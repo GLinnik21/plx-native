@@ -1,0 +1,21 @@
+{
+  "settings.services.section": "Сэрвісы",
+  "settings.seerr.title": "Seerr",
+  "settings.seerr.detail": "Запытвайце фільмы і серыялы праз свой сервер Seerr.",
+  "settings.seerr.value_off": "Выкл.",
+  "settings.seerr.value_on": "Укл.",
+  "settings.seerr.copy": "Падключыце сервер Seerr, Overseerr або Jellyseerr, каб запытваць фільмы і серыялы з гэтага тэлевізара. Уваход адбываецца ад імя профілю Plex, які зараз глядзіць.",
+  "settings.seerr.address.title": "Адрас сервера",
+  "settings.seerr.address.detail": "Напрыклад, 192.168.1.10:5055",
+  "settings.seerr.address.unset": "Не зададзены",
+  "settings.seerr.connect.title": "Падключыцца",
+  "settings.seerr.status.off": "Спачатку ўвядзіце адрас сервера.",
+  "settings.seerr.status.idle": "Не падключана.",
+  "settings.seerr.status.connecting": "Падключэнне…",
+  "settings.seerr.status.connected": "Падключана як {name}.",
+  "settings.seerr.status.not_allowed": "Сервер не пускае гэты ўліковы запіс Plex.",
+  "settings.seerr.status.unreachable": "Не ўдаецца звязацца з серверам.",
+  "settings.seerr.status.bad_address": "Гэта не адрас сервера.",
+  "settings.seerr.remove.title": "Выдаліць сервер",
+  "settings.seerr.remove.detail": "Забыць гэты адрас на гэтым тэлевізары."
+}

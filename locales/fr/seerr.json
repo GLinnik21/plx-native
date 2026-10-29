@@ -1,0 +1,21 @@
+{
+  "settings.services.section": "Services",
+  "settings.seerr.title": "Seerr",
+  "settings.seerr.detail": "Demandez films et séries via Seerr.",
+  "settings.seerr.value_off": "Désactivé",
+  "settings.seerr.value_on": "Activé",
+  "settings.seerr.copy": "Connectez votre serveur Seerr, Overseerr ou Jellyseerr pour demander des films et des séries depuis ce téléviseur. La connexion se fait avec le profil Plex en cours.",
+  "settings.seerr.address.title": "Adresse du serveur",
+  "settings.seerr.address.detail": "Par exemple 192.168.1.10:5055",
+  "settings.seerr.address.unset": "Non définie",
+  "settings.seerr.connect.title": "Se connecter",
+  "settings.seerr.status.off": "Saisissez d'abord l'adresse du serveur.",
+  "settings.seerr.status.idle": "Non connecté.",
+  "settings.seerr.status.connecting": "Connexion…",
+  "settings.seerr.status.connected": "Connecté en tant que {name}.",
+  "settings.seerr.status.not_allowed": "Le serveur n'autorise pas ce compte Plex.",
+  "settings.seerr.status.unreachable": "Impossible de joindre le serveur.",
+  "settings.seerr.status.bad_address": "Ce n'est pas une adresse de serveur.",
+  "settings.seerr.remove.title": "Supprimer le serveur",
+  "settings.seerr.remove.detail": "Oublier cette adresse sur ce téléviseur."
+}

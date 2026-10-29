@@ -41,6 +41,8 @@ pub enum SettingsPage {
     Privacy,
     /// The Legal index.
     Legal,
+    /// Services > Seerr: the household's Seerr server (docs/seerr.md).
+    Seerr,
     /// About PlxNative, a document pushed straight from the root.
     About,
     /// One Legal document, by index into `screens::legal`'s page list.
@@ -114,6 +116,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Contribute => 111,
             SettingsPage::UnderPosters => 113,
             SettingsPage::UnderPostersDetails => 114,
+            SettingsPage::Seerr => 115,
             SettingsPage::Favourites => 101,
             SettingsPage::Privacy => 102,
             SettingsPage::Legal => 103,
@@ -159,6 +162,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Favourites
             | SettingsPage::Privacy
             | SettingsPage::Legal
+            | SettingsPage::Seerr
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
@@ -177,6 +181,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Privacy => "privacy",
             SettingsPage::Legal => "legal",
             SettingsPage::About => "about",
+            SettingsPage::Seerr => "seerr",
             SettingsPage::Document(_) => "document",
             SettingsPage::Preview(_) => "preview",
             SettingsPage::ConsentStage(_) => "stage",
@@ -204,12 +209,28 @@ impl LogicalState for NoInit {
     fn probe(&self, _out: &mut String) {}
 }
 
+/// What the family's pages read, from the outer host's frame: the retained Browse directory (the
+/// Libraries row, the Onboard child, Under posters' preview) and the household's Seerr store
+/// (Services > Seerr's connection line).
+#[derive(Clone, Copy)]
+pub struct InnerViews<'a> {
+    pub directory: plx_data::stores::browse::DirectoryView<'a>,
+    pub seerr: Option<&'a plx_data::stores::seerr::SeerrStore>,
+}
+
+impl<'a> InnerViews<'a> {
+    /// The directory alone (a host that publishes no Seerr store: a fixture).
+    pub fn of_directory(directory: plx_data::stores::browse::DirectoryView<'a>) -> Self {
+        Self { directory, seerr: None }
+    }
+}
+
 impl Host for InnerHost {
     type Arg = SettingsPage;
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = plx_data::stores::browse::DirectoryView<'a>;
+    type Views<'a> = InnerViews<'a>;
     type Init = NoInit;
     // No family page remembers anything on its own `ReturnState` today (`machine/src/machine.rs`'s
     // `Host::Memory` doc) — the surface's own `NavStack<InnerHost>` restores its child pages by
@@ -219,7 +240,10 @@ impl Host for InnerHost {
 
 impl DirectoryLike for InnerHost {
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
-        cx.views
+        cx.views.directory
+    }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        cx.views.seerr
     }
 }
 
@@ -230,7 +254,7 @@ impl DirectoryLike for InnerHost {
 /// borrow to hand it to a `DrawFrame`.
 pub fn inner_cx<'o, 'a: 'o, H: DirectoryLike>(cx: &Cx<'a, H>) -> Cx<'o, InnerHost> {
     Cx {
-        views: H::directory(cx),
+        views: InnerViews { directory: H::directory(cx), seerr: H::seerr(cx) },
         tick: cx.tick,
         measure: cx.measure,
         press: cx.press,
@@ -337,6 +361,7 @@ mod tests {
             SettingsPage::Privacy,
             SettingsPage::Legal,
             SettingsPage::About,
+            SettingsPage::Seerr,
             SettingsPage::Document(0),
             SettingsPage::Preview(0),
             SettingsPage::ConsentStage(0),

@@ -35,7 +35,7 @@ pub fn cx_with<'a>(
     directory: plx_data::stores::browse::DirectoryView<'a>,
 ) -> Cx<'a, InnerHost> {
     Cx {
-        views: directory,
+        views: crate::registry::InnerViews::of_directory(directory),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),

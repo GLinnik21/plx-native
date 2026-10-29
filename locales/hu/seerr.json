@@ -1,0 +1,21 @@
+{
+  "settings.services.section": "Szolgáltatások",
+  "settings.seerr.title": "Seerr",
+  "settings.seerr.detail": "Filmek és sorozatok kérése a Seerr-szerveredről.",
+  "settings.seerr.value_off": "Ki",
+  "settings.seerr.value_on": "Be",
+  "settings.seerr.copy": "Csatlakoztasd a Seerr, Overseerr vagy Jellyseerr szerveredet, hogy erről a tévéről kérhess filmeket és sorozatokat. A bejelentkezés a nézést végző Plex-profillal történik.",
+  "settings.seerr.address.title": "Szervercím",
+  "settings.seerr.address.detail": "Például 192.168.1.10:5055",
+  "settings.seerr.address.unset": "Nincs megadva",
+  "settings.seerr.connect.title": "Csatlakozás",
+  "settings.seerr.status.off": "Előbb add meg a szerver címét.",
+  "settings.seerr.status.idle": "Nincs csatlakoztatva.",
+  "settings.seerr.status.connecting": "Csatlakozás…",
+  "settings.seerr.status.connected": "Csatlakozva mint {name}.",
+  "settings.seerr.status.not_allowed": "A szerver nem engedi be ezt a Plex-fiókot.",
+  "settings.seerr.status.unreachable": "A szerver nem érhető el.",
+  "settings.seerr.status.bad_address": "Ez nem szervercím.",
+  "settings.seerr.remove.title": "Szerver eltávolítása",
+  "settings.seerr.remove.detail": "A cím elfelejtése ezen a tévén."
+}

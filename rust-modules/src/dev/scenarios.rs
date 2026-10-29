@@ -527,7 +527,7 @@ pub(crate) fn libswitch_armed() -> bool {
 pub(crate) fn searchosc_armed() -> bool {
     plx_base::devtrig::flag("searchosc")
 }
-/// `/tmp/plxnative-settings=<root|home|privacy|legal|playback|picker-quality|…>`.
+/// `/tmp/plxnative-settings=<root|home|privacy|legal|playback|seerr|picker-quality|…>`.
 pub(crate) fn settings_boot_value() -> Option<String> {
     plx_base::devtrig::read("settings")
 }
@@ -1247,6 +1247,7 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
                 "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
                 "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
+                "seerr" => plx_screens::family::SettingsPage::Seerr,
                 _other => {
                     #[cfg(feature = "devtriggers")]
                     plx_base::eventlog::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));

@@ -122,6 +122,9 @@ pub(crate) struct AppViews<'a> {
     /// every context that is not a page's own. What a page that names where BACK goes reads
     /// ([`super::page_title`]).
     pub(crate) beneath: Option<plx_machine::machine::ScreenId>,
+    /// The household's Seerr store, read-only (`plx_data::stores::seerr`): the Settings family reads its
+    /// connection, the request surfaces its answers. A screen changes it only through an effect.
+    pub(crate) seerr: &'a plx_data::stores::seerr::SeerrStore,
 }
 
 impl Bridge {
@@ -137,7 +140,7 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None, seerr: &self.stores.seerr }
     }
 }
 
@@ -247,6 +250,7 @@ impl plx_screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> { Some(cx.views.seerr) }
     fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
         super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
     }
@@ -1355,6 +1359,13 @@ impl Bridge {
         }
     }
 
+    /// Settings > Services > Seerr's Connect: sign the seated profile in afresh at the stored
+    /// address, the call started in this call.
+    pub(crate) fn seerr_connect(&mut self) {
+        self.stores.seerr.connect(&Self::watchlist_input());
+        self.start_store_jobs_of(StoreId::Seerr);
+    }
+
     /// Run one subtitle-search command. A command decides from the model alone (the request is the
     /// pump's, which is where the registry's answer is read), so it emits no job; the drain stays
     /// so that a command which one day does is started in the call that ran it.
@@ -2060,7 +2071,7 @@ impl Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None, seerr: &self.stores.seerr,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -2258,7 +2269,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None, seerr: &self.stores.seerr,
             },
             measure: &self.measure,
         }
@@ -2345,7 +2356,12 @@ impl Bridge {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
-            AppFx::Preferences(command) => super::preferences::execute(command),
+            // Signing in to Seerr steps the Seerr store, which this Bridge owns; every other
+            // preference is the executor's.
+            AppFx::Preferences(command) => match command {
+                plx_screens::registry::PreferenceCmd::SeerrConnect => self.seerr_connect(),
+                command => super::preferences::execute(command),
+            },
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),

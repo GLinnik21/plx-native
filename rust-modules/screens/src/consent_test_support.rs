@@ -14,7 +14,7 @@ pub use plx_machine::present::Present;
 /// fixture is sufficient; the nested host still carries the same view type as production.
 pub fn test_cx(m: &FixtureMeasure) -> Cx<'_, InnerHost> {
     Cx {
-        views: plx_data::stores::browse::DirectoryView::empty_for_test(),
+        views: crate::registry::InnerViews::of_directory(plx_data::stores::browse::DirectoryView::empty_for_test()),
         tick: Tick::default(),
         measure: m,
         press: PressRead::default(),

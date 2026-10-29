@@ -100,6 +100,12 @@ pub enum PreferenceCmd {
     /// The Interface resolution picked in its picker: install-wide, applied at the next launch. The
     /// app writes it through the session; `reply` learns whether the write was durable.
     UiResolution { mode: plx_plex::plex::session::UiResolution, reply: std::sync::mpsc::Sender<bool> },
+    /// Settings > Services > Seerr: the household's Seerr address as typed (`""` removes it). The
+    /// app writes it through the session; `reply` learns whether the write was durable. The Seerr
+    /// store reads the stored address on its next frame pass and signs in there.
+    SeerrAddress { address: String, reply: std::sync::mpsc::Sender<bool> },
+    /// Settings > Services > Seerr's Connect: sign the seated profile in at the stored address again.
+    SeerrConnect,
 }
 
 /// Whether an item has a context menu to open (`item_menu::has_actions`): the one predicate the
@@ -110,6 +116,9 @@ pub use crate::item_menu::has_actions as item_has_menu;
 pub use crate::item_menu::Action as ItemMenuAction;
 /// Re-exported so a screen's test host names its init through the registry.
 pub use crate::family::NoInit;
+/// What the Settings family's pages read (the directory and the Seerr store), named by the family's
+/// fixtures and pages through the shared vocabulary.
+pub use crate::family::InnerViews;
 /// The panels a sibling screen's host test reads through the shared vocabulary (the `sibling` gate
 /// admits only `crate::registry`): the Detail page's tests drive the real About panel and compare
 /// the audio summary against the tracks panel's full list.
@@ -1309,6 +1318,11 @@ pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn collections_count(_cx: &Cx<'_, Self>, _section: usize) -> Option<Result<u32, Forbidden>> {
         None
     }
+    /// The household's Seerr store, read-only (docs/seerr.md): its connection and its answers.
+    /// A provided method, `None` for a host that publishes none (a fixture); `AppHost` publishes it.
+    fn seerr<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        None
+    }
 }
 
 /// The server refused the collections listing (HTTP 401/403): the answer is final for the identity
@@ -1322,11 +1336,17 @@ pub struct Forbidden;
 /// one publication so its Onboard child never falls back to the compatibility selector.
 pub trait DirectoryLike: AppLike + Sized {
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
+    /// The household's Seerr store (Settings > Services > Seerr reads its connection), carried down
+    /// to the Settings family like the directory; `None` where the host publishes none.
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore>;
 }
 
 impl<H: LibraryLike> DirectoryLike for H {
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         LibraryLike::directory(cx)
+    }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        LibraryLike::seerr(cx)
     }
 }
 

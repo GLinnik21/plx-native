@@ -65,5 +65,14 @@ pub(super) fn execute(command: PreferenceCmd) {
                 plx_machine::idle::invalidate();
             });
         }
+        PreferenceCmd::SeerrAddress { address, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let _ = reply.send(plx_plex::plex::session::set_seerr_address(address.trim()));
+                plx_machine::idle::invalidate();
+            });
+        }
+        // Signing in steps the Seerr store, which the Bridge owns: it answers this one itself
+        // (`Bridge::app_effect`) and never hands it here.
+        PreferenceCmd::SeerrConnect => debug_assert!(false, "SeerrConnect is the Bridge's"),
     }
 }

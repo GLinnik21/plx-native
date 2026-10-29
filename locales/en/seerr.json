@@ -1,0 +1,81 @@
+{
+  "settings.services.section": {
+    "value": "Services",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Settings root section heading for connected outside services"
+  },
+  "settings.seerr.title": {
+    "value": "Seerr",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Row and page title; Seerr is a product name"
+  },
+  "settings.seerr.detail": {
+    "value": "Request movies and shows from your Seerr server.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Root row sub-line"
+  },
+  "settings.seerr.value_off": {
+    "value": "Off",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Root row value when no server address is set"
+  },
+  "settings.seerr.value_on": {
+    "value": "On",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Root row value when a server address is set"
+  },
+  "settings.seerr.copy": {
+    "value": "Connect your Seerr, Overseerr or Jellyseerr server to request movies and shows from this television. It signs in as the Plex profile that is watching.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Page introduction under the title"
+  },
+  "settings.seerr.address.title": {
+    "value": "Server address",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Row title, and the empty field's placeholder"
+  },
+  "settings.seerr.address.detail": {
+    "value": "For example 192.168.1.10:5055",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Address row sub-line; keep the example address as it is"
+  },
+  "settings.seerr.address.unset": {
+    "value": "Not set",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Address row value while none is set"
+  },
+  "settings.seerr.connect.title": {
+    "value": "Connect",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Button row: sign in to the server again"
+  },
+  "settings.seerr.status.off": {
+    "value": "Enter the server's address first.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Connect row sub-line: no address yet"
+  },
+  "settings.seerr.status.idle": {
+    "value": "Not connected.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Connect row sub-line: an address, not signed in"
+  },
+  "settings.seerr.status.connecting": {
+    "value": "Connecting…",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Connect row sub-line while signing in"
+  },
+  "settings.seerr.status.connected": {
+    "value": "Connected as {name}.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Connect row sub-line: {name} is the user's name on the server",
+    "args": {
+      "name": "str"
+    }
+  },
+  "settings.seerr.status.not_allowed": {
+    "value": "The server doesn't let this Plex account in.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Connect row sub-line: the server refused this Plex account"
+  },
+  "settings.seerr.status.unreachable": {
+    "value": "Can't reach the server.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Connect row sub-line: no answer from the address"
+  },
+  "settings.seerr.status.bad_address": {
+    "value": "That isn't a server address.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Connect row sub-line: what was typed is not a web address"
+  },
+  "settings.seerr.remove.title": {
+    "value": "Remove server",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Button row: forget the address"
+  },
+  "settings.seerr.remove.detail": {
+    "value": "Forget this address on this television.",
+    "description": "Settings > Services > Seerr (the household's Seerr / Overseerr / Jellyseerr request server): Remove row sub-line"
+  }
+}
