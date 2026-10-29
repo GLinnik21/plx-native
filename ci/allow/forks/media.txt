@@ -10,7 +10,7 @@ rust-modules/media/src/player/engine.rs::release_off_frame
 rust-modules/media/src/player/ffi_host.rs::sf_destroy
 rust-modules/media/src/player/ffi_host.rs::sf_set_volume
 rust-modules/media/src/player/mod.rs::ffi
-rust-modules/media/src/player/mod.rs::sink
+rust-modules/media/src/player/mod.rs::raw_sink
 rust-modules/media/src/player/playurl.rs::parse_playurl
 rust-modules/media/src/player/preview.rs::load_still_out
 rust-modules/media/src/player/subside.rs::sync

@@ -2495,12 +2495,19 @@ fn cold_audio_resolve_held(
 
 #[cfg(feature = "devtriggers")]
 fn cold_track(id: i64, codec: &str, lang: &str, default: bool, title: &str) -> plx_data::metadata::Stream {
+    cold_track_ch(id, codec, lang, default, title, 6)
+}
+
+/// [`cold_track`] with the source's channel count: the app's stereo decode is a downmix of a 5.1
+/// track (`cold_track`'s) and no downmix of a 2.0 one.
+#[cfg(feature = "devtriggers")]
+fn cold_track_ch(id: i64, codec: &str, lang: &str, default: bool, title: &str, channels: i64) -> plx_data::metadata::Stream {
     plx_data::metadata::Stream {
         id,
         index: id,
         lang_code: lang.into(),
         codec: codec.into(),
-        channels: 6,
+        channels,
         default,
         selected: default,
         title: title.into(),
@@ -2749,7 +2756,9 @@ fn uncopyable_video_keeps_its_stand_in() {
 
 /// Force Direct Play with a PMS-spelled `dca` track on a set whose table has no DTS row: refused
 /// with `ForcedFailure::Audio` and no part URL to Load, not a Load the pipeline cannot decode
-/// (#584's endless spinner). The test-process caps are `Caps::assumed()`, which lists no DTS.
+/// (#584's endless spinner). The test-process caps are `Caps::assumed()`, which lists no DTS and has
+/// no lossy policy (`AppLossy::Off`), so the app does not decode it either: the same track on a value
+/// the policy admits DTS on is `forced_resolve_decodes_dts_in_the_app_when_the_set_has_no_dts_row`.
 #[test]
 #[cfg(feature = "devtriggers")]
 fn forced_direct_play_refuses_dca_without_a_dts_row() {
@@ -2780,6 +2789,17 @@ fn forced_resolve_on_a_learned_dts_refusal(
     name: &'static str,
     audio: Vec<plx_data::metadata::Stream>,
 ) -> (Plan, Vec<String>) {
+    forced_resolve_on_a_learned_dts_refusal_with(name, audio, plx_platform::devcaps::AppLossy::Off)
+}
+
+/// [`forced_resolve_on_a_learned_dts_refusal`] on a set whose lossy policy is `lossy` (`Off` is the
+/// assumed fallback's, `Measured` a table that was read).
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_on_a_learned_dts_refusal_with(
+    name: &'static str,
+    audio: Vec<plx_data::metadata::Stream>,
+    lossy: plx_platform::devcaps::AppLossy,
+) -> (Plan, Vec<String>) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let _session = plx_plex::plex::session::TempSession::new(name);
@@ -2789,6 +2809,7 @@ fn forced_resolve_on_a_learned_dts_refusal(
         plx_platform::devcaps::Caps {
             audio: "aac,ac3,eac3,dts".into(),
             audio_channels: [("dts".into(), 6)].into(),
+            app_lossy: lossy,
             ..plx_platform::devcaps::Caps::assumed()
         },
     );
@@ -2819,7 +2840,9 @@ fn forced_resolve_on_a_learned_dts_refusal(
 /// #1048: under Force Direct Play a refusal the install learned is refused BEFORE the Load, with the
 /// codec named, not sent to the pipeline that already refused it. The Forced gate reads the
 /// attempt's start value (`env.caps`), so the row's native ceiling holds although the boot value
-/// still announces DTS 5.1 and the codec's table row is still there.
+/// still announces DTS 5.1 and the codec's table row is still there. The fixture's policy is `Off`:
+/// where the policy admits DTS the app decodes it instead
+/// (`forced_resolve_decodes_dts_in_the_app_after_a_learned_surround_refusal`).
 #[test]
 #[cfg(feature = "devtriggers")]
 fn forced_direct_play_refuses_a_learned_refusal_before_the_load() {
@@ -2835,6 +2858,8 @@ fn forced_direct_play_refuses_a_learned_refusal_before_the_load() {
 /// The same learned refusal with an AC3 sibling: Forced keeps its ladder (a non-commentary,
 /// same-language stand-in), so the part plays with the sibling named to the server and the learned
 /// DTS is not offered. Pins the rule `forced_direct_play_keeps_its_stand_in` pins for a TrueHD default.
+/// (The policy is `Off` here; with it on, the sibling still wins:
+/// `forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track`.)
 #[test]
 #[cfg(feature = "devtriggers")]
 fn forced_direct_play_plays_the_ac3_sibling_of_a_learned_dts() {
@@ -2850,6 +2875,226 @@ fn forced_direct_play_plays_the_ac3_sibling_of_a_learned_dts() {
         probes.iter().all(|l| query_param(l, "audioStreamID") == Some("2")),
         "Forced must name the AC3 sibling (stream 2), not the learned DTS (stream 1): {requests:?}"
     );
+}
+
+/// A cold Force Direct Play resolve of `audio` on a value the lossy policy `lossy` governs, on the
+/// assumed fallback's table (no DTS row), so the set has no native path for DTS at all.
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_with_policy(
+    name: &'static str,
+    audio: Vec<plx_data::metadata::Stream>,
+    acodec: &str,
+    lossy: plx_platform::devcaps::AppLossy,
+) -> (Plan, Vec<String>) {
+    cold_audio_resolve(name, 2, MDE_DIRECTPLAY, audio, Vec::new(), acodec, |env, _| {
+        env.direct_play_mode = DirectPlayMode::Forced;
+        env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps { app_lossy: lossy, ..plx_platform::devcaps::Caps::assumed() });
+    })
+}
+
+/// **Force Direct Play decodes a STEREO DTS track in the app where the set has no DTS row** (webOS 10+):
+/// the track is picked, the Part is direct, and nothing refuses it. A 2.0 source is no downmix, so the
+/// app's decode loses nothing (a surround one is
+/// `forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
+/// `forced_direct_play_refuses_dca_without_a_dts_row` is the same play with no lossy policy.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_decodes_dts_in_the_app_when_the_set_has_no_dts_row() {
+    let (plan, requests) = forced_resolve_with_policy(
+        "cold-forced-dca-app",
+        vec![cold_track_ch(1, "dca", "eng", true, "", 2)],
+        "dca",
+        plx_platform::devcaps::AppLossy::Measured,
+    );
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/36013/"), "a direct Part reaches the Load: {}", plan.url);
+    let probes = request_with(&requests, "hasMDE=1");
+    assert!(!probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
+}
+
+/// **Force Direct Play never mixes a surround source down** (owner, 2026-10-28, #1082). The same set (no
+/// DTS row, the lossy policy admitting DTS) with a 5.1 DTS track: the app does not decode it to stereo,
+/// so Force shows its refusal exactly as it did before the app decoded anything, naming the codec,
+/// and no part URL reaches the Load.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down() {
+    let (plan, _) = forced_resolve_with_policy(
+        "cold-forced-dca-surround",
+        vec![cold_track(1, "dca", "eng", true, "")],
+        "dca",
+        plx_platform::devcaps::AppLossy::Measured,
+    );
+    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
+        panic!("a 5.1 DTS track must not be decoded to stereo under Force Direct Play, got {:?}", plan.verdict);
+    };
+    assert_eq!(codec, "DTS", "the read-out names the codec");
+    assert!(plan.url.is_empty(), "no part URL may reach the Load: {}", plan.url);
+    assert!(plan.verdict.as_ref().is_some_and(|v| v.text().contains("DTS")), "{:?}", plan.verdict);
+}
+
+/// **Auto direct-plays a codec in force**: a DTS-only file on a value with every lossy row in force (the
+/// `appdecodelossy` trigger, the value the recovery rung hands a re-plan) is picked in ONE pass over the
+/// set's own decoder AND the app's, so the Part is direct and the Load will declare PCM. Only Force
+/// Direct Play separates the set's decoder into a first pass; a first pass of the set's decoder alone
+/// would plan a server conversion here, and nothing would measure the app's decode.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn auto_resolve_picks_a_codec_in_force_in_one_pass() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-auto-dca-in-force",
+        2,
+        MDE_DIRECTPLAY,
+        vec![cold_track(1, "dca", "eng", true, "")],
+        Vec::new(),
+        "dca",
+        |env, _| env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+    );
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/36013/"), "a direct Part reaches the Load: {}", plan.url);
+    let probes = request_with(&requests, "hasMDE=1");
+    assert!(!probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
+}
+
+/// **A native sibling always beats an app decode**: the Forced pick tries the set's own decoder over
+/// every track first, so the AC3 track plays and the (stereo) DTS default is not decoded in the app.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track() {
+    let (plan, requests) = forced_resolve_with_policy(
+        "cold-forced-dca-sibling",
+        vec![cold_track_ch(1, "dca", "eng", true, "", 2), cold_track(2, "ac3", "eng", false, "")],
+        "dca",
+        plx_platform::devcaps::AppLossy::Measured,
+    );
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    let probes = request_with(&requests, "hasMDE=1");
+    assert!(
+        !probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("2")),
+        "the AC3 sibling (stream 2) plays, not the DTS the app could decode: {requests:?}"
+    );
+}
+
+/// The intended track of a Force Direct Play on a set with no DTS row (policy `Measured`) is the one
+/// the app decodes: the audio probes of `audio` name stream `want`, the verdict is none.
+#[cfg(feature = "devtriggers")]
+fn forced_measured_probes_stream(name: &'static str, audio: Vec<plx_data::metadata::Stream>, acodec: &str, want: &str, why: &str) {
+    let (plan, requests) = forced_resolve_with_policy(name, audio, acodec, plx_platform::devcaps::AppLossy::Measured);
+    assert!(plan.verdict.is_none(), "{why}: {:?}", plan.verdict);
+    let probes = request_with(&requests, "hasMDE=1");
+    assert!(
+        !probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some(want)),
+        "{why}: stream {want} plays: {requests:?}"
+    );
+}
+
+/// **A native COMMENTARY is not the intent's sibling.** An English stereo DTS main (the default) beside an
+/// English AC3 commentary, on a set with no DTS row: the main is decoded in the app; the commentary,
+/// which the old first pass reached through its language arm, must not stand in for it. (A SURROUND main
+/// is not decoded at all, `forced_resolve_plays_the_last_resort_stand_in_for_a_surround_dts_main`.)
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_decodes_the_dts_main_not_a_native_commentary() {
+    forced_measured_probes_stream(
+        "cold-forced-dca-commentary",
+        vec![cold_track_ch(1, "dca", "eng", true, "", 2), cold_track(2, "ac3", "eng", false, "Director's Commentary")],
+        "dca",
+        "1",
+        "the DTS main, not the AC3 commentary",
+    );
+}
+
+/// **A native dub in another language is not the intent's sibling either.** A Japanese stereo DTS original
+/// (the default) beside an English AC3 dub: the original is decoded in the app, not replaced by the dub.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_decodes_the_dts_original_not_a_native_dub() {
+    forced_measured_probes_stream(
+        "cold-forced-dca-dub",
+        vec![cold_track_ch(1, "dca", "jpn", true, "", 2), cold_track(2, "ac3", "eng", false, "")],
+        "dca",
+        "1",
+        "the Japanese DTS, not the English dub",
+    );
+}
+
+/// **A surround DTS main the app will not mix down falls to the last resort, as it did before the app
+/// decoded anything**: pass 3 is the native stand-in of any track, so an English AC3 commentary beside an
+/// English 5.1 DTS main plays (the same pick `forced_direct_play_keeps_its_stand_in` pins for a TrueHD
+/// default). The refusal is only for a file with nothing native to stand in
+/// (`forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_plays_the_last_resort_stand_in_for_a_surround_dts_main() {
+    forced_measured_probes_stream(
+        "cold-forced-dca-surround-stand-in",
+        vec![cold_track(1, "dca", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Director's Commentary")],
+        "dca",
+        "2",
+        "the native stand-in, not a 5.1 DTS mixed down to stereo",
+    );
+}
+
+/// **Nothing that played before is refused**: where the intended track's codec is not enabled (TrueHD
+/// under `Measured`), the app decodes nothing and the last resort, the native stand-in of another
+/// language, plays as it did before the app decode existed.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_keeps_the_native_stand_in_when_the_intended_codec_is_not_enabled() {
+    forced_measured_probes_stream(
+        "cold-forced-truehd-stand-in",
+        vec![cold_track(1, "truehd", "jpn", true, ""), cold_track(2, "ac3", "eng", false, "")],
+        "truehd",
+        "2",
+        "the English AC3 stand-in",
+    );
+}
+
+/// **A lossy codec nothing has enabled is still refused**: TrueHD has no recorded measurement, so a
+/// read table does not enable it and Force Direct Play ends on the audio read-out, as before. The debug
+/// policy (`All`, the `appdecodelossy` trigger) is the contrast: the same track plays there.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_still_refuses_an_unmeasured_lossy_codec() {
+    use plx_platform::devcaps::AppLossy;
+    let (plan, _) = forced_resolve_with_policy(
+        "cold-forced-truehd-unmeasured",
+        vec![cold_track(1, "truehd", "eng", true, "")],
+        "truehd",
+        AppLossy::Measured,
+    );
+    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
+        panic!("{:?}", plan.verdict);
+    };
+    assert_eq!(codec, "Dolby TrueHD");
+    assert!(plan.url.is_empty(), "no part URL may reach the Load: {}", plan.url);
+    let (plan, _) = forced_resolve_with_policy(
+        "cold-forced-truehd-all",
+        vec![cold_track(1, "truehd", "eng", true, "")],
+        "truehd",
+        AppLossy::All,
+    );
+    assert!(plan.verdict.is_none(), "every lossy row is enabled under the debug policy: {:?}", plan.verdict);
+}
+
+/// A learned surround refusal (the set's own DTS decoder was watched refusing 5.1) leaves a 5.1 track
+/// with no native path, but it is still a surround track: Force Direct Play does not mix it down in the
+/// app (owner, 2026-10-28, #1082), so even on a value the policy admits DTS on the play ends on the same
+/// read-out `forced_direct_play_refuses_a_learned_refusal_before_the_load` pins for a value with no
+/// policy. (The refusal narrowed DTS to two channels, so the set's own decoder keeps a stereo track.)
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_refuses_a_learned_surround_dts_refusal_instead_of_mixing_it_down() {
+    let (plan, _) = forced_resolve_on_a_learned_dts_refusal_with(
+        "forced-learned-dts-app",
+        vec![cold_track(1, "dca", "eng", true, "")],
+        plx_platform::devcaps::AppLossy::Measured,
+    );
+    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
+        panic!("a learned DTS 5.1 refusal must still refuse under Force Direct Play, got {:?}", plan.verdict);
+    };
+    assert_eq!(codec, "DTS");
+    assert!(plan.url.is_empty(), "no part URL may reach the Load: {}", plan.url);
 }
 
 /// The detail page's facts row is a read-out of what the device would do NOW, so it reads the same

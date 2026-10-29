@@ -984,8 +984,75 @@ fn auto_and_forced_agree_on_the_dca_spelling() {
     assert!(!audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "truehd", 8, 0));
 }
 
+/// **DTS the app decodes** (S4 PR 2): a set with no DTS row direct-plays a DTS track in
+/// BOTH modes, up to 8 channels (the app decodes the core and downmixes), whatever a native
+/// ceiling says; with the policy off nothing changes — no row, no DTS — and the lossless codecs do
+/// not depend on it.
+#[test]
+fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_nothing() {
+    let off = plx_platform::devcaps::Caps::assumed();
+    let on = plx_platform::devcaps::Caps::assumed().with_app_lossy();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        for ch in [2, 6, 8] {
+            assert!(!audio_direct_plays_with(&off, mode, "dca", ch, 0), "{mode:?} {ch}ch: gate off");
+            assert!(audio_direct_plays_with(&on, mode, "dca", ch, 0), "{mode:?} {ch}ch: gate on");
+        }
+        assert!(audio_direct_plays_with(&on, mode, "dca", 6, 96_000), "{mode:?}: a core has no rate bound");
+        assert!(!audio_direct_plays_with(&on, mode, "mlp", 8, 0), "{mode:?}: only the app-decoded set joined");
+        assert!(!audio_direct_plays_with(&on, mode, "aac", 2, 96_000), "{mode:?}: hardware limits stand");
+    }
+    // A policy that merely ADMITS DTS (a read table's `Measured`) is not "in force": Auto never decodes
+    // in the app on its own, Force Direct Play does only where the set has no native path.
+    let admitted = plx_platform::devcaps::Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..off.clone() };
+    assert!(!audio_direct_plays_with(&admitted, DirectPlayMode::Auto, "dca", 6, 0), "Auto: the server converts it");
+    assert!(audio_direct_plays_with(&admitted, DirectPlayMode::Forced, "dca", 2, 0), "Forced: no native path, nothing to mix down");
+    assert!(
+        !audio_direct_plays_with(&admitted, DirectPlayMode::Forced, "dca", 6, 0),
+        "Forced: no native path and the app will not mix a surround source down (owner, 2026-10-28)"
+    );
+    assert!(!audio_natively_plays_with(&admitted, DirectPlayMode::Forced, "dca", 2, 0));
+    let measured = plx_platform::devcaps::Caps { native_ceiling: [("dts".into(), 2)].into(), ..dts_row_caps() };
+    assert!(!audio_direct_plays_with(&measured, DirectPlayMode::Forced, "dca", 6, 0), "native ceiling applies natively");
+    assert!(audio_direct_plays_with(&measured.with_app_lossy(), DirectPlayMode::Forced, "dca", 6, 0));
+}
+
+/// **MP3 and Vorbis in force** (S4-4) direct-play in both modes on a set with no row for
+/// them, and not with it off; a Vorbis above 48 kHz is the server's.
+#[test]
+fn the_lossy_gate_lets_the_app_direct_play_mp3_and_vorbis_in_both_modes() {
+    let off = plx_platform::devcaps::Caps::assumed();
+    let on = plx_platform::devcaps::Caps::assumed().with_app_lossy();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        for codec in ["mp3", "vorbis"] {
+            assert!(!audio_direct_plays_with(&off, mode, codec, 2, 44_100), "{mode:?} {codec}: gate off");
+            assert!(audio_direct_plays_with(&on, mode, codec, 2, 44_100), "{mode:?} {codec}: gate on");
+            assert!(audio_direct_plays_with(&on, mode, codec, 2, 0), "{mode:?} {codec}: unstated rate");
+            assert!(!audio_direct_plays_with(&on, mode, codec, 2, 96_000), "{mode:?} {codec}: above 48 kHz");
+        }
+        assert!(audio_direct_plays_with(&on, mode, "vorbis", 6, 48_000), "{mode:?}: 5.1 Vorbis");
+        assert!(!audio_direct_plays_with(&on, mode, "mp2", 2, 44_100), "{mode:?}: only MP3 and Vorbis joined");
+    }
+}
+
+/// **TrueHD in force** (S4-5) direct-plays in both modes at any rate it has, 8 channels,
+/// on a set with no row for it, and not with the gate off.
+#[test]
+fn the_lossy_gate_lets_the_app_direct_play_truehd_at_any_rate_in_both_modes() {
+    let off = plx_platform::devcaps::Caps::assumed();
+    let on = plx_platform::devcaps::Caps::assumed().with_app_lossy();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        assert!(!audio_direct_plays_with(&off, mode, "truehd", 8, 48_000), "{mode:?}: gate off");
+        for rate in [0, 48_000, 96_000, 192_000] {
+            for channels in [2, 6, 8] {
+                assert!(audio_direct_plays_with(&on, mode, "truehd", channels, rate), "{mode:?}: {channels}ch {rate} Hz");
+            }
+        }
+        assert!(!audio_direct_plays_with(&on, mode, "mlp", 6, 48_000), "{mode:?}: only truehd");
+    }
+}
+
 /// Issue #951: an LG B8 refused a 96 kHz AAC Load. The server is asked for 48 kHz at most on every
-/// audio codec, and the local gate agrees on that axis: a 96 kHz AAC (or AC-3) track does not
+/// audio codec the app does not resample (not DTS, TrueHD, FLAC, ALAC or LPCM), and the local gate agrees on that axis: a 96 kHz AAC (or AC-3) track does not
 /// direct-play in either mode and never wins the pick over a sibling that does, while an unstated
 /// rate (the planner's `0`) and a DTS core (48 kHz by format, whatever the container says) pass.
 #[test]
@@ -1008,7 +1075,9 @@ fn a_track_above_the_load_rate_ceiling_is_not_direct_played_in_either_mode() {
 /// FLAC is decoded by the app and fed to LG's PCM input, whose limits are its own: two channels,
 /// and only the rates its table names. Forced trusts a hardware decoder past its table,
 /// but not these, so on the B8 a 5.1 FLAC (the Load was refused after PMS had direct-played it)
-/// and a 96 kHz FLAC (played audibly slow) are refused before anything starts, in both modes.
+/// is refused before anything starts, in both modes. A rate above the table is no refusal: the app
+/// resamples a 96 or 192 kHz stereo FLAC to the table's top (`devcaps::pcm_load_rate`), so both modes
+/// play it; an unstated rate still is.
 #[test]
 fn flac_is_gated_by_the_pcm_paths_own_limits_in_both_modes() {
     let caps = plx_platform::devcaps::Caps {
@@ -1020,18 +1089,25 @@ fn flac_is_gated_by_the_pcm_paths_own_limits_in_both_modes() {
         assert!(audio_direct_plays_with(&caps, mode, "flac", 2, 48_000), "{mode:?}");
         assert!(audio_direct_plays_with(&caps, mode, "flac", 1, 44_100), "{mode:?}");
         assert!(!audio_direct_plays_with(&caps, mode, "flac", 6, 48_000), "{mode:?}: 5.1");
-        assert!(!audio_direct_plays_with(&caps, mode, "flac", 2, 96_000), "{mode:?}: 96 kHz");
-        assert!(!audio_direct_plays_with(&caps, mode, "flac", 2, 192_000), "{mode:?}: 192 kHz");
+        assert!(audio_direct_plays_with(&caps, mode, "flac", 2, 96_000), "{mode:?}: 96 kHz is resampled");
+        assert!(audio_direct_plays_with(&caps, mode, "flac", 2, 192_000), "{mode:?}: 192 kHz is resampled");
+        assert!(audio_direct_plays_with(&caps, mode, "flac", 1, 88_200), "{mode:?}: 88.2 kHz mono");
+        assert!(!audio_direct_plays_with(&caps, mode, "flac", 6, 96_000), "{mode:?}: 5.1 at 96 kHz still converts");
+        assert!(!audio_direct_plays_with(&caps, mode, "flac", 2, 11_025), "{mode:?}: below the table, not in it");
         assert!(!audio_direct_plays_with(&caps, mode, "flac", 2, 0), "{mode:?}: unstated rate");
     }
     // the hardware codecs keep their own rules: Forced still feeds a 7.1 DTS core
     assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 8, 96_000));
-    // a 96 kHz FLAC never wins the track pick over a stereo AC3 sibling it would play slow
+    // a stereo 96 kHz FLAC wins the track pick (the app resamples it); a 5.1 one still gives way to the AC3 sibling
     let mut hi = trk(1, "flac", "eng", true);
     hi.channels = 2;
     hi.sampling_rate = 96_000;
     let mut ac3 = trk(2, "ac3", "eng", false);
     ac3.channels = 2;
+    let pick = pick_dp_audio_eligible(&[hi.clone(), ac3.clone()], "flac", AudioLangPrefs::default(), 0, StandIn::Any,
+        |c, n, r| audio_direct_plays_with(&caps, DirectPlayMode::Forced, c, n, r));
+    assert_eq!(pick.map(|(_, _, id)| id), Some(1));
+    hi.channels = 6;
     let pick = pick_dp_audio_eligible(&[hi, ac3], "flac", AudioLangPrefs::default(), 0, StandIn::Any,
         |c, n, r| audio_direct_plays_with(&caps, DirectPlayMode::Forced, c, n, r));
     assert_eq!(pick.map(|(_, _, id)| id), Some(2));
@@ -1057,14 +1133,15 @@ fn alac_and_lpcm_are_gated_by_the_pcm_paths_limits_in_both_modes() {
             assert!(audio_direct_plays_with(&caps, mode, codec, 2, 44_100), "{codec} {mode:?}");
             assert!(audio_direct_plays_with(&caps, mode, codec, 1, 48_000), "{codec} {mode:?}");
             assert!(!audio_direct_plays_with(&caps, mode, codec, 6, 48_000), "{codec} {mode:?}: 5.1");
-            assert!(!audio_direct_plays_with(&caps, mode, codec, 2, 96_000), "{codec} {mode:?}: 96 kHz");
+            assert!(audio_direct_plays_with(&caps, mode, codec, 2, 96_000), "{codec} {mode:?}: 96 kHz is resampled");
+            assert!(!audio_direct_plays_with(&caps, mode, codec, 6, 96_000), "{codec} {mode:?}: 5.1 at 96 kHz");
             assert!(!audio_direct_plays_with(&caps, mode, codec, 2, 0), "{codec} {mode:?}: unstated rate");
         }
         for not_ours in ["pcm_f32le", "pcm_bluray", "pcm_u8"] {
             assert!(!audio_direct_plays_with(&caps, mode, not_ours, 2, 48_000), "{not_ours} {mode:?}: the server converts it");
         }
     }
-    // a 24-bit/96 kHz ALAC never beats a stereo AC3 sibling it would play slow
+    // a 24-bit/96 kHz ALAC beats a stereo AC3 sibling (the app resamples it)
     let mut hi = trk(1, "alac", "eng", true);
     hi.channels = 2;
     hi.sampling_rate = 96_000;
@@ -1072,7 +1149,7 @@ fn alac_and_lpcm_are_gated_by_the_pcm_paths_limits_in_both_modes() {
     ac3.channels = 2;
     let pick = pick_dp_audio_eligible(&[hi, ac3], "alac", AudioLangPrefs::default(), 0, StandIn::Any,
         |c, n, r| audio_direct_plays_with(&caps, DirectPlayMode::Forced, c, n, r));
-    assert_eq!(pick.map(|(_, _, id)| id), Some(2));
+    assert_eq!(pick.map(|(_, _, id)| id), Some(1));
 }
 
 

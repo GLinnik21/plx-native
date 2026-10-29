@@ -18,7 +18,7 @@ fn resident(sid: ServerId, browse: &mut TestBrowse) {
 
 fn apply(browse: &mut TestBrowse, sid: ServerId, edit: ViewEdit) -> bool {
     browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ApplyView {
-        at: ViewAt::leaf(sid, "7"), edit }, &ClientKeys::default(), &mut Vec::new())
+        at: ViewAt::leaf(sid, "7"), edit }, &ClientKeys::default(), &plx_plex::plex::session::peek(), &mut Vec::new())
 }
 
 fn stale(browse: &mut TestBrowse) -> bool {
@@ -149,7 +149,7 @@ fn an_agreeing_read_back_resets_a_stale_section_that_is_not_showing() {
 
 fn listings_changed(browse: &mut TestBrowse, sid: ServerId, library_on_stack: bool) -> bool {
     browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack },
-        &ClientKeys::default(), &mut Vec::new())
+        &ClientKeys::default(), &plx_plex::plex::session::peek(), &mut Vec::new())
 }
 
 #[test]

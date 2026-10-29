@@ -19,6 +19,7 @@
   "widgets.tracks.stereo": "Stereo",
   "widgets.tracks.original": "Oryginał: {language}",
   "widgets.tracks.converted_by_server": "{track} · konwersja na serwerze",
+  "widgets.tracks.decoded_in_app_stereo": "{track} · odtwarzane w stereo",
   "widgets.action.mark_watched": "Oznacz jako obejrzane",
   "widgets.action.mark_unwatched": "Oznacz jako nieobejrzane",
   "widgets.action.play_start": "Odtwórz od początku",

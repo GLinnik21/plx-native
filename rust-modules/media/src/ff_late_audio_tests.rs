@@ -422,6 +422,59 @@ fn prepare_with(tag: &str, make: impl FnOnce(&Path) -> PathBuf) -> Option<Prepar
     Some(Prepared { run, first_audio_s, video_before, _server: server, _scratch: scratch, _ffmpeg: ffmpeg })
 }
 
+/// Watches one lane's cap and queued bytes from another thread while the demuxer runs.
+///
+/// A demux of a four second fixture ends in milliseconds, so the test thread can see it finished
+/// before the OS has scheduled this thread at all (a loaded CI runner did, twice: "0 bytes").
+/// The thread therefore reads the stop flag BEFORE each sample and stops only after a sample that
+/// followed it, so one sample is always taken after the demuxer has ended. The lanes the tests
+/// watch are never popped, so that last sample is also the peak.
+struct LaneProbe {
+    stop: std::sync::Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<(i64, i64)>,
+}
+
+impl LaneProbe {
+    fn start(lane: *mut AuQueue) -> LaneProbe {
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let lane = lane as usize;
+        let thread = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let (mut max_cap, mut max_queued) = (0i64, 0i64);
+                loop {
+                    let last = stop.load(Ordering::Acquire);
+                    max_cap = max_cap.max(i64::from(crate::aq::aq_cap(lane as *mut AuQueue)));
+                    max_queued = max_queued.max(i64::from(crate::aq::aq_bytes(lane as *mut AuQueue)));
+                    if last {
+                        return (max_cap, max_queued);
+                    }
+                    std::thread::yield_now();
+                }
+            })
+        };
+        LaneProbe { stop, thread }
+    }
+
+    /// Stop the probe; `(largest cap seen, most bytes queued seen)`.
+    fn finish(self) -> (i64, i64) {
+        self.stop.store(true, Ordering::Release);
+        self.thread.join().expect("lane probe")
+    }
+}
+
+/// The probe samples at least once however soon it is finished (no ffmpeg needed).
+#[test]
+fn a_lane_probe_finished_at_once_still_samples_the_lane() {
+    let mut q = crate::aq::aq_new(4096);
+    let au = [0u8; 100];
+    assert_eq!(crate::aq::aq_push(&mut *q, au.as_ptr(), au.len() as std::os::raw::c_int, 0, 1, 1), 0);
+    for round in 0..200 {
+        let probe = LaneProbe::start(&mut *q);
+        assert_eq!(probe.finish(), (4096, 100), "round {round}");
+    }
+}
+
 /// [`prepare`], then report what reached the audio lane within the deadline.
 fn demux_fixture(tag: &str, audio_delay_s: f64) -> Option<(Observed, f64, u64)> {
     let mut p = prepare(tag, audio_delay_s, 14)?;
@@ -590,33 +643,19 @@ fn an_ordinary_file_never_raises_the_video_lane_cap() {
     );
 
     // Watch the cap from outside while the demuxer runs.
-    let lane = p.run.video_lane() as usize;
-    let max_cap = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
-    let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let sampler = {
-        let (max_cap, stop) = (max_cap.clone(), stop.clone());
-        std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                let cap = i64::from(crate::aq::aq_cap(lane as *mut AuQueue));
-                max_cap.fetch_max(cap, Ordering::AcqRel);
-                std::thread::yield_now();
-            }
-        })
-    };
+    let probe = LaneProbe::start(p.run.video_lane());
     let until = Instant::now() + FIRST_AUDIO_DEADLINE;
     while !p.run.finished() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(5));
     }
-    stop.store(true, Ordering::Release);
-    sampler.join().expect("sampler");
+    let (max_cap, _) = probe.finish();
 
     assert!(p.run.finished(), "the demuxer must reach the end of a four second file");
     assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
     let held = i64::from(crate::aq::aq_bytes(&mut *p.run.video));
     assert!(held > 0 && held < base, "the whole file sits in the video lane: {held} bytes");
     assert_eq!(
-        max_cap.load(Ordering::Acquire),
-        base,
+        max_cap, base,
         "a file whose video never fills the lane must keep the lane's base cap throughout \
          (a grant was taken although no push ever parked)"
     );
@@ -839,34 +878,17 @@ fn an_interleaved_file_never_queues_audio_past_the_soft_cap() {
         return;
     };
     let base = crate::player::engine::aq_caps().1;
-    let lane = p.run.audio_lane() as usize;
-    let max_cap = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
-    let max_queued = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
-    let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let sampler = {
-        let (max_cap, max_queued, stop) = (max_cap.clone(), max_queued.clone(), stop.clone());
-        std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                let cap = i64::from(crate::aq::aq_cap(lane as *mut AuQueue));
-                max_cap.fetch_max(cap, Ordering::AcqRel);
-                let queued = i64::from(crate::aq::aq_bytes(lane as *mut AuQueue));
-                max_queued.fetch_max(queued, Ordering::AcqRel);
-                std::thread::yield_now();
-            }
-        })
-    };
+    let probe = LaneProbe::start(p.run.audio_lane());
     let until = Instant::now() + FIRST_AUDIO_DEADLINE;
     while !p.run.finished() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(5));
     }
-    stop.store(true, Ordering::Release);
-    sampler.join().expect("sampler");
+    let (max_cap, queued) = probe.finish();
 
     assert!(p.run.finished(), "the demuxer must reach the end of a four second file");
     assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
     assert!(crate::aq::aq_bytes(&mut *p.run.video) > 0, "the video was read");
-    assert_eq!(max_cap.load(Ordering::Acquire), base, "the audio lane's cap never moves");
-    let queued = max_queued.load(Ordering::Acquire);
+    assert_eq!(max_cap, base, "the audio lane's cap never moves");
     assert!(
         queued > 0 && queued < base,
         "a file whose audio never fills the lane keeps it under its soft cap throughout: {queued} bytes"

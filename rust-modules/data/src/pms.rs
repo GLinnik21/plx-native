@@ -1848,15 +1848,24 @@ fn place_heroes(pool: Vec<(Arc<PmsMovie>, String, usize)>, build: &mut HubBuild)
 /// The hub list is read in windows of hubs ([`paging::read_hub_list`]) and each window is projected
 /// as it arrives; `held` names the rows whose cards the source holds now, and the rest are
 /// descriptors from the moment they are parsed (see [`Projection`]).
+///
+/// The Continue Watching hub needs nothing from the hub list, so it is asked for beside it rather
+/// than after it (`plx_base::task::beside`). The read-ahead behind its preview is NOT: it starts
+/// once both answered, so a source whose hub list fails costs one extra request (the deck's), not
+/// the deck's and its look-ahead pages on every retry.
 fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId, held: &[(String, String)]) -> Option<SourceBuild> {
-    let mut build = project_hubs(sid, held, |req| match req {
-        Some(req) => c.home_hubs_page(HUB_FETCH_COUNT, req),
-        None => c.home_hubs(HUB_FETCH_COUNT),
-    })?;
+    let (build, cw) = std::thread::scope(|s| {
+        let cw = plx_base::task::beside(s, "hubs-deck", move || c.continue_watching(HUB_FETCH_COUNT));
+        let build = project_hubs(sid, held, |req| match req {
+            Some(req) => c.home_hubs_page(HUB_FETCH_COUNT, req),
+            None => c.home_hubs(HUB_FETCH_COUNT),
+        });
+        (build, cw.finish())
+    });
     // The Continue Watching shelf comes from the DEDICATED hub (see `project`). Its failure fails
     // THIS SOURCE (`?`) — nothing of it commits and it retries on its own backoff. Losing the most
     // important shelf to a transient error would be worse than briefly showing the previous one.
-    let cw = c.continue_watching(HUB_FETCH_COUNT)?;
+    let (mut build, cw) = (build?, cw?);
     project_deck(&mut build, &cw, sid);
     with_lookahead(&mut build, sid, |start, size| c.continue_watching_page(start as i64, size as i64));
     Some(build)

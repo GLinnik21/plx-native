@@ -12,6 +12,36 @@ use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
 use std::sync::{Condvar, Mutex};
+
+/// How the pipeline refused a Load, for the `playback.failed` event: the Load call itself returned
+/// 0 (`Sync`, `threads::load_thread` via `publish_native_load_failure`), or the call returned and
+/// a `type=18` error callback arrived before any picture (`Async`, `sf_on_event`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum RefusalPath {
+    None = 0,
+    Sync = 1,
+    Async = 2,
+}
+
+impl RefusalPath {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Sync,
+            2 => Self::Async,
+            _ => Self::None,
+        }
+    }
+
+    /// The stable wire code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sync => "sync",
+            Self::Async => "async",
+        }
+    }
+}
 use std::time::{Duration, Instant};
 
 /// Exact conservation certificate accumulated while the native media clock is held.
@@ -654,6 +684,11 @@ pub struct Shared {
     /// `error_shape` tell a k5lp-style hang apart from an ordinary firmware refusal on the wire,
     /// as `FailureKind::LoadTimeout` rather than the generic `FailureKind::TvPipeline`.
     pub load_timed_out: AtomicBool,
+    /// A native start is queued behind the previous object's still-running `Unload`. Written ONLY
+    /// by the `PlayerAdapter` after each release-machine step (it publishes the machine's
+    /// `has_queued`), never by a session; `state()` derives `Resolving` from it. Not part of
+    /// `reset_session`: the queue outlives a session reset exactly as the machine does.
+    pub start_queued: AtomicBool,
     /// The pipeline took the video decoder back from an ESTABLISHED session: `type=18 num=600`
     /// (`"VDEC resource is released by policy action"`) after a picture. Measured on the dev set
     /// (webOS 4, 2026-10-13): a direct play left paused until the screensaver came on got this
@@ -846,6 +881,12 @@ pub struct Shared {
     /// success flag, and the other refusals inside `sf_load` are the seam's own lifecycle gates —
     /// so a session that failed that way leaves this at 0 ("none recorded").
     pub dg_cb_err_num: AtomicI32,
+    /// HOW the Load was refused, as a [`RefusalPath`] code: written by [`Self::publish_native_load_failure`]
+    /// (`Sync`) and by `sf_on_event`'s refusal-before-any-picture arm (`Async`), first writer wins,
+    /// cleared by [`Self::reset_session`] with the other per-play failure state. Read by the
+    /// `playback.failed` event, which `dg_cb_err_num` alone cannot serve: a synchronous refusal
+    /// leaves that at 0 and so does a session that never failed.
+    pub refusal_path: AtomicU8,
     /// The media GET's HTTP status and the bytes actually delivered to the demuxer. Written by the
     /// DEMUX thread — the third writer of this block. 0/0 = no connection was ever made, which is
     /// a different failure from a connection that answered 401.
@@ -1018,6 +1059,7 @@ impl Shared {
             dg_cb_err: AtomicI32::new(0),
             dg_cb_err_at: AtomicU32::new(0),
             dg_cb_err_num: AtomicI32::new(0),
+            refusal_path: AtomicU8::new(RefusalPath::None as u8),
             dg_http_status: AtomicI32::new(0),
             dg_transport_rc: AtomicI32::new(0),
             dg_transport_age_ms: AtomicI64::new(-1),
@@ -1091,6 +1133,7 @@ impl Shared {
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
+            start_queued: AtomicBool::new(false),
             decoder_revoked: AtomicBool::new(false),
             native_audio_refused: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
@@ -1184,8 +1227,25 @@ impl Shared {
         if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch) {
             return false;
         }
+        self.note_refusal_path(RefusalPath::Sync);
         self.load_failed.store(true, Ordering::Release);
         true
+    }
+
+    /// Record how this session's Load was refused. The first path wins: a later callback must not
+    /// rewrite the account of the refusal that ended the open.
+    pub fn note_refusal_path(&self, path: RefusalPath) {
+        let _ = self.refusal_path.compare_exchange(
+            RefusalPath::None as u8,
+            path as u8,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// The refusal path recorded for this session, [`RefusalPath::None`] when there is none.
+    pub fn refusal_path(&self) -> RefusalPath {
+        RefusalPath::from_u8(self.refusal_path.load(Ordering::Relaxed))
     }
 
     /// Whether `epoch`'s Starfish `Load` call has returned yet. Required by `pump.rs`'s
@@ -1373,6 +1433,18 @@ impl Shared {
         }
         state.phase = to;
         true
+    }
+
+    /// Whether an off-frame `Unload` owns the native object ([`NativeSessionPhase::Releasing`]):
+    /// `player::sink()` answers the fenced sink for the main thread while this holds.
+    pub fn native_releasing(&self) -> bool {
+        matches!(
+            self.native_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .phase,
+            NativeSessionPhase::Releasing { .. }
+        )
     }
 
     /// Whether a timed-out Load is parked ([`NativeSessionPhase::Abandoned`]): the native object
@@ -1703,6 +1775,7 @@ impl Shared {
         self.dg_cb_err.store(0, Ordering::Relaxed);
         self.dg_cb_err_at.store(0, Ordering::Relaxed);
         self.dg_cb_err_num.store(0, Ordering::Relaxed);
+        self.refusal_path.store(RefusalPath::None as u8, Ordering::Relaxed);
         self.dg_http_status.store(0, Ordering::Relaxed);
         self.dg_transport_rc.store(0, Ordering::Relaxed);
         self.dg_transport_age_ms.store(-1, Ordering::Relaxed);

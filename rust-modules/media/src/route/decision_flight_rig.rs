@@ -36,6 +36,13 @@ enum Shape {
     /// A progressive-MKV Original (a remux) the Auto watchdog is watching, under an applied Auto
     /// contract: the route an automatic Original-to-HLS fallback leaves.
     AutoOriginal,
+    /// A direct play of the Part itself: the Part URL, no transcode session (`tsession` empty, so the
+    /// route is not `is_transcoding`) and the direct-play contract. What a refused DTS track of a
+    /// direct play is, which the app-decode rung re-opens.
+    Direct,
+    /// [`Shape::Direct`] that the Auto watchdog watches, under an applied Auto contract: a cold Auto
+    /// Original which is a direct play.
+    DirectAutoOriginal,
 }
 
 pub(crate) struct FlightRig {
@@ -84,6 +91,18 @@ impl FlightRig {
     /// restores Original.
     pub(crate) fn start_auto_original(ps: &mut PlaybackSession, delay: std::time::Duration) -> FlightRig {
         Self::start_shaped(ps, delay, Shape::AutoOriginal)
+    }
+
+    /// [`FlightRig::start`] on a direct play of the Part (`rig-1` is the logical session; no encoder
+    /// runs), the shape the in-app audio decode re-opens ([`Shape::Direct`]).
+    pub(crate) fn start_direct(ps: &mut PlaybackSession, delay: std::time::Duration) -> FlightRig {
+        Self::start_shaped(ps, delay, Shape::Direct)
+    }
+
+    /// [`FlightRig::start_direct`] that the Auto watchdog watches, the quality preference at Auto
+    /// ([`Shape::DirectAutoOriginal`]). The drop restores Original.
+    pub(crate) fn start_direct_auto_original(ps: &mut PlaybackSession, delay: std::time::Duration) -> FlightRig {
+        Self::start_shaped(ps, delay, Shape::DirectAutoOriginal)
     }
 
     fn start_shaped(ps: &mut PlaybackSession, delay: std::time::Duration, shape: Shape) -> FlightRig {
@@ -164,6 +183,12 @@ impl FlightRig {
                     enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false),
                 )
             }
+            Shape::Direct | Shape::DirectAutoOriginal => {
+                if matches!(shape, Shape::DirectAutoOriginal) {
+                    restore_quality(Quality::Auto);
+                }
+                (format!("http://127.0.0.1:{port}/library/parts/960001/1/file.mkv"), Default::default())
+            }
             Shape::Hls => {
                 restore_quality(Quality::Auto);
                 (
@@ -187,7 +212,7 @@ impl FlightRig {
             Plan {
                 sid,
                 url,
-                tsession: "rig-1".to_owned(),
+                tsession: if matches!(shape, Shape::Direct | Shape::DirectAutoOriginal) { String::new() } else { "rig-1".to_owned() },
                 sess: "rig-logical".into(),
                 part_id: 960001,
                 vcodec: "hevc".into(),
@@ -201,7 +226,7 @@ impl FlightRig {
             },
             "960001",
         );
-        if matches!(shape, Shape::AutoOriginal) {
+        if matches!(shape, Shape::AutoOriginal | Shape::DirectAutoOriginal) {
             ps.cur_auto_original_watched = true;
             ps.cur_src = (28_000, 1_920, 1_080);
         }

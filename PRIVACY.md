@@ -94,10 +94,13 @@ details as a native report (plus the same `probe` fact and the exact firmware `b
 for playback-error reports below), and the file name (never the folder) and build identifier of each
 library (a library of the television's firmware or one bundled with PlxNative) the faulting
 address and the return address were in, with the library's load address and size. A library that
-has no build identifier (the television's own C library has none) is still named, with its load
+has no build identifier (the television's own C library has none), or whose file could not be matched to the one that crashed, is still named, with its load
 address and size and an all-zero placeholder identifier, as the native report lists it. It carries the
 time of the crash, to the second, as the television's clock read it when the crash was logged (it
-is left out when that clock reads an implausible time). It also says in
+is left out when that clock reads an implausible time), which thread it happened on (the thread's number,
+whether it was the main thread, and the thread's own name, a technical label set by PlxNative or a library),
+whether the app was running, shutting down or exiting, and how many seconds it had been running; none of
+this is personal data. It also says in
 one fixed word why the primary report is missing: `no_envelope` (no usable report was left:
 the crash reporter left none, or left one that was malformed and was deleted before the comparison,
 which looks the same) or `envelope_unmatched` (it left reports, none of them this crash). No path, library
@@ -307,7 +310,7 @@ Every product analytics event also carries this bounded compatibility and connec
 | `enhancement.refused` | `boost_dialog` — `true` / `false`; `normalize_loudness` — `true` / `false` |
 | `playback.requested` | `playback_id` — a random number minted per attempt, never stored and never reused |
 | `playback.started` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused; `raster` — `sd` / `hd` / `fhd` / `uhd` / `unknown` — never the raster; `fps` — a fixed rung: `24`/`25`/`30`/`50`/`60`/`100`/`other`/`unknown` — never the measured rate; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `startup` — `<1s` / `1-3s` / `3-10s` / `10s+` — never the interval |
-| `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused; `kind` — `decision_refused` / `playback_policy` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `unspecified` |
+| `playback.failed` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused; `kind` — `decision_refused` / `playback_policy` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `release_timeout` / `resolve_failed` / `preview_not_direct` / `unspecified`; `video` — a codec name from a fixed table; anything else is `other`; `audio` — a codec name from a fixed table; anything else is `other`; `pipeline_error` — the TV pipeline's first error number as a class: `0` (none) / `100` / `200` / `601` / `other`; `refusal` — `sync` (the TV's Load call itself refused) / `async` (the pipeline refused it before the first picture) / `none` |
 | `playback.cancelled` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused |
 | `playback.abandoned` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused |
 | `playback.quality` | `playback_id` — a random number minted per attempt, never stored and never reused; `rebuffers` — `0` / `1` / `2-3` / `4+`; `buffering` — `none` / `<2s` / `2-10s` / `10s+` — never the interval |

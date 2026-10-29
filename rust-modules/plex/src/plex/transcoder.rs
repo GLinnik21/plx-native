@@ -29,7 +29,8 @@ pub use plx_platform::devcaps::DP_AUDIO_CODECS;
 /// Codec, channel and rate check for an actual selected track, against the capability value `caps`
 /// of the attempt asking. Codec-only membership is insufficient on devices whose DTS decoder stops
 /// at 5.1 or whose AAC decoder stops at stereo, on the PCM path, which can name only some rates,
-/// and for a source above the rate ceiling the profile asks the server for. The rate half is
+/// and for a source above the rate ceiling the profile asks the server for (the app-decoded lossless
+/// codecs have none: the app resamples a faster track, `devcaps::pcm_load_rate`). The rate half is
 /// `devcaps::audio_track_fits` (see `devcaps::AUDIO_RATE_CEILING`, #951).
 ///
 /// The value is an argument, never a read of the process-wide `devcaps::caps()`: the profile the
@@ -186,9 +187,10 @@ pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'sta
 ///   anywhere, so it can neither confirm nor deny 10-bit. The claim stays because it is what
 ///   keeps HDR10 through a transcode (HEVC Main10, BT.2020+PQ in-bitstream — the same in-band
 ///   static HDR10 SEI the direct-play path relies on; ff.rs keeps it).
-/// * **`audio.samplingRate` upper bound** — `devcaps::AUDIO_RATE_CEILING` (48 kHz, #951) on the
-///   app-decoded PCM codecs and each codec of the target's `audioCodec` list that
-///   `devcaps::audio_rate_bounded` names (all but DTS), so PMS converts a faster track.
+/// * **`audio.samplingRate` upper bound** — `devcaps::AUDIO_RATE_CEILING` (48 kHz, #951) on each
+///   codec of the target's `audioCodec` list and each lossy app-decoded row that
+///   `devcaps::audio_rate_bounded` names (all but DTS, TrueHD and FLAC, ALAC and LPCM, which the app
+///   resamples itself, `devcaps::pcm_load_rate`), so PMS converts a faster track.
 ///   `devcaps::audio_track_fits` is the local counterpart: a path that skips `/decision` cannot
 ///   direct-play what this has the server convert.
 ///
@@ -299,15 +301,17 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
         .filter(|(codec, _)| caps.audio_has(codec))
         .map(|(codec, channels)| audio_limit(profile_codec_name(codec), "audio.channels", *channels))
         .collect::<String>();
-    // The rate ceiling (`devcaps::AUDIO_RATE_CEILING`, #951) goes on the PCM codecs and every codec
-    // of the transcode target list that `devcaps::audio_rate_bounded` names, the same set the
-    // local gate (`devcaps::audio_track_fits`) holds a track to: PMS converts above it, as it does
-    // for a FLAC wider than stereo. A PCM rate under the ceiling that is not in the PCM table is
-    // refused by the planner instead.
+    // The rate ceiling (`devcaps::AUDIO_RATE_CEILING`, #951) goes on every codec of the transcode
+    // target list and every lossy app-decoded row that `devcaps::audio_rate_bounded` names, the same
+    // set the local gate (`devcaps::audio_track_fits`) holds a track to: PMS converts above it. The
+    // PCM codecs are not in it: the app resamples a faster FLAC, ALAC or LPCM track to the PCM
+    // input's top rate (`devcaps::pcm_load_rate`), so only their channel limit above is sent, and a
+    // PCM rate under the ceiling that is not in the PCM table is refused by the planner instead.
     let audio_limits = audio_limits
         + &plx_platform::devcaps::PCM_AUDIO_CODECS
             .split(',')
             .filter(|c| caps.audio_has(c))
+            .chain(plx_platform::devcaps::APP_DECODED.iter().filter(|c| c.lossy && caps.audio_has(c.id)).map(|c| c.id))
             .chain(target_audio_codecs.iter().copied())
             .filter(|c| plx_platform::devcaps::audio_rate_bounded(c))
             .map(|codec| audio_limit(codec, "audio.samplingRate", plx_platform::devcaps::AUDIO_RATE_CEILING))
@@ -356,11 +360,21 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     }
     // The pipeline's feed formats, DTS only under the Forced rule (`Caps::forced_admits_dts`):
     // a profile that offered DTS to a set with no DTS row would have PMS direct-play a Load the
-    // pipeline cannot decode.
+    // pipeline cannot decode. The lossy app-decoded ids the policy admits follow (those not already
+    // listed: DTS is, where the table has the row): the app decodes them, so a set with no decoder for
+    // one still gets a direct-play answer for it instead of a transcode (`Caps::app_may_decode_lossy`).
     let audio = DP_AUDIO_CODECS
         .split(',')
         .chain(plx_platform::devcaps::PCM_AUDIO_CODECS.split(','))
-        .filter(|c| caps.forced_feeds_audio(c))
+        .chain(plx_platform::devcaps::APP_DECODED.iter().filter(|c| c.lossy).map(|c| c.id))
+        .filter(|c| caps.forced_feeds_audio(c) || caps.app_may_decode_lossy(c))
+        .fold(Vec::<&str>::new(), |mut seen, c| {
+            if !seen.contains(&c) {
+                seen.push(c);
+            }
+            seen
+        })
+        .into_iter()
         .map(profile_codec_name)
         .collect::<Vec<_>>()
         .join(",");
@@ -1176,6 +1190,8 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_lossy: plx_platform::devcaps::AppLossy::Off,
+            app_lossy_in_force: Default::default(),
             },
             s.contract.delivery,
         );
@@ -1354,8 +1370,8 @@ mod tests {
         let profile = super::profile_for(&caps);
         assert!(list_of(&profile, "audioCodec=").contains(&"flac".into()), "{profile}");
         assert!(profile.contains("scope=videoAudioCodec&scopeName=flac&type=upperBound&name=audio.channels&value=2&replace=true"), "{profile}");
-        // and at the PCM input's highest rate: a 96 kHz FLAC is converted, not played slow
-        assert!(profile.contains("scope=videoAudioCodec&scopeName=flac&type=upperBound&name=audio.samplingRate&value=48000&replace=true"), "{profile}");
+        // and with NO rate bound: the app resamples a 96 kHz FLAC to the PCM input's top rate itself
+        assert!(!profile.contains("scopeName=flac&type=upperBound&name=audio.samplingRate"), "{profile}");
         assert!(!list_of(target_of(&profile), "audioCodec=").contains(&"flac".into()));
         assert!(list_of(&super::forced_direct_profile_for(&caps), "audioCodec=").contains(&"flac".into()));
         let assumed = plx_platform::devcaps::Caps::assumed();
@@ -1363,7 +1379,7 @@ mod tests {
         assert!(!super::forced_direct_profile_for(&assumed).contains("flac"));
     }
 
-    /// ALAC and LPCM are app-decoded like FLAC (S4): the same stereo and 48 kHz limits, direct play
+    /// ALAC and LPCM are app-decoded like FLAC (S4): the same stereo limit and no rate bound, direct play
     /// and Force only, never a transcode target. LPCM is named `pcm` in the profile.
     #[test]
     fn alac_and_pcm_are_offered_like_flac_and_never_as_a_target() {
@@ -1377,7 +1393,7 @@ mod tests {
         for c in ["alac", "pcm"] {
             assert!(list_of(&profile, "audioCodec=").contains(&c.into()), "{c}: {profile}");
             assert!(profile.contains(&format!("scope=videoAudioCodec&scopeName={c}&type=upperBound&name=audio.channels&value=2&replace=true")), "{c}: {profile}");
-            assert!(profile.contains(&format!("scope=videoAudioCodec&scopeName={c}&type=upperBound&name=audio.samplingRate&value=48000&replace=true")), "{c}: {profile}");
+            assert!(!profile.contains(&format!("scopeName={c}&type=upperBound&name=audio.samplingRate")), "{c}: {profile}");
             assert!(!list_of(target_of(&profile), "audioCodec=").contains(&c.into()), "{c} is not a transcode target");
             assert!(list_of(&forced, "audioCodec=").contains(&c.into()), "{c}: {forced}");
         }
@@ -1388,8 +1404,9 @@ mod tests {
     }
 
     /// Issue #951: PMS converts a 96 kHz FLAC to AAC and keeps 96 kHz, which an LG B8 refuses to
-    /// Load. So every audio codec the pipeline can be handed, not only the app-decoded PCM ones, is
-    /// asked for at 48 kHz at most, DTS excepted (`devcaps::audio_rate_bounded`). The profile and the
+    /// Load. So every audio codec the pipeline can be handed except the app-decoded lossless ones
+    /// (FLAC, ALAC, PCM: the app resamples them, `devcaps::pcm_load_rate`), DTS and TrueHD is asked
+    /// for at 48 kHz at most (`devcaps::audio_rate_bounded`). The profile and the
     /// local gate (`devcaps::audio_track_fits`) must agree per codec, or a path that skips
     /// `/decision` direct-plays what the profile has the server convert.
     #[test]
@@ -1417,6 +1434,36 @@ mod tests {
         assert!(!assumed.contains(&rate_bound("opus")) && !assumed.contains(&rate_bound("dca")), "{assumed}");
     }
 
+    /// **Hi-res lossless is the app's, not the server's**: the app resamples a FLAC, ALAC or LPCM track faster
+    /// than the PCM input names (`devcaps::pcm_load_rate`), so the profile no longer asks PMS to convert one
+    /// (exactly the three `audio.samplingRate` limitations on `flac`, `alac` and `pcm` are gone), while every
+    /// bound that protects a Load the app does not resample stays: the transcode targets' (`aac`, `ac3`,
+    /// `eac3`, `opus`), the lossy app-decoded rows' (`mp3`, `vorbis`) and the HLS target's `aac`. A 5.1 track
+    /// is still converted: the `audio.channels` limitation of the three stays at two.
+    #[test]
+    fn hi_res_lossless_is_not_converted_by_the_server_but_surround_still_is() {
+        use plx_platform::devcaps::audio_track_fits;
+        let mut caps = Caps::assumed().with_app_lossy();
+        caps.audio.push_str(",opus,flac,alac,pcm");
+        for c in ["flac", "alac", "pcm"] {
+            caps.audio_channels.insert(c.into(), plx_platform::devcaps::PCM_MAX_CHANNELS);
+        }
+        let limit = |codec: &str, name: &str, value: u32| format!(
+            "scope=videoAudioCodec&scopeName={codec}&type=upperBound&name={name}&value={value}&replace=true"
+        );
+        let profile = super::profile_for(&caps);
+        let samplings: Vec<&str> = profile.split("+add-limitation(").filter(|l| l.contains("name=audio.samplingRate")).collect();
+        for c in ["flac", "alac", "pcm"] {
+            assert!(!samplings.iter().any(|l| l.contains(&format!("scopeName={c}&"))), "{c}: {profile}");
+            assert!(profile.contains(&limit(c, "audio.channels", 2)), "{c}: 5.1 still converts: {profile}");
+            assert!(!audio_track_fits(c, 6, 96_000) && audio_track_fits(c, 2, 96_000), "{c}: the local gate agrees");
+        }
+        for c in ["ac3", "eac3", "aac", "opus", "mp3", "vorbis"] {
+            assert!(profile.contains(&limit(c, "audio.samplingRate", 48_000)), "{c} keeps its bound: {profile}");
+        }
+        assert!(hls_profile_for(&caps).contains(&limit("aac", "audio.samplingRate", 48_000)));
+    }
+
     /// Force Direct Play offers DTS only on the same table evidence the planner asks for
     /// (`Caps::forced_admits_dts`); without the row the profile cannot invite a Load the
     /// pipeline cannot decode.
@@ -1431,6 +1478,94 @@ mod tests {
         let with = super::forced_direct_profile_for(&caps);
         assert_eq!(list_of(&with, "audioCodec="), ["aac", "ac3", "eac3", "dca"]);
         assert!(!with.contains("dts"), "{with}");
+    }
+
+    /// **The lossy-decode policy in both profiles** (S4 PR 2). Off (the assumed fallback), the profiles are
+    /// what they were: a set with no DTS row announces no `dca`. On, the app decodes the core
+    /// itself, so `dca` is announced with no table row — up to 8 channels, no rate bound — in the
+    /// Auto direct-play list and its copy lane and in Force Direct Play's; and the lossless set is
+    /// untouched either way.
+    #[test]
+    fn the_lossy_gate_adds_dca_to_both_profiles_and_off_changes_nothing() {
+        let off = Caps::assumed();
+        let on = Caps::assumed().with_app_lossy();
+        for (profile, forced) in [(super::profile_for(&off), false), (super::forced_direct_profile_for(&off), true)] {
+            assert!(!profile.contains("dca") && !profile.contains("dts"), "policy off, forced={forced}: {profile}");
+        }
+        let auto = super::profile_for(&on);
+        assert!(list_of(&auto, "audioCodec=").contains(&"dca".into()), "{auto}");
+        assert!(auto.contains("scope=videoAudioCodec&scopeName=dca&type=upperBound&name=audio.channels&value=8&replace=true"), "{auto}");
+        assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "no rate bound on the core: {auto}");
+        assert!(!auto.contains("dts"), "{auto}");
+        let forced = super::forced_direct_profile_for(&on);
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"], "{forced}");
+        assert_eq!(super::profile_for(&off), super::profile_for(&Caps::assumed()));
+    }
+
+    /// **MP3 and Vorbis in both profiles under the gate** (S4-4): announced like `dca` (direct-play
+    /// list, channel limit, no transcode target), and, unlike a DTS core, held to the 48 kHz
+    /// sampling-rate bound, because the app's resampler is not for a 96 kHz Vorbis. Off, the profiles
+    /// are what they were.
+    #[test]
+    fn the_lossy_gate_adds_mp3_and_vorbis_to_both_profiles_with_a_rate_bound() {
+        let off = Caps::assumed();
+        for profile in [super::profile_for(&off), super::forced_direct_profile_for(&off)] {
+            assert!(!profile.contains("mp3") && !profile.contains("vorbis"), "{profile}");
+        }
+        let on = Caps::assumed().with_app_lossy();
+        let auto = super::profile_for(&on);
+        let dp = list_of(&auto, "audioCodec=");
+        for codec in ["mp3", "vorbis"] {
+            assert!(dp.contains(&codec.into()), "{codec}: {auto}");
+            assert!(auto.contains(&format!("scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value=8&replace=true")), "{codec}: {auto}");
+            assert!(auto.contains(&format!("scopeName={codec}&type=upperBound&name=audio.samplingRate&value=48000")), "{codec} is rate bound: {auto}");
+            assert!(!list_of(target_of(&auto), "audioCodec=").contains(&codec.into()), "{codec} is never a transcode target");
+        }
+        assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "a DTS core still is not: {auto}");
+        let forced = list_of(&super::forced_direct_profile_for(&on), "audioCodec=");
+        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"]);
+    }
+
+    /// **TrueHD in both profiles under the gate** (S4-5): announced up to eight channels, in the
+    /// direct-play list and Force Direct Play's, never a transcode target, and with NO sampling-rate
+    /// bound (the app's resampler handles 96 and 192 kHz). Off, the profiles are what they were.
+    #[test]
+    fn the_lossy_gate_adds_truehd_to_both_profiles_with_no_rate_bound() {
+        let off = Caps::assumed();
+        for profile in [super::profile_for(&off), super::forced_direct_profile_for(&off)] {
+            assert!(!profile.contains("truehd"), "{profile}");
+        }
+        let on = Caps::assumed().with_app_lossy();
+        let auto = super::profile_for(&on);
+        assert!(list_of(&auto, "audioCodec=").contains(&"truehd".into()), "{auto}");
+        assert!(auto.contains("scope=videoAudioCodec&scopeName=truehd&type=upperBound&name=audio.channels&value=8&replace=true"), "{auto}");
+        assert!(!auto.contains("scopeName=truehd&type=upperBound&name=audio.samplingRate"), "no rate bound: {auto}");
+        assert!(!list_of(target_of(&auto), "audioCodec=").contains(&"truehd".into()), "never a transcode target");
+        let forced = list_of(&super::forced_direct_profile_for(&on), "audioCodec=");
+        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"]);
+    }
+
+    /// **Force Direct Play offers the lossy codec the policy enabled even where the set has no decoder
+    /// for it**, because the app decodes it: a profile without `dca` would have MDE answer that Load with
+    /// a transcode, and the play would end as `ForcedFailure::Unauthorized`. A codec nothing enabled
+    /// (MP3, Vorbis, TrueHD: unmeasured) stays off, `dca` is listed once where the table has the row as
+    /// well, and Auto's profile does not move with the policy at all.
+    #[test]
+    fn the_forced_profile_offers_an_enabled_lossy_codec_the_set_cannot_decode() {
+        use plx_platform::devcaps::AppLossy;
+        let rowless = Caps { app_lossy: AppLossy::Measured, ..Caps::assumed() };
+        let forced = super::forced_direct_profile_for(&rowless);
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca"], "{forced}");
+        let mut native = rowless.clone();
+        native.audio.push_str(",dts");
+        native.audio_channels.insert("dts".into(), 6);
+        assert_eq!(list_of(&super::forced_direct_profile_for(&native), "audioCodec="), ["aac", "ac3", "eac3", "dca"]);
+        assert_eq!(
+            list_of(&super::forced_direct_profile_for(&Caps::assumed()), "audioCodec="),
+            ["aac", "ac3", "eac3"],
+            "off: what shipped"
+        );
+        assert_eq!(super::profile_for(&rowless), super::profile_for(&Caps::assumed()), "Auto's profile is unchanged");
     }
 
     /// Forced mode advertises the engine's formats with no device limits and no transcode target.
@@ -1467,6 +1602,8 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_lossy: plx_platform::devcaps::AppLossy::Off,
+            app_lossy_in_force: Default::default(),
         };
         let p = super::profile_for(&caps);
         assert!(!p.contains("hevc"), "hevc must not appear anywhere in {p}");
@@ -1500,6 +1637,8 @@ mod tests {
                 audio_channels: Default::default(),
                 native_ceiling: Default::default(),
                 video_ceiling: Default::default(),
+                app_lossy: plx_platform::devcaps::AppLossy::Off,
+                app_lossy_in_force: Default::default(),
             },
         ] {
             let p = super::profile_for(&caps);
@@ -1530,6 +1669,8 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_lossy: plx_platform::devcaps::AppLossy::Off,
+            app_lossy_in_force: Default::default(),
         };
         let p = super::profile_for(&caps);
         let dp = p.split("add-transcode-target").next().unwrap();

@@ -112,6 +112,15 @@ struct RetryContext {
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
 
+/// Why the last native start was refused with no Engine built ([`PlaybackSession::native_start_refused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartRefusal {
+    /// A timed-out Load is still inside `sf_load` (an `AbandonedLoad` owns the one native object).
+    LoadTimeout,
+    /// The previous object's off-frame `Unload` outlived `player::release::RELEASE_DEADLINE`.
+    ReleaseTimeout,
+}
+
 pub struct PlaybackSession {
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
@@ -123,7 +132,12 @@ pub struct PlaybackSession {
     /// else would publish the failure and the player sat Idle with no read-out. `player::state`
     /// derives `Error` (cause `load_timeout`) from it. Cleared by the next start attempt and,
     /// like [`jail_load_blocked`](Self::jail_load_blocked), with the playback verdict.
-    pub native_start_refused: bool,
+    ///
+    /// The cause rides with the refusal ([`StartRefusal`]): the previous object's off-frame `Unload`
+    /// being overdue (`player::release`) is a refusal like the parked Load, with its own cause
+    /// (`release_timeout`). A start QUEUED behind a still-running `Unload` is not stored here: the
+    /// release machine owns that fact and `player::state` reads what the adapter publishes of it.
+    pub native_start_refused: Option<StartRefusal>,
     /// The cause an Engine ended with when it failed for good and was released while the
     /// read-out stands (`player::release_failed_engine`). The Engine, its pipeline and the video
     /// plane are gone, so the worker signals the read-out used to be derived from are gone with
@@ -529,7 +543,7 @@ impl PlaybackSession {
     pub const IDLE: PlaybackSession = PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
-        native_start_refused: false,
+        native_start_refused: None,
         engine_failure: None,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
@@ -1013,6 +1027,14 @@ impl std::fmt::Debug for ClaimSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RouteStartTransaction {
     pub(super) serial: u64,
+}
+
+impl RouteStartTransaction {
+    /// A transaction identity for a pure machine's unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn fixture(serial: u64) -> Self {
+        Self { serial }
+    }
 }
 
 /// Synchronous result of the native half of a prepared route transition.
@@ -5408,6 +5430,11 @@ pub fn is_transcoding(ps: &PlaybackSession) -> bool {
 pub fn play_refused(ps: &PlaybackSession) -> bool {
     ps.play_verdict.is_some()
 }
+/// Did the resolve refuse this as a PREVIEW that was not a direct play
+/// ([`PlayVerdict::PreviewNeedsDirectPlay`])? Our own refusal, not the server's.
+pub(crate) fn play_refused_as_preview(ps: &PlaybackSession) -> bool {
+    matches!(ps.play_verdict, Some(PlayVerdict::PreviewNeedsDirectPlay))
+}
 /// The app/worker failed to produce a playable plan, as distinct from a PMS `/decision` refusal.
 /// There is no Engine whose pump could publish Error, so `player::state()` derives it beside the
 /// refusal case.
@@ -5449,6 +5476,16 @@ pub fn server_refusal_codes(ps: &PlaybackSession) -> Option<DecisionCodes> {
         _ => None,
     }
 }
+/// Force Direct Play's read-out after the TV refused the audio the Load was fed (LG error 601 names
+/// no codec): the same verdict the planner's up-front refusal installs
+/// ([`ForcedFailure::Audio`], the codec by [`plx_data::metadata::friendly_codec`]), so both ways of
+/// "not played" name the codec alike (scheme of discussion #695, row 10). `codec` is the track's raw
+/// spelling. MAIN THREAD.
+pub fn name_refused_forced_audio(ps: &mut PlaybackSession, codec: &str) {
+    let friendly = plx_data::metadata::friendly_codec(codec);
+    crate::player::log(&format!("playback_policy: Force Direct Play refused audio codec {codec} ({friendly})"));
+    ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::Audio { codec: friendly }));
+}
 /// Retire the refusal — "this playback request is withdrawn", the one thing besides a fresh
 /// resolve that ends a verdict's life. [`request_play`] clears it because a NEW item is being
 /// resolved; this is the other half, for leaving the player entirely.
@@ -5460,7 +5497,7 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
         s.jail_load_blocked = false;
-        s.native_start_refused = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
@@ -5633,14 +5670,19 @@ pub fn stream_vcodec(ps: &PlaybackSession) -> String {
 pub fn stream_acodec(ps: &PlaybackSession) -> String {
     ps.stream_acodec.clone()
 }
+/// The carried audio track when it is the codec the stream declares, in any spelling of it
+/// (`devcaps::audio_codec_id`: PMS's `dca` is the pipeline's `dts`), else `None`. A native track
+/// switch moves only `stream_acodec`, so a switch between two tracks of one codec and different widths
+/// still reads the first one's facts.
+fn carried_audio_of_stream(ps: &PlaybackSession) -> Option<&CarriedAudio> {
+    let declared = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
+    ps.cur_audio.as_ref().filter(|a| plx_platform::devcaps::audio_codec_id(&a.codec) == declared)
+}
 /// The carried audio track's channel count when it is the codec the stream declares, else 0.
-/// An Opus Load needs it (`opusInfo`); a native track switch moves only `stream_acodec`, so a
-/// switch between two Opus tracks of different widths still reads the first one's count.
+/// An Opus Load needs it (`opusInfo`), and the no-downmix rule reads it
+/// ([`plx_platform::devcaps::app_decode_mixes_down`]: 0 is unknown, which counts as a downmix).
 pub fn stream_achannels(ps: &PlaybackSession) -> i64 {
-    ps.cur_audio
-        .as_ref()
-        .filter(|a| a.codec.eq_ignore_ascii_case(&ps.stream_acodec))
-        .map_or(0, |a| a.channels)
+    carried_audio_of_stream(ps).map_or(0, |a| a.channels)
 }
 /// What the pipeline was fed, for the failed-open ladder ([`crate::player::recovery::OpenFacts`]):
 /// the stream's audio codec and the carried track's channel count ([`stream_achannels`]: 0 when
@@ -5651,6 +5693,7 @@ pub fn stream_audio(ps: &PlaybackSession) -> Option<crate::player::recovery::Str
     (!codec.is_empty()).then(|| crate::player::recovery::StreamAudio {
         codec,
         channels: u32::try_from(stream_achannels(ps)).unwrap_or(0),
+        app_decoded_lossy: stream_pcm_is_lossy(ps),
     })
 }
 /// The SOURCE's video, when the pipeline was fed it whole, for the failed-open ladder
@@ -5711,14 +5754,31 @@ pub fn stream_immersive(ps: &PlaybackSession) -> bool {
 }
 
 /// The PCM a Load must declare for audio the app decodes itself
-/// (`devcaps::PCM_AUDIO_CODECS` — FLAC, ALAC, LPCM).
+/// (`devcaps::PCM_AUDIO_CODECS` — FLAC, ALAC, LPCM — and the lossy entries when the attempt's
+/// capability value decodes the track in the app,
+/// [`Caps::app_decodes_lossy_track`](plx_platform::devcaps::Caps::app_decodes_lossy_track)).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PcmFormat {
+    /// What the Load declares: always a rate of `devcaps::PCM_SAMPLE_RATES` (the input's table).
     pub sample_rate: u32,
-    /// 16 or 32: a source of up to 16 bits is fed as S16LE, anything deeper (or unstated) as
-    /// S32LE — both bit-exact, since the decoder left-justifies 24-bit samples in 32.
+    /// 16 or 32: a source of up to 16 bits at a table rate is fed as S16LE, anything deeper (or
+    /// unstated) as S32LE, both bit-exact (the decoder left-justifies 24-bit samples in 32). A stream
+    /// the app resamples (`source_rate != sample_rate`) is always 32: the resampled value is not on
+    /// the 16-bit grid, whatever the source's depth.
     pub bits: u32,
     pub channels: u32,
+    /// The track's own rate. Equal to `sample_rate` at a table rate (the bit-exact path); above the
+    /// table's top it is what the app resamples FROM (`devcaps::pcm_load_rate` names the rate it
+    /// resamples TO). `ff_pcm::PcmDecoder::open` refuses a file whose rate is not this one.
+    pub source_rate: u32,
+}
+
+impl PcmFormat {
+    /// What the lossy decode outputs (`ff_pcm::PcmDecoder`): the source downmixed to stereo and
+    /// resampled to 48 kHz, as 16-bit samples — the same shape the speed decoder feeds. Its
+    /// `source_rate` is 48 kHz by convention: the lossy decode accepts any source rate (it is the
+    /// lossless declaration that `source_rate` is checked against).
+    pub const STEREO_48K: PcmFormat = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
 }
 
 /// [`PcmFormat`] for the stream now being fed, `None` when it is not app-decoded audio.
@@ -5726,14 +5786,31 @@ pub struct PcmFormat {
 /// the caller refuses the Load rather than declare a rate the decoder would contradict.
 pub fn stream_pcm(ps: &PlaybackSession) -> Option<Result<PcmFormat, String>> {
     let id = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
-    if !plx_platform::devcaps::PCM_AUDIO_CODECS.split(',').any(|c| c == id) {
-        return None;
+    if plx_platform::devcaps::PCM_AUDIO_CODECS.split(',').any(|c| c == id) {
+        return Some(pcm_format_of(ps.cur_audio.as_ref(), &id));
     }
-    Some(pcm_format_of(ps.cur_audio.as_ref(), &id))
+    // A lossy codec the attempt's value lets the app decode: its output has one shape, whatever
+    // the source is, so no track fact is needed (and none can contradict it).
+    stream_pcm_is_lossy(ps).then_some(Ok(PcmFormat::STEREO_48K))
+}
+
+/// Whether the stream now being fed is one the app decodes LOSSILY (a codec the attempt's policy
+/// admits that is in force, or that Force Direct Play has no native path for): what `ff` is told so a
+/// lossless PCM Load never makes it decode a DTS stream in the app. The carried track's channels and
+/// rate are used when it is the declared codec, else unknown (`0`). Under Force Direct Play the decode is
+/// stereo only: a surround track, and one whose width is unknown, is not mixed down
+/// (`Caps::app_may_mix_down`), so this reads false there and the Load stays native.
+pub fn stream_pcm_is_lossy(ps: &PlaybackSession) -> bool {
+    let (channels, rate) = carried_audio_of_stream(ps).map_or((0, 0), |a| (a.channels, a.sample_rate));
+    ps.attempt_caps().app_decodes_lossy_track(&ps.stream_acodec, channels, rate, forced_direct_play(ps))
 }
 
 /// PURE half of [`stream_pcm`]: the carried track must be the same codec, with a stated rate and
-/// one or two channels.
+/// one or two channels. The rate is declared as `devcaps::pcm_load_rate` names it: a table rate is
+/// itself (bit-exact, `bits` 16 iff PMS says `bitDepth` is 1..=16, else 32), and every rate above the
+/// table's top is the rate the app RESAMPLES it to, with `source_rate` the track's own and `bits` 32
+/// (the resampled value is not on the 16-bit grid, a 16-bit source included). Only a rate that is not
+/// positive, or below the top and not in the table, is refused.
 pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result<PcmFormat, String> {
     let Some(a) = audio else {
         return Err(format!("{codec}: the playing track's facts are unknown"));
@@ -5745,16 +5822,13 @@ pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result
     if !(1..=max).contains(&a.channels) {
         return Err(format!("{codec}: {} channels (the PCM path carries 1..={max})", a.channels));
     }
-    let rates = &plx_platform::devcaps::PCM_SAMPLE_RATES;
-    let sample_rate = u32::try_from(a.sample_rate).ok().filter(|r| rates.contains(r));
-    let Some(sample_rate) = sample_rate else {
-        return Err(format!(
-            "{codec}: sampling rate {} is not one the PCM input's table names",
-            a.sample_rate
-        ));
+    let Some(sample_rate) = plx_platform::devcaps::pcm_load_rate(a.sample_rate) else {
+        return Err(format!("{codec}: sampling rate {} cannot be made one the PCM input names", a.sample_rate));
     };
-    let bits = if (1..=16).contains(&a.bit_depth) { 16 } else { 32 };
-    Ok(PcmFormat { sample_rate, bits, channels: a.channels as u32 })
+    // `pcm_load_rate` accepted it, so the rate is in 1..=i32::MAX
+    let source_rate = a.sample_rate as u32;
+    let bits = if source_rate != sample_rate || !(1..=16).contains(&a.bit_depth) { 32 } else { 16 };
+    Ok(PcmFormat { sample_rate, bits, channels: a.channels as u32, source_rate })
 }
 
 #[cfg(test)]
@@ -5771,9 +5845,9 @@ mod pcm_format_tests {
     #[test]
     fn a_stereo_flac_declares_its_own_rate_and_a_bit_exact_width() {
         assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 16)), "flac"),
-            Ok(PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 }));
         assert_eq!(pcm_format_of(Some(&flac(1, 44_100, 24)), "flac"),
-            Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1 }));
+            Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1, source_rate: 44_100 }));
         // an unstated depth is fed wide: never truncate a sample nobody measured
         assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 0)), "flac").unwrap().bits, 32);
     }
@@ -5784,16 +5858,204 @@ mod pcm_format_tests {
     fn alac_and_lpcm_declare_the_same_shape_as_flac() {
         let track = |codec: &str, channels, rate, bits| CarriedAudio { codec: codec.into(), ..flac(channels, rate, bits) };
         assert_eq!(pcm_format_of(Some(&track("alac", 2, 44_100, 16)), "alac"),
-            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2, source_rate: 44_100 }));
         assert_eq!(pcm_format_of(Some(&track("alac", 2, 48_000, 24)), "alac"),
-            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 48_000 }));
         assert_eq!(pcm_format_of(Some(&track("pcm_s24le", 2, 48_000, 24)), "pcm"),
-            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 48_000 }));
         assert_eq!(pcm_format_of(Some(&track("pcm_s16be", 2, 44_100, 16)), "pcm"),
-            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2, source_rate: 44_100 }));
         assert!(pcm_format_of(Some(&track("alac", 6, 48_000, 16)), "alac").is_err());
-        assert!(pcm_format_of(Some(&track("pcm_s24le", 2, 96_000, 24)), "pcm").is_err());
+        // above the table: resampled by the app, declared at the table's rate as S32
+        assert_eq!(pcm_format_of(Some(&track("pcm_s24le", 2, 96_000, 24)), "pcm"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 }));
+        assert_eq!(pcm_format_of(Some(&track("alac", 2, 96_000, 24)), "alac"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 }));
         assert!(pcm_format_of(Some(&track("flac", 2, 48_000, 16)), "pcm").is_err(), "a track of another codec");
+    }
+
+    /// **A hi-res lossless stereo track is declared as the PCM input's own top rate, in a 32-bit sample**: the app
+    /// resamples it (`ff_pcm`), so the Load names the rate the decoder emits (`sample_rate`) and the
+    /// track keeps its own (`source_rate`, what the decoder checks the file against). The width is 32 whenever the
+    /// rate differs, from a 16-bit source too: the resampled value is not on the 16-bit grid. A table rate is unchanged.
+    #[test]
+    fn a_hi_res_stereo_track_is_declared_at_the_tables_top_rate_in_32_bits() {
+        let shape = |channels, rate, bits| pcm_format_of(Some(&flac(channels, rate, bits)), "flac");
+        let fmt = |sample_rate, bits, channels, source_rate| Ok(PcmFormat { sample_rate, bits, channels, source_rate });
+        assert_eq!(shape(2, 96_000, 24), fmt(48_000, 32, 2, 96_000));
+        assert_eq!(shape(2, 192_000, 24), fmt(48_000, 32, 2, 192_000));
+        assert_eq!(shape(2, 88_200, 16), fmt(44_100, 32, 2, 88_200), "a 16-bit source resampled is still S32");
+        assert_eq!(shape(2, 176_400, 24), fmt(44_100, 32, 2, 176_400));
+        assert_eq!(shape(2, 96_000, 0), fmt(48_000, 32, 2, 96_000), "an unstated depth");
+        assert_eq!(shape(1, 96_000, 24), fmt(48_000, 32, 1, 96_000), "mono is kept mono");
+        assert_eq!(shape(2, 705_600, 24), fmt(44_100, 32, 2, 705_600), "there is no rate ceiling");
+        assert_eq!(shape(2, i64::from(i32::MAX), 24), fmt(48_000, 32, 2, i32::MAX as u32));
+        // a table rate is itself, bit-exact, and its own source
+        assert_eq!(shape(2, 48_000, 16), fmt(48_000, 16, 2, 48_000));
+        assert_eq!(shape(1, 44_100, 24), fmt(44_100, 32, 1, 44_100));
+        // not made into a table rate: surround (the server converts it), no rate, a rate below the top that the table lacks
+        assert!(shape(6, 96_000, 24).is_err());
+        assert!(shape(2, 0, 24).is_err());
+        assert!(shape(2, 11_025, 16).is_err());
+        // ALAC and LPCM, whatever the spelling of the codec
+        let track = |codec: &str, rate| CarriedAudio { codec: codec.into(), ..flac(2, rate, 24) };
+        for (spelling, id) in [("alac", "alac"), ("pcm_s24le", "pcm"), ("pcm_s32be", "pcm"), ("pcm_s16le", "pcm")] {
+            assert_eq!(pcm_format_of(Some(&track(spelling, 96_000)), id), fmt(48_000, 32, 2, 96_000), "{spelling}");
+        }
+    }
+
+    /// **DTS in force** (S4 PR 2): the Load declares the SHAPE THE DECODER OUTPUTS, stereo
+    /// 48 kHz S16, whatever the source's channels and rate; and only on an attempt whose capability
+    /// value turned the lossy decode on. Off, DTS declares nothing here and stays native.
+    #[test]
+    fn dts_declares_stereo_48k_only_when_the_attempt_has_the_gate_on() {
+        let mut ps = PlaybackSession::IDLE;
+        set_stream_codecs(&mut ps, "h264", "dts");
+        assert_eq!(stream_pcm(&ps), None, "no attempt begun: the assumed value, gate off");
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
+        assert_eq!(stream_pcm(&ps), None, "gate off");
+        assert!(!stream_pcm_is_lossy(&ps));
+        assert!(!stream_audio(&ps).unwrap().app_decoded_lossy, "the ladder's fact: native DTS is the pipeline's");
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
+        for spelling in ["dts", "dca", "DTS"] {
+            set_stream_codecs(&mut ps, "h264", spelling);
+            assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{spelling}");
+            assert!(stream_pcm_is_lossy(&ps), "{spelling}");
+            assert!(stream_audio(&ps).unwrap().app_decoded_lossy, "{spelling}: the ladder must not name a native facet");
+        }
+        set_stream_codecs(&mut ps, "h264", "flac");
+        assert!(!stream_pcm_is_lossy(&ps), "a lossless PCM Load is never the lossy one");
+        assert_eq!(PcmFormat::STEREO_48K, PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 });
+        let out = crate::ff_pcm::STEREO_48K;
+        assert_eq!(
+            (PcmFormat::STEREO_48K.sample_rate, PcmFormat::STEREO_48K.bits, PcmFormat::STEREO_48K.channels),
+            (out.rate, out.bits, out.channels),
+            "the shape the Load declares is the one the decoder outputs"
+        );
+        for other in ["ac3", "eac3", "aac", "mlp"] {
+            set_stream_codecs(&mut ps, "h264", other);
+            assert_eq!(stream_pcm(&ps), None, "{other}");
+        }
+    }
+
+    /// **The Load declares PCM where the attempt decodes the track in the app, not where the policy
+    /// merely admits it.** On a table that was read and admits DTS (`Measured`), Auto feeds DTS natively
+    /// and Force Direct Play does too where the set has a DTS row; only Force Direct Play on a set with
+    /// no native path, or a codec the recovery rung put in force, is PCM. The ladder's fact
+    /// (`stream_audio`) and the track menu's mark (`audio_decoded_in_app`) read the same answer. The app
+    /// decodes to stereo, so under Force Direct Play that is a track of at most two channels only (owner
+    /// decision 2026-10-28: the app never mixes a surround source down by default); Auto's rung and the
+    /// `appdecodelossy` debug trigger are not Force and keep the surround decode.
+    #[test]
+    fn dts_declares_stereo_48k_only_where_the_attempt_decodes_it_in_the_app() {
+        use plx_platform::devcaps::{AppLossy, Caps};
+        let measured = Caps { app_lossy: AppLossy::Measured, ..Caps::assumed() };
+        let native_row = Caps { audio: "aac,ac3,eac3,dts".into(), audio_channels: [("dts".into(), 6)].into(), ..measured.clone() };
+        let dts = |channels: i64| CarriedAudio { codec: "dca".into(), ..flac(channels, 48_000, 0) };
+        let shape = |caps: &Caps, forced: bool, channels: i64| {
+            let mut ps = PlaybackSession::IDLE;
+            ps.direct_play_mode = if forced { DirectPlayMode::Forced } else { DirectPlayMode::Auto };
+            ps.begin_attempt(std::sync::Arc::new(caps.clone()));
+            set_stream_codecs(&mut ps, "h264", "dca");
+            set_carried_audio_for_test(&mut ps, dts(channels));
+            let fact = stream_audio(&ps).unwrap().app_decoded_lossy;
+            assert_eq!(fact, stream_pcm_is_lossy(&ps));
+            assert_eq!(fact, audio_decoded_in_app(&ps, "dca", channels, 48_000));
+            stream_pcm(&ps)
+        };
+        let stereo = Some(Ok(PcmFormat::STEREO_48K));
+        assert_eq!(shape(&measured, false, 6), None, "Auto: admitted is not in force");
+        assert_eq!(shape(&measured, true, 2), stereo, "Forced, no native path, a stereo track: the app decodes it");
+        assert_eq!(shape(&measured, true, 1), stereo, "and a mono one");
+        for channels in [3, 6, 8, 0] {
+            assert_eq!(shape(&measured, true, channels), None, "Forced, {channels} channels: no downmix, the refusal reads out");
+        }
+        assert_eq!(shape(&Caps::assumed(), true, 2), None, "Forced, no policy: native (and the planner refuses it first)");
+        assert_eq!(shape(&native_row, true, 6), None, "Forced on a set that decodes DTS keeps doing so");
+        assert_eq!(shape(&native_row, false, 6), None);
+        let in_force = native_row.clone().with_app_lossy_for("dts");
+        assert_eq!(shape(&in_force, false, 6), stereo,
+            "the rung's value: the set's decoder was refused, so Auto's attempt declares PCM too, the last rung's surround downmix");
+        assert_eq!(shape(&in_force, true, 6), None, "but Force Direct Play never takes a surround track down, even with the codec in force");
+        assert_eq!(shape(&in_force, true, 2), stereo);
+        assert_eq!(shape(&Caps::assumed().with_app_lossy(), false, 6), stereo, "the debug force-on");
+        assert_eq!(shape(&Caps::assumed().with_app_lossy(), true, 6), stereo, "and its explicit override of Force's rule");
+        // The carried track's own facts decide the rate-bound rows: a 96 kHz Vorbis is not decoded here.
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(Caps::assumed().with_app_lossy()));
+        set_stream_codecs(&mut ps, "h264", "vorbis");
+        let vorbis = |rate| CarriedAudio {
+            sid: 5, ordinal: 1, codec: "vorbis".into(), channels: 2,
+            can_normalize_loudness: false, immersive: false, sample_rate: rate, bit_depth: 0,
+        };
+        set_carried_audio_for_test(&mut ps, vorbis(44_100));
+        assert!(stream_pcm_is_lossy(&ps));
+        set_carried_audio_for_test(&mut ps, vorbis(96_000));
+        assert!(!stream_pcm_is_lossy(&ps), "above the rate bound the server converts it");
+    }
+
+    /// **The no-downmix rule reads the carried track's width whichever spelling names the codec**: the
+    /// stream declares `dts` while PMS (and so the carried track) says `dca`, and the same track is one
+    /// codec (`devcaps::audio_codec_id`). A width lost to a spelling would read as "unknown", which Force
+    /// Direct Play refuses as a possible downmix, and a stereo DTS would lose its app decode for nothing.
+    #[test]
+    fn the_downmix_rule_reads_the_carried_width_in_either_spelling_of_the_codec() {
+        use plx_platform::devcaps::{AppLossy, Caps};
+        let measured = std::sync::Arc::new(Caps { app_lossy: AppLossy::Measured, ..Caps::assumed() });
+        for (declared, carried) in [("dts", "dca"), ("dca", "dts"), ("DTS", "dca"), ("dca", "dca")] {
+            for (channels, decoded) in [(2, true), (1, true), (6, false)] {
+                let mut ps = PlaybackSession::IDLE;
+                ps.direct_play_mode = DirectPlayMode::Forced;
+                ps.begin_attempt(measured.clone());
+                set_stream_codecs(&mut ps, "h264", declared);
+                set_carried_audio_for_test(&mut ps, CarriedAudio { codec: carried.into(), ..flac(channels, 48_000, 0) });
+                let what = format!("{declared}/{carried} {channels}ch");
+                assert_eq!(stream_achannels(&ps), channels, "{what}");
+                assert_eq!(stream_pcm_is_lossy(&ps), decoded, "{what}");
+                assert_eq!(stream_audio(&ps).unwrap().channels, channels as u32, "{what}: the ladder's fact");
+            }
+        }
+    }
+
+    /// **MP3 and Vorbis in force** (S4-4) declare the same one shape as DTS, only on an attempt
+    /// that turned the lossy decode on, and are the ladder's "app decoded" fact then.
+    #[test]
+    fn mp3_and_vorbis_declare_stereo_48k_only_when_the_attempt_has_the_gate_on() {
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
+        for codec in ["mp3", "vorbis"] {
+            set_stream_codecs(&mut ps, "h264", codec);
+            assert_eq!(stream_pcm(&ps), None, "{codec}: gate off");
+            assert!(!stream_pcm_is_lossy(&ps) && !stream_audio(&ps).unwrap().app_decoded_lossy, "{codec}");
+        }
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
+        for codec in ["mp3", "vorbis", "MP3"] {
+            set_stream_codecs(&mut ps, "h264", codec);
+            assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{codec}");
+            assert!(stream_pcm_is_lossy(&ps) && stream_audio(&ps).unwrap().app_decoded_lossy, "{codec}");
+        }
+        for other in ["mp2", "wma", "opus", "mlp"] {
+            set_stream_codecs(&mut ps, "h264", other);
+            assert_eq!(stream_pcm(&ps), None, "{other}");
+        }
+    }
+
+    /// TrueHD in force (S4-5) declares the same one shape as DTS, MP3 and Vorbis.
+    #[test]
+    fn truehd_declares_stereo_48k_only_when_the_attempt_has_the_gate_on() {
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
+        set_stream_codecs(&mut ps, "h264", "truehd");
+        assert_eq!(stream_pcm(&ps), None, "gate off");
+        assert!(!stream_audio(&ps).unwrap().app_decoded_lossy);
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
+        for spelling in ["truehd", "TrueHD"] {
+            set_stream_codecs(&mut ps, "h264", spelling);
+            assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{spelling}");
+            assert!(stream_pcm_is_lossy(&ps) && stream_audio(&ps).unwrap().app_decoded_lossy, "{spelling}");
+        }
+        set_stream_codecs(&mut ps, "h264", "mlp");
+        assert_eq!(stream_pcm(&ps), None, "MLP is not claimed");
     }
 
     #[test]
@@ -5802,9 +6064,12 @@ mod pcm_format_tests {
         assert!(pcm_format_of(Some(&flac(6, 48_000, 16)), "flac").is_err());
         assert!(pcm_format_of(Some(&flac(0, 48_000, 16)), "flac").is_err());
         assert!(pcm_format_of(Some(&flac(2, 0, 16)), "flac").is_err());
-        // libpf plays these slow, with no error: refused, never declared
-        assert!(pcm_format_of(Some(&flac(2, 96_000, 24)), "flac").is_err());
-        assert!(pcm_format_of(Some(&flac(2, 192_000, 24)), "flac").is_err());
+        // a rate the table does not name and the app cannot make one (libpf plays an undeclared one slow, with no error)
+        assert!(pcm_format_of(Some(&flac(2, 11_025, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, 37_800, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, -48_000, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, i64::from(u32::MAX) + 1, 24)), "flac").is_err(), "past what FFmpeg can state");
+        assert!(pcm_format_of(Some(&flac(6, 96_000, 24)), "flac").is_err(), "5.1 at 96 kHz still converts on the server");
         let mut other = flac(2, 48_000, 16);
         other.codec = "ac3".into();
         assert!(pcm_format_of(Some(&other), "flac").is_err());
@@ -5968,6 +6233,18 @@ pub fn set_stream_declaration_for_test(
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
     set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
+}
+
+/// Begin an attempt on `caps`, so [`stream_pcm`] and the planner read that value (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn begin_attempt_for_test(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+    ps.begin_attempt(caps);
+}
+
+/// Make `ps` a play requested under `mode`, so [`stream_pcm`] and the planner read that mode (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_direct_play_mode_for_test(ps: &mut PlaybackSession, mode: DirectPlayMode) {
+    ps.direct_play_mode = mode;
 }
 
 /// Carry `audio` as the playing track, so [`stream_pcm`] reads its facts (rate, depth, channels).
@@ -7074,6 +7351,16 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
 /// mark at the next request, not before.
 pub fn audio_converted_by_server(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
     ps.direct_play_mode != DirectPlayMode::Forced && !audio_track_direct_plays(ps, codec, channels, sample_rate)
+}
+
+/// **Does the app decode this track itself, to stereo?** The track menu's "played in stereo" mark: a
+/// lossy track the attempt's capability value decodes in the app
+/// ([`Caps::app_decodes_lossy_track`](plx_platform::devcaps::Caps::app_decodes_lossy_track)) is fed as a
+/// stereo mix whatever its layout. A surround track gets that mark only from the recovery's last rung (or
+/// the `appdecodelossy` debug trigger): Force Direct Play never mixes one down. Reads the ATTEMPT, as
+/// [`audio_converted_by_server`] does.
+pub fn audio_decoded_in_app(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    ps.attempt_caps().app_decodes_lossy_track(codec, channels, sample_rate, forced_direct_play(ps))
 }
 
 /// Select a rung. MAIN THREAD (it writes the session).
@@ -8337,7 +8624,7 @@ fn request_play_with_queue(
         // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
         s.play_verdict = None;
         s.jail_load_blocked = false;
-        s.native_start_refused = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
         // A film request retires the previous trailer's mark: `resolved_as_preview` is otherwise
@@ -8851,7 +9138,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         *s = PlaybackSession {
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
-            native_start_refused: false,
+            native_start_refused: None,
             engine_failure: None,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,
@@ -11320,6 +11607,41 @@ pub fn report_timeline(
 #[path = "decision_test_support.rs"]
 mod test_support;
 
+/// Test-only: leave `ps` as a REAL hero-preview resolve leaves it when the route is not a direct
+/// play. The resolve runs against a loopback PMS through `build_stream` with the preview env and
+/// an item with no Part, which `preview::accepts_direct_play` rejects, and the plan it returns is
+/// installed by `apply_plan`. Nothing here sets a flag the production path would not. The caller
+/// holds `plx_base::testlock::serial()`.
+#[cfg(test)]
+pub(crate) fn resolve_refused_preview_for_test(ps: &mut PlaybackSession) {
+    assert!(plx_net::net::global_init() && crate::curlio::available());
+    let (port, done, server) = test_support::enhancement_pms(
+        test_support::MDE_DIRECTPLAY, test_support::EnhMode::Honor("ac3"), 0);
+    let sid = plx_plex::plex::register_for_test("preview-pms", "127.0.0.1", port, "token", "preview-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    let mut env = ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "trailer");
+    env.quality = Quality::Original;
+    env.set_preview(true);
+    env.cached_item = Some(test_support::fourk_item(sid, vec![plx_data::metadata::Stream::default()]));
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "trailer", "", "h264", "aac", &env);
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    ps.request = Some(PlaybackRequest {
+        sid,
+        rk: "trailer".into(),
+        part: String::new(),
+        vcodec: "h264".into(),
+        acodec: "aac".into(),
+        title: "Trailer".into(),
+        ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
+        preview: true,
+        version: None,
+    });
+    test_support::apply_plan(ps, plan, "trailer");
+    crate::route::resolve_as_preview_for_test(ps);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 #[path = "decision_flight_rig.rs"]
 pub(crate) mod flight_rig;
@@ -11395,6 +11717,10 @@ mod prefs_door_tests;
 #[cfg(test)]
 #[path = "decision_memory_tests.rs"]
 mod memory_tests;
+
+#[cfg(test)]
+#[path = "decision_queue_beside_tests.rs"]
+mod queue_beside_tests;
 
 #[cfg(test)]
 #[path = "decision_track_memory_tests.rs"]

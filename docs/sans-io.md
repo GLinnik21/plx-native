@@ -43,8 +43,8 @@ dropped.
 
 **Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
-`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs` and `recovery.rs`
-(the failed-open ladder machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
+`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs`, `recovery.rs`
+(the failed-open ladder machine) and `release.rs` (the native object's release machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
 `net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
 of `data/`, `plex/`, `media/` and `session/`, because a fork anywhere in them is a test that does not
 run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
@@ -55,8 +55,12 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   file that imports it from `task`, `storage_worker`, `session`, `keypin` or `grant` (singly, as the
   last or any other item of a braced group, or through a glob; `Builder::spawn`, a local fn and
   `it.peek()` are not workers or registry reads); `peek` is also a site in
-  `plex/src/plex/session.rs`, the module that defines it. A local wrapper (`spawn_discovery`) is no
+  `plex/src/plex/session.rs`, the module that defines it. A local launcher (`launch_browse_discovery`) is no
   site of its own: the real call inside it is.
+- `task::beside` is not a `workers` site: its scoped sibling is joined before the IO body that asked for
+  it returns, so no worker outlives the call and there is no ledger line to shrink; scoped concurrency
+  inside an IO body a runner already runs off the frame is allowed, a machine step never calls it (it
+  would block the frame on the network, and `beside` asserts it is not on the frame thread).
 - A getter named without a call (`.and_then(client_for)`) reads the registry as surely as a call
   does, so it is a site. Only a rename (`use ...::client_for as x`) fails outright, because the
   calls through `x` are invisible to the scan.
@@ -175,8 +179,8 @@ reads). Person has up to six requests out at once, so a pump emits several jobs,
 in ascending slot order. The catalog page's read is the fourth: its one worker start is gone from
 `data/src/stores/catalog.rs`. Unlike the other three it names no server and no client (it is a
 plex.tv read as the captured identity), so it takes no `ClientKeys` and no tape admission, and the
-Catalog step is not pure either (the bullet headed "What the Catalog step still reads" lists what it
-still reads). Subtitle search and the view-state read-back are the fifth and sixth (the bullet
+Catalog step reads no registry once it takes the seated profile from the Bridge (the bullet headed
+"The Watchlist and catalog session input"). Subtitle search and the view-state read-back are the fifth and sixth (the bullet
 headed "Subtitle search and the view-state read-back"). Home's Hubs read is the seventh (the bullet
 headed "The Hubs lane"): the worker start and the `client_for` read are gone from `data/src/pms.rs`
 and its three `data-pms` ledger files are deleted. The Search screen's per-source fetches and its
@@ -187,11 +191,14 @@ and row reads, are the ninth (the bullet headed "The section hubs lane"): their 
 and three registry reads are gone from `data/src/browse/section_hubs.rs`. The same store's Library
 listing reads, the filter menus' value lists and the grid's pages, are on the lane too (the bullet
 headed "The listing lanes"): their two worker starts and two registry reads are gone from
-`data/src/browse/mod.rs`. The rest of `browse/` (the source reads, discovery, the pins) is still
-on its ledger. The Metadata store's
+`data/src/browse/mod.rs`. The Library's source discovery (the section list, the server's name and the
+item counts) is the twelfth (the bullet headed "The discovery lane"): its worker start and its one
+registry read are gone from `data/src/browse/mod.rs`, and its `data-browse` workers ledger file is
+deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines; the rest of `browse/` (the roster and the gate reads) is still on its ledger. The Metadata store's
 season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
 two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
-from `data/src/metadata.rs`. The household's watch-state writes are the eleventh (the bullet headed
+from `data/src/metadata.rs`; the Related row's tail window read joins them in the same bullet, and its
+worker start and the `client_for` read inside that worker are gone too. The household's watch-state writes are the eleventh (the bullet headed
 "The view-state write lane"): the worker start and all five `client_for` reads are gone from
 `data/src/viewstate.rs`, and its two `data-viewstate` ledger files are deleted.
 
@@ -208,23 +215,32 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   `plx_data::search::recents::{SaveRecentsReq, SaveRecentsPort}`,
   `plx_data::browse::section_hubs::{BrowseHubsReq, BrowseHubsPort}`,
   `plx_data::browse::listing_jobs::{BrowseDirectoryReq, BrowseDirectoryPort}`,
-  `plx_data::browse::listing_jobs::{BrowsePageReq, BrowsePagePort}` (`BrowseStore::take_jobs`) and
-  `plx_data::metadata::{MetaSeasonReq, MetaSeasonPort, MetaEpisodesReq, MetaEpisodesPort}`. The app's `StoreRunner`
+  `plx_data::browse::listing_jobs::{BrowsePageReq, BrowsePagePort}`,
+  `plx_data::browse::discovery_job::{BrowseDiscoveryReq, BrowseDiscoveryPort}` (`BrowseStore::take_jobs`) and
+  `plx_data::metadata::{MetaSeasonReq, MetaSeasonPort, MetaEpisodesReq, MetaEpisodesPort}` and
+  `plx_data::metadata::{MetaRelatedReq, MetaRelatedPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
   retires only the parked Detail jobs, never another store's. `Held` parks per kind
   (`LiveKind`, test only; a kind and not a store, because Browse emits several kinds: `BrowseHubs`,
-  `BrowseDirectory`, `BrowsePage`): `StoreRunner::held()`
+  `BrowseDirectory`, `BrowsePage`, `BrowseDiscovery`): `StoreRunner::held()`
   leaves the Hubs read, the Metadata season switch and the Library grid's page read live, as
-  production runs them (a rig that waits for a Home, a season or a grid landing needs a real
-  worker; `menu_play_season_tests` polls for the season landing and never runs held jobs), and
+  production runs them (a rig that waits for a Home, a season or a grid landing needs a real worker;
+  `menu_play_season_tests` polls for the season landing and never runs held jobs), leaves the
+  Library's source discovery live for the reason given below, and
   `StoreRunner::held_all()` parks them too, for a test that chooses when the read settles
   (`Bridge::run_held_store_jobs_of_for_test`).
   `StoreRunner::park_page_reads` (`Bridge::park_page_reads_for_test`) parks only the page read of
-  a held runner, for a rig that grades which reads an entry started. Every other kind parks under
-  all three, the section hubs' read, the filter menus' directory read and the episode-page jobs
-  included: no rig of the suite waits for any of those landings from a real worker, and a parked
+  a held runner, for a rig that grades which reads an entry started. Source discovery is parked by
+  `held_all()` only: it is live under `held()` and under `park_page_reads()`, so a rig that runs
+  every parked job on the test thread (the `hostsim` helpers of `app/run.rs`) never runs a
+  discovery's blocking reads there, where the worker blocks harmlessly off-thread. No rig waits for
+  a discovery landing from a real worker (every one fabricates it), and parking it under `held()`
+  was tried: the whole `hostsim` and `app` suites passed, 27 discovery jobs running on the test
+  thread through `run_held`, so no suite forced the choice. Every other kind parks under
+  all three, the section hubs' read, the filter menus' directory read, the episode-page jobs and
+  the Related window job included: no rig of the suite waits for any of those landings from a real worker, and a parked
   read is one the test starts when it chooses (the one `hostsim` rig that needs the section hubs'
   read to reach the server, `the_recommended_page_fetches_the_sections_hubs`, runs it from the
   parked set with `Bridge::run_held_store_jobs_of_for_test(StoreId::Browse)`). The page read is live
@@ -259,8 +275,8 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   `Bridge::collection_pump` refill the keys, step, then run
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
-  `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry and its profile-switch
-  re-open both emit). `Bridge::search_run` drains `(StoreId::Search)` after every command (a recents
+  `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry emits and the profile-switch
+  re-open it takes (`CatalogStore::take_reopen`) goes through `Bridge::catalog_open`). `Bridge::search_run` drains `(StoreId::Search)` after every command (a recents
   edit emits its write there) and `Bridge::search_pump` refills the keys, steps and drains it.
   Browse's reads (the section hubs, the filter menus' directory reads and the grid's pages) are
   drained at five entries: `Bridge::browse_run` (which
@@ -291,7 +307,7 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   `HubsStore::run_with_directory`, `land_with_directory` and `tick_with_directory`: the
   Bridge's `Store(Hubs(..))`, `HubsResult` and `StoreWork::Hubs` arms and `Bridge::hubs_run` drain
   with `start_store_jobs_of(StoreId::Hubs)` in the same call, and a controlled Home arm admits the
-  jobs (`Bridge::admit_hubs_jobs`, the bullet headed "The Hubs lane"). And for the public
+  jobs (`Bridge::admit_home_jobs`, the bullet headed "The Hubs lane"). And for the public
   `SearchStore::run_with_directory` and `pump_with_directory_and_gate`: the Bridge's
   `Store(Search(..))` and `StoreWork::Search` arms, `boot.rs`'s reset and `dev/scenarios.rs`'s query
   all reach them through `Bridge::search_run` and `Bridge::search_pump`, which drain in the same call.
@@ -347,13 +363,34 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   and asks again after `RETRY_FRAMES` (120) pumps, with no job in between. That refusal is applied
   one pump later than the failed spawn it replaces was. A landing, a refusal or a panic: every job
   is answered once.
-- **What the Catalog step still reads.** `open` and `pump` call the store's `CatalogIo`, whose
-  production seam (`LiveCatalogIo`) calls `WatchlistAuth::capture()` and `WatchlistAuth::is_current()`
-  in `data/src/watchlist.rs`, whose `session::peek` and `current_snapshot` reads stay on the
-  `data-watchlist` globals ledger (`capture::current_snapshot`, `capture::session::peek`,
-  `is_current::current_snapshot`) and leave only with the Watchlist store's own migration. The
-  Catalog step is therefore not pure, and claims no purity. Its test seam, `with_spawn_for_test`, is
-  gone: a test runs the emitted job through `finish_catalog_job`.
+- **The Watchlist and catalog session input.** Neither store reads the registry to learn whose list it
+  reads. `WatchlistAuth::capture` is gone, `WatchlistAuth::is_current` is a pure comparison against a
+  `&CurrentProfile`, and `capture_auth` / `is_current` left the `WatchlistIo` and `CatalogIo` seams. This is
+  the third consumer of the Search scope's pattern (`Bridge::household_ids`) and the Browse pins'
+  (`Bridge::browse_session`): the Bridge reads, the store takes the value. No job kind and no runner arm is
+  added; the five worker starts, `find`, `guid_of`, `copy_rank` and the clock read are W-2's.
+  - **Two helpers, two shapes.** `Bridge::seated_profile` is `current_snapshot()`, an `Arc` clone handed to
+    both stores' frame passes (`WatchlistStore::pump_with_gate`, `CatalogStore::pump`): a pass notices a
+    switch or a sign-out in the same frame as before and captures nothing. `Bridge::watchlist_input` builds a
+    `WatchlistInput` (the profile and `Option<WatchlistAuth>`) from ONE snapshot, `plex_tv_credential` and the
+    client id, and is called only where a capture can happen: `WatchlistCmd::Open` (`watchlist_feed`,
+    `watchlist_open_if_idle`, `catalog_feed`) and `CatalogStore::open` (`Bridge::catalog_open`). It is built
+    per call and never kept, so a capture reads the credential at the moment it is made.
+    `plex_tv_credential` reads the registry (`peek()`, the legacy-owner fallback), so it is called there and
+    never from `data/`.
+  - **`run(cmd)` holds no input.** Every command but `Open` runs through it; an `Open` is refused (a
+    `debug_assert`, and a dropped command with a log line in a release build), and `run_with_input` is the
+    stepping entry. The watchlist's `Machine` arms hand the step neither input nor profile: a `Cmd` goes
+    through `run`, and a `Pump` is refused the same way, because a pump handed no profile would read as a
+    sign-out. Nothing sends either.
+  - **The catalog re-open.** A landing for a profile that is gone is dropped in `CatalogStore::pump`, which
+    can capture nothing: it clears the identity and records the title as owed a read (`take_reopen`).
+    `Bridge::catalog_pump` takes it and calls `catalog_open`, which reads the input then and starts the job,
+    all in the pump's own call. An `open` or a `reset` clears the owed title.
+  - **What stays.** The Watchlist's `copy_rank::current_server`, `find::client_for` and `guid_of::client_for`
+    (W-2), `server_ids` / `server_probe_result` / `server_roster_gen` / `server_facts_gen`, and the
+    `today()` clock read. The test entries (`WatchlistStore::pump`, `run_for_test`, `WatchlistInput::for_test`)
+    hand a generation-1 seat.
 - **A refusal the step can observe.** The runner may decline to start a job: the thread ceiling, a
   registry that moved on between the step and the launch (the client the job names is no longer the
   one the slot holds), or a `Held` runner whose client is gone. It then calls the port's `refused`,
@@ -390,14 +427,16 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
     `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the section
-    hubs' read, the Library's directory and page reads, the view-state writes, the Metadata season switch
-    and episode-page window) or `Home`,
+    hubs' read, the Library's directory and page reads, the view-state writes, the Metadata season switch,
+    episode-page window and Related window) or `Home` (the Hubs read and the Library's source discovery),
     as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,
     unchanged). A controlled arm of the Bridge steps Hubs, then admits what it emitted inside the
     arm with `StoreRunner::start_admitted(job, Some(io))`, so the hubs line precedes the discovery
-    line in the ledger (`home_admission_tests` pins that order). Every other sender uses `start`,
+    line in the ledger (`home_admission_tests` pins that order). The discovery job is admitted the
+    same way, from the controlled `StoreWork::BrowseDiscovery` arm only (`Bridge::admit_home_jobs`
+    with `StoreId::Browse`). Every other sender uses `start`,
     which launches a `Home` job as a direct one. Replay pops the recorded answer and never
     launches: a recorded launch answers nothing (the recorded landing settles it), a recorded
     refusal is answered once by the runner.
@@ -523,8 +562,67 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
     page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a directory
     read that panics lands as an empty list. The seams `finish_page_with` and
     `finish_directory_with` take the read as a closure so a test can swap in one that panics.
-- **The Metadata reads.** The season tabs and the long-season page window (`data/src/metadata.rs`)
-  are the tenth store reads on the lane. `load_season` flips the tab and emits
+- **The discovery lane.** The Library's source discovery (`data/src/browse/mod.rs`,
+  `maybe_discover_owned`) is the twelfth store job: the section list, the server's name and the
+  item counts of one source, as `StoreJob::BrowseDiscovery(Job<BrowseDiscoveryReq>,
+  BrowseDiscoveryPort)` (`data/src/browse/discovery_job.rs`; `finish_browse_discovery_job` is the
+  IO body, the old worker's, unchanged, and the runner's `launch_browse_discovery` starts the
+  `"sources"` worker). The step is handed the registry's `ClientKeys` and decides from
+  `keys.key(sid)`; the runner resolves the key at the launch, so the step's `client_for` read is
+  gone. Admission is `Home`, unlike every other Browse kind: a controlled Home run starts it (the
+  `StoreWork::BrowseDiscovery` arm), records its request with the bytes the old
+  `DiscoveryRequest::descriptor` wrote (a literal pinned in `home_admission_tests` and
+  `browse_discovery_admission_tests`), and a replay never launches it.
+  - **A claim with no slot, one mailbox.** `src_fetching` is a `Fetch<()>` whose slot is unused:
+    the answer still lands in `src_result` (the mailbox `record.rs` encodes and the landing gate
+    takes), and the claim is raised at the STEP and lowered by `apply_discovery` after its epoch
+    check, so the landing gate's dump mode still waits on it.
+  - **A refusal is settled by the store's next step, and backs off.** A key that moved by the
+    launch, or a thread the system refused, refuses the job: the port lowers the claim in the
+    refusing call and remembers the request id (`Fetch::refuse_for`). The store records the one
+    read it has out (`src_flight`) and `discovery_settle`, at the head of the next
+    `maybe_discover_owned`, reads `take_refused`: if it was refused and the table epoch is the
+    flight's, the source's `retry_cd` is set to the full `SRC_RETRY_CD`, as a refused launch
+    always did, so a source is not asked again at 60 Hz. Nothing is invalidated and nothing is
+    recorded. The refusal settles one step later than the old launcher's (which set the countdown
+    in the launching call); no replay fixture holds a refused discovery. `BrowseStore::sync_roster`
+    settles before it syncs the roster, so a source the sync re-arms in the same step (a
+    re-pointed or retokened client, `retry_cd = 0`) is asked again at once, as it always was.
+  - **Every entry drains it.** `Bridge::browse_discover_pump` refills the keys, steps, and starts
+    the jobs of Browse; `frame_ingest` and the live `StoreWork::BrowseDiscovery` arm go through it,
+    and the controlled arm drains inside the arm to admit. `app/browse_discovery_drain_tests.rs`
+    fails when an entry's drain is removed, and `app/adapters/stores.rs` has a test for each branch
+    of the runner's start.
+- **The pins' session input.** `resolve_pins_from` (through `append_sections_with` and `record::apply_to`),
+  `pin_record_for`, `record_pins_from` (through `apply_pins_from`) and `onboard::asks_for_sources` read no
+  registry: each is handed the `&Session` the app read. This is the second consumer of the pattern Search's
+  household scope began (`Bridge::household_ids`, the Bridge reads, the store takes the value), and of the
+  controlled run's `preferences`, which is the same value handed under the `""` key. No job kind and no
+  runner arm is added; every replay fixture is byte-identical. One path is not yet handed: the roster
+  reconcile (`sync_roster_owned` -> `reconcile_pins_from` -> `pin_record_for`) is given
+  `sync_roster_owned`'s own in-machine `peek()`, which stays on the ledger until B-E.
+  - **Observe, then read.** `Bridge::browse_session` is the one production reader: it calls
+    `BrowseStore::observe_pin_write` FIRST, then `session::peek()`. The write's receipt is sent after the
+    storage worker installed the written session, so a session read after seeing the receipt contains the
+    write. `PinWrite::observe` polls and latches; `PinWrite::saved` only reads the latch and never polls, so
+    a step can never pair a receipt it saw with a session read before it. A write not yet observed answers
+    with the local pending record. Each write has its own latch (`record_pins_from` replaces
+    `pending_pins`). The two lines of `browse_session` must not swap, and its `Arc` is not kept across
+    Bridge calls. Its callers are `browse_run`, `browse_discover_pump`, the `StoreWork::Browse` arm and
+    `reconcile_pump`'s requery.
+  - **`run(cmd, keys)` holds no session.** It is the Stores fan-outs' entry (`ApplyView`,
+    `HubsInvalidateAll`, `HubsInvalidateServer`, `ListingsChanged`), and it refuses `ApplyPins` and
+    `Discovery` (a `debug_assert`, and a dropped command with a log line in a release build) rather than
+    read the registry; both reach `run_with_session`. The `Machine` arms hand the step no keys and no
+    session.
+  - **What stays.** `current_profile_key` (the profile is a published key, not a session read), the
+    `queue_update` / `queue_update_ticket` merge under IO, `peek_settled`, and B-E's reads
+    (`discovery_needs_pump`, `sync_roster_owned`). The first-run gate's session is read by its two
+    callers, boot and `follow_auth_landing`, where each asks. The test entry points (`*_for_test`, the
+    `#[cfg(test)]` `resolve_pins` / `apply_pins` / `record_pins` shims) read the registry as of now, after
+    observing the pin write, as the Bridge does.
+- **The Metadata reads.** The season tabs, the long-season page window and the Related row's tail
+  window (`data/src/metadata.rs`) are the tenth store reads on the lane. `load_season` flips the tab and emits
   `StoreJob::MetaSeason(Job<MetaSeasonReq>, MetaSeasonPort)`, addressed by the season generation it
   minted; `want_episodes` emits `StoreJob::MetaEpisodes(Job<MetaEpisodesReq>, MetaEpisodesPort)` for
   at most `EP_JOB_PAGES` pages, addressed by a sequence of its own (pages are keyed by
@@ -557,6 +655,40 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
     refusing the thread cannot be forced on a host, so the refused branches are pinned at the port
     (`a_refused_season_job_ends_season_loading_and_leaves_the_tab_and_the_list`,
     `a_refused_page_job_releases_its_inflight_keys_and_the_next_want_asks_again`).
+  - **The Related window.** `ask_related` (an edge ask, `WantRelated`, or a seek, `SeekRelated`)
+    takes the single-flight claim in the adapter's `rel_pages` exactly as before (the adopt path
+    that un-withdraws a read asked for again, and the `served` check that skips an edge that already
+    landed, are unchanged) and then emits `StoreJob::MetaRelated(Job<MetaRelatedReq>,
+    MetaRelatedPort)`, `Direct`, addressed by a sequence of its own (`RelPages.sent`; it shares
+    `season_addr`'s id space, and nothing routes by an `Addr` alone). The request carries what the
+    worker closure captured: the item, the ask, the window it starts from with its cards, the keys
+    the tail must not show, the hubs with the lengths learned so far, the ledger the window carries
+    and the view-state stamp. A controlled run never emits it (`bootstrap/effects.rs` has no related
+    arm), so no replay fixture moved. The runner resolves `client_for(sid)` once, at the launch,
+    which moves the resolve that used to run inside the worker onto the main thread: a read keeps
+    its client for its few serial GETs, and a server the registry holds none for still launches and
+    its body answers the failure (`window: None`) without a GET. The body is the old worker's:
+    `read_row` over `tail_page`, behind `catch_unwind`, the answer posted outside the guard.
+    - **The claim is the port's to give back.** `done` lowers `inflight` and `out`, drops the
+      answer when the reader withdrew the read while it was out (taking the flag), and otherwise
+      lands the window for `pump_related_pages`, which is unchanged and ungated. `refused` lowers
+      the claim and clears `withdrawn` in the call that refuses, which is what the inline
+      `!spawned` arm left, so the next edge asks again and no later read is discarded on a stale
+      flag. A job the held runner parks keeps the claim up, as a worker that has not answered does;
+      a cancel meanwhile leaves the answer to be discarded when the parked job runs.
+    - **The return value.** `ask_related` returned `spawned`; it returns true when the job was
+      emitted. Its readers are `MetadataStore::run`'s `changed` (the notice is bumped for every
+      command but `ApplyView`, so a true never changes whether it rises) and the tests; the one
+      production sender, `deliver_inner`, ignores it. A true for a job later refused changes no
+      screen state beyond what a spawned read's true did.
+    - **Drains.** The Detail screen's effects reach `ask_related` through `Bridge::metadata_run`,
+      which drains Metadata after its step; that is the only production path. No bare-store sender
+      and no fan-out sends `WantRelated` or `SeekRelated` (the view-state closures send `ApplyView`
+      only), so no drain was added; `the_bridge_metadata_run_starts_the_related_window_it_emitted`
+      pins the dispatcher path. The held runner parks the kind under `held()` and `held_all()`: no
+      rig in the app, screens or hostsim suites waits on a Related landing through a real worker
+      (`detail_related_landing_tests` lands the window with `land_related_for_test`), so there is
+      no `LiveKind` for it.
 - **The view-state write lane.** The household's watch-state writes (`data/src/viewstate.rs`: mark
   watched, mark unwatched, remove from Continue Watching, and the fan-out of a watched write, or of
   an end of stream, to the title's other copies) are the eleventh store on the lane. `kick` starts no

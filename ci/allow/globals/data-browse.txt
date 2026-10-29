@@ -1,4 +1,4 @@
-# count: 15
+# count: 10
 # Process-global reads inside machines (docs/sans-io.md), area `data-browse`: one line per production read of a registry in a machine —
 # (the spellings are ci/check-deps.sh's `globals` rule) — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -7,14 +7,9 @@ rust-modules/data/src/browse/mod.rs::cur_source_idx::current_server
 rust-modules/data/src/browse/mod.rs::discovery_needs_pump::client_for
 rust-modules/data/src/browse/mod.rs::discovery_needs_pump::session::peek
 rust-modules/data/src/browse/mod.rs::machine_of::client_for
-rust-modules/data/src/browse/mod.rs::maybe_discover_owned::client_for
-rust-modules/data/src/browse/mod.rs::pin_record_for::session::peek
-rust-modules/data/src/browse/mod.rs::record_pins::session::peek
-rust-modules/data/src/browse/mod.rs::resolve_pins::session::peek
 rust-modules/data/src/browse/mod.rs::source_snapshot::client_for
 rust-modules/data/src/browse/mod.rs::source_snapshot::client_for
 rust-modules/data/src/browse/mod.rs::sync_roster_owned::client_for
 rust-modules/data/src/browse/mod.rs::sync_roster_owned::client_for
 rust-modules/data/src/browse/mod.rs::sync_roster_owned::client_for
 rust-modules/data/src/browse/mod.rs::sync_roster_owned::session::peek
-rust-modules/data/src/stores/browse.rs::asks_for_sources::session::peek

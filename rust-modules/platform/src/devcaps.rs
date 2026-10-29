@@ -78,37 +78,97 @@ const OPUS_AUTO_MAX_CHANNELS: u32 = 2;
 /// Audio the app DECODES ITSELF and feeds as PCM, so no row of the device table is needed: the
 /// pipeline's PCM input (`libpf`'s `audio/x-raw` caps and the `contents.pcmInfo` node) is what
 /// carries it. FLAC is the case, and ALAC and LPCM ride the same path ([`APP_DECODED`]) — libpf has no FLAC input of its own (its Load vocabulary is
-/// AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/VORBIS/WMA/PCM), but PCM decoded from it is bit-exact. Both
+/// AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/VORBIS/WMA/PCM), but PCM decoded from it is bit-exact at a rate of [`PCM_SAMPLE_RATES`]
+/// (above them the app resamples, [`pcm_load_rate`]). Both
 /// the vocabulary and the PCM input were verified on webOS 4.4.3 (libpf-1.0 on an OLED55B8); other
 /// webOS versions are unconfirmed. Joins [`Caps::audio`] only on a table that was READ: the assumed
 /// fallback stays byte-for-byte what it was.
 pub const PCM_AUDIO_CODECS: &str = "flac,alac,pcm";
 
-/// One codec the app decodes itself ([`PCM_AUDIO_CODECS`]): its [`audio_codec_id`] and the bundled
-/// FFmpeg decoders that produce its PCM (`avcodec_get_name`'s spelling, one codec id each).
+/// One codec the app decodes itself: its [`audio_codec_id`], the names `avcodec_get_name` gives the
+/// streams it covers (what the demuxer sees), and the decoders `ci/build-ffmpeg.sh` must enable to
+/// decode them. The two differ for DTS, whose codec is `dts` and whose decoder is `dca`.
 pub struct AppDecoded {
     pub id: &'static str,
-    pub ffmpeg: &'static [&'static str],
+    pub codecs: &'static [&'static str],
+    pub decoders: &'static [&'static str],
+    /// Lossy: the decode is NOT bit-exact and is fed as stereo 48 kHz S16 whatever the source
+    /// (see [`Caps::app_decodes`]). Only on a value whose [`Caps::app_lossy`] policy admits the row
+    /// ([`lossy_row_enabled`]); [`PCM_AUDIO_CODECS`] is the lossless entries.
+    pub lossy: bool,
+    /// The TV evidence that this row's decode is affordable (the CPU it costs, in the style of
+    /// [`Exclusion::evidence`]). A lossy row without it is not enabled on a table that was read
+    /// ([`AppLossy::Measured`]); turning a row on is `Some(..)` plus its evidence. Always `None` for a
+    /// lossless row, where the field means nothing.
+    pub measured: Option<&'static str>,
 }
 
 /// The app-decoded set, and the ONLY place a decoder name is tied to a codec: the demuxer asks
-/// [`app_decoded_by_ffmpeg_name`], and a test holds every name here to `ci/build-ffmpeg.sh`'s
+/// [`app_decoded_by_ffmpeg_name`], and a test holds every decoder here to `ci/build-ffmpeg.sh`'s
 /// `--enable-decoder` list, so a codec cannot be offered that the bundled library cannot decode.
 pub const APP_DECODED: &[AppDecoded] = &[
-    AppDecoded { id: "flac", ffmpeg: &["flac"] },
-    AppDecoded { id: "alac", ffmpeg: &["alac"] },
+    AppDecoded { id: "flac", codecs: &["flac"], decoders: &["flac"], lossy: false, measured: None },
+    AppDecoded { id: "alac", codecs: &["alac"], decoders: &["alac"], lossy: false, measured: None },
     // LPCM in MKV (`A_PCM/INT/LIT`, `/BIG`) and MP4 (`sowt`, `twos`, `in24`, `in32`). The integer
     // widths only: a float or 8-bit track is not claimed ([`audio_codec_id`]), because the
     // path is bit-exact and the Load declares 16 or 32 bits.
     AppDecoded {
         id: "pcm",
-        ffmpeg: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
+        codecs: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
+        decoders: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
+        lossy: false,
+        measured: None,
     },
+    // DTS core, downmixed to stereo and resampled to 48 kHz: for a set with no DTS decoder (webOS 10+)
+    // and for Force Direct Play there. Enabled on a read table: the TV has measured what it costs.
+    AppDecoded {
+        id: "dts",
+        codecs: &["dts"],
+        decoders: &["dca"],
+        lossy: true,
+        measured: Some(
+            "U5 2026-10: DTS core decode on the dev set (webOS 4.5), whole app 13.1% of one core of four, \
+             system 25% busy, 60 fps held",
+        ),
+    },
+    // MP3 and Vorbis (S4-4): stereo 48 kHz PCM through the same decoder and the same policy as DTS. Unlike
+    // a DTS core they can be above 48 kHz, so they stay rate bound ([`audio_rate_bounded`]). Unmeasured:
+    // off on a read table until their U5 evidence is recorded here.
+    AppDecoded { id: "mp3", codecs: &["mp3"], decoders: &["mp3"], lossy: true, measured: None },
+    AppDecoded { id: "vorbis", codecs: &["vorbis"], decoders: &["vorbis"], lossy: true, measured: None },
+    // TrueHD (S4-5): up to eight channels (FFmpeg's `truehd` decodes the 7.1 bed; an Atmos object
+    // substream is not rendered), mixed by layout to stereo 48 kHz. The only lossy entry without a rate
+    // bound beside DTS, because the app's resampler (`speed_audio::Resampler`) low-passes high rates ([`audio_rate_bounded`]).
+    // Unmeasured, like MP3 and Vorbis.
+    AppDecoded { id: "truehd", codecs: &["truehd"], decoders: &["truehd"], lossy: true, measured: None },
 ];
 
-/// The [`APP_DECODED`] entry whose decoder is the FFmpeg one named `name`.
+/// Which lossy [`APP_DECODED`] rows a [`Caps`] value may decode in the app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AppLossy {
+    /// None: an unread table is not a policy (the PCM precedent, [`PCM_AUDIO_CODECS`]), so the assumed
+    /// fallback stays byte-for-byte what shipped.
+    #[default]
+    Off,
+    /// The rows with recorded evidence ([`AppDecoded::measured`]): what a table that was read gets.
+    Measured,
+    /// Every lossy row: the `appdecodelossy` debug trigger, which is how an unmeasured row is measured.
+    All,
+}
+
+/// Whether `policy` admits `row`: the ONE answer to "may the app decode this lossy row".
+pub(crate) fn lossy_row_enabled(row: &AppDecoded, policy: AppLossy) -> bool {
+    row.lossy
+        && match policy {
+            AppLossy::Off => false,
+            AppLossy::Measured => row.measured.is_some(),
+            AppLossy::All => true,
+        }
+}
+
+/// The [`APP_DECODED`] entry covering the stream whose `avcodec_get_name` is `name`.
 pub fn app_decoded_by_ffmpeg_name(name: &str) -> Option<&'static AppDecoded> {
-    APP_DECODED.iter().find(|c| c.ffmpeg.contains(&name))
+    APP_DECODED.iter().find(|c| c.codecs.contains(&name))
 }
 
 /// The channel ceiling of the PCM path: `pcmInfo.channelMode` has `mono` and `stereo` (and
@@ -121,25 +181,67 @@ pub const PCM_MAX_CHANNELS: u32 = 2;
 /// becomes 44.1 kHz and plays at the wrong speed with no error (a 96 kHz FLAC audibly slow on an
 /// OLED55B8, webOS 4.4.3; a 48 kHz one 9% slow, a 32 kHz one fast and stuttering on a C1, webOS
 /// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8. It
-/// bounds the PCM input only; every other codec's Load carries no rate ([`AUDIO_RATE_CEILING`]).
+/// bounds what the PCM input is DECLARED at, not what a source may be: a faster FLAC, ALAC or LPCM is
+/// resampled to its top ([`pcm_load_rate`]). Every other codec's Load carries no rate
+/// ([`AUDIO_RATE_CEILING`]).
 pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
+
+/// **The rate the PCM Load declares for a source sampled at `source` Hz**, or `None` when the app cannot
+/// make the source into one: the single rule for the PCM path's rate.
+///
+/// * a rate in [`PCM_SAMPLE_RATES`] is itself: the bit-exact path, no resampler built;
+/// * every rate above 48 kHz is resampled by the app (`speed_audio::Resampler`, a linear-phase low-pass
+///   decimator) to the top of the table that keeps its family: 44.1 kHz for a multiple of 44.1 kHz
+///   (88.2, 176.4, 352.8, 705.6 kHz: an integer ratio), 48 kHz for any other (96, 192, 384, 64, 50 kHz...);
+/// * `<= 0` (unstated) and a rate below 48 kHz outside the table (11.025, 37.8 kHz) are `None`: upsampling
+///   was not asked for, so those tracks stay with the server.
+///
+/// **There is no ceiling on the rate.** What is bounded is the converter, not the content that reaches it
+/// (`speed_audio::Resampler`: the memory of its filter tables is a constant of the filter, whatever
+/// the rate, and its per-input-frame work is constant). The one limit is `i32::MAX`, which is not a cap
+/// on a file: FFmpeg states a stream's rate in a C int (`AVCodecParameters::sample_rate`), so a rate past
+/// it cannot be one.
+///
+/// Every `Some(r)` is in [`PCM_SAMPLE_RATES`], so the Load's kilohertz declaration (`player::engine`)
+/// needs no new rate. The declared Load is then the shape a 24-bit 48 or 44.1 kHz FLAC already has.
+pub fn pcm_load_rate(source: i64) -> Option<u32> {
+    let top = PCM_SAMPLE_RATES[PCM_SAMPLE_RATES.len() - 1];
+    if !(1..=i64::from(i32::MAX)).contains(&source) {
+        return None;
+    }
+    if let Some(r) = PCM_SAMPLE_RATES.iter().copied().find(|&r| i64::from(r) == source) {
+        return Some(r);
+    }
+    if source < i64::from(top) {
+        return None;
+    }
+    let family = PCM_SAMPLE_RATES[PCM_SAMPLE_RATES.len() - 2];
+    Some(if source % i64::from(family) == 0 { family } else { top })
+}
 
 /// The highest sample rate, in hertz, any audio Load path here is known to accept: the
 /// `audio.samplingRate` upper bound the transcode profile asks PMS for and the one
-/// [`audio_track_fits`] holds a track to. An LG B8 (webOS 4.4.3) refused the Load of a 96 kHz AAC
-/// that PMS had made from a 96 kHz FLAC (#951, `smp_cb type=18 num=100`). WHERE that limit lives
-/// (the Load payload, libpf, the decoder) is not determined; 48 kHz is used because nothing above
-/// it is known to load (it is the top of [`PCM_SAMPLE_RATES`] too).
+/// [`audio_track_fits`] holds a codec that [`audio_rate_bounded`] names to. An LG B8 (webOS 4.4.3)
+/// refused the Load of a 96 kHz AAC that PMS had made from a 96 kHz FLAC (#951, `smp_cb type=18
+/// num=100`). WHERE that limit lives (the Load payload, libpf, the decoder) is not determined; 48 kHz
+/// is used because nothing above it is known to load (it is the top of [`PCM_SAMPLE_RATES`] too).
 pub const AUDIO_RATE_CEILING: u32 = 48_000;
 
 /// Whether `codec` is held to [`AUDIO_RATE_CEILING`], by [`audio_track_fits`] and by the profile's
-/// `audio.samplingRate` limitation alike: every codec but DTS. The app feeds only the DTS core
+/// `audio.samplingRate` limitation alike: every codec but DTS, TrueHD and the lossless PCM codecs
+/// ([`PCM_AUDIO_CODECS`]: FLAC, ALAC, LPCM). The app feeds only the DTS core
 /// (`ff.rs::dts_core_packet`), 48 kHz at most by format, so a DTS-HD 96/24 source plays today and
-/// bounding it would push that source into a lossy AC-3 conversion. Opus, AC-3 and E-AC-3 are
-/// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every codec
-/// but DTS" is the one rule, with no per-codec list to keep in step.
+/// bounding it would push that source into a lossy AC-3 conversion. TrueHD and the lossless PCM codecs,
+/// when the app decodes them, are resampled to 48 or 44.1 kHz by the app itself (`speed_audio::Resampler`
+/// low-passes before it decimates from 88.2 kHz and up), so their Load never carries the source rate;
+/// bounding them would send every high-resolution track to a lossy server conversion for nothing
+/// ([`pcm_load_rate`] is the rule for the PCM codecs). MP3 and Vorbis stay bound: the resampler exists,
+/// but a 96 kHz Vorbis has not been through the TV. Opus, AC-3 and E-AC-3 are
+/// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every other
+/// codec" is the one rule, with no per-codec list to keep in step.
 pub fn audio_rate_bounded(codec: &str) -> bool {
-    audio_codec_id(codec) != "dts"
+    let id = audio_codec_id(codec);
+    !matches!(id.as_ref(), "dts" | "truehd") && !PCM_AUDIO_CODECS.split(',').any(|c| c == id)
 }
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
@@ -152,17 +254,28 @@ pub fn is_pcm_codec(codec: &str) -> bool {
 /// [`Caps::audio_supports`] / [`Caps::forced_feeds_audio`]: the ONE rate-fit predicate for every
 /// route that decides without PMS's `/decision`, mirrored by the transcode profile's
 /// `audio.samplingRate` limitation. A PCM codec ([`PCM_AUDIO_CODECS`]) needs one or two channels at
-/// a rate `pcmInfo` can name ([`PCM_SAMPLE_RATES`]); an unstated count or rate does not pass. Any
+/// a rate the app can make a `pcmInfo` rate of ([`pcm_load_rate`]: a table rate, or any faster one,
+/// resampled); an unstated count or rate does not pass. Any
 /// other codec passes at an unstated rate (`<= 0`, the planner's `0`) or at most
-/// [`AUDIO_RATE_CEILING`], DTS excepted ([`audio_rate_bounded`]). These are limits of the Load,
+/// [`AUDIO_RATE_CEILING`], DTS and TrueHD excepted ([`audio_rate_bounded`]). These are limits of the Load,
 /// not of a hardware decoder, so Force Direct Play applies them as well.
 pub fn audio_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
     if is_pcm_codec(codec) {
-        (1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
-            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate)
+        (1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels) && pcm_load_rate(sample_rate).is_some()
     } else {
         sample_rate <= i64::from(AUDIO_RATE_CEILING) || !audio_rate_bounded(codec)
     }
+}
+
+/// Whether the app's lossy decode of a source with `channels` channels MIXES IT DOWN: the decode's one
+/// output is stereo ([`PCM_MAX_CHANNELS`] channels), so a source with more than two channels loses its
+/// layout, and one with an unstated count (`<= 0`) is not known to keep it. **The ONE predicate of the
+/// owner's rule (2026-10-28, #1082): the app never mixes a surround source down by default.** The
+/// planner ([`Caps::app_decodes_lossy_track`]), the failed-open ladder (`player::recovery`'s order of
+/// the app decode and the manual encode, and Force Direct Play's rung) and the track menu's "played in
+/// stereo" mark all ask this, so none of them can disagree about which tracks are mixed.
+pub fn app_decode_mixes_down(channels: i64) -> bool {
+    !(1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
 }
 
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
@@ -429,6 +542,15 @@ pub struct Caps {
     /// never stored on the install (a video facet never proves). Read through
     /// [`Caps::raster_bound`], never directly. A `BTreeMap` keeps `Eq` and deterministic profile bytes.
     pub video_ceiling: std::collections::BTreeMap<String, (u32, u32)>,
+    /// Which LOSSY entries of [`APP_DECODED`] this value may decode itself and feed as stereo 48 kHz
+    /// PCM, instead of the set's own decoder or the server. [`AppLossy::Off`] in [`Caps::assumed`],
+    /// [`AppLossy::Measured`] in a table read, [`AppLossy::All`] under the `appdecodelossy` dev
+    /// trigger ([`Caps::with_app_lossy`]).
+    pub app_lossy: AppLossy,
+    /// The lossy codecs ([`audio_codec_id`] spelling) this value decodes in the app WHATEVER its own
+    /// decoder says: set by the recovery rung for the one codec a Load refused
+    /// ([`Caps::with_app_lossy_for`]), or for every lossy row by the debug trigger. Empty at boot.
+    pub app_lossy_in_force: std::collections::BTreeSet<String>,
 }
 
 impl Caps {
@@ -451,7 +573,94 @@ impl Caps {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_lossy: AppLossy::Off,
+            app_lossy_in_force: Default::default(),
         }
+    }
+
+    /// Whether `codec` is a lossy [`APP_DECODED`] row this value's policy admits ([`lossy_row_enabled`]).
+    /// Says nothing of whether it is in force.
+    pub fn app_may_decode_lossy(&self, codec: &str) -> bool {
+        let id = audio_codec_id(codec);
+        APP_DECODED.iter().any(|r| r.id == id && lossy_row_enabled(r, self.app_lossy))
+    }
+
+    /// This value with `codec` decoded in the app whatever the set's decoder says: put in
+    /// [`Caps::app_lossy_in_force`], announced whatever the table says (the app decodes it, so no
+    /// decoder row is needed), up to eight channels (the output is stereo; the extensions of DTS-HD are
+    /// not read). A codec the policy does not admit leaves the value unchanged.
+    pub fn with_app_lossy_for(mut self, codec: &str) -> Caps {
+        if !self.app_may_decode_lossy(codec) {
+            return self;
+        }
+        let id = audio_codec_id(codec).into_owned();
+        if !self.audio_has(&id) {
+            self.audio.push(',');
+            self.audio.push_str(&id);
+        }
+        self.audio_channels.insert(id.clone(), 8);
+        self.app_lossy_in_force.insert(id);
+        self
+    }
+
+    /// Whether this value lets the app decode a source with `channels` channels, in the mode `forced`
+    /// says (Force Direct Play), WITHOUT mixing it down against the viewer's choice: false only for a
+    /// Force Direct Play of a source [`app_decode_mixes_down`] says is mixed down. Force Direct Play
+    /// never mixes a surround source down (owner, 2026-10-28, #1082): it plays what the set decodes or
+    /// shows the refusal. Auto's last rung may, and so may the explicit `appdecodelossy` debug trigger
+    /// ([`AppLossy::All`]), which exists to measure a decode on any file.
+    pub fn app_may_mix_down(&self, channels: i64, forced: bool) -> bool {
+        !(forced && app_decode_mixes_down(channels)) || self.app_lossy == AppLossy::All
+    }
+
+    /// The debug form ([`AppLossy::All`], every lossy row in force): even a codec the set decodes
+    /// natively goes through the app, so each row's cost can be measured on a set that has its decoder.
+    pub fn with_app_lossy(mut self) -> Caps {
+        self.app_lossy = AppLossy::All;
+        for r in APP_DECODED.iter().filter(|r| r.lossy) {
+            self = self.with_app_lossy_for(r.id);
+        }
+        self
+    }
+
+    /// Whether the app decodes `codec` itself on this value: the lossless set always
+    /// ([`PCM_AUDIO_CODECS`]), a lossy codec only once it is in force ([`Caps::app_lossy_in_force`]).
+    #[cfg(test)]
+    pub fn app_decodes(&self, codec: &str) -> bool {
+        is_pcm_codec(codec) || self.app_lossy_in_force.contains(audio_codec_id(codec).as_ref())
+    }
+
+    /// The SET'S OWN decoder plays this track from the file (rate and channel limits included): false
+    /// for a codec in force, which the app decodes instead. `channels` and `sample_rate` are 0 when not
+    /// known. `forced` is Force Direct Play, which applies no table ceiling
+    /// ([`Caps::forced_feeds_audio_track`]).
+    pub fn native_audio_track(&self, codec: &str, channels: i64, sample_rate: i64, forced: bool) -> bool {
+        if self.app_lossy_in_force.contains(audio_codec_id(codec).as_ref()) {
+            return false;
+        }
+        let feeds = if forced {
+            self.forced_feeds_audio_track(codec, channels)
+        } else {
+            self.audio_supports(codec, channels)
+        };
+        feeds && audio_track_fits(codec, channels, sample_rate)
+    }
+
+    /// The app decodes this lossy track to stereo 48 kHz PCM on this value: the policy admits the
+    /// row, and the codec is either in force or Force Direct Play has no native path for the track (so
+    /// the app replaces what would be a refusal; a set that plays it natively keeps doing so). The
+    /// track's own limit is the rate bound of a rate-bound row ([`audio_track_fits`]); the channel
+    /// count is no limit of the DECODER (it mixes by layout down to two), but **Force Direct Play
+    /// never mixes a surround source down** ([`Caps::app_may_mix_down`], owner 2026-10-28, #1082): there
+    /// the app decodes a stereo or mono track only, and a surround one keeps its refusal. Auto's value
+    /// with the codec in force (the recovery ladder's last rung) decodes any width.
+    pub fn app_decodes_lossy_track(&self, codec: &str, channels: i64, sample_rate: i64, forced: bool) -> bool {
+        let id = audio_codec_id(codec);
+        self.app_may_decode_lossy(&id)
+            && audio_track_fits(&id, channels, sample_rate)
+            && self.app_may_mix_down(channels, forced)
+            && (self.app_lossy_in_force.contains(id.as_ref())
+                || (forced && !self.native_audio_track(&id, channels, sample_rate, true)))
     }
 
     /// The width/height upper bound for `vcodec` (PMS's lower-case spelling), per axis the lowest
@@ -764,7 +973,7 @@ pub fn audio_codec_id(codec: &str) -> Cow<'_, str> {
         // media's `pcm` and the stream's `pcm_s16le`, `pcm_s24le`, … The flavour is the demuxer's
         // business (`ff_pcm`); a flavour not listed here stays itself and is not app-decoded.
         "lpcm" => Cow::Borrowed("pcm"),
-        c if APP_DECODED.iter().any(|d| d.id == "pcm" && d.ffmpeg.contains(&c)) => Cow::Borrowed("pcm"),
+        c if APP_DECODED.iter().any(|d| d.id == "pcm" && d.codecs.contains(&c)) => Cow::Borrowed("pcm"),
         _ => Cow::Borrowed(codec),
     }
 }
@@ -956,6 +1165,8 @@ fn parse(s: &str) -> Option<Caps> {
         audio_channels,
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
+        app_lossy: AppLossy::Measured,
+        app_lossy_in_force: Default::default(),
     })
 }
 
@@ -1187,6 +1398,21 @@ pub fn probe() {
     let _ = AUDIO_STACK.set(stack);
     let mut boot = caps.clone();
     let excluded = apply_exclusions(&mut boot, &info.codename, wide, EXCLUSIONS);
+    if plx_base::devtrig::flag("appdecodelossy") {
+        boot = boot.with_app_lossy();
+        #[cfg(feature = "devtriggers")]
+        plx_base::eventlog::log(&format!(
+            "devcaps: appdecodelossy trigger: every lossy APP_DECODED row decoded in the app (All, in force: {:?})",
+            boot.app_lossy_in_force
+        ));
+    }
+    let lossy_rows = || APP_DECODED.iter().filter(|r| r.lossy);
+    plx_base::eventlog::log(&format!(
+        "devcaps: app lossy decode {:?}: enabled [{}] unmeasured [{}]",
+        boot.app_lossy,
+        lossy_rows().filter(|r| lossy_row_enabled(r, boot.app_lossy)).map(|r| r.id).collect::<Vec<_>>().join(","),
+        lossy_rows().filter(|r| r.measured.is_none()).map(|r| r.id).collect::<Vec<_>>().join(","),
+    ));
     plx_base::eventlog::log(&format!(
         "devcaps: firmware={:?} build={:?} audio stack={} audio layers: table+gst={} | exclusions: {} | -> audio={}{}{}",
         info.codename,
@@ -1816,22 +2042,56 @@ mod tests {
         assert!(!Caps::assumed().forced_feeds_audio("truehd"));
     }
 
-    /// `pcmInfo` can name only the rates in libpf's table (plus 44.1 kHz): a 96 kHz or 192 kHz FLAC
-    /// played audibly slow on the B8, with no error anywhere. The track gate refuses those, and an
-    /// unstated rate or channel count, for app-decoded codecs only.
+    /// `pcmInfo` can name only the rates in libpf's table (plus 44.1 kHz), so the app resamples a faster
+    /// FLAC to the top of it ([`pcm_load_rate`]) and the Load never carries the source rate. A rate the
+    /// resampler cannot make a table rate of (below 48 kHz and outside the table, unstated) and a
+    /// channel count past two still go to the server.
     #[test]
-    fn the_pcm_path_admits_only_the_rates_and_channels_it_plays_correctly() {
+    fn the_pcm_path_admits_the_table_rates_and_resamples_the_faster_ones() {
         for rate in [8_000, 22_050, 44_100, 48_000] {
             assert!(audio_track_fits("flac", 2, rate), "{rate}");
         }
         assert!(audio_track_fits("FLAC", 1, 48_000));
-        for rate in [0, 11_025, 88_200, 96_000, 176_400, 192_000] {
-            assert!(!audio_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
+        for rate in [64_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000] {
+            assert!(audio_track_fits("flac", 2, rate), "{rate}: resampled to the table's top");
+            assert!(audio_track_fits("flac", 1, rate), "{rate}: mono");
+        }
+        for rate in [0, -1, 11_025, 37_800] {
+            assert!(!audio_track_fits("flac", 2, rate), "{rate} is unstated or not a table rate");
         }
         assert!(!audio_track_fits("flac", 6, 48_000));
+        assert!(!audio_track_fits("flac", 6, 96_000), "a 5.1 hi-res FLAC still converts on the server");
         assert!(!audio_track_fits("flac", 0, 48_000));
         // not app-decoded: the hardware decoder's own channel rules apply, not these
         assert!(audio_track_fits("ac3", 6, 0));
+    }
+
+    /// **The rate the Load declares for a source rate** ([`pcm_load_rate`]): a table rate is itself (the
+    /// bit-exact path), every rate above 48 kHz goes to the top of the table that keeps its family
+    /// (a multiple of 44.1 kHz to 44.1 kHz, any other to 48 kHz), and a rate below 48 kHz that is not in
+    /// the table, or none, is `None`. There is no ceiling: the only limit is the type FFmpeg states a
+    /// rate in (a C int). Whatever it returns is in [`PCM_SAMPLE_RATES`], which is why the Load's
+    /// kilohertz declaration needs no change.
+    #[test]
+    fn pcm_load_rate_resamples_every_rate_above_the_table_to_its_top() {
+        for r in PCM_SAMPLE_RATES {
+            assert_eq!(pcm_load_rate(i64::from(r)), Some(r), "{r}: a table rate is itself");
+        }
+        for (src, want) in [
+            (88_200, 44_100), (176_400, 44_100), (352_800, 44_100), (705_600, 44_100), (2_822_400, 44_100),
+            (96_000, 48_000), (192_000, 48_000), (384_000, 48_000), (768_000, 48_000),
+            (64_000, 48_000), (128_000, 48_000), (50_000, 48_000), (48_001, 48_000), (1_000_003, 48_000),
+            (5_644_800, 44_100), (i64::from(i32::MAX), 48_000),
+        ] {
+            assert_eq!(pcm_load_rate(src), Some(want), "{src}");
+        }
+        for src in [i64::MIN, -48_000, -1, 0, 1, 7_999, 11_025, 37_800, 47_999] {
+            assert_eq!(pcm_load_rate(src), None, "{src}: unstated, or below the table's top and not in it");
+        }
+        assert_eq!(pcm_load_rate(i64::from(i32::MAX) + 1), None, "FFmpeg states a rate in a C int: no file has this");
+        for src in (0..400).map(|k| 1_000 * k + 7).chain([48_000 * 3, 44_100 * 3]) {
+            assert!(pcm_load_rate(src).is_none_or(|r| PCM_SAMPLE_RATES.contains(&r)), "{src}: the Load can name it");
+        }
     }
 
     /// Issue #951: an LG B8 refused a 96 kHz AAC Load, so a codec the hardware decodes is admitted
@@ -1878,9 +2138,10 @@ mod tests {
     /// that table's ids, in order.
     #[test]
     fn the_pcm_codec_list_is_the_app_decoded_table() {
-        let ids: Vec<&str> = APP_DECODED.iter().map(|c| c.id).collect();
+        let ids: Vec<&str> = APP_DECODED.iter().filter(|c| !c.lossy).map(|c| c.id).collect();
         assert_eq!(PCM_AUDIO_CODECS.split(',').collect::<Vec<_>>(), ids);
-        assert!(ids.iter().all(|id| audio_codec_id(id) == *id), "an id is its own canonical spelling");
+        let all: Vec<&str> = APP_DECODED.iter().map(|c| c.id).collect();
+        assert!(all.iter().all(|id| audio_codec_id(id) == *id), "an id is its own canonical spelling");
     }
 
     /// "Derived from the bundled decoder list": every decoder the table names is enabled in
@@ -1896,13 +2157,251 @@ mod tests {
             .collect();
         assert!(enabled.contains(&"flac"), "the parse found the decoder list: {enabled:?}");
         for c in APP_DECODED {
-            assert!(!c.ffmpeg.is_empty(), "{}", c.id);
-            for d in c.ffmpeg {
+            assert!(!c.decoders.is_empty() && !c.codecs.is_empty(), "{}", c.id);
+            for d in c.decoders {
                 assert!(enabled.contains(d), "{}: decoder {d} is not in ci/build-ffmpeg.sh's --enable-decoder list", c.id);
-                assert_eq!(app_decoded_by_ffmpeg_name(d).map(|c| c.id), Some(c.id));
+            }
+            for n in c.codecs {
+                assert_eq!(app_decoded_by_ffmpeg_name(n).map(|c| c.id), Some(c.id));
             }
         }
         assert!(app_decoded_by_ffmpeg_name("ac3").is_none(), "a hardware codec is not app-decoded");
+    }
+
+    /// **The lossy policy.** DTS is app-decoded (in force) only on a value that put it there: the
+    /// assumed fallback and a table read have it ADMITTED at most ([`AppLossy`]), never in force, so the
+    /// set's own decoder keeps playing what it can. In force, DTS is announced without a table row, with
+    /// no rate bound, in both modes, and a native ceiling measured on the set's own decoder does not
+    /// apply to it (the app decodes it, and `native_audio_track` is false for it).
+    #[test]
+    fn dts_is_app_decoded_only_on_a_value_that_turned_the_gate_on() {
+        for off in [Caps::assumed(), parse(REAL).unwrap()] {
+            assert!(off.app_lossy_in_force.is_empty() && !off.app_decodes("dts") && !off.app_decodes("dca"));
+            assert!(off.app_decodes("flac"), "the lossless set is never lossy-policy bound");
+        }
+        assert_eq!(Caps::assumed().app_lossy, AppLossy::Off);
+        assert_eq!(parse(REAL).unwrap().app_lossy, AppLossy::Measured);
+        assert!(!Caps::assumed().audio_has("dts"), "off: the assumed fallback is what it was");
+        let on = Caps::assumed().with_app_lossy();
+        for spelling in ["dts", "dca", "DTS"] {
+            assert!(on.app_decodes(spelling), "{spelling}");
+            assert!(on.audio_has(spelling) && on.audio_supports(spelling, 8), "{spelling}");
+            assert!(on.forced_feeds_audio(spelling), "{spelling}");
+        }
+        assert!(!on.app_decodes("ac3") && !on.app_decodes("eac3") && !on.app_decodes("mlp"));
+        assert!(audio_track_fits("dts", 6, 96_000), "no rate bound: the core is at most 48 kHz");
+        let measured = Caps { native_ceiling: [("dts".into(), 2)].into(), ..Caps::assumed() }.with_app_lossy();
+        assert!(measured.app_decodes_lossy_track("dts", 6, 0, true), "a ceiling of the native decoder is not the app's");
+        assert!(!measured.native_audio_track("dts", 6, 0, true), "and the set's decoder is not asked");
+        assert!(!Caps { native_ceiling: [("dts".into(), 2)].into(), ..parse(REAL).unwrap() }.forced_feeds_audio_track("dts", 6));
+        assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
+        let dts_in_list = on.audio.split(',').filter(|c| *c == "dts").count();
+        assert_eq!(dts_in_list, 1);
+    }
+
+    /// **S4-4: MP3 and Vorbis ride the same policy as DTS**: in force only when the debug trigger or the
+    /// rescue rung puts them there, and, being unmeasured, never enabled on a read table.
+    /// On, each is announced without a table row and fed in both modes; unlike a DTS core, either can
+    /// be above 48 kHz (a 96 kHz Vorbis), which has not been through the TV, so the rate bound stays
+    /// and such a track is converted by the server.
+    #[test]
+    fn mp3_and_vorbis_are_app_decoded_only_where_in_force() {
+        for off in [Caps::assumed(), parse(REAL).unwrap()] {
+            for codec in ["mp3", "vorbis", "MP3"] {
+                assert!(!off.app_decodes(codec) && !off.audio_has(codec) && !off.forced_feeds_audio(codec), "{codec}");
+                assert!(!off.app_decodes_lossy_track(codec, 2, 44_100, true), "{codec}: unmeasured, so never enabled on a read table");
+            }
+        }
+        let on = Caps::assumed().with_app_lossy();
+        for codec in ["mp3", "vorbis", "MP3", "Vorbis"] {
+            assert!(on.app_decodes(codec) && on.app_may_decode_lossy(codec), "{codec}");
+            assert!(on.audio_has(codec) && on.audio_supports(codec, 2), "{codec}");
+            assert!(on.app_decodes_lossy_track(codec, 2, 44_100, true) && !on.native_audio_track(codec, 2, 44_100, true), "{codec}");
+        }
+        assert!(audio_track_fits("mp3", 2, 44_100) && audio_track_fits("vorbis", 6, 48_000));
+        assert!(audio_track_fits("vorbis", 2, 0), "an unstated rate passes, as for every codec");
+        assert!(!audio_track_fits("vorbis", 2, 96_000), "above 48 kHz the server converts it");
+        assert!(!on.app_decodes("mp2") && !on.app_decodes("wma") && !on.app_decodes("mlp"));
+        for codec in ["mp3", "vorbis"] {
+            assert_eq!(on.audio.split(',').filter(|c| *c == codec).count(), 1, "{codec} once");
+        }
+        assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
+        assert_eq!(audio_codec_id("MP3"), "mp3");
+        assert_eq!(app_decoded_by_ffmpeg_name("mp3").map(|c| (c.id, c.lossy)), Some(("mp3", true)));
+        assert_eq!(app_decoded_by_ffmpeg_name("vorbis").map(|c| (c.id, c.lossy)), Some(("vorbis", true)));
+    }
+
+    /// **S4-5: TrueHD rides the same gate**, up to eight channels in and any rate the codec has (192 kHz
+    /// at most), mixed to the one stereo 48 kHz shape. Unlike MP3 and Vorbis it is NOT rate bound: the
+    /// app's resampler low-passes before it decimates, so a 96 or 192 kHz track is decoded here instead
+    /// of being converted by the server. Gate off, nothing changes; the planner and the profile see no
+    /// TrueHD.
+    #[test]
+    fn truehd_is_app_decoded_under_the_gate_with_no_rate_bound() {
+        for off in [Caps::assumed(), parse(REAL).unwrap()] {
+            assert!(!off.app_decodes("truehd") && !off.audio_has("truehd") && !off.forced_feeds_audio("truehd"));
+        }
+        let on = Caps::assumed().with_app_lossy();
+        for codec in ["truehd", "TrueHD"] {
+            assert!(on.app_decodes(codec) && on.app_may_decode_lossy(codec), "{codec}");
+            assert!(on.audio_has(codec) && on.audio_supports(codec, 8), "{codec}");
+            assert!(on.app_decodes_lossy_track(codec, 8, 96_000, true), "{codec}");
+        }
+        assert!(!audio_rate_bounded("truehd") && audio_rate_bounded("vorbis") && audio_rate_bounded("mp3"));
+        // the lossless app decode resamples too, so the profile asks PMS for no rate bound on it either
+        for codec in ["flac", "FLAC", "alac", "pcm", "pcm_s24le", "dts", "dca"] {
+            assert!(!audio_rate_bounded(codec), "{codec}");
+        }
+        for codec in ["aac", "ac3", "eac3", "opus", "mp3", "vorbis"] {
+            assert!(audio_rate_bounded(codec), "{codec}");
+        }
+        for rate in [0, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000] {
+            assert!(audio_track_fits("truehd", 8, rate), "{rate}");
+        }
+        assert!(!on.app_decodes("mlp"), "only the codec PMS spells truehd");
+        assert_eq!(on.audio.split(',').filter(|c| *c == "truehd").count(), 1);
+        assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
+        assert_eq!(app_decoded_by_ffmpeg_name("truehd").map(|c| (c.id, c.lossy)), Some(("truehd", true)));
+    }
+
+    /// The policy is one predicate over the table: a read table admits exactly the rows with recorded
+    /// evidence (DTS today), the assumed fallback none, the debug trigger every lossy row, and a lossless
+    /// row is never a lossy one whatever the policy.
+    #[test]
+    fn a_read_table_enables_only_measured_lossy_rows() {
+        for row in APP_DECODED {
+            for policy in [AppLossy::Off, AppLossy::Measured, AppLossy::All] {
+                let want = row.lossy
+                    && match policy {
+                        AppLossy::Off => false,
+                        AppLossy::Measured => row.measured.is_some(),
+                        AppLossy::All => true,
+                    };
+                assert_eq!(lossy_row_enabled(row, policy), want, "{} under {policy:?}", row.id);
+            }
+        }
+        let read = parse(REAL).unwrap();
+        for spelling in ["dts", "dca", "DTS"] {
+            assert!(read.app_may_decode_lossy(spelling), "{spelling}: measured");
+        }
+        for codec in ["mp3", "vorbis", "truehd", "flac", "ac3", "mlp"] {
+            assert!(!read.app_may_decode_lossy(codec), "{codec}: unmeasured, lossless or not ours");
+            assert_eq!(read.clone().with_app_lossy_for(codec), read, "{codec}: nothing to put in force");
+        }
+        assert!(!Caps::assumed().app_may_decode_lossy("dts"), "an unread table is not a policy");
+        assert_eq!(Caps::assumed().with_app_lossy_for("dts"), Caps::assumed());
+        let all = Caps::assumed().with_app_lossy();
+        assert_eq!(all.app_lossy, AppLossy::All);
+        let lossy: Vec<&str> = APP_DECODED.iter().filter(|r| r.lossy).map(|r| r.id).collect();
+        assert_eq!(all.app_lossy_in_force.iter().map(String::as_str).collect::<Vec<_>>().len(), lossy.len());
+        assert!(lossy.iter().all(|id| all.app_lossy_in_force.contains(*id)), "every lossy row in force");
+    }
+
+    /// A row is turned on by its evidence, so the evidence has to say something, and a lossless row
+    /// (where the field means nothing) carries none.
+    #[test]
+    fn every_enabled_lossy_row_carries_its_measurement() {
+        for row in APP_DECODED {
+            match (row.lossy, row.measured) {
+                (true, Some(evidence)) => assert!(evidence.len() > 20 && evidence.contains("U5"), "{}: {evidence}", row.id),
+                (false, measured) => assert!(measured.is_none(), "{}: lossless rows carry no measurement", row.id),
+                (true, None) => {}
+            }
+        }
+        assert!(APP_DECODED.iter().any(|r| r.id == "dts" && r.measured.is_some()), "DTS is the measured row");
+    }
+
+    /// Force Direct Play decodes in the app only where the set has no path of its own for the track: a
+    /// set whose table lists DTS keeps playing it natively, and one without a DTS row (webOS 10+) does
+    /// not. Auto never takes this path on its own, and a refusal the install learned
+    /// ([`Caps::minus`]) is "no native path" for that width.
+    #[test]
+    fn forced_app_decode_is_only_where_the_set_has_no_native_path() {
+        let native = parse(REAL).unwrap();
+        assert!(native.audio_has("dts"));
+        assert!(!native.app_decodes_lossy_track("dts", 6, 0, true), "the set decodes DTS itself");
+        assert!(native.native_audio_track("dts", 6, 0, true));
+        let rowless = parse(&REAL.replace("DTS", "WMA")).unwrap();
+        assert!(!rowless.audio_has("dts"));
+        for spelling in ["dts", "dca", "DTS"] {
+            // a stereo core at any rate: nothing to mix down (a surround one is `forced_app_decode_never_mixes_a_surround_source_down`)
+            assert!(rowless.app_decodes_lossy_track(spelling, 2, 96_000, true), "{spelling}");
+        }
+        assert!(!rowless.native_audio_track("dts", 8, 0, true));
+        assert!(!rowless.app_decodes_lossy_track("dts", 6, 0, false), "Auto converts on the server instead");
+        assert!(!Caps::assumed().app_decodes_lossy_track("dts", 2, 0, true), "off is off");
+        let learned = native.minus(&[refusal("dts", 6)], "");
+        assert!(
+            !learned.app_decodes_lossy_track("dts", 6, 0, true),
+            "a learned surround refusal is still a surround track: Force Direct Play shows the refusal, it does not mix down"
+        );
+        assert!(!learned.app_decodes_lossy_track("dts", 2, 0, true));
+        let unmeasured = rowless.clone();
+        for codec in ["truehd", "mp3", "vorbis"] {
+            assert!(!unmeasured.app_decodes_lossy_track(codec, 2, 44_100, true), "{codec}: no evidence, no decode");
+        }
+        assert!(!rowless.app_decodes_lossy_track("ac3", 6, 0, true), "only the lossy rows");
+    }
+
+    /// **The app never mixes a surround source down by default** (owner, 2026-10-28, #1082). Force Direct
+    /// Play, on a set with no path of its own for the track, decodes in the app only a source that is
+    /// already stereo or mono; a surround one (or one whose count is not stated) is refused, whatever
+    /// codec and rate. The rule holds for a codec the recovery rung put in force too (the rung is
+    /// reached by a stereo track only under Forced), but not for Auto's last rung, which is exactly
+    /// where the downmix is allowed, nor under the `appdecodelossy` trigger, an explicit override.
+    #[test]
+    fn forced_app_decode_never_mixes_a_surround_source_down() {
+        for (channels, mixes) in [(-1, true), (0, true), (1, false), (2, false), (3, true), (6, true), (8, true)] {
+            assert_eq!(app_decode_mixes_down(channels), mixes, "{channels} channels");
+        }
+        let rowless = parse(&REAL.replace("DTS", "WMA")).unwrap();
+        assert!(rowless.app_lossy == AppLossy::Measured && !rowless.audio_has("dts"));
+        for spelling in ["dts", "dca", "DTS"] {
+            for channels in [0, 3, 6, 8] {
+                assert!(!rowless.app_decodes_lossy_track(spelling, channels, 48_000, true), "{spelling} {channels}ch");
+            }
+            for channels in [1, 2] {
+                assert!(rowless.app_decodes_lossy_track(spelling, channels, 48_000, true), "{spelling} {channels}ch");
+            }
+        }
+        assert!(!rowless.app_may_mix_down(6, true) && rowless.app_may_mix_down(2, true));
+        assert!(rowless.app_may_mix_down(6, false), "Auto asks the ladder's order, not this gate");
+        // A set that has the decoder and a refusal the install learned: a learned surround refusal leaves
+        // stereo to the set's own decoder, and the surround track stays refused under Force.
+        let learned = parse(REAL).unwrap().minus(&[refusal("dts", 6)], "");
+        assert!(!learned.app_decodes_lossy_track("dts", 6, 0, true));
+        // The recovery rung's value: Auto may use it for any width (the last rung), Force only for stereo.
+        let rescue = rowless.clone().with_app_lossy_for("dts");
+        assert!(rescue.app_decodes_lossy_track("dts", 6, 0, false), "Auto's last rung decodes a surround track");
+        assert!(rescue.app_decodes_lossy_track("dts", 2, 0, true));
+        assert!(
+            !rescue.app_decodes_lossy_track("dts", 6, 0, true),
+            "a codec in force by the rung still does not mix a surround pick down under Force"
+        );
+        // The debug trigger is the explicit override (it measures a decode on any file), in both modes.
+        let all = Caps::assumed().with_app_lossy();
+        for forced in [false, true] {
+            assert!(all.app_decodes_lossy_track("dts", 8, 96_000, forced) && all.app_may_mix_down(8, forced));
+        }
+    }
+
+    /// The recovery rung's value puts ONE codec in force: the others, and the policy, stay as they were.
+    #[test]
+    fn the_rescue_value_decodes_one_codec_in_the_app_and_no_other() {
+        let base = parse(REAL).unwrap();
+        let rescue = base.clone().with_app_lossy_for("DCA");
+        assert_eq!(rescue.app_lossy_in_force.iter().map(String::as_str).collect::<Vec<_>>(), ["dts"]);
+        assert_eq!(rescue.app_lossy, AppLossy::Measured);
+        assert_eq!(rescue.audio_channels.get("dts"), Some(&8));
+        assert!(rescue.app_decodes("dts") && !rescue.app_decodes("truehd") && !rescue.app_decodes("mp3"));
+        assert!(!rescue.native_audio_track("dts", 6, 0, false), "the set's own decoder was refused");
+        assert!(rescue.app_decodes_lossy_track("dts", 6, 0, false), "so Auto plans the app decode too");
+        assert!(rescue.native_audio_track("ac3", 6, 0, false) && rescue.native_audio_track("eac3", 8, 0, false));
+        let rowless = parse(&REAL.replace("DTS", "WMA")).unwrap().with_app_lossy_for("dts");
+        assert!(rowless.audio_has("dts") && rowless.audio_supports("dts", 8), "announced without a table row");
+        assert_eq!(rowless.audio.split(',').filter(|c| *c == "dts").count(), 1);
+        assert_eq!(rescue.clone().with_app_lossy_for("dts"), rescue, "idempotent");
+        assert_ne!(rescue, base);
     }
 
     /// Lossless two-channel codecs share FLAC's path (S4, PR 1): ALAC, and LPCM under every spelling
@@ -1928,7 +2427,8 @@ mod tests {
             assert!(caps.forced_feeds_audio(codec), "{codec}");
             assert!(!Caps::assumed().forced_feeds_audio(codec), "{codec}: the assumed fallback stays what shipped");
             assert!(audio_track_fits(codec, 2, 44_100), "{codec}");
-            assert!(!audio_track_fits(codec, 2, 96_000), "{codec}: 96 kHz plays slow in libpf");
+            assert!(audio_track_fits(codec, 2, 96_000), "{codec}: 96 kHz is resampled to 48 kHz");
+            assert!(!audio_track_fits(codec, 6, 96_000), "{codec}: wider than stereo is the server's at any rate");
             assert!(!audio_track_fits(codec, 6, 48_000), "{codec}");
         }
         assert_eq!(Caps::assumed().audio, "aac,ac3,eac3");

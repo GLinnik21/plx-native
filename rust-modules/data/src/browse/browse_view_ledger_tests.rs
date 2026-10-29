@@ -135,7 +135,7 @@ fn a_library_change_leaves_the_open_grid_alone_and_marks_it_stale() {
     browse.state.want(PAGE - 10, PAGE + 20, Some(PAGE + 5));
     let gen = browse.state.query_gen();
     assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack: true },
-        &ClientKeys::default(), &mut Vec::new()));
+        &ClientKeys::default(), &plx_plex::plex::session::peek(), &mut Vec::new()));
     browse.maybe_spawn();
     assert!(!browse.adapter.page.busy(), "the visible grid is not listed again");
     assert!(browse.jobs.is_empty(), "…and no job asks for it: {:?}", browse.jobs);

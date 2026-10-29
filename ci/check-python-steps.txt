@@ -357,3 +357,7 @@ python3 ci/test_agent_files.py
 # no code. Fixtures of real headless output with Ghidra's own multi-line records mixed in, through `decomp.sh filter` and through
 # `fn` / `xref` against a fake `analyzeHeadless`. No Ghidra, no Java, no firmware; POSIX awk, so BSD awk and mawk both pass.
 python3 ci/test_decomp_filter.py
+
+# tests/mkv_audio_lead.py (the late-audio tests' fixture reorderer) reading Tracks: only TrackEntry children are parsed, never the CRC-32 ffmpeg writes
+# there, whose checksum bytes can look like a huge field (the flaky "Exceeds the limit (4300 digits)" crash). Synthetic MKV, no ffmpeg, milliseconds.
+python3 tests/test_mkv_audio_lead.py

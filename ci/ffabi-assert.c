@@ -27,6 +27,7 @@
 #include <libavutil/dovi_meta.h>
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/dict.h>
+#include <libavutil/opt.h>
 
 #define SAME(expr, want, what) _Static_assert((expr) == (want), what)
 
@@ -118,6 +119,18 @@ SAME32(offsetof(AVFrame, sample_rate), 132, "OFF_AFRAME_SAMPLE_RATE != 132");
 SAME64(offsetof(AVFrame, sample_rate), 180, "OFF_AFRAME_SAMPLE_RATE != 180 [host]");
 SAME32(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, nb_channels), 260, "OFF_AFRAME_NB_CHANNELS != 260");
 SAME64(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, nb_channels), 388, "OFF_AFRAME_NB_CHANNELS != 388 [host]");
+/* The channel layout's order and native mask, read by ff_pcm.rs's lossy mode to mix by channel ROLE.
+   `u` is a union of the mask and a pointer (a custom layout), so the mask is only read when the order
+   is AV_CHANNEL_ORDER_NATIVE; `u` is 8-aligned on ARM EABI as on the 64-bit hosts. */
+SAME32(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, order), 256, "OFF_AFRAME_CH_ORDER != 256");
+SAME64(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, order), 384, "OFF_AFRAME_CH_ORDER != 384 [host]");
+SAME32(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, u), 264, "OFF_AFRAME_CH_MASK != 264");
+SAME64(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, u), 392, "OFF_AFRAME_CH_MASK != 392 [host]");
+SAME(AV_CHANNEL_ORDER_NATIVE, 1, "ff::CH_ORDER_NATIVE");
+SAME(sizeof(((AVChannelLayout *)0)->u.mask), 8, "the channel mask is 64 bits");
+/* `av_opt_set`'s search flag, passed by ff_pcm.rs to reach the DTS decoder's private `core_only` option; a moved
+   value would make that call fail silently and a DTS-HD stream decode its extensions. */
+SAME(AV_OPT_SEARCH_CHILDREN, 1, "ff_pcm::AV_OPT_SEARCH_CHILDREN");
 SAME(AV_SAMPLE_FMT_U8, 0, "speed_audio::SampleFormat::from_av U8");
 SAME(AV_SAMPLE_FMT_S16, 1, "speed_audio::SampleFormat::from_av S16");
 SAME(AV_SAMPLE_FMT_S32, 2, "speed_audio::SampleFormat::from_av S32");

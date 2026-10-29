@@ -104,19 +104,59 @@ impl TestBrowse {
     }
 
     pub(super) fn pump(&mut self) -> crate::stores::StoreOutcome {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
         let roster = self.state.sync_roster_owned();
         if roster.retire_adapter {
             self.adapter = Arc::new(BrowseAdapter::default());
         }
         self.refill();
         let mut outcome = self.state.pump_owned_with_gate(&self.adapter, plx_machine::landgate::fixture_gate(),
-            &self.keys, &mut self.jobs);
+            &self.keys, &session, &mut self.jobs);
         outcome.changed |= roster.changed;
         outcome
     }
 
+    /// `discover_pump_owned` on the registry as of now: the discovery that is due leaves on `jobs`.
     pub(super) fn discover_pump(&mut self) -> crate::stores::StoreOutcome {
-        self.state.discover_pump_owned(&self.adapter)
+        self.refill();
+        self.state.discover_pump_owned(&self.adapter, &self.keys, &mut self.jobs)
+    }
+
+    /// `maybe_discover_owned` on the registry as of now, with no landing pass.
+    pub(super) fn maybe_discover(&mut self) {
+        self.refill();
+        self.state.maybe_discover_owned(&self.adapter, &self.keys, &mut self.jobs);
+    }
+
+    /// The runner's refusal of every discovery job the steps left, through the job's own port: what
+    /// the system refusing the thread (or a registry that moved on) does. Returns how many were
+    /// refused; any other job stays on the outbox.
+    pub(super) fn refuse_discovery_jobs(&mut self) -> usize {
+        let mut refused = 0;
+        for job in std::mem::take(&mut self.jobs) {
+            match job {
+                crate::stores::StoreJob::BrowseDiscovery(job, port) => {
+                    refused += 1;
+                    plx_machine::job::Port::refused(&port, job.addr);
+                }
+                other => self.jobs.push(other),
+            }
+        }
+        refused
+    }
+
+    /// The discovery jobs the steps left, taken off the outbox.
+    pub(super) fn take_discovery_jobs(&mut self) -> Vec<(plx_machine::job::Job<discovery_job::BrowseDiscoveryReq>,
+        discovery_job::BrowseDiscoveryPort)> {
+        let mut taken = Vec::new();
+        for job in std::mem::take(&mut self.jobs) {
+            match job {
+                crate::stores::StoreJob::BrowseDiscovery(job, port) => taken.push((job, port)),
+                other => self.jobs.push(other),
+            }
+        }
+        taken
     }
 
     pub(super) fn sync_roster(&mut self) {
@@ -131,7 +171,7 @@ impl TestBrowse {
     }
 
     pub(super) fn append_sections(&mut self, source: usize, sections: Vec<(i64, String, SecKind)>) {
-        self.state.append_sections_with(source, sections, None);
+        self.state.append_sections_for_test(source, sections);
     }
 
     pub(super) fn section_title(&self, index: usize) -> &str {
@@ -197,8 +237,35 @@ impl TestBrowse {
         self.state.cur_state().map_or(SecFetch::Loading, |state| state.fetch)
     }
 
+    /// Poll the pending pin write's receipt once, as the Bridge does before it reads the session.
+    pub(super) fn observe_pin_write(&self) {
+        self.state.observe_pin_write();
+    }
+
+    /// The first-run gate on `session`.
+    pub(super) fn first_run_asks_with(&self, session: &plx_plex::plex::session::Session) -> bool {
+        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len(), session)
+    }
+
+    /// The editor's commit, stepped with `session`.
+    pub(super) fn apply_pins_with(&mut self, answers: &[(usize, bool)], session: &plx_plex::plex::session::Session) {
+        self.state.apply_pins_from(answers, session);
+    }
+
+    /// A live discovery landing's section append, stepped with `session`.
+    pub(super) fn append_sections_live_with(
+        &mut self,
+        source: usize,
+        sections: Vec<(i64, String, SecKind)>,
+        session: &plx_plex::plex::session::Session,
+    ) {
+        self.state.append_sections_with(source, sections, session,
+            &plx_plex::plex::session::current_profile_key());
+    }
+
     pub(super) fn first_run_asks(&self) -> bool {
-        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len())
+        crate::stores::browse::onboard::asks_for_sources(
+            self.state.sources.len(), &plx_plex::plex::session::peek())
     }
 }
 pub(super) struct RegisteredCleanup;

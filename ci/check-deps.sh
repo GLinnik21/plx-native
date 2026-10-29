@@ -622,8 +622,9 @@ gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_
 #   wall (widened Sans-IO store lane, subtitle search, 2026-10-24): also data/src/subsearch.rs, whose step emits its request as a store job and starts nothing, so a clock read there is an instrument or a defect (no hit when it joined; stores/viewreconcile.rs is already inside data/src/stores).
 #   wall (widened Sans-IO store lane, Browse section hubs, 2026-10-24): also data/src/browse/section_hubs.rs, whose steps emit their reads as store jobs and start nothing, so a clock read there is an instrument or a defect (no hit when it joined; the rest of browse/ is not in scope yet, its directory and page reads still start their own workers).
 #   wall (widened Sans-IO store lane, Search, 2026-10-24): also data/src/search.rs and data/src/search/, whose step emits its fetches as store jobs and starts nothing (its debounce and backoff count the `dt` the pump is handed), so a clock read there is an instrument or a defect (no hit when they joined).
-#   wall (widened Sans-IO store lane, Browse directory and page reads, 2026-10-25): also data/src/browse/listing_jobs.rs, the requests, ports and completion paths of the directory and listing-page reads whose steps now emit them as store jobs, so a clock read there is an instrument or a defect (no hit when it joined; the rest of browse/ is not in scope yet, its discovery reads still start their own workers).
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs" "$SRC_DATA/search.rs" "$SRC_DATA/search" "$SRC_DATA/browse/section_hubs.rs" "$SRC_DATA/browse/listing_jobs.rs" "$SRC_MEDIA/player/lifecycle.rs"
+#   wall (widened Sans-IO store lane, Browse directory and page reads, 2026-10-25): also data/src/browse/listing_jobs.rs, the requests, ports and completion paths of the directory and listing-page reads whose steps now emit them as store jobs, so a clock read there is an instrument or a defect (no hit when it joined; the rest of browse/ is not in scope yet, its source reads and pins still read the registry and the roster).
+#   wall (widened Sans-IO store lane, Browse source discovery, 2026-10-28): also data/src/browse/discovery_job.rs, the request, port and completion path of the source discovery whose step now emits it as a store job, so a clock read there is an instrument or a defect (no hit when it joined; the rest of browse/ is not in scope yet).
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs" "$SRC_DATA/search.rs" "$SRC_DATA/search" "$SRC_DATA/browse/section_hubs.rs" "$SRC_DATA/browse/listing_jobs.rs" "$SRC_DATA/browse/discovery_job.rs" "$SRC_MEDIA/player/lifecycle.rs"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/platform/Cargo.toml rust-modules/platform/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -658,7 +659,7 @@ if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFO
 # outright — and added every real mutator the census found missing entirely: `alt_install`,
 # `alt_restamp_owners`, `alt_prune_inactive`, `alt_stand_in`, `record_pins`, `retry_source`,
 # `apply_landing`, `take_landed_views`/`take_landed`.
-MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
+MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|apply_pins_from|toggle_pin|record_pins|record_pins_from|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
 # The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
 # `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
 # wherever it sits in the file — the first version cut at the FIRST such block and let ~700
@@ -705,7 +706,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 # script's own shebang is `env bash` and the dev Mac's `/bin/bash` is 3.2 (Apple ships nothing
 # newer over the GPLv3 boundary), which has no associative arrays at all.
 MUT_FNS_TABLE=(
-  "browse/mod.rs|set_cur note_library_choice kick_letters kick_genres want save_cursor set_sort_by_key set_sort set_unwatched set_genre_by_id set_genre retry_cur_source retry_source recheck_shares apply_pins toggle_pin record_pins retry_discovery reset set_watched_local"
+  "browse/mod.rs|set_cur note_library_choice kick_letters kick_genres want save_cursor set_sort_by_key set_sort set_unwatched set_genre_by_id set_genre retry_cur_source retry_source recheck_shares apply_pins apply_pins_from toggle_pin record_pins record_pins_from retry_discovery reset set_watched_local"
   "browse/section_hubs.rs|kick commit_staged invalidate_all invalidate set_watched_local left_the_deck"
   "metadata.rs|request_detail clear load_season set_now_playing set_watched_local install_playing mark_skipped retire_playing retire_playing_item alt_install alt_restamp_owners alt_prune_inactive"
   "pms.rs|request_refetch_hubs request_retry edit_item apply_landing reset"
@@ -1199,7 +1200,7 @@ LG_LEDGERS=ci/allow/blocking.txt LG_COUNT_FILE=ci/allow/blocking.txt \
 # lines of the machine it made pure. MACHINES is the scope of workers and globals; forks reads the
 # whole of the four crates that own the data, the Plex client, the player and the session:
 MACHINES=("$SRC_DATA" "$SRC_SESSION" rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"
-  "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
+  "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/player/release.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
 FORK_SCOPE=("$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_SESSION")
 
 # scope_re <path>...: an ERE over repo-relative file paths that matches those paths (a `.rs` file
@@ -1253,7 +1254,7 @@ ledger_candidates() {
 # `storage_worker::submit(`, `submit_retained(` (base/src/storage_worker.rs) and the typed command
 # worker's `.submit_ticket(`, keyed `<path>::<enclosing fn>::<spelling>`. A BARE `spawn(` / `submit(` is a
 # site only in a file that imports it from `task` / `storage_worker` (no other `spawn(` is a worker start:
-# `Builder::spawn`, a local fn). A local wrapper (`spawn_discovery`) is not itself a site —
+# `Builder::spawn`, a local fn). A local launcher (`launch_browse_discovery`) is not itself a site —
 # the real call inside it is. The command worker's `.submit(` is not covered: it is `cfg(any(test,
 # feature = "test-support"))` in base, so no production line can call it; `.submit_ticket(` is covered
 # although no machine calls it today, because a machine that did would be starting a worker. A worker

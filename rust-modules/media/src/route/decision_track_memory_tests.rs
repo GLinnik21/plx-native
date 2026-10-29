@@ -206,13 +206,19 @@ mod through_build_stream {
         requests.iter().filter(|r| r.starts_with("PUT ")).count()
     }
 
-    /// The request lines with their per-run noise (session ids, tokens, query values) taken off.
+    /// The request lines with their per-run noise (session ids, tokens, query values) taken off,
+    /// SORTED: the play queue is asked for beside the rest of the plan, so the order its request
+    /// arrives in relative to the others is not a property of the resolve. What two resolves are
+    /// compared on is the set of requests each made; the queue's overlap with the rest has its own
+    /// tests (`decision_queue_beside_tests`).
     pub(super) fn shape(requests: &[String]) -> Vec<String> {
-        requests
+        let mut shaped: Vec<String> = requests
             .iter()
             .map(|r| r.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
             .map(|r| r.split('?').next().unwrap_or("").to_string())
-            .collect()
+            .collect();
+        shaped.sort();
+        shaped
     }
 
     pub(super) fn decision(requests: &[String]) -> &String {

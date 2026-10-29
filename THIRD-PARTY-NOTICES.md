@@ -56,7 +56,8 @@ has always done).
 component is present. Only demuxers, parsers, bitstream filters, *subtitle* decoders and the
 LGPL audio decoders the app runs itself are enabled — video and, in the ordinary case, audio are
 decoded by the television's hardware, not by FFmpeg. FLAC, ALAC and LPCM are decoded by the app
-because the television's player has no input for them; the result is fed to it as PCM. The one external library enabled is **zlib**,
+because the television's player has no input for them; the result is fed to it as PCM. The DTS core is decoded
+by the app (`dca`) where Force Direct Play has no native path for it or a refused open falls back to it. The one external library enabled is **zlib**,
 the television's own `libz.so.1` (not redistributed — see section 3), which the Matroska demuxer
 needs to inflate compressed subtitle tracks.
 

@@ -180,11 +180,53 @@ fn a_96_khz_aac_is_converted_not_reloaded_natively_by_the_paths_that_skip_the_de
     assert_eq!(desired_audio_idx(), -1, "a 96 kHz AAC must not be staged for a native reload");
     assert!(commit_audio_selection(&mut ps, aac(48_000)));
     assert_eq!(desired_audio_idx(), 2, "a 48 kHz AAC reloads natively");
-    // Force Direct Play refuses it, as it refuses a 96 kHz FLAC, rather than failing at the Load
+    // Force Direct Play refuses it, as it refuses a 5.1 FLAC (a 96 kHz stereo one is resampled by the app and plays), rather than failing at the Load
     ps.direct_play_mode = DirectPlayMode::Forced;
     restore_direct_play_mode(DirectPlayMode::Forced);
     assert!(!commit_audio_selection(&mut ps, aac(96_000)));
     assert!(play_verdict(&ps).unwrap().contains("Force Direct Play is on"));
+    restore_direct_play_mode(DirectPlayMode::Auto);
+    crate::player::reset_route_requests_for_test(&mut ps);
+    crate::player::reset_audio_track();
+}
+
+/// **A mid-play pick under Force Direct Play accepts a STEREO track the app decodes, and refuses a
+/// surround one** (owner, 2026-10-28, #1082: the app never mixes a surround source down by default): the
+/// pick goes through the same `audio_direct_plays_with` the planner uses, so a stereo DTS track on a set
+/// whose table has no DTS row is staged for a native reload (the app decodes it, nothing is lost) while
+/// a DTS 5.1 track is refused as it was before the app decoded anything; with no lossy policy both are
+/// refused (`force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits`).
+#[test]
+fn a_forced_pick_of_an_app_decodable_track_is_accepted() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let dts = |channels| CarriedAudio {
+        sid: 41, ordinal: 3, codec: "dca".into(), channels,
+        can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 0,
+    };
+    ps.direct_play_mode = DirectPlayMode::Forced;
+    restore_direct_play_mode(DirectPlayMode::Forced);
+    crate::player::reset_audio_track();
+    assert!(!audio_track_direct_plays(&ps, "dca", 2, 48_000), "sanity: no DTS row, no policy");
+    assert!(!commit_audio_selection(&mut ps, dts(2)), "with no policy the pick is refused");
+    assert!(play_verdict(&ps).is_some());
+    ps.play_verdict = None;
+
+    ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps {
+        app_lossy: plx_platform::devcaps::AppLossy::Measured,
+        ..plx_platform::devcaps::Caps::assumed()
+    }));
+    assert!(audio_track_direct_plays(&ps, "dca", 2, 48_000));
+    assert!(!audio_decoded_in_app(&ps, "dca", 6, 48_000), "a surround track is not mixed down under Force");
+    assert!(!audio_track_direct_plays(&ps, "dca", 6, 48_000));
+    assert!(!audio_converted_by_server(&ps, "dca", 2, 48_000), "Forced converts nothing");
+    assert!(!audio_track_direct_plays(&ps, "truehd", 2, 48_000), "an unmeasured row stays refused");
+    assert!(!commit_audio_selection(&mut ps, dts(6)), "a DTS 5.1 pick is refused, not decoded to stereo");
+    assert!(play_verdict(&ps).is_some());
+    ps.play_verdict = None;
+    assert!(commit_audio_selection(&mut ps, dts(2)), "the app decodes a stereo one");
+    assert!(play_verdict(&ps).is_none(), "{:?}", play_verdict(&ps));
+    assert_eq!(desired_audio_idx(), 3, "staged for a native reload of its ordinal");
     restore_direct_play_mode(DirectPlayMode::Auto);
     crate::player::reset_route_requests_for_test(&mut ps);
     crate::player::reset_audio_track();

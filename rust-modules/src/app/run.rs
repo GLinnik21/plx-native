@@ -214,7 +214,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         plx_media::player::engine::reap_abandoned_load(&mut app.adapters.player);
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
-        app.adapters.player.poll_release();
+        plx_media::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
@@ -2691,10 +2691,13 @@ fn finish_landed_play(app: &mut App, resume_prepared: bool) {
     // A preview is the exception: the detail page stays mounted, and an off-route
     // engine is the feature, not a violation.
     if resume_prepared {
-        let started = plx_media::player::start_bufferfeed(
+        let outcome = plx_media::player::start_bufferfeed_tracked(
             &mut app.player.session,
             &mut app.adapters.player,
         );
+        let started = app.player.session.jail_load_blocked || outcome.accepted();
+        // Queued behind the previous object's `Unload`: not started yet, so not admitted yet.
+        let deferred = outcome == plx_media::player::BufferfeedStartOutcome::Deferred;
         let preview = plx_media::route::is_preview(&app.player.session);
         if started && !matches!(app.route(), AppArg::Player) && !preview {
             log("pump_play: engine started off-route → restoring AppArg::Player");
@@ -2711,7 +2714,11 @@ fn finish_landed_play(app: &mut App, resume_prepared: bool) {
             // admitted slot. Counting it spends the cycle and the later failure
             // opens the breaker, so every later title is skipped.
             let seam_absent = cfg!(feature = "hostsim") && !plx_base::devtrig::flag("clocksink");
-            if started && !seam_absent {
+            if deferred {
+                // Admission is taken when the queued start launches (or refused if the deadline
+                // refuses it), by the runner that starts it.
+                app.adapters.player.admit_preview_at_launch(!seam_absent);
+            } else if started && !seam_absent {
                 plx_media::player::preview::note_admitted();
             } else if plx_media::route::url(&app.player.session).is_empty() {
                 plx_media::player::preview::note_refused_direct(
@@ -3346,8 +3353,20 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
         }
 }
 
+/// Whether [`shutdown`] quits SDL before the process ends. EVERY exit ends the process with `_exit`
+/// (`plx_base::process::exit_now`), never by returning into libc's `exit` (#1115); this is the one decision
+/// left in the teardown.
+pub(crate) fn quits_sdl(native_exit: plx_media::player::engine::NativeExit) -> bool {
+    match native_exit {
+        plx_media::player::engine::NativeExit::Clean => true,
+        // A native worker is still inside firmware: the display must not be torn down under it.
+        plx_media::player::engine::NativeExit::WorkerInFirmware => false,
+    }
+}
+
 /// Teardown after the loop: abandon the pending report, stop the feed, wait for the stop
-/// scrobble, close the capture stream and the poster workers, quit SDL.
+/// scrobble, close the capture stream and the poster workers, quit SDL (unless a worker is still
+/// in firmware). The caller (`app::run_and_shutdown`) then ends the process with `_exit`.
 pub(crate) unsafe fn shutdown(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
@@ -3357,8 +3376,11 @@ pub(crate) unsafe fn shutdown(
         plx_media::player::stop_bufferfeed(ps, pa);
     }
     // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the
-    // object it is releasing left undestroyed.
-    pa.finish_release();
+    // object it is releasing left undestroyed. The wait is bounded, and a worker still inside
+    // firmware (an overdue `Unload`, or a timed-out Load's media thread) means the display must not
+    // be torn down under it, and nothing may run the firmware libraries' destructors either: the
+    // caller (`app::run_and_shutdown`) ends the process with `_exit`.
+    let native_exit = plx_media::player::engine::exit_native(pa);
     // The stop scrobble is posted off-thread now, and this process is about to die with any
     // worker still running — so THIS is the one place its result has to be waited for, or the
     // resume point the user just earned is silently dropped. Same cost the old inline call
@@ -3369,7 +3391,11 @@ pub(crate) unsafe fn shutdown(
     // A clean exit ends the release-health session as `exited`, after the native teardown: a death
     // anywhere above leaves its state for the next boot to classify as crashed or abnormal.
     plx_telemetry::telemetry::session::shutdown();
-    SDL_Quit();
+    if quits_sdl(native_exit) {
+        SDL_Quit();
+    } else {
+        log("shutdown: a native worker is still inside firmware; SDL_Quit skipped, exiting without unwinding");
+    }
 }
 
 /// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL
@@ -3484,6 +3510,13 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
 #[cfg(all(test, feature = "hostsim"))]
 mod lifecycle_regression_tests {
     use super::*;
+
+    #[test]
+    fn shutdown_quits_sdl_only_when_no_worker_is_in_firmware() {
+        use plx_media::player::engine::NativeExit;
+        assert!(!quits_sdl(NativeExit::WorkerInFirmware));
+        assert!(quits_sdl(NativeExit::Clean));
+    }
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -6085,6 +6118,23 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// Deliver the end of the stream to a rig's session, once its engine has stopped changing under
+    /// the test. The rig's media URL answers with JSON, so every rig engine's source open fails and
+    /// the pump flies a recovery (`land_recovery_flight`: a worker round trip to the fixture, then
+    /// `reload_transcode`, which resets the session and with it `SHARED.ended`) before the engine
+    /// settles on `Error`. That landing is a worker's, so the frame it lands in is timing: an end
+    /// stored while the flight is still out is cleared by the reload in the very frame that would
+    /// have acted on it, and the page never leaves the player. Wait for the flight to land and the
+    /// engine to settle, then store the end.
+    fn end_the_stream(app: &mut App, t: &mut u32) {
+        poll_until("the rig engine's failed-open recovery never settled", || {
+            step(app, t, vec![]);
+            !plx_media::route::recovery_flight_outstanding()
+                && plx_media::player::state(&app.player.session) == plx_media::player::PlaybackState::Error
+        });
+        plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// `settle` for the frames after BACK from the player to Home: the page dip may wait dark at its
     /// floor for the hubs refetch for up to `CW_RETURN_HOLD_MS` (300 ms of frame time, 19 frames),
     /// and a stop that is still in flight keeps the refetch from being issued, so the whole bound
@@ -6455,7 +6505,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         assert!(super::super::bridge::player(&rig.app.pages).is_some(), "the player is on top");
         assert!(played.load(Ordering::SeqCst), "premise: the server saw the play");
-        plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        end_the_stream(&mut rig.app, &mut t);
         settle(&mut rig.app, &mut t);
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "EOS returned to the page");
         // The rig's engine decodes no frame, so its own teardown has no final position to report:
@@ -7353,7 +7403,7 @@ mod lifecycle_regression_tests {
         assert_eq!(rig.app.bridge.grid_tile_for_test(0), Some((false, false, 0)), "premise: an untouched tile");
         let origin = rig.app.pages.nav.top_page().unwrap().id;
         play_from_here(&mut rig, &mut t);
-        plx_media::player::SHARED.ended.store(true, Ordering::Relaxed);
+        end_the_stream(&mut rig.app, &mut t);
         settle(&mut rig.app, &mut t);
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "the end returned to the Library");
         // the rig has no engine, so teardown posts no `stopped`: the engine's own call, at the end
@@ -7725,7 +7775,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
         assert!(plx_media::route::up_next(&rig.app.player.session).is_none(), "a film: nothing queued");
-        plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        end_the_stream(&mut rig.app, &mut t);
         settle(&mut rig.app, &mut t);
         assert!(
             rig.app.route().same_instance(&detail_arg(rig.sid)),
@@ -7822,6 +7872,7 @@ mod lifecycle_regression_tests {
         assert!(!plx_media::route::play_pending(), "the credits alone must not request the successor");
         assert_eq!(plx_media::route::up_next(&rig.app.player.session).unwrap().rk, "2");
 
+        // No engine in this rig (the state is forced), so nothing recovers under the end.
         plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = t;
@@ -7870,7 +7921,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
         assert!(plx_media::route::up_next(&rig.app.player.session).is_some(), "premise: a successor is queued");
-        plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        end_the_stream(&mut rig.app, &mut t);
         settle(&mut rig.app, &mut t);
         assert!(!plx_media::route::play_pending(), "Off must not request the successor");
         assert!(

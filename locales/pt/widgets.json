@@ -19,6 +19,7 @@
   "widgets.tracks.stereo": "Estéreo",
   "widgets.tracks.original": "Original: {language}",
   "widgets.tracks.converted_by_server": "{track} · convertido pelo servidor",
+  "widgets.tracks.decoded_in_app_stereo": "{track} · reproduzido em estéreo",
   "widgets.action.mark_watched": "Marcar como visto",
   "widgets.action.mark_unwatched": "Marcar como não visto",
   "widgets.action.play_start": "Reproduzir do início",

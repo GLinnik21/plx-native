@@ -268,6 +268,10 @@ impl Engine {
     }
 }
 
+/// Test builds only: how many Engines have dropped (the exit's leak is observed by it staying put).
+#[cfg(test)]
+static ENGINES_DROPPED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Test builds only: an Engine dropped while it still holds its demuxer's handle was never torn
 /// down, so that thread may still be writing into `aq_video`/`aq_audio`, which this drop frees.
 /// `teardown` always takes the handle and joins it first. The hostsim rigs used to drop a
@@ -276,6 +280,7 @@ impl Engine {
 #[cfg(test)]
 impl Drop for Engine {
     fn drop(&mut self) {
+        ENGINES_DROPPED.fetch_add(1, Ordering::SeqCst);
         if self.stream_th.is_some() && !std::thread::panicking() {
             panic!("an Engine was dropped with its demuxer still owned: stop it with teardown first");
         }
@@ -418,8 +423,8 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
 /// returns. So a real stop issues it on a worker and keeps everything else where it was: the
 /// callback gate, the epoch retirement, the ACB `setState(UNLOADED)`, D1 and the exported window
 /// still run on the main thread, in the same order, once `Unload` has returned
-/// ([`settle_release`], polled once a frame by `app::run` and forced by the adapter before anyone
-/// takes the token again). A reload, an app-switch suspend and the decoder-revoked park keep the
+/// ([`poll_release`], polled once a frame by `app::run`; the adapter hands out the token at once and
+/// `player::sink()` fences the object meanwhile). A reload, an app-switch suspend and the decoder-revoked park keep the
 /// synchronous release: each starts the next Load at once, so there is no frame to save.
 ///
 /// While the worker owns the object its epoch is [`Shared::begin_native_release`]'s `Releasing`
@@ -427,11 +432,27 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
 /// callback would write into), and no new native session may begin.
 pub struct PendingRelease {
     epoch: u32,
-    unload_th: std::thread::JoinHandle<()>,
+    /// Taken by the join ([`join_finished_release`]); `None` afterwards.
+    unload_th: Option<std::thread::JoinHandle<()>>,
     handed_off_at: std::time::Instant,
     /// The Engine the object belonged to. It used to drop at the end of `teardown`, after the
     /// release; it still drops after it (the Load payload in particular outlives the Unload).
     _engine: Engine,
+}
+
+impl PendingRelease {
+    pub(crate) fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    pub(crate) fn handed_off_at(&self) -> std::time::Instant {
+        self.handed_off_at
+    }
+
+    /// The `Unload` has returned, so joining its worker cannot block.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.unload_th.as_ref().is_none_or(|t| t.is_finished())
+    }
 }
 
 /// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
@@ -442,7 +463,7 @@ static FAIL_UNLOAD_SPAWN_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::at
 /// off (no dispatchable object, an epoch that no longer owns `Active`, or the OS refusing the
 /// thread). `Some` = the worker is running and the caller must park it with the Engine.
 fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Option<std::thread::JoinHandle<()>> {
-    if unsafe { sink().ready(mt) } == 0 || !SHARED.begin_native_release(epoch) {
+    if unsafe { super::raw_sink().ready(mt) } == 0 || !SHARED.begin_native_release(epoch) {
         release_native_object_timed(mt, epoch, sp);
         return None;
     }
@@ -454,12 +475,18 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     let th = if refused {
         None
     } else {
-        plx_base::task::spawn("sf-unload", move || unsafe { sink().unload(&ticket) })
+        #[cfg(all(test, feature = "hostsim"))]
+        let worker = super::ffi_host::UnloadWorker::enter();
+        plx_base::task::spawn("sf-unload", move || {
+            #[cfg(all(test, feature = "hostsim"))]
+            let _worker = worker;
+            unsafe { super::raw_sink().unload(&ticket) }
+        })
     };
     sp.mark("unload_handoff");
     if th.is_none() {
         log("native lifecycle: no thread for the off-frame Unload; unloading on the main thread");
-        unsafe { sink().unload(&UnloadTicket::issue(mt)) };
+        unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
         sp.mark("sf_unload");
         finish_unloaded_object(mt, epoch, sp);
         destroy_native_window(mt, sp);
@@ -467,34 +494,191 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     th
 }
 
-/// Finish a parked [`PendingRelease`]: join its `Unload` (only once it has returned, unless
-/// `wait`) and run the main-thread tail. `true` when this call finished it. Reached through
-/// `PlayerAdapter::{poll_release, finish_release}`.
-pub(crate) fn settle_release(slot: &mut Option<PendingRelease>, mt: &MainThread, wait: bool) -> bool {
-    let finished = match slot.as_ref() {
-        Some(p) => p.unload_th.is_finished(),
-        None => return false,
-    };
-    if !finished && !wait {
-        return false;
+/// **The runner of [`super::release::NativeRelease`].** Once a frame (and at the head of a start):
+/// join the `Unload` worker only if it has returned (so the join cannot block), feed that and the
+/// clock to the machine, and execute what it asks: the main-thread tail, the start that was queued
+/// behind the release, or the typed refusal once the release is overdue. `true` when a tail ran.
+pub fn poll_release(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    now: std::time::Instant,
+) -> bool {
+    let (fx, joined) = drive_release(pa, now, None);
+    run_release_effects(ps, pa, fx, joined, true).tail_ran
+}
+
+/// [`poll_release`] at the wall clock: the per-frame entry `app::run` calls.
+pub fn poll_release_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    poll_release(ps, pa, std::time::Instant::now())
+}
+
+/// What one pass of the effects did.
+#[derive(Default)]
+struct ReleasePass {
+    tail_ran: bool,
+    exit: Option<super::release::ReleaseEffect>,
+}
+
+/// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
+/// exit request. Returns the effects and the joined release, whose tail the effects may run.
+fn drive_release(
+    pa: &mut super::adapter::PlayerAdapter,
+    now: std::time::Instant,
+    exit: Option<std::time::Instant>,
+) -> (Vec<super::release::ReleaseEffect>, Option<PendingRelease>) {
+    use super::release::ReleaseEvent as V;
+    let mut fx = Vec::new();
+    let joined = pa.take_finished_release().map(|mut p| {
+        if let Some(th) = p.unload_th.take() {
+            plx_base::task::join("sf-unload", th);
+        }
+        pa.release_step(&V::UnloadReturned { epoch: p.epoch }, &mut fx);
+        p
+    });
+    pa.release_step(&V::Tick { now }, &mut fx);
+    if let Some(at) = exit {
+        pa.release_step(&V::Exit { now: at }, &mut fx);
     }
-    let p = slot.take().expect("checked above");
+    (fx, joined)
+}
+
+fn run_release_effects(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    fx: Vec<super::release::ReleaseEffect>,
+    mut joined: Option<PendingRelease>,
+    may_start: bool,
+) -> ReleasePass {
+    use super::release::ReleaseEffect as E;
+    let mut pass = ReleasePass::default();
+    for effect in fx {
+        match effect {
+            E::RunTail { epoch } => {
+                if let Some(p) = joined.take() {
+                    debug_assert_eq!(p.epoch, epoch);
+                    run_release_tail(pa.mt(), p);
+                    pass.tail_ran = true;
+                }
+            }
+            E::Start(q) if may_start => {
+                let launched = match start_bufferfeed_for(ps, pa, q.route_start) {
+                    BufferfeedStartOutcome::Launched(attempt) => Some(attempt),
+                    _ => None,
+                };
+                pa.settle_preview_admission(launched.is_some(), true);
+                pa.queued_start_ran(launched);
+            }
+            // The exit does not start playback; the transaction is settled instead.
+            E::Start(q) => {
+                pa.settle_preview_admission(false, false);
+                let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+            }
+            E::AbortSuperseded(q) => {
+                pa.settle_preview_admission(false, false);
+                pa.queued_start_dropped();
+                let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+            }
+            E::RefuseStart(q) => {
+                refuse_start_for_release(ps, q);
+                pa.settle_preview_admission(false, true);
+                pa.queued_start_ran(None);
+            }
+            exit @ (E::ExitClean | E::ExitWaiting | E::ExitWorkerInFirmware) => pass.exit = Some(exit),
+        }
+    }
+    pass
+}
+
+/// The deadline passed over a start: settle its transaction as failed and record where
+/// `player::state` derives the `release_timeout` read-out from. No Engine, no second object.
+fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession, q: super::release::QueuedStart) {
+    log("native lifecycle: the previous Unload is overdue (refusing native start)");
+    let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+    ps.native_start_refused = Some(crate::route::StartRefusal::ReleaseTimeout);
+}
+
+/// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
+fn run_release_tail(mt: &MainThread, p: PendingRelease) {
     let mut sp = TeardownSpans::new();
-    // A thread that has finished joins at once; one that has not is a caller about to use the seam
-    // within ~150 ms of the stop, and `task::join` names the wait if it stalls.
-    plx_base::task::join("sf-unload", p.unload_th);
-    sp.mark(if finished { "join" } else { "wait_unload" });
+    sp.mark("join");
     finish_unloaded_object(mt, p.epoch, &mut sp);
     destroy_native_window(mt, &mut sp);
     sp.emit("release");
     log(&format!(
-        "native lifecycle: off-frame Unload epoch={} released {} ms after the stop{}",
+        "native lifecycle: off-frame Unload epoch={} released {} ms after the stop",
         p.epoch,
         p.handed_off_at.elapsed().as_millis(),
-        if finished { "" } else { " (a caller waited for it)" },
     ));
     // `p._engine` drops here, after the object it belonged to is gone.
-    true
+}
+
+/// Whether the process may tear the display down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeExit {
+    Clean,
+    /// A native worker (the `sf-unload` worker, or a timed-out Load's media thread) is still
+    /// inside firmware: `SDL_Quit` / the Wayland window destroy must not run under it.
+    WorkerInFirmware,
+}
+
+/// The native half of `app::run::shutdown`, after the final stop. Waits for the `Unload` up to
+/// the release deadline (the process is ending anyway; the old wait was unbounded).
+pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
+    exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
+}
+
+fn exit_native_with(
+    pa: &mut super::adapter::PlayerAdapter,
+    mut clock: impl FnMut() -> std::time::Instant,
+    mut idle: impl FnMut(),
+) -> NativeExit {
+    reap_abandoned_load(pa);
+    if pa.has_abandoned_load() {
+        log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
+        leak_parked_for_exit(pa);
+        return NativeExit::WorkerInFirmware;
+    }
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    loop {
+        let now = clock();
+        let (fx, joined) = drive_release(pa, now, Some(now));
+        match run_release_effects(&mut ps, pa, fx, joined, false).exit {
+            Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
+            Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
+                log("exit: the native Unload is overdue; the display is left to the OS");
+                leak_parked_for_exit(pa);
+                return NativeExit::WorkerInFirmware;
+            }
+            _ => idle(),
+        }
+    }
+}
+
+/// **A worker still in firmware reads memory its owner is about to drop.** The caller skips
+/// `SDL_Quit` and `app::run_and_shutdown` ends the process with `_exit` (no `App` drop, no libc
+/// finalizers), but the stack above it may still unwind, so the parked
+/// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
+/// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
+/// reads) would be freed under the live call. They are leaked instead, for the life of the process
+/// (`release.rs`: the `_exit` that follows skips their destructors). Only `exit_native` calls this, and only on that outcome.
+fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
+    if let Some(p) = pa.take_pending_release_any() {
+        std::mem::forget(p);
+    }
+    if let Some(l) = pa.take_abandoned_load() {
+        std::mem::forget(l);
+    }
+}
+
+/// Test helper: finish the pending release the way the exit does, with no deadline concerns.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    while pa.release_busy() {
+        let (fx, joined) = drive_release(pa, std::time::Instant::now(), None);
+        let _ = run_release_effects(&mut ps, pa, fx, joined, false);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 /// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
@@ -553,9 +737,9 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
     // runtime evidence that this firmware followed the audited path. If any proof is missing, C
     // retains the constructed object forever and permanently refuses another Load. Leaking one
     // object is preferable to letting D1 turn a late producer callback into a use-after-free.
-    if unsafe { sink().ready(mt) } != 0 {
+    if unsafe { super::raw_sink().ready(mt) } != 0 {
         sp.mark("pre_unload");
-        unsafe { sink().unload(&UnloadTicket::issue(mt)) };
+        unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
         sp.mark("sf_unload");
         finish_unloaded_object(mt, epoch, sp);
     } else if !SHARED.retire_native_session(epoch) {
@@ -568,14 +752,14 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
 
 /// Everything after `Unload` returns, in the audited order: close and drain the C callback gate,
 /// retire the Rust epoch, unload the ACB plane, then D1 with complete evidence or quarantine. The
-/// synchronous release and the off-frame release's main-thread tail ([`settle_release`]) share
+/// synchronous release and the off-frame release's main-thread tail ([`run_release_tail`]) share
 /// it, so the order is one definition.
 fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
     {
         window_step(WindowStage::NativeUnload);
-        let callback_gate_proven = unsafe { sink().callback_gate_retire(mt) } != 0;
+        let callback_gate_proven = unsafe { super::raw_sink().callback_gate_retire(mt) } != 0;
         sp.mark("gate_retire");
-        let callback_intercepts = unsafe { sink().callback_intercepts(mt) };
+        let callback_intercepts = unsafe { super::raw_sink().callback_intercepts(mt) };
         let unload_completed = SHARED.native_unload_completed(epoch);
         let rust_epoch_retired = SHARED.retire_native_session(epoch);
         if !unload_completed {
@@ -595,14 +779,14 @@ fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
         }
         sp.mark("retire");
         if ACB_OK.load(Ordering::Relaxed) {
-            unsafe { sink().plane_unload(mt) };
+            unsafe { super::raw_sink().plane_unload(mt) };
             sp.mark("acb_unload");
             window_step(WindowStage::AcbPlaneUnload);
         }
         match native_object_disposition(unload_completed, callback_gate_proven, rust_epoch_retired)
         {
             NativeObjectDisposition::Destroy => {
-                let destroyed = unsafe { sink().destroy(mt) } != 0;
+                let destroyed = unsafe { super::raw_sink().destroy(mt) } != 0;
                 sp.mark("sf_destroy");
                 if !destroyed {
                     log("native lifecycle: C seam rejected D1 and quarantined the object");
@@ -612,7 +796,7 @@ fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
                 }
             }
             NativeObjectDisposition::Quarantine => {
-                unsafe { sink().quarantine(mt) };
+                unsafe { super::raw_sink().quarantine(mt) };
                 sp.mark("quarantine");
                 window_step(WindowStage::NativeQuarantined);
             }
@@ -626,9 +810,9 @@ fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans) {
     // because the window is created BEFORE Load — a session that failed between the two would
     // otherwise leak it, and the next Load would ask for another. Unguarded because the seam
     // already no-ops in the other modes (see starfish.h).
-    unsafe { sink().destroy_window(mt) };
+    unsafe { super::raw_sink().destroy_window(mt) };
     sp.mark("destroy_window");
-    if sink().window_mode() == super::VP_EXPORTED {
+    if super::raw_sink().window_mode() == super::VP_EXPORTED {
         window_step(WindowStage::ExportedWindowDestroy);
     }
 }
@@ -1035,6 +1219,17 @@ fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
     }
 }
 
+/// The audio name and diagnostic code a Load declares for `codec`: PCM whenever the app decodes the
+/// stream itself (`pcm` is the shape [`crate::route::stream_pcm`] declared), whatever the codec
+/// is — DTS is `DTS` only when the set's own decoder takes it — else [`audio_payload_codec`]'s.
+/// PURE.
+fn audio_declaration(codec: &str, pcm: Option<&crate::route::PcmFormat>) -> Option<(&'static str, u8)> {
+    if pcm.is_some() {
+        return Some(("PCM", 5));
+    }
+    audio_payload_codec(codec)
+}
+
 /// RFC 7845 §5.1 `OpusHead` as libopus's surround encoder writes it: mapping family 0 for mono and
 /// stereo, family 1 (Vorbis channel order) for 3-8 channels, pre-skip 312, 48 kHz, 0 dB gain.
 /// The Load is built before the demuxer opens the file, so the file's own CodecPrivate is not
@@ -1084,7 +1279,8 @@ fn with_opus_info(p: &str, channels: i64) -> Option<String> {
     })
 }
 
-/// **Who owns the PCM a Load declares.** Audio the app decodes at 1x (FLAC, ALAC, LPCM: `ff_pcm`)
+/// **Who owns the PCM a Load declares.** Audio the app decodes at 1x (FLAC, ALAC, LPCM, and a lossy codec the attempt decodes in
+/// the app: `ff_pcm`)
 /// declares its own shape; at any other speed the speed decoder (`ff::SpeedDecoder`) decodes every
 /// codec, those included, and feeds stereo PCM that [`build_av_payload`] declares with its own
 /// fixed `pcmInfo` (kilohertz). The app-decoded shape is then dropped and, at 1x, that fixed node is dropped
@@ -1125,6 +1321,14 @@ fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> 
             f.bits
         ),
     )
+}
+
+/// The diagnostics line for an app-decoded PCM Load: the declared shape, and where the app resamples it
+/// the track's own rate (` (resampled from 96000Hz)`; nothing when the two are the same).
+/// PURE.
+fn pcm_decode_line(codec: &str, f: &crate::route::PcmFormat) -> String {
+    let resampled = if f.source_rate != f.sample_rate { format!(" (resampled from {}Hz)", f.source_rate) } else { String::new() };
+    format!("pcm: {codec} decoded in-app -> {}Hz {}-bit {}ch{resampled}", f.sample_rate, f.bits, f.channels)
 }
 
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
@@ -1433,11 +1637,15 @@ fn fps_rational(fps: f64) -> Option<(i64, i64)> {
 pub enum BufferfeedStartOutcome {
     AlreadyRunning,
     Launched(crate::route::RouteStartAttempt),
+    /// The previous object's `Unload` is still running: the start is queued in the release
+    /// machine and runs the frame its tail has run (or fails typed at the deadline). Accepted:
+    /// the route stays on the Player and the HUD shows Connecting.
+    Deferred,
     Failed,
 }
 
 impl BufferfeedStartOutcome {
-    fn accepted(self) -> bool {
+    pub fn accepted(self) -> bool {
         !matches!(self, Self::Failed)
     }
 }
@@ -1460,7 +1668,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
         return BufferfeedStartOutcome::Failed;
     }
     ps.jail_load_blocked = false;
-    ps.native_start_refused = false;
+    ps.native_start_refused = None;
     // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
     // playback: it gets to try the native Seek again.
     if pa.engine().is_none() {
@@ -1501,7 +1709,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     // why the player is empty. Record it where `player::state` derives the read-out from; the start
     // itself stays refused.
     if outcome == BufferfeedStartOutcome::Failed && pa.has_abandoned_load() {
-        ps.native_start_refused = true;
+        ps.native_start_refused = Some(crate::route::StartRefusal::LoadTimeout);
     }
     outcome
 }
@@ -1523,13 +1731,48 @@ fn start_bufferfeed_for(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
+    // The last real stop's object may still be inside its off-frame `Unload`. A tail that is ready
+    // runs now; one that is not defers this start into the release machine (never a blocking join:
+    // PLX-NATIVE-1Q), which starts it the frame the tail has run or refuses it at the deadline.
+    if pa.release_busy() {
+        poll_release(ps, pa, std::time::Instant::now());
+    }
+    let mut fx = Vec::new();
+    pa.release_step(
+        &super::release::ReleaseEvent::StartRequested(super::release::QueuedStart { route_start }),
+        &mut fx,
+    );
+    let mut go = false;
+    let mut refused = false;
+    for effect in fx {
+        match effect {
+            super::release::ReleaseEffect::Start(_) => go = true,
+            super::release::ReleaseEffect::RefuseStart(q) => {
+                refuse_start_for_release(ps, q);
+                refused = true;
+            }
+            super::release::ReleaseEffect::AbortSuperseded(q) => {
+                pa.settle_preview_admission(false, false);
+                pa.queued_start_dropped();
+                let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+            }
+            _ => {}
+        }
+    }
+    if refused {
+        return BufferfeedStartOutcome::Failed;
+    }
+    if !go {
+        log("start_bufferfeed: the previous Unload is still running; start deferred");
+        return BufferfeedStartOutcome::Deferred;
+    }
     match start_bufferfeed_inner(ps, pa, route_start) {
         Ok(attempt) => {
             // Every start funnels through here (fresh, reload and the rollback's reload alike), so
             // the refusal's read-out ends at the first start that is NOT refused. Clearing it only
             // in `start_bufferfeed_tracked` left a reload landing after a refused fresh start
             // (the foreground restore's rollback) with an Error over the video it began.
-            ps.native_start_refused = false;
+            ps.native_start_refused = None;
             // The request's failed-open ladder rules on this Engine's open too: a Load it did not
             // ask for (the foreground restore after a Home during a recovery flight or over the
             // read-out) takes it out of `Flight` or `Failed`. The recovery landing's own reload has
@@ -1549,10 +1792,8 @@ fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
-    // The last real stop's object may still be inside its off-frame `Unload`: finish that release
-    // first (waiting for it if it has not returned — only a start within ~150 ms of a stop does),
-    // so the epoch is retired and the object destroyed before this start constructs the next one.
-    pa.finish_release();
+    // The previous object's release is finished or the start was deferred before this point
+    // (`start_bufferfeed_for`), so the epoch is retired and the object destroyed already.
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
     // holds. Release it now if it has returned; otherwise refuse before anything below (the
     // exported window in particular) can touch state that object is still using.
@@ -1742,16 +1983,6 @@ fn start_bufferfeed_inner(
             // wrong string leaves the audio ES unconfigured, and with audioSync the video
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
             let codec = crate::route::stream_acodec(ps);
-            // Dev trigger `pcmavoffset=<ms>` (debug builds, read per Load): how the lead is measured
-            // on an output the default was not filmed on.
-            let lead_override = plx_base::devtrig::read("pcmavoffset");
-            let Some(audio) =
-                load_audio(&codec, session_rate, lead_override.as_deref(), plx_platform::devcaps::audio_stack())
-            else {
-                log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
-                SHARED.fail_demux(DemuxExitClass::LoadRefused);
-                return Err(crate::route::RouteStartResult::StartFailed);
-            };
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
             // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
             let pcm = match app_pcm_for_rate(session_rate, crate::route::stream_pcm(ps)) {
@@ -1763,16 +1994,28 @@ fn start_bufferfeed_inner(
                 }
                 None => None,
             };
-            crate::ff::set_pcm_out(pcm.map(|f| (f.sample_rate, f.bits, f.channels)));
+            // Dev trigger `pcmavoffset=<ms>` (debug builds, read per Load): how the lead is measured
+            // on an output the default was not filmed on.
+            let lead_override = plx_base::devtrig::read("pcmavoffset");
+            let Some(audio) = load_audio(
+                &codec, session_rate, pcm.as_ref(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
+            ) else {
+                log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
+                SHARED.fail_demux(DemuxExitClass::LoadRefused);
+                return Err(crate::route::RouteStartResult::StartFailed);
+            };
+            crate::ff::set_pcm_out(
+                pcm.map(|f| crate::ff_pcm::PcmOut {
+                    rate: f.sample_rate, bits: f.bits, channels: f.channels, source_rate: f.source_rate,
+                }),
+                pcm.is_some() && crate::route::stream_pcm_is_lossy(ps),
+            );
             if let Some(f) = pcm {
-                log(&format!(
-                    "pcm: {codec} decoded in-app -> {}Hz {}-bit {}ch",
-                    f.sample_rate, f.bits, f.channels
-                ));
+                log(&pcm_decode_line(&codec, &f));
             }
             SHARED.dg_load_a.store(audio.diagnostic, Ordering::Relaxed);
-            // At a speed the sound is decoded and stretched in the app (`ff::SpeedDecoder`), which
-            // `load_audio` has already put into the declared name.
+            // App-decoded audio (`pcm`) and a speed session (`ff::SpeedDecoder`) both declare PCM;
+            // `load_audio` has already put that into the declared name and the lead plan with it.
             let ac = audio.name;
             audio_declared = ac;
             audio_lead = audio.lead;
@@ -2354,7 +2597,9 @@ pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::
         // `start_bufferfeed_for` always creates a fresh attempt, but keep the conversion total if
         // that implementation changes.
         Some(BufferfeedStartOutcome::AlreadyRunning) => ReloadOutcome::Started,
-        Some(BufferfeedStartOutcome::Launched(_)) => unreachable!("accepted handled above"),
+        Some(BufferfeedStartOutcome::Launched(_) | BufferfeedStartOutcome::Deferred) => {
+            unreachable!("accepted handled above")
+        }
     }
 }
 
@@ -2374,8 +2619,8 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// Stop playback: unblock+join threads, reset all state so a fresh start_bufferfeed() can
 /// restart, and release the pipeline and the video plane. With a ready object the native Unload is
 /// handed to the `sf-unload` worker and the destroy / plane release finish later in
-/// `settle_release` (`PendingRelease`), so the object may still exist when this returns; anything
-/// that needs it gone goes through the adapter, which waits for it.
+/// [`poll_release`] (`PendingRelease`), so the object may still exist when this returns; anything
+/// that needs it gone is queued behind it in the release machine (`Deferred`), never waited for.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     teardown(ps, pa, false);
 }
@@ -2475,6 +2720,14 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
 fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
+    // A start still queued behind the previous object's `Unload` is the playback this stop ends.
+    // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
+    // that fact in the session can go stale across a landing that replaced the session.
+    {
+        let mut fx = Vec::new();
+        pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut fx);
+        let _ = run_release_effects(ps, pa, fx, None, false);
+    }
     // A prepared route whose native start failed has no Engine but still owns its exact PMS
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
@@ -2741,7 +2994,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             ));
             pa.park_release(PendingRelease {
                 epoch: eng.native_epoch,
-                unload_th,
+                unload_th: Some(unload_th),
                 handed_off_at: std::time::Instant::now(),
                 _engine: eng,
             });
@@ -3340,13 +3593,25 @@ struct LoadAudio {
     lead: PcmLead,
 }
 
-/// [`LoadAudio`] for a track of `codec` at `session_rate` (permille); `None` when the pipeline has no
-/// name for the codec. A speed session decodes and stretches the sound in the app
-/// (`ff::SpeedDecoder`), so at any speed but 1x every codec declares `"PCM"`. `lead_override_ms` is
+/// [`LoadAudio`] for a track of `codec` at `session_rate` (permille); `None` only at 1x, when the pipeline has
+/// no name for the codec and the app does not decode it. A speed session decodes and stretches the sound in the app
+/// (`ff::SpeedDecoder`), so at any speed but 1x every codec declares `"PCM"`; so does a track the app
+/// decodes itself at 1x (`app_pcm`, the shape [`crate::route::stream_pcm`] declared: DTS under the
+/// lossy gate, FLAC and the like), whatever its codec, and that name is what the lead plan is made
+/// from, so every Load that declares `"audio":"PCM"` is planned a lead. `lead_override_ms` is
 /// the dev trigger's text and `stack` the set's audio stack ([`plx_platform::devcaps::audio_stack`]).
-fn load_audio(codec: &str, session_rate: i32, lead_override_ms: Option<&str>, stack: AudioStack) -> Option<LoadAudio> {
-    let (name, diagnostic) = audio_payload_codec(codec)?;
-    let name = if session_rate != super::RATE_NORMAL { "PCM" } else { name };
+fn load_audio(
+    codec: &str, session_rate: i32, app_pcm: Option<&crate::route::PcmFormat>, lead_override_ms: Option<&str>,
+    stack: AudioStack,
+) -> Option<LoadAudio> {
+    let declared = audio_declaration(codec, app_pcm);
+    // A speed session declares PCM whatever the codec is called, so it needs no payload name for it
+    // (`mp3`, `vorbis` and `truehd` have none): its diagnostic code stays the codec's when it has one.
+    let (name, diagnostic) = if session_rate != super::RATE_NORMAL {
+        ("PCM", declared.map_or(5, |(_, code)| code))
+    } else {
+        declared?
+    };
     Some(LoadAudio { name, diagnostic, lead: pcm_lead_plan(name, lead_override_ms, stack) })
 }
 
@@ -5885,7 +6150,7 @@ pub(super) fn streaming_engine_for_test(native_epoch: u32) -> Engine {
 /// (`delay_unload_for_test`) and the contract is graded where the device's cannot be: the stop
 /// returns long before the Unload does, nothing the stopped object says reaches the state the next
 /// session owns, no native session can begin while the object is still being released, and a start
-/// issued meanwhile waits for the release instead of racing it — and the release still ends in a
+/// issued meanwhile is queued behind the release instead of racing it — and the release still ends in a
 /// D1 with complete evidence, not a quarantine.
 #[cfg(all(test, feature = "hostsim"))]
 mod off_frame_release_tests {
@@ -5933,7 +6198,7 @@ mod off_frame_release_tests {
     }
 
     #[test]
-    fn a_stop_returns_before_the_unload_and_the_next_start_waits_for_it() {
+    fn a_stop_returns_before_the_unload_and_the_next_start_is_deferred_until_its_tail_ran() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
         let mut pa = arm(&ps);
@@ -5964,17 +6229,31 @@ mod off_frame_release_tests {
             SHARED.begin_native_session().is_none(),
             "a native session began while the previous object was still inside Unload"
         );
-        assert!(!pa.poll_release(), "the per-frame poll must not wait for a running Unload");
+        assert!(
+            !poll_release(&mut ps, &mut pa, std::time::Instant::now()),
+            "the per-frame poll must not wait for a running Unload"
+        );
 
-        // A start now (no URL, so it ends NoRoute) finishes the release before anything else.
-        let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
-        let _ = start_bufferfeed_inner(&mut ps, &mut pa, start);
-        let _ = crate::route::abort_route_start(start, crate::route::RouteStartResult::StartFailed);
+        // A start now (no URL, so it would end NoRoute) is deferred: it neither waits for the
+        // Unload nor runs over the object, and the frame poll starts it once the tail has run.
+        let before_start = std::time::Instant::now();
+        let outcome = start_bufferfeed_tracked(&mut ps, &mut pa);
+        assert_eq!(outcome, BufferfeedStartOutcome::Deferred);
+        assert!(
+            before_start.elapsed() < std::time::Duration::from_millis(UNLOAD_MS / 4),
+            "the start waited for the Unload"
+        );
+        assert!(pa.has_pending_release(), "the Unload is still running");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !poll_release(&mut ps, &mut pa, std::time::Instant::now()) {
+            assert!(std::time::Instant::now() < deadline, "the returned Unload was never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
-            "the start went ahead while the Unload was still running"
+            "the tail ran before the Unload returned"
         );
-        assert!(!pa.has_pending_release(), "the start must leave no release pending");
+        assert!(!pa.has_pending_release(), "the tail must leave no release pending");
         assert_eq!(ready_now(), 0, "the released object must be destroyed before a new one may load");
         assert!(
             !crate::player::ffi_host::lifecycle_blocked_for_test(),
@@ -5998,7 +6277,7 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !pa.poll_release() {
+        while !poll_release(&mut ps, &mut pa, std::time::Instant::now()) {
             assert!(std::time::Instant::now() < deadline, "the returned Unload was never finished");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -6012,7 +6291,7 @@ mod off_frame_release_tests {
         crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         assert!(!pa.has_pending_release(), "finish_release must not return with the Unload running");
         assert_eq!(ready_now(), 0);
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
@@ -6028,7 +6307,7 @@ mod off_frame_release_tests {
         crate::player::ffi_host::delay_unload_for_test(50);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the release must still D1");
         assert_eq!(
             SHARED.dg_cb_count.load(Ordering::Relaxed),
@@ -6039,7 +6318,7 @@ mod off_frame_release_tests {
     }
 
     #[test]
-    fn taking_the_token_or_splitting_waits_for_a_running_unload() {
+    fn taking_the_token_or_splitting_never_waits_for_a_running_unload() {
         for use_split in [false, true] {
             let mut ps = crate::route::PlaybackSession::IDLE;
             let _serial = plx_base::testlock::serial();
@@ -6050,17 +6329,29 @@ mod off_frame_release_tests {
             let started = std::time::Instant::now();
             stop_bufferfeed(&mut ps, &mut pa);
             assert!(pa.has_pending_release());
+            let before = std::time::Instant::now();
             if use_split {
                 let _ = pa.split();
             } else {
                 let _ = pa.mt();
             }
             assert!(
-                started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
-                "{} returned while the Unload was still running",
+                before.elapsed() < std::time::Duration::from_millis(UNLOAD_MS / 4),
+                "{} waited for the running Unload (PLX-NATIVE-1Q)",
                 if use_split { "split()" } else { "mt()" }
             );
-            assert!(!pa.has_pending_release(), "nothing may be pending once the token is handed out");
+            // …and a verb through the fenced sink does not reach the object the worker is inside.
+            assert_eq!(
+                unsafe { crate::player::sink().pause(pa.mt()) },
+                0,
+                "a main-thread verb reached the object while it was Releasing"
+            );
+            assert!(pa.has_pending_release(), "nothing may finish the release but its own poll");
+            finish_release_for_test(&mut pa);
+            assert!(
+                started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
+                "the release finished before the Unload returned"
+            );
             assert_eq!(ready_now(), 0);
             assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
         }
@@ -6093,6 +6384,314 @@ mod off_frame_release_tests {
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the fallback must end in a D1");
     }
 
+    /// Lets the held host `Unload` go when a test unwinds, so a failed assertion cannot leave
+    /// the next test's release hanging.
+    struct ReleaseUnloadOnDrop;
+    impl Drop for ReleaseUnloadOnDrop {
+        fn drop(&mut self) {
+            crate::player::ffi_host::release_unload_for_test();
+        }
+    }
+
+    /// PLX-NATIVE-1Q: a start over an `Unload` that never returns froze the UI thread in the
+    /// join. It must come back at once, deferred, and fail typed at the deadline.
+    #[test]
+    fn a_start_over_an_unload_that_never_returns_does_not_block_and_fails_typed_at_the_deadline() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        let t_stop = std::time::Instant::now();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        // A helper lets the hold go after 3 s, so the unfixed code ends instead of hanging.
+        let helper = std::thread::Builder::new()
+            .name("test-unload-release".into())
+            .spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                crate::player::ffi_host::release_unload_for_test();
+            })
+            .expect("spawn helper");
+
+        let started = std::time::Instant::now();
+        let outcome = start_bufferfeed_tracked(&mut ps, &mut pa);
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(50),
+            "the start blocked the UI thread for {took:?} over an Unload that had not returned"
+        );
+        assert_eq!(outcome, BufferfeedStartOutcome::Deferred);
+        assert!(!pa.is_live());
+        assert!(SHARED.begin_native_session().is_none());
+        assert!(pa.has_pending_release());
+        assert_eq!(
+            crate::player::state(&ps),
+            crate::player::PlaybackState::Resolving,
+            "a deferred start must read as Connecting, not as an empty player"
+        );
+
+        // The deadline, on the machine's injected clock: the queued start fails typed.
+        let t0 = t_stop;
+        assert!(!poll_release(&mut ps, &mut pa, t0 + crate::player::release::RELEASE_DEADLINE - std::time::Duration::from_millis(1)));
+        assert_ne!(
+            crate::player::error_now(&ps).kind,
+            crate::player::FailureKind::ReleaseTimeout,
+            "the read-out appeared before the deadline"
+        );
+        assert!(!poll_release(&mut ps, &mut pa, t0 + crate::player::release::RELEASE_DEADLINE + std::time::Duration::from_secs(5)));
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+        let shape = crate::player::error_now(&ps);
+        assert_eq!(shape.kind, crate::player::FailureKind::ReleaseTimeout);
+        assert_eq!(shape.kind.code(), "release_timeout");
+        let actions = crate::player::failure_actions(
+            shape.kind,
+            crate::player::FailureContext { forced: false, can_retry: true, repair_idle: true },
+        );
+        assert!(actions.contains(&crate::player::FailureAction::TryAgain), "{actions:?}");
+
+        // A second start is refused with no new object; the leaked object was not D1'd.
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Failed);
+        assert!(!pa.is_live());
+        assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
+        assert_ne!(
+            unsafe { crate::player::raw_sink().ready(&MainThread::assume()) },
+            0,
+            "the overdue object was destroyed under a worker that may still be inside it"
+        );
+        assert!(pa.has_pending_release(), "the overdue release must stay parked");
+        assert!(pa.release_overdue());
+
+        // The Unload finally returns: the tail runs, nothing quarantines, the next start goes.
+        helper.join().unwrap(); // released by the helper after 3 s
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !poll_release(&mut ps, &mut pa, std::time::Instant::now()) {
+            assert!(std::time::Instant::now() < give_up, "the late Unload was never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!pa.has_pending_release());
+        assert_eq!(ready_now(), 0);
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the late tail must D1");
+        assert_ne!(
+            start_bufferfeed_tracked(&mut ps, &mut pa),
+            BufferfeedStartOutcome::Deferred,
+            "the slot must be free again"
+        );
+        assert_ne!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
+    }
+
+    /// A stop over a deferred start ends that playback: the queued start must not run after the tail.
+    #[test]
+    fn a_stop_over_a_deferred_start_cancels_it() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(50);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(!pa.release_has_queued_start());
+        assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Resolving);
+        // The frame poll (may_start = true) is what would launch a surviving queued start.
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pa.release_busy() {
+            assert!(std::time::Instant::now() < give_up, "the Unload never returned");
+            poll_release(&mut ps, &mut pa, std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!pa.is_live(), "the cancelled start ran after the tail");
+        assert_eq!(ready_now(), 0);
+    }
+
+    /// A landing replaces the whole session (`apply_plan` rebuilds it). The queued start lives in the
+    /// release machine, not in the session, so a stop after that landing still cancels it.
+    #[test]
+    fn a_stop_after_a_landing_replaced_the_session_still_cancels_the_queued_start() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(50);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "derived from the machine");
+        ps = crate::route::PlaybackSession::IDLE; // the landing's rebuilt session
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "the session carries nothing");
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(!pa.release_has_queued_start());
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pa.release_busy() {
+            assert!(std::time::Instant::now() < give_up, "the Unload never returned");
+            poll_release(&mut ps, &mut pa, std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!pa.is_live(), "the queued start survived a stop and ran after the tail");
+    }
+
+    /// The foreground restore over a held `Unload` neither blocks nor loses the start: it parks, and
+    /// lands once the release goes Idle, or fails typed at the deadline.
+    #[test]
+    fn a_foreground_start_over_a_held_unload_parks_without_blocking_then_lands() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        let t = std::time::Instant::now();
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        pa.watch_queued_start();
+        assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Waiting);
+        poll_release(&mut ps, &mut pa, std::time::Instant::now());
+        assert!(t.elapsed() < std::time::Duration::from_millis(50), "the restore blocked the frame");
+        assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Waiting);
+        crate::player::ffi_host::release_unload_for_test();
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let landing = loop {
+            poll_release(&mut ps, &mut pa, std::time::Instant::now());
+            match pa.take_queued_landing() {
+                crate::player::adapter::QueuedLanding::Waiting => {
+                    assert!(std::time::Instant::now() < give_up, "the deferred start never ran");
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                other => break other,
+            }
+        };
+        assert!(
+            !matches!(landing, crate::player::adapter::QueuedLanding::Waiting | crate::player::adapter::QueuedLanding::Stale),
+            "{landing:?}"
+        );
+    }
+
+    /// A preview whose start is queued behind the release is not admitted while queued, and a
+    /// deadline that refuses it (or a run that fails) settles the admission instead of leaving it counted.
+    /// (Admission on a SUCCESSFUL launch needs a route fixture the rig does not have.)
+    #[test]
+    fn a_deferred_preview_start_is_settled_when_it_runs_not_when_queued() {
+        use crate::player::preview::{phase_for_test, set_phase_for_test, reset_for_test, Phase};
+        for refuse in [false, true] {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let _serial = plx_base::testlock::serial();
+            let mut pa = arm(&ps);
+            let _cleanup = Cleanup;
+            let _release = ReleaseUnloadOnDrop;
+            reset_for_test();
+            playing_engine(&mut pa);
+            crate::player::ffi_host::hold_unload_for_test();
+            stop_bufferfeed(&mut ps, &mut pa);
+            set_phase_for_test(Phase::Fetching);
+            assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+            pa.admit_preview_at_launch(true);
+            assert_eq!(phase_for_test(), Phase::Fetching, "queued is not admitted");
+            if refuse {
+                let later = std::time::Instant::now() + crate::player::release::RELEASE_DEADLINE + std::time::Duration::from_secs(1);
+                poll_release(&mut ps, &mut pa, later);
+                assert_eq!(phase_for_test(), Phase::Idle, "a refused start gives the slot back");
+            } else {
+                crate::player::ffi_host::release_unload_for_test();
+                let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while phase_for_test() == Phase::Fetching {
+                    assert!(std::time::Instant::now() < give_up, "the queued start never launched");
+                    poll_release(&mut ps, &mut pa, std::time::Instant::now());
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                // The fixture session has no URL, so the start runs and ends NoRoute: the admission is
+                // settled when the start RUNS (here refused, the slot given back), not when queued.
+                assert_eq!(phase_for_test(), Phase::Idle, "settled at the run, not before");
+            }
+            reset_for_test();
+        }
+    }
+
+    /// …and past the deadline the parked restore fails typed (`release_timeout`), still without blocking.
+    #[test]
+    fn a_foreground_start_over_an_overdue_unload_fails_typed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        pa.watch_queued_start();
+        let later = std::time::Instant::now() + crate::player::release::RELEASE_DEADLINE + std::time::Duration::from_secs(1);
+        poll_release(&mut ps, &mut pa, later);
+        assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Failed);
+        assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
+    }
+
+    /// The exit with an `Unload` that never returns is bounded by the deadline and says a worker
+    /// is still in firmware, so the display is not torn down under it.
+    #[test]
+    fn exit_with_an_unload_that_never_returns_is_bounded_and_reports_a_worker_in_firmware() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        // An injected clock that jumps a second per look: no real sleep, the deadline in ~11 reads.
+        let t0 = std::time::Instant::now();
+        let mut ticks = 0u64;
+        let exit = exit_native_with(
+            &mut pa,
+            || {
+                ticks += 1;
+                t0 + std::time::Duration::from_secs(ticks)
+            },
+            || {},
+        );
+        assert_eq!(exit, NativeExit::WorkerInFirmware);
+        assert!(ticks >= 10, "the exit gave up before the deadline ({ticks} looks)");
+        // The object is still in firmware: the adapter must not own it (dropping the adapter would
+        // free the Engine under the live Unload), and its drop must never run.
+        assert!(!pa.has_pending_release(), "the overdue object must leave the adapter, leaked");
+        let dropped = ENGINES_DROPPED.load(Ordering::SeqCst);
+        drop(pa);
+        assert_eq!(ENGINES_DROPPED.load(Ordering::SeqCst), dropped, "dropping the adapter freed the Engine");
+        crate::player::ffi_host::release_unload_for_test();
+    }
+
+    /// The flake behind `exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load`: a
+    /// test that ends with its `sf-unload` worker still held leaves a DETACHED thread whose
+    /// `sf_unload` later reads the process-global `ACTIVE_EPOCH` (by then the NEXT test's session)
+    /// and delivers UNLOADCOMPLETED into it. The reset every test opens and closes with must wait
+    /// the worker out, so none outlives its test.
+    #[test]
+    fn the_lifecycle_reset_waits_out_a_released_unload_worker() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(
+            crate::player::ffi_host::unload_workers_for_test(),
+            1,
+            "PRECONDITION FAILED: the stop must have a worker inside the held Unload"
+        );
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        assert_eq!(
+            crate::player::ffi_host::unload_workers_for_test(),
+            0,
+            "the reset returned with an sf-unload worker still alive: it could fire into the next test"
+        );
+    }
+
     #[test]
     fn an_unloadcompleted_from_the_wrong_epoch_during_the_release_is_not_evidence() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6111,7 +6710,7 @@ mod off_frame_release_tests {
             !SHARED.native_unload_completed(epoch),
             "a wrong-epoch UNLOADCOMPLETED counted as the release's D1 evidence"
         );
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
     }
 }
@@ -6804,6 +7403,35 @@ mod load_in_flight_tests {
         );
     }
 
+    /// The exit after a playback error (`load_timeout`): `app::run::shutdown` then quits SDL and
+    /// destroys the Wayland display. A Load still inside firmware on the `media` thread must make
+    /// the exit say so, so the display is left to the OS rather than torn down under it.
+    #[test]
+    fn exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        install_engine_with_timed_out_load(&mut ps, &mut pa);
+        stop_bufferfeed(&mut ps, &mut pa);
+        let exit = exit_native(&mut pa);
+        assert!(
+            exit == NativeExit::WorkerInFirmware || !crate::player::ffi_host::load_in_flight_for_test(),
+            "the exit's native half returned with a Load still inside firmware: SDL_Quit would run under it"
+        );
+        assert_eq!(exit, NativeExit::WorkerInFirmware);
+        // The payload the `media` thread reads is leaked, not owned by the adapter that is dropped next.
+        assert!(!pa.has_abandoned_load(), "the parked Load must leave the adapter, leaked");
+        crate::player::ffi_host::release_load_for_test();
+    }
+
     /// PLX-NATIVE-15: the Auto Original's Load passes its budget, the HLS recovery reloads while
     /// the Load is still inside `sf_load`, the reload's teardown parks that Load (clearing
     /// `load_timed_out` with the rest of the session) and the start is refused. The failure was
@@ -6929,7 +7557,7 @@ mod load_in_flight_tests {
             BufferfeedStartOutcome::Failed,
             "PRECONDITION FAILED: the fresh start must be refused for the parked Load"
         );
-        assert!(ps.native_start_refused, "PRECONDITION FAILED: the refusal must be recorded");
+        assert!(ps.native_start_refused.is_some(), "PRECONDITION FAILED: the refusal must be recorded");
 
         // The parked Load returns and is reaped; the rollback's reload then starts.
         crate::player::ffi_host::release_load_for_test();
@@ -6966,13 +7594,46 @@ mod pcm_info_tests {
 
     #[test]
     fn a_pcm_load_states_the_shape_the_decoder_produces() {
-        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
         let p = with_pcm_info(BASE, "PCM", Some(f));
         assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48,"bitsPerSample":16}"#), "{p}");
-        let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 96_000, bits: 32, channels: 1 }));
+        let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 48_000, bits: 32, channels: 1, source_rate: 96_000 }));
         assert!(wide.contains(r#""format":"S32LE","channelMode":"mono""#) && wide.contains(r#""bitsPerSample":32"#), "{wide}");
         // the payload stays parseable JSON
         serde_json::from_str::<serde_json::Value>(&p).unwrap();
+    }
+
+    /// **A hi-res track the app resamples is declared as what the decoder emits**, never as the file's own rate:
+    /// the Load is built from the format `route::pcm_format_of` returns, which names the PCM input's table
+    /// rate in S32 (a 16-bit source included), so the payload carries 48 or 44.1 kHz and 32 bits and none of 96, 192 or 88.2.
+    #[test]
+    fn a_resampled_hi_res_track_declares_the_tables_rate_and_a_32_bit_sample() {
+        let track = |rate: i64, bits: i64| crate::route::CarriedAudio {
+            sid: 7, ordinal: 4, codec: "flac".into(), channels: 2,
+            can_normalize_loudness: false, immersive: false, sample_rate: rate, bit_depth: bits,
+        };
+        for (rate, bits, khz, never) in [(96_000, 24, "48", ["96", "192", "88.2"]), (192_000, 24, "48", ["96", "192", "88.2"]), (88_200, 16, "44.1", ["96", "192", "88.2"])] {
+            let f = crate::route::pcm_format_of(Some(&track(rate, bits)), "flac").unwrap();
+            let p = with_pcm_info(BASE, "PCM", Some(f));
+            let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+            let info = &v["contents"]["pcmInfo"];
+            assert_eq!(info["format"], "S32LE", "{rate}/{bits}: {p}");
+            assert_eq!(info["bitsPerSample"], 32, "{rate}/{bits}: {p}");
+            assert_eq!(info["sampleRate"].as_f64(), khz.parse::<f64>().ok(), "{rate}/{bits}: {p}");
+            for n in never {
+                assert!(!p.contains(&format!(r#""sampleRate":{n}"#)), "{rate}/{bits}: the file's own rate {n} must not be declared: {p}");
+            }
+        }
+    }
+
+    /// The diagnostics line names the track's own rate only where the app resamples it.
+    #[test]
+    fn the_decode_log_line_names_the_source_rate_only_when_it_is_resampled() {
+        let exact = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
+        assert_eq!(pcm_decode_line("flac", &exact), "pcm: flac decoded in-app -> 48000Hz 16-bit 2ch");
+        let hires = PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 };
+        assert_eq!(pcm_decode_line("flac", &hires), "pcm: flac decoded in-app -> 48000Hz 32-bit 2ch (resampled from 96000Hz)");
+        assert_eq!(pcm_decode_line("dca", &PcmFormat::STEREO_48K), "pcm: dca decoded in-app -> 48000Hz 16-bit 2ch");
     }
 
     /// Every rate the PCM path admits is declared in kilohertz, the unit libpf's table is in. In
@@ -6982,7 +7643,7 @@ mod pcm_info_tests {
         let want = ["8", "12", "16", "22.05", "24", "32", "44.1", "48"];
         for (hz, khz) in plx_platform::devcaps::PCM_SAMPLE_RATES.into_iter().zip(want) {
             assert_eq!(pcm_rate_khz(hz), khz);
-            let p = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2 }));
+            let p = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2, source_rate: hz }));
             let v: serde_json::Value = serde_json::from_str(&p).unwrap();
             let declared = v["contents"]["pcmInfo"]["sampleRate"].as_f64().unwrap();
             assert!((declared * 1000.0 - f64::from(hz)).abs() < 1e-6, "{hz}: {p}");
@@ -6992,7 +7653,7 @@ mod pcm_info_tests {
 
     #[test]
     fn a_speed_session_leaves_the_pcm_to_the_speed_decoder() {
-        let f = || Some(Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+        let f = || Some(Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2, source_rate: 44_100 }));
         assert_eq!(app_pcm_for_rate(crate::player::RATE_NORMAL, f()), f(), "1x: the FLAC decoder's shape");
         assert!(app_pcm_for_rate(1500, f()).is_none(), "1.5x: the speed decoder declares its own");
         // a FLAC track whose facts are missing only fails at 1x, where the FLAC decoder needs them
@@ -7001,9 +7662,145 @@ mod pcm_info_tests {
         assert!(app_pcm_for_rate(750, missing()).is_none());
     }
 
+    /// **DTS the attempt decodes in the app** is declared as PCM — stereo 48 kHz S16, one `pcmInfo` — and
+    /// where it does not is `DTS` exactly as before. The shape is the session's own
+    /// (`route::stream_pcm`), so a native DTS Load can never carry a PCM node nor the reverse.
+    #[test]
+    fn app_decoded_dts_is_declared_as_pcm_and_native_dts_as_dts() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::set_stream_codecs(&mut ps, "h264", "dts");
+        assert_eq!(audio_declaration("dts", crate::route::stream_pcm(&ps).and_then(Result::ok).as_ref()), Some(("DTS", 4)));
+        let off = build_av_payload_at(&ps, "H264", "DTS", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert!(off.contains(r#""audio":"DTS""#) && !off.contains("pcmInfo"), "{off}");
+
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+        assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
+        assert_eq!(audio_declaration("dts", shape.as_ref()), Some(("PCM", 5)));
+        let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert!(on.contains(r#""audio":"PCM""#), "{on}");
+        assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+        assert!(on.contains(r#""format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48,"bitsPerSample":16"#), "{on}");
+        // at a speed the speed decoder declares PCM itself, from the same codec: still one node
+        let fast = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, 1500);
+        assert_eq!(fast.matches("pcmInfo").count(), 1, "{fast}");
+        serde_json::from_str::<serde_json::Value>(&on).unwrap();
+    }
+
+    /// **Force Direct Play on a set with no DTS row declares a STEREO DTS track as stereo 48 kHz PCM**: the
+    /// app decodes it (the table's lossy policy admits DTS, the set has no native path, and a 2.0 source
+    /// is no downmix, `Caps::app_may_mix_down`), so the Load carries one `pcmInfo` and `PCM` instead of a
+    /// `DTS` the pipeline would hang on. Under Auto the same value still declares `DTS`. The carried track
+    /// supplies the channel count the rule reads; a 5.1 one is refused before any Load
+    /// (`forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
+    #[test]
+    fn a_forced_dts_with_no_row_is_declared_as_stereo_48k_pcm() {
+        let caps = std::sync::Arc::new(plx_platform::devcaps::Caps {
+            app_lossy: plx_platform::devcaps::AppLossy::Measured,
+            ..plx_platform::devcaps::Caps::assumed()
+        });
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::begin_attempt_for_test(&mut ps, caps);
+        crate::route::set_stream_codecs(&mut ps, "h264", "dts");
+        crate::route::set_carried_audio_for_test(
+            &mut ps,
+            crate::route::CarriedAudio {
+                sid: 7, ordinal: 1, codec: "dts".into(), channels: 2,
+                can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 0,
+            },
+        );
+        assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None, "Auto: the native decoder's");
+        crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
+        let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+        assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
+        assert_eq!(audio_declaration("dts", shape.as_ref()), Some(("PCM", 5)));
+        let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert!(on.contains(r#""audio":"PCM""#) && !on.contains(r#""audio":"DTS""#), "{on}");
+        assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+        serde_json::from_str::<serde_json::Value>(&on).unwrap();
+    }
+
+    /// MP3 and Vorbis in force (S4-4) are declared exactly as DTS is: `PCM`, stereo 48 kHz S16.
+    #[test]
+    fn app_decoded_mp3_and_vorbis_are_declared_as_pcm_and_native_ones_are_refused() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        for codec in ["mp3", "vorbis"] {
+            crate::route::set_stream_codecs(&mut ps, "h264", codec);
+            let off = crate::route::stream_pcm(&ps).and_then(Result::ok);
+            assert_eq!(off, None, "{codec}: gate off");
+            assert_eq!(audio_declaration(codec, off.as_ref()).map(|d| d.0).filter(|n| *n == "PCM"), None, "{codec}");
+        }
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        for codec in ["mp3", "vorbis"] {
+            crate::route::set_stream_codecs(&mut ps, "h264", codec);
+            let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+            assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K), "{codec}");
+            assert_eq!(audio_declaration(codec, shape.as_ref()), Some(("PCM", 5)), "{codec}");
+            let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+            assert_eq!(on.matches("pcmInfo").count(), 1, "{codec}: {on}");
+            // declared PCM, so planned the stack's lead like a FLAC Load (`load_audio` is the one value)
+            let planned =
+                load_audio(codec, crate::player::RATE_NORMAL, shape.as_ref(), None, AudioStack::Liblxa).unwrap();
+            assert_eq!((planned.name, planned.lead), ("PCM", PcmLead::FromOutput(AudioStack::Liblxa)), "{codec}");
+        }
+    }
+
+    /// TrueHD in force (S4-5) is declared as `PCM`, stereo 48 kHz S16, like the other lossy ones.
+    #[test]
+    fn app_decoded_truehd_is_declared_as_pcm() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::set_stream_codecs(&mut ps, "h264", "truehd");
+        assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None, "not in force");
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        crate::route::set_stream_codecs(&mut ps, "h264", "truehd");
+        let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+        assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
+        assert_eq!(audio_declaration("truehd", shape.as_ref()), Some(("PCM", 5)));
+        let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+        let planned = load_audio("truehd", crate::player::RATE_NORMAL, shape.as_ref(), None, AudioStack::Liblxa).unwrap();
+        assert_eq!((planned.name, planned.lead), ("PCM", PcmLead::FromOutput(AudioStack::Liblxa)), "planned the stack's lead");
+    }
+
+    /// **An app-decoded lossy track at a playback speed still loads.** At a speed the speed decoder
+    /// declares PCM itself and the app-decoded shape is dropped ([`app_pcm_for_rate`]), so `load_audio`
+    /// is asked for a codec the pipeline has no payload name for (`mp3`, `vorbis`, `truehd`): the Load must still
+    /// declare PCM and take the stack's lead, as a speed session on any other codec does, not be
+    /// refused as an "unsupported audio codec". The `pcm` argument is derived exactly as
+    /// `start_bufferfeed_inner` derives it, so this goes through the Load's own path (the speed
+    /// assertion of `app_decoded_dts_is_declared_as_pcm_and_native_dts_as_dts` hands `"PCM"` straight
+    /// to the payload builder and cannot see this).
+    #[test]
+    fn an_app_decoded_lossy_track_loads_as_pcm_at_a_speed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        for codec in ["mp3", "vorbis", "truehd"] {
+            crate::route::set_stream_codecs(&mut ps, "h264", codec);
+            for rate in [500, 1500, 2000] {
+                let pcm = app_pcm_for_rate(rate, crate::route::stream_pcm(&ps)).and_then(Result::ok);
+                assert_eq!(pcm, None, "{codec} at {rate}: the speed decoder declares the shape");
+                let planned = load_audio(codec, rate, pcm.as_ref(), None, AudioStack::Liblxa)
+                    .map(|a| (a.name, a.diagnostic, a.lead));
+                assert_eq!(
+                    planned,
+                    Some(("PCM", 5, PcmLead::FromOutput(AudioStack::Liblxa))),
+                    "{codec} at {rate}: a speed session declares PCM whatever the codec is called"
+                );
+            }
+        }
+    }
+
     #[test]
     fn only_a_pcm_load_carries_pcm_info() {
-        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
         assert_eq!(with_pcm_info(BASE, "AC3", Some(f)), BASE);
         assert_eq!(with_pcm_info(BASE, "PCM", None), BASE);
     }
@@ -8006,7 +8803,7 @@ mod pcm_sink_lead_pure_tests {
     fn a_pcm_load_asks_for_the_output_only_on_a_stack_whose_lead_follows_it() {
         for stack in ALL_STACKS {
             let reads = std::cell::Cell::new(0);
-            let lead = load_audio("flac", crate::player::RATE_NORMAL, None, stack).unwrap().lead;
+            let lead = load_audio("flac", crate::player::RATE_NORMAL, None, None, stack).unwrap().lead;
             let resolved = lead.resolve(|| {
                 reads.set(reads.get() + 1);
                 Some("bt_soundbar".to_string())
@@ -8079,7 +8876,7 @@ mod pcm_sink_lead_pure_tests {
     #[test]
     fn the_engines_lead_follows_the_declared_audio_the_speed_override_and_the_stack() {
         use crate::player::RATE_NORMAL;
-        let plan = |codec: &str, rate: i32| load_audio(codec, rate, None, AudioStack::Liblxa).map(|a| (a.name, a.lead));
+        let plan = |codec: &str, rate: i32| load_audio(codec, rate, None, None, AudioStack::Liblxa).map(|a| (a.name, a.lead));
         let from_output = PcmLead::FromOutput(AudioStack::Liblxa);
         assert_eq!(plan("flac", RATE_NORMAL), Some(("PCM", from_output)));
         assert_eq!(plan("alac", RATE_NORMAL), Some(("PCM", from_output)));
@@ -8090,22 +8887,48 @@ mod pcm_sink_lead_pure_tests {
         assert_eq!(plan("dca", 500), Some(("PCM", from_output)));
         assert_eq!(plan("flac", 1500), Some(("PCM", from_output)));
         assert_eq!(plan("not-a-codec", RATE_NORMAL), None, "an undeclarable codec still refuses the Load");
+        // At a speed the codec's name is not declared at all, so it cannot refuse: the guard is upstream,
+        // at every Load (`player::session_rate_for` -> `speed_offer` -> `ff::speed_decoder_available`).
+        assert_eq!(plan("not-a-codec", 1500), Some(("PCM", from_output)), "a speed session declares PCM whatever the codec is called");
         let sink = AudioStack::LgAudioSink;
-        let on_sink = |codec: &str, rate: i32| load_audio(codec, rate, None, sink).map(|a| (a.name, a.lead));
+        let on_sink = |codec: &str, rate: i32| load_audio(codec, rate, None, None, sink).map(|a| (a.name, a.lead));
         assert_eq!(on_sink("flac", RATE_NORMAL), Some(("PCM", PcmLead::Fixed(sink))));
         assert_eq!(on_sink("ac3", 1500), Some(("PCM", PcmLead::Fixed(sink))), "a speed session declares PCM on this stack too");
         assert_eq!(on_sink("ac3", RATE_NORMAL), Some(("AC3", PcmLead::Off)), "a compressed Load keeps the set's own decoder");
         let y2018 = AudioStack::AudioSinkNew;
-        let on_2018 = |codec: &str, rate: i32| load_audio(codec, rate, None, y2018).map(|a| (a.name, a.lead));
+        let on_2018 = |codec: &str, rate: i32| load_audio(codec, rate, None, None, y2018).map(|a| (a.name, a.lead));
         assert_eq!(on_2018("flac", RATE_NORMAL), Some(("PCM", PcmLead::FromOutput(y2018))));
         assert_eq!(on_2018("ac3", 1500), Some(("PCM", PcmLead::FromOutput(y2018))));
         assert_eq!(on_2018("ac3", RATE_NORMAL), Some(("AC3", PcmLead::Off)));
         for stack in NO_LEAD_STACKS {
-            let on = |codec: &str, rate: i32| load_audio(codec, rate, None, stack).map(|a| (a.name, a.lead));
+            let on = |codec: &str, rate: i32| load_audio(codec, rate, None, None, stack).map(|a| (a.name, a.lead));
             assert_eq!(on("flac", RATE_NORMAL), Some(("PCM", PcmLead::NoLead(stack))), "{stack:?}");
             assert_eq!(on("ac3", 1500), Some(("PCM", PcmLead::NoLead(stack))), "{stack:?}");
             assert_eq!(on("ac3", RATE_NORMAL), Some(("AC3", PcmLead::Off)), "{stack:?}");
         }
+    }
+
+    /// **App-decoded DTS** (S4, the lossy gate on) declares `"audio":"PCM"` and so takes the lead of the
+    /// set's stack exactly like FLAC; the same track left to the set's own decoder (`a="DTS"`) gets none.
+    /// `load_audio` is given the shape the session declared (`route::stream_pcm`), so the name the
+    /// payload carries and the lead plan cannot disagree.
+    #[test]
+    fn app_decoded_dts_takes_the_stacks_lead_and_native_dts_none() {
+        use crate::player::RATE_NORMAL;
+        let shape = crate::route::PcmFormat::STEREO_48K;
+        for stack in ALL_STACKS {
+            let app = load_audio("dts", RATE_NORMAL, Some(&shape), None, stack).unwrap();
+            let like_flac = load_audio("flac", RATE_NORMAL, Some(&shape), None, stack).unwrap();
+            assert_eq!((app.name, app.diagnostic), ("PCM", 5), "{stack:?}");
+            assert_eq!(app.lead, like_flac.lead, "{stack:?}: the same plan as a FLAC Load");
+            assert_eq!(app.lead, pcm_lead_plan("PCM", None, stack), "{stack:?}");
+            let native = load_audio("dts", RATE_NORMAL, None, None, stack).unwrap();
+            assert_eq!((native.name, native.lead), ("DTS", PcmLead::Off), "{stack:?}: a compressed Load gets none");
+        }
+        assert_eq!(
+            load_audio("dts", RATE_NORMAL, Some(&shape), None, AudioStack::Liblxa).unwrap().lead,
+            PcmLead::FromOutput(AudioStack::Liblxa)
+        );
     }
 
     /// The per-Load override reaches the Engine's lead through the same value, for a PCM Load only,
@@ -8114,11 +8937,11 @@ mod pcm_sink_lead_pure_tests {
     fn the_dev_override_reaches_the_engines_lead_through_the_declaration() {
         use crate::player::RATE_NORMAL;
         for stack in ALL_STACKS {
-            assert_eq!(load_audio("flac", RATE_NORMAL, Some("330"), stack).unwrap().lead, PcmLead::Override(330_000_000, stack));
-            assert_eq!(load_audio("ac3", 1500, Some("0"), stack).unwrap().lead, PcmLead::Override(0, stack));
-            assert_eq!(load_audio("ac3", RATE_NORMAL, Some("330"), stack).unwrap().lead, PcmLead::Off);
+            assert_eq!(load_audio("flac", RATE_NORMAL, None, Some("330"), stack).unwrap().lead, PcmLead::Override(330_000_000, stack));
+            assert_eq!(load_audio("ac3", 1500, None, Some("0"), stack).unwrap().lead, PcmLead::Override(0, stack));
+            assert_eq!(load_audio("ac3", RATE_NORMAL, None, Some("330"), stack).unwrap().lead, PcmLead::Off);
         }
-        let flac = load_audio("flac", RATE_NORMAL, None, AudioStack::Liblxa).unwrap();
+        let flac = load_audio("flac", RATE_NORMAL, None, None, AudioStack::Liblxa).unwrap();
         assert_eq!(flac.diagnostic, 5, "the diagnostics code is the same pair's");
     }
 
@@ -8213,7 +9036,7 @@ mod pcm_stack_wiring_tests {
         );
         crate::player::ffi_host::delay_unload_for_test(unload_ms);
         stop_bufferfeed(&mut ps, &mut pa);
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         (pending, lead)
     }
 

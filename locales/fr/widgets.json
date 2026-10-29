@@ -19,6 +19,7 @@
   "widgets.tracks.stereo": "Stéréo",
   "widgets.tracks.original": "Original : {language}",
   "widgets.tracks.converted_by_server": "{track} · converti par votre serveur",
+  "widgets.tracks.decoded_in_app_stereo": "{track} · lu en stéréo",
   "widgets.action.mark_watched": "Marquer comme vu",
   "widgets.action.mark_unwatched": "Marquer comme non vu",
   "widgets.action.play_start": "Lire depuis le début",
