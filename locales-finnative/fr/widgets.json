@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "La réparation nécessite une TV rootée et Homebrew Channel. Aide : github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md",
+  "widgets.repair.question": "Réparer le bac à sable de FinNative ?",
+  "widgets.repair.body": "Utilisez l’accès root de Homebrew Channel pour mettre à jour le bac à sable de FinNative avec le profil natif de LG. Cela nécessite une TV rootée. Fermez puis rouvrez FinNative ensuite.",
+  "widgets.repair.reopen": "Fermez puis rouvrez FinNative avant de lire une vidéo.",
+  "widgets.repair.start_failed": "Impossible de lancer la réparation. Fermez puis rouvrez FinNative pour réessayer.",
+  "widgets.tracks.enh_note_burn": "Les sous-titres restent affichés. Votre serveur retravaillera la vidéo pour les conserver ; l’image peut paraître un peu moins nette.",
+  "widgets.tracks.enh_reason_not_analyzed": "Pas encore disponible pour cette vidéo. Votre serveur doit d’abord analyser sa piste son.",
+  "widgets.tracks.enh_reason_refused": "Votre serveur n’a pas pu l’activer pour cette vidéo."
+}

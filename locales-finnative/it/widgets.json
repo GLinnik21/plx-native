@@ -1,0 +1,7 @@
+{
+  "widgets.reason.jail_help": "Servono root e Homebrew Channel. Aiuto: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md.",
+  "widgets.repair.question": "Aggiornare i permessi di FinNative?",
+  "widgets.repair.body": "Usa l'accesso root di Homebrew Channel per aggiornare i permessi di FinNative con il profilo nativo LG. Serve una TV con root. Poi chiudi e riapri FinNative.",
+  "widgets.repair.reopen": "Chiudi e riapri FinNative prima di riprodurre un video.",
+  "widgets.repair.start_failed": "Impossibile avviare la riparazione. Chiudi e riapri FinNative per riprovare."
+}

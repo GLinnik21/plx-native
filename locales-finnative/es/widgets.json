@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "La reparación requiere un televisor con root y acceso a Homebrew Channel. Ayuda: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md.",
+  "widgets.repair.question": "¿Reparar el entorno aislado de FinNative?",
+  "widgets.repair.body": "Usa el acceso root de Homebrew Channel para actualizar el entorno aislado de FinNative con el perfil nativo de LG. Se requiere un televisor con root. Después, cierra y vuelve a abrir FinNative.",
+  "widgets.repair.reopen": "Cierra y vuelve a abrir FinNative antes de reproducir vídeo.",
+  "widgets.repair.start_failed": "No se pudo iniciar la reparación. Cierra y vuelve a abrir FinNative para intentarlo de nuevo.",
+  "widgets.tracks.enh_note_burn": "Los subtítulos se mantienen. Tu servidor reprocesará el vídeo para conservarlos, y la imagen puede verse algo menos nítida.",
+  "widgets.tracks.enh_reason_not_analyzed": "Este vídeo aún no está listo. Tu servidor necesita analizar primero su sonido.",
+  "widgets.tracks.enh_reason_refused": "Tu servidor no pudo activar esto para este vídeo."
+}

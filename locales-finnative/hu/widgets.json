@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "A javításhoz rootolt TV és Homebrew Channel-hozzáférés kell. Súgó: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md",
+  "widgets.repair.question": "Javítja a FinNative sandboxát?",
+  "widgets.repair.body": "A Homebrew Channel root-hozzáférésével frissítheti a FinNative sandboxát az LG natív profiljával. Ehhez rootolt TV szükséges. Utána zárja be, majd nyissa meg újra a FinNative-ot.",
+  "widgets.repair.reopen": "Videó lejátszása előtt zárja be, majd nyissa meg újra a FinNative-ot.",
+  "widgets.repair.start_failed": "A javítás nem indítható el. Az újrapróbáláshoz zárja be, majd nyissa meg újra a FinNative-ot.",
+  "widgets.tracks.enh_note_burn": "A feliratok bekapcsolva maradnak. A szerver ehhez újrafeldolgozza a videót, ezért a kép kissé életlenebb lehet.",
+  "widgets.tracks.enh_reason_not_analyzed": "Ehhez a videóhoz még nem érhető el. A szervernek előbb elemeznie kell a hangját.",
+  "widgets.tracks.enh_reason_refused": "A szerver ennél a videónál nem tudta bekapcsolni."
+}

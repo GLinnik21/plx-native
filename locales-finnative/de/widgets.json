@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "Die Reparatur braucht einen gerooteten Fernseher mit Homebrew Channel. Hilfe: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md",
+  "widgets.repair.question": "Sandbox von FinNative reparieren?",
+  "widgets.repair.body": "Nutzt den Root-Zugriff des Homebrew Channel, um die Sandbox von FinNative mit dem nativen Profil von LG zu aktualisieren. Dafür ist ein gerooteter Fernseher nötig. Schließe FinNative danach und öffne es erneut.",
+  "widgets.repair.reopen": "Schließe FinNative und öffne es erneut, bevor du Videos abspielst.",
+  "widgets.repair.start_failed": "Die Reparatur konnte nicht gestartet werden. Schließe FinNative und öffne es erneut, um es noch einmal zu versuchen.",
+  "widgets.tracks.enh_note_burn": "Die Untertitel bleiben an. Dein Server bearbeitet das Video, um sie zu behalten, daher kann das Bild etwas weicher wirken.",
+  "widgets.tracks.enh_reason_not_analyzed": "Für dieses Video noch nicht bereit. Dein Server muss erst den Ton analysieren.",
+  "widgets.tracks.enh_reason_refused": "Dein Server konnte dies für dieses Video nicht einschalten."
+}

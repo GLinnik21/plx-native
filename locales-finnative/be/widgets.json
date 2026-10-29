@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "Для выпраўлення патрэбны тэлевізар з root-доступам і Homebrew Channel. Даведка: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md.",
+  "widgets.repair.question": "Выправіць ізаляванае асяроддзе FinNative?",
+  "widgets.repair.body": "Выкарыстаць root-доступ Homebrew Channel, каб абнавіць ізаляванае асяроддзе FinNative з дапамогай натыўнага профілю LG. Для гэтага патрэбны тэлевізар з root-доступам. Пасля гэтага закрыйце і зноў адкрыйце FinNative.",
+  "widgets.repair.reopen": "Закрыйце і зноў адкрыйце FinNative, перш чым прайграваць відэа.",
+  "widgets.repair.start_failed": "Не ўдалося пачаць выпраўленне. Закрыйце і зноў адкрыйце FinNative, каб паспрабаваць яшчэ раз.",
+  "widgets.tracks.enh_note_burn": "Субтытры застануцца. Ваш сервер пераапрацуе відэа, каб іх захаваць, і карцінка можа стаць крыху менш чоткай.",
+  "widgets.tracks.enh_reason_not_analyzed": "Гэтае відэа яшчэ не гатова. Ваш сервер спачатку павінен прааналізаваць гук.",
+  "widgets.tracks.enh_reason_refused": "Ваш сервер не змог уключыць гэта для гэтага відэа."
+}

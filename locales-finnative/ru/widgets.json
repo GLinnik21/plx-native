@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "Для исправления нужны root-доступ к телевизору и Homebrew Channel. Инструкция: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md",
+  "widgets.repair.question": "Исправить песочницу FinNative?",
+  "widgets.repair.body": "Использовать root-доступ Homebrew Channel для обновления песочницы FinNative нативным профилем LG. Нужен телевизор с root-доступом. После исправления закройте и снова откройте FinNative.",
+  "widgets.repair.reopen": "Закройте и снова откройте FinNative перед просмотром видео.",
+  "widgets.repair.start_failed": "Не удалось начать исправление. Закройте и снова откройте FinNative для повторной попытки.",
+  "widgets.tracks.enh_note_burn": "Субтитры останутся включены. Чтобы сохранить их, сервер переработает видео, поэтому изображение может стать менее чётким.",
+  "widgets.tracks.enh_reason_not_analyzed": "Пока недоступно для этого видео. Сначала сервер должен проанализировать звук.",
+  "widgets.tracks.enh_reason_refused": "Сервер не смог включить эту функцию для видео."
+}

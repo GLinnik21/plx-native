@@ -1,0 +1,221 @@
+{
+  "settings.about.title": {
+    "value": "About FinNative",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.title"
+  },
+  "settings.root.copy": {
+    "value": "Manage this television and your Jellyfin user. Audio and subtitle language preferences sync with your Jellyfin user; playback settings belong to each profile, and the app language applies to this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.root.copy"
+  },
+  "settings.language.detail": {
+    "value": "Choose the language used by FinNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.detail"
+  },
+  "settings.language.copy": {
+    "value": "Choose the app language for everyone on this television. Changes apply after restarting FinNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.copy"
+  },
+  "settings.language.pending": {
+    "value": "Restart FinNative to apply this change.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.pending"
+  },
+  "settings.language.restart_hint": {
+    "value": "Hold {key} to close FinNative, then open it again.",
+    "description": "Complete sentence under the Language page's explanation, telling people how to restart the app: holding the remote's BACK button closes it (many LG remotes have no EXIT button). {key} is the BACK button rendered as a keycap; keep exactly one occurrence. Must fit one line of the Settings narrative column at CAPTION size.",
+    "args": {
+      "key": "str"
+    }
+  },
+  "settings.consent.crash.body": {
+    "value": "If FinNative crashes, or signing in fails, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, or which sign-in step failed and how the connection answered, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. Whether each app session ended normally is also sent. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.body"
+  },
+  "settings.consent.product.body": {
+    "value": "FinNative can share which screens and features are used, how smoothly they respond, and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.product.body"
+  },
+  "settings.consent.delete_scope": {
+    "value": "This signs out and removes FinNative data stored on this television. It does not delete anything your Jellyfin server keeps.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_scope"
+  },
+  "settings.consent.settings_copy": {
+    "value": "Control optional reporting, review exactly what may be shared, and manage data stored by FinNative on this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.settings_copy"
+  },
+  "settings.consent.preview_policy": {
+    "value": "The complete FinNative privacy policy for this build.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_policy"
+  },
+  "settings.consent.delete_detail": {
+    "value": "Sign out and remove FinNative data from this TV.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_detail"
+  },
+  "settings.consent.policy_subtitle": {
+    "value": "How FinNative handles local data and your Jellyfin server.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.policy_subtitle"
+  },
+  "settings.legal.source.title": {
+    "value": "FinNative source code",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.title"
+  },
+  "settings.legal.privacy.subtitle": {
+    "value": "Local data and your Jellyfin server.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.subtitle"
+  },
+  "settings.legal.copy": {
+    "value": "Read the notices that apply to this build, its open-source components and its relationship with Jellyfin, PlxNative, Plex and LG.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.copy"
+  },
+  "settings.legal.privacy.responsible_body": {
+    "value": "Tiago (github.com/tiper), who maintains FinNative, is responsible only for data FinNative stores locally and for optional reports you choose to share.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.responsible_body"
+  },
+  "settings.legal.privacy.plex_body": {
+    "value": "FinNative is an independent client for Plex. To sign you in, discover servers and provide Plex account features, the app communicates directly with Plex services. Plex processes information received by those services under Plex’s own Privacy Policy. FinNative’s developer does not receive that information.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.plex_body"
+  },
+  "settings.legal.privacy.servers_body": {
+    "value": "To browse and play media, update watch progress and use server features, FinNative communicates directly with the Plex Media Servers you select. Those requests are handled by the selected server and its operator. FinNative’s developer does not receive them.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.servers_body"
+  },
+  "settings.legal.privacy.local_body": {
+    "value": "FinNative stores your Plex account token and a separate token for each server you use. For every profile you have switched to on this television, it also keeps that profile's own server access token(s) and, for a PIN-protected profile, a one-way check computed from that PIN rather than the PIN itself. It also keeps the addresses and identifiers of those servers, the profile names and pictures on your account (pictures and other downloaded artwork are cached as bounded files for reuse across restarts), your Home library choices, your recent searches, your playback quality, Direct Play and app language preferences, and local technical logs: an event log and an error-output log, each emptied every time the app launches, a crash log that is kept until the television restarts, and a bounded storage status snapshot. It also stores your answers to the two optional-reporting questions, the random Crash report ID if you turned crash reports on, when the app session in progress started and was last active, the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a marker recording how much of the crash log has already been read. It keeps no bookmark of its own for where you stopped watching: playback position is held by your Plex Media Server. Delete all local data in Settings signs out and removes FinNative data from this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.local_body"
+  },
+  "settings.legal.privacy.choices_body": {
+    "value": "Both optional reports are off until you turn them on, and either can be turned off again at any time in Settings. A one-off sign-in problem report is sent only when you press Send report. Delete all local data removes what FinNative stored on this television; it does not reach anything already sent. To ask what crash reports or product analytics hold for your installation, or to have them deleted, write to the contact below and quote your Crash report ID or Analytics ID from Settings, or the Report ID shown after a one-off report. Each identifier is the only handle its reports carry. Turning a category off deletes its identifier from this television, and so does signing out; reports already sent keep the old one, so copy it down first if you intend to ask for their deletion.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.choices_body"
+  },
+  "settings.legal.privacy.processing_body": {
+    "value": "Optional crash reports are processed by Sentry in Germany and optional product analytics by PostHog in Germany. Plex processes what its own services receive under Plex’s Privacy Policy. A Plex Media Server you connect to may be located anywhere and is operated by whoever runs it, not by FinNative’s developer.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.processing_body"
+  },
+  "settings.legal.privacy.uninstall_body": {
+    "value": "Removing FinNative removes the application, but webOS gives an application no way to run code as it is removed, so anything kept outside the application’s own directory can survive. Your sign-in is deliberately kept there so that reinstalling does not sign you out. Your optional-reporting answers and their Crash report ID and Analytics ID are kept with that sign-in, so that a decision you have already made is not put to you again after a reinstall. Your app language preference is also kept there. Use Delete all local data BEFORE uninstalling if you want nothing of FinNative left on this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.uninstall_body"
+  },
+  "settings.legal.ffmpeg.body": {
+    "value": "This software uses libraries from the FFmpeg project under the LGPLv2.1. FFmpeg is copyright (c) the FFmpeg developers; FinNative does not own FFmpeg.\n\nThe FFmpeg libraries are unmodified and loaded dynamically, and may be replaced with an interface-compatible build. The complete corresponding FFmpeg 9.0 source, exact configure line and build script are published with every FinNative release.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.ffmpeg.body"
+  },
+  "settings.legal.trademarks.body": {
+    "value": "Jellyfin and the Jellyfin logo belong to the Jellyfin project.\n\nPlex, the Plex logo and Plex Media Server are trademarks of Plex, Inc.\n\nLG and webOS are trademarks of LG Electronics Inc.\n\nPlxNative is the name of Gleb Linnik's application; FinNative uses it only to credit the work it is built on.\n\nFinNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with the Jellyfin project, the PlxNative project, Plex, Inc. or LG Electronics Inc.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.body"
+  },
+  "settings.legal.contact.body": {
+    "value": "Questions about FinNative, including privacy and security, may be sent to its maintainer, Tiago (github.com/tiper). Please do not report FinNative problems to the PlxNative project, and do not include access tokens, server addresses or personal media information in a report.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.body"
+  },
+  "settings.legal.opensource.body": {
+    "value": "FinNative is open-source software licensed under GPL-3.0-or-later. It is a modified version of PlxNative, Copyright (c) 2026 Gleb Linnik and contributors; the Jellyfin changes are Copyright (c) 2026 Tiago. You may modify and redistribute it under these terms. There is no warranty, to the extent permitted by law.\n\nThird-party components retain their own licences. The package includes THIRD-PARTY-NOTICES.md and licence texts for the Rust runtime and crates, FFmpeg, Sentry Native, libunwind, NanoSVG, fonts and icons. Platform libraries have separate terms.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.body"
+  },
+  "settings.legal.source.body": {
+    "value": "Source for build {build}:\n\nhttps://github.com/tiper/fin-native/tree/{build}\n\nLocal migration candidates may contain unpublished changes. Their matching source snapshot is provided with the candidate evidence. A published binary must be accompanied by its version-specific complete source bundle and build instructions; a moving branch is not the corresponding-source record. See LICENSING.md in the package.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.body",
+    "args": {
+      "build": "str"
+    }
+  },
+  "settings.about.body": {
+    "value": "Version {version}\nBuild {build}\nPlxNative {plxnative}\n\nFinNative, maintained by Tiago (github.com/tiper)\nPowered by PlxNative, developed by Gleb Linnik\n© 2026 Gleb Linnik and contributors\n\nOpen source under GPL-3.0-or-later\ngithub.com/tiper/fin-native\n\nFinNative is an independent, unofficial application. It is not endorsed by the PlxNative project, and it is not produced by, endorsed by, or affiliated with the Jellyfin project, Plex, Inc. or LG Electronics Inc.",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.body",
+    "args": {
+      "build": "str",
+      "plxnative": "str",
+      "version": "str"
+    }
+  },
+  "settings.audio.detail": {
+    "value": "Language preferences synced with your Jellyfin user.",
+    "description": "Settings, consent or sign-in UI: settings.audio.detail"
+  },
+  "settings.playback.force_body": {
+    "value": "Bypasses playback compatibility checks and always uses original quality. Playback may have no sound, display incorrectly, freeze, or crash the app. FinNative will not automatically switch to compatible playback and may not recover gracefully.\n\nEnable this only if you understand these risks and know how to restart the app and return Direct Play to Auto.",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_body"
+  },
+  "settings.audio.account_note": {
+    "value": "Saved to this Jellyfin user and shared with your other Jellyfin apps. Changes may take time to affect playback; selections already made for an item still take priority.",
+    "description": "Settings, consent or sign-in UI: settings.audio.account_note"
+  },
+  "settings.playback.quality.copy": {
+    "value": "The highest quality a video plays at. Larger files are converted by your server to fit. Also available in the player's More menu.",
+    "description": "Explanation under the title of the Default quality picker (Settings, Video & playback). Describes the ceiling and says the same control is in the player's More menu (the More menu drops its Quality section only under Forced Direct Play, where this text is replaced by the Force note)."
+  },
+  "settings.playback.direct_play.copy": {
+    "value": "Auto plays the original file when this television can; otherwise your server converts it. Disabled always converts. Force skips every check: for troubleshooting only.",
+    "description": "Explanation under the title of the Direct Play picker. Names its three modes in order: Auto, Disabled and Force (the picker's third option, 'Force Direct Play (advanced)'). While Force is on the Force note replaces it."
+  },
+  "settings.audio.saving": {
+    "value": "Saving to your account…",
+    "description": "Settings, consent or sign-in UI: settings.audio.saving"
+  },
+  "settings.audio.loading": {
+    "value": "Loading your account preferences…",
+    "description": "Settings, consent or sign-in UI: settings.audio.loading"
+  },
+  "settings.audio.sign_in_again": {
+    "value": "Sign in to this Jellyfin user again to edit its preferences.",
+    "description": "Settings, consent or sign-in UI: settings.audio.sign_in_again"
+  },
+  "settings.plaintext.body": {
+    "value": "Your Jellyfin sign-in will travel without encryption over this network, to this server only.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.body"
+  },
+  "settings.plaintext.server": {
+    "value": "Jellyfin server",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.server"
+  },
+  "settings.legal.privacy.plaintext_body": {
+    "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
+    "value": "For a server you were asked about, FinNative also keeps whether you allowed an unencrypted connection on your home network, for the Jellyfin account that answered. Only the answer is stored. The permission itself is never stored and ends when a fresh check no longer reaches the same server address, at sign-in or sign-out, at a profile switch unless the new profile reaches that server at the same address, or when the app returns from the background."
+  },
+  "settings.legal.privacy.fin.responsible": {
+    "value": "RESPONSIBLE FOR FINNATIVE DATA",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.responsible"
+  },
+  "settings.legal.privacy.fin.responsible_body": {
+    "value": "Tiago (github.com/tiper), who maintains FinNative, is responsible only for the data FinNative stores on this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.responsible_body"
+  },
+  "settings.legal.privacy.fin.jellyfin": {
+    "value": "YOUR JELLYFIN SERVER",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.jellyfin"
+  },
+  "settings.legal.privacy.fin.jellyfin_body": {
+    "value": "To sign you in, browse and play your media and keep your watch progress, FinNative talks only to the Jellyfin server you sign in to, and, while you sign in, looks for Jellyfin servers on your home network. It tells that server this app's name and version, the device name “LG TV” and a random device identifier, and reports what you play and how far you got, so the server can keep your progress and list this television among its devices. Those requests are handled by the server and whoever runs it, under their own terms. FinNative's developer does not receive them.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.jellyfin_body"
+  },
+  "settings.legal.privacy.fin.local_body": {
+    "value": "FinNative stores the address and identifier of your Jellyfin server and the access token the server issued when you signed in, never your password. It also keeps your Home library choices, your recent searches, the audio and subtitle tracks you picked for each show, your playback quality, Direct Play and app language preferences, downloaded artwork cached as bounded files for reuse across restarts, and local technical logs: an event log and an error-output log, each emptied every time the app launches, a crash log that is kept until the television restarts, and a bounded storage status snapshot. It keeps no bookmark of its own for where you stopped watching: playback position is held by your Jellyfin server. Delete all local data in Settings signs out and removes FinNative data from this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.local_body"
+  },
+  "settings.legal.privacy.fin.reports": {
+    "value": "NO REPORTS",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.reports"
+  },
+  "settings.legal.privacy.fin.reports_body": {
+    "value": "FinNative sends no crash reports, analytics or other data to its developer or to anyone else. Apart from the requests to your Jellyfin server described above, nothing leaves this television, and its logs stay on it.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.reports_body"
+  },
+  "settings.legal.privacy.fin.retention_body": {
+    "value": "Signing out removes your sign-in, your Jellyfin server's address and token, and the cached artwork. Your app language preference belongs to this television and is kept when you sign out. The event log and the error-output log are emptied every time the app launches, the crash log is kept until the television restarts (the television clears its temporary storage then), and the storage snapshot is replaced when its bounded status changes. Delete all local data removes all of it.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.retention_body"
+  },
+  "settings.legal.privacy.fin.uninstall_body": {
+    "value": "Removing FinNative removes the application, but webOS gives an application no way to run code as it is removed, so anything kept outside the application’s own directory can survive. Your sign-in is deliberately kept there so that reinstalling does not sign you out, and so is your app language preference. Use Delete all local data BEFORE uninstalling if you want nothing of FinNative left on this television.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.uninstall_body"
+  },
+  "settings.legal.privacy.fin.contact_body": {
+    "value": "Privacy questions: github.com/tiper/fin-native/issues",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.fin.contact_body"
+  },
+  "settings.account.add_user": {
+    "value": "Add user",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.add_user"
+  },
+  "settings.privacy.detail": {
+    "value": "Privacy information and local data.",
+    "description": "FinNative: the Privacy & data row's subtitle, with no optional reports (FinNative sends none)"
+  }
+}

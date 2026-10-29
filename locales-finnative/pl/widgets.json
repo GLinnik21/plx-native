@@ -1,0 +1,10 @@
+{
+  "widgets.reason.jail_help": "Naprawa wymaga zrootowanego TV i dostępu do Homebrew Channel. Pomoc: github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md",
+  "widgets.repair.question": "Naprawić piaskownicę FinNative?",
+  "widgets.repair.body": "Użyj dostępu root Homebrew Channel, aby zaktualizować piaskownicę FinNative natywnym profilem LG. Wymaga to telewizora z uprawnieniami root. Potem zamknij i ponownie otwórz FinNative.",
+  "widgets.repair.reopen": "Zamknij i ponownie otwórz FinNative przed odtworzeniem wideo.",
+  "widgets.repair.start_failed": "Nie udało się rozpocząć naprawy. Zamknij i ponownie otwórz FinNative, aby spróbować jeszcze raz.",
+  "widgets.tracks.enh_note_burn": "Napisy zostają włączone. Serwer przetworzy obraz, aby je zachować, więc obraz może być nieco mniej ostry.",
+  "widgets.tracks.enh_reason_not_analyzed": "Jeszcze niegotowe dla tego filmu. Serwer musi najpierw przeanalizować jego dźwięk.",
+  "widgets.tracks.enh_reason_refused": "Serwer nie mógł tego włączyć dla tego filmu."
+}

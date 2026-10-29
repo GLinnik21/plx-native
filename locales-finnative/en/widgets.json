@@ -1,0 +1,39 @@
+{
+  "widgets.reason.jail_help": {
+    "value": "Repair requires a rooted TV and Homebrew Channel access. See github.com/tiper/fin-native/blob/main/docs/native-video-sandbox.md for help.",
+    "description": "reason jail_help"
+  },
+  "widgets.panel.jail": {
+    "value": "this install's sandbox blocks access to /dev/rtkmem; FinNative can offer a confirmed repair through rooted Homebrew Channel access",
+    "translate": false,
+    "description": "Playback verdict line: the install's sandbox blocks the video-plane device node."
+  },
+  "widgets.repair.question": {
+    "value": "Repair FinNative’s sandbox?",
+    "description": "repair question"
+  },
+  "widgets.repair.body": {
+    "value": "Use Homebrew Channel’s root access to update FinNative’s sandbox with LG’s native profile. This requires a rooted TV. Close and reopen FinNative afterward.",
+    "description": "repair body"
+  },
+  "widgets.repair.reopen": {
+    "value": "Close and reopen FinNative before playing video.",
+    "description": "repair reopen"
+  },
+  "widgets.repair.start_failed": {
+    "value": "Could not start the repair. Close and reopen FinNative to try again.",
+    "description": "repair start_failed"
+  },
+  "widgets.tracks.enh_note_burn": {
+    "value": "Subtitles stay on. Your server will rework the video to keep them, so the picture may look a little softer.",
+    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows when the subtitle on screen is embedded in the file — turning the toggle on makes the server re-encode the video to keep it in view. No jargon: never say burn/re-encode/transcode."
+  },
+  "widgets.tracks.enh_reason_not_analyzed": {
+    "value": "Not ready for this video yet. Your server needs to scan its sound first.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the carried audio track has no canNormalizeLoudness fact yet."
+  },
+  "widgets.tracks.enh_reason_refused": {
+    "value": "Your server couldn't turn this on for this video.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows after this playback's server already refused or ignored the params once."
+  }
+}

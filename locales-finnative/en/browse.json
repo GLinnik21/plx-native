@@ -1,0 +1,121 @@
+{
+  "browse.home.failed": {
+    "value": "Can’t reach your server",
+    "description": "browse home failed"
+  },
+  "browse.login.title": {
+    "value": "Sign in to Jellyfin",
+    "description": "browse login title"
+  },
+  "browse.login.instructions": {
+    "value": "On your phone or computer, open Jellyfin, go to Quick Connect in your user settings and enter this code. You can also scan the code to open that page.",
+    "description": "browse login instructions"
+  },
+  "browse.login.connecting": {
+    "value": "Connecting to Jellyfin…",
+    "description": "browse login connecting"
+  },
+  "browse.auth.tls_untrusted": {
+    "value": "This TV doesn't trust your server's security certificate. Update FinNative and try again.",
+    "description": "Reason line on Who's watching or the sign-in read-out when the server answered over HTTPS but its certificate chain could not be verified against this television's trusted certificate authorities (X509 verify result 2, 18, 19, 20 or 21); it is NOT the wrong-clock case, which has its own line. The sentence names the remedy that exists in the app: results 2, 20 and 21 on a plex.direct name mean an out-of-date certificate store, which an update answers with newer bundled public roots; 18 and 19 mean the server presented its own root, which only the server's owner can fix. No placeholders. Sits in a two-line reason slot on the sign-in read-out and one centred line on the picker; keep the whole sentence at 125 characters or fewer."
+  },
+  "browse.jf.no_server": {
+    "value": "No Jellyfin server answered on this network. Use Manual sign-in to enter its address.",
+    "description": "FinNative sign-in failure: LAN discovery found no Jellyfin server; points at the Manual sign-in button"
+  },
+  "browse.jf.unreachable": {
+    "value": "Couldn’t reach your Jellyfin server. Check the address and that the server is on.",
+    "description": "FinNative sign-in failure: the server address did not answer"
+  },
+  "browse.jf.not_jellyfin": {
+    "value": "There’s no Jellyfin server at that address.",
+    "description": "FinNative sign-in failure: something answered at the address but it is not Jellyfin"
+  },
+  "browse.jf.wrong_password": {
+    "value": "Wrong username or password.",
+    "description": "FinNative sign-in failure: the server rejected the username and password"
+  },
+  "browse.jf.sign_in_failed": {
+    "value": "Your Jellyfin server didn’t accept the sign-in. Try again.",
+    "description": "FinNative sign-in failure: the server answered the password sign-in with an error"
+  },
+  "browse.jf.quick_connect_failed": {
+    "value": "Your Jellyfin server didn’t start Quick Connect. Try again.",
+    "description": "FinNative sign-in failure: the server would not start Quick Connect"
+  },
+  "browse.jf.quick_connect_off": {
+    "value": "Quick Connect is off on your Jellyfin server. Turn it on in Dashboard, General, or use Manual sign-in.",
+    "description": "FinNative sign-in failure: Quick Connect is disabled on the server; names the Jellyfin dashboard page and the Manual sign-in button"
+  },
+  "browse.jf.bad_address": {
+    "value": "This Jellyfin server’s address can’t be used.",
+    "description": "FinNative sign-in failure: the server address cannot be turned into a connection"
+  },
+  "browse.jf.plaintext_name": {
+    "value": "This server isn’t encrypted, so it can only be used at its IP address on your home network, like http://192.168.1.20:8096. Or use its https:// address.",
+    "description": "FinNative sign-in failure: the server address is plain http but is a name or a public address, which a release build will not send a password to unencrypted; gives an example private IP address with Jellyfin's default port"
+  },
+  "browse.jf.manual": {
+    "value": "Manual sign-in",
+    "description": "FinNative sign-in page button: opens the form to type a server address, username and password"
+  },
+  "browse.jf.next_up": {
+    "value": "Next Up",
+    "description": "FinNative shelf title: the next unwatched episode of each show being watched (Jellyfin's Next Up)"
+  },
+  "browse.jf.more_like_this": {
+    "value": "More Like This",
+    "description": "FinNative shelf title on an item's page: titles Jellyfin finds similar to this one"
+  },
+  "browse.jf.form_copy": {
+    "value": "Enter your server’s address, then sign in with your username and password, or with Quick Connect.",
+    "description": "FinNative manual sign-in form: the paragraph under the title"
+  },
+  "browse.jf.server": {
+    "value": "Server address",
+    "description": "FinNative manual sign-in form: label of the server address field"
+  },
+  "browse.jf.server_example": {
+    "value": "192.168.1.20:8096 or https://jellyfin.example.com",
+    "description": "FinNative manual sign-in form: example shown in the empty server address field; keep the two addresses unchanged"
+  },
+  "browse.jf.username": {
+    "value": "Username",
+    "description": "FinNative manual sign-in form: label of the username field"
+  },
+  "browse.jf.password": {
+    "value": "Password",
+    "description": "FinNative manual sign-in form: label of the password field"
+  },
+  "browse.jf.quick_connect": {
+    "value": "Use Quick Connect",
+    "description": "FinNative manual sign-in form: button that signs in to the typed server by Quick Connect instead of a password"
+  },
+  "browse.jf.need_server": {
+    "value": "Enter your server’s address first.",
+    "description": "FinNative manual sign-in form: shown when Sign in or Quick Connect is pressed with no server address"
+  },
+  "browse.jf.need_username": {
+    "value": "Enter your username.",
+    "description": "FinNative manual sign-in form: shown when Sign in is pressed with no username"
+  },
+  "browse.jf.favorite_add": {
+    "value": "Add to Favorites",
+    "description": "FinNative item menu row and detail-page control: makes this movie, show or episode one of the user's Jellyfin favorites"
+  },
+  "browse.jf.favorite_remove": {
+    "value": "Remove from Favorites",
+    "description": "FinNative item menu row and detail-page control: takes this movie, show or episode off the user's Jellyfin favorites"
+  },
+  "browse.jf.favorites": {
+    "value": "Favorites",
+    "description": "FinNative Home shelf title: the movies, shows and episodes the user marked as Jellyfin favorites"
+  },
+  "browse.auth.sign_in_again": {
+    "value": "The server no longer accepts {profile}’s sign-in. Sign in again with Add user.",
+    "description": "browse auth sign_in_again",
+    "args": {
+      "profile": "str"
+    }
+  }
+}
