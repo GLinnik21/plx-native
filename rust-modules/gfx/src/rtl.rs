@@ -182,7 +182,9 @@ impl Face {
         Some(Shaped { w: out.width, h: out.height, ascent: out.ascent, alpha })
     }
 
-    /// The box `s` (one directional run, logical order) would render into, without rasterizing.
+    /// The box `s` (one directional run, logical order) would render into. It runs the same layout
+    /// pass as [`Self::render`], rasterizing every glyph, because the box is the ink's extent; it
+    /// stops before compositing the coverage buffer, so it returns no alpha.
     pub(crate) fn measure(&self, s: &str, rtl: bool) -> Option<Shaped> {
         self.call(s, rtl, false)
     }
