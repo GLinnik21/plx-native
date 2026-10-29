@@ -2285,7 +2285,8 @@ fn a_deliberate_move_ends_a_shelfs_return_and_is_slept_through() {
 /// move that names no card of this shelf), or the BACK that walks there (a seat the page makes for
 /// itself, announced as a restore). The seat lets go and its band shuts at once, like an entry's:
 /// a band left closing on its spring is layout motion, and the image waits for it. Elem 7 is on the
-/// page and not a card of the shelf.
+/// page and not a card of the shelf. The return ends with the departure, whichever way focus left:
+/// a card of the shelf that focus lands on afterwards, with no fresh `Enter`, is slept through.
 #[test]
 fn a_shelf_that_returned_sleeps_through_focus_leaving_it() {
     for by in [By::Dir, By::Pointer, By::Restore] {
@@ -2303,6 +2304,31 @@ fn a_shelf_that_returned_sleeps_through_focus_leaving_it() {
         assert!(!band_open(&r) && r.sect.at_rest(), "{by:?}: a band is left closing under the image");
         assert!(!r.run(1), "{by:?}: something moves under the image");
         assert_eq!(lifted(&r), 0, "{by:?}");
+        r.land_focus(102, By::Restore);
+        r.run(1);
+        assert_eq!(r.scale(102), Some(1.0), "{by:?}: the return ended when focus left, so a later seat is slept through");
+        assert!(!band_open(&r) && r.sect.at_rest(), "{by:?}: and its band stays shut");
+        assert!(!r.run(1), "{by:?}: and nothing moves under the image");
+    }
+}
+
+/// **A return no move announces wakes at its lift too.** The engine's focus can stay on the card
+/// while the page is covered, so the page comes back with `Enter(Restored)` and no `FocusMoved`. What
+/// the shelf slept through is stale then as well: the first tick adopts the seat at full pop as it
+/// does any focus no deliberate move announced, and does not grow it from rest (the wake of an
+/// entry's dissolve).
+#[test]
+fn a_shelf_that_returns_with_no_restoring_move_wakes_at_its_lift_and_not_from_rest() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = shelf_left_lifted();
+    let _held = ImageHeld::set();
+    r.sect.dormant(true);
+    r.run(3);
+    assert_eq!(r.scale(101), Some(1.0), "premise: it slept, with focus still on the card");
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    for frame in 0..5 {
+        r.run(1);
+        assert_eq!(r.scale(101), Some(full), "adopted whole, not grown from rest, frame {frame}");
     }
 }
 
