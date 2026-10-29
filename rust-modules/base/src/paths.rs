@@ -648,6 +648,49 @@ pub fn image_cache_dir_is_private(path: &Path) -> bool {
     path.parent() == Some(Path::new("/media/developer/temp"))
 }
 
+/// Where the installed player-HUD packages may live (`data::hudpacks`), best first, on
+/// [`image_cache_candidates`]'s pattern and keyed by [`app_id`] so two flavours never share a store
+/// (a debug build's unreviewed sideload must never reach the stable install):
+///
+/// 1. a steerable (hostsim) build: [`in_runtime_dir`]`("huds")` FIRST, so two simulators never share one;
+/// 2. `/media/developer/{id}-huds` (Developer Mode: rw, survives a reinstall);
+/// 3. `/media/internal/.{id}-huds` (the production jail's persistent rw location);
+/// 4. `/media/developer/temp/{id}-huds` when (2) is refused, created owner-only
+///    ([`hud_dir_is_private`]);
+/// 5. a device build: [`in_runtime_dir`]`("huds")` LAST. That is `/tmp` on the television, which a
+///    restart clears, so a package only this one took is installed "until restart"; the caller marks
+///    that candidate (the first one on a steerable build is an ordinary directory).
+///
+/// `in_app_dir` is never a candidate: the jailed uid cannot write there.
+pub fn hud_candidates() -> Vec<PathBuf> {
+    hud_candidate_list(ENV_STEERABLE, app_id(), in_runtime_dir("huds"))
+}
+
+/// [`hud_candidates`] for a given build kind, install id and runtime-root directory: the order lives
+/// here so a test pins both build kinds and several flavours in one build.
+fn hud_candidate_list(steerable: bool, id: &str, runtime: PathBuf) -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if steerable {
+        v.push(runtime.clone());
+    }
+    v.extend([
+        PathBuf::from(format!("/media/developer/{id}-huds")),
+        PathBuf::from(format!("/media/internal/.{id}-huds")),
+        PathBuf::from(format!("/media/developer/temp/{id}-huds")),
+    ]);
+    if !steerable {
+        v.push(runtime);
+    }
+    v
+}
+
+/// Whether the HUD store must create this candidate owner-only: it sits directly in the
+/// world-writable `/media/developer/temp`, like the image cache's. The other candidates keep the mode
+/// they are given.
+pub fn hud_dir_is_private(path: &Path) -> bool {
+    path.parent() == Some(Path::new("/media/developer/temp"))
+}
+
 /// The spool, beside the decision that authorised it.
 ///
 /// **Same directories, same search order, different file** — and not merged into
@@ -751,6 +794,65 @@ mod tests {
             .collect();
         assert_eq!(private.len(), 1, "{c:?}");
         assert!(private[0].starts_with("/media/developer/temp"), "{c:?}");
+    }
+
+    /// The HUD store's candidates, in the spec's order, for both build kinds and every flavour: the
+    /// runtime directory comes FIRST on a steerable build and LAST (the `/tmp`-backed fallback) on a
+    /// device build, never twice, and `in_app_dir` is never offered.
+    #[test]
+    fn hud_candidates_are_ordered_per_build_kind_and_keyed_by_the_install_id() {
+        use std::path::PathBuf;
+        let runtime = PathBuf::from("/run/instance/huds");
+        for id in [super::STABLE_APP_ID, "com.beb.plxnative.debug", "com.beb.plxnative.nightly"] {
+            let persistent = vec![
+                PathBuf::from(format!("/media/developer/{id}-huds")),
+                PathBuf::from(format!("/media/internal/.{id}-huds")),
+                PathBuf::from(format!("/media/developer/temp/{id}-huds")),
+            ];
+            let mut steerable = vec![runtime.clone()];
+            steerable.extend(persistent.clone());
+            let mut device = persistent;
+            device.push(runtime.clone());
+            assert_eq!(super::hud_candidate_list(true, id, runtime.clone()), steerable, "{id}");
+            assert_eq!(super::hud_candidate_list(false, id, runtime.clone()), device, "{id}");
+        }
+    }
+
+    /// Two flavours never share a HUD directory: every persistent candidate differs.
+    #[test]
+    fn hud_candidates_of_two_flavours_share_no_persistent_directory() {
+        let rt = |name: &str| std::path::PathBuf::from(format!("/tmp/{name}/huds"));
+        let stable = super::hud_candidate_list(false, super::STABLE_APP_ID, rt("a"));
+        let debug = super::hud_candidate_list(false, "com.beb.plxnative.debug", rt("b"));
+        for (a, b) in stable.iter().zip(&debug) {
+            assert_ne!(a, b);
+        }
+    }
+
+    /// The live answer is the build kind's list, for this install's id and runtime root, and the app
+    /// directory is not in it.
+    #[test]
+    fn hud_candidates_answer_for_this_build_and_never_offer_the_app_dir() {
+        let live = super::hud_candidates();
+        let want =
+            super::hud_candidate_list(super::ENV_STEERABLE, super::app_id(), super::in_runtime_dir("huds"));
+        assert_eq!(live, want);
+        let runtime = super::in_runtime_dir("huds");
+        assert_eq!(live.iter().filter(|p| **p == runtime).count(), 1, "{live:?}");
+        assert_eq!(live.len(), 4, "{live:?}");
+        assert!(!live.contains(&super::in_app_dir("huds")), "{live:?}");
+        let at = if super::ENV_STEERABLE { 0 } else { live.len() - 1 };
+        assert_eq!(live[at], runtime, "{live:?}");
+    }
+
+    /// Only the candidate inside the world-writable `/media/developer/temp` is created owner-only.
+    #[test]
+    fn hud_dir_is_private_only_inside_the_shared_temp_directory() {
+        let c = super::hud_candidates();
+        let private: Vec<_> = c.iter().filter(|p| super::hud_dir_is_private(p)).collect();
+        assert_eq!(private.len(), 1, "{c:?}");
+        assert!(private[0].starts_with("/media/developer/temp"), "{c:?}");
+        assert!(!super::hud_dir_is_private(std::path::Path::new("/media/developer/x-huds")));
     }
 
     /// The runtime root is a path in the shared, sticky `/tmp`, and `ensure_runtime_dir` chmods it
