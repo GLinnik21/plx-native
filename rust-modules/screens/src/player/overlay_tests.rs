@@ -31,6 +31,7 @@ use plx_machine::machine::{
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
 };
 use plx_ui::screen::{At, By, Focusable, Placed, ScreenEvent};
+#[path = "hud_pins_tests.rs"] mod hud_pins;
 
 pub(super) struct TestHost;
 impl Host for TestHost {
