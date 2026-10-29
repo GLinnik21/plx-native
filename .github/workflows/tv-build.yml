@@ -1,0 +1,78 @@
+name: TV build (fork)
+
+# A RELEASE-CONFIGURATION .ipk of whatever the `tv-build` branch holds, for sideloading onto the
+# owner's own television through Developer Mode. Fork-only: it exists because the official
+# pipelines cannot run here — `build-package.yml` requires the upstream repository's telemetry
+# variables and Sentry token, and `nightly.yml` its tag plan — and because an x86_64 host cannot
+# cross-build at all (the webOS NDK has no linux-x86_64 build). Not for upstreaming.
+#
+# What it builds: `RELEASE=1` (no devtools, no `/tmp` triggers, so no write failsafe: Seerr requests
+# and Watchlist changes go through) as `FLAVOR=nightly` (`com.beb.plxnative.nightly`, installing
+# beside a stable or debug install; it replaces an official nightly if one is installed). No
+# telemetry endpoint is configured, so telemetry is compiled out (the Makefile's local-build
+# default). Debug files are not uploaded anywhere.
+#
+# It runs on a push to `tv-build` (a `workflow_dispatch` button only appears for a workflow on the
+# default branch), and by hand from the Actions tab once that is so. The .ipk is the run's artifact.
+
+on:
+  push:
+    branches: [tv-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tv-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: armv7 release build (nightly id)
+    # MUST be arm64 Linux: no linux-x86_64 webOS NDK exists (ci.yml's cross-build job says why).
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned Rust and the armv7 target
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
+
+      - id: ndk
+        uses: ./.github/actions/webos-ndk
+
+      - name: Cache the bundled FFmpeg
+        # The same key as ci.yml's cross-build job: `ci/build-ffmpeg.sh` re-derives its own tree key,
+        # so a stale restore can only rebuild, never hand back wrong objects.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/plxnative/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/deps.py', 'ci/dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
+
+      - name: Build
+        # RELEASE=1 must be on every make invocation that builds or ships the release artifact.
+        run: make RELEASE=1 FLAVOR=nightly WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
+
+      - name: Package
+        run: make ipk RELEASE=1 FLAVOR=nightly WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}'
+
+      - name: ELF assertions
+        run: ./ci/check-elf.sh
+        env:
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
+
+      - name: Packaging assertions
+        env:
+          REQUIRE_PACKAGE: "1"
+        run: python3 ci/check-package.py
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plxnative-tv-${{ github.sha }}
+          path: |
+            pkg/*.ipk
+          if-no-files-found: error
