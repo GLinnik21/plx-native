@@ -1,0 +1,15 @@
+{
+  "file": "newer-format.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0402",
+      "hint": "this PlxNative reads HUD format 1.0",
+      "message": "Made for a newer PlxNative",
+      "nearest": [],
+      "path": "/format",
+      "rule": "format-newer-minor",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}
