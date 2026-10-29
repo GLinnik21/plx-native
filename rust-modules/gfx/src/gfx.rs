@@ -928,7 +928,7 @@ unsafe fn supersample_aa(src: *const c_char) -> Option<std::ffi::CString> {
 }
 
 pub fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
-    try_compile(ty, src).unwrap_or_else(|| std::process::exit(1))
+    try_compile(ty, src).unwrap_or_else(|| plx_base::process::exit_now(1))
 }
 
 /// Optional programs may degrade on a driver's compile rejection; required shaders keep the
@@ -1094,7 +1094,7 @@ pub fn init_gl() {
             // ambient/shadow/image programs below merely degrade.
             log("base prog link FAILED — exiting");
             eprintln!("link failed");
-            std::process::exit(1);
+            plx_base::process::exit_now(1);
         });
         use_prog(PROG);
         LOC_RECT = glGetUniformLocation(PROG, c"u_rect".as_ptr());

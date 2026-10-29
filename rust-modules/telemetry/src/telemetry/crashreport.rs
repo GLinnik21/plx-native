@@ -111,7 +111,7 @@ pub struct CrashThread {
 }
 
 /// The process phase at the fault (`plx_crash_phase`, `src/crashfmt.h`'s `PLX_PHASE_*`): a crash
-/// during `Exiting` is libc's exit-time destructors running, not the running app.
+/// during `Exiting` is the last flushes before `_exit` (the teardown is over), not the running app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrashPhase {
     Running,

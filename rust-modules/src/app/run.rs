@@ -3353,31 +3353,24 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
         }
 }
 
-/// How the process ends once [`shutdown`] has flushed everything.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Teardown {
-    /// SDL is quit and nothing native is running: return to `main`, drop the `App`, let libc exit.
-    Return,
-    /// A native worker is still inside firmware, so no destructor, `atexit` handler or C++ static
-    /// finalizer may run under it: the caller ends the process with `_exit` without unwinding.
-    ExitNow,
-}
-
-/// The decision [`shutdown`] acts on, apart from the teardown it performs.
-pub(crate) fn teardown_for(native_exit: plx_media::player::engine::NativeExit) -> Teardown {
+/// Whether [`shutdown`] quits SDL before the process ends. EVERY exit ends the process with `_exit`
+/// (`plx_base::process::exit_now`), never by returning into libc's `exit` (#1115); this is the one decision
+/// left in the teardown.
+pub(crate) fn quits_sdl(native_exit: plx_media::player::engine::NativeExit) -> bool {
     match native_exit {
-        plx_media::player::engine::NativeExit::Clean => Teardown::Return,
-        plx_media::player::engine::NativeExit::WorkerInFirmware => Teardown::ExitNow,
+        plx_media::player::engine::NativeExit::Clean => true,
+        // A native worker is still inside firmware: the display must not be torn down under it.
+        plx_media::player::engine::NativeExit::WorkerInFirmware => false,
     }
 }
 
 /// Teardown after the loop: abandon the pending report, stop the feed, wait for the stop
 /// scrobble, close the capture stream and the poster workers, quit SDL (unless a worker is still
-/// in firmware, which returns [`Teardown::ExitNow`]).
+/// in firmware). The caller (`app::run_and_shutdown`) then ends the process with `_exit`.
 pub(crate) unsafe fn shutdown(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-) -> Teardown {
+) {
     plx_media::player::report::abandon_pending(ps);
     if is_started() {
         plx_media::player::stop_bufferfeed(ps, pa);
@@ -3386,7 +3379,7 @@ pub(crate) unsafe fn shutdown(
     // object it is releasing left undestroyed. The wait is bounded, and a worker still inside
     // firmware (an overdue `Unload`, or a timed-out Load's media thread) means the display must not
     // be torn down under it, and nothing may run the firmware libraries' destructors either: the
-    // caller (`app::run_and_shutdown`) ends the process with `_exit` on `Teardown::ExitNow`.
+    // caller (`app::run_and_shutdown`) ends the process with `_exit`.
     let native_exit = plx_media::player::engine::exit_native(pa);
     // The stop scrobble is posted off-thread now, and this process is about to die with any
     // worker still running — so THIS is the one place its result has to be waited for, or the
@@ -3398,14 +3391,11 @@ pub(crate) unsafe fn shutdown(
     // A clean exit ends the release-health session as `exited`, after the native teardown: a death
     // anywhere above leaves its state for the next boot to classify as crashed or abnormal.
     plx_telemetry::telemetry::session::shutdown();
-    let teardown = teardown_for(native_exit);
-    match teardown {
-        Teardown::Return => SDL_Quit(),
-        Teardown::ExitNow => {
-            log("shutdown: a native worker is still inside firmware; SDL_Quit skipped, exiting without unwinding");
-        }
+    if quits_sdl(native_exit) {
+        SDL_Quit();
+    } else {
+        log("shutdown: a native worker is still inside firmware; SDL_Quit skipped, exiting without unwinding");
     }
-    teardown
 }
 
 /// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL
@@ -3522,10 +3512,10 @@ mod lifecycle_regression_tests {
     use super::*;
 
     #[test]
-    fn a_worker_still_in_firmware_ends_the_process_without_unwinding() {
+    fn shutdown_quits_sdl_only_when_no_worker_is_in_firmware() {
         use plx_media::player::engine::NativeExit;
-        assert_eq!(teardown_for(NativeExit::WorkerInFirmware), Teardown::ExitNow);
-        assert_eq!(teardown_for(NativeExit::Clean), Teardown::Return);
+        assert!(!quits_sdl(NativeExit::WorkerInFirmware));
+        assert!(quits_sdl(NativeExit::Clean));
     }
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::{

@@ -230,7 +230,7 @@ static inline size_t plx_fmt_thread(char *out, size_t cap, unsigned long tid, in
 /* The process phase values Rust stores in `plx_crash_phase` (`plx_base::task::watchdog`). */
 #define PLX_PHASE_RUNNING  0u   /* the main loop, or before it */
 #define PLX_PHASE_SHUTDOWN 1u   /* the loop has ended and the teardown is running */
-#define PLX_PHASE_EXITING  2u   /* the teardown is over: libc's atexit/static destructors run */
+#define PLX_PHASE_EXITING  2u   /* the teardown is over; the process is ending (exit_now) */
 
 /* The record's phase line: how far the process had got, and how long it had lived.
  *
