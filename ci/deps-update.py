@@ -359,7 +359,7 @@ def check_patches(dep, root=ROOT):
         for patch in patches:
             path = (root / patch['path']).resolve()
             for extra in (['--check'], []):
-                result = subprocess.run(['git', 'apply', *extra, str(path)], cwd=source, env=env,
+                result = subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', *extra, str(path)], cwd=source, env=env,
                                         capture_output=True, text=True)
                 if result.returncode != 0:
                     raise PatchError(patch['path'] + ' no longer applies to ' + dep['id'] + ' ' + dep['version'] +
