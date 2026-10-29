@@ -65,8 +65,6 @@ const ID_LEN: usize = 40;
 /// The longest a reverse-DNS id or a schema URL may be: the table gives these no bound, and a package
 /// file carries them into logs and the picker.
 const PATTERN_LEN: usize = 256;
-/// A gap given in px stays on the canvas: the 1080-tall logical screen (`base/src/surface.rs`).
-const CANVAS_H_PX: i64 = 1080;
 /// How much of a name a message quotes and `nearest` compares: a key of a hostile file can be a megabyte.
 const CLIP_CHARS: usize = 48;
 /// How many declared names a hint lists: a package may declare thousands of assets, and every unknown
@@ -79,8 +77,6 @@ const CARD_NODE: &str = "card";
 /// The two keys of a state-keyed value, `{"value": v, "if": {...}}`: the format's grammar, not a table row.
 const KEYED_VALUE: &str = "value";
 const KEYED_IF: &str = "if";
-/// The prefix of a built-in glyph face, `builtin:play`.
-const BUILTIN_PREFIX: &str = "builtin:";
 /// The `node` names of the objects the walker builds that are not nodes of the table: the palette, the
 /// assets, and a face map with its Skip-interval ladder.
 const PALETTE_NODE: &str = "palette";
@@ -1151,7 +1147,7 @@ impl Walker {
                     self.unknown_name(&codes::E0201, pointer, "spacing token", s, &names);
                     None
                 }
-                Ordered::Number(_) => self.walk_int(&ty, 0, CANVAS_H_PX, json, pointer),
+                Ordered::Number(_) => self.walk_int(&ty, 0, schema::GAP_TOP_PX, json, pointer),
                 _ => self.wrong_type(&ty, json, pointer),
             },
             Ty::Ink => self.walk_ink(json, pointer),
@@ -1654,13 +1650,13 @@ impl Walker {
 
     /// A single face: `builtin:<icon>` or a declared asset id.
     fn face_single(&mut self, face: &str, pointer: &str) -> Option<Val> {
-        if let Some(icon) = face.strip_prefix(BUILTIN_PREFIX) {
+        if let Some(icon) = face.strip_prefix(schema::BUILTIN_FACE_PREFIX) {
             if schema::builtin_icon(icon).is_some() {
                 return Some(Val::Name(face.to_owned()));
             }
             let all: Vec<String> = schema::BUILTIN_ICONS
                 .iter()
-                .map(|(n, _)| format!("{BUILTIN_PREFIX}{n}"))
+                .map(|(n, _)| format!("{}{n}", schema::BUILTIN_FACE_PREFIX))
                 .collect();
             let near = nearest(clip(face), &all);
             self.report_near(
@@ -2082,6 +2078,9 @@ fn is_semver(text: &str) -> bool {
 }
 
 fn is_reverse_dns(text: &str) -> bool {
+    if text == schema::BUILTIN_CLASSIC_ID {
+        return true;
+    }
     let alphabet = text
         .bytes()
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-');

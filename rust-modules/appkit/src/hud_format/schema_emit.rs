@@ -12,12 +12,13 @@
 //!
 //! Draft 2020-12 (`$schema`, `$id`), written with the keywords whose meaning has not changed since
 //! draft-07: `type`, `properties`, `required`, `additionalProperties`, `enum`, `const`, `pattern`,
-//! `minimum`, `maximum`, single-schema `items` and `oneOf`. Two groups of words are added, and no more:
+//! `minimum`, `maximum`, single-schema `items` and `oneOf`. Three groups of words are added, and no more:
 //! * `$defs` and `$ref`, because the format is recursive (a `cell` holds a `vstack` or a `rect` that holds
 //!   `cell`s) and a recursive schema cannot be written without a reference. They also keep the repeated
 //!   vocabularies (the inks, the gaps, the conditions) one definition each. Every reference is local.
 //! * the annotations `description` (the table's `doc`) and `default` (the table's, as JSON). A validator
 //!   ignores both.
+//! * the root's `title`, an annotation as well, naming the format.
 //!
 //! Every object is `additionalProperties: false`, so a misspelt key is an error at the object. A control
 //! item is a `oneOf` with one branch per command, keyed by a `const` on `command`; each branch lists the

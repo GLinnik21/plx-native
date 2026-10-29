@@ -12,15 +12,17 @@
 //! and commit what changed. The invalid examples' own `*.plxhud.json` are authored, not generated.
 //!
 //! The site is not deployed by this change: `pages.yml` copies named files, and publishing `site/hud/` is a
-//! later PR. These files are committed so that the golden and the examples are held by CI from now on.
+//! later PR. These files are committed so that the golden and the examples are held by CI whenever a PR
+//! touches Rust. KNOWN GAP: `ci.yml`'s path filter still excludes `site/**`, so a PR that edits only
+//! `site/hud/` does not run these tests; the PR that publishes `site/hud/` adds `site/hud/**` to `ci_paths`.
 
 use std::fs;
 use std::path::PathBuf;
 
 use plx_ui::rec::strict_json::Value;
 
-use super::schema_check::{accepts, check, is_prefix};
-use super::{parse, report, schema, schema_emit};
+use super::schema_check::{accepts, check as schema_check, is_prefix};
+use super::{check, parse, report, schema, schema_emit};
 
 /// The environment variable that turns a golden comparison into a rewrite.
 const BLESS: &str = "PLX_HUD_SCHEMA_WRITE";
@@ -207,73 +209,23 @@ fn every_example_parses_with_no_finding_and_the_schema_accepts_it() {
             parsed.findings
         );
         let value: Value = text.parse().expect("an example is JSON");
-        let found = check(&schema, &value);
+        let found = schema_check(&schema, &value);
         assert!(found.is_empty(), "{name}: {found:#?}");
     }
 }
 
-/// `(command, section, guarded)` of every control item under `value`; `guarded` is true when a `when` of the
-/// item or of anything above it (its cell, its band) can hide it.
-fn controls(value: &Value, guarded: bool, out: &mut Vec<(String, Option<String>, bool)>) {
-    match value {
-        Value::Object(map) => {
-            let here = guarded || map.contains_key("when");
-            if let Some(Value::String(command)) = map.get("command") {
-                let section = map
-                    .get("section")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                out.push((command.clone(), section, here));
-            }
-            map.values().for_each(|v| controls(v, here, out));
-        }
-        Value::Array(items) => items.iter().for_each(|v| controls(v, guarded, out)),
-        _ => {}
-    }
-}
-
-/// The sections some band of `layout.block` opens on: a band with `when: panel.<section>`.
-fn section_bands(package: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    for band in package["layout"]["block"].as_array().expect("the bands") {
-        let when = match &band["when"] {
-            Value::String(one) => vec![one.as_str()],
-            Value::Array(all) => all.iter().filter_map(Value::as_str).collect(),
-            _ => Vec::new(),
-        };
-        out.extend(
-            when.iter()
-                .filter_map(|w| w.strip_prefix("panel."))
-                .map(str::to_owned),
-        );
-    }
-    out
-}
-
 #[test]
-fn every_example_places_more_in_its_root_state_and_a_band_for_each_section_it_opens() {
+fn every_example_passes_the_package_checker_with_no_finding() {
     for (name, text) in EXAMPLES {
-        let package: Value = text.parse().expect("an example is JSON");
-        let mut found = Vec::new();
-        controls(&package, false, &mut found);
+        let package = parse::parse(text.as_bytes())
+            .package
+            .unwrap_or_else(|| panic!("{name} parses"));
+        let checked = check(&package);
         assert!(
-            found
-                .iter()
-                .any(|(command, _, guarded)| command == "open_more" && !guarded),
-            "{name}: R1, `open_more` is placed in the root state, under no `when`"
+            checked.findings.is_empty(),
+            "{name}: R1 to R4 and the invariants: {:#?}",
+            checked.findings
         );
-        let bands = section_bands(&package);
-        for (command, section, _) in &found {
-            if command == "toggle_section" {
-                let section = section
-                    .as_deref()
-                    .expect("a toggle_section names its section");
-                assert!(
-                    bands.iter().any(|b| b == section),
-                    "{name}: R3, the opener of `{section}` has a band with `when: panel.{section}`"
-                );
-            }
-        }
     }
 }
 
@@ -378,7 +330,7 @@ fn the_schema_rejects_the_key_type_and_value_faults_among_them_where_the_parser_
     for (name, _, rejected) in INVALID {
         let text = invalid_text(name);
         let instance: Value = text.parse().expect("an invalid example is still JSON");
-        let failures = check(&schema, &instance);
+        let failures = schema_check(&schema, &instance);
         assert_eq!(!failures.is_empty(), rejected, "{name}: {failures:#?}");
         assert_eq!(accepts(&schema, &instance), !rejected, "{name}");
         let parser = parse::parse(text.as_bytes()).findings;

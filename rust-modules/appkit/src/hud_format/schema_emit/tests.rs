@@ -20,6 +20,7 @@ use crate::hud_format::{codes, Finding};
 
 const REFERENCE: &str = include_str!("../fixtures/reference.plxhud.json");
 const MINIMAL: &str = include_str!("../fixtures/minimal.plxhud.json");
+const CLASSIC: &str = include_str!("../fixtures/classic.plxhud.json");
 const HERO_CENTER: &str = include_str!("../fixtures/hero-center.plxhud.json");
 const TABS: &str = include_str!("../fixtures/tabs.plxhud.json");
 const PALETTE: &str = include_str!("../fixtures/palette.plxhud.json");
@@ -710,6 +711,13 @@ fn every_pattern_regex_gives_the_parsers_answer() {
             "a.b c",
             "é.b",
             "a.b9.c0",
+            "builtin:classic",
+            "builtin:Classic",
+            "builtin:other",
+            "builtin:",
+            "xbuiltin:classic",
+            "builtin:classic ",
+            "builtin:classic.x",
         ],
         |s| {
             !refused_at(
@@ -944,6 +952,7 @@ fn the_schema_accepts_every_valid_package_of_the_corpus() {
     let mut texts: Vec<(String, String)> = [
         ("reference", REFERENCE),
         ("minimal", MINIMAL),
+        ("classic", CLASSIC),
         ("hero-center", HERO_CENTER),
         ("tabs", TABS),
         ("palette", PALETTE),

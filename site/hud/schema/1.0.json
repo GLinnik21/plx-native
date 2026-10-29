@@ -3440,8 +3440,8 @@
       "type": "string"
     },
     "id": {
-      "description": "The package's reverse-DNS identity.",
-      "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$",
+      "description": "The package's reverse-DNS identity (the built-in HUD's reserved `builtin:classic` is the one other id that parses).",
+      "pattern": "^(builtin:classic|[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+)$",
       "type": "string"
     },
     "layout": {
