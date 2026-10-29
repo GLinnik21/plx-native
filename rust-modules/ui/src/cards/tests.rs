@@ -2186,6 +2186,51 @@ fn a_shelf_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_band_op
     }
 }
 
+/// **A scroll glide the push froze ends at once when the page returns.** A seat past the shelf's edge
+/// scrolls into view on the scroll spring, and an OK before it ends covers the page with the glide
+/// half played. The seat's shelf is stepped on the way back, so it would finish the glide under the
+/// BACK dip's image: layout motion, which holds the image past its dissolve and then jumps the row
+/// sideways. The scroll settles with the band and the heading on the restoring event, so the page
+/// the dip captures is the one that stays.
+#[test]
+fn a_shelf_that_returns_with_a_scroll_glide_unfinished_ends_the_glide_before_the_image_holds() {
+    let seat = 119;
+    let end = {
+        let mut left = settled::<Shelf>(20);
+        left.land_focus(seat, By::Dir);
+        left.run(300);
+        left.scroll().unwrap()
+    };
+    assert!(end > 100.0, "premise: the seat is past the edge, so the row scrolls: {end}");
+    let mut r = settled::<Shelf>(20);
+    r.land_focus(seat, By::Dir);
+    r.run(5);
+    let frozen = r.scroll().unwrap();
+    assert!(frozen > 1.0 && frozen < end - 20.0, "premise: the push froze the glide half played: {frozen} of {end}");
+    let push = ImageHeld::set();
+    r.sect.dormant(true);
+    r.run(3);
+    assert_eq!(r.scroll(), Some(frozen), "premise: the covered page keeps its scroll");
+    r.focus = None;
+    drop(push);
+
+    let _held = ImageHeld::set();
+    r.sect.dormant(true);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(seat, By::Restore);
+    let landed = r.scroll().unwrap();
+    assert!((landed - end).abs() < 0.5, "the glide ends on the restoring event, before any tick: {landed} of {end}");
+    assert!(r.sect.under_band() > crate::card_row::under_band(0.0) + 1.0, "its caption band is open");
+    let raised = crate::card_row::heading_clearance(Some(19), &RowStyle::HOME, landed);
+    assert_eq!(r.sect.heading_lift(), raised, "and the heading is raised for the scroll it stands at");
+    for frame in 0..30 {
+        r.run(1);
+        assert_eq!(r.scroll(), Some(landed), "the row stands still under the image, frame {frame}");
+        assert_eq!(r.sect.heading_lift(), raised, "and so does its heading, frame {frame}");
+    }
+    assert!(!r.run(1), "a glide already ended reports no motion to hold the image");
+}
+
 /// **A return leaves no mark.** `Enter(Restored)` reaches a live page too (a modal's dismissal), with
 /// no image after it: the first tick that reports awake ends the return, so a later dissolve puts
 /// the seat to rest and the lift grows on the awake tick, as on a page that never returned.

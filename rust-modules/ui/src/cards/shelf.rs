@@ -218,7 +218,8 @@ impl Shelf {
     /// it ends on the first tick that reports awake, at the first deliberate move and when focus
     /// lands anywhere but a card of this shelf (that move is slept through, and no band is left
     /// closing under the image). A landing is adopted whole while dormant, a returning shelf
-    /// included: nothing plays under the image.
+    /// included, and so is a scroll glide the covered page froze under way: nothing plays under the
+    /// image.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }
@@ -279,10 +280,11 @@ impl Shelf {
                     self.seen = Seen::of(by, a);
                     if self.returning && self.dormant {
                         // The seat returns to a row the page shut when it covered it (a shelf put to
-                        // rest under the push's image): its band and heading open with it, now, so
-                        // the layout the owner reads on this very event (the page drawn this frame
-                        // is the one the dip captures) already has them, not a tick after.
-                        self.row.settle_band(a, self.style);
+                        // rest under the push's image): its scroll, band and heading settle with it,
+                        // now, so the layout the owner reads on this very event (the page drawn this
+                        // frame is the one the dip captures) already has them, not a tick after, and
+                        // no glide plays on under the image.
+                        self.row.settle_seat(a, src.len(), self.style);
                     }
                 }
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| here(&k.elem));
