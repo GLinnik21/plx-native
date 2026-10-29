@@ -492,15 +492,20 @@ impl<'a> TextView<'a> {
         }
         // A wrapped line is its own bidi paragraph when it is drawn, and takes its direction from
         // its OWN first letter: a line of an Arabic summary that happens to open with a Latin word
-        // would be laid out left to right. A right-to-left mark (it draws nothing and measures
-        // nothing) keeps such a line in its paragraph's direction.
+        // would be laid out left to right, and a line of an English one that opens with an Arabic
+        // word right to left. A direction mark (it draws nothing and measures nothing) keeps such
+        // a line in its block's direction: RLM in a right-to-left block, LRM in a left-to-right one.
         let rtl = self.is_rtl();
         // NUL-terminate once, here — every later frame draws these by pointer (interior NULs
         // can't occur in PMS strings; degrade to an empty line rather than panic if one does)
         let lines = lines
             .into_iter()
             .map(|s| {
-                let s = if rtl && !plx_gfx::text::is_rtl_paragraph(&s) { format!("\u{200F}{s}") } else { s };
+                let s = match (rtl, plx_gfx::text::is_rtl_paragraph(&s)) {
+                    (true, false) => format!("\u{200F}{s}"),
+                    (false, true) => format!("\u{200E}{s}"),
+                    _ => s,
+                };
                 CString::new(s).unwrap_or_default()
             })
             .collect();
@@ -1099,6 +1104,21 @@ mod tests {
         for r in &runs {
             assert_eq!((r.align, r.at.x), (0, frame.x), "{r:?}");
         }
+    }
+
+    /// The mirror case: every wrapped line is its own bidi paragraph when drawn, so a line of a
+    /// LEFT-to-right block that happens to open with Arabic or Hebrew (the wrap fell between two
+    /// native words) would be laid out right to left, its Latin neighbours jumping to its left. A
+    /// left-to-right mark (it draws nothing and measures nothing) keeps it in the block's direction;
+    /// a line that already opens with a Latin letter is left alone.
+    #[test]
+    fn an_ltr_block_keeps_its_direction_on_a_wrapped_line_that_opens_with_rtl_text() {
+        let _serial = plx_base::testlock::serial();
+        let view = TextView::new("Netflix عرض جديد على الليلة", theme::size::CAPTION, theme::TEXT_PRIMARY)
+            .with_measure(&TenPx);
+        assert!(!view.is_rtl());
+        assert_eq!(lines_of(&view, 120.0), vec!["Netflix عرض", "\u{200E}جديد على", "\u{200E}الليلة"]);
+        assert_eq!(view.wrap(120.0).widths, vec![110.0, 80.0, 60.0], "the mark is not measured");
     }
 
     /// A truncated right-to-left block dissolves its last line at the LEFT end, where that line's
