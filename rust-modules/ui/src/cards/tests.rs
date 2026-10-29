@@ -2064,8 +2064,8 @@ impl Drop for ImageHeld {
 
 /// **Nothing steps under an image that hides it.** A shelf that is dormant while the page is a held
 /// image (a route dip's Out and In halves, the hold after it) parks at exact rest on its FIRST
-/// tick, as a grid put to sleep does (a grid that RETURNS is not put to sleep): the card that was
-/// lifted, the caption band and the heading's lift are all closed at once, with no spring left
+/// tick, as a grid put to sleep does (a section that RETURNS is not put to sleep, below): the card that
+/// was lifted, the caption band and the heading's lift are all closed at once, with no spring left
 /// moving to hold the image past the dissolve.
 #[test]
 fn a_dormant_shelf_under_a_held_page_image_parks_on_its_first_tick() {
@@ -2123,6 +2123,191 @@ fn a_dormant_shelf_on_a_visible_page_still_eases_to_rest() {
     r.run(300);
     assert_eq!(r.scale(101), Some(1.0));
     assert!(r.sect.at_rest());
+}
+
+/// A shelf of eight cards with card 101 focused and settled lifted, the way a page is left when a
+/// Detail is opened from it.
+fn shelf_left_lifted() -> Rig<Shelf> {
+    let mut r = settled::<Shelf>(8);
+    r.land_focus(101, By::Dir);
+    r.run(200);
+    assert!(r.scale(101).unwrap() > RowStyle::HOME.focus_scale - 0.002, "premise: the card is left lifted");
+    r
+}
+
+/// The shelf's caption band is open under its lifted card, and so is the lift it gives its heading.
+fn band_open(r: &Rig<Shelf>) -> bool {
+    r.sect.under_band() > crate::card_row::under_band(0.0) + 1.0 && r.sect.heading_lift() > 0.0
+}
+
+/// **A page that returns is not put to sleep, a shelf's too.** BACK from a Detail runs under the
+/// dip's image, which the owner reports as dormant; a seat put at rest there and grown again moves
+/// the shelf under its caption band by the band's height and back (the Recommended page's next
+/// shelf). A shelf fed `Enter(Restored)` draws the seat the engine restored lifted, its band open
+/// and its heading raised, from the first frame, through every dormant tick under the image, and
+/// keeps it when the owner wakes it. Both a shelf that slept while covered and a fresh one (the
+/// stack let the page go and rebuilt it) come back that way, the band and the heading with the seat
+/// on the restoring event itself: the page the dip captures that frame is laid out from them.
+#[test]
+fn a_shelf_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_band_open() {
+    let full = RowStyle::HOME.focus_scale;
+    for covered in [true, false] {
+        let mut r = if covered {
+            // the page slept under the image of the push that covered it, then went unticked
+            let mut r = shelf_left_lifted();
+            let _push = ImageHeld::set();
+            r.sect.dormant(true);
+            r.run(3);
+            assert_eq!(r.scale(101), Some(1.0), "premise: it slept");
+            r.focus = None;
+            r
+        } else {
+            settled::<Shelf>(8)
+        };
+        let held = ImageHeld::set();
+        r.sect.dormant(true);
+        r.feed(ScreenEvent::Enter(Enter::Restored));
+        r.land_focus(101, By::Restore);
+        assert_eq!(r.scale(101), Some(full), "covered={covered}: whole on the first frame, before any tick");
+        assert!(band_open(&r), "covered={covered}: its band and heading are open on the first frame too, for the layout read before any tick");
+        for frame in 0..30 {
+            r.run(1);
+            assert_eq!(r.scale(101), Some(full), "covered={covered}: lifted under the image, frame {frame}");
+        }
+        assert!(band_open(&r), "covered={covered}: its caption band is open and its heading raised under the image");
+        assert!(!r.run(1), "covered={covered}: a seat already where it goes reports no motion to hold the image");
+        drop(held);
+        r.sect.dormant(false);
+        for frame in 0..30 {
+            r.run(1);
+            assert_eq!(r.scale(101), Some(full), "covered={covered}: still lifted once awake, frame {frame}");
+            assert!(band_open(&r), "covered={covered}: band kept once awake, frame {frame}");
+        }
+    }
+}
+
+/// **A return leaves no mark.** `Enter(Restored)` reaches a live page too (a modal's dismissal), with
+/// no image after it: the first tick that reports awake ends the return, so a later dissolve puts
+/// the seat to rest and the lift grows on the awake tick, as on a page that never returned.
+#[test]
+fn a_shelf_that_returned_with_no_image_sleeps_through_the_next_dissolve() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = shelf_left_lifted();
+    r.focus = None;
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(101, By::Restore);
+    r.run(2);
+    assert!((r.scale(101).unwrap() - full).abs() < 1e-4, "premise: it came back lifted");
+    r.sect.dormant(true);
+    r.run(300);
+    assert_eq!(r.scale(101), Some(1.0), "a later dissolve puts the seat to rest");
+    assert_eq!(lifted(&r), 0);
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(101).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "and the lift grows from rest once the page is in: {first}");
+}
+
+/// **The reader moving ends the return.** A key pressed while the image of the way back is still up
+/// is slept through like an entry's: nothing is lifted or opened under the image (the move would
+/// hold it), and the new seat grows from rest once the owner wakes the shelf.
+#[test]
+fn a_deliberate_move_ends_a_shelfs_return_and_is_slept_through() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = shelf_left_lifted();
+    r.focus = None;
+    let held = ImageHeld::set();
+    r.sect.dormant(true);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(101, By::Restore);
+    r.run(3);
+    assert!((r.scale(101).unwrap() - full).abs() < 1e-4, "premise: it came back lifted");
+    r.land_focus(102, By::Dir);
+    r.run(1);
+    assert_eq!(r.scale(101), Some(1.0), "the seat it left is at rest at once");
+    assert_eq!(r.scale(102), Some(1.0), "the seat it moved to is at rest");
+    assert!(!band_open(&r) && r.sect.at_rest(), "nothing is left open or moving under the image");
+    assert!(!r.run(1), "nothing moves under the image");
+    drop(held);
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(102).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "the new seat grows from rest once the page is in: {first}");
+}
+
+/// **Leaving the shelf under the image of the way back waits for nothing.** A shelf that returned
+/// lifted, then had focus leave its cards: Up onto a header control or another shelf (a deliberate
+/// move that names no card of this shelf), or the BACK that walks there (a seat the page makes for
+/// itself, announced as a restore). The seat lets go and its band shuts at once, like an entry's:
+/// a band left closing on its spring is layout motion, and the image waits for it. Elem 7 is on the
+/// page and not a card of the shelf.
+#[test]
+fn a_shelf_that_returned_sleeps_through_focus_leaving_it() {
+    for by in [By::Dir, By::Pointer, By::Restore] {
+        let mut r = shelf_left_lifted();
+        r.focus = None;
+        let _held = ImageHeld::set();
+        r.sect.dormant(true);
+        r.feed(ScreenEvent::Enter(Enter::Restored));
+        r.land_focus(101, By::Restore);
+        r.run(3);
+        assert!(band_open(&r), "{by:?}: premise: it came back with its band open");
+        r.land_focus(7, by);
+        r.run(1);
+        assert_eq!(r.scale(101), Some(1.0), "{by:?}: the seat it left is at rest at once");
+        assert!(!band_open(&r) && r.sect.at_rest(), "{by:?}: a band is left closing under the image");
+        assert!(!r.run(1), "{by:?}: something moves under the image");
+        assert_eq!(lifted(&r), 0, "{by:?}");
+    }
+}
+
+/// **Only the shelf that holds the seat returns lifted.** The Recommended page feeds every shelf
+/// `Enter(Restored)`; a shelf the focus is not on (its lift was let go before the page was covered
+/// and its ease froze there) is still finished at once under the image, as any dormant shelf is:
+/// stepping it on would hold the image past the dissolve.
+#[test]
+fn a_returning_shelf_that_holds_no_seat_is_still_put_to_rest_under_the_image() {
+    let mut r = shelf_left_lifted();
+    r.sect.dormant(true);
+    r.run(3);
+    let eased = r.scale(101).unwrap();
+    assert!(eased > 1.0 + 1e-3 && eased < RowStyle::HOME.focus_scale - 1e-3, "premise: mid-ease on a visible page: {eased}");
+    r.focus = None;
+    let _held = ImageHeld::set();
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.run(1);
+    assert_eq!(r.scale(101), Some(1.0), "the ease is finished under the image");
+    assert!(r.sect.at_rest());
+    assert!(!r.run(1), "and the shelf reports no motion to hold the image");
+}
+
+/// **A landing is adopted whole under the image, a returning shelf included.** A card that left or
+/// arrived while the page was covered (the item watched, a refetch) must not play its ghost and its
+/// slides under the image that hides them: the animation would hold the image to its bound and
+/// then be cut.
+#[test]
+fn a_shelf_that_returned_adopts_a_landing_whole_under_the_image() {
+    let mut r = landing_rig();
+    r.focus = None;
+    let held = ImageHeld::set();
+    r.sect.dormant(true);
+    r.run(2);
+    r.src.elems.remove(11);
+    r.src.elems.insert(13, 900);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(112, By::Restore);
+    for frame in 0..4 {
+        r.run(1);
+        assert!(r.sect.ghost_probe().0.is_empty(), "a ghost plays under the image, frame {frame}");
+        assert_eq!(r.scale(112), Some(RowStyle::HOME.focus_scale), "the seat stays lifted through the landing, frame {frame}");
+    }
+    drop(held);
+    r.sect.dormant(false);
+    r.run(2);
+    let n = r.src.elems.len();
+    assert_eq!(r.sect.landing_probe(n, 13), (0.0, 1.0));
+    assert_eq!(r.sect.landing_probe(n, 10), (0.0, 1.0));
+    assert!(r.sect.ghost_probe().0.is_empty());
 }
 
 /// `cull_margin` keeps painting and registering a card whose left edge is just past the screen's.

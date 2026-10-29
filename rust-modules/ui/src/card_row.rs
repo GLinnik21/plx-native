@@ -321,6 +321,15 @@ impl CardRow {
     pub fn adopt(&mut self, i: usize, sty: &RowStyle) {
         if i < MAX_ROW_ITEMS { self.scale[i].jump(sty.focus_scale) } else { self.overflow.jump(sty.focus_scale) }
     }
+    /// Put the two springs that open under a focused card where focus on cell `i` rests them, with
+    /// no motion: the label band wide open and the heading raised by its clearance at the current
+    /// scroll. The twin of [`adopt`](Self::adopt) for a seat that comes back to a row the page had
+    /// shut (a shelf put to rest under a transition image), where adopting the pop alone would leave
+    /// the band and the heading to open as layout motion under the shelves around it.
+    pub fn settle_band(&mut self, i: usize, sty: &RowStyle) {
+        self.band.jump(1.0);
+        self.lift.jump(heading_clearance(Some(i), sty, self.scroll_x.pos));
+    }
     /// Cell `i`'s spring, the shared overflow one for a cell past the array.
     fn cell_mut(&mut self, i: usize) -> &mut Spring {
         if i < MAX_ROW_ITEMS { &mut self.scale[i] } else { &mut self.overflow }
