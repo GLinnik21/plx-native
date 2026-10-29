@@ -1642,7 +1642,7 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
             pin_headless_hud(app, fr.now, None);
         }
         if plx_base::devtrig::flag("more") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { quality: false });
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { page: None });
             pin_headless_hud(app, fr.now, None);
         }
         if plx_base::devtrig::flag("info") {
@@ -1826,7 +1826,7 @@ fn moreosc_arm(app: &mut App, fr: &mut Frame) {
     app.scenarios.more_osc.last = fr.now;
     let Some(depth) = crate::app::bridge::player_overlay_mut(&mut app.pages).and_then(|s| s.more_probe()) else {
         if !crate::app::bridge::player_overlay_up(&app.pages) {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { quality: false });
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { page: None });
             pin_headless_hud(app, fr.now, None);
         }
         return;

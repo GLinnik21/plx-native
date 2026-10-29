@@ -350,7 +350,7 @@ fn quality_form(
 }
 
 impl MoreMenuState {
-    fn open_focused(ps: &plx_media::route::PlaybackSession, quality: Option<plx_media::route::Quality>) -> Self {
+    fn open_focused(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>) -> Self {
         let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
         let current = plx_media::route::quality();
@@ -372,11 +372,22 @@ impl MoreMenuState {
             anchor: crate::player_hud::classic::frame_geometry().row,
             side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
-        // A quality entry (the failure screen's OK) opens straight on the Quality page with the
-        // active rung focused, no slide: the viewer is fixing a bad decision, not browsing. Under
-        // Force Direct Play there is no ladder, so it is the ordinary root.
-        if quality.is_some() && quality_offered(&st.rows, st.forced) {
-            st.push(ps, MorePage::Quality);
+        // A page entry opens straight on that page, no slide. Quality (the failure screen's OK)
+        // lands on the active rung: the viewer is fixing a bad decision, not browsing. A page that
+        // is not offered (no ladder under Force Direct Play, no choice of speed) is the ordinary
+        // root, as the page-vanished refresh below does.
+        let offered = match page {
+            None => false,
+            Some(MorePage::Quality) => quality_offered(&st.rows, st.forced),
+            Some(MorePage::Speed) => st.speeds.len() > 1,
+        };
+        if let Some(page) = page.filter(|_| offered) {
+            // the page is pushed from its opener's row, so BACK lands where a viewer would have
+            // pressed to get here
+            if page == MorePage::Speed {
+                st.focus_key(MoreRow::OpenSpeed.key().0);
+            }
+            st.push(ps, page);
             st.motion.cancel_slide();
         }
         st
@@ -530,7 +541,7 @@ impl MoreMenuState {
     }
 
     pub fn new(ps: &plx_media::route::PlaybackSession) -> Self {
-        Self::open_focused(ps, None)
+        Self::new_on(ps, None)
     }
 
     /// Open beside `anchor`, the rect of the control (widened to the end of its segment) that
@@ -558,7 +569,14 @@ impl MoreMenuState {
     /// Under Force Direct Play the menu has no Quality section (see [`rows_for`]), and this is the
     /// same menu as [`Self::new`]; `screens::player::overlay` does not route here then.
     pub fn new_quality(ps: &plx_media::route::PlaybackSession) -> Self {
-        Self::open_focused(ps, Some(plx_media::route::quality()))
+        Self::new_on(ps, Some(MorePage::Quality))
+    }
+
+    /// The menu opened on `page`: the root for `None`, else the drill-in, focused on its checked
+    /// row. A page that is not offered for this playback (Quality under Force Direct Play, Speed
+    /// when the playback takes only one) opens the root instead.
+    pub fn new_on(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>) -> Self {
+        Self::open_focused(ps, page)
     }
 
     /// Every row's focus key, in drawn order (for a test that walks the rows).
@@ -1185,6 +1203,29 @@ mod tests {
         }
         assert!(st.pop(&ps), "BACK returns to the root");
         assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "on the row that opened it");
+    }
+
+    /// **`open_more {page: speed}` opens the Speed page itself** — no drill-in press, no slide —
+    /// on the current speed, and BACK returns to the root on the row that would have opened it. A
+    /// playback that takes one speed only has no Speed page to open, so it is the ordinary root
+    /// (`speed_offer`'s own tests grade when that is).
+    #[test]
+    fn the_menu_opens_straight_on_the_speed_page_when_it_is_offered() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = plx_media::route::PlaybackSession::default();
+        let mut st = MoreMenuState::new_on(&ps, Some(MorePage::Speed));
+        assert_eq!(st.speeds.len(), plx_media::player::PLAY_RATES.len(), "the fixture offers every speed");
+        assert_eq!(st.page(), Some(MorePage::Speed));
+        assert_eq!(st.form.table.title(), Some("Playback speed"));
+        assert_eq!(
+            st.form.selected_id(),
+            Some(&MoreRow::Act(Action::SetSpeed(st.speed))),
+            "on the current speed"
+        );
+        assert!(st.pop(&ps), "BACK returns to the root");
+        assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "on the row that opens Speed");
+
+        assert_eq!(MoreMenuState::new_on(&ps, None).page(), None, "the root is the root");
     }
 
     /// **No offer, no row**: where a playback can play only 1x (segmented HLS, an undecodable audio

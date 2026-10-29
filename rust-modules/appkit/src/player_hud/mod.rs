@@ -12,6 +12,7 @@
 //! | [`model`] | [`model::HudModel`]: the per-frame, read-only snapshot of every global the presentation reads. Every draw takes `&HudModel` |
 //! | [`motion`] | the clock prewarm ([`motion::ClockWarm`]), the pop-in of a row ([`motion::RowPop`]) and the HUD's per-frame animation state ([`motion::HudMotion`], formerly `TransportRow`) |
 //! | [`geometry`] | the focus GROUPS ([`geometry::GROUP_SCRUB`] ..), [`geometry::HudGeometry`] and [`geometry::RowAnchor`]: what a layout reports back to focus, the pointer, the overscan audit and the stand-ins |
+//! | [`command`] | [`command::HudCommand`], the closed vocabulary of things a control asks the app to do, with its app-owned enabled predicates, and classic's five discs as controls |
 //! | [`classic`] | the classic layout: its constants, hit rects, and every draw of the transport (scrim, title, playbar, control row, tabs, the failure read-out) |
 //! | [`seek_jump`] | the long-seek jump chord |
 //!
@@ -19,6 +20,7 @@
 //! composites over the video plane and belongs to no layout, and `overscan_rects`.
 #![allow(dead_code)]
 pub mod classic;
+pub mod command;
 pub mod geometry;
 pub mod model;
 pub mod motion;

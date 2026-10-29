@@ -650,7 +650,7 @@ mod hud_visibility_tests {
                 "on the control row, so the auto-hide re-park leaves it"
             );
             assert!(
-                plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn),
+                plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn == plx_appkit::up_next::BTN_NEXT),
                 "…and RESTING on the primary, which is what the next frame's cancel rule asks"
             );
         });
@@ -678,7 +678,7 @@ mod hud_visibility_tests {
             assert!(hud.visible(&ps, now, false), "the offer is still shown");
             assert_eq!((hud.nav.focus, hud.nav.tab), (GROUP_TABS, 1), "their spot is theirs");
             assert!(
-                !plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn),
+                !plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn == plx_appkit::up_next::BTN_NEXT),
                 "engaging the transport is not consent to be pulled into the next episode"
             );
         });
