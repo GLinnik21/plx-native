@@ -129,7 +129,7 @@ pub struct SeerrTitleScreen {
 
 impl SeerrTitleScreen {
     /// The heartbeat word, byte-identical to the route word (`app/words.rs`).
-    pub const WORD: &'static str = "seerr-title";
+    pub const WORD: &'static str = "seerr_title";
 
     pub const SHAPE: &'static str = "SeerrTitleScreen{entry:u32,tv:bool,tmdb:u64,refreshed:bool}";
 
@@ -289,7 +289,7 @@ impl LogicalState for SeerrTitleScreen {
         c.u32(self.entry.0).bool(self.kind == MediaKind::Tv).u64(self.tmdb as u64).bool(self.refreshed);
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("seerr-title tv={} refreshed={}", self.kind == MediaKind::Tv, self.refreshed));
+        out.push_str(&format!("seerr_title tv={} refreshed={}", self.kind == MediaKind::Tv, self.refreshed));
     }
 }
 

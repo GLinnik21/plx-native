@@ -12,26 +12,41 @@ pub(crate) enum Pill {
     Home,
     Section(SecKind),
     Watchlist,
+    /// The Requests tab (docs/seerr.md).
+    Requests,
     Search,
 }
 
+/// What decides the strip's destinations: the Browse directory's type pills, and whether the
+/// household has a Seerr server (the Requests pill, docs/seerr.md).
+#[derive(Clone, Copy)]
+pub(crate) struct StripSource<'a> {
+    pub(crate) directory: DirectoryView<'a>,
+    /// A Seerr address is set (`SeerrStore::configured`).
+    pub(crate) requests: bool,
+}
+
 /// The strip's destination keys in strip order: Home, one key per type pill, the Watchlist
-/// bookmark, Search. The one
+/// bookmark, Requests while a Seerr address is set, Search. The one
 /// place that order is written; `refresh` publishes it and the pill maps below read it, so no
 /// map assumes which index Search holds.
-fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
+fn strip_keys(source: StripSource<'_>) -> Vec<u32> {
+    let directory = source.directory;
     let mut keys = vec![widgets::TAB_KEY_HOME];
     keys.extend((0..directory.tab_count()).filter_map(|i| directory.tab_kind(i)).map(|kind| match kind {
         SecKind::Movie => widgets::TAB_KEY_MOVIES,
         SecKind::Show => widgets::TAB_KEY_SHOWS,
     }));
     keys.push(widgets::TAB_KEY_WATCHLIST);
+    if source.requests {
+        keys.push(widgets::TAB_KEY_REQUESTS);
+    }
     keys.push(widgets::TAB_KEY_SEARCH);
     keys
 }
 
-pub(crate) fn pill_at(directory: DirectoryView<'_>, i: usize) -> Pill {
-    pill_in(i, &strip_keys(directory))
+pub(crate) fn pill_at(source: StripSource<'_>, i: usize) -> Pill {
+    pill_in(i, &strip_keys(source))
 }
 
 /// The destination a strip index names, by the KEY published at that index.
@@ -40,13 +55,14 @@ fn pill_in(i: usize, keys: &[u32]) -> Pill {
         Some(widgets::TAB_KEY_MOVIES) => Pill::Section(SecKind::Movie),
         Some(widgets::TAB_KEY_SHOWS) => Pill::Section(SecKind::Show),
         Some(widgets::TAB_KEY_WATCHLIST) => Pill::Watchlist,
+        Some(widgets::TAB_KEY_REQUESTS) => Pill::Requests,
         Some(widgets::TAB_KEY_SEARCH) => Pill::Search,
         _ => Pill::Home,
     }
 }
 
-pub(crate) fn pill_of(directory: DirectoryView<'_>, pill: Pill) -> Option<usize> {
-    pill_index(pill, &strip_keys(directory))
+pub(crate) fn pill_of(source: StripSource<'_>, pill: Pill) -> Option<usize> {
+    pill_index(pill, &strip_keys(source))
 }
 
 fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
@@ -55,6 +71,7 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
         Pill::Section(SecKind::Movie) => widgets::TAB_KEY_MOVIES,
         Pill::Section(SecKind::Show) => widgets::TAB_KEY_SHOWS,
         Pill::Watchlist => widgets::TAB_KEY_WATCHLIST,
+        Pill::Requests => widgets::TAB_KEY_REQUESTS,
         Pill::Search => widgets::TAB_KEY_SEARCH,
     };
     keys.iter().position(|&k| k == key)
@@ -63,6 +80,8 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
 #[derive(Default)]
 pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
+    /// The Requests pill was on the strip the faces were built for.
+    tabs_requests: bool,
     profile_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     faces: Vec<TabFace>,
@@ -98,24 +117,26 @@ impl ChromeSnapshot {
         self.pulse = None;
     }
 
-    pub(crate) fn refresh(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>) {
-        self.refresh_with_profile(measure, directory, None);
+    pub(crate) fn refresh(&mut self, measure: &dyn Measure, source: StripSource<'_>) {
+        self.refresh_with_profile(measure, source, None);
     }
 
-    pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>,
+    pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, source: StripSource<'_>,
         captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
-        let generation = directory.tabs_gen();
-        if self.tabs_generation != Some(generation) {
-            self.keys = strip_keys(directory);
+        let generation = source.directory.tabs_gen();
+        if self.tabs_generation != Some(generation) || self.tabs_requests != source.requests {
+            self.keys = strip_keys(source);
             self.faces = self.keys.iter().map(|&key| match key {
                 widgets::TAB_KEY_HOME => TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()),
                 widgets::TAB_KEY_MOVIES => TabFace::Label(plx_platform::i18n::msg::browse_kind_movies().into()),
                 widgets::TAB_KEY_SHOWS => TabFace::Label(plx_platform::i18n::msg::browse_kind_tv_shows().into()),
                 widgets::TAB_KEY_WATCHLIST => TabFace::Icon(Icon::Bookmark),
+                widgets::TAB_KEY_REQUESTS => TabFace::Label(plx_platform::i18n::msg::requests_tab().into()),
                 _ => TabFace::Icon(Icon::Search),
             }).collect();
             self.widths = widgets::tab_widths(&self.faces, measure);
             self.tabs_generation = Some(generation);
+            self.tabs_requests = source.requests;
         }
         let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
         let session_changed = captured.is_none() && self.session_watch.changed();
@@ -193,6 +214,10 @@ mod tests {
     use plx_data::stores::browse::{DirectorySnapshot, SectionView, SrcRow};
     use plx_machine::machine::EntryId;
 
+    fn source(directory: &DirectorySnapshot, requests: bool) -> StripSource<'_> {
+        StripSource { directory: directory.view(), requests }
+    }
+
     fn directory(kinds: &[SecKind]) -> DirectorySnapshot {
         DirectorySnapshot::fixture(7, 0, kinds.iter().enumerate().map(|(i, &kind)| SectionView {
             sid: Some(plx_plex::plex::ServerId::from_raw((i / 2) as u16)),
@@ -210,7 +235,7 @@ mod tests {
         let mut snapshot = ChromeSnapshot::default();
         let directory = directory(&[]);
         plx_plex::plex::session::install_transient_for_test(true);
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, source(&directory, false));
         assert_eq!(snapshot.name.to_str().unwrap(), "Sign in");
         plx_plex::plex::session::save(&plx_plex::plex::session::Session {
             client_id: "synthetic-client".into(), account_token: "synthetic-token".into(),
@@ -218,7 +243,7 @@ mod tests {
                 title: "Synthetic owner".into(), admin: true, ..Default::default()
             }], ..Default::default()
         });
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, source(&directory, false));
         assert_eq!(snapshot.name.to_str().unwrap(), "Synthetic owner");
     }
 
@@ -243,7 +268,7 @@ mod tests {
         let mut snapshot = ChromeSnapshot {
             profile_generation: Some(plx_plex::plex::session::current_gen()), ..Default::default()
         };
-        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, source(&directory, false));
         assert_eq!(snapshot.keys, vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
             widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
         let words: Vec<&str> = snapshot.faces.iter().filter_map(|face| match face {
@@ -296,13 +321,34 @@ mod tests {
     #[test]
     fn pill_maps_follow_the_published_strip_keys() {
         let directory = directory(&[SecKind::Movie, SecKind::Show]);
-        let view = directory.view();
+        let view = source(&directory, false);
         assert_eq!(strip_keys(view), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
             widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
         assert_eq!(pill_of(view, Pill::Watchlist), Some(3));
         assert_eq!(pill_of(view, Pill::Search), Some(4));
+        assert_eq!(pill_of(view, Pill::Requests), None, "no Seerr address, no Requests pill");
         assert_eq!(pill_at(view, 3), Pill::Watchlist);
         assert_eq!(pill_at(view, 4), Pill::Search);
+    }
+
+    #[test]
+    fn a_seerr_address_puts_the_requests_pill_between_the_watchlist_and_search() {
+        let directory = directory(&[SecKind::Movie, SecKind::Show]);
+        let view = source(&directory, true);
+        assert_eq!(strip_keys(view), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_SHOWS,
+            widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_REQUESTS, widgets::TAB_KEY_SEARCH]);
+        assert_eq!(pill_of(view, Pill::Requests), Some(4));
+        assert_eq!(pill_of(view, Pill::Search), Some(5));
+        assert_eq!(pill_at(view, 4), Pill::Requests);
+        let mut snapshot = ChromeSnapshot {
+            profile_generation: Some(plx_plex::plex::session::current_gen()), ..Default::default()
+        };
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, source(&directory, false));
+        assert!(!snapshot.keys.contains(&widgets::TAB_KEY_REQUESTS));
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, view);
+        assert_eq!(snapshot.keys[4], widgets::TAB_KEY_REQUESTS,
+            "setting an address rebuilds the strip without a directory change");
+        assert_eq!(snapshot.faces[4], TabFace::Label(plx_platform::i18n::msg::requests_tab().into()));
     }
 
     #[test]

@@ -527,6 +527,17 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 halt_preview(app);
                 content_back(&mut app.pages, source, entry, ret);
             }
+            // The strip of a page that has no lane of its own (the Requests tab), under the gate
+            // Home's pills keep: a stale key does not resurrect a destination the strip withdrew.
+            ContentReq::Tab(tab) => {
+                if !home_tab_available(app.bridge.strip_source(), tab) || tab == HomeTab::Requests { continue; }
+                match tab {
+                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
+                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
+                }
+            }
+            ContentReq::Account => chip_activate(&mut app.pages),
+            ContentReq::ToHome => bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, None, Some(ret)),
             ContentReq::Play { play, resume_ns } => {
                 let mounted = bridge::player(&app.pages).is_some();
                 if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
@@ -654,7 +665,7 @@ fn home_requests(app: &mut App, now: u32) {
             HomeReq::Tab(tab) => {
                 // A pointer may name the last presented map after favourites changed. The
                 // stable key must not resurrect a destination the current strip withdrew.
-                if !home_tab_available(app.bridge.browse_directory(), tab) { continue; }
+                if !home_tab_available(app.bridge.strip_source(), tab) { continue; }
                 match tab {
                     // The Home pill ON Home: nothing to navigate to, but a transition queued a
                     // moment ago is still withdrawable, and focus drops into the hero like every
@@ -1050,15 +1061,16 @@ pub(crate) fn watchlist_navigation(
 }
 
 fn home_tab_available(
-    directory: plx_data::stores::browse::DirectoryView<'_>,
+    source: super::chrome::StripSource<'_>,
     tab: HomeTab,
 ) -> bool {
     let kind = match tab {
         HomeTab::Movies => Some(plx_data::stores::browse::SecKind::Movie),
         HomeTab::Shows => Some(plx_data::stores::browse::SecKind::Show),
+        HomeTab::Requests => return source.requests,
         _ => None,
     };
-    kind.is_none_or(|kind| directory.tab_of_kind(kind).is_some())
+    kind.is_none_or(|kind| source.directory.tab_of_kind(kind).is_some())
 }
 
 /// **The Library pages' publication gate**: may the store land the hubs it staged, this frame?
@@ -1312,9 +1324,12 @@ mod library_publication_tests {
             },
         ]);
 
-        assert!(home_tab_available(directory.view(), HomeTab::Movies));
-        assert!(!home_tab_available(directory.view(), HomeTab::Shows));
-        assert!(home_tab_available(directory.view(), HomeTab::Home));
+        let source = |requests| super::super::chrome::StripSource { directory: directory.view(), requests };
+        assert!(home_tab_available(source(false), HomeTab::Movies));
+        assert!(!home_tab_available(source(false), HomeTab::Shows));
+        assert!(home_tab_available(source(false), HomeTab::Home));
+        assert!(!home_tab_available(source(false), HomeTab::Requests), "no Seerr address, no Requests tab");
+        assert!(home_tab_available(source(true), HomeTab::Requests));
     }
 
     #[test]

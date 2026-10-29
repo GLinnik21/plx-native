@@ -19,6 +19,7 @@ it is reached at exactly that address.
 | store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands |
 | app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, the runner's `seerr-call` | hands the store the stored address, signs a seated profile in once |
 | Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`), Connect with the live connection line, Remove |
+| Requests tab | `screens/src/requests.rs` (`AppArg::Requests`, `TAB_KEY_REQUESTS`) | on the strip between the Watchlist mark and Search while an address is set (`chrome::StripSource::requests`); rows My requests (the first `MINE_SHOWN`, each title read by its own `Detail`), Trending, Popular movies and shows, Upcoming movies and shows; a card opens the Seerr title page |
 
 Layers: the client is `plex`, the store `data` (no worker: its jobs are started by the app's
 runner, docs/sans-io.md), the page `screens`, which reads the store through `InnerViews::seerr`.
@@ -65,5 +66,7 @@ query, a title, the token or the cookie.
 
 - Managed Plex Home profiles may not be allowed to sign in to Seerr; Settings shows the refusal.
 - Requests use the server's defaults: no 4K, quality profile or server choice.
-- The surfaces that read the store (the Search row, the Requests tab, a show's missing seasons)
-  land after this foundation.
+- "My requests" shows the first page of the list, newest first, and only its first `MINE_SHOWN`
+  titles: Seerr's request list carries no title, so each card costs one more call. It is read
+  again whenever the tab is uncovered.
+- A show's missing seasons on its Detail page are not built yet.

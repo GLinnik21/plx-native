@@ -23,7 +23,8 @@ use crate::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_data::stores::search::SearchCmd;
 use plx_ui::cards::{CardEvent, PageEdge, SectionFrame, SectionSpec, Shelf, Stack, StackEvent, StackMemory, StackPage};
-use cards::{PageCards, RequestCard, RequestCards, RowCards};
+use cards::{PageCards, RowCards};
+use crate::registry::seerr_cards::{RequestCard, RequestCards};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -297,14 +298,8 @@ impl SearchScreen {
             }
         });
         let cards: Vec<RequestCard> = found.into_iter().flatten()
-            .filter(|title| title.status != Availability::Available && title.kind.is_some())
-            .map(|title| RequestCard {
-                kind: title.kind.unwrap_or(plx_data::seerr::MediaKind::Movie),
-                tmdb: title.tmdb,
-                title: title.title.clone(),
-                status: title.status,
-                poster: title.poster.as_deref().and_then(|path| plx_plex::plex::seerr::tmdb_image(path, "w342")),
-            })
+            .filter(|title| title.status != Availability::Available)
+            .filter_map(RequestCard::of)
             .collect();
         if cards == self.request {
             return false;
@@ -323,13 +318,14 @@ impl SearchScreen {
     }
 
     fn activate<H: SearchLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_REQUESTS, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
         if elem >= plx_ui::dispatch::STRIP_BASE {
             let request = match elem {
                 TAB_KEY_HOME => SearchReq::Tab(HomeTab::Home),
                 TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
                 TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
                 TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
+                TAB_KEY_REQUESTS => SearchReq::Tab(HomeTab::Requests),
                 // The Search mark is the page the user is already on: nothing to request, but the
                 // same ask as arriving by it — back onto the field, keyboard up.
                 TAB_KEY_SEARCH => {

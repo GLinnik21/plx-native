@@ -38,6 +38,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         AppArg::Content(ContentArg::SeerrTitle { .. }) => plx_screens::seerr_title::SeerrTitleScreen::WORD,
         AppArg::Search => "search",
         AppArg::Watchlist => "watchlist",
+        AppArg::Requests => plx_screens::requests::RequestsScreen::WORD,
         AppArg::Player => "player",
         AppArg::Home => "home",
         // Not pages: a surface's word is ` overlay=`, and none of these reaches the page stack's
@@ -72,7 +73,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 /// holds one and asks about it. Its two readers are this module's word derivation and
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
-pub(crate) fn every_route() -> [AppArg; 14] {
+pub(crate) fn every_route() -> [AppArg; 16] {
     use plx_screens::registry::ContentArg;
     let sid = plx_plex::plex::ServerId::UNSET;
     [
@@ -91,8 +92,10 @@ pub(crate) fn every_route() -> [AppArg; 14] {
         }),
         AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
         AppArg::Content(ContentArg::Catalog { hex: [0; 12] }),
+        AppArg::Content(ContentArg::SeerrTitle { kind: plx_data::seerr::MediaKind::Movie, tmdb: 0 }),
         AppArg::Search,
         AppArg::Watchlist,
+        AppArg::Requests,
         AppArg::Player,
     ]
 }

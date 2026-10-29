@@ -1,0 +1,10 @@
+{
+  "requests.tab": "Kérések",
+  "requests.row.mine": "Kéréseim",
+  "requests.row.trending": "Felkapott",
+  "requests.row.popular_movies": "Népszerű filmek",
+  "requests.row.popular_tv": "Népszerű sorozatok",
+  "requests.row.upcoming_movies": "Hamarosan: filmek",
+  "requests.row.upcoming_tv": "Hamarosan: sorozatok",
+  "requests.empty": "A Seerr még nem mutat semmit."
+}

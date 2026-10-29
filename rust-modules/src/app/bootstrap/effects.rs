@@ -25,14 +25,19 @@ fn argument(arg: &plx_screens::registry::AppArg) -> Result<Value, &'static str> 
         _ => Err("unsupported controlled navigation argument"),
     }
 }
+fn tab(tab: &plx_screens::registry::HomeTab) -> &'static str {
+    use plx_screens::registry::HomeTab;
+    match tab {
+        HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search",
+        HomeTab::Watchlist => "watchlist", HomeTab::Requests => "requests",
+    }
+}
 fn home_command(command: &plx_screens::registry::HomeCmd) -> Value {
-    use plx_screens::registry::{HomeCmd,HomeTab};
+    use plx_screens::registry::HomeCmd;
     match command {
         HomeCmd::FocusGrid { row,col } => json!({"focus_grid":[row,col]}),
         HomeCmd::Hero => json!("hero"),
-        HomeCmd::FocusStrip(tab) => json!({"focus_strip":match tab {
-            HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search",
-            HomeTab::Watchlist => "watchlist" }}),
+        HomeCmd::FocusStrip(t) => json!({"focus_strip":tab(t)}),
         HomeCmd::Flip(delta) => json!({"flip":delta}),
         HomeCmd::SelectHero(index) => json!({"select_hero":index}),
         HomeCmd::PinHero(index) => json!({"pin_hero":index}),
@@ -176,6 +181,9 @@ fn content_request(request: &plx_screens::registry::ContentReq) -> Result<Value,
         ContentReq::Push(arg) => json!({"push":content(arg)}),
         ContentReq::Present(arg) => json!({"present":content(arg)}),
         ContentReq::Back => json!("back"),
+        ContentReq::Tab(t) => json!({"tab":tab(t)}),
+        ContentReq::Account => json!("account"),
+        ContentReq::ToHome => json!("to_home"),
         ContentReq::PreviewStart { sid, rk, part, vcodec, acodec, title } =>
             json!({"preview_start":{"sid":sid.raw(),"rk":rk,"part":part,
                 "vcodec":vcodec,"acodec":acodec,"title":title}}),

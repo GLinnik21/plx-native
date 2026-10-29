@@ -1,6 +1,7 @@
 //! One result row's cards, for `plx_ui::cards::Shelf`: the row's items read over the page's
 //! element interning and the roster of sources the results came from.
 use super::*;
+use crate::registry::seerr_cards::RequestCards;
 use crate::registry::tile_facts;
 use plx_data::search::scope::ScopeSource;
 use plx_machine::machine::Measure;
@@ -78,58 +79,6 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
         if let (Kind::Episode, Some(Item::Media(media))) = (self.kind, self.items.get(i)) {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(media), tile.rect, tile.radius, false, measure);
         }
-    }
-}
-
-/// One card of the Request row: a title the household's Seerr server found for the query and the
-/// household's servers do not hold yet (docs/seerr.md). Owned by the page, built from the store's
-/// answer by [`SearchScreen::sync_request`].
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct RequestCard {
-    pub(super) kind: plx_data::seerr::MediaKind,
-    pub(super) tmdb: i64,
-    pub(super) title: String,
-    pub(super) status: plx_data::seerr::Availability,
-    /// The TMDB poster's URL (`plex::seerr::tmdb_image`), drawn through a household server's proxy.
-    pub(super) poster: Option<String>,
-}
-
-/// What a Request card says under its title: what has become of a request for it.
-pub(super) fn request_caption(status: plx_data::seerr::Availability) -> &'static str {
-    use plx_data::seerr::Availability;
-    use plx_platform::i18n::msg;
-    match status {
-        Availability::Pending => msg::seerr_status_pending(),
-        Availability::Processing => msg::seerr_status_processing(),
-        Availability::PartlyAvailable => msg::seerr_status_partly(),
-        Availability::Available => msg::seerr_status_available(),
-        Availability::Blocked => msg::seerr_status_blocked(),
-        Availability::Unknown => "",
-    }
-}
-
-/// The Request row's cards.
-pub struct RequestCards<'a> {
-    pub(super) elems: &'a [u32],
-    pub(super) cards: &'a [RequestCard],
-    /// A household server whose photo proxy fetches the TMDB posters; `None` draws blank faces.
-    pub(super) art_server: Option<u16>,
-}
-
-impl<H: SearchLike> CardSource<H> for RequestCards<'_> {
-    fn len(&self) -> usize { self.elems.len().min(self.cards.len()) }
-    fn elem(&self, i: usize) -> u32 { self.elems[i] }
-    fn index_of(&self, e: &u32) -> Option<usize> {
-        self.elems.iter().position(|elem| elem == e).filter(|&i| i < self.cards.len())
-    }
-    fn art(&self, i: usize) -> Art<'_> {
-        match (self.cards.get(i).and_then(|card| card.poster.as_deref()), self.art_server) {
-            (Some(url), Some(sid)) => Art::Thumb { sid, key: url, res: (250, 375) },
-            _ => Art::Poster(None),
-        }
-    }
-    fn label(&self, i: usize) -> TileLabel {
-        self.cards.get(i).map_or_else(TileLabel::default, |card| TileLabel::titled(&card.title, request_caption(card.status)))
     }
 }
 
