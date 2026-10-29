@@ -2,23 +2,27 @@
 
 ## Reporting a vulnerability
 
-Report privately, **not** as a public issue:
+Report privately, **not** as a public issue, through **GitHub Security Advisories**:
+<https://github.com/tiper/fin-native/security/advisories/new>. It is private, it threads, and it
+produces a CVE if one is warranted.
 
-- **GitHub Security Advisories** — <https://github.com/GLinnik21/plx-native/security/advisories/new>
-  (preferred: it is private, it threads, and it produces a CVE if one is warranted)
-- or e-mail **support@plxnative.com** with `PlxNative security` in the subject.
-
-This is a one-person unpaid project, so the honest service level is: acknowledged within **7 days**,
-an assessment within **30**. If you have not heard back in a week, assume the mail was lost and open
-a public issue saying only *"sent a security report on <date>, no reply"* — with no details.
+FinNative is a one-person unpaid project, so reports are answered as soon as I can. If you have not
+heard back in a couple of weeks, open a public issue saying only *"sent a security report on
+<date>, no reply"*, with no details.
 
 Please give me a reasonable window to ship a fix before disclosing. There is no bounty; I will credit
 you in the release note unless you ask me not to.
 
+**Report FinNative problems here, not to PlxNative.** FinNative is built on
+[PlxNative](https://github.com/GLinnik21/plx-native); a vulnerability that is in PlxNative's own code
+as well is passed on to its maintainer once it is understood.
+
 ## What is in scope
 
-The app, its packaging, and the host-side tools in `tools/` and `ci/`. Concretely, the things worth
-looking at:
+The app, its packaging, and the host-side tools in `tools/` and `ci/`. Much of what follows is the
+PlxNative engine FinNative runs on, and it names Plex where that engine does; in FinNative the one
+server is a Jellyfin server, and its access token is held to the same rules. Concretely, the things
+worth looking at:
 
 - **The `/tmp` trigger surface.** `/tmp` is mode 1777 in webOS's production jail, so any co-resident
   process can create files there. Roughly forty `plxnative-*` files change behaviour, and three are
@@ -67,7 +71,8 @@ looking at:
   roster does not install that server at that origin, whenever a fresh probe no longer reaches it,
   and at once when the person says no (a refusal is written again until it reaches the disk). A
   token sent over plaintext to any origin outside a live grant, or to a server other than the one
-  it names, is in scope.
+  it names, is in scope. A Jellyfin server's token goes out under the same rule: only over TLS, or
+  under a live grant for exactly that plaintext origin (`jellyfin::client`).
   Only an explicit developer-trigger build can otherwise allow the lab path, and it logs the
   exception without the URL.
   Anything that disables, downgrades or bypasses these rules is in scope — including a key-mode
@@ -91,31 +96,18 @@ looking at:
 - Post-compromise access by an attacker who already has root on the television. Root is not an app
   prerequisite; a report whose only precondition is an already-rooted OS describes a platform
   compromise rather than an app sandbox escape.
-- The webosbrew Homebrew Channel, webOS itself, LG's own libraries, or Plex Media Server. Report
-  those to their maintainers.
+- The webosbrew Homebrew Channel, webOS itself, LG's own libraries, Jellyfin Server or Plex Media
+  Server. Report those to their maintainers.
 - Missing hardening that costs nothing to an attacker who is already executing code in the app's
   jail, unless you can show a concrete consequence.
 
 ## What this app does not have
 
 No account of its own, no server, no payment path, and no user-generated content. It signs in to
-**your** Plex account and talks to **your** servers.
+**your** Jellyfin server and talks only to it.
 
-**It does have telemetry, and that hedge used to say it did not.** A release binary carries a Sentry
-DSN and a PostHog project key — both **write-only ingest credentials**, publishable by design, which
-permit sending to a project and grant no read of anything in it. First run asks about crash reports
-and product analytics separately. The first answer remains a draft; answering the second records
-both choices, and only a **Share** answer enables that category and permits its POSTs to
-`ingest.de.sentry.io` or `eu.i.posthog.com`. `BACK` navigates without recording a refusal. Later
-changes live under Account → Settings → Privacy & data, where **Done** commits and `BACK` discards.
-The Sentry
-**auth token** is the real secret in this system: it can read and delete the project, it never
-enters the binary, and it exists only as a GitHub Actions secret used by `sentry-cli` in the release
-workflow.
-
-In scope for a report, and worth naming since a "no telemetry endpoint" line told researchers not to
-look here: the consent gate failing open, an identifier existing before product analytics is
-explicitly enabled or surviving its withdrawal, anything that gets a runtime string past
-`diag::schema`'s no-owned-strings guarantee,
-and the spool's file mode or its contents. [PRIVACY.md](PRIVACY.md) is the full account of what
-leaves the television.
+**No telemetry.** The reporting code FinNative inherits from PlxNative (Sentry crash reports and
+PostHog product analytics) sends nothing unless a build carries a Sentry DSN and a PostHog key, and
+builds made from this repository carry neither, so FinNative never asks about reports. A FinNative
+build from this repository that sends anything anywhere except your Jellyfin server is in scope,
+and so is a consent prompt appearing in one. [PRIVACY.md](PRIVACY.md) is the full account.

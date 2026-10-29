@@ -1,5 +1,74 @@
 # Project instructions
 
+## FinNative: read this first
+
+This repository is **FinNative**, a native Jellyfin client for LG webOS televisions built on
+PlxNative (upstream: `GLinnik21/plx-native`). Everything after this section is PlxNative's own
+guidance and still applies, with the differences below; where they disagree, this section wins.
+
+- **What is FinNative's.** The Jellyfin layer is the `plx_jellyfin` crate (`rust-modules/jellyfin`):
+  the typed API, translated into PlxNative's item model, answering the alt-backend hook in
+  `rust-modules/plex/src/plex/backend.rs`. Hook methods stay Plex-neutral: they name what the app
+  needs, never a Jellyfin endpoint. The app crate always builds the `finnative` feature (screens and
+  session); `#[cfg(feature = "finnative")]` marks the few places where FinNative's screens differ.
+  App ids: `io.github.tiper.finnative` (stable) and `io.github.tiper.finnative.debug`; both install
+  beside PlxNative (`com.beb.plxnative`), and every FinNative install keeps its runtime files under
+  `/tmp/<app id>` (`make -s print-rundir`).
+- **Read "Plex" below as "the server" when the work is FinNative's.** The Plex-only machinery is
+  still Plex-only: `tests/mock_pms.py`, `tools/mock-guest.py`, `./tests/run.py --server`, and
+  `tools/tv-session.sh`'s `--guest`, `--mock` and `--mock-plextv` drive a Plex server and plex.tv.
+  There is no Jellyfin mock and no Jellyfin harness suite: the Jellyfin layer is proven by its own
+  unit tests (`cargo test --lib -p plx_jellyfin`, which `make check` does NOT run; CI runs it in a
+  workflow of its own, `jellyfin.yml`) and on the television against the development server.
+- **Jellyfin sign-in.** A FinNative build signs in with Quick Connect (a code approved from another
+  Jellyfin client) or with a server address, a username and a password; servers on the network are
+  found by Jellyfin's discovery. The sign-in is saved on the set under the install's own records,
+  so a debug and a stable install sign in separately. Never put a server address, username,
+  password or access token in a tracked file, a commit message or a PR.
+- **The development server** is the maintainer's own Jellyfin, running on a small Android
+  device and serving media from external USB storage. It is slow: a stall, a slow transcode or a timeout can be the server, so read its logs (reachable
+  over adb; Jellyfin logs in UTC) before blaming the client, and prove a client cause from the
+  app's own event log (`docs/agent-reference.md`, and the `profile-tv` skill for frame drops).
+  Its address lives with the maintainer, never in the repository.
+- **Never change the Jellyfin watch state behind the maintainer's back.** The users on the
+  development server are real people's viewing records, exactly as "Never write to a real
+  person's Plex account" below says of Plex. A FinNative build writes to the server when it plays
+  (`/Sessions/Playing`, `/Progress`, `/Stopped`: the resume point, and played at the end), marks
+  played or unplayed (`/UserPlayedItems`), removes from Continue Watching (which resets the play
+  state), toggles a favourite (`/UserFavoriteItems`) and downloads a subtitle through the server's
+  providers (a file the server stores with the item). A session does any of these only on items the
+  maintainer named in that session, never by walking Home and pressing OK on whatever is
+  focused, and it reports what it changed so the maintainer can put it back.
+- **Upstream is merged in.** `main` is FinNative's only long-lived branch. PlxNative's `main` is
+  merged into it (a merge commit, the one exception to "squash merges only" below; FinNative's own
+  changes still land as squash merges). Generic fixes, ones PlxNative would want, go upstream as one
+  commit on a branch of the fork cut from upstream's `main`, and come back with the next merge.
+  At each merge keep FinNative's version in the four version files, move `PLXNATIVE_BASE` and the
+  release note's base (the `cut-release` skill), give any new upstream string its FinNative
+  wording, and expect the tests that count settings or Playback pickers to need FinNative's own
+  rows added. PlxNative's `v*` tags must never reach a FinNative repository: set
+  `git config remote.upstream.tagOpt --no-tags`.
+- **CI is the gate.** Work on a `fix/<topic>` or `feat/<topic>` branch from an up-to-date `main`,
+  run the changed crate's tests while iterating, push, `gh workflow run ci.yml --ref <branch>`, and
+  take the debug ipk from that run (`gh run download <run> -n plxnative-<full sha>`). Build on the
+  Mac only for the simulator or the television. The rest of "Build and verification" below still
+  says what a gate proves.
+- **Strings.** `locales/` is upstream's catalog plus the generic (upstream-bound) commits `main`
+  carries; a generic string goes there, in every language, as in PlxNative. A string only FinNative
+  has, or one it rewords (Plex to Jellyfin, PlxNative to FinNative), lives in the overlay
+  `locales-finnative/<tag>/<file>.json`, which the platform build script lays over `locales/` (an
+  entry there replaces or adds to the key of the same name; the merged result must still carry
+  every key in every language, so a new overlay key goes into every overlay directory, one per language in `locales/`). At an
+  upstream merge, delete an overlay entry whose key upstream now carries with the same value, and
+  give a language upstream added (Dutch, `nl`, came in #1160) an overlay directory of its own.
+  European Portuguese (pt-PT, never Brazilian), Italian and German are written properly; es, fr, be, hu,
+  pl, ru and nl need their keys too. For a reworded string keep upstream's translation and terminology in
+  each language and change only the names; when upstream changes such a string, refresh the overlay
+  entry.
+- **Releases** follow the `cut-release` skill, whose "FinNative: read this first" section is the
+  plan: FinNative's own version line from 0.1.0, no telemetry, three workflows kept (CI, Release,
+  Release candidate) and the others disabled in the Actions tab rather than edited.
+
 ## Project
 
 PlxNative is a production-quality native Plex client for rooted LG webOS 4.5 TVs. Most of the

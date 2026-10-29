@@ -190,11 +190,8 @@ jobs:
       ref: ${{ needs.plan.outputs.sha }}
       flavor: nightly
       nightly-date: ${{ needs.plan.outputs.date }}
-      # The DEVELOPMENT telemetry pair — a nightly is unreleased and untested on a television, so
-      # its crash reports and usage events belong in the project's development project
-      # (`plx-native-dev`), not mixed into what a real release reports. build-package.yml's own
-      # build step asserts this pair specifically for `telemetry: development`.
-      telemetry: development
+      # Like the release: FinNative compiles in no telemetry endpoint (build-package.yml's `none`).
+      telemetry: none
       artifact: nightly-assets
       # The package REDISTRIBUTES FFmpeg, so the LGPL corresponding-source obligation applies here
       # exactly as it does to a stable release — this is the fail-closed default anyway, but named
@@ -212,7 +209,7 @@ jobs:
       # than on every push, so the cache's turnaround benefit is smaller and not worth the same
       # trade here either.
       caches: false
-      # The nightly package's own manifest (`com.beb.plxnative.nightly.manifest.json`), which
+      # The nightly package's own manifest (`io.github.tiper.finnative.nightly.manifest.json`), which
       # `ci/nightly.py repo-json` turns into the project's Homebrew Channel repository. It is
       # NOT the webosbrew catalogue's stable listing — that one is keyed to the stable app id
       # and release.yml alone feeds it.
@@ -266,14 +263,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          ipk="plxnative-v${LABEL}.ipk"
-          cp raw/com.beb.plxnative.nightly_*_arm.ipk "dist/$ipk"
+          ipk="finnative-v${LABEL}.ipk"
+          cp raw/io.github.tiper.finnative.nightly_*_arm.ipk "dist/$ipk"
           ( cd dist && sha256sum "$ipk" > nightly.sha256 )
           # The package's manifest, with its bare `ipkUrl` pointed at the name the .ipk has on the
           # release, so the release's own copy resolves (a bare filename is relative to the
           # manifest's URL). `ci/nightly.py repo-json` later makes it absolute for the site.
-          python3 - "raw/com.beb.plxnative.nightly.manifest.json" "$ipk" \
-            "dist/com.beb.plxnative.nightly.manifest.json" <<'PYEOF'
+          python3 - "raw/io.github.tiper.finnative.nightly.manifest.json" "$ipk" \
+            "dist/io.github.tiper.finnative.nightly.manifest.json" <<'PYEOF'
           import hashlib, json, sys
           src, ipk, dst = sys.argv[1:4]
           manifest = json.load(open(src))
@@ -288,7 +285,7 @@ jobs:
           # regardless of which install it is.
           cp raw/ffmpeg-*.tar.xz dist/
           cp raw/build-ffmpeg.sh dist/
-          cp raw/plxnative-source-*.tar.gz* dist/
+          cp raw/finnative-source-*.tar.gz* dist/
           echo "ipk=$ipk" >> "$GITHUB_OUTPUT"
         id: stage
       - name: Render release notes
@@ -321,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "$TAG" \
-            "dist/$IPK" dist/nightly.sha256 dist/com.beb.plxnative.nightly.manifest.json dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/plxnative-source-*.tar.gz* \
+            "dist/$IPK" dist/nightly.sha256 dist/io.github.tiper.finnative.nightly.manifest.json dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/finnative-source-*.tar.gz* \
             --target "$SHA" \
             --title "PlxNative $LABEL" \
             --prerelease \
@@ -339,8 +336,8 @@ jobs:
           test "$(sha256sum "verify/$IPK" | cut -d' ' -f1)" = "$(cut -d' ' -f1 dist/nightly.sha256)"
           # The published manifest must name the published package's hash — the one thing the
           # television checks on install.
-          gh release download "$TAG" --pattern com.beb.plxnative.nightly.manifest.json --dir verify
-          test "$(python3 -c "import json;print(json.load(open('verify/com.beb.plxnative.nightly.manifest.json'))['ipkHash']['sha256'])")" = "$(cut -d' ' -f1 dist/nightly.sha256)"
+          gh release download "$TAG" --pattern io.github.tiper.finnative.nightly.manifest.json --dir verify
+          test "$(python3 -c "import json;print(json.load(open('verify/io.github.tiper.finnative.nightly.manifest.json'))['ipkHash']['sha256'])")" = "$(cut -d' ' -f1 dist/nightly.sha256)"
 
   pages:
     name: refresh site latest-nightly pointer

@@ -1,230 +1,131 @@
-# PlxNative
+# FinNative
 
-A fast, unofficial [Plex](https://www.plex.tv/) client for LG webOS televisions. Native, not a web
-page — the interface is drawn straight on the GPU at 60 fps, and video plays on the TV's own decoder.
+An unofficial, native [Jellyfin](https://jellyfin.org/) client for LG webOS televisions.
 
-**Website: [plxnative.com](https://plxnative.com/)** · [Install guide](https://plxnative.com/install/) ·
-[Troubleshooting](https://plxnative.com/troubleshooting/)
+FinNative is powered by **[PlxNative](https://github.com/GLinnik21/plx-native)**, the fast native Plex
+client written by **Gleb Linnik**. Everything that makes it fast is his work: the interface drawn
+straight on the GPU with SDL2 and OpenGL ES, the FFmpeg demuxer feeding the TV's own hardware
+decoder through LG's media pipeline, the layout, widgets, player and storage layers. FinNative adds
+a Jellyfin backend to that engine and ships it as a separate app. If you use Plex, use PlxNative.
 
-<a href="https://trendshift.io/repositories/244171?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-244171" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/244171" alt="GLinnik21/plx-native | Trendshift" width="250" height="55"/></a>
+> **Status: early.** 0.1.0 is FinNative's first release. It has been developed and tested on one
+> television (an LG C1) against one Jellyfin server, so expect rough edges, and please
+> [say how it went](https://github.com/tiper/fin-native/issues) on yours.
 
-*In daily use on a 2019 LG set. PlxNative is an independent project and is not affiliated with Plex, Inc.
-or LG. The same install steps are in the repo: [installation guide](docs/install-and-verify.md).*
+## What works
 
-## Why this exists
+- **Sign-in** with Quick Connect from your phone, or with the server's address, a username and a
+  password. Jellyfin servers on your home network are found for you.
+- **Your movie and TV libraries**, as your server shows them: Home follows your Jellyfin home
+  screen, and libraries, collections, seasons, episodes and people each have a page. A library can
+  be filtered by genre.
+- **Search** across films, shows and people.
+- **Several Jellyfin users** on one TV, on one server or several: add one with **Add user** and
+  switch with **Change profile**.
+- **Playback** with the television's own decoders. FinNative tells your server what the TV can
+  decode, and the server decides whether the file plays directly or is converted, within the limits
+  its administrator set. Audio the TV can't decode can be converted on the TV itself.
+- **The parts of watching you expect:** resume where you stopped, the next episode, Skip Intro and
+  Skip Credits where the server knows them, scrub thumbnails, your audio and subtitle preferences,
+  subtitle search through the server, and favourites. Watch progress is kept by your server.
 
-The official Plex app on my old LG is slow. Scrolling a shelf stutters, opening a poster takes a
-beat too long. It behaves like a web page because it is one: a web app running in the television's
-Chromium. Patching it doesn't help — the ceiling isn't the code, it's the browser.
+## What doesn't work yet
 
-So I threw the browser away.
-
-PlxNative draws straight on the GPU and hands video to the same silicon the built-in apps use. No
-Chromium, no JavaScript, no web view. It just draws. Almost all of it is Rust, and I use it every
-day to watch things off my server in the next room.
-
-## What it looks like
-
-Real captures of the app, not mockups: the same code that runs on the television, on the desktop
-simulator, browsing a demo library of openly licensed films
-([credits](docs/screenshots/CREDITS.md)). `make screenshots` regenerates them.
-
-![Home](docs/screenshots/home.jpg)
-
-**Home** — a rotating hero from what you're partway through and what's just landed, shelves under it.
-
-![Library](docs/screenshots/library.jpg)
-
-**Library** — a library opens on its full poster grid, with an A–Z rail down the side and one
-header row for sort & filter (including unwatched-only), a Collections page and a Recommended
-page. The shelves live on Recommended: what you're partway through, with the time left under
-the focused card, and what just landed
-([pictured here](docs/screenshots/ux-library-grid.jpg)).
-Settings → Libraries → Under posters also has a **Sort value** switch (on by default, per
-profile). In a movie or TV show library sorted by something other than Title or Random (its movies, shows, seasons or
-episodes), every card shows the value it is sorted by on one line under it (a score, a length, a date as Today,
-Yesterday, 27 Oct or Oct 2024), in place of the title and details line; a sort with no value to show, such as
-the Show order of Seasons and Episodes, keeps the usual captions. It uses the existing sort menu; other poster
-surfaces keep their usual captions.
-
-![Search](docs/screenshots/search.jpg)
-
-**Search** — one query across every server you can reach, results grouped by kind.
-
-![Player](docs/screenshots/player.jpg)
-
-**Player** — the transport with chapters and track menus, drawn over video the television decodes
-itself. (In this capture the frame under it was decoded by the simulator.)
-
-## What it does
-
-- **An interface that keeps up with the remote.** 60 fps on the 2019 set I develop on, with
-  frame-rate regression scenes that measure it on the television rather than trusting it.
-- **Sign in on the TV** with an on-screen QR code and pick a Plex Home profile.
-- **Browse and search your libraries** — on your own servers and on ones shared with you. Your
-  servers' libraries, that is, plus the plex.tv Watchlist as its own tab, where any title can be added or
-  removed; search covers servers only.
-- **Direct play** H.264 and HEVC — 4K, 10-bit, Dolby Vision profiles 5 and 8, E-AC-3 Atmos, and AV1 or VP9 (10-bit VP9 only on webOS 4 sets)
-  on televisions whose codec table lists that decoder — decided against your television's own
-  codec table where it publishes one. Anything else the server transcodes, and you can switch a
-  playback to Auto to follow a link whose speed changes.
-- **Everything you expect while watching**: resume, seek and scrub, chapters, audio and subtitle
-  tracks (including image subtitles), Skip Intro, Skip Credits, Up Next with auto-advance, and
-  progress reported back to your server.
+- **Music, photos and live TV** aren't supported.
+- **Playlists.** They are listed but can't be opened yet; collections work.
+- **Controlling the TV from the Jellyfin phone app.** The TV doesn't show up there as a player.
+- **Seeking and resuming through Cloudflare.** On a server behind Cloudflare, seeking or resuming
+  a file can fail.
+- **Items that need server transcoding** fail with "Playback failed" when your server can't or
+  isn't allowed to transcode. That is the server's limit, not a FinNative bug.
 
 ## Will it work on my television?
 
-**It needs webOS 4.0 or newer**, with two tested exceptions: a 2016 set on **webOS 3.4.3** signs
-in, browses, searches and plays (direct play, transcodes, subtitles and seeking) through Developer
-Mode, and a 2018 set on **webOS 3.9.3** plays direct play the same way when built from source at
-or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) — the catalogue's
-prebuilt v0.8.0 predates that fix (see [Known issues](#known-issues)). Other 3.x releases are
-untested, and anything older than 3.4 is unknown. Past that, it most
-likely will. I develop and test on a 2019 set, and opt-in usage reports show
-video playing on sets from 2018 through the newest, on webOS 11 — both direct play and server
-transcodes, Developer Mode installs included.
-
-Owners' reports, set by set, are in the [compatibility list](docs/compatibility.md).
+**It needs webOS 4.0 or newer.** Only an LG C1 (2021, webOS 6) has played video with FinNative so
+far. Every firmware from webOS 4.0 up is expected to start it, because each release checks its
+libraries and symbols against the firmware images webosbrew collects; that says nothing yet about
+whether video plays. webOS 3.9.2 and older can't start it.
 
 ### Known issues
 
+FinNative shares PlxNative's player, so it shares the problems PlxNative has documented on
+particular sets:
+
 | Where | What happens |
 |---|---|
-| **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
-| **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work. The prebuilt **v0.8.0** holds a strong ELF reference to the cxx11 `StarfishMediaAPIs::Feed` symbol, which 3.x `libplayerAPIs` does not export, so on the prebuilt video never starts and no error is reported: [#249](https://github.com/GLinnik21/plx-native/issues/249). A source build at or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) resolves Feed with a dual-ABI `dlsym` and plays direct play on a 2018 C7 (W17H chassis, 3.9.3). |
-| **webOS 3.x** | Seeking jumps in place through LG's public `Seek`, as on webOS 5 and newer (tested on platform release 3.9.3 only). The in-place path webOS 4 uses depends on the internal layout of LG's 4.x media player, which differs on 3.x, so it is not used there. A set that refuses `Seek` falls back to restarting the stream at the new position, as all 3.x sets did before. Menus can drop frames at 1920x1080 on these sets; **Settings → System → Interface resolution** trades sharper text for smoother menus. |
-| **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
+| **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. LG's Developer Mode sandbox on these sets can withhold a device the video path needs. The app checks for it and says so instead of crashing. On a rooted TV with Homebrew Channel, the failure screen offers **Repair** ([what it does](docs/native-video-sandbox.md)); without root there is no fix. |
+| **Sets on LG's k6hp chip** | PlxNative has a crash report from these sets that hasn't been reproduced: [GLinnik21/plx-native#174](https://github.com/GLinnik21/plx-native/issues/174). |
 
-### Rooted or not
-
-**No root is needed.** A regular TV in Developer Mode runs everything except the k5lp/k3lp Repair
-above. What Developer Mode costs you is renewal: if the session lapses, LG removes the apps
-installed through it ([how to keep them](docs/install-and-verify.md#important-developer-mode-expires)).
-A rooted TV with Homebrew Channel has no expiry.
-
-If something goes wrong, check [Troubleshooting](docs/troubleshooting.md) first, then
-[tell me what happened](https://github.com/GLinnik21/plx-native/issues/new/choose) — and if you own one of the
-sets above, it working is as useful a report as it failing: post it under
-[Discussions > Compatibility](https://github.com/GLinnik21/plx-native/discussions/categories/compatibility).
+[Troubleshooting](docs/troubleshooting-finnative.md) covers the rest. If your set isn't an LG C1, a report
+that it works is as useful as one that it doesn't.
 
 ## Installing
 
-**First time installing an app outside the LG Content Store?** Follow the
-[**step-by-step installation guide**](docs/install-and-verify.md). It starts with a regular LG
-webOS TV, a computer on the same network, and a Plex account with access to your own or a shared
-server. **No root is required.**
+**No root is needed.** You install FinNative with LG's Developer Mode and
+[webOS Dev Manager](https://github.com/webosbrew/dev-manager-desktop) on a computer:
 
-Set up LG Developer Mode and connect with webOS Dev Manager, then choose:
+1. Turn on Developer Mode on the TV and connect Dev Manager to it.
+2. Download `io.github.tiper.finnative_X.Y.Z_arm.ipk` from the
+   [latest release](https://github.com/tiper/fin-native/releases/latest) and check its hash.
+3. Install it from Dev Manager's **Apps** view, then open **FinNative** on the TV and sign in.
 
-- **Install PlxNative directly:** add only PlxNative to the TV; install future `.ipk` updates from
-  your computer.
-- **Install Homebrew Channel first:** get an app catalogue on the TV, then install PlxNative and
-  its updates with the remote.
+The [installation guide](docs/install-finnative.md) walks through every step, including the
+Developer Mode session you must renew or LG removes the apps it installed. FinNative isn't in the
+Homebrew Channel catalogue yet.
 
-**Already have Homebrew Channel?** Find [PlxNative in its catalogue](https://repo.webosbrew.org/apps/com.beb.plxnative/)
-and select **Install**. Skip the computer setup.
+## Credit
 
-**Developer Mode needs periodic renewal.** If it expires and LG disables Developer Mode, apps
-installed through it are removed. Installing Homebrew Channel through Developer Mode does not
-remove that requirement. The guide explains [how to renew the session](docs/install-and-verify.md#important-developer-mode-expires).
+- **PlxNative** — Copyright (c) 2026 Gleb Linnik and contributors, GPL-3.0-or-later.
+  Upstream: <https://github.com/GLinnik21/plx-native>. The upstream README is kept as
+  [`README.plxnative.md`](README.plxnative.md), its links to the user guides pointed at upstream's, and its full history is preserved in this
+  repository.
+- **FinNative's changes** (the Jellyfin layer in `rust-modules/jellyfin/`, the backend hook in
+  `rust-modules/plex/src/plex/backend.rs`, and the renaming) — Copyright (c) 2026 FinNative's
+  maintainer ([@tiper](https://github.com/tiper)), under the same GPL-3.0-or-later terms.
+- **Other Jellyfin clients for LG webOS** that FinNative takes code or designs from, each credited
+  in the source file that uses it: [Native Jelly](https://github.com/sostk/native-jelly) by sostk
+  and [Butaca](https://github.com/gnacho/butaca) by gnacho, both forks of PlxNative under
+  GPL-3.0-or-later, and [WebOS-Jellyfin-Native](https://github.com/SchulzCode/WebOS-Jellyfin-Native)
+  by SchulzCode (0BSD).
+- Third-party components keep their own licences: see
+  [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
-For manual `.ipk` downloads, [verify the release checksum](docs/install-and-verify.md#verifying-the-package)
-before installing. Homebrew Channel verifies catalogue downloads for you.
+FinNative is not endorsed by the PlxNative project. Please report FinNative problems
+[here](https://github.com/tiper/fin-native/issues), not upstream.
 
-## Nightly builds
+## A separate app, not a replacement
 
-Every day `main` moves, CI cuts a nightly `.ipk` from wherever it stands. It installs beside the
-regular app as **"PlxNative Nightly"** — its own tile, its own sign-in — so trying it never touches
-the release you already trust.
+FinNative installs **beside** PlxNative and never over it:
 
-**With Homebrew Channel:** under Settings choose **Add repository**, enter
-`https://plxnative.com/nightly/repo.json`, then install PlxNative Nightly. Every later nightly
-appears there as an update. The [nightly builds guide](docs/nightly-builds.md) has the steps, how
-the versions work and what to do if something goes wrong.
+| | PlxNative | FinNative |
+|---|---|---|
+| App id | `com.beb.plxnative` | `io.github.tiper.finnative` |
+| Name on the TV | PlxNative | FinNative |
+| Icon and splash | PLX artwork (reserved by its author) | its own FinNative artwork |
+| Stored data | `plxstate.*` records | `finstate.*` records |
+| Server | Plex | Jellyfin |
 
-**Without it:** each build is a
-[prerelease](https://github.com/GLinnik21/plx-native/releases?q=nightly), and the newest is always
-linked from [plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json). Install
-it with Dev Manager; a package installed that way does not update itself.
-
-**It is not tested on a television.** It passes the same automated build and packaging checks a
-release does, but nobody has watched it play. Each nightly is deleted 30 days after it is
-published, so link to a specific `.ipk` at your own risk.
-
-## Release candidates
-
-Before a release, CI may publish a release candidate as a
-[prerelease](https://github.com/GLinnik21/plx-native/releases?q=rc) named like `PlxNative 0.8.0-rc.1`.
-It is the release build itself, so it **installs as the regular PlxNative app**, replacing the one
-you have the way an update would. It is not in the Homebrew Channel, and the Channel will not offer
-the final release over it either: reinstall the final by hand once it is out.
+PlxNative's name and artwork are reserved by its author (see [`TRADEMARKS.md`](TRADEMARKS.md)), so
+FinNative carries its own. The name PlxNative appears in this app only to credit the work it is
+built on.
 
 ## Privacy
 
-**Your library data never reaches me.** The app talks to your Plex server, to `plex.tv` to sign in,
-and to `discover.provider.plex.tv` for cast biographies and the Watchlist (reading it, and adding or
-removing a title when you ask, with the active profile's plex.tv token).
+FinNative sends no crash reports or analytics. It talks only to the Jellyfin server you sign in
+to, and while you sign in it looks for Jellyfin servers on your home network. Your password is
+never stored. [`PRIVACY.md`](PRIVACY.md) is the full policy, and the same text is in the app under
+Settings → Legal.
 
-**Crash reports and usage analytics are off until you turn them on** — two separate first-run
-questions, each answerable with Don't Share, both reversible later under Account → Settings →
-Privacy & data. No title, search term, subtitle line, server name or address can appear in any
-report. [`PRIVACY.md`](PRIVACY.md) is the whole statement, including the schemas.
+## Building
 
-ASS/SSA subtitles render natively during direct play, including styles, positioning, overlapping
-signs and dialogue, karaoke, and embedded fonts. External ASS files retain their original scripts.
-A re-encode still burns the selected subtitle on the server; over a remux the app draws a sidecar, and an embedded track when the link is local and the Part is 1..=30000 kbps, and otherwise the server burns it.
-
-## The honest scope
-
-I built this for how *I* watch, so it's narrower than Plex's:
-
-- **Movies and TV shows.** No music, no photos, no live TV or DVR.
-- **No typing in server addresses.** Servers come from your Plex account; set them up on a phone or
-  PC and choose from what's there. Servers reached through Plex's relay, or that require an
-  encrypted connection, are supported but haven't been watched end to end.
-- **One person's spare time.** There will be bugs I haven't hit, because I don't watch the way you do.
-
-If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.
-
-## Contributing
-
-Issues and pull requests are welcome, especially from anyone whose television or library differs
-from mine — [**docs/building.md**](docs/building.md) is the build and the test loop, and says what
-hardware I most need help with. Feature ideas go to [Discussions >
-Ideas](https://github.com/GLinnik21/plx-native/discussions/categories/ideas). Security issues go
-through [`SECURITY.md`](SECURITY.md) rather than a public issue.
-
-## Acknowledgements
-
-Error monitoring for PlxNative is sponsored by [Sentry](https://sentry.io/for/good/).
-
-<a href="https://sentry.io/for/good/">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/sentry-wordmark-light.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/sentry-wordmark-dark.svg">
-    <img alt="Sentry" src="docs/assets/sentry-wordmark-dark.svg" width="160">
-  </picture>
-</a>
+The build, simulator and TV workflows are PlxNative's, unchanged; see
+[`docs/building.md`](docs/building.md) and [`docs/agent-reference.md`](docs/agent-reference.md).
+The default `FLAVOR=debug` package installs as `io.github.tiper.finnative.debug`.
 
 ## Licence
 
-[GPL-3.0-or-later](LICENSE), © 2026 Gleb Linnik. The PlxNative name and its brand artwork are excluded — see
-[`TRADEMARKS.md`](TRADEMARKS.md), which also carries the Plex and LG non-affiliation statements.
-Third-party components and their licences are in
-[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and `licenses/` — notably the app ships its own
-LGPL build of FFmpeg. Those notices and licence texts ship inside the `.ipk` too, so they travel
-with the binary and not only with this repository.
+GPL-3.0-or-later, the same as PlxNative. [`LICENSE`](LICENSE) is the unmodified GPLv3 text and
+[`LICENSING.md`](LICENSING.md) states the "or later" choice.
 
-This is an unofficial client, not affiliated with, endorsed by, or sponsored by Plex GmbH or LG
-Electronics. "Plex", "Rotten Tomatoes", "IMDb", "TMDB", "LG" and "webOS" are trademarks of their
-respective owners; where they appear in the app, they identify whose service or score is being shown.
-
-## Star history
-
-<a href="https://www.star-history.com/?repos=glinnik21%2Fplx-native&type=date&legend=bottom-right">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&theme=dark&legend=bottom-right">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
-    <img alt="Star history chart" src="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
-  </picture>
-</a>
+Jellyfin is a project of the Jellyfin team; Plex is a trademark of Plex, Inc.; LG and webOS are
+trademarks of LG Electronics. FinNative is not affiliated with or endorsed by any of them.

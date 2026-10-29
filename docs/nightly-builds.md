@@ -1,5 +1,11 @@
 # Nightly builds
 
+> **This page is PlxNative's, kept as upstream wrote it. FinNative has no nightly builds.** Everything
+> below describes PlxNative Nightly (`com.beb.plxnative.nightly`) and its repository on
+> plxnative.com, which install PlxNative, not FinNative. FinNative's builds are on its
+> [releases page](https://github.com/tiper/fin-native/releases); see the
+> [installation guide](install-and-verify.md).
+
 A nightly is the newest PlxNative build from `main`, published on most days the code changes. It
 installs **beside** the regular app as **PlxNative Nightly** - its own launcher tile and its own
 sign-in - so trying it never touches the release you already trust.

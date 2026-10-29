@@ -32,6 +32,100 @@ typed into a note are now read out of the `.ipk`.
 That is why this skill exists and why it is mostly about verification. Every rule below is here
 because it was violated in a real release of this project, not because it is good practice.
 
+## FinNative: read this first
+
+Everything below is PlxNative's procedure, and FinNative releases through the same workflows and
+gates. These are the differences; where the text below disagrees with this section, this section
+wins.
+
+- **The ids.** Read `com.beb.plxnative` as `io.github.tiper.finnative` and `com.beb.plxnative.debug`
+  as `io.github.tiper.finnative.debug`. Ask the Makefile for paths rather than typing them:
+  `make -s print-appdir FLAVOR=stable`, `make -s print-eventlog FLAVOR=stable`.
+- **The repository.** Read `GLinnik21/plx-native` as the repository the release runs in. `gh` takes
+  it from the checkout, so write `gh api repos/{owner}/{repo}/releases/tags/vX.Y.Z`, never a
+  literal owner. FinNative's home is `tiper/fin-native`, a GitHub fork of PlxNative's repository,
+  and releases run there. A note's and an audit's links name `https://github.com/tiper/fin-native/...`;
+  the two `TEMPLATE.md` files still carry PlxNative's.
+- **Nothing reaches the Homebrew Channel from a release run.** `release.yml` creates a GitHub
+  Release on its own repository and nothing else: the channel finds a version through a listing in
+  `webosbrew/apps-repo`, and PlxNative's listing (`packages/com.beb.plxnative.yml`) points at
+  PlxNative's repository, so nothing FinNative publishes can reach it. FinNative's own listing is a
+  separate, one-time pull request ("The Homebrew Channel listing" below); step 7 means that one.
+- **No telemetry.** Every caller passes `telemetry: none`: no Sentry DSN or PostHog key is compiled
+  in, the build asserts the binary carries none, and nothing is uploaded to Sentry, so no
+  `SENTRY_AUTH_TOKEN` or telemetry variable is needed.
+- **Three workflows are FinNative's: CI, Release and Release candidate.** The rest publish
+  PlxNative's things or need its keys, and are disabled in the repository's Actions tab rather than
+  edited, so upstream merges stay clean: Deploy landing page (`pages.yml`), Site video, Nightly, CI
+  metrics, Build bench, Dependency update and Issue labels. Simulators runs macOS and Windows jobs,
+  which are free on a public repository. With Site video disabled, a release's last job, which
+  dispatches it, fails without failing the release (`continue-on-error`). Dependabot's version
+  updates stay off on a fork unless enabled in its settings; leave them off, since dependency bumps
+  arrive with upstream merges. Skip "Look at the screenshots" in step 2 and the site-video section
+  at the end.
+- **The version is FinNative's own, from 0.1.0.** PlxNative's `release: X.Y.Z` commits move the
+  same four files; an upstream sync keeps FinNative's number. PlxNative's tags (`v0.1.0`…`v0.8.0`
+  and on) name PlxNative releases: never push one to a FinNative repository, and in a checkout
+  with an `upstream` remote run `git config remote.upstream.tagOpt --no-tags` and delete the local
+  copies (`git tag -l 'v*' | xargs git tag -d`), or `git fetch origin` refuses FinNative's own
+  `v0.1.0` as clobbering an existing tag. The repository must carry no `v*` tag before the first
+  release (`prepare` refuses a tag that exists). `docs/release-notes/vX.Y.Z.md` and
+  `docs/release-audits/vX.Y.Z.md` for a FinNative number replace PlxNative's file of that name.
+- **Every release names its PlxNative base.** The note's second paragraph and the audit's
+  "built on" row give the last PlxNative release the tree contains and the upstream commit it was
+  merged to; Settings > About prints `PLXNATIVE_BASE` (`rust-modules/screens/src/legal.rs`). At
+  each upstream merge, set `PLXNATIVE_BASE` to what PlxNative's own build of the merged commit
+  reports: `X.Y.Z` at a release tag, otherwise the next minor, `X.Y.0-dev`. The merge's conflict
+  on the four version files is the reminder: keep FinNative's number there, move the base here.
+
+### The first release, 0.1.0
+
+The tree already says 0.1.0 in all four files, and `docs/release-notes/v0.1.0.md` and
+`docs/release-audits/v0.1.0.md` are drafts that pass `--lint-note` and `--lint-audit`. In order:
+
+1. **Rehearse:** `gh workflow run rc.yml -f version=0.1.0 -f dry_run=true` builds and gates the
+   stable package and publishes nothing.
+2. **The repository, once:** Issues on, private vulnerability reporting on, Actions enabled, the
+   workflows above disabled, GitHub Pages off. `pkg/icon160.png` and `icon320.png` must be on the
+   default branch of the public repository: the manifest's `iconUri` points there and webosbrew's
+   lint requires a 200.
+3. **Re-read both drafts** against what 0.1.0 actually contains. Build the package locally
+   (`make FLAVOR=stable RELEASE=1 ipk`), install that `.ipk` on the C1 (webOS Dev Manager, or the
+   luna call in step 6), and add the run to the audit's "Device test evidence" table. Commit that
+   with any other correction BEFORE the candidate: a promotion refuses a tree that moved after it.
+   Then cut the candidate, `gh workflow run rc.yml -f version=0.1.0`, and install it too.
+4. **Release it**: `gh workflow run release.yml -f version=0.1.0 -f candidate=rc/v0.1.0-rc.1`.
+   The version does not move (an explicit version equal to the tree's is "ship what is written"),
+   so there is no bump commit; `prepare` tags `v0.1.0`, and `publish` attaches the `.ipk`, the
+   manifest and the FFmpeg source, runs `ci/verify-published.sh` and commits the completed audit
+   to `main`.
+
+### The Homebrew Channel listing
+
+Once, after 0.1.0 is public: fork `webosbrew/apps-repo`, add `packages/io.github.tiper.finnative.yml`
+(the stem must equal the manifest id; schema and CI rules in `docs/distribution.md` §1.1-1.5) and
+open the pull request from the maintainer's own account:
+
+```yaml
+title: FinNative
+shortDescription: A native Jellyfin client for LG webOS TVs, built on PlxNative
+iconUri: https://raw.githubusercontent.com/tiper/fin-native/main/pkg/icon160.png
+detailIconUri: https://raw.githubusercontent.com/tiper/fin-native/main/pkg/icon320.png
+manifestUrl: https://github.com/tiper/fin-native/releases/latest/download/io.github.tiper.finnative.manifest.json
+category: multimedia
+pool: main
+requirements:
+  webosRelease: '>=4.0'
+description: |
+  …
+```
+
+`'>=4.0'` is PlxNative's own listing's range, the one `ci.yml`'s `fwcompat.py --min-release 4.4.2`
+check grades; widen or narrow it only with the generated audit's matrix. The PR template's AI-use
+declaration must be answered honestly (§1.5): FinNative was written with AI coding agents and
+tested by its maintainer on an LG C1. Every later release reaches the channel through `manifestUrl` with no
+further pull request.
+
 ## The three that actually went wrong
 
 Read these first; the rest of the procedure assumes them.

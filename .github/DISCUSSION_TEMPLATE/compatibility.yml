@@ -3,9 +3,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for telling me how PlxNative runs on your television. A report that it works is as useful as one that fails: the [compatibility list](https://github.com/GLinnik21/plx-native/blob/main/docs/compatibility.md) is built from these.
+        Thanks for telling us how FinNative runs on your television. A report that it works is as useful as one that fails: these reports are how other owners learn which sets it runs on.
 
-        If something is **broken** (video never starts, the app closes, sign-in fails), please use the [bug report form](https://github.com/GLinnik21/plx-native/issues/new?template=bug_report.yml) instead, so it gets tracked and fixed.
+        If something is **broken** (video never starts, the app closes, sign-in fails), please use the [bug report form](https://github.com/tiper/fin-native/issues/new?template=bug_report.yml) instead, so it gets tracked and fixed.
   - type: input
     id: tv-model
     attributes:
@@ -21,20 +21,19 @@ body:
     validations:
       required: true
   - type: input
-    id: plxnative-version
+    id: finnative-version
     attributes:
-      label: PlxNative version
-      description: For example `0.8.0`, or the nightly's version.
+      label: FinNative version
+      description: Settings > About shows it, for example `0.1.0`.
     validations:
       required: true
   - type: dropdown
     id: install-method
     attributes:
-      label: How you installed PlxNative
+      label: How you installed FinNative
       options:
         - Dev Manager (Developer Mode)
         - Homebrew Channel
-        - Nightly build
         - Built from source
         - Other or not sure
     validations:
@@ -68,11 +67,11 @@ body:
     id: notes
     attributes:
       label: Anything else
-      description: Problems you hit, what you could not try, the file types you played. For a problem with video, the bottom line of the failure screen (it starts with `PlxNative`) is the most useful thing to paste.
+      description: Problems you hit, what you could not try, the file types you played. For a problem with video, the bottom line of the failure screen is the most useful thing to paste.
   - type: checkboxes
     id: privacy
     attributes:
       label: Before you submit
       options:
-        - label: I have not pasted a Plex token or a passphrase into this discussion.
+        - label: I have not pasted a Jellyfin password, access token or server address into this discussion.
           required: true

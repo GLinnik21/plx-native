@@ -12,6 +12,13 @@ description: >
 
 # Working on the TV
 
+> **FinNative.** A FinNative install signs in to Jellyfin on the set itself, so `--guest`,
+> `--mock` and `--mock-plextv` below (Plex, `tests/mock_pms.py`, plex.tv) do not reach its
+> backend. The development server is the maintainer's own Jellyfin: before pressing OK on a card,
+> playing, marking, favouriting or downloading a subtitle there, read "Never change the Jellyfin
+> watch state" in `AGENTS.md`'s FinNative section. The app ids are `io.github.tiper.finnative`
+> and `.debug`; ask the Makefile for paths (`make -s print-rundir`, `print-eventlog`).
+
 > **FIRST: take the television's lock.** One set, no OS-level mutex — two jobs on it produce
 > plausible WRONG data rather than a clean failure. `tools/tv-lock.sh acquire --ttl 30 --why "…"` before
 > one run (`up` … `down`) and `release` right after it (and `tools/tv-lock.sh status` to see who
@@ -216,11 +223,10 @@ UNEXPANDED DEFINITION, so `TV` comes back as the literal `$(strip $(shell tools/
 ssh built from it then fails, and the tool reports an unreachable television that is in fact awake
 and idle in front of you.
 
-### The runtime root moved, and only for a flavoured install
+### The runtime root is `/tmp/<app id>`
 
-The stable install keeps `/tmp` byte for byte, so every recipe and every `/tmp/plxnative-…` line
-below stays literally true for the app users get. A flavoured install puts its triggers, its
-`plxnative-remote` FIFO and its runtime logs in `/tmp/<app id>` instead. **Every name is
+FinNative: every install, stable included, puts its triggers, its `plxnative-remote` FIFO and its
+runtime logs in `/tmp/<app id>`, because the bare `/tmp` is a stable PlxNative's. **Every name is
 unchanged — only the directory moved**, so read each `/tmp/plxnative-…` path here as
 `$(make -s print-rundir FLAVOR=…)/plxnative-…`.
 

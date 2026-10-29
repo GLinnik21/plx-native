@@ -1,13 +1,87 @@
-# PlxNative Privacy Policy
+# FinNative Privacy Policy
 
-Applies to PlxNative 0.6.0. Last updated 4 September 2026.
+Applies to FinNative builds made from this repository. Last updated 19 October 2026. The same
+policy is in the app, under Settings → Legal → Privacy policy.
 
-## Who is responsible for PlxNative data
+## Who is responsible for FinNative data
 
-Gleb Linnik is responsible only for data PlxNative stores locally and for optional reports you
-choose to share. Contact: `support@plxnative.com`.
+Tiago ([github.com/tiper](https://github.com/tiper)), who maintains FinNative, is responsible only
+for the data FinNative stores on this television.
 
-## Plex services
+## Your Jellyfin server
+
+To sign you in, browse and play your media and keep your watch progress, FinNative talks only to
+the Jellyfin server you sign in to, and, while you sign in, looks for Jellyfin servers on your home
+network. It tells that server this app's name and version, the device name “LG TV” and a random
+device identifier, and reports what you play and how far you got, so the server can keep your
+progress and list this television among its devices. Those requests are handled by the server and
+whoever runs it, under their own terms. FinNative's developer does not receive them.
+
+## Data stored on this television
+
+FinNative stores the address and identifier of your Jellyfin server and the access token the server
+issued when you signed in, never your password. It also keeps your Home library choices, your
+recent searches, the audio and subtitle tracks you picked for each show, your playback quality,
+Direct Play and app language preferences, downloaded artwork cached as bounded files for reuse
+across restarts, and local technical logs: an event log and an error-output log, each emptied every
+time the app launches, a crash log that is kept until the television restarts, and a bounded
+storage status snapshot. It keeps no bookmark of its own for where you stopped watching: playback
+position is held by your Jellyfin server. Delete all local data in Settings signs out and removes
+FinNative data from this television.
+
+## No reports
+
+FinNative sends no crash reports, analytics or other data to its developer or to anyone else.
+Apart from the requests to your Jellyfin server described above, nothing leaves this television,
+and its logs stay on it.
+
+## Retention
+
+Signing out removes your sign-in, your Jellyfin server's address and token, and the cached
+artwork. Your app language preference belongs to this television and is kept when you sign out.
+The event log and the error-output log are emptied every time the app launches, the crash log is
+kept until the television restarts (the television clears its temporary storage then), and the
+storage snapshot is replaced when its bounded status changes. Delete all local data removes all of
+it.
+
+## Uninstalling
+
+Removing FinNative removes the application, but webOS gives an application no way to run code as
+it is removed, so anything kept outside the application's own directory can survive. Your sign-in
+is deliberately kept there so that reinstalling does not sign you out, and so is your app language
+preference. Use Delete all local data **before** uninstalling if you want nothing of FinNative left
+on this television.
+
+## Contact and non-affiliation
+
+Privacy questions: <https://github.com/tiper/fin-native/issues>. Security vulnerabilities: report
+them privately, as [SECURITY.md](SECURITY.md) describes.
+
+FinNative is an independent, unofficial application. It is not endorsed by the PlxNative project,
+and it is not produced by, endorsed by, or affiliated with the Jellyfin project, Plex, Inc. or LG
+Electronics Inc.
+
+---
+
+## Appendix: the reporting code FinNative inherits from PlxNative
+
+FinNative is built on PlxNative, whose code can send optional crash reports and product analytics,
+but only from a build that carries a Sentry DSN and a PostHog key. **Builds made from this
+repository carry neither**, so FinNative never asks about reports and none of what follows happens
+in them. The text below is PlxNative's own policy, kept because it is the exact account of what
+that code would send in a build whose maker compiled in their own keys, and because the code is
+tested against it. Whoever makes such a build is responsible for those reports and must publish
+their own contact; FinNative's maintainer receives nothing from them.
+
+PlxNative's policy, as it applies to PlxNative 0.6.0 (last updated 4 September 2026):
+
+### Who is responsible for PlxNative data
+
+In PlxNative, Gleb Linnik is responsible only for data PlxNative stores locally and for optional
+reports you choose to share. In a FinNative build with reporting keys, that is whoever made the
+build.
+
+### Plex services
 
 PlxNative is an independent client for Plex. To sign you in, discover servers and provide Plex
 account features, the app communicates directly with Plex services. Plex processes information
@@ -15,13 +89,13 @@ received by those services under [Plex’s own Privacy
 Policy](https://www.plex.tv/about/privacy-legal/). PlxNative’s developer does not receive that
 information.
 
-## Plex Media Servers
+### Plex Media Servers
 
 To browse and play media, update watch progress and use server features, PlxNative communicates
 directly with the Plex Media Servers you select. Those requests are handled by the selected server
 and its operator. PlxNative’s developer does not receive them.
 
-## Data stored on this television
+### Data stored on this television
 
 PlxNative has a developer-only input/frame recorder used to reproduce and test bugs. It is not
 part of the app you installed: a release build has the developer-trigger inputs, including the
@@ -67,7 +141,7 @@ snapshot is replaced when its bounded status changes. **webOS gives an applicati
 is removed**, so the sign-in and the reporting answers can survive an uninstall — use Delete all
 local data before uninstalling if you want nothing of PlxNative left on the television.
 
-## Optional crash reports
+### Optional crash reports
 
 Crash reporting is off until you choose to share it. If enabled, PlxNative sends technical crash
 details to Sentry in Germany. A report may include the signal, code addresses, thread information,
@@ -260,7 +334,7 @@ Crash report ID and with a random **Report ID** shown on screen that identifies 
 report — not you or this television. A stalled wait is only ever reported that way, never
 automatically.
 
-## Optional product analytics
+### Optional product analytics
 
 Product analytics is a separate choice and is off until you choose to share it. If enabled,
 PlxNative sends typed screen and feature events, broad sign-in and playback outcome classes and,
@@ -316,12 +390,12 @@ Every product analytics event also carries this bounded compatibility and connec
 | `playback.quality` | `playback_id` — a random number minted per attempt, never stored and never reused; `rebuffers` — `0` / `1` / `2-3` / `4+`; `buffering` — `none` / `<2s` / `2-10s` / `10s+` — never the interval |
 | `playback.ended` | `playback_id` — a random number minted per attempt, never stored and never reused; `mode` — `direct` / `transcode` / `unknown` — `unknown` when no route was installed, as for a plan the server or a playback setting refused; `watched` — `abandoned` / `some` / `most` / `finished` — never a position or a duration |
 
-## Never included in optional reports
+### Never included in optional reports
 
 Optional reports have no fields for media titles, Plex accounts or profile names, searches, server
 names or addresses, access tokens, subtitle text, or exact viewing history.
 
-## Your choices
+### Your choices
 
 Crash reports and product analytics are independent. You can enable either, both or neither during
 setup, and change either choice later in Settings → Privacy & data. Withdrawing a choice stops new
@@ -336,10 +410,9 @@ and error reports, the Analytics ID for product analytics. Each identifier is th
 reports carry, so a request without it cannot be matched to anything. A one-off sign-in problem
 report is sent only when you press Send report; quote the Report ID it showed to ask about it.
 
-## Contact and non-affiliation
+### Contact and non-affiliation
 
-Privacy questions may be sent to `support@plxnative.com`. Security vulnerabilities may be reported
-privately through GitHub Security Advisories for `GLinnik21/plx-native`.
+For FinNative, use the contact at the top of this document, not PlxNative's.
 
 PlxNative is an independent, unofficial application. It is not produced by, endorsed by, or
 affiliated with Plex, Inc. or LG Electronics Inc.

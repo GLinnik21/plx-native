@@ -135,8 +135,8 @@ and then dumps stderr, the SAM exit status and the crash-daemon reports.
 
 ## Read the right log
 
-These files live in the crashing install's **runtime root** — `/tmp` for stable, `/tmp/<app id>` for
-a flavoured install (`make -s print-rundir FLAVOR=<f>`). The file names are identical in both, so
+These files live in the crashing install's **runtime root** — `/tmp/<app id>` for every FinNative
+install, stable included (the bare `/tmp` is a stable PlxNative's) (`make -s print-rundir FLAVOR=<f>`). The file names are identical in both, so
 a path typed from memory reads the wrong app's log without erroring.
 
 | Log | Lifetime |

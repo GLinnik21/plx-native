@@ -62,7 +62,7 @@ Four things, and three of them were bugs that had been sitting in the tree unrea
 4. **`paths.rs` learned what a macOS bundle is.** An app bundle keeps its executable in
    `Contents/MacOS` and its payload in `Contents/Resources`, so "next to the binary" is wrong by
    one directory — and getting it wrong is the silent font fallback that module's doc opens with.
-   A bundled app also gets `~/Library/Application Support/PlxNative` as its runtime root instead of
+   A bundled app also gets `~/Library/Application Support/FinNative` as its runtime root instead of
    `/tmp`, because that root is where `auth.json` lives and `/tmp` is swept: the friend would be
    re-doing the QR sign-in every few days with nothing to explain why. Both are structural probes
    (is there a `Contents/MacOS` above me?), so the dev loop and every `PLXNATIVE_RUNTIME_DIR`

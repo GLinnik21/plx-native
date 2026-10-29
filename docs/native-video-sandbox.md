@@ -16,9 +16,9 @@ Leaving or recreating the player page does not reset it. A timeout means the rem
 unknown: cancelling the LS2 wait cannot promise that the root command stopped.
 
 Success requires the exact result marker and a fresh readability check from this app's jail.
-Close PlxNative completely and reopen it before playing. The cached preflight is deliberately
+Close the app completely and reopen it before playing. The cached preflight is deliberately
 not cleared by success. The repair does not root a TV, install a service, download a file, or
-send Plex credentials to Homebrew Channel.
+send server credentials to Homebrew Channel.
 
 Source evidence: v0.6.6 (`48866094e73493eb57a045723cdb6e195d9f4361`),
 [issue #74](https://github.com/GLinnik21/plx-native/issues/74#issuecomment-5634518876), and

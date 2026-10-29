@@ -1,0 +1,58 @@
+name: Jellyfin
+
+# FinNative's own gate. `make check-cargo-unit-default` names upstream's crates only, so the
+# Jellyfin layer's tests (`plx_jellyfin`, which `make check` does not run) run here, in a workflow
+# of their own, and `ci.yml` stays byte for byte upstream's. A required-check rule must name this
+# workflow's check by hand to gate pull requests on it.
+
+on:
+  push:
+    branches: [main, 'release/v*']
+    paths:
+      - 'rust-modules/jellyfin/**'
+      - 'rust-modules/plex/**'
+      - 'rust-modules/base/**'
+      - 'rust-modules/platform/**'
+      - 'rust-modules/net/**'
+      - 'rust-modules/Cargo.toml'
+      - 'rust-modules/Cargo.lock'
+      - 'rust-modules/rust-toolchain.toml'
+      - '.github/actions/**'
+      - '.github/workflows/jellyfin.yml'
+  pull_request:
+    paths:
+      - 'rust-modules/jellyfin/**'
+      - 'rust-modules/plex/**'
+      - 'rust-modules/base/**'
+      - 'rust-modules/platform/**'
+      - 'rust-modules/net/**'
+      - 'rust-modules/Cargo.toml'
+      - 'rust-modules/Cargo.lock'
+      - 'rust-modules/rust-toolchain.toml'
+      - '.github/actions/**'
+      - '.github/workflows/jellyfin.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jellyfin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plx-jellyfin:
+    name: plx_jellyfin unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # plx_jellyfin depends on plx_plex, plx_base, plx_platform and plx_net only, none of which
+      # links SDL, so the desktop libraries are not installed.
+      - uses: ./.github/actions/host-rust
+        with:
+          sdl: "false"
+
+      - name: plx_jellyfin unit tests
+        shell: bash
+        run: cd rust-modules && cargo "+$RUST_TOOLCHAIN" test --lib -p plx_jellyfin

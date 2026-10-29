@@ -1,5 +1,12 @@
 # Known issues — check here before you decompile firmware or blame LG
 
+> **Inherited from PlxNative.** The entry below was written upstream about PlxNative's own history:
+> its issue numbers point at [GLinnik21/plx-native](https://github.com/GLinnik21/plx-native/issues),
+> and its branches (`release/v0.6`, `feature-trailers`) and tags (`v0.6.x`) are PlxNative's. FinNative
+> shares the player it describes, so it applies here too. FinNative's own reports are at
+> [tiper/fin-native](https://github.com/tiper/fin-native/issues). For what a FinNative user can't do
+> yet, see the README's [What doesn't work yet](../README.md#what-doesnt-work-yet).
+
 This file exists because one already-fixed bug got re-investigated from scratch on 2026-09-14: a
 real device session, a Ghidra decompilation of three LG libraries, and a written conclusion that a
 crash needed "an LG firmware fix or a different TV" — when the actual fix had shipped five days
@@ -25,7 +32,7 @@ no Dolby Vision declared) just as reliably as through real PMS-driven Play press
 the same content without incident.
 
 **This is not an LG firmware bug, and the fix already exists.** It is
-[issue #74](https://github.com/GLinnik21/plx-native/issues/74), fixed in commit `ac305265`
+[PlxNative issue #74](https://github.com/GLinnik21/plx-native/issues/74), fixed in commit `ac305265`
 (`fix(player): never drive Starfish while Load is still in flight, and refuse to Load under a k5lp
 jail with no /dev/rtkmem`), released as **v0.6.1**. Root cause, from that commit's own account:
 `src/starfish.c` marked the native session ready *before* the synchronous `Load` call returned, so

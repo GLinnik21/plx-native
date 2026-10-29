@@ -17,9 +17,9 @@ CommonMark and need no preset.
 Heading ids replicate GitHub's own slugger — lowercase, drop everything that isn't a word
 character, hyphen or space, then turn each REMAINING space into its own hyphen (a run of spaces
 becomes a run of hyphens, not one hyphen: that is what pins the algorithm down, verified against
-two anchors this repo already depends on — docs/install-and-verify.md's "## Important: Developer
-Mode expires" is linked from README.md as "#important-developer-mode-expires", and its own
-"### Option A — install PlxNative directly" is linked internally as
+two anchors — docs/install-and-verify.md's "## Important: Developer Mode expires" is linked from
+README.md as "#important-developer-mode-expires", and PlxNative's version of that guide had an
+"### Option A — install PlxNative directly" linked internally as
 "#option-a--install-plxnative-directly", double hyphen and all, where the em dash used to be).
 
 Link rewriting: install-and-verify.md, troubleshooting.md and nightly-builds.md are the only docs

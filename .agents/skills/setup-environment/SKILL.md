@@ -59,6 +59,10 @@ make                  # -> pkg/plxnative
 
 ### With a TV but no Plex account or token
 
+> **FinNative.** This subsection is Plex-only: there is no Jellyfin mock. A FinNative install signs
+> in to Jellyfin on the set (`AGENTS.md`, "FinNative: read this first"); the Jellyfin layer is proven
+> by `cargo test --lib -p plx_jellyfin` and on the television against the development server.
+
 The build needs no private data, and neither does driving the TV: the app can run against the
 synthetic `tests/mock_pms.py`, which accepts any non-empty token.
 

@@ -164,7 +164,7 @@ done
 set -- ${_argv[@]+"${_argv[@]}"}
 
 # WHICH INSTALL — asked for, never restated. This file used to carry
-# `APPDIR=/media/developer/apps/usr/palm/applications/com.beb.plxnative` and a matching `APPID=`
+# `APPDIR=/media/developer/apps/usr/palm/applications/io.github.tiper.finnative` and a matching `APPID=`
 # as literals, which was fine while there was one install and became a second source of truth the
 # moment a second one landed: the Makefile derives all of this from FLAVOR, and a copy here would
 # go stale silently, pointing the deploy at one app and the log at another.

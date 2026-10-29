@@ -1,6 +1,6 @@
 name: Release candidate
 
-# A release CANDIDATE: the stable package (`com.beb.plxnative`) of a version that has not shipped,
+# A release CANDIDATE: the stable package (`io.github.tiper.finnative`) of a version that has not shipped,
 # built by the same pipeline as a release (`build-package.yml`, production telemetry, every gate)
 # and published as a GitHub prerelease for people to install and try before the release is cut.
 # `ci/rc.py`'s module doc is the full account; the short one:
@@ -153,9 +153,8 @@ jobs:
       # The released id: a candidate is the release build of the app users install.
       flavor: stable
       rc: ${{ needs.prepare.outputs.rc }}
-      # PRODUCTION, like the release: a candidate is what will ship, and its reports are filed
-      # under their own Sentry release (`plxnative@X.Y.Z-rc.N`), apart from the final's.
-      telemetry: production
+      # Like the release: FinNative compiles in no telemetry endpoint (build-package.yml's `none`).
+      telemetry: none
       artifact: rc-assets
       homebrew-manifest: false
       source-asset: true
@@ -191,12 +190,12 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           # Named for the candidate: every candidate of one version would otherwise download as the
-          # same com.beb.plxnative_X.Y.Z_arm.ipk.
-          ipk="plxnative-v${LABEL}.ipk"
-          cp raw/com.beb.plxnative_*_arm.ipk "dist/$ipk"
+          # same io.github.tiper.finnative_X.Y.Z_arm.ipk.
+          ipk="finnative-v${LABEL}.ipk"
+          cp raw/io.github.tiper.finnative_*_arm.ipk "dist/$ipk"
           ( cd dist && sha256sum "$ipk" > rc.sha256 )
           cp raw/ffmpeg-*.tar.xz raw/build-ffmpeg.sh dist/
-          cp raw/plxnative-source-*.tar.gz* dist/
+          cp raw/finnative-source-*.tar.gz* dist/
           echo "ipk=$ipk" >> "$GITHUB_OUTPUT"
       - name: Render the prerelease body
         env:
@@ -225,9 +224,9 @@ jobs:
           sha=$(git rev-parse HEAD)
           # --verify-tag: the tag `prepare` pushed, never one gh would create at another commit.
           gh release create "$TAG" \
-            "dist/$IPK" dist/rc.sha256 dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/plxnative-source-*.tar.gz* \
+            "dist/$IPK" dist/rc.sha256 dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/finnative-source-*.tar.gz* \
             --verify-tag \
-            --title "PlxNative $LABEL" \
+            --title "FinNative $LABEL" \
             --prerelease \
             --latest=false \
             --notes-file "$RUNNER_TEMP/notes.md"

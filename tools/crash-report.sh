@@ -27,8 +27,8 @@
 # TWO LOGS, and the difference matters after a relaunch:
 #   <runtime root>/plxnative-crash.log   append-only, SURVIVES the relaunch  <- read this one
 #   <runtime root>/plxnative-events.log  truncated at every launch           <- already gone
-# The NAMES are the same for both installs; only the root differs — `/tmp` for the stable
-# install, `/tmp/<app id>` for a flavoured one. Ask for the one you mean with
+# The NAMES are the same for every install; only the root differs — `/tmp/<app id>` (FinNative's
+# stable install too: the bare `/tmp` is a stable PlxNative's). Ask for the one you mean with
 # `make -s print-rundir FLAVOR=<f>`; this script derives CRASHLOG/STDERRLOG from it below.
 # Do not carry an absolute path out of here into a by-hand `cat`: at the default flavour
 # `/tmp/plxnative-crash.log` is the OTHER install's log, it exists, it is append-only, and it
@@ -199,7 +199,7 @@ else
   echo "$block" | grep -E '^(thread|phase): ' | sed 's/^/  /'
   # WHICH `bin:` line. The tracer emits one per maps line naming our executable, and that path
   # carries the app directory — so the match has to be ANCHORED on `/<id>/`. A bare substring test
-  # would not do: `com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`, so triaging the
+  # would not do: `io.github.tiper.finnative` is a PREFIX of `io.github.tiper.finnative.debug`, so triaging the
   # stable install would happily accept the debug install's load base and hand addr2line an offset
   # into the wrong binary — which does not fail, it answers with a confident wrong function.
   # A RELATED but different guard sits on the tracer's side, in src/crashfmt.h: it emits a `bin:`
@@ -306,7 +306,7 @@ hr
 # SIGILL — `(128+sig) << 8` — and expect no crashd report beside it.
 echo "== SAM exit status for $APPID (768 = exit(3); a signal death shows WIFSIGNALED in the low byte)"
 # Filtered to this install, and anchored on the RIGHT: /var/log/messages carries both apps' lines,
-# and `com.beb.plxnative` is a prefix of `com.beb.plxnative.debug`, so a plain grep for the stable
+# and `io.github.tiper.finnative` is a prefix of `io.github.tiper.finnative.debug`, so a plain grep for the stable
 # id also returns the debug id's deaths — the other install's crash reported as this one's.
 # The dots are escaped because they are regex metacharacters, not separators, to grep.
 APPID_RE=$(printf '%s' "$APPID" | sed 's/\./\\./g')

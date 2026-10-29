@@ -1,10 +1,16 @@
 # Third-party notices
 
-This file accompanies the **PlxNative** application package (`com.beb.plxnative`), an unofficial
-native Plex client for LG webOS 4.x televisions. PlxNative itself is Copyright (c) 2026 Gleb
-Linnik and is distributed under GPL-3.0-or-later (see `LICENSE`; the brand reservation and the
-non-affiliation statements are in `TRADEMARKS.md`, alongside it in both the repository and this
-package).
+This file accompanies the **FinNative** application package (`io.github.tiper.finnative`), an
+unofficial native Jellyfin client for LG webOS televisions. FinNative is a modified version of
+**PlxNative** (<https://github.com/GLinnik21/plx-native>), Copyright (c) 2026 Gleb Linnik and
+contributors; FinNative's changes are Copyright (c) 2026 Tiago. Both are distributed under
+GPL-3.0-or-later (see `LICENSE`; the brand reservation and the non-affiliation statements are in
+`TRADEMARKS.md`, alongside it in both the repository and this package). FinNative's source is at
+<https://github.com/tiper/fin-native>.
+
+Where this file says **PlxNative**, it means that engine, which FinNative ships whole: everything
+said here about PlxNative's binary, libraries and releases holds for FinNative's package and its
+releases too. Code FinNative takes from other Jellyfin clients is in section 2.8.
 
 The file is organised by **relationship**. Both the applicable license and the actual
 relationship affect obligations; dynamic linking is not a blanket exemption:
@@ -54,12 +60,16 @@ has always done).
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
 component is present. Only demuxers, parsers, bitstream filters, *subtitle* decoders and the
-LGPL audio decoders the app runs itself and the AC3 encoder behind Settings > Playback > Convert audio are enabled — video and, in the ordinary case, audio are
+LGPL audio decoders the app runs itself are enabled — video and, in the ordinary case, audio are
 decoded by the television's hardware, not by FFmpeg. FLAC, ALAC and LPCM are decoded by the app
-because the television's player has no input for them; the result is fed to it as PCM. The DTS core is decoded
-by the app (`dca`) where Force Direct Play has no native path for it or a refused open falls back to it. The one external library enabled is **zlib**,
+because the television's player has no input for them; the result is fed to it as PCM. The DTS core is decoded by the app (`dca`) where Force Direct Play has no native path for it or a refused open falls back to it. The one external library enabled is **zlib**,
 the television's own `libz.so.1` (not redistributed — see section 3), which the Matroska demuxer
 needs to inflate compressed subtitle tracks.
+
+**FinNative's additions.** FinNative's FFmpeg also enables the `ac3` encoder (Settings > Playback >
+Convert audio) and libswresample, which ship beside the three libraries above, and it also decodes
+TrueHD, Opus, Vorbis and further PCM formats in the app so that it can re-encode them to AC3. All of
+it is LGPL-2.1-or-later, built from the same unmodified FFmpeg source.
 
 **You may modify and replace them.** They are ordinary shared libraries, loaded at run time by
 `dlopen` from the application's own directory; no FFmpeg code is linked into the `plxnative`
@@ -530,6 +540,23 @@ host, a request to that host starts there instead of repeating the handshake the
 redirect is a request of its own, verified against the television's own store, and is offered this
 file only if its target is itself a `*.plex.direct` name that fails the same way.
 
+### 2.8 Code adapted from other Jellyfin clients for webOS
+
+FinNative takes code and designs from three other Jellyfin clients for LG webOS. Each one is
+credited at the place it is used, in the source file named below.
+
+| Project | Licence | What FinNative takes, and where |
+|---|---|---|
+| **Native Jelly** — <https://github.com/sostk/native-jelly>, by sostk, itself a fork of PlxNative | GPL-3.0-or-later | The BlurHash decoder that turns a Jellyfin image's BlurHash into the four ambient corner colours (`rust-modules/jellyfin/src/jellyfin/blurhash.rs`) |
+| **Butaca** — <https://github.com/gnacho/butaca>, by gnacho, itself a fork of PlxNative | GPL-3.0-or-later | Asking the server for its playback decision with a device profile, `POST /Items/{id}/PlaybackInfo` (`rust-modules/jellyfin/src/jellyfin/playback_info.rs`) |
+| **WebOS-Jellyfin-Native** — <https://github.com/SchulzCode/WebOS-Jellyfin-Native>, Copyright (C) 2026 SchulzCode, at commit `63daba7` | 0BSD | Converting audio the television cannot decode to AC3 (`rust-modules/media/src/ff_audio.rs`, from its `src/player/audio.rs`), and opening an item from the launch parameters (`rust-modules/src/app/launch.rs`, from its `src/app.rs`) |
+
+Native Jelly and Butaca are GPL-3.0-or-later, the licence of this package, so their code is covered
+by `LICENSE`. 0BSD asks for no notice; WebOS-Jellyfin-Native is credited all the same.
+
+The BlurHash decoder follows Wolt's reference algorithm, **BlurHash** (<https://github.com/woltapp/blurhash>),
+Copyright (c) 2018 Wolt Enterprises, MIT (`licenses/MIT.txt`).
+
 ---
 
 ## 3. Dynamically linked, not redistributed
@@ -595,7 +622,7 @@ runtime notices listed below:
 | File | Required by |
 |---|---|
 | `licenses/LGPL-2.1.txt` | FFmpeg, FriBidi, GLib, GNU C Library (§1) — GNU Lesser General Public License, version 2.1 |
-| `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind (§2.2, §2.4, §2.6). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
+| `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native, libunwind and BlurHash (§2.2, §2.4, §2.6, §2.8). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
 | `licenses/Apache-2.0.txt` | Google Material Design Icons; calendrical_calculations; moxcms; pxfm; compiler_builtins (§2.2, §2.4) |
 | `licenses/LLVM-exception.txt` | compiler_builtins (§2.4) |
 | `licenses/Unicode-3.0.txt` | Unicode Character Database tables in Rust `core` (§2.4) — UNICODE LICENSE V3, "Copyright © 1991-2024 Unicode, Inc." |

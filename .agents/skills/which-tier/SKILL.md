@@ -14,6 +14,12 @@ description: >
 
 # which-tier — what actually verifies this change
 
+> **FinNative.** A change to the Jellyfin layer (`rust-modules/jellyfin`) is seen by
+> `cargo test --lib -p plx_jellyfin` and by the television against the development server,
+> and by nothing else here: `make check`'s crate list does not include it (CI runs it in a step of
+> its own), and `./tests/run.py --server`, the mock server and the simulator's demo library all
+> speak Plex. Everywhere below, "Plex" means Plex.
+
 This skill **decides**. `ui-sim`, `tv-session`, `tv-lock`, `fleet-plan`, `profile-tv`, `crash-triage` and
 `cut-release` **execute** — it ends by handing off to one of them, and it deliberately does not
 restate what they already document.

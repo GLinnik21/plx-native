@@ -1308,9 +1308,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   notes, that prose is NOT hard-wrapped and every link is absolute, because a release body is
   rendered at a width nobody controls and resolves no repo-relative path. The `cut-release` skill
   is the procedure.
-- `docs/install-and-verify.md` — the invariant half a release note used to repeat every time:
-  which asset is which, both install routes and why the Homebrew Channel wins, how to check the
-  sha256 per platform, and what the app writes, reads and reaches on your television.
+- `docs/install-finnative.md` — FinNative's invariant half a release note used to repeat every time:
+  which asset is which, the one install route (Dev Manager; FinNative is not in the Homebrew
+  Channel catalogue yet), how to check the sha256 per platform, and what the app writes, reads and reaches on your television.
+  `docs/install-and-verify.md` and `docs/troubleshooting.md` are PlxNative's, kept as upstream wrote
+  them; `docs/troubleshooting-finnative.md` is FinNative's troubleshooting guide.
 - `site/` — the landing page (`index.html`/`styles.css`/`site.js`/`CNAME`); `.github/workflows/
   pages.yml` stages its screenshots, logo and fonts from their existing README/app locations
   rather than copying them into `site/`. The close-up stills `site/media/closeup-*.jpg` and the
@@ -2352,10 +2354,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   prepare budget is priced from the same measurement: `Poster` 2500 us under a 5000 us ceiling
   (`ui/src/frame/budget.rs`).
 - **Dev trigger files (read once at boot, in the install's RUNTIME ROOT).** There are ~40; this
-  lists the ones worth knowing by name. **The ROOT moved for flavoured installs and ONLY for
-  them:** the stable install keeps `/tmp` byte for byte, so every `/tmp/plxnative-*` path written
-  out below stays literally true for the app users get, while a flavoured install puts the SAME
-  names under `/tmp/<app id>` (`/tmp/com.beb.plxnative.debug/plxnative-library`). Nothing was
+  lists the ones worth knowing by name. **The ROOT is `/tmp/<app id>`:** FinNative puts every
+  install's files there, stable included (the bare `/tmp` is a stable PlxNative's), so read each
+  `/tmp/plxnative-*` path written out below with the SAME name under `/tmp/<app id>` (`/tmp/io.github.tiper.finnative.debug/plxnative-library`). Nothing was
   renamed — not the ~40 triggers, not the `plxnative-remote` FIFO, not the runtime logs, not
   `dev::DIAG`; only the directory they sit in. `make -s print-rundir FLAVOR=<f>` is how a tool asks
   rather than restating the rule, and the root is created **1777, mkdir THEN an explicit chmod**
@@ -2632,7 +2633,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   lives only as a GitHub secret. A RELEASE build does carry two **write-only ingest credentials**
   (`PLX_SENTRY_DSN`, `PLX_POSTHOG_KEY`, compiled in via `option_env!`): they permit sending to a
   project and reading nothing from it, `strings` finds them, `ci/gen-release-audit.py` prints them
-  into the audit on purpose, and `release.yml` REFUSES to publish without them. The distinction is
+  into the audit on purpose, and `release.yml` REFUSES to publish without them. (FinNative's release,
+  rc and nightly build with `telemetry: none` instead: no credential is compiled in, and
+  `build-package.yml` asserts the binary carries none.) The distinction is
   the point, and this line read "NO credentials" flatly — which stops a reader before they reach
   it. A build with no credential compiled in cannot report at all, which is the guarantee that
   replaced the cargo feature that used to claim it. PMS access comes

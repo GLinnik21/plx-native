@@ -1,5 +1,8 @@
 @AGENTS.md
 
+FinNative: `AGENTS.md` opens with what differs from PlxNative (Jellyfin sign-in, the development
+server, the Jellyfin watch state, upstream merges, strings); read it before the rest.
+
 # Claude Code configuration
 
 Project-specific Claude subagents are available under `.claude/agents/`. Shared skills are exposed

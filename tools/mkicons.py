@@ -14,7 +14,7 @@ in a web-app context and it was not obvious it applies to `type: "native"` at al
 Re-running this is the only supported way to change any of them.
 
 **`--badge=TEXT` cuts the set for a SECOND INSTALL** — the developer build that lives beside the
-released app on the same television (`com.beb.plxnative.debug`; the Makefile's FLAVOR block is the
+released app on the same television (`io.github.tiper.finnative.debug`; the Makefile's FLAVOR block is the
 account). The tiles sit side by side in the launcher, so the badge's whole job is to be unmistakable
 at the smallest size webOS ever draws.
 

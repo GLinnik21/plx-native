@@ -9,6 +9,12 @@ description: >
 
 # ui-sim — verify UI work on a desktop, finish on the TV
 
+> **FinNative.** The simulator builds the same FinNative app core, so it opens on the Jellyfin
+> sign-in. Its mock paths below (the demo library, `tools/screenshots.py`, `tests/mock_pms.py`)
+> serve a Plex server, so they answer for the screens and the Plex data layer, not for
+> `plx_jellyfin`. A real Jellyfin server's watch state is a real person's: `AGENTS.md`'s
+> FinNative section says what a session may write there.
+
 
 > **This is also what you do while the television is locked.** One set, one lane at a time
 > (`tools/tv-lock.sh`, the **`tv-lock`** skill): when a device command is refused because another

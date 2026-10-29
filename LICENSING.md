@@ -1,4 +1,11 @@
-# PlxNative licensing
+# FinNative licensing
+
+FinNative is a modified version of PlxNative. FinNative's changes are Copyright (c) 2026 Tiago and
+are licensed under the same terms as PlxNative, GPL-3.0-or-later, stated below. FinNative's source,
+including the exact commit of every build, is at <https://github.com/tiper/fin-native>; code it takes
+from other Jellyfin clients is listed in `THIRD-PARTY-NOTICES.md`, section 2.8.
+
+## PlxNative licensing
 
 Copyright (c) 2026 Gleb Linnik and contributors.
 PlxNative's own code is licensed under the GNU General Public License, version 3 or

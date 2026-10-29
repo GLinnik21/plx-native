@@ -107,8 +107,8 @@ REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file
 
 
 # ---- which INSTALL this session drives ---------------------------------------
-# Two builds now live on one television — `com.beb.plxnative`, the one users install,
-# and `com.beb.plxnative.debug` beside it — and each keeps its `plxnative-*` dev
+# Two builds now live on one television — `io.github.tiper.finnative`, the one users install,
+# and `io.github.tiper.finnative.debug` beside it — and each keeps its `plxnative-*` dev
 # triggers, its three logs and the remote FIFO in its OWN runtime root: `/tmp` for the
 # stable install, `/tmp/<app id>` for a flavoured one. The Makefile owns that rule
 # (RUNDIR), so ASK it rather than restate it a fourth time.
@@ -161,7 +161,7 @@ def resolve_install(runtime_dir: str = "", fifo: str = "") -> dict:
         if runtime_dir != root:
             # An explicit root that is not the flavour make just answered for. The only
             # other root the Makefile can produce is stable's — so ask for that triple
-            # too, because writing `com.beb.plxnative` here would be a fourth copy of a
+            # too, because writing `io.github.tiper.finnative` here would be a fourth copy of a
             # string that already lives in the Makefile, paths.rs and ci/flavor.py.
             # Anything else is an install this repo did not build, and saying so beats
             # guessing an id off the directory name.
