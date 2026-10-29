@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-29T23:18:03Z",
+ "generated": "2026-10-29T23:19:07Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -148,14 +148,14 @@
    "change7_pct": 11.6,
    "d30": 909.0,
    "delta30": -535.0,
-   "delta7": 39,
+   "delta7": 39.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 231,
+   "n_now": 232,
    "n_prev": 159,
-   "now": 374,
+   "now": 374.0,
    "prev7": 335,
    "shown": true,
    "state": "flat",
@@ -387,10 +387,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 52.0,
+   "change30_pct": 50.7,
    "change7_pct": 3.1,
-   "d30": 175,
-   "delta30": 91.0,
+   "d30": 176.5,
+   "delta30": 89.5,
    "delta7": 8.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -429,10 +429,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -70.0,
+   "change30_pct": -70.5,
    "change7_pct": 4.5,
-   "d30": 699,
-   "delta30": -489.0,
+   "d30": 712.5,
+   "delta30": -502.5,
    "delta7": 9.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -538,7 +538,7 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 0.0,
-   "d30": 16,
+   "d30": 16.0,
    "delta30": 2.0,
    "delta7": 0.0,
    "group": "ci",
