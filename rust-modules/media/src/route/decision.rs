@@ -5476,6 +5476,16 @@ pub fn server_refusal_codes(ps: &PlaybackSession) -> Option<DecisionCodes> {
         _ => None,
     }
 }
+/// Force Direct Play's read-out after the TV refused the audio the Load was fed (LG error 601 names
+/// no codec): the same verdict the planner's up-front refusal installs
+/// ([`ForcedFailure::Audio`], the codec by [`plx_data::metadata::friendly_codec`]), so both ways of
+/// "not played" name the codec alike (scheme of discussion #695, row 10). `codec` is the track's raw
+/// spelling. MAIN THREAD.
+pub fn name_refused_forced_audio(ps: &mut PlaybackSession, codec: &str) {
+    let friendly = plx_data::metadata::friendly_codec(codec);
+    crate::player::log(&format!("playback_policy: Force Direct Play refused audio codec {codec} ({friendly})"));
+    ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::Audio { codec: friendly }));
+}
 /// Retire the refusal — "this playback request is withdrawn", the one thing besides a fresh
 /// resolve that ends a verdict's life. [`request_play`] clears it because a NEW item is being
 /// resolved; this is the other half, for leaving the player entirely.

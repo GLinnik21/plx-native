@@ -353,7 +353,8 @@ something.
   ladder read it: under Force Direct Play (D1(b)) a surround track the set has no native path for is NOT decoded
   in the app (`app_decodes_lossy_track` is false for it, in either arm, the codec being in force or not), so the
   Forced pick refuses it like any unplayable track (`ForcedFailure::Audio`, naming the codec; before S4 the same)
-  and a pipeline refusal of it reads out; a track of one or two channels is no downmix and keeps the app decode. Under
+  and a pipeline refusal of it reads out (`RecoveryEffect::NameRefusedAudio`: LG's 601 names no codec, so the read-out names the
+  track the Load was fed, the same `ForcedFailure::Audio` sentence as the planner's up-front refusal; scheme of discussion #695 row 10); a track of one or two channels is no downmix and keeps the app decode. Under
   Auto (D2) the surround downmix is only the very last rung of the ladder (below), after every server option was
   refused, and stays labelled; Auto's default for a 5.1 track the set cannot take is the server conversion that keeps its channels.
   **One exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,

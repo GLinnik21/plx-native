@@ -2960,6 +2960,26 @@ mod tests {
         assert!(server.readout.contains("server"));
     }
 
+    /// Scheme #695, row 10 and "Force: anything else is not played": a Force play the TV refuses after
+    /// Load (error 601, which names no codec) reads out the same policy refusal as the planner's
+    /// up-front one, naming the codec the Load was fed.
+    #[test]
+    fn forced_tv_refusal_after_load_names_the_codec_like_the_up_front_one() {
+        use plx_plex::plex::serverinfo::Subscription as Sub;
+        let mut ps = crate::route::PlaybackSession::default();
+        crate::route::name_refused_forced_audio(&mut ps, "dca");
+        let verdict = crate::route::play_verdict(&ps).expect("a verdict").to_owned();
+        let up_front = crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Audio {
+            codec: plx_data::metadata::friendly_codec("dca"),
+        });
+        assert_eq!(verdict, up_front.text());
+        assert!(verdict.contains("DTS"), "{verdict}");
+        let shape = with_forced_playback_context(
+            error_shape(false, false, Sub::No, Some(&verdict), RuntimeFailure::TvPipeline), true);
+        assert_eq!(shape.kind, FailureKind::PlaybackPolicy);
+        assert_eq!(shape.detail, verdict);
+    }
+
     /// **Each cause converts to its own telemetry class, under the code it always had.** The class
     /// enum is telemetry's and the match that fills it is this layer's, so a copy-paste that sent
     /// two causes to one class would merge two dashboard series without any compile error. (The

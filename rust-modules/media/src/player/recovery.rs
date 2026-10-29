@@ -307,6 +307,11 @@ pub enum RecoveryEffect {
     /// encode), no server is asked and no flight is flown. The attempt ([`OpenRecovery::attempt`]) has already put the codec in force. `refusal`
     /// is the failure that led here, for the driver's log line.
     DecodeInApp { audio: Facet, refusal: LoadRefusal },
+    /// Forced Direct Play ends on the read-out after a pipeline refusal of an audio track outside the
+    /// codecs every set decodes (the scheme of discussion #695: "not played, and the codec is named").
+    /// LG's error 601 names no codec, so the driver names the track the Load was fed (`codec` is its
+    /// raw spelling) as the request's play verdict, and `ShowError` follows.
+    NameRefusedAudio { codec: String },
     /// Fail the Engine for good and show the failure read-out.
     ShowError { refusal: LoadRefusal },
     /// A refused play showed its first picture on a rung of the ladder: tell the project, once per
@@ -576,7 +581,15 @@ impl OpenRecovery {
         if facts.forced {
             // A forced play is never converted, but the app can decode a stereo track the set refused (a
             // surround track is not mixed down for it: `app_decode_for` declines, and the read-out follows).
-            self.app_decode_or_error(refusal, facts, fx);
+            if self.try_app_decode(refusal, facts, fx) {
+                return;
+            }
+            if let Some(a) = facts.audio.as_ref().filter(|_| refusal.names_pipeline() && facts.no_frames && suspect_audio(facts.audio.as_ref()).is_some()) {
+                fx.push(RecoveryEffect::NameRefusedAudio { codec: a.codec.clone() });
+            }
+            fx.push(RecoveryEffect::ShowError { refusal });
+            self.state = State::Failed;
+            self.rescue = None;
             return;
         }
         if refusal.names_pipeline() && facts.no_frames && self.flights == 0 {
@@ -905,6 +918,11 @@ mod tests {
     const SHUT: LoadRefusal = LoadRefusal::Refused { num: 601 };
     const NATIVE: LoadRefusal = LoadRefusal::Refused { num: 200 };
     const ERROR: [RecoveryEffect; 1] = [RecoveryEffect::ShowError { refusal: SHUT }];
+
+    /// Scheme #695 row 10 / "Force: anything else is not played": the read-out names the refused codec.
+    fn forced_dts_error() -> Vec<RecoveryEffect> {
+        vec![RecoveryEffect::NameRefusedAudio { codec: "dca".into() }, RecoveryEffect::ShowError { refusal: SHUT }]
+    }
 
     fn refused(refusal: LoadRefusal, facts: OpenFacts) -> RecoveryEvent {
         RecoveryEvent::Refused { refusal, facts }
@@ -1377,7 +1395,7 @@ mod tests {
         for channels in [3, 6, 8, 0] {
             let mut m = measured_machine();
             let (handled, fx) = run(&mut m, refused(SHUT, forced(channels)));
-            assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed), "{channels}ch: the refusal reads out");
+            assert_eq!((handled, fx, m.phase()), (Handled::Yes, forced_dts_error(), Phase::Failed), "{channels}ch: the refusal reads out, naming the codec");
             assert!(m.in_app.is_none() && !m.attempt().app_lossy_in_force.contains("dts"), "{channels}ch: nothing decodes in the app");
             assert_eq!(m.flights, 0, "{channels}ch: Forced converts nothing");
         }
@@ -1426,16 +1444,26 @@ mod tests {
             assert_eq!(m.flights, 0, "no flight: Forced asks no server");
             assert!(m.attempt().app_lossy_in_force.contains("dts"));
         }
-        let ends = |m: &mut OpenRecovery, refusal: LoadRefusal, f: OpenFacts, what: &str| {
+        // The read-out names the codec of a native audio the TV refused as the play started (`named`).
+        let ends_as = |m: &mut OpenRecovery, refusal: LoadRefusal, f: OpenFacts, named: bool, what: &str| {
+            let codec = f.audio.as_ref().map(|a| a.codec.clone()).unwrap_or_default();
             let (_, fx) = run(m, refused(refusal, f));
-            assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ShowError { refusal }], Phase::Failed), "{what}");
+            let want: Vec<_> = named.then(|| RecoveryEffect::NameRefusedAudio { codec }).into_iter()
+                .chain([RecoveryEffect::ShowError { refusal }]).collect();
+            assert_eq!((fx, m.phase()), (want, Phase::Failed), "{what}");
         };
+        let ends = |m: &mut OpenRecovery, refusal: LoadRefusal, f: OpenFacts, what: &str| ends_as(m, refusal, f, false, what);
         ends(&mut measured_machine(), SHUT, OpenFacts { audio: audio("ac3", 6), ..base() }, "ac3: no row to enable");
-        ends(&mut measured_machine(), SHUT, OpenFacts { audio: audio("truehd", 8), ..base() }, "truehd: unmeasured");
+        let (_, fx) = run(&mut measured_machine(), refused(SHUT, OpenFacts { audio: audio("truehd", 8), ..base() }));
+        assert_eq!(
+            fx,
+            [RecoveryEffect::NameRefusedAudio { codec: "truehd".into() }, RecoveryEffect::ShowError { refusal: SHUT }],
+            "truehd: unmeasured, not played, and the codec is named"
+        );
         ends(&mut measured_machine(), LoadRefusal::TimedOut, base(), "a timeout names no pipeline refusal");
         ends(&mut measured_machine(), LoadRefusal::SourceFailed, base(), "a source failure is not the pipeline's");
-        ends(&mut measured_machine(), SHUT, OpenFacts { direct: false, ..base() }, "a server session in the way");
-        ends(&mut machine(), SHUT, base(), "an Off start");
+        ends_as(&mut measured_machine(), SHUT, OpenFacts { direct: false, ..base() }, true, "a server session in the way");
+        ends_as(&mut machine(), SHUT, base(), true, "an Off start");
         ends(&mut measured_machine(), SHUT, OpenFacts { audio: app_decoded("dca", 6), ..base() }, "already decoded in the app");
         ends(&mut measured_machine(), SHUT, OpenFacts { no_frames: false, ..base() }, "a picture was already shown");
         ends(&mut measured_machine(), SHUT, OpenFacts { audio: None, ..base() }, "no audio fed");
@@ -1450,12 +1478,16 @@ mod tests {
     #[test]
     fn the_app_decode_rung_runs_once_per_request() {
         let forced = |f: OpenFacts| OpenFacts { forced: true, ..f };
-        for second in [on_dts_ch(facts(false, false, true), 2), OpenFacts { audio: app_decoded("dca", 2), ..facts(false, false, true) }] {
+        // The native DTS the TV refuses again is named; an app-decoded Load's refusal names no audio.
+        for (second, want) in [
+            (on_dts_ch(facts(false, false, true), 2), forced_dts_error()),
+            (OpenFacts { audio: app_decoded("dca", 2), ..facts(false, false, true) }, ERROR.to_vec()),
+        ] {
             let mut m = measured_machine();
             run(&mut m, refused(SHUT, forced(direct(on_dts_ch(facts(false, false, true), 2)))));
             assert_eq!(m.phase(), Phase::Opening);
             let (handled, fx) = run(&mut m, refused(SHUT, forced(direct(second))));
-            assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed));
+            assert_eq!((handled, fx, m.phase()), (Handled::Yes, want, Phase::Failed));
         }
         // Not Forced: after the rung, the app-decoded Load's refusal names no audio and no video that
         // is still to lower, so the read-out follows.
@@ -1830,7 +1862,9 @@ mod tests {
         };
         for refusal in [SHUT, LoadRefusal::TimedOut, LoadRefusal::Stalled, LoadRefusal::SourceFailed] {
             assert_eq!(forced(true, refusal), [RecoveryEffect::Rollback], "{refusal}");
-            assert_eq!(forced(false, refusal), [RecoveryEffect::ShowError { refusal }], "{refusal}");
+            let named = refusal.names_pipeline().then(|| RecoveryEffect::NameRefusedAudio { codec: "dca".into() });
+            let want: Vec<_> = named.into_iter().chain([RecoveryEffect::ShowError { refusal }]).collect();
+            assert_eq!(forced(false, refusal), want, "{refusal}");
         }
     }
 
