@@ -18,9 +18,13 @@ fork. The engine, the pump and the drivers beside them execute their effects.
 ## Pipeline
 
 In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process
-path (`com.webos.media/load`, `start_playback()`) could not provide — that path is kept only as
-dead-ish reference, and `docs/buffer-feed-plan.md` records the pivot (treat it as history, not
-spec). The stream side: `PMS HTTP GET` → demux → per-lane access-unit
+path (`com.webos.media/load`) could not provide — that code is gone, and `docs/buffer-feed-plan.md`
+records the pivot (treat it as history, not spec). URI mode exists in the tree once more only as a
+developer probe: `uriprobe.rs` (the pure machine) and `uriprobe_drive.rs` (its driver, forked to
+from `engine::start_bufferfeed_inner` by the `plxnative-uriprobe` trigger) play one stream through
+`com.webos.media` with no Engine behind it, to learn what webOS 5+ does with the exported window id
+(issue #1064). It is `devtriggers`-only, so a release build carries none of it, and it reports
+nothing to Plex. The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
 The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
