@@ -322,13 +322,13 @@ impl<'a> TextView<'a> {
         plx_gfx::text::is_rtl_paragraph(self.text)
     }
 
-    /// The alignment the block is DRAWN with: a right-to-left paragraph's `Left` is its START,
-    /// which is the column's right edge. `Right` and `Center` are positions in the layout and stay.
+    /// The alignment the block is DRAWN with: `Left` is the block's START ([`HAlign::Start`]), which
+    /// for a right-to-left paragraph is the column's right edge. `Right` and `Center` are positions
+    /// in the layout and stay.
     fn drawn_align(&self) -> HAlign {
-        if self.align == HAlign::Left && self.is_rtl() {
-            HAlign::Right
-        } else {
-            self.align
+        match self.align {
+            HAlign::Left | HAlign::Start => HAlign::Start.resolve(self.text),
+            at => at,
         }
     }
 
@@ -336,7 +336,7 @@ impl<'a> TextView<'a> {
     /// ONE placement rule every draw path uses, the plain label as well as the two fade programs.
     fn line_x(&self, frame: Rect, dx: f32, text_w: f32) -> f32 {
         match self.drawn_align() {
-            HAlign::Left => frame.x + dx,
+            HAlign::Left | HAlign::Start => frame.x + dx,
             HAlign::Right => frame.x + frame.w - text_w,
             HAlign::Center => frame.x + dx + (frame.w - dx - text_w) * 0.5,
         }

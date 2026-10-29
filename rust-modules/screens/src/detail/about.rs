@@ -7,6 +7,7 @@ use std::ffi::CString;
 
 use plx_data::metadata::Detail;
 use plx_machine::machine::{GroupId, Measure};
+use plx_ui::label::HAlign;
 use plx_ui::text_lift::{draw_focused, TextLift, CENTRE};
 use plx_ui::hstack::Item;
 use plx_ui::text_view::TextView;
@@ -462,16 +463,13 @@ fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str, measure: &dyn
     PAIR_VALUE_DY + h.max(30.0)
 }
 
-/// One line of the About card, inside its padding and in the line's OWN direction: an Arabic or
-/// Hebrew line ([`plx_gfx::text::is_rtl_paragraph`]) stands flush right, as the synopsis under it
+/// One line of the About card, inside its padding and in the line's OWN direction: it stands at
+/// the [`HAlign::Start`] edge, flush right for an Arabic or Hebrew line, as the synopsis under it
 /// does, any other flush left.
 #[allow(clippy::too_many_arguments)]
 fn card_line(p: Painter, card: Rect, y: f32, size: i32, color: [f32; 4], bold: i32, text: &str) -> f32 {
-    let (x, align) = if plx_gfx::text::is_rtl_paragraph(text) {
-        (card.x + card.w - CARD_PAD, 2)
-    } else {
-        (card.x + CARD_PAD, 0)
-    };
+    let inner = Rect::new(card.x + CARD_PAD, y, card.w - 2.0 * CARD_PAD, 0.0);
+    let (x, align) = HAlign::Start.resolve(text).anchor(inner);
     CString::new(text)
         .ok()
         .map(|s| p.text(s.as_ptr(), x, y, size, color, align, bold))
