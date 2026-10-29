@@ -162,9 +162,9 @@ pub enum Icon {
     //
     // These are OUR OWN drawings, not reproductions. Rotten Tomatoes' marks — the fruit, the
     // Certified Fresh seal, the popcorn tub — were shipped here until 2026-08-02 and removed:
-    // there is no licensing route for them (RT's developer programme is closed to unofficial
-    // projects and `developer.fandango.com` does not resolve), and redrawing a mark is the
-    // standard infringement pattern rather than a defence. The provider is now NAMED in text
+    // RT offers no public licence (it reviews each use case by case and forbids altering its
+    // score logos without written permission; docs/distribution.md §11), and redrawing a mark is
+    // the standard infringement pattern rather than a defence. The provider is now NAMED in text
     // instead, which is referential use and needs no licence — so the glyph no longer has to say
     // *whose* score this is. It only has to carry the VERDICT, which is what these four do.
     //
