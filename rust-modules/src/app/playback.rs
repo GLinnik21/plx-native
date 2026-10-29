@@ -625,8 +625,9 @@ pub(crate) fn player_requests(
             }
             PlayerReq::FocusTabs => {
                 if let Some(player) = super::bridge::player_mut(pages) {
-                    player.hud.nav.focus = 2;
+                    player.hud.nav.focus = plx_appkit::player_hud::geometry::GROUP_TABS;
                 }
+                super::bridge::reseat_player_focus(pages);
             }
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
