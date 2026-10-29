@@ -4,11 +4,13 @@ variable font.
 
     python3 tools/cut-inter.py path/to/Inter[opsz,wght].ttf
 
-Two further faces ship and do not come from here: `pkg/appfont-cjk.ttf` is Noto Sans CJK KR, cut by
-`tools/cut-noto-cjk.py` from a pinned upstream asset, and `pkg/appfont-emoji.ttf` is the monochrome Noto
-Emoji, cut by `tools/cut-noto-emoji.py`. Both match this file's old `appfont*.ttf`
-glob, which is why the wording above is now explicit. None of the three fixes below apply to the CJK face —
-that script's docstring says why, one by one.
+Further faces ship and do not come from here: `pkg/appfont-cjk.ttf` is Noto Sans CJK KR, cut by
+`tools/cut-noto-cjk.py` from a pinned upstream asset, and `pkg/appfont-emoji.ttf` is the monochrome
+Noto Emoji, cut by `tools/cut-noto-emoji.py`; the four Arabic and Hebrew faces
+(`pkg/appfont-arabic*.ttf`, `pkg/appfont-hebrew*.ttf`) are fetched unmodified by
+`tools/fetch-noto-rtl.py`. All of them match this file's old `appfont*.ttf` glob, which is why the
+wording above is now explicit. None of the three fixes below apply to the CJK face — that script's
+docstring says why, one by one.
 
 Why this is a script and not a one-off: the two fixes below restore conditions the UI was tuned
 under for months, and BOTH are invisible in the font's appearance — a future re-cut that forgets

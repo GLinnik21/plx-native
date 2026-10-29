@@ -4478,6 +4478,12 @@ mod lifecycle_regression_tests {
             // session and successor. No native decoding is needed to exercise the countdown.
             super::super::bridge::nav_push(&mut self.app.pages, AppArg::Player);
             frame(&mut self.app, 16);
+            self.expire_countdown_on_mounted_player()
+        }
+
+        /// The Up Next countdown of the Player page already on screen (an Engine started through
+        /// `accept_start` has mounted it), run out.
+        fn expire_countdown_on_mounted_player(&mut self) -> Frame {
             let player = super::super::bridge::player_mut(&mut self.app.pages).unwrap();
             player.up_next.tick(
                 plx_appkit::player_hud::ControlSlot::UpNext(plx_data::metadata::Marker {
@@ -7930,6 +7936,127 @@ mod lifecycle_regression_tests {
             rig.app.route().id(),
         );
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+
+    // ---- leaving an item from its credits marks it watched --------------------------------------
+    //
+    // `PlaybackSession::finished` is armed by the app and taken by the stop it precedes, so nothing
+    // can read it in between: the server's request log is the observable. The stop only reports
+    // when a real Engine stands (`teardown` builds its final report from the Engine's clock), hence
+    // `playing_live_at`.
+
+    /// A real Engine over E1 of the fixture's two-episode queue (60 s long), its playhead at
+    /// `pos_ms`: the stop that ends it reports that position, as the loop's own stop does.
+    fn playing_live_at(rig: &mut Rig, pos_ms: i64) {
+        start_film(rig);
+        assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
+        plx_media::player::SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
+        plx_media::player::SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
+    }
+
+    /// Where E1's `state=stopped` report and its `/:/scrobble` sit in the fixture's request log,
+    /// once the stop's worker has finished.
+    fn e1_stop_requests(rig: &Rig) -> (Option<usize>, Option<usize>) {
+        plx_media::route::drain_scrobble();
+        let seen = rig.requests.lock().unwrap();
+        (
+            seen.iter().position(|l| {
+                l.contains("/:/timeline") && l.contains("ratingKey=1&") && l.contains("state=stopped")
+            }),
+            seen.iter().position(|l| l.contains("/:/scrobble?key=1&")),
+        )
+    }
+
+    /// **Up Next from the credits marks the episode it leaves watched.** Credits start before the
+    /// server's own watched threshold, so the `stopped` report at 30 s of 60 s would leave the
+    /// episode unwatched: the loop's `play_up_next` arms the flag and the stop scrobbles after it.
+    #[test]
+    fn up_next_from_the_credits_scrobbles_the_episode_it_leaves() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED up_next_from_the_credits_scrobbles_the_episode_it_leaves: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(plx_media::route::NextEpisodeMode::Countdown);
+        playing_live_at(&mut rig, 30_000);
+        let mut fr = rig.expire_countdown_on_mounted_player();
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(plx_media::route::play_pending(), "the countdown requested the successor");
+
+        let (stopped, scrobbled) = e1_stop_requests(&rig);
+        let stopped = stopped.expect("E1's `stopped` report reached the server");
+        assert!(
+            scrobbled.is_some_and(|s| s > stopped),
+            "E1 is marked watched after its `stopped` report: {:?}",
+            rig.requests.lock().unwrap(),
+        );
+    }
+
+    /// **Up Next past the server's threshold leaves the view to the server.** The same hand-off at
+    /// 59 s of 60 s (the end of the stream and the countdown's expiry reach `play_up_next` too, and
+    /// on a typical episode the credits start past 90 %): the `stopped` report already makes the
+    /// server count the view, and a scrobble on top would record a second one.
+    #[test]
+    fn up_next_past_the_servers_threshold_posts_stopped_alone() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED up_next_past_the_servers_threshold_posts_stopped_alone: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(plx_media::route::NextEpisodeMode::Countdown);
+        playing_live_at(&mut rig, 59_000);
+        let mut fr = rig.expire_countdown_on_mounted_player();
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(plx_media::route::play_pending(), "the countdown requested the successor");
+
+        let (stopped, scrobbled) = e1_stop_requests(&rig);
+        assert!(stopped.is_some(), "E1's `stopped` report reached the server");
+        assert!(scrobbled.is_none(), "no second view: {:?}", rig.requests.lock().unwrap());
+    }
+
+    /// **Skip on a `final` credits marker marks the item watched.** With Next episode Off nothing
+    /// starts after it, so `play_up_next` never runs and the skip itself must arm the flag: the
+    /// stop that leaves the player scrobbles the item the viewer finished.
+    #[test]
+    fn skipping_final_credits_scrobbles_the_item_it_finishes() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED skipping_final_credits_scrobbles_the_item_it_finishes: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let _mode = NextEpisodeGuard::set(plx_media::route::NextEpisodeMode::Off);
+        playing_live_at(&mut rig, 30_000);
+        let skip = plx_appkit::player_hud::ControlSlot::Skip(plx_appkit::skip_pill::prompt_for(
+            plx_data::metadata::Marker {
+                kind: plx_data::metadata::MarkerKind::Credits,
+                start_ms: 0,
+                end_ms: 60_000,
+                final_seg: true,
+            },
+        ));
+        let app = &mut rig.app;
+        super::super::playback::activate_ctrl_row(
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            skip,
+            &mut app.refresh_hubs,
+            0,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        assert!(!plx_media::route::play_pending(), "Off: the skip leaves the player and requests nothing");
+
+        let (stopped, scrobbled) = e1_stop_requests(&rig);
+        let stopped = stopped.expect("E1's `stopped` report reached the server");
+        assert!(
+            scrobbled.is_some_and(|s| s > stopped),
+            "E1 is marked watched after its `stopped` report: {:?}",
+            rig.requests.lock().unwrap(),
+        );
     }
 }
 

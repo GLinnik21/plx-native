@@ -1130,8 +1130,19 @@ class Library:
             kind = {"1": "movie", "2": "show", "3": "season", "4": "episode"}.get(t, kind)
         rows = [it for it in self.items.values() if it["type"] == kind
                 and it["librarySectionID"] == int(key)]
-        if q.get("unwatched") == "1":
+        # Two keys, not one. `unwatchedLeaves=1` is the key the app sends for shows and seasons: a row
+        # whose leaves are not all watched. A real PMS answers `unwatched=1` on such a row differently
+        # (30 of 33 shows against 24, docs/pms-api.md "Unwatched"; its rule is not documented), so the
+        # mock models only that the two DIFFER: `unwatched=1` reads the row's own `viewCount`, which a
+        # show or season never carries here. An app sending the wrong key for a show gets an unnarrowed
+        # listing instead of passing by luck. Movies and episodes have no leaves: `unwatched` as usual.
+        if q.get("unwatchedLeaves") == "1":
             rows = [it for it in rows if not self._watched(it)]
+        if q.get("unwatched") == "1":
+            if kind in ("show", "season"):
+                rows = [it for it in rows if not it.get("viewCount", 0) > 0]
+            else:
+                rows = [it for it in rows if not self._watched(it)]
         g = q.get("genre")
         if g:
             rows = [it for it in rows if any(str(t["id"]) == g for t in it.get("Genre", []))]
@@ -1159,11 +1170,16 @@ class Library:
         return rows
 
     def first_characters(self, key, q=None):
-        """Counts in the unfiltered ascending titleSort order, exactly the rail's query —
-        of the section's collections for `type=18`, as PMS answers `firstCharacter?type=18`."""
+        """Counts in ascending titleSort order (the rail's order) of the listing `q` describes: the
+        terms that scope `/all` (`type`, `unwatched`, `unwatchedLeaves`, `genre`, ...) scope the counts
+        the same way, as PMS does, so the sum is the filtered `totalSize` and prefix sums are the
+        offsets of each letter in that listing. `type=18` counts the section's collections."""
+        q = q or {}
         counts = {}
         rows = (sorted(self.collection_metadata(key), key=lambda c: c["titleSort"].lower())
-                if (q or {}).get("type") == "18" else self.section_items(key, {}))
+                if q.get("type") == "18"
+                else self.section_items(key, {k: v for k, v in q.items()
+                                              if k != "sort" and not k.startswith("X-Plex-")}))
         for item in rows:
             letter = item["titleSort"][0].upper()
             counts[letter] = counts.get(letter, 0) + 1
