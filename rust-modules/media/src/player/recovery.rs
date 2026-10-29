@@ -555,6 +555,33 @@ impl OpenRecovery {
         true
     }
 
+    /// The codec Force Direct Play's read-out may name for `refusal`, or `None` when the refusal is not
+    /// attributable to the audio track (the read-out then stays the generic one). LG's `num=601`
+    /// names no stream and is also a video/resource refusal, so the audio is named on positive
+    /// evidence from this attempt's own value ([`OpenRecovery::attempt`]), never by elimination:
+    /// * a pipeline refusal of an Engine that showed no picture, with audio [`suspect_audio`] puts under
+    ///   suspicion (not AAC/AC-3/E-AC-3, not the app's own lossy decode);
+    /// * not a lossless PCM codec ([`plx_platform::devcaps::is_pcm_codec`]): the app decodes it and the
+    ///   TV was fed PCM (scheme row 6);
+    /// * a codec the set is NOT expected to play from the file under Force
+    ///   ([`Caps::native_audio_track`] false): Opus on a table that lists it and DTS on a set with a
+    ///   DTS row play (rows 2 and 3), so a refusal there says nothing about them;
+    /// * and, for a numbered refusal, a video that is not itself a suspect: the test the facet rungs
+    ///   use (`Caps::without` of its [`suspect_video`] changes the attempt, i.e. the raster is above
+    ///   [`plx_platform::devcaps::VIDEO_REFUSAL_FLOOR`], where the H.264 4K60 and 4K@30-limited
+    ///   `num=601` refusals live, `engine::sink_envelope`). A `Stalled` Load is audio's alone.
+    fn refusal_attributable_to_audio(&self, refusal: LoadRefusal, facts: &OpenFacts) -> Option<String> {
+        if !refusal.names_pipeline() || !facts.no_frames {
+            return None;
+        }
+        suspect_audio(facts.audio.as_ref())?;
+        let a = facts.audio.as_ref()?;
+        let set_plays_it = self.attempt.native_audio_track(&a.codec, i64::from(a.channels), 0, true);
+        let video_may_be_it = matches!(refusal, LoadRefusal::Refused { .. })
+            && suspect_video(facts.video.as_ref()).is_some_and(|f| self.attempt.without(&f) != *self.attempt);
+        (!plx_platform::devcaps::is_pcm_codec(&a.codec) && !set_plays_it && !video_may_be_it).then(|| a.codec.clone())
+    }
+
     /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
     /// rollback, Forced's app decode (a track of at most two channels) or read-out, the facet rung, a cold
     /// Auto Original's HLS rung, then for a track of at most two channels the app decode and a manual
@@ -584,8 +611,8 @@ impl OpenRecovery {
             if self.try_app_decode(refusal, facts, fx) {
                 return;
             }
-            if let Some(a) = facts.audio.as_ref().filter(|_| refusal.names_pipeline() && facts.no_frames && suspect_audio(facts.audio.as_ref()).is_some()) {
-                fx.push(RecoveryEffect::NameRefusedAudio { codec: a.codec.clone() });
+            if let Some(codec) = self.refusal_attributable_to_audio(refusal, facts) {
+                fx.push(RecoveryEffect::NameRefusedAudio { codec });
             }
             fx.push(RecoveryEffect::ShowError { refusal });
             self.state = State::Failed;
@@ -1395,9 +1422,15 @@ mod tests {
         for channels in [3, 6, 8, 0] {
             let mut m = measured_machine();
             let (handled, fx) = run(&mut m, refused(SHUT, forced(channels)));
-            assert_eq!((handled, fx, m.phase()), (Handled::Yes, forced_dts_error(), Phase::Failed), "{channels}ch: the refusal reads out, naming the codec");
+            assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed), "{channels}ch: the refusal reads out; a DTS row plays DTS, so the audio is not named");
             assert!(m.in_app.is_none() && !m.attempt().app_lossy_in_force.contains("dts"), "{channels}ch: nothing decodes in the app");
             assert_eq!(m.flights, 0, "{channels}ch: Forced converts nothing");
+        }
+        // A set with no DTS row does not play it, so the refusal reads out naming the codec.
+        let no_row = || OpenRecovery::new(Arc::new(Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..Caps::assumed() }));
+        for channels in [3, 6, 8, 0] {
+            let (_, fx) = run(&mut no_row(), refused(SHUT, forced(channels)));
+            assert_eq!(fx, forced_dts_error(), "{channels}ch: no DTS row: the codec is named");
         }
         for channels in [1, 2] {
             let (_, fx) = run(&mut measured_machine(), refused(SHUT, forced(channels)));
@@ -1462,8 +1495,9 @@ mod tests {
         );
         ends(&mut measured_machine(), LoadRefusal::TimedOut, base(), "a timeout names no pipeline refusal");
         ends(&mut measured_machine(), LoadRefusal::SourceFailed, base(), "a source failure is not the pipeline's");
-        ends_as(&mut measured_machine(), SHUT, OpenFacts { direct: false, ..base() }, true, "a server session in the way");
-        ends_as(&mut machine(), SHUT, base(), true, "an Off start");
+        ends(&mut measured_machine(), SHUT, OpenFacts { direct: false, ..base() }, "a server session in the way; a DTS row plays it");
+        ends_as(&mut OpenRecovery::new(Arc::new(Caps::assumed())), SHUT, OpenFacts { direct: false, ..base() }, true, "a server session in the way, no DTS row");
+        ends_as(&mut OpenRecovery::new(Arc::new(Caps::assumed())), SHUT, base(), true, "an Off start with no DTS row");
         ends(&mut measured_machine(), SHUT, OpenFacts { audio: app_decoded("dca", 6), ..base() }, "already decoded in the app");
         ends(&mut measured_machine(), SHUT, OpenFacts { no_frames: false, ..base() }, "a picture was already shown");
         ends(&mut measured_machine(), SHUT, OpenFacts { audio: None, ..base() }, "no audio fed");
@@ -1857,8 +1891,9 @@ mod tests {
 
     #[test]
     fn forced_ends_on_the_read_out_after_rollback_only() {
+        // A set with no DTS row: the audio is the one the refusal can name.
         let forced = |pending, refusal| {
-            run(&mut machine(), refused(refusal, OpenFacts { forced: true, ..on_dts(facts(pending, false, true)) })).1
+            run(&mut OpenRecovery::new(Arc::new(Caps::assumed())), refused(refusal, OpenFacts { forced: true, ..on_dts(facts(pending, false, true)) })).1
         };
         for refusal in [SHUT, LoadRefusal::TimedOut, LoadRefusal::Stalled, LoadRefusal::SourceFailed] {
             assert_eq!(forced(true, refusal), [RecoveryEffect::Rollback], "{refusal}");
@@ -1866,6 +1901,37 @@ mod tests {
             let want: Vec<_> = named.into_iter().chain([RecoveryEffect::ShowError { refusal }]).collect();
             assert_eq!(forced(false, refusal), want, "{refusal}");
         }
+    }
+
+    /// **Force's read-out names the audio only when the refusal is attributable to it.** LG's `num=601`
+    /// is also a video/resource refusal, so the codec is named on positive evidence (the set does not
+    /// play it from the file, it is not the app's PCM decode, the video is not the likelier cause) and
+    /// never by elimination; every other refusal keeps the generic read-out. Scheme #695 rows 2, 3, 6, 10.
+    #[test]
+    fn forced_names_the_audio_only_when_the_refusal_is_attributable_to_it() {
+        let h264 = |w, h| Some(StreamVideo { codec: "h264".into(), width: w, height: h });
+        let base = |audio, video| OpenFacts { forced: true, direct: true, audio, video, ..facts(false, false, true) };
+        let assumed = || OpenRecovery::new(Arc::new(Caps::assumed()));
+        let end = |mut m: OpenRecovery, f: OpenFacts| run(&mut m, refused(SHUT, f)).1;
+        let named = |codec: &str| {
+            vec![RecoveryEffect::NameRefusedAudio { codec: codec.into() }, RecoveryEffect::ShowError { refusal: SHUT }]
+        };
+        // Positive: a set with no DTS row, TrueHD, an FHD video that is not the suspect.
+        assert_eq!(end(assumed(), base(audio("dca", 6), h264(1920, 1080))), named("dca"));
+        assert_eq!(end(assumed(), base(audio("truehd", 8), None)), named("truehd"));
+        // Row 2: Opus plays under Force on a table that lists it.
+        assert_eq!(end(OpenRecovery::new(opus_start()), base(audio("opus", 2), h264(1920, 1080))), ERROR, "opus");
+        // Row 6: FLAC/ALAC are decoded by the app and the TV is fed PCM.
+        assert_eq!(end(assumed(), base(audio("flac", 2), h264(1920, 1080))), ERROR, "flac");
+        assert_eq!(end(assumed(), base(audio("alac", 2), None)), ERROR, "alac");
+        // Row 3: a set with a DTS row plays the DTS core.
+        assert_eq!(end(machine(), base(audio("dca", 6), h264(1920, 1080))), ERROR, "dts on a DTS-decoder set");
+        // A 4K H.264 refused with 601 is the video's known refusal, whatever the audio.
+        assert_eq!(end(assumed(), base(audio("dca", 6), h264(3840, 2160))), ERROR, "video 601");
+        assert_eq!(end(assumed(), base(audio("truehd", 8), h264(3840, 2160))), ERROR, "video 601, truehd");
+        // A Stalled Load is audio's alone: the video is no suspect for it.
+        let stalled = run(&mut assumed(), refused(LoadRefusal::Stalled, base(audio("dca", 6), h264(3840, 2160)))).1;
+        assert_eq!(stalled[0], RecoveryEffect::NameRefusedAudio { codec: "dca".into() });
     }
 
     #[test]
