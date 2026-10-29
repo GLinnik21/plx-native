@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-29T09:11:39Z",
+ "generated": "2026-10-29T09:12:09Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -180,17 +180,17 @@
   },
   {
    "change30_pct": -60.8,
-   "change7_pct": 5.7,
+   "change7_pct": 5.5,
    "d30": 902,
-   "delta30": -548,
-   "delta7": 19,
+   "delta30": -548.5,
+   "delta7": 18.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 99,
-   "now": 354,
+   "now": 353.5,
    "prev7": 335,
    "shown": true,
    "state": "flat",
@@ -410,18 +410,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 62.9,
-   "change7_pct": 4.7,
+   "change30_pct": 62.6,
+   "change7_pct": 4.5,
    "d30": 163,
-   "delta30": 102.5,
-   "delta7": 12.0,
+   "delta30": 102,
+   "delta7": 11.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 94,
-   "now": 265.5,
+   "now": 265,
    "prev7": 253.5,
    "shown": true,
    "state": "flat",
@@ -452,18 +452,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.9,
-   "change7_pct": 2.5,
+   "change30_pct": -58.0,
+   "change7_pct": 2.3,
    "d30": 482,
-   "delta30": -279,
-   "delta7": 5.0,
+   "delta30": -279.5,
+   "delta7": 4.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 94,
-   "now": 203,
+   "now": 202.5,
    "prev7": 198.0,
    "shown": true,
    "state": "flat",
@@ -482,9 +482,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 94,
-   "now": 172.0,
+   "now": 172,
    "prev7": 151.0,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 5.9,
    "change7_pct": 0.0,
    "d30": 17,
-   "delta30": 1.0,
+   "delta30": 1,
    "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 94,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 68.7,
    "commits": [
     {
-     "pr": 1095,
-     "sha": "ee737edf8",
-     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
-    },
-    {
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
@@ -715,6 +710,11 @@
      "pr": 1116,
      "sha": "1d603b179",
      "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
+    },
+    {
+     "pr": 1120,
+     "sha": "959440fae",
+     "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
     }
    ],
    "from": 171.0,
@@ -728,11 +728,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1095,
-     "sha": "ee737edf8",
-     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
-    },
-    {
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
@@ -776,6 +771,11 @@
      "pr": 1116,
      "sha": "1d603b179",
      "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
+    },
+    {
+     "pr": 1120,
+     "sha": "959440fae",
+     "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
     }
    ],
    "from": 1116.6,
@@ -789,11 +789,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1095,
-     "sha": "ee737edf8",
-     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
-    },
-    {
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
@@ -837,6 +832,11 @@
      "pr": 1116,
      "sha": "1d603b179",
      "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
+    },
+    {
+     "pr": 1120,
+     "sha": "959440fae",
+     "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
     }
    ],
    "from": 1116.0,
@@ -850,11 +850,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1095,
-     "sha": "ee737edf8",
-     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
-    },
-    {
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
@@ -898,6 +893,11 @@
      "pr": 1116,
      "sha": "1d603b179",
      "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
+    },
+    {
+     "pr": 1120,
+     "sha": "959440fae",
+     "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
     }
    ],
    "from": 973.0,
