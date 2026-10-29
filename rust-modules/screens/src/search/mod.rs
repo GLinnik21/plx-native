@@ -109,6 +109,12 @@ pub struct SearchScreen {
     /// `PageCancel` can name its window: every ask the shelf emits is forwarded, a repeat
     /// included. The shelf paces the repeats and the store takes an identical ask idempotently.
     page_sent: [Option<(usize, bool, usize)>; 5],
+    /// The user asked for Search by its pill (the strip's cover-and-mint, or OK on the pill while
+    /// here): raise the keyboard once focus lands on the field. Armed rather than raised at once
+    /// because the dispatcher seats focus AFTER this step, and focus leaving the field drops the
+    /// keyboard; the `FocusMoved` onto the field is also only ever sent to the input owner, whose
+    /// keyboard request is the only one the dispatcher accepts. Not part of the state hash.
+    raise_on_field: bool,
 }
 
 impl SearchScreen {
@@ -119,7 +125,7 @@ impl SearchScreen {
             recent_clear_pending: false, publication: None, content_dirty: true,
             fade: plx_ui::xfade::Xfade::new(), ground: plx_ui::widgets::PageGround::new(),
             owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
-            notices: 0, page_sent: [None; 5] }
+            notices: 0, page_sent: [None; 5], raise_on_field: false }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
     fn real_query(&self) -> bool { plx_data::search::terms(self.draft.query()).is_some() }
@@ -269,8 +275,13 @@ impl SearchScreen {
                 TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
                 TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
                 TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
-                // The Search mark is the page the user is already on: nothing to request.
-                TAB_KEY_SEARCH => return Handled::Yes,
+                // The Search mark is the page the user is already on: nothing to request, but the
+                // same ask as arriving by it — back onto the field, keyboard up.
+                TAB_KEY_SEARCH => {
+                    self.raise_on_field = true;
+                    self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
+                    return Handled::Yes;
+                }
                 TAB_KEY_CHIP => SearchReq::Account,
                 _ => return Handled::No,
             };
@@ -357,7 +368,21 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 self.fade.mount();
                 self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
             }
-            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, false, fx),
+            // A pill press is the strip's cover-and-mint, the one entry seated `FirstInGroupAnimated`
+            // (`containers::stack`'s `fresh_tab`). A root mint, a return and this page's own
+            // `reseat` leave the keyboard down. Unhandled, so the dispatcher still seats focus.
+            ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroupAnimated(_) }) => {
+                self.raise_on_field = true;
+                return Handled::No;
+            }
+            ScreenEvent::Enter(Enter::Restored) => {
+                self.raise_on_field = false;
+                return Handled::No;
+            }
+            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => {
+                self.raise_on_field = false;
+                self.keyboard(false, false, fx);
+            }
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
             ScreenEvent::PressCommit(_) => {
                 if let Some(CardEvent::Activate(elem)) = card { return self.activate(elem, false, cx, fx); }
@@ -420,6 +445,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
             ScreenEvent::Tick(tick) => self.tick(*tick, cx, fx),
             ScreenEvent::FocusMoved { to, .. } => {
                 if to.elem != FIELD { self.keyboard(false, true, fx); }
+                else if std::mem::take(&mut self.raise_on_field) { self.keyboard(true, false, fx); }
                 self.keep_home_while_editing();
                 fx.invalidate(Provenance::Input);
             }
