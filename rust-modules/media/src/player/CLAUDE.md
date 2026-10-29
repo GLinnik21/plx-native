@@ -7,6 +7,14 @@ binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross
 bind-order gotchas for that seam live in THIS file**, below. `docs/agent-reference.md` carries only the
 one-paragraph playback summary.
 
+## Sans-IO
+
+`lifecycle.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
+`plan_memory.rs` are machines: a step starts no worker, reads no registry and has no `cfg(test)`
+fork. The engine, the pump and the drivers beside them execute their effects.
+
+@../../../../docs/sans-io-guide.md
+
 ## Pipeline
 
 In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process

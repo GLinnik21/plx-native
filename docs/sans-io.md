@@ -43,8 +43,8 @@ dropped.
 
 **Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
-`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs` and `recovery.rs`
-(the failed-open ladder machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
+`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs`, `recovery.rs`
+(the failed-open ladder machine) and `release.rs` (the native object's release machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
 `net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
 of `data/`, `plex/`, `media/` and `session/`, because a fork anywhere in them is a test that does not
 run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
@@ -57,6 +57,10 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   `it.peek()` are not workers or registry reads); `peek` is also a site in
   `plex/src/plex/session.rs`, the module that defines it. A local launcher (`launch_browse_discovery`) is no
   site of its own: the real call inside it is.
+- `task::beside` is not a `workers` site: its scoped sibling is joined before the IO body that asked for
+  it returns, so no worker outlives the call and there is no ledger line to shrink; scoped concurrency
+  inside an IO body a runner already runs off the frame is allowed, a machine step never calls it (it
+  would block the frame on the network, and `beside` asserts it is not on the frame thread).
 - A getter named without a call (`.and_then(client_for)`) reads the registry as surely as a call
   does, so it is a site. Only a rename (`use ...::client_for as x`) fails outright, because the
   calls through `x` are invisible to the scan.
@@ -551,13 +555,24 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     the system refused, refuses the job: the claim is lowered in the refusing call and the
     request id remembered. `settle_refused_reads` takes the three markers at the head of the next
     step and wakes the pump (`idle::invalidate`); nothing is recorded and nothing backs off. The
-    directory is owed again (`*_done` is still false, and the menu's tick sends the work again),
+    directory is owed again (`genres_done` is still false, or the letters are still not current
+    (`SecState::letters_current`), and the menu's tick sends the work again),
     and the page is still the first one missing, so the next pump asks again with the then-current
     key, exactly what the old `!spawned` arms left.
   - **The guard is in the body, the landing outside it.** A page read that panics lands as a failed
-    page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a directory
-    read that panics lands as an empty list. The seams `finish_page_with` and
+    page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a genre read
+    that panics lands as an empty list, and a letters read that fails or panics lands as `ok: false`:
+    the landed list stays as it was (hidden, it no longer describes the grid) and the same key waits
+    120 steps (`SecState::letters_backoff`), an edit asking at once. The seams `finish_page_with` and
     `finish_directory_with` take the read as a closure so a test can swap in one that panics.
+  - **The letters carry the grid's terms.** The Letters job is asked with `SecState::query_filters`,
+    the terms of the page read, and a `LettersKey` (applied Unwatched, applied genre, a generation
+    that a membership change moves and, for an Unwatched key only, a watched state read back from
+    the server; `data/src/browse/letters.rs`) that the answer returns. A list is current, and
+    shown, only while its key is the section's present one, checked where it is read. The landed
+    list and the one it replaced are both held (`SecState::letters_kept`: an unfiltered list
+    survives a genre or Unwatched switched on and off; an Unwatched list is never the kept one),
+    and a third key evicts the oldest.
 - **The discovery lane.** The Library's source discovery (`data/src/browse/mod.rs`,
   `maybe_discover_owned`) is the twelfth store job: the section list, the server's name and the
   item counts of one source, as `StoreJob::BrowseDiscovery(Job<BrowseDiscoveryReq>,

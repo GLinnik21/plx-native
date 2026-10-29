@@ -350,6 +350,8 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   `loop=` from a simulator as evidence about performance.
 - **Text rasterization truth.** Different FreeType, so stem/bar weight, hinting and the
   `theme::size` ladder stay device questions — `tools/font-hint-audit.py` and a device capture.
+  Arabic and Hebrew runs are the exception for shape and order: libass-plx draws them with the same
+  pinned FreeType and HarfBuzz in the simulator and on the TV, and `make check-ass` checks their ink.
   The window is no longer at an arbitrary fitted scale (`scale≈0.86` was the old fitted size): it
   opens at an exact divisor of the 1920x1080 canvas and is not resizable, so on a Retina display
   the drawable is 1920x1080 and `scale` is exactly 1.0 — whatever the display's size and with or

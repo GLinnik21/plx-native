@@ -109,6 +109,15 @@ impl GridBands {
         self.slots[at] = Slot { row: Some(row), card: None, spring: Spring::at(0.0) };
     }
 
+    /// Close every band at once and name no focused row: what was opening and what was closing
+    /// behind a move are gone, with no spring left to step. [`focus`](Self::focus)`(None, false)`
+    /// cannot say it when the focus has already left (`None`): it returns early, and the band a
+    /// move off the grid left closing goes on closing.
+    pub fn shut(&mut self) {
+        self.focus = None;
+        self.slots = [Slot::EMPTY; MAX_GRID_BANDS];
+    }
+
     /// Note which card of the focused row `row` the focus is on, so the band, once it closes behind
     /// a move, still knows whose caption it carries ([`closing`](Self::closing)). A card outside the
     /// focused row is not noted.

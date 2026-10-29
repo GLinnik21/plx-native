@@ -60,7 +60,8 @@ last two bullets); it is the source; this list only indexes it. Cite a rule by i
 
 `rust-modules/ui/src/CLAUDE.md` (its rule 4 names the ready-made mechanisms),
 `rust-modules/screens/src/CLAUDE.md` (a screen), `rust-modules/media/src/player/CLAUDE.md`
-(playback), `rust-modules/plex/src/plex/CLAUDE.md` with `docs/pms-api.md` (Plex data layer).
+(playback), `rust-modules/plex/src/plex/CLAUDE.md` with `docs/pms-api.md` (Plex data layer),
+`rust-modules/data/src/AGENTS.md` (a `data/` store) and `docs/sans-io-guide.md` (any machine's step).
 Anything else: one named section of `docs/agent-reference.md`, never the whole file.
 
 ## Other reviewers: recommend, never spawn

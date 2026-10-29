@@ -117,9 +117,12 @@ Use the grammatical form that follows a day number (for Polish, `12 marca`, not 
 The rule for code: a UI language is its directory and registry entry. Code never lists languages:
 every "each language" loop uses `i18n::SHIPPED` (`ci/check-language-lists.py` fails a hand-written
 list), and production code never `match`es on `Language` or `Preference` outside `i18n`. A test that
-pins a reviewed translation iterates its own table and never falls back with `_ =>`. The current
-renderer supports the shipped Latin and Cyrillic languages; Arabic/Hebrew and other scripts
-requiring shaping or bidirectional layout need renderer work before being offered.
+pins a reviewed translation iterates its own table and never falls back with `_ =>`. The renderer
+draws Arabic and Hebrew TEXT (titles, synopses, track names: shaped through libass-plx, and a
+right-to-left paragraph is right-aligned and, when truncated, dissolves at its left end into a MORE
+on the left, `gfx/src/text.rs` and
+`ui/src/text_view.rs`), but the interface layout itself is left-to-right throughout, so an Arabic
+or Hebrew UI language needs a mirrored layout before it can be offered.
 
 ## Runtime behavior
 

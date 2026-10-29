@@ -372,9 +372,16 @@ pub struct Beside<'scope, T> {
 /// re-raises it, as the same call made inline would have; nothing is swallowed into a default.
 ///
 /// Only the borrows of the scope's CALLER can be captured (a thread started inside the scope body
-/// cannot borrow the body's own locals) — move owned copies in. Call it as
-/// `plx_base::task::beside(..)`: `ci/check-deps.sh`'s `workers` gate counts a detached worker
-/// start in a machine, and a scoped sibling joined before its scope returns is not one.
+/// cannot borrow the body's own locals) — move owned copies in.
+///
+/// **For an IO body, never a machine step.** The scope joins the sibling before its caller
+/// returns, so the caller waits for the network: that is fine in a body a runner already runs off
+/// the frame (`fetch_full`, `fetch_source`, `build_stream`) and would stall the frame in a step.
+/// That join is also why this is not a worker start: `ci/check-deps.sh`'s `workers` gate counts
+/// a detached worker a machine owns (`task::spawn`, `spawn_small*`, ...), its pattern does not
+/// match `beside` in any spelling, and a `beside` call is not a `ci/allow/workers/` ledger line.
+/// The gate cannot tell a body from a step, so this debug assertion does: a call on the frame
+/// thread panics on any tested path, as an `OffFrame` mint does.
 pub fn beside<'scope, 'env, T, F>(
     s: &'scope std::thread::Scope<'scope, 'env>,
     what: &str,
@@ -398,6 +405,7 @@ where
     F: FnOnce() -> T + Send + 'scope,
 {
     use std::sync::{Arc, Mutex};
+    debug_assert!(!blocking::in_frame(), "beside was asked for on the frame thread");
     // The lock is never held while `f` runs, so a panic in `f` cannot poison it.
     fn lock<'a, 'scope, T>(work: &'a Mutex<Work<'scope, T>>) -> std::sync::MutexGuard<'a, Work<'scope, T>> {
         work.lock().unwrap_or_else(|e| e.into_inner())
@@ -670,6 +678,19 @@ mod tests {
         });
         let panic = outcome.expect_err("finish must re-raise");
         assert_eq!(panic.downcast_ref::<&str>().copied(), Some("sibling work"));
+    }
+
+    /// `beside` makes its caller wait for the sibling at the end of the scope, so it is for an IO
+    /// body a runner runs off the frame; a machine step that called it would block the frame on
+    /// the network. The frame thread is refused in debug builds, as an `OffFrame` mint is.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "beside was asked for on the frame thread")]
+    fn a_beside_request_on_the_frame_thread_is_refused() {
+        let _frame = super::FrameScope::enter();
+        std::thread::scope(|s| {
+            super::beside(s, "beside-on-frame", || ()).finish();
+        });
     }
 
     /// The scope joins a sibling its owner never `finish`ed: an early return out of the scope body

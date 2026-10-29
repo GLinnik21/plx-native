@@ -4298,6 +4298,10 @@ mod library_push_capture_tests;
 mod recommended_enter_tests;
 
 #[cfg(test)]
+#[path = "library_back_lift_tests.rs"]
+mod library_back_lift_tests;
+
+#[cfg(test)]
 #[path = "library_diagnostic_tests.rs"]
 mod library_diagnostic_tests;
 
