@@ -1387,17 +1387,21 @@ fn min_controls_top_y_is_where_the_largest_block_just_fits() {
         }
     }
     // The image path: the same block authored on the highest position's baseline. `hud_lift` lands
-    // its bottom on the ceiling and never pushes it off the screen, at the bound and past it.
+    // its bottom on the BAND's ceiling (classic's 780 would not move it at all, so this is what
+    // ties the reader to the band) and, being a lift, leaves the top inside `SAFE`.
     let height = CAPTION_ANCHOR_LINES as f32 * CAPTION_LINE_PITCH * size_scale(size);
     let bottom = SUB_BASE_Y - position_lift(position);
     let block = Rect::new(300.0, bottom - height, 1320.0, height);
     for band in [HudBand::from_controls_top(bound), HudBand::from_controls_top(bound - 1.0)] {
         let lift = hud_lift([block].into_iter(), true, band);
+        assert!(close(block.y + block.h - lift, band.ceil_y), "{band:?}: bottom on the ceiling");
         assert!(block.y - lift >= SAFE.y, "{band:?}: lifted top {}", block.y - lift);
     }
+    // The clamp, not the bound: a band far past it cannot push the block off the screen.
     let far = HudBand::from_controls_top(200.0);
     let lift = hud_lift([block].into_iter(), true, far);
     assert!(block.y - lift >= 0.0, "a band far past the bound clamps on screen");
+    assert!(block.y + block.h - lift > far.ceil_y, "…which is the clamp, short of the ceiling");
 }
 
 /// **`HudGeometry::band` is the compact row's top**, in every slot: classic's layout reports

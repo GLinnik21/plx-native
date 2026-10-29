@@ -432,27 +432,34 @@ mod tests {
     }
 
     /// The largest block at the highest position, three lines, as libass places it, lifted by the
-    /// band's `lift`: where its top ends up.
-    fn lifted_libass_top(band: HudBand) -> f32 {
+    /// band's `lift`: where its top starts and where it ends up.
+    fn lifted_libass_top(band: HudBand) -> (f32, f32) {
         let style = style(SubtitleSize::Huge, SubtitlePosition::High);
         let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
         let height = text_style::CAPTION_ANCHOR_LINES as f32 * pitch;
         let top = text_style::bottom_anchor_y(style.position) - height;
         let dys = dys_in(band, text(style), true, &[(top as i32, height as i32)], BOTTOM);
-        top + dys[0]
+        (top, top + dys[0])
     }
 
-    /// `MIN_CONTROLS_TOP_Y` through the libass lift: at the bound the largest block is inside
-    /// `SAFE`. The libass block sits `INK_TRIM` below the bespoke one, so it is still inside one
-    /// pixel higher; the bound is set by the stricter bespoke draw.
+    /// `min_controls_top_y` through the libass lift. Two claims, kept apart:
+    /// - the lift IS the band's (the block rises by exactly `band.lift`, not a fixed 200), which is
+    ///   what makes the largest block's lifted top depend on the band at the bound;
+    /// - the block is then inside `SAFE` at the bound and one pixel past it (the libass block sits
+    ///   `INK_TRIM` below the bespoke one, so the bound is set by the stricter bespoke draw), and a
+    ///   band far past the bound clamps the lift so the block stays on the screen.
     #[test]
     fn the_libass_lift_keeps_the_largest_block_on_screen_at_the_bound() {
         let bound = plx_appkit::player_hud::min_controls_top_y();
-        assert!(lifted_libass_top(HudBand::from_controls_top(bound)) >= plx_ui::consts::SAFE.y);
-        let past = lifted_libass_top(HudBand::from_controls_top(bound - 1.0));
-        assert!(past >= plx_ui::consts::SAFE.y, "one px past the bound is still inside: {past}");
-        // Far past it, the lift clamps rather than push the block off the screen.
-        assert!(lifted_libass_top(HudBand::from_controls_top(300.0)) >= 0.0);
+        for band in [HudBand::from_controls_top(bound), HudBand::from_controls_top(bound - 1.0)] {
+            let (top, lifted) = lifted_libass_top(band);
+            assert_eq!(lifted, top - band.lift, "{band:?}: the rise is the band's lift");
+            assert_ne!(band.lift, HudBand::CLASSIC.lift);
+            assert!(lifted >= plx_ui::consts::SAFE.y, "{band:?}: lifted top {lifted}");
+        }
+        // The clamp, not the bound: far past it the lift is cut to keep the block on the screen.
+        let (_, lifted) = lifted_libass_top(HudBand::from_controls_top(300.0));
+        assert!(lifted >= 0.0);
     }
 
     #[test]
