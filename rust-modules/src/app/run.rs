@@ -2025,57 +2025,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // `Tick` now — `step_scrub_hold`, formula for formula, and the debounce gone with
         // click-to-confirm (a key target waits for OK) — which is what makes the field have one
         // owner. Phase 12, PX-PLAYER.)
-        // Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
-        // rather than a "was something shown" bool, because the two edges have different jobs
-        // and the previous bool implemented neither of the ones its comment promised.
-        let mut reseat = false;
-        if let Some(player) = super::bridge::player_mut(&mut app.pages) {
-            // Keyed on the SEGMENT, not the slot, and `last_offer` is only ever advanced to
-            // a real offer — never cleared back to None. `active_marker` is gated on `is_playing`,
-            // so a momentary drop out of Playing mid-segment reads as "no segment" and flips the
-            // row to the discs and back; keyed on the slot that round trip looked like a new
-            // offer and re-raised the HUD over an intro the user was simply watching.
-            let offer = fr.ctrl.offer();
-            let fresh = offer.is_some() && offer != player.hud.last_offer;
-            if offer.is_some() {
-                player.hud.last_offer = offer;
-            }
-            if fresh {
-                // One line per SEGMENT offered — the on-device suite grades this feature from
-                // the event log like everything else, and "the control row offered a skip" had
-                // no observable signal at all before it.
-                if let Some((kind, start)) = offer {
-                    log(&format!("marker offer: {kind:?} at {}s", start / 1000));
-                }
-                // A segment beginning puts the HUD ON SCREEN and offers the row — the timer,
-                // the DISMISSAL and the ring in one act, because raising the timer alone left
-                // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
-                // that rule, its resting-position clause and the bug are written down.
-                player.raise_for_offer(fr.now, fr.ctrl.primary_btn());
-                // It moved the ring (when it was on the scrubber) with no effect to say so: the engine
-                // has to follow, or OK on the offered pill would toggle play/pause.
-                reseat = true;
-            } else if plx_appkit::player_hud::standin_left_the_ring(
-                player.hud.was_standin,
-                fr.ctrl,
-                player.hud.nav.focus == GROUP_ROW,
-            ) {
-                // The stand-in went away under the focus ring. Without this the row swaps back
-                // to the discs with focus still on it and `btn` still 0, so the next OK opened
-                // the SUBTITLES menu instead of toggling pause — exactly the bug class HudNav's
-                // own doc says it exists to kill. Strictly the EDGE: as a steady state it also
-                // fired on a user who walked UP to the discs on purpose, yanking the ring back
-                // the same frame and making OK on a disc unreachable by remote.
-                player.hud.nav = HudNav::HOME;
-                // It left the ROW for the scrubber, so the engine has to follow.
-                reseat = true;
-            }
-            player.hud.was_standin = !fr.ctrl.is_discs();
-            player.publish();
-        }
-        if reseat {
-            super::bridge::reseat_player_focus(&mut app.pages);
-        }
+        follow_control_row(app, fr.ctrl, fr.now);
         // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to the
         // next episode out of nowhere. `hud.dismissed` has to clear with it, not just the
         // timer: a user who UP-hid the HUD and then touched nothing until the credits still
@@ -2467,6 +2417,63 @@ fn loop_requests(app: &mut App) {
                 crate::lab::request_upload("menu", &app.player.session);
             }
         }
+    }
+}
+
+/// Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
+/// rather than a "was something shown" bool, because the two edges have different jobs
+/// and the previous bool implemented neither of the ones its comment promised.
+fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, now: u32) {
+    let mut reseat = false;
+    if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+        // Keyed on the SEGMENT, not the slot, and `last_offer` is only ever advanced to
+        // a real offer — never cleared back to None. `active_marker` is gated on `is_playing`,
+        // so a momentary drop out of Playing mid-segment reads as "no segment" and flips the
+        // row to the discs and back; keyed on the slot that round trip looked like a new
+        // offer and re-raised the HUD over an intro the user was simply watching.
+        let offer = ctrl.offer();
+        let fresh = offer.is_some() && offer != player.hud.last_offer;
+        if offer.is_some() {
+            player.hud.last_offer = offer;
+        }
+        if fresh {
+            // One line per SEGMENT offered — the on-device suite grades this feature from
+            // the event log like everything else, and "the control row offered a skip" had
+            // no observable signal at all before it.
+            if let Some((kind, start)) = offer {
+                log(&format!("marker offer: {kind:?} at {}s", start / 1000));
+            }
+            // A segment beginning puts the HUD ON SCREEN and offers the row — the timer,
+            // the DISMISSAL and the ring in one act, because raising the timer alone left
+            // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
+            // that rule, its resting-position clause and the bug are written down.
+            player.raise_for_offer(now, ctrl.primary_btn());
+            // It moved the ring (when it was on the scrubber) with no effect to say so: the engine
+            // has to follow, or OK on the offered pill would toggle play/pause.
+            reseat = true;
+        } else if plx_appkit::player_hud::standin_left_the_ring(
+            player.hud.was_standin,
+            ctrl,
+            player.hud.nav.focus == GROUP_ROW,
+        ) {
+            // The stand-in went away under the focus ring. Without this the row swaps back
+            // to the discs with focus still on it and `btn` still 0, so the next OK opened
+            // the SUBTITLES menu instead of toggling pause — exactly the bug class HudNav's
+            // own doc says it exists to kill. Strictly the EDGE: as a steady state it also
+            // fired on a user who walked UP to the discs on purpose, yanking the ring back
+            // the same frame and making OK on a disc unreachable by remote.
+            player.hud.nav = HudNav::HOME;
+            // The engine is NOT re-seated here, and that is `main`'s behaviour kept, not an
+            // omission: it still sits on the stand-in's item, which the discs may not have, and
+            // its own reconcile moves it to the row's primary disc and mirrors that back into
+            // `nav`. Seating it on the scrubber instead left no disc focused, and the next OK
+            // paused the film where `main` opens Subtitles.
+        }
+        player.hud.was_standin = !ctrl.is_discs();
+        player.publish();
+    }
+    if reseat {
+        super::bridge::reseat_player_focus(&mut app.pages);
     }
 }
 
@@ -4315,6 +4322,56 @@ mod lifecycle_regression_tests {
         assert_eq!(player.hud.nav.tab, 0);
         assert_ne!(app.pages.focus().map(|k| k.elem), Some(ELEM_SCRUB), "the engine left the scrubber");
         assert_eq!(app.pages.focus().map(|k| k.elem), Some(ELEM_TAB_BASE), "…for the tab the pin named");
+    }
+
+    /// **A Skip pill that retires leaves the ring where `main` leaves it: on the first remaining
+    /// disc.** The engine is seated on the pill's item (the row's item 0) when the segment ends and
+    /// the discs come back; item 0 is not a disc a movie has, so the engine's own reconcile moves
+    /// it to the row's primary disc and the page mirrors that back into `nav`. Re-seating the
+    /// engine on the SCRUBBER at the departure (what the stand-in edge did on this branch) took
+    /// that away: no disc focused, and the next OK paused the film instead of opening Subtitles.
+    #[test]
+    fn a_skip_pill_that_retires_leaves_focus_on_the_first_remaining_disc() {
+        use plx_appkit::player_hud::{geometry::GROUP_ROW, Action, ControlSlot, Controls, ELEM_ROW_BASE};
+        use plx_appkit::skip_pill::{Prompt, SkipAction};
+        use plx_data::metadata::{Marker, MarkerKind};
+        let _serial = plx_base::testlock::serial();
+        let marker = Marker { kind: MarkerKind::Intro, start_ms: 0, end_ms: 60_000, final_seg: false };
+        let skip = ControlSlot::Skip(Prompt { marker, kind: MarkerKind::Intro, action: SkipAction::Seek(60_000_000_000) });
+        let up_next = ControlSlot::UpNext(Marker { kind: MarkerKind::Credits, ..marker });
+        let discs = ControlSlot::Discs(Controls::NONE);
+        // Up Next's stand-in leaves by the same edge, from its own primary item.
+        for (name, standin, seat) in [
+            ("Skip", skip, ELEM_ROW_BASE),
+            ("Up Next", up_next, ELEM_ROW_BASE + up_next.primary_btn() as u32),
+        ] {
+            let mut app = app();
+            super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+            frame(&mut app, 16);
+            let set_slot = |app: &mut App, slot| {
+                super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted").slot = slot;
+            };
+            set_slot(&mut app, standin);
+            follow_control_row(&mut app, standin, 100);
+            for now in [116, 132, 148] {
+                frame(&mut app, now);
+            }
+            assert_eq!(app.pages.focus().map(|k| k.elem), Some(seat), "{name}: the offer seats the stand-in");
+            set_slot(&mut app, discs);
+            follow_control_row(&mut app, discs, 200);
+            for now in [216, 232, 248, 264] {
+                frame(&mut app, now);
+            }
+            let primary = discs.primary_btn();
+            let player = super::super::bridge::player(&app.pages).expect("the player page is mounted");
+            assert_eq!((player.hud.nav.focus, player.hud.nav.btn), (GROUP_ROW, primary), "{name}: the mirror");
+            assert_eq!(
+                app.pages.focus().map(|k| k.elem),
+                Some(ELEM_ROW_BASE + primary as u32),
+                "{name}: the engine"
+            );
+            assert_eq!(Controls::NONE.action(primary), Some(Action::Subtitles), "so the next OK opens Subtitles");
+        }
     }
 
     #[test]

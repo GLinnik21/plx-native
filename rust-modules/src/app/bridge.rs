@@ -3969,11 +3969,16 @@ pub(crate) fn player_mut(
 /// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
 /// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in four
 /// places — a Chapters / Info panel handing the ring back to the tabs (`PlayerReq::FocusTabs`), the
-/// headless pin (`run::pin_headless_hud`), the auto-hide park and the stand-in's departure (both in
-/// `run::update`) — and a bare write would leave the engine on the group it was on, so the next
-/// Up, Down or OK travelled from there. Each such write is followed by this, which hands the page
+/// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, and the auto-hide
+/// park (the last two in `run::follow_control_row` and `run::update`) — and a bare write would leave
+/// the engine on the group it was on, so the next Up, Down or OK travelled from there. Each such
+/// write is followed by this, which hands the page
 /// the same `Enter::Fresh { ContainerGroup }` the screen's own `repair_focus` delivers. It rides
 /// the dispatcher's queue from outside a step and drains in the next frame, ahead of its input.
+///
+/// **Not the stand-in's departure** (`run::follow_control_row`): the Skip / Up Next stand-in leaving
+/// the row writes `nav` and leaves the engine where it is, because the engine's own reconcile then
+/// moves it from the stand-in's item to the row's first remaining disc, as it always has.
 ///
 /// A no-op when no player page is mounted. The engine acts on an `Enter` only for the page that owns
 /// input at the moment it drains; for a page under a panel it only reaches the screen, which mirrors it.
