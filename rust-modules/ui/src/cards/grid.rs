@@ -1,4 +1,4 @@
-//! [`Grid`] — the poster grid with a collapsing caption band under the focused row: six
+//! [`Grid`] — a poster grid with focused captions, or fixed captions on every visible tile: six
 //! `poster_grid::STYLE` columns by default, any column count / style / left edge through
 //! [`GridSpec`] (`poster_grid`'s `_in` functions are its geometry). The Collection page is its first
 //! adopter; [`ScrollMode::External`] serves a grid inside a document another owner scrolls.
@@ -81,12 +81,14 @@ pub struct GridSpec {
     pub landings: bool,
     /// Rows REST rather than snap (see [`resting`](Self::resting)).
     pub rests: bool,
+    /// Every visible cell carries a fixed three-line caption band.
+    pub persistent_captions: bool,
 }
 
 impl GridSpec {
     /// A grid that scrolls home when focus leaves it.
     pub const fn new(top: f32, edge: f32) -> Self {
-        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false, rests: false }
+        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false, rests: false, persistent_captions: false }
     }
 
     /// **A grid whose rows rest where the first row does** (the Library's rule, `poster_grid::rest_scroll`):
@@ -135,7 +137,9 @@ impl GridSpec {
         Self { landings: on, ..self }
     }
 
-    fn geom(&self) -> Geom { Geom::of(self.cols, self.left, &self.style) }
+    fn geom(&self) -> Geom {
+        Geom { persistent_captions: self.persistent_captions, ..Geom::of(self.cols, self.left, &self.style) }
+    }
 }
 
 /// What [`Grid::card_paint`] decides for one card (see there).
@@ -256,7 +260,10 @@ impl Grid {
     }
 
     /// The focused band's height: the policy's (0 / 80 / 112), else the legacy band.
+    pub fn set_persistent_captions(&mut self, on: bool) { self.spec.persistent_captions = on; }
+
     pub fn band_h(&self) -> f32 {
+        if self.spec.persistent_captions { return 0.0; }
         self.caption_policy.as_ref().map_or(card_row::LEGACY_BAND_H, crate::caption_policy::band_h)
     }
 
@@ -958,7 +965,11 @@ impl Grid {
         // Either way each line is revealed by the band's own progress and the room it has made
         // (`card_row::line_reveal_for`), so the caption goes with the gap and never stands over
         // the row under it.
-        let label = if focused {
+        let label = if self.spec.persistent_captions {
+            let mut label = src.label(i).within_tile();
+            label.static_text = !focused;
+            Some((label, 1.0))
+        } else if focused {
             let row = i / self.spec.cols;
             let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
             // The focused card left as a ghost that is still waiting for the landing to step: the
@@ -971,9 +982,13 @@ impl Grid {
                 .find(|&(row, card, _)| card == i && row == i / self.spec.cols)
                 .map(|(_, _, open)| (src.label(i), open))
         }
-        .map(|(label, open)| label.revealed(self.band_h(), open, self.rise_below(cards, f.cx, src, i, bands)));
+        .map(|(label, open)| if self.spec.persistent_captions { label }
+            else { label.revealed(self.band_h(), open, self.rise_below(cards, f.cx, src, i, bands)) });
         let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
-        if !card_row::paint_visible(p, rect, s, label.is_some()) {
+        let visible = if self.spec.persistent_captions {
+            card_row::paint_visible_with_label_h(p, rect, s, super::TileLabel::SORT_BAND_H)
+        } else { card_row::paint_visible(p, rect, s, label.is_some()) };
+        if !visible {
             return None;
         }
         // an arriving card fades in
@@ -1063,7 +1078,7 @@ impl Grid {
             let Some(paint) = self.card_paint(f, p, src, cards, i, s, role == DrawRole::Focus, &bands) else { continue };
             let Some(label) = paint.label else { continue };
             let bottom = card_row::unscaled_bottom(paint.rect, s);
-            for line in label.lines().into_iter().flatten().filter(|l| l.alpha * paint.p.opacity() > 0.0) {
+            for line in label.all_lines().into_iter().flatten().filter(|l| l.alpha * paint.p.opacity() > 0.0) {
                 out.push((i, bottom + line.top, bottom + line.bottom, line.alpha * paint.p.opacity()));
             }
         }

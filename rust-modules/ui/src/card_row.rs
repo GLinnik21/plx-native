@@ -845,7 +845,15 @@ fn tile_paint_bounds(rect: Rect, scale: f32, labelled: bool) -> Rect {
 pub fn paint_visible(p: Painter, rect: Rect, scale: f32, labelled: bool) -> bool {
     // Recording follows the buffered composition's text queries, including its offscreen rows.
     if p.is_recording() { return true; }
-    let mut bounds = tile_paint_bounds(rect, scale, labelled);
+    let label_h = if labelled { UNDER_LABEL_H } else { 0.0 };
+    paint_visible_with_label_h(p, rect, scale, label_h)
+}
+
+/// A card whose caller declares a taller persistent caption block.
+pub fn paint_visible_with_label_h(p: Painter, rect: Rect, scale: f32, label_h: f32) -> bool {
+    if p.is_recording() { return true; }
+    let mut bounds = tile_paint_bounds(rect, scale, label_h > 0.0);
+    if label_h > 0.0 { bounds.h = bounds.h.max(unscaled_bottom(rect, scale) + label_h - bounds.y); }
     bounds.x += p.dx();
     bounds.y += p.dy();
     let visible = bounds.intersect(Rect::FULL);
@@ -885,10 +893,17 @@ pub fn draw_tile(
 /// every shelf must reserve room for it in its own flow, and `reveal`/`scroll_into_view` only keep
 /// air under the block a screen *declares*. Before this, five call sites hand-authored that number
 /// from constants they could not see — [`TileLabel::height`] is the answer they were restating.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct TileLabel {
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
+    /// A grid's optional third line, below its identity (title and year).
+    pub sort_info: Option<std::ffi::CString>,
+    pub sort_mark: &'static [crate::widgets::MarkLayer],
+    /// Scores have emphasis; ordinary sort metadata uses the regular details face.
+    pub sort_bold: bool,
+    /// Unfocused persistent captions elide; only the focused caption may marquee.
+    pub static_text: bool,
     /// lead the FIRST line drawn with the amber play triangle (Continue Watching's tile has no play
     /// disc): the title when the block has one, else the details line. The mark hangs to the left of
     /// the line, which is centred as if it were not there. Set only while a press on the tile plays
@@ -942,6 +957,15 @@ pub struct LineBox {
 }
 
 impl TileLabel {
+    /// Fixed room for three lines; unknown values leave their own slot blank.
+    pub const SORT_BAND_H: f32 = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP
+        + 2.0 * UNDER_CAPTION_H + crate::consts::UNDER_LABEL_AIR;
+
+    pub fn all_lines(&self) -> [Option<LineBox>; 3] {
+        let [title, caption] = self.lines();
+        let top = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP + UNDER_CAPTION_H;
+        [title, caption, self.sort_info.as_ref().map(|_| self.line(top, top + UNDER_CAPTION_H))]
+    }
     /// **A line of the block is the label BAND's content, so it may not be on screen before the
     /// room for it is.** `band_h` is the band's whole height ([`CardRow::band_h`],
     /// `Grid::band_h`), `e` its live expansion, 0 collapsed → 1 open, and `rise` how far the tile
@@ -1147,10 +1171,29 @@ pub fn draw_label(
     // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
     // only about whether the room under it holds the line yet.
     let lines = label.lines();
-    if lines.iter().flatten().all(|l| l.alpha <= 0.0) {
+    if label.all_lines().iter().flatten().all(|l| l.alpha <= 0.0) {
         return;
     }
     draw_label_block(p, rect, sty, label, lines, bottom, measure);
+    if let (Some(text), Some(line)) = (&label.sort_info, label.all_lines()[2].filter(|l| l.alpha > 0.0)) {
+        let raw = text.to_string_lossy();
+        if !label.sort_bold && label.sort_mark.is_empty() {
+            let value = plx_gfx::text::elide_by(&raw, sty.w, false,
+                |s| measure.width_str(s, theme::size::CAPTION, false));
+            if let Ok(value) = std::ffi::CString::new(value) {
+                p.alpha(line.alpha).text(value.as_ptr(), rect.cx(), bottom + line.top,
+                    theme::size::CAPTION, theme::CAPTION_DETAIL_INK, 1, 0);
+            }
+            return;
+        }
+        let lead = if label.sort_mark.is_empty() { 0.0 } else { crate::widgets::RATING_MARK_D + crate::theme::space::SM };
+        let value = plx_gfx::text::elide_by(&raw, (sty.w - lead).max(0.0), false,
+            |s| measure.width_str(s, theme::size::LABEL, true));
+        let cell = crate::widgets::RatingCell { mark: label.sort_mark, value: &value, suffix: "" };
+        let width = crate::widgets::rating_group_w("", std::slice::from_ref(&cell), measure);
+        crate::widgets::rating_group(p.alpha(line.alpha), rect.cx() - width.min(sty.w) * 0.5,
+            bottom + line.top + UNDER_CAPTION_H * 0.5, "", &[cell], measure);
+    }
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
 /// caption rung of the deck's state, replacing the details line, and always shown on the deck (the
@@ -1742,6 +1785,29 @@ fn draw_label_block(
     // Every run of the block is a label block's to a recording census, whatever its ink.
     #[cfg(any(test, feature = "test-support"))]
     let _label_scope = crate::draw_census::label_scope();
+    if label.static_text {
+        for (text, line, size, bold, ink) in [
+            (label.title.as_ref(), lines[0], theme::size::LABEL, true, theme::TEXT_PRIMARY),
+            (label.caption.as_ref(), lines[1], theme::size::CAPTION, false, theme::CAPTION_DETAIL_INK),
+        ] {
+            if let (Some(text), Some(line)) = (text, line.filter(|l| l.alpha > 0.0)) {
+                let text = plx_gfx::text::elide_by(&text.to_string_lossy(), sty.w, false,
+                    |s| measure.width_str(s, size, bold));
+                if let Ok(text) = std::ffi::CString::new(text) {
+                    let p = p.alpha(line.alpha);
+                    let width = measure.width(&text, size, bold);
+                    let x = rect.cx() - width * 0.5;
+                    let y = bottom + line.top;
+                    if label.shadowed {
+                        p.text(text.as_ptr(), x, y + crate::caption_policy::CAPTION_SHADOW_DY, size,
+                            crate::caption_policy::CAPTION_SHADOW, 0, i32::from(bold));
+                    }
+                    p.text(text.as_ptr(), x, y, size, ink, 0, i32::from(bold));
+                }
+            }
+        }
+        return;
+    }
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
     // Measured once and threaded through: the title's drawn width feeds both how wide the block

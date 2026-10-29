@@ -75,6 +75,7 @@ pub(super) fn summary(v: UnderPosters) -> String {
 enum UpId {
     Title,
     Details,
+    SortInfo,
     Reset,
 }
 
@@ -83,6 +84,7 @@ impl FormId for UpId {
         RowKey(match self {
             UpId::Title => 1,
             UpId::Details => 2,
+            UpId::SortInfo => 3,
             UpId::Reset => 30,
         })
     }
@@ -93,6 +95,7 @@ enum UpAction {
     Title,
     /// The Details row is a push (`RowKind::Nav`): the form answers it with the page, never with this.
     Details,
+    SortInfo,
     Reset,
 }
 
@@ -115,6 +118,8 @@ fn under_posters_form(v: UnderPosters) -> Form<UpId, UpAction, SettingsPage> {
                 .value(details_label(v.details))
                 .chevron(true),
         );
+    let rows = rows.item(UpId::SortInfo, RowKind::Toggle, UpAction::SortInfo,
+        Row::new(msg::under_posters_show_sort_info()).detail(msg::under_posters_sort_info_detail()).toggle(v.show_sort_info));
     let reset = FormSection::new("").item(
         UpId::Reset,
         RowKind::Button,
@@ -145,8 +150,8 @@ impl LogicalState for UpState {
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "under_posters sel={} title={} details={} busy={}",
-            self.sel.0, self.value.title, self.value.details.index(), self.busy
+            "under_posters sel={} title={} details={} busy={} sort_info={}",
+            self.sel.0, self.value.title, self.value.details.index(), self.busy, self.value.show_sort_info
         ));
     }
 }
@@ -201,6 +206,7 @@ impl UnderPostersPage {
         let next = match action {
             UpAction::Title => UnderPosters { title: !v.title, ..v },
             UpAction::Details => return,
+            UpAction::SortInfo => UnderPosters { show_sort_info: !v.show_sort_info, ..v },
             UpAction::Reset => UnderPosters::DEFAULT,
         };
         self.send(next, fx);
@@ -344,7 +350,17 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], measure: &dy
         TileLabel::default()
     };
     let tiles = (0..PREVIEW_TILES).map(|i| Art::Poster(posters.get(i).map(|m| tile_facts::of(m))));
-    SampleRow::draw(p, preview_row(), &PREVIEW_STYLE, tiles, lifted, &label, measure);
+    if v.show_sort_info {
+        SampleRow::draw_labeled(p, preview_row(), &PREVIEW_STYLE, tiles, lifted,
+            |i| posters.get(i).map_or_else(|| {
+                let facts = sample_facts();
+                let sample = PmsMovie { title: facts.title.unwrap_or_default(), year: facts.year.unwrap_or(0),
+                    dur_ns: i64::from(facts.duration_min.unwrap_or(0)) * 60_000_000_000, ..Default::default() };
+                crate::registry::sort_info::label(&sample, "duration")
+            }, |item| crate::registry::sort_info::label(item, "duration")), measure);
+    } else {
+        SampleRow::draw(p, preview_row(), &PREVIEW_STYLE, tiles, lifted, &label, measure);
+    }
 }
 
 /// The posters a page's preview shows: the current library's first cached ones.
@@ -432,7 +448,7 @@ impl FormId for DetailsId {
 /// row's sample on the right. `None` for Nothing; a kind the poster has no fact for samples the identity
 /// line the tile says instead (its year), as the preview draws it.
 fn details_sample(d: UnderPostersDetails, facts: &CaptionFacts) -> Option<String> {
-    lines_of(UnderPosters { title: false, details: d }, facts)[1].clone()
+    lines_of(UnderPosters { title: false, details: d, show_sort_info: false }, facts)[1].clone()
 }
 
 /// The picker's order: Nothing first, then the lines in the ladder's order (the board's list).

@@ -29,6 +29,24 @@ use crate::{Painter, Rect};
 use std::cell::RefCell;
 use std::os::raw::c_uint;
 
+#[cfg(test)]
+#[test]
+fn rating_verdict_masks_rasterize_at_caption_size_and_four_times_size() {
+    let _guard = plx_base::testlock::serial();
+    for icon in [Icon::TomatoSplat, Icon::PopcornBody, Icon::PopcornStripes, Icon::PopcornKernels,
+        Icon::PopcornSpilledBody, Icon::PopcornSpilledStripes, Icon::PopcornSpilledKernels] {
+        for px in [crate::widgets::RATING_MARK_D as i32, 4 * crate::widgets::RATING_MARK_D as i32] {
+            let rgba = plx_gfx::svg::rasterize(src(icon), px, px).unwrap();
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            assert!(rgba.chunks_exact(4).any(|p| p[3] == 255), "{icon:?} at {px}px has no solid ink");
+            for k in 0..px {
+                assert_eq!([alpha(k, 0), alpha(k, px - 1), alpha(0, k), alpha(px - 1, k)], [0; 4],
+                    "{icon:?} at {px}px touches the border");
+            }
+        }
+    }
+}
+
 // `Debug` so a host test can name the glyph it expected: `widgets`' play-indicator table grades
 // an Option<Icon> per cell and an assertion that cannot print the two sides is one nobody reads.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -160,13 +178,8 @@ pub enum Icon {
     Search,
     // ---- review-score marks (the detail hero's ratings row) ----
     //
-    // These are OUR OWN drawings, not reproductions. Rotten Tomatoes' marks — the fruit, the
-    // Certified Fresh seal, the popcorn tub — were shipped here until 2026-08-02 and removed:
-    // there is no licensing route for them (RT's developer programme is closed to unofficial
-    // projects and `developer.fandango.com` does not resolve), and redrawing a mark is the
-    // standard infringement pattern rather than a defence. The provider is now NAMED in text
-    // instead, which is referential use and needs no licence — so the glyph no longer has to say
-    // *whose* score this is. It only has to carry the VERDICT, which is what these four do.
+    // Authored vector masks, with provider and verdict taken from the server's ratingImage.
+    // The critic pair is a red fruit / green splat; the audience pair is a full / tipped tub.
     //
     // Two layers per mark for the same reason as before: the rasterizer renders a MASK and the
     // colour is the tint (`theme::RATING_*`), so a two-tone mark needs two masks at one rect.
@@ -179,10 +192,9 @@ pub enum Icon {
     /// certified body and [`theme::RATING_MUTED`] on a hollow one. Its base sits INSIDE the body's
     /// silhouette, so the two masks overlap solidly instead of meeting at a seam.
     TomatoCalyx,
-    /// A rotten score: the same fruit drained to an outline. A stroked ring rather than a splat —
-    /// the negation is "the colour has gone out of it", which needs no second device.
+    /// Legacy hollow fruit mask. Current rotten-score captions use [`Icon::TomatoSplat`].
     TomatoHollow,
-    /// The audience mark: a CROWD — two figures under one shoulder line, so it reads as "many
+    /// Legacy audience mark: a CROWD — two figures under one shoulder line, so it reads as "many
     /// people" rather than "a person". One layer, and the only mark here with four elements in it:
     /// permitted because none of them touch (heads clear their bodies by ~2.5 units and the two
     /// figures do not overlap in x), so there is no antialiased seam for them to composite across.
@@ -244,6 +256,16 @@ pub enum Icon {
     /// A ring with a bar through it — the Watchlist's on-no-server mark, the universal "unavailable"
     /// sign at the inline weight.
     CircleSlash,
+    /// A rotten critic verdict, distinct in silhouette and colour from the fresh fruit.
+    TomatoSplat,
+    /// Full audience tub: white body, red stripes, golden kernels, at one 26-unit viewBox.
+    PopcornBody,
+    PopcornStripes,
+    PopcornKernels,
+    /// Tipped audience tub: green body, white stripes and spilled golden kernels.
+    PopcornSpilledBody,
+    PopcornSpilledStripes,
+    PopcornSpilledKernels,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -330,6 +352,13 @@ fn src(id: Icon) -> &'static str {
         Icon::TomatoCalyx => include_str!("../../../assets/icons/tomato-calyx.svg"),
         Icon::TomatoHollow => include_str!("../../../assets/icons/tomato-hollow.svg"),
         Icon::Crowd => include_str!("../../../assets/icons/crowd.svg"),
+        Icon::TomatoSplat => include_str!("../../../assets/icons/rating-rotten.svg"),
+        Icon::PopcornBody => include_str!("../../../assets/icons/popcorn-body.svg"),
+        Icon::PopcornStripes => include_str!("../../../assets/icons/popcorn-stripes.svg"),
+        Icon::PopcornKernels => include_str!("../../../assets/icons/popcorn-kernels.svg"),
+        Icon::PopcornSpilledBody => include_str!("../../../assets/icons/popcorn-spilled-body.svg"),
+        Icon::PopcornSpilledStripes => include_str!("../../../assets/icons/popcorn-spilled-stripes.svg"),
+        Icon::PopcornSpilledKernels => include_str!("../../../assets/icons/popcorn-spilled-kernels.svg"),
         Icon::ClockBadgeAlert => include_str!("../../../assets/icons/clock-badge-alert.svg"),
         Icon::CloudBadgeAlert => include_str!("../../../assets/icons/cloud-badge-alert.svg"),
         Icon::GlobeBadgeMinus => include_str!("../../../assets/icons/globe-badge-minus.svg"),

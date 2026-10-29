@@ -237,3 +237,38 @@ mod tests {
         assert_eq!(at(false), [None, None]);
     }
 }
+
+pub fn rating_mark(art: plx_data::metadata::RatingArt) -> &'static [plx_ui::widgets::MarkLayer] {
+    use plx_data::metadata::RatingArt as A;
+    use plx_ui::icons::Icon;
+    use plx_ui::widgets::MarkLayer;
+    static FRESH: &[MarkLayer] = &[
+        (Icon::Tomato, plx_ui::theme::RATING_FRESH),
+        (Icon::TomatoCalyx, plx_ui::theme::RATING_LEAF),
+    ];
+    static CERTIFIED: &[MarkLayer] = &[
+        (Icon::Tomato, plx_ui::theme::RATING_CERTIFIED),
+        (Icon::TomatoCalyx, plx_ui::theme::RATING_LEAF),
+    ];
+    static ROTTEN: &[MarkLayer] = &[
+        (Icon::TomatoSplat, plx_ui::theme::RATING_ROTTEN),
+    ];
+    static POPCORN_UP: &[MarkLayer] = &[
+        (Icon::PopcornBody, plx_ui::theme::RATING_PAPER),
+        (Icon::PopcornStripes, plx_ui::theme::RATING_FRESH),
+        (Icon::PopcornKernels, plx_ui::theme::RATING_KERNEL),
+    ];
+    static POPCORN_DOWN: &[MarkLayer] = &[
+        (Icon::PopcornSpilledBody, plx_ui::theme::RATING_ROTTEN),
+        (Icon::PopcornSpilledStripes, plx_ui::theme::RATING_PAPER),
+        (Icon::PopcornSpilledKernels, plx_ui::theme::RATING_KERNEL),
+    ];
+    match art {
+        A::TomatoFresh => FRESH,
+        A::TomatoCertified => CERTIFIED,
+        A::TomatoRotten => ROTTEN,
+        A::PopcornUpright => POPCORN_UP,
+        A::PopcornSpilled => POPCORN_DOWN,
+        A::Imdb | A::Tmdb => &[],
+    }
+}

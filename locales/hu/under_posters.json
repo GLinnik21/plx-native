@@ -15,5 +15,8 @@
   "under_posters.reset": "Alapértelmezés",
   "under_posters.reset_detail": "Év és hossz, cím nélkül.",
   "under_posters.sample_title": "Film",
-  "under_posters.sample_genre": "Dráma"
+  "under_posters.sample_genre": "Dráma",
+  "under_posters.show_sort_info": "Rendezési információk megjelenítése",
+  "under_posters.sort_info_detail": "Cím, év és rendezési érték a filmtárban.",
+  "under_posters.default_version": "Alapértelmezett"
 }

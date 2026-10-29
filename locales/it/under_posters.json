@@ -15,5 +15,8 @@
   "under_posters.reset": "Ripristina predefinito",
   "under_posters.reset_detail": "Anno e durata, senza titolo.",
   "under_posters.sample_title": "Film",
-  "under_posters.sample_genre": "Drammatico"
+  "under_posters.sample_genre": "Drammatico",
+  "under_posters.show_sort_info": "Mostra informazioni di ordinamento",
+  "under_posters.sort_info_detail": "Titolo, anno e ordine nella libreria dei film.",
+  "under_posters.default_version": "Principale"
 }

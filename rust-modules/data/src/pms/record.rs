@@ -116,6 +116,8 @@ mod tests {
             subtype: Some("movie".into()), smart: true, genre: Some("Drama".into()),
             video_resolution: Some("4k".into()), hdr: true, audience_rating: Some(7.5),
             leaf_count: Some(10), viewed_leaf_count: Some(4), added_at: Some(i64::MAX),
+            sort_info: Some(crate::pms::SortInfo { rating: Some(9.1), user_rating: Some(8.0),
+                view_count: Some(7), bitrate_kbps: Some(8000), media_count: 2, ..Default::default() }),
             versions: vec![crate::pms::MediaVersion {
                 id: plx_plex::plex::MediaId(3082), kbps: 25_200, resolution: "4k".into(),
                 vcodec: "hevc".into(), size: i64::MAX, hdr: true, ..Default::default()

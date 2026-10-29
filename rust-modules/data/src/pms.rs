@@ -174,6 +174,46 @@ pub struct PmsMovie {
     /// item menu's Play Version row; empty for a single-version item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<MediaVersion>,
+    /// Listing-only sort facts. No detail fetch is needed to caption a movie grid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_info: Option<SortInfo>,
+}
+
+/// Facts lost by the compact poster projection before sort captions were introduced.
+/// Values and provider images always stay paired; missing values remain unknown.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SortInfo {
+    pub rating: Option<f64>,
+    pub rating_image: String,
+    pub audience_image: String,
+    pub user_rating: Option<f64>,
+    pub view_count: Option<i64>,
+    pub last_viewed_at: Option<i64>,
+    pub added_date: Option<[i32; 3]>,
+    pub last_viewed_date: Option<[i32; 3]>,
+    pub bitrate_kbps: Option<i64>,
+    pub width: i64,
+    pub height: i64,
+    pub media_count: usize,
+}
+
+impl SortInfo {
+    fn of(it: &plx_plex::plex::Metadata) -> Self {
+        let score = |n: f64| (n.is_finite() && n > 0.0 && n <= 10.0).then_some(n);
+        let media = it.media_version(None).map(|(_, media)| media);
+        Self {
+            rating: score(it.rating), rating_image: it.rating_image.clone(),
+            audience_image: it.audience_rating_image.clone(), user_rating: score(it.user_rating),
+            view_count: (it.view_count >= 0).then_some(it.view_count),
+            last_viewed_at: (it.last_viewed_at > 0).then_some(it.last_viewed_at),
+            added_date: plx_platform::i18n::local_calendar_date(it.added_at),
+            last_viewed_date: plx_platform::i18n::local_calendar_date(it.last_viewed_at),
+            bitrate_kbps: media.and_then(|m| (m.bitrate > 0).then_some(m.bitrate)),
+            width: media.map_or(0, |m| m.width), height: media.map_or(0, |m| m.height),
+            media_count: it.media.len(),
+        }
+    }
 }
 
 fn is_false(b: &bool) -> bool { !*b }
@@ -569,6 +609,7 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         m.child_count = it.child_count.max(0);
     }
     fill_caption_facts(&mut m, it);
+    if m.kind == 0 { m.sort_info = Some(SortInfo::of(it)); }
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);
@@ -4504,5 +4545,32 @@ mod caption_fact_tests {
         assert!(!normal.smart && normal.child_count == 5);
         let absent = row(r#"{"type":"collection","title":"C"}"#);
         assert!(!absent.smart);
+    }
+}
+
+#[cfg(test)]
+mod sort_info_tests {
+    use super::*;
+    #[test]
+    fn listing_keeps_distinct_scores_and_default_version_without_a_detail_request() {
+        let it: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({
+            "type":"movie","ratingKey":"7","title":"Film","contentRating":"PG-13",
+            "rating":10.0,"ratingImage":"rottentomatoes://image.rating.ripe",
+            "audienceRating":8.5,"audienceRatingImage":"rottentomatoes://image.rating.spilled",
+            "userRating":6.0,"viewCount":3,"addedAt":1700000000,"lastViewedAt":1700000010,
+            "Media":[{"id":1,"videoResolution":"1080","width":1920,"height":802,"bitrate":8000},
+                     {"id":2,"videoResolution":"4k","width":3840,"height":2160,"bitrate":40000}]
+        })).unwrap();
+        let row = parse_item(&it, ServerId::UNSET);
+        let facts = row.sort_info.as_ref().unwrap();
+        assert_eq!(row.rating, "PG-13");
+        assert_eq!(facts.rating, Some(10.0));
+        assert_eq!(row.audience_rating, Some(8.5));
+        assert_eq!(facts.user_rating, Some(6.0));
+        assert_eq!((facts.view_count, facts.last_viewed_at), (Some(3), Some(1700000010)));
+        assert_eq!((facts.bitrate_kbps, facts.width, facts.height, facts.media_count), (Some(8000),1920,802,2));
+        assert_eq!(row.video_resolution.as_deref(), Some("1080"));
+        let roundtrip: PmsMovie = serde_json::from_str(&serde_json::to_string(&row).unwrap()).unwrap();
+        assert!(roundtrip == row);
     }
 }
