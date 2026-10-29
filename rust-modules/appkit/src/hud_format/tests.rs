@@ -137,11 +137,11 @@ fn reference(from: &str, to: &str) -> String {
 /// One invalid-corpus row: a package (as bytes, since some rows are not UTF-8), and the finding it must
 /// produce: its code, its pointer, optionally a name that must be among the nearest, optionally the
 /// exact message, and whether it is the ONLY finding.
-struct Row {
-    label: &'static str,
-    bytes: Vec<u8>,
-    code: &'static Code,
-    pointer: String,
+pub(in crate::hud_format) struct Row {
+    pub(in crate::hud_format) label: &'static str,
+    pub(in crate::hud_format) bytes: Vec<u8>,
+    pub(in crate::hud_format) code: &'static Code,
+    pub(in crate::hud_format) pointer: String,
     near: Option<&'static str>,
     message: Option<&'static str>,
     only: bool,
@@ -218,7 +218,7 @@ impl Row {
 // Valid fixtures
 // ---------------------------------------------------------------------------------------------------
 
-mod valid {
+pub(in crate::hud_format) mod valid {
     use super::*;
 
     #[test]
@@ -314,7 +314,7 @@ mod valid {
 
     /// Edits of the reference that must still parse with no finding: the boundary values, every
     /// condition form, and the choices a package may make.
-    fn accepted() -> Vec<(&'static str, String)> {
+    pub(in crate::hud_format) fn accepted() -> Vec<(&'static str, String)> {
         let mut out: Vec<(&'static str, String)> = vec![
             (
                 "when_and_array",
@@ -483,7 +483,7 @@ fn format_row(label: &'static str, value: &str, code: &'static Code) -> Row {
 }
 
 /// Every row of the corpus. One row per parse rule at least (see `corpus_covers_every_code`).
-fn corpus() -> Vec<Row> {
+pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     let r = reference;
     let mut rows: Vec<Row> = Vec::new();
     let mut add = |row: Row| rows.push(row);

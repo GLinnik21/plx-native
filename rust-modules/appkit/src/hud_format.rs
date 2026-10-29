@@ -4,7 +4,8 @@
 //! A HUD package is declarative DATA, never code (D1): one UTF-8 JSON file, assets inline. This module is
 //! PURE: no IO, no globals, no clock, no `cfg(test)` fork. Bytes go in; a typed [`parse::Package`] and a
 //! list of [`Finding`]s come out. Wave B builds the draw-list compiler, the reachability check and `lint`
-//! on top of these types and reuses [`Finding`] as it is.
+//! on top of these types and reuses [`Finding`] as it is. [`schema_emit`] serializes the descriptor table
+//! to the published JSON Schema, and [`report`] prints findings as the lint JSON and as text.
 //!
 //! ## The finding
 //!
@@ -23,11 +24,17 @@
 //! * an SVG asset: the asset string's pointer, `/assets/<id>`.
 
 pub mod parse;
+pub mod report;
 pub mod schema;
+pub mod schema_emit;
 pub mod svg_subset;
 
 #[cfg(test)]
 mod tests; // the corpus of valid and invalid packages, the seeded mutation tests and the table-vs-parser drift test
+#[cfg(test)]
+mod schema_check; // the in-test JSON Schema checker and the regex subset it runs
+#[cfg(test)]
+mod site_tests; // the published schema, examples and invalid examples with their lint reports (`site/hud/`)
 
 /// How loudly a finding speaks. A package parses (`Parsed::package` is `Some`) only if it has no `Error`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

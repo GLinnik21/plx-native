@@ -1,0 +1,15 @@
+{
+  "file": "svg-gradient.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0701",
+      "hint": "HUD assets are alpha masks tinted by the app; a gradient would be discarded, so draw the mark in one colour",
+      "message": "element <linearGradient> is not part of the mask subset (byte 25)",
+      "nearest": [],
+      "path": "/assets/mark",
+      "rule": "svg-element",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}
