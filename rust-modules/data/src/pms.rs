@@ -174,9 +174,10 @@ pub struct PmsMovie {
     /// item menu's Play Version row; empty for a single-version item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<MediaVersion>,
-    /// Listing-only sort facts. No detail fetch is needed to caption a movie grid.
+    /// Listing-only sort facts, shared across retained row copies. Watch edits detach with
+    /// Arc::make_mut, keeping the optional block out of the compact poster's inline storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sort_info: Option<SortInfo>,
+    pub sort_info: Option<Arc<SortInfo>>,
 }
 
 /// Facts lost by the compact poster projection before sort captions were introduced.
@@ -605,7 +606,7 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         m.child_count = it.child_count.max(0);
     }
     fill_caption_facts(&mut m, it);
-    if m.kind == 0 { m.sort_info = Some(SortInfo::of(it)); }
+    if m.kind == 0 { m.sort_info = Some(Arc::new(SortInfo::of(it))); }
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);
