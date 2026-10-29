@@ -38,7 +38,7 @@ use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
     LogicalState, Machine,
 };
-use plx_appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, TransportRow};
+use plx_appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, motion::HudMotion};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, FocusSource, Focusable, GroupKind, GroupSpec,
     HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
@@ -128,7 +128,7 @@ pub struct PlayerScreen {
     // a ramp rather than a discrete move and was never gated.)
     /// The control row's focus springs, its label-width memo and the resume clock
     /// (`player_hud`'s `ROW_POP`/`MEMO`/`PLAY_AT`/`PAUSE_SEEN`).
-    pub row: TransportRow,
+    pub row: HudMotion,
     /// The Up Next auto-advance countdown (`up_next`'s `DEADLINE`/`CANCELLED`).
     pub up_next: Countdown,
     /// This frame's control-row occupant, sampled ONCE by the loop and pushed here (`slot()`'s own
@@ -158,7 +158,7 @@ pub struct PlayerScreen {
     /// Did a failure own the frame at the last Tick — the edge that resets `failure_sel`.
     failure_up: bool,
     /// The transport clocks' prewarm memo — a render resource, not logical state (`prepare`).
-    clock_warm: plx_appkit::player_hud::ClockWarm,
+    clock_warm: plx_appkit::player_hud::motion::ClockWarm,
 }
 
 impl PlayerScreen {
@@ -169,7 +169,7 @@ impl PlayerScreen {
             scrub: Scrub::IDLE,
             seek_burst: player_hud::seek_jump::SeekBurst::IDLE,
             transport_tap: false,
-            row: TransportRow::new(),
+            row: HudMotion::new(),
             up_next: Countdown::default(),
             slot: ControlSlot::Discs(player_hud::Controls::NONE),
             busy: plx_appkit::player_hud::Busy::None,
@@ -192,7 +192,7 @@ impl PlayerScreen {
     /// **Mirror the two published fields into `player::TX`** (§2.3).
     ///
     /// `hud.until` and `scrub.ns` are this screen's decisions; the draw path
-    /// (`player_hud::draw_hud` reads `TX.scrub_ns`) and the engine read them, so the owner writes
+    /// (`player_hud::classic::draw_hud` reads `TX.scrub_ns`) and the engine read them, so the owner writes
     /// a snapshot after every step rather than letting either reader reach into the screen. The
     /// loop calls this once per iteration, after the ladders and the dispatcher frame have both
     /// had their turn — one publication per frame, and nothing between them can observe a
@@ -249,7 +249,7 @@ impl PlayerScreen {
         measure: &dyn plx_machine::machine::Measure,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
-        plx_appkit::player_hud::draw_hud(
+        plx_appkit::player_hud::classic::draw_hud(
             ps,
             &mut self.row,
             &self.up_next,
@@ -269,7 +269,7 @@ impl PlayerScreen {
     /// pointer stop at the rect `place` gives it** — the rect D-pad focus uses, so "reachable by
     /// the D-pad" and "clickable with the pointer" are one statement (issue #162).
     ///
-    /// Until #162 the stops were a by-product of painting: `player_hud::draw_hud` pushed each rect
+    /// Until #162 the stops were a by-product of painting: `player_hud::classic::draw_hud` pushed each rect
     /// as it drew, in PAINT order, and the hit map resolves the LAST stop under the pointer. The
     /// scrubber's grab band (160 px tall) was pushed after the control row it overlaps, so a click
     /// on the middle of any disc resolved to the scrubber and seeked instead; and a stand-in
@@ -315,7 +315,7 @@ impl PlayerScreen {
         }
     }
 
-    /// Is group `g` on screen this frame — the same gates `player_hud::draw_hud`/`draw_readout`
+    /// Is group `g` on screen this frame — the same gates `player_hud::classic::draw_hud`/`draw_readout`
     /// paint behind. A failure owns the frame outright; the scrubber and control row are the
     /// transport's MIDDLE, which an open Info card or Chapters strip hides.
     fn group_drawn(&self, g: GroupId, hud_drawn: bool) -> bool {
@@ -613,7 +613,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // The control row's springs and the resume clock are stepped once per FRAME and
                 // never from `draw_hud` — this row is not drawn on every frame of the route, so a
                 // spring advanced in the draw would run at a rate that depended on which overlay
-                // was open (`TransportRow::step`'s own doc).
+                // was open (`HudMotion::step`'s own doc).
                 self.row
                     .step(self.slot, self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms);
                 // …and the Up Next countdown, which arms on APPEARANCE and is dropped with the
@@ -810,7 +810,7 @@ impl PlayerScreen {
     /// `scrub_frac_x` is x-only on purpose: an engaged drag tracks the pointer even when it
     /// wanders off the band vertically, which is why the drag arm below never re-tests the hit.
     fn pointed_ns(&self, x: f32, duration_ns: i64) -> i64 {
-        let frac = player_hud::scrub_frac_x(x) as f64;
+        let frac = player_hud::classic::scrub_frac_x(x) as f64;
         Scrub::clamp_target((frac * duration_ns as f64) as i64, duration_ns)
     }
 
@@ -1327,7 +1327,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Screen; 4],
-            extent: player_hud::scrub_hit_rect(),
+            extent: player_hud::classic::scrub_hit_rect(),
             len: 1,
             elem: plx_ui::screen::ElemKind::Control,
         });
@@ -1340,7 +1340,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
-            extent: player_hud::ctrl_row_hit_rect(),
+            extent: player_hud::classic::ctrl_row_hit_rect(),
             len: row_len,
             elem: plx_ui::screen::ElemKind::Control,
         });
@@ -1351,7 +1351,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Screen; 4],
-            extent: player_hud::tab_hit_rect(0, has_ch, cx.measure).unwrap_or(Rect::FULL),
+            extent: player_hud::classic::tab_hit_rect(0, has_ch, cx.measure).unwrap_or(Rect::FULL),
             len: if has_ch { 2 } else { 1 },
             elem: plx_ui::screen::ElemKind::Control,
         });
@@ -1413,12 +1413,12 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             return Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None });
         }
         let rect = match *key {
-            e if e == ELEM_SCRUB => player_hud::scrub_hit_rect(),
+            e if e == ELEM_SCRUB => player_hud::classic::scrub_hit_rect(),
             e if let Some(index) = player_hud::row_index(e) => {
                 if !self.slot.enabled(index) { return None; }
                 self.slot.item_rect(&self.row, index, cx.measure)?
             }
-            e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => player_hud::tab_hit_rect(
+            e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => player_hud::classic::tab_hit_rect(
                 (e - ELEM_TAB_BASE) as i32,
                 plx_appkit::chapters_panel::has_chapters(H::metadata(cx)),
                 cx.measure,
@@ -1492,7 +1492,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         None
     }
     /// The transport's clocks, queued for the presenting side to rasterise before the draw's
-    /// back-buffer wait (`player_hud::ClockWarm`). Only while the playbar is drawn: the gate is
+    /// back-buffer wait (`player_hud::motion::ClockWarm`). Only while the playbar is drawn: the gate is
     /// `draw`'s own (`hud_drawn` and the transport's middle).
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
         let ps = H::session(cx);
@@ -1546,7 +1546,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
         // instead of vanishing with the 4.5 s linger. AFTER the transport, so it is never dimmed by
         // the scrim; BEFORE the overlay panels, which the container draws above this page.
-        plx_appkit::player_hud::draw_readout(ps, self.busy, now, self.failure_sel, f.measure);
+        plx_appkit::player_hud::classic::draw_readout(ps, self.busy, now, self.failure_sel, f.measure);
         if self.repair_alert.visible() {
             self.repair_alert.draw_scrim();
             self.repair_alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::widgets_repair_action_c(), f.measure);
@@ -2111,7 +2111,7 @@ mod step_ladder_tests {
             let gaps = pointer_gaps(&mut map, ENTRY, &placed);
             assert!(gaps.is_empty(), "{name}: controls the pointer cannot click:\n{}", gaps.join("\n"));
             if !player_hud::failure_row_drawn(busy) {
-                let band = player_hud::scrub_hit_rect();
+                let band = player_hud::classic::scrub_hit_rect();
                 let hit = map.resolve(Some(ENTRY), PointerKind::Click, band.cx(), band.cy(), None);
                 assert_eq!(hit.activate.map(|(k, _)| k.elem), Some(ELEM_SCRUB), "{name}: the scrubber");
             }
@@ -2467,7 +2467,7 @@ mod step_ladder_tests {
             At::Drawn,
         )
         .expect("the scrubber always places");
-        let want = player_hud::scrub_hit_rect();
+        let want = player_hud::classic::scrub_hit_rect();
         assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h), (want.x, want.y, want.w, want.h));
     }
 
@@ -2656,7 +2656,7 @@ mod scrub_ownership_tests {
 
     /// A point on the scrubber's registered band, `frac` of the way along it.
     fn on_the_bar(frac: f32) -> (f32, f32) {
-        let r = player_hud::scrub_hit_rect();
+        let r = player_hud::classic::scrub_hit_rect();
         (r.x + r.w * frac, r.y + r.h * 0.5)
     }
 

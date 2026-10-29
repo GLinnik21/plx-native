@@ -1658,7 +1658,7 @@ impl HeaderLayout {
 /// Two consequences, and both REMOVE code rather than adding it. The video stays visible around it,
 /// which is the point of a stats overlay you watch playback under — the first version was a
 /// full-screen opaque card that made "is anything on screen?" unanswerable while the panel was up.
-/// And it sits entirely ABOVE the transport (`player_hud::CTRL_Y`), so a pointer click can never
+/// And it sits entirely ABOVE the transport (`player_hud::classic::CTRL_Y`), so a pointer click can never
 /// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
 /// needed a close-on-click arm at all.
 impl Diagnostics {
@@ -2098,7 +2098,7 @@ mod tests {
                     + panel.head_lines[1].len().max(1) as f32 * HEAD_LINE_H);
                 assert!(layout.fields_y >= layout.sections_y + HEAD_LINE_H);
                 assert!(plx_ui::consts::inside_safe(frame));
-                assert!(frame.y + frame.h < plx_appkit::player_hud::CTRL_Y);
+                assert!(frame.y + frame.h < plx_appkit::player_hud::classic::CTRL_Y);
             }
         }
     }
@@ -2116,7 +2116,7 @@ mod tests {
         for panel in [&short, &long] {
             let chart_top = panel.header_layout().fields_y + FieldList::height(RIGHT_ROWS);
             assert_eq!(panel.panel_rect().h - PAD - chart_top, FieldList::height(CHART_ROWS));
-            assert!(panel.panel_rect().y + panel.panel_rect().h < plx_appkit::player_hud::CTRL_Y);
+            assert!(panel.panel_rect().y + panel.panel_rect().h < plx_appkit::player_hud::classic::CTRL_Y);
         }
         assert_eq!(long.head_lines[0].concat(), long.head[0], "opaque build IDs must never lose a suffix");
     }
@@ -2671,9 +2671,9 @@ mod tests {
     fn the_panel_clears_the_transport() {
         let bottom = MARGIN + HEAD_H + FieldList::height(LEFT_ROWS) + PAD;
         assert!(
-            bottom < plx_appkit::player_hud::CTRL_Y,
+            bottom < plx_appkit::player_hud::classic::CTRL_Y,
             "panel bottom {bottom} overlaps the control row at {}",
-            plx_appkit::player_hud::CTRL_Y
+            plx_appkit::player_hud::classic::CTRL_Y
         );
         // through `panel_rect` itself, not a restatement of its arithmetic: its x is `MARGIN_X`
         // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept

@@ -4002,7 +4002,7 @@ impl DetailScreen {
         // The scrim/wedge strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
         // picture is up, protecting the logo+synopsis), and NOTHING in full-trailer mode — the
         // page keeps no ink up there to protect, and the trailer's own transport brings the only
-        // scrim the state needs (`player_hud::draw_scrim`, at the bottom, under the playbar).
+        // scrim the state needs (`player_hud::classic::draw_scrim`, at the bottom, under the playbar).
         let field_target = if full_trailer { 0.0 } else { view.field };
         // The bottom base scrim goes with it, for the same reason
         // (`docs/trailer-ux-plan.md` §8.3).

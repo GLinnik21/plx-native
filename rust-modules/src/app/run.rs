@@ -2505,7 +2505,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         #[cfg(feature = "threadcheck")]
         plx_ui::runtime_warning::update(app.boot_initial.is_some());
         // The Up Next countdown and the control row's focus pop are the PLAYER INSTANCE's and
-        // are stepped from its own `Tick` for the reason `TransportRow::step` gives — the row is
+        // are stepped from its own `Tick` for the reason `HudMotion::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
         // rate that depended on which panel was open. What the loop still owes the instance is
         // this frame's ONE resolve of the control-row slot (`slot()`'s own doc: `playpos_ns` is
@@ -4144,7 +4144,7 @@ mod lifecycle_regression_tests {
         use plx_screens::registry::PlayerReq;
         let key = FocusKey { elem: plx_appkit::player_hud::ELEM_SCRUB,
             ..app.pages.focus().expect("the player has a scrub seat") };
-        let rect = plx_appkit::player_hud::scrub_hit_rect();
+        let rect = plx_appkit::player_hud::classic::scrub_hit_rect();
         app.pages.input.hit.fill(vec![Stop { key, rect, rest_rect: rect, clip: Rect::FULL,
             hover: Hover::Ignore, activate: Activate::Direct }]);
         app.pages.input.hit.swap();
@@ -4159,7 +4159,7 @@ mod lifecycle_regression_tests {
                 assert!(page.scrub.drag);
                 assert!(page.scrub.ns > 0);
             } else {
-                let expected = (plx_appkit::player_hud::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
+                let expected = (plx_appkit::player_hud::classic::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
                 assert_eq!(reqs, vec![PlayerReq::CommitSeek(expected)], "release commits once at the final motion");
             }
         }
