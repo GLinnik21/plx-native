@@ -2463,11 +2463,14 @@ fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, 
             // fired on a user who walked UP to the discs on purpose, yanking the ring back
             // the same frame and making OK on a disc unreachable by remote.
             player.hud.nav = HudNav::HOME;
-            // The engine is NOT re-seated here, and that is `main`'s behaviour kept, not an
-            // omission: it still sits on the stand-in's item, which the discs may not have, and
-            // its own reconcile moves it to the row's primary disc and mirrors that back into
-            // `nav`. Seating it on the scrubber instead left no disc focused, and the next OK
-            // paused the film where `main` opens Subtitles.
+            // The ring goes back to the SCRUBBER for the engine as much as for `nav`: `key_ok` acts
+            // on the element the engine holds, so a stale seat on the stand-in's item (an enabled
+            // Previous / Restart on an episode, which reconcile leaves alone) made the next OK
+            // press a disc where `main`'s `nav`-driven OK toggled pause. On a movie `main` did not
+            // honour this contract either: reconcile moved the stale item to Subtitles and mirrored
+            // it into `nav`, so OK opened that menu. Following the contract is the one deliberate
+            // behaviour change of this PR.
+            reseat = true;
         }
         player.hud.was_standin = !ctrl.is_discs();
         player.publish();
@@ -4324,54 +4327,81 @@ mod lifecycle_regression_tests {
         assert_eq!(app.pages.focus().map(|k| k.elem), Some(ELEM_TAB_BASE), "…for the tab the pin named");
     }
 
-    /// **A Skip pill that retires leaves the ring where `main` leaves it: on the first remaining
-    /// disc.** The engine is seated on the pill's item (the row's item 0) when the segment ends and
-    /// the discs come back; item 0 is not a disc a movie has, so the engine's own reconcile moves
-    /// it to the row's primary disc and the page mirrors that back into `nav`. Re-seating the
-    /// engine on the SCRUBBER at the departure (what the stand-in edge did on this branch) took
-    /// that away: no disc focused, and the next OK paused the film instead of opening Subtitles.
+    /// Offer `standin` on a mounted player, let the offer seat the engine, retire it for `discs`,
+    /// then press OK on the ring with the HUD up. Returns (nav focus, engine element, what OK asked).
+    fn depart_and_press_ok(
+        standin: plx_appkit::player_hud::ControlSlot,
+        discs: plx_appkit::player_hud::ControlSlot,
+    ) -> (plx_machine::machine::GroupId, Option<u32>, Vec<plx_screens::registry::PlayerReq>) {
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        let set_slot = |app: &mut App, slot| {
+            super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted").slot = slot;
+        };
+        set_slot(&mut app, standin);
+        follow_control_row(&mut app, standin, 100);
+        for now in [116, 132, 148] {
+            frame(&mut app, now);
+        }
+        assert_eq!(
+            app.pages.focus().map(|k| k.elem),
+            Some(plx_appkit::player_hud::ELEM_ROW_BASE + standin.primary_btn() as u32),
+            "the offer seats the engine on the stand-in's primary item"
+        );
+        set_slot(&mut app, discs);
+        follow_control_row(&mut app, discs, 200);
+        for now in [216, 232, 248, 264] {
+            frame(&mut app, now);
+        }
+        let player = super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted");
+        player.hud.extend(264, HUD_LINGER_MS);
+        player.hud.visible_at_press = true;
+        let (focus, engine) = (player.hud.nav.focus, app.pages.focus().map(|k| k.elem));
+        app.bridge.take_player_reqs();
+        super::super::bridge::frame(
+            &mut app.pages,
+            &mut app.bridge,
+            plx_machine::machine::Tick { ms: 280, dt_us: 16_000 },
+            super::super::bridge::script_key(plx_machine::machine::Key::Ok, plx_machine::machine::Tick { ms: 280, dt_us: 16_000 }),
+        );
+        (focus, engine, app.bridge.take_player_reqs())
+    }
+
+    /// **A stand-in that leaves the row sends the ring back to the SCRUBBER**
+    /// ([`plx_appkit::player_hud::standin_left_the_ring`]'s own contract), for the engine as much as
+    /// for `nav`, so the next OK toggles play/pause. On a MOVIE, `main` got this wrong for a Skip
+    /// that was pressed: the engine kept item 0, reconcile moved it to Subtitles and mirrored that
+    /// into `nav`, so OK opened the Subtitles menu. This is the one deliberate difference from it.
     #[test]
-    fn a_skip_pill_that_retires_leaves_focus_on_the_first_remaining_disc() {
-        use plx_appkit::player_hud::{geometry::GROUP_ROW, Action, ControlSlot, Controls, ELEM_ROW_BASE};
+    fn a_skip_pill_that_retires_on_a_movie_sends_the_ring_to_the_scrubber() {
+        use plx_appkit::player_hud::{geometry::GROUP_SCRUB, ControlSlot, Controls, ELEM_SCRUB};
         use plx_appkit::skip_pill::{Prompt, SkipAction};
         use plx_data::metadata::{Marker, MarkerKind};
         let _serial = plx_base::testlock::serial();
         let marker = Marker { kind: MarkerKind::Intro, start_ms: 0, end_ms: 60_000, final_seg: false };
         let skip = ControlSlot::Skip(Prompt { marker, kind: MarkerKind::Intro, action: SkipAction::Seek(60_000_000_000) });
-        let up_next = ControlSlot::UpNext(Marker { kind: MarkerKind::Credits, ..marker });
-        let discs = ControlSlot::Discs(Controls::NONE);
-        // Up Next's stand-in leaves by the same edge, from its own primary item.
-        for (name, standin, seat) in [
-            ("Skip", skip, ELEM_ROW_BASE),
-            ("Up Next", up_next, ELEM_ROW_BASE + up_next.primary_btn() as u32),
-        ] {
-            let mut app = app();
-            super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
-            frame(&mut app, 16);
-            let set_slot = |app: &mut App, slot| {
-                super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted").slot = slot;
-            };
-            set_slot(&mut app, standin);
-            follow_control_row(&mut app, standin, 100);
-            for now in [116, 132, 148] {
-                frame(&mut app, now);
-            }
-            assert_eq!(app.pages.focus().map(|k| k.elem), Some(seat), "{name}: the offer seats the stand-in");
-            set_slot(&mut app, discs);
-            follow_control_row(&mut app, discs, 200);
-            for now in [216, 232, 248, 264] {
-                frame(&mut app, now);
-            }
-            let primary = discs.primary_btn();
-            let player = super::super::bridge::player(&app.pages).expect("the player page is mounted");
-            assert_eq!((player.hud.nav.focus, player.hud.nav.btn), (GROUP_ROW, primary), "{name}: the mirror");
-            assert_eq!(
-                app.pages.focus().map(|k| k.elem),
-                Some(ELEM_ROW_BASE + primary as u32),
-                "{name}: the engine"
-            );
-            assert_eq!(Controls::NONE.action(primary), Some(Action::Subtitles), "so the next OK opens Subtitles");
-        }
+        let (focus, engine, reqs) = depart_and_press_ok(skip, ControlSlot::Discs(Controls::NONE));
+        assert_eq!(focus, GROUP_SCRUB, "nav");
+        assert_eq!(engine, Some(ELEM_SCRUB), "the engine");
+        assert_eq!(reqs, vec![plx_screens::registry::PlayerReq::Transport(None)], "OK toggles play");
+    }
+
+    /// The same on an EPISODE, where the first disc (Previous / Restart) IS enabled, so the engine's
+    /// reconcile has nothing to move: before the departure re-seated the engine, the ring said
+    /// "scrubber" while the engine held that disc, and OK restarted the episode.
+    #[test]
+    fn an_up_next_stand_in_that_leaves_an_episode_sends_the_ring_to_the_scrubber() {
+        use plx_appkit::player_hud::{geometry::GROUP_SCRUB, ControlSlot, Controls, ELEM_SCRUB};
+        use plx_data::metadata::{Marker, MarkerKind};
+        let _serial = plx_base::testlock::serial();
+        let credits = Marker { kind: MarkerKind::Credits, start_ms: 0, end_ms: 60_000, final_seg: true };
+        let discs = ControlSlot::Discs(Controls::for_item(true, true, true, true));
+        assert!(discs.enabled(plx_appkit::player_hud::BTN_PREVIOUS), "the fixture: the first disc is live");
+        let (focus, engine, reqs) = depart_and_press_ok(ControlSlot::UpNext(credits), discs);
+        assert_eq!(focus, GROUP_SCRUB, "nav");
+        assert_eq!(engine, Some(ELEM_SCRUB), "the engine");
+        assert_eq!(reqs, vec![plx_screens::registry::PlayerReq::Transport(None)], "OK toggles play, it does not restart");
     }
 
     #[test]
