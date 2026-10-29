@@ -1116,7 +1116,9 @@ pub fn sentry_body(
         }]});
     }
     body["tags"] = fault_tags(f);
-    body["fingerprint"] = serde_json::json!(fault_fingerprint(f, &plx_platform::tv::device::info().build));
+    if let Some(fp) = fault_fingerprint(f, &plx_platform::tv::device::info().build, &extra.modules, debug_id) {
+        body["fingerprint"] = serde_json::json!(fp);
+    }
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -1201,34 +1203,67 @@ fn fault_sites(f: &Fault) -> (Option<(String, u64)>, Option<(String, u64)>) {
     (at(f.pc), at(f.lr))
 }
 
-/// The explicit Sentry `fingerprint` of a fault.
+/// Whether the module holding `addr` is one Sentry can symbolicate: our own binary with a build id
+/// (`debug_id` is its resolved debug id) or a recorded module image whose debug id is not the nil
+/// one. Its offsets change with every build, so they must not key a fingerprint.
+fn has_real_debug_id(f: &Fault, images: &[ModuleImage], debug_id: Option<&str>, addr: u64) -> bool {
+    match locate_in(f.image.as_ref(), &f.modules, addr) {
+        Some((_, _, true)) => debug_id.is_some_and(|d| d != ZERO_DEBUG_ID),
+        Some((file, _, false)) => images.iter().any(|m| m.file == file && m.debug_id != ZERO_DEBUG_ID),
+        None => false,
+    }
+}
+
+/// The explicit Sentry `fingerprint` of a fault, or `None` to leave Sentry's default grouping.
 ///
 /// **Why it is explicit.** Sentry's default groups by stack frames, and these events carry two
 /// unsymbolicated addresses: every near-null SIGSEGV with no resolvable frame lands in one issue
-/// (PLX-NATIVE-P merged four unrelated crashes that way). A crash whose `pc` is inside a recorded
-/// module groups on the signal, the module's basename and the `pc` and `lr` OFFSETS in their
-/// modules (load-address independent, so one cause is one issue across boots and televisions); the
-/// `lr` module is part of the key because the same libc offset reached from two callers is two
-/// bugs. When no module vouches for `pc` there is no stable name, so it falls back to the signal,
-/// the firmware's OS build (`os_build`, nyx's `core_os_release`) and the low 12 bits of `pc` and
-/// `lr`: the in-page offset survives ASLR, the build pins the library binaries.
-pub fn fault_fingerprint(f: &Fault, os_build: &str) -> Vec<String> {
+/// (PLX-NATIVE-P merged four unrelated crashes that way). When `pc` is in a module with a real
+/// debug id (our binary, a bundled `.so` whose debug file CI uploads) the frames symbolicate and
+/// the default grouping is right: an explicit key of build-specific offsets would open a new issue
+/// every release and defeat regression detection, so this returns `None`. Otherwise:
+///
+/// - `pc` in a module with no debug id (firmware libraries): the signal, the module basename and
+///   the `pc` and `lr` OFFSETS (load-address independent; the `lr` module is part of the key
+///   because the same libc offset reached from two callers is two bugs). An `lr` that sits in a
+///   symbolicatable module keeps its module name but not its build-specific offset.
+/// - `pc` in no module but `lr` in one: `[signal, "pc-unmapped", lr_module, lr_off]` (or `None`
+///   when that module has a real debug id).
+/// - neither: the signal, the firmware's OS build (`os_build`, nyx's `core_os_release`) and the low
+///   12 bits of `pc` and `lr`: the in-page offset survives ASLR, the build pins the binaries.
+pub fn fault_fingerprint(
+    f: &Fault,
+    os_build: &str,
+    images: &[ModuleImage],
+    debug_id: Option<&str>,
+) -> Option<Vec<String>> {
     let name = signal_name(f.signal).to_string();
+    let real = |a: u64| has_real_debug_id(f, images, debug_id, a);
     match fault_sites(f) {
         (Some((pc_module, pc_off)), lr) => {
+            if real(f.pc) {
+                return None;
+            }
             let (lr_module, lr_off) = match lr {
+                Some((m, _)) if real(f.lr) => (m, "-".to_string()),
                 Some((m, o)) => (m, format!("0x{o:x}")),
                 None => ("-".to_string(), "-".to_string()),
             };
-            vec![name, pc_module, format!("0x{pc_off:x}"), lr_module, lr_off]
+            Some(vec![name, pc_module, format!("0x{pc_off:x}"), lr_module, lr_off])
         }
-        (None, _) => vec![
+        (None, Some((lr_module, lr_off))) => {
+            if real(f.lr) {
+                return None;
+            }
+            Some(vec![name, "pc-unmapped".to_string(), lr_module, format!("0x{lr_off:x}")])
+        }
+        (None, None) => Some(vec![
             name,
             "unknown-module".to_string(),
             os_build.to_string(),
             format!("0x{:x}", f.pc & 0xfff),
             format!("0x{:x}", f.lr & 0xfff),
-        ],
+        ]),
     }
 }
 
@@ -2622,22 +2657,88 @@ mod tests {
     #[test]
     fn the_fingerprint_names_module_and_offsets_or_falls_back_to_os_build_and_page_offsets() {
         let f = only_fault(THREAD_REC);
-        let known = fault_fingerprint(&f, "6.5.3-47");
+        let fp = |f: &Fault, os: &str| fault_fingerprint(f, os, &[], None).expect("explicit");
+        let known = fp(&f, "6.5.3-47");
         assert_eq!(known, ["SIGSEGV", "libpthread.so.0", "0x20123", "libpthread.so.0", "0x20456"]);
         // Same bug, other boot: the load address moved, the fingerprint did not.
         let moved = THREAD_REC.replace("b6f00000-b6f21000", "b6a00000-b6a21000").replace("0xb6f10", "0xb6a10");
-        assert_eq!(fault_fingerprint(&only_fault(&moved), "other build"), known);
+        assert_eq!(fp(&only_fault(&moved), "other build"), known);
         // pc in a module, lr unmapped: still the module branch, with a placeholder lr.
         let no_lr = Fault { lr: 0x1234, ..f.clone() };
-        assert_eq!(
-            fault_fingerprint(&no_lr, "x"),
-            ["SIGSEGV", "libpthread.so.0", "0x20123", "-", "-"]
-        );
-        // No module for pc: signal, OS build, and the in-page offsets of pc and lr.
+        assert_eq!(fp(&no_lr, "x"), ["SIGSEGV", "libpthread.so.0", "0x20123", "-", "-"]);
+        // No module for either: signal, OS build, and the in-page offsets of pc and lr.
         let unknown = Fault { modules: Vec::new(), ..f };
+        assert_eq!(fp(&unknown, "6.5.3-47"), ["SIGSEGV", "unknown-module", "6.5.3-47", "0x123", "0x456"]);
+    }
+
+    fn image_of(file: &str, did: &str) -> ModuleImage {
+        ModuleImage { file: file.into(), image_addr: 0, image_size: 0, code_id: None, debug_id: did.into() }
+    }
+
+    /// Our binary crashing at the same place in two builds: other image address, other offset,
+    /// other debug id. No explicit fingerprint, so Sentry's symbolicated grouping decides.
+    #[test]
+    fn a_crash_in_our_own_binary_is_left_to_default_grouping_across_builds() {
+        let build_a = "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n\
+            *** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\n";
+        let build_b = "\nimg: build_id=aabbccddeeff00112233445566778899aabbccdd image_addr=0x20000 image_size=0x610000\n\
+            *** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x9a010 lr=0x4cde00\n";
+        for (rec, bid) in [
+            (build_a, "11223344556677889900aabbccddeeff00112233"),
+            (build_b, "aabbccddeeff00112233445566778899aabbccdd"),
+        ] {
+            let f = only_fault(rec);
+            let did = super::super::sentry::debug_id(bid);
+            assert!(did.is_some());
+            assert_eq!(fault_fingerprint(&f, "os", &[], did.as_deref()), None);
+            let body: serde_json::Value =
+                serde_json::from_slice(&sentry_body(&f, "e", bid, did.as_deref(), None, &extra())).unwrap();
+            assert!(body.get("fingerprint").is_none(), "default grouping");
+        }
+    }
+
+    #[test]
+    fn a_bundled_library_with_a_debug_id_is_default_grouped_and_a_firmware_library_is_keyed() {
+        let f = only_fault(THREAD_REC);
+        let real = [image_of("libpthread.so.0", "0123456789abcdef0123456789abcdef-1")];
+        assert_eq!(fault_fingerprint(&f, "os", &real, None), None);
+        // A nil debug id (firmware library) keys on module and offset, stable across ASLR.
+        let nil = [image_of("libpthread.so.0", ZERO_DEBUG_ID)];
+        let moved = THREAD_REC.replace("b6f00000-b6f21000", "b6a00000-b6a21000").replace("0xb6f10", "0xb6a10");
+        let a = fault_fingerprint(&f, "os", &nil, None).unwrap();
+        assert_eq!(a, ["SIGSEGV", "libpthread.so.0", "0x20123", "libpthread.so.0", "0x20456"]);
+        assert_eq!(fault_fingerprint(&only_fault(&moved), "os2", &nil, None).unwrap(), a);
+    }
+
+    #[test]
+    fn a_firmware_pc_called_from_our_binary_keeps_the_lr_module_but_not_its_offset() {
+        let rec = "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n\
+            *** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0x4bccd0\n\
+            at: b6f00000-b6f21000 r-xp 00010000 fe:01 1234 /lib/libc.so.6\n";
+        let f = only_fault(rec);
+        let did = super::super::sentry::debug_id("11223344556677889900aabbccddeeff00112233");
         assert_eq!(
-            fault_fingerprint(&unknown, "6.5.3-47"),
-            ["SIGSEGV", "unknown-module", "6.5.3-47", "0x123", "0x456"]
+            fault_fingerprint(&f, "os", &[], did.as_deref()).unwrap(),
+            ["SIGSEGV", "libc.so.6", "0x20123", "plxnative", "-"]
+        );
+    }
+
+    #[test]
+    fn an_unmapped_pc_keys_on_the_caller_module_when_it_resolves() {
+        let f = Fault { pc: 0x1234, ..only_fault(THREAD_REC) };
+        let nil = [image_of("libpthread.so.0", ZERO_DEBUG_ID)];
+        assert_eq!(
+            fault_fingerprint(&f, "os", &nil, None).unwrap(),
+            ["SIGSEGV", "pc-unmapped", "libpthread.so.0", "0x20456"]
+        );
+        // The caller's module has a real debug id: default grouping.
+        let real = [image_of("libpthread.so.0", "0123456789abcdef0123456789abcdef-1")];
+        assert_eq!(fault_fingerprint(&f, "os", &real, None), None);
+        // Neither resolves: OS build and page offsets.
+        let none = Fault { pc: 0x1234, lr: 0x5678, modules: Vec::new(), ..f };
+        assert_eq!(
+            fault_fingerprint(&none, "6.5", &[], None).unwrap(),
+            ["SIGSEGV", "unknown-module", "6.5", "0x234", "0x678"]
         );
     }
 

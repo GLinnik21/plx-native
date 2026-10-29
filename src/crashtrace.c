@@ -48,7 +48,7 @@
  * static like `plx_freeze_seq`, so this file links without Rust and Rust without this file). The
  * handler only reads it. */
 extern volatile unsigned int plx_crash_phase;
-/* CLOCK_MONOTONIC at install, for the record's uptime. Zero until `plx_crash_install` ran. */
+/* CLOCK_MONOTONIC at install, for the record's uptime. -1 until `plx_crash_install` ran. */
 static volatile long install_mono_secs = -1;
 
 /* ---------------------------------------------------------------------------------------------
