@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-29T23:06:09Z",
+ "generated": "2026-10-29T23:14:57Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -103,6 +103,27 @@
   },
   {
    "change30_pct": null,
+   "change7_pct": 22.7,
+   "d30": null,
+   "delta30": null,
+   "delta7": 34.0,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 78,
+   "n_prev": 73,
+   "now": 184.0,
+   "prev7": 150,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
    "change7_pct": 21.3,
    "d30": null,
    "delta30": null,
@@ -119,27 +140,6 @@
    "state": "worse",
    "state30": "new",
    "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 20.7,
-   "d30": null,
-   "delta30": null,
-   "delta7": 31,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 77,
-   "n_prev": 73,
-   "now": 181,
-   "prev7": 150,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -166,17 +166,17 @@
   },
   {
    "change30_pct": -59.9,
-   "change7_pct": 11.1,
+   "change7_pct": 10.9,
    "d30": 913,
-   "delta30": -546.5,
-   "delta7": 36.5,
+   "delta30": -547,
+   "delta7": 36,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 92,
+   "n_now": 93,
    "n_prev": 79,
-   "now": 366.5,
+   "now": 366,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -390,15 +390,15 @@
    "change30_pct": 52.0,
    "change7_pct": 2.7,
    "d30": 175,
-   "delta30": 91,
-   "delta7": 7,
+   "delta30": 91.0,
+   "delta7": 7.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 73,
-   "now": 266,
+   "now": 266.0,
    "prev7": 259,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -70.2,
-   "change7_pct": 3.7,
+   "change30_pct": -70.0,
+   "change7_pct": 4.7,
    "d30": 699,
-   "delta30": -491,
-   "delta7": 7.5,
+   "delta30": -489.0,
+   "delta7": 9.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 72,
-   "now": 208,
+   "now": 210.0,
    "prev7": 200.5,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2,
-   "delta7": 0,
+   "delta30": 2.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 73,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 69.3,
    "commits": [
     {
-     "pr": 1007,
-     "sha": "411f6d33c",
-     "title": "UI text: Arabic and Hebrew with RTL paragraphs"
-    },
-    {
      "pr": 1134,
      "sha": "decb0aafa",
      "title": "CI: the globals rule names the registry readers it missed, and the forks rule reads every machine crate"
@@ -715,6 +710,11 @@
      "pr": 1140,
      "sha": "c5e2bec77",
      "title": "HUD split: state, model, motion and geometry; HUD travel on FocusEngine groups"
+    },
+    {
+     "pr": 1148,
+     "sha": "c0b61dff8",
+     "title": "HUD plugins: the caption band as a value through every caption reader"
     }
    ],
    "from": 176.0,
@@ -728,11 +728,6 @@
    "change_pct": 28.6,
    "commits": [
     {
-     "pr": 1007,
-     "sha": "411f6d33c",
-     "title": "UI text: Arabic and Hebrew with RTL paragraphs"
-    },
-    {
      "pr": 1134,
      "sha": "decb0aafa",
      "title": "CI: the globals rule names the registry readers it missed, and the forks rule reads every machine crate"
@@ -776,6 +771,11 @@
      "pr": 1140,
      "sha": "c5e2bec77",
      "title": "HUD split: state, model, motion and geometry; HUD travel on FocusEngine groups"
+    },
+    {
+     "pr": 1148,
+     "sha": "c0b61dff8",
+     "title": "HUD plugins: the caption band as a value through every caption reader"
     }
    ],
    "from": 120.3,
@@ -786,13 +786,8 @@
    "to": 154.8
   },
   {
-   "change_pct": 21.3,
+   "change_pct": 22.7,
    "commits": [
-    {
-     "pr": 1007,
-     "sha": "411f6d33c",
-     "title": "UI text: Arabic and Hebrew with RTL paragraphs"
-    },
     {
      "pr": 1134,
      "sha": "decb0aafa",
@@ -837,6 +832,72 @@
      "pr": 1140,
      "sha": "c5e2bec77",
      "title": "HUD split: state, model, motion and geometry; HUD travel on FocusEngine groups"
+    },
+    {
+     "pr": 1148,
+     "sha": "c0b61dff8",
+     "title": "HUD plugins: the caption band as a value through every caption reader"
+    }
+   ],
+   "from": 150,
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "since": "2026-10-29",
+   "threshold_pct": 20.0,
+   "to": 184.0
+  },
+  {
+   "change_pct": 21.3,
+   "commits": [
+    {
+     "pr": 1134,
+     "sha": "decb0aafa",
+     "title": "CI: the globals rule names the registry readers it missed, and the forks rule reads every machine crate"
+    },
+    {
+     "pr": 1135,
+     "sha": "b763b41db",
+     "title": "CI: a ledger or allowlist count that rises above the base branch's fails the PR"
+    },
+    {
+     "pr": 1129,
+     "sha": "64e7bf443",
+     "title": "Library: optional sort information below movie library posters"
+    },
+    {
+     "pr": 1136,
+     "sha": "656ed590e",
+     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
+    },
+    {
+     "pr": 1139,
+     "sha": "2623e4560",
+     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
+    },
+    {
+     "pr": 1141,
+     "sha": "9986d528c",
+     "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
+    },
+    {
+     "pr": 1142,
+     "sha": "a51d70e7b",
+     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
+    },
+    {
+     "pr": 1143,
+     "sha": "4d27dec82",
+     "title": "HUD plugins: the JSON Schema emitted from the descriptor table, the lint report, and the published examples"
+    },
+    {
+     "pr": 1140,
+     "sha": "c5e2bec77",
+     "title": "HUD split: state, model, motion and geometry; HUD travel on FocusEngine groups"
+    },
+    {
+     "pr": 1148,
+     "sha": "c0b61dff8",
+     "title": "HUD plugins: the caption band as a value through every caption reader"
     }
    ],
    "from": 258,
@@ -845,67 +906,6 @@
    "since": "2026-10-29",
    "threshold_pct": 20.0,
    "to": 313
-  },
-  {
-   "change_pct": 20.7,
-   "commits": [
-    {
-     "pr": 1007,
-     "sha": "411f6d33c",
-     "title": "UI text: Arabic and Hebrew with RTL paragraphs"
-    },
-    {
-     "pr": 1134,
-     "sha": "decb0aafa",
-     "title": "CI: the globals rule names the registry readers it missed, and the forks rule reads every machine crate"
-    },
-    {
-     "pr": 1135,
-     "sha": "b763b41db",
-     "title": "CI: a ledger or allowlist count that rises above the base branch's fails the PR"
-    },
-    {
-     "pr": 1129,
-     "sha": "64e7bf443",
-     "title": "Library: optional sort information below movie library posters"
-    },
-    {
-     "pr": 1136,
-     "sha": "656ed590e",
-     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
-    },
-    {
-     "pr": 1139,
-     "sha": "2623e4560",
-     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
-    },
-    {
-     "pr": 1141,
-     "sha": "9986d528c",
-     "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
-    },
-    {
-     "pr": 1142,
-     "sha": "a51d70e7b",
-     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
-    },
-    {
-     "pr": 1143,
-     "sha": "4d27dec82",
-     "title": "HUD plugins: the JSON Schema emitted from the descriptor table, the lint report, and the published examples"
-    },
-    {
-     "pr": 1140,
-     "sha": "c5e2bec77",
-     "title": "HUD split: state, model, motion and geometry; HUD travel on FocusEngine groups"
-    }
-   ],
-   "from": 150,
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "since": "2026-10-29",
-   "threshold_pct": 20.0,
-   "to": 181
   }
  ],
  "schema": 2,
