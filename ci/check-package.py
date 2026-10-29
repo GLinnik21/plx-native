@@ -1719,7 +1719,7 @@ for loc in staged_locales:
 
 print("== ipk payload ==")
 expected = {
-    "plxnative", "sentry-crash", "libass-plx.so.0", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
+    "plxnative", "sentry-crash", "libass-plx.so.0", "appinfo.json", "icon.png", "largeIcon.png", "splash.png", "roots.pem",
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",

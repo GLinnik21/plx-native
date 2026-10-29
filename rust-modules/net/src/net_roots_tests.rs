@@ -672,3 +672,19 @@ fn a_real_failed_handshake_reports_its_x509_verify_result_on_the_failure() {
     assert_eq!(failure.verify, Some(10));
     assert_eq!(failure.untrusted_chain(), None);
 }
+
+/// HU80KS/libcurl 7.50.1 reports X509 result 1 for the same missing issuer its curl CLI
+/// names explicitly. Retry a PUBLIC root bundle, never key mode or disabled verification.
+#[test]
+fn generic_lg_verify_failure_retries_public_roots_only_once_for_plex_direct() {
+    let _serial = plx_base::testlock::serial();
+    let cert = mint_cert(&[PLEX_DIRECT]);
+    let _roots = keypin::test_roots::Guard::install(&cert.pem, "lg-unspecified");
+    let key = keypin::key_of(PLEX_DIRECT, 32400);
+    let mode = after_strict_failure(&key, 60, Some(1)).expect("LG's generic verify failure needs a roots retry");
+    assert!(matches!(mode, keypin::Mode::Roots { .. }));
+    assert!(keypin::after_failure(&key, &mode, 60, Some(1), true).is_none(), "no endless retries");
+    assert!(after_strict_failure("unrelated.invalid:443", 60, Some(1)).is_none());
+    assert!(after_strict_failure(&key, 51, Some(1)).is_none(), "name mismatch is not this retry");
+    assert!(after_strict_failure(&key, 7, Some(1)).is_none(), "connection refusal is not TLS verification");
+}
