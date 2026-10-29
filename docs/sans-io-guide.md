@@ -71,8 +71,9 @@ Hubs (#1011) is the same shape for several sources at once. A new store also joi
 `Stores::take_jobs_of`, `has_jobs_of` and every `*_FILLS` list (`rust-modules/data/src/AGENTS.md`).
 
 **(b) The step needs the session, the profile or a client: the Bridge reads, the step takes the
-value.** #1108 removed the registry reads from the Watchlist and catalog stores. The Bridge builds
-the input (`bridge.rs:1690-1695`) and the step receives it:
+value.** #1108 removed the session reads from the Watchlist and catalog stores (the `client_for` and
+roster reads that remain are listed in `docs/sans-io.md`). The Bridge builds the input
+(`bridge.rs:1690-1695`) and the step receives it:
 
 ```rust
 pub(crate) fn watchlist_input() -> plx_data::watchlist::WatchlistInput {

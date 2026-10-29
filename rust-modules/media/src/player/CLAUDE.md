@@ -10,8 +10,8 @@ one-paragraph playback summary.
 ## Sans-IO
 
 `lifecycle.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
-`plan_memory.rs` are machines: no worker, no registry read, no `cfg(test)` fork. The engine, the
-pump and the drivers beside them execute their effects.
+`plan_memory.rs` are machines: a step starts no worker, reads no registry and has no `cfg(test)`
+fork. The engine, the pump and the drivers beside them execute their effects.
 
 @../../../../docs/sans-io-guide.md
 

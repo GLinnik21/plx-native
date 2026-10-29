@@ -1,7 +1,7 @@
 # data/ stores: the Sans-IO recipe (read before adding or changing a store)
 
-Every store here is a machine: its step (`run`, `pump`, `Machine::step`) starts no worker, reads no
-process-global registry and reads no clock. Work leaves as a job on the store's outbox, and the
+Every store here is a machine: its step (`run`, `pump`, `Machine::step`) must start no worker, read no
+process-global registry and read no clock. Work leaves as a job on the store's outbox, and the
 answer returns through the job's port. `docs/sans-io-guide.md` has the general moves and the
 checklist; this is the store case, which is the most common one.
 
