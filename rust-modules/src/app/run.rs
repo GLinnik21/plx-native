@@ -4459,6 +4459,108 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// The media globals the performer's seeks write, set for one test and put back after it, so a
+    /// failed assertion does not leak a seek target into the next test.
+    struct SeekGlobals {
+        saved: [i64; 5],
+    }
+    impl SeekGlobals {
+        fn set(playpos_ns: i64, duration_ns: i64) -> Self {
+            use std::sync::atomic::Ordering::Relaxed;
+            let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
+            let saved = [
+                shared.playpos_ns.swap(playpos_ns, Relaxed),
+                shared.duration_ns.swap(duration_ns, Relaxed),
+                shared.seek_display_ns.swap(-1, Relaxed),
+                tx.seek_to_ns.swap(-1, Relaxed),
+                tx.scrub_ns.swap(-1, Relaxed),
+            ];
+            Self { saved }
+        }
+        fn seek_to(&self) -> i64 {
+            plx_media::player::TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    impl Drop for SeekGlobals {
+        fn drop(&mut self) {
+            use std::sync::atomic::Ordering::Relaxed;
+            let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
+            shared.playpos_ns.store(self.saved[0], Relaxed);
+            shared.duration_ns.store(self.saved[1], Relaxed);
+            shared.seek_display_ns.store(self.saved[2], Relaxed);
+            tx.seek_to_ns.store(self.saved[3], Relaxed);
+            tx.scrub_ns.store(self.saved[4], Relaxed);
+        }
+    }
+
+    fn perform_on_a_mounted_player(app: &mut App, command: plx_appkit::player_hud::command::HudCommand, now: u32) {
+        super::playback::perform_hud_command(
+            command,
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            now,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+    }
+
+    /// **Previous and Next are not interchangeable in the performer.** With the playhead past the
+    /// restart threshold, Previous restarts the item (`queue_transport::step(Previous)` seeks to 0);
+    /// Next, with no queue behind it, asks for no seek at all. A swap of the two steps fails both ways.
+    #[test]
+    fn previous_steps_the_queue_back_and_next_steps_it_forward() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        perform_on_a_mounted_player(&mut app, HudCommand::Next, 100);
+        assert_eq!(globals.seek_to(), -1, "Next, with nothing queued after it, seeks nowhere");
+        perform_on_a_mounted_player(&mut app, HudCommand::Previous, 200);
+        assert_eq!(globals.seek_to(), 0, "Previous past the threshold restarts the item");
+    }
+
+    /// **`toggle_play` in the performer is the keys' own function**: a pending scrub target is taken
+    /// as `SeekTo` (a seek, and the target is spent) where a bare transport toggle would leave it.
+    #[test]
+    fn the_toggle_play_command_takes_a_pending_scrub_target_as_the_play_keys_do() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::super::bridge::player_mut(&mut app.pages).expect("mounted").scrub.ns = 60_000_000_000;
+        perform_on_a_mounted_player(&mut app, HudCommand::TogglePlay, 100);
+        assert_eq!(globals.seek_to(), 60_000_000_000, "the pending target is the seek");
+        assert_eq!(super::super::bridge::player(&app.pages).expect("mounted").scrub.ns, -1, "and it is spent");
+    }
+
+    /// **A seek control keeps the HUD up and accumulates**: the performer's `seek` is
+    /// `jump_by(.., keep_hud = true, ..)`, so the transport it was pressed on is not dismissed (a
+    /// hidden-HUD jump key hides it), and a second press inside the burst continues from the first target.
+    #[test]
+    fn a_seek_command_keeps_the_hud_up_and_accumulates_inside_one_burst() {
+        use plx_appkit::player_hud::command::{HudCommand, SeekBy};
+        use std::num::NonZeroI32;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        let seek = HudCommand::Seek(SeekBy::Secs(NonZeroI32::new(10).unwrap()));
+        perform_on_a_mounted_player(&mut app, seek, 100);
+        assert_eq!(globals.seek_to(), 50_000_000_000);
+        let player = super::super::bridge::player(&app.pages).expect("mounted");
+        assert!(!player.hud.dismissed, "a control press does not hide the transport it was pressed on");
+        assert!(player.hud.until >= 100 + HUD_LINGER_MS, "and extends its linger");
+        perform_on_a_mounted_player(&mut app, seek, 300);
+        assert_eq!(globals.seek_to(), 60_000_000_000, "the second press accumulates");
+    }
+
     /// **Section commands toggle**: `toggle_section` opens its panel and dismisses it when the same
     /// panel is already up, the way the Info card's own tab does.
     #[test]

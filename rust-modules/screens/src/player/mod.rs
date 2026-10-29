@@ -688,7 +688,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         let focused = cx.focus.current.map(|k| k.elem);
                         self.handle_key(
                             ps, consts::classify_input(*key, *sym, *wcode), *edge, *at_edge, input.at.ms,
-                            focused, fx, H::metadata(cx),
+                            focused, self.focused_command(focused), fx, H::metadata(cx),
                         )
                     }
                     InputKind::Click { hit, x, .. } => {
@@ -934,7 +934,9 @@ impl PlayerScreen {
     /// `at_edge` marks the dispatcher's RE-DELIVERY of a direction the engine could not move (an
     /// `EdgeRule::Screen` edge, §7.3 step 4): the screen's answer is [`Self::answer_edge`], and an
     /// edge is never asked twice. `focused` is the element the ENGINE holds focus on, which is what
-    /// decides OK ([`Self::key_ok`]) and which group an edge belongs to.
+    /// decides OK ([`Self::key_ok`]) and which group an edge belongs to. `command` is the command of
+    /// the control `focused` names ([`Self::focused_command`]), resolved by the caller: the burst
+    /// guard below turns on it, and no slot holds a seek control until a package can place one.
     fn handle_key<H: AppLike>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
@@ -943,6 +945,7 @@ impl PlayerScreen {
         at_edge: bool,
         now: u32,
         focused: Option<u32>,
+        command: Option<player_hud::command::HudCommand>,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) -> Handled {
@@ -950,7 +953,7 @@ impl PlayerScreen {
         if edge == Edge::Down && !matches!(key, Key::Left { .. } | Key::Right { .. }) {
             // A press of a seek CONTROL belongs to the jump gesture in progress, so two of them
             // inside one burst give one target (`seek_jump::SeekBurst`).
-            if !continues_seek_burst(key, self.focused_command(focused)) {
+            if !continues_seek_burst(key, command) {
                 self.seek_burst.reset();
             }
             self.drop_transport_tap();

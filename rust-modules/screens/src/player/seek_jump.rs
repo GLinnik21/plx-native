@@ -535,4 +535,50 @@ mod tests {
         assert_eq!(page.jump_by(&ps, 10_000_000_000, true, 1_000), None);
         assert!(page.hud.until == 0, "nothing to clamp against: the HUD is left alone");
     }
+
+    /// **OK on a seek control continues the burst through `handle_key`**: the guard that keeps the
+    /// burst alive is in the key path, so two OK key-downs on a seek control inside the gap, each
+    /// followed by the performer's `jump_by` (what `PressCommit` leads to), give ONE accumulated
+    /// target, and an OK on any other control restarts it. No slot holds a seek control yet, so the
+    /// control's command is handed to `handle_key` as the page resolves it.
+    #[test]
+    fn two_ok_presses_on_a_seek_control_inside_one_burst_give_one_target() {
+        use player_hud::command::{HudCommand, SeekBy, SeekDir};
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let step = 10_000_000_000;
+        let seek = Some(HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)));
+        let ok_down = |page: &mut PlayerScreen, command: Option<HudCommand>, now: u32| {
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            page.hud.visible_at_press = true;
+            page.handle_key::<TestHost>(
+                &ps,
+                consts::Key::Ok,
+                Edge::Down,
+                false,
+                now,
+                Some(player_hud::control_elem(player_hud::BTN_MORE)),
+                command,
+                &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present),
+                plx_data::stores::metadata::MetadataStore::default().view(),
+            )
+        };
+        let mut page = PlayerScreen::new(EntryId(9));
+        ok_down(&mut page, seek, 1_000);
+        assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
+        ok_down(&mut page, seek, 1_300);
+        assert_eq!(page.jump_by(&ps, step, true, 1_300), Some(60_000_000_000), "the second press accumulates");
+
+        let mut page = PlayerScreen::new(EntryId(9));
+        ok_down(&mut page, seek, 1_000);
+        assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
+        ok_down(&mut page, Some(HudCommand::Next), 1_300);
+        assert_eq!(
+            page.jump_by(&ps, step, true, 1_300),
+            Some(50_000_000_000),
+            "an OK on another control ends the gesture, so the next jump starts from the playhead"
+        );
+    }
 }
