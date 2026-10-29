@@ -7,6 +7,8 @@ pub mod secure;
 pub mod sink;
 pub mod sound;
 pub mod toast;
+#[cfg(feature = "devtriggers")]
+pub mod uri;
 pub mod window;
 
 use std::os::raw::c_void;
@@ -45,6 +47,9 @@ pub struct Port {
     /// The Starfish-shaped verb sink (see `sink::VideoSink`); the OS-neutral sink is step L15b.
     /// Read only by [`sink::installed`], the one way out of `tv` for it.
     pub sink: &'static dyn sink::VideoSink,
+    /// The URI-mode media pipe of the developer probe (issue #1064); read only by [`uri::installed`].
+    #[cfg(feature = "devtriggers")]
+    pub uri_media: &'static dyn uri::UriMedia,
 }
 
 fn nothing() {}
@@ -78,6 +83,8 @@ static ABSENT: Port = Port {
     frame_probe_acquired: nothing,
     frame_probe_fields: String::new,
     sink: &sink::NoSink,
+    #[cfg(feature = "devtriggers")]
+    uri_media: &uri::NoUriMedia,
 };
 
 static INSTALLED: OnceLock<&'static Port> = OnceLock::new();

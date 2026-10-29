@@ -560,6 +560,15 @@ pub fn bind_window(win: *mut std::os::raw::c_void) {
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
+/// The URI-mode media pipe the port installs (`tv::Port::uri_media`, the developer probe of issue
+/// #1064): the bus worker on the television, nothing in the simulator and in tests, like
+/// [`bind_window`].
+#[cfg(all(feature = "devtriggers", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
+
+#[cfg(all(feature = "devtriggers", any(feature = "hostsim", test, feature = "test-support")))]
+pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
+
 /// One LS2 request/reply, on the calling thread.
 ///
 /// **The one LS2 client this process has**, shared by every caller that speaks to the bus from
