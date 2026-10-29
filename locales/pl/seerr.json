@@ -6,7 +6,7 @@
   "settings.seerr.value_on": "Wł.",
   "settings.seerr.copy": "Połącz swój serwer Seerr, Overseerr lub Jellyseerr, aby zamawiać filmy i seriale z tego telewizora. Logowanie odbywa się profilem Plex, który właśnie ogląda.",
   "settings.seerr.address.title": "Adres serwera",
-  "settings.seerr.address.detail": "Na przykład 192.168.1.10:5055",
+  "settings.seerr.address.detail": "Na przykład 192.0.2.10:5055",
   "settings.seerr.address.unset": "Nie ustawiono",
   "settings.seerr.connect.title": "Połącz",
   "settings.seerr.status.off": "Najpierw wpisz adres serwera.",

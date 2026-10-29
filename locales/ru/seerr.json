@@ -6,7 +6,7 @@
   "settings.seerr.value_on": "Вкл.",
   "settings.seerr.copy": "Подключите сервер Seerr, Overseerr или Jellyseerr, чтобы запрашивать фильмы и сериалы с этого телевизора. Вход выполняется от имени профиля Plex, который сейчас смотрит.",
   "settings.seerr.address.title": "Адрес сервера",
-  "settings.seerr.address.detail": "Например, 192.168.1.10:5055",
+  "settings.seerr.address.detail": "Например, 192.0.2.10:5055",
   "settings.seerr.address.unset": "Не задан",
   "settings.seerr.connect.title": "Подключиться",
   "settings.seerr.status.off": "Сначала введите адрес сервера.",
