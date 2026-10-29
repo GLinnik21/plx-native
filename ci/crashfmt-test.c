@@ -111,6 +111,36 @@ int main(void) {
         eq_int("time line truncated length", (long)n, 8);
         eq_int("time line wrote nothing past cap", small[8], '#');
     }
+    /* The thread and phase lines: byte for byte, because `crashreport::parse` reads them back and
+     * a drift strips the thread off every fallback event. A name is cut at 15 bytes and a byte
+     * outside [A-Za-z0-9_.-] (a space, a newline) can never reach the log as itself. */
+    {
+        char out[96];
+        size_t n = plx_fmt_thread(out, sizeof out - 1, 4242, 1, "plxnative");
+        out[n] = 0;
+        eq_str("thread line", out, "thread: tid=4242 main=1 name=plxnative\n");
+        n = plx_fmt_thread(out, sizeof out - 1, 7, 0, "a b\nc*");
+        out[n] = 0;
+        eq_str("thread line, hostile name", out, "thread: tid=7 main=0 name=a?b?c?\n");
+        n = plx_fmt_thread(out, sizeof out - 1, 7, 0, "");
+        out[n] = 0;
+        eq_str("thread line, empty name", out, "thread: tid=7 main=0 name=?\n");
+        n = plx_fmt_thread(out, sizeof out - 1, 7, 0, "0123456789abcdefXYZ");
+        out[n] = 0;
+        eq_str("thread line, long name", out, "thread: tid=7 main=0 name=0123456789abcde\n");
+        n = plx_fmt_phase(out, sizeof out - 1, PLX_PHASE_RUNNING, 57);
+        out[n] = 0;
+        eq_str("phase line, running", out, "phase: running uptime=57\n");
+        n = plx_fmt_phase(out, sizeof out - 1, PLX_PHASE_SHUTDOWN, 0);
+        out[n] = 0;
+        eq_str("phase line, shutdown", out, "phase: shutdown uptime=0\n");
+        n = plx_fmt_phase(out, sizeof out - 1, PLX_PHASE_EXITING, 3600);
+        out[n] = 0;
+        eq_str("phase line, exiting", out, "phase: exiting uptime=3600\n");
+        n = plx_fmt_phase(out, sizeof out - 1, 9, 1);
+        out[n] = 0;
+        eq_str("phase line, unknown", out, "phase: unknown uptime=1\n");
+    }
     /* Truncation is silent and must not overrun. The buffer here cannot hold the whole line; the
      * only assertion that matters is that nothing past `cap` was written, which the canary
      * checks. */

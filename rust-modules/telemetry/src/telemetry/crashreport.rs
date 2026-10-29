@@ -92,6 +92,41 @@ pub struct Fault {
     /// Unix seconds the tracer stamped on the record (`time:` line), as read. NOT yet checked
     /// against the clock: [`crash_timestamp`] does that when a body is built.
     pub crash_time: Option<u64>,
+    /// The thread that took the fault (`thread:` line), `None` for a record from an older build.
+    pub thread: Option<CrashThread>,
+    /// How far the process had got (`phase:` line), `None` for an older record.
+    pub phase: Option<CrashPhase>,
+    /// Whole seconds the process had lived (`phase:` line's `uptime=`).
+    pub uptime_secs: Option<u64>,
+}
+
+/// The faulting thread, from the record's `thread: tid=<n> main=<0|1> name=<comm>` line. Technical
+/// identifiers only: the id, whether it is the main thread, and the thread's own name as the
+/// application or a library set it (the tracer keeps `[A-Za-z0-9_.-]` and writes `?` for the rest).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrashThread {
+    pub tid: u64,
+    pub main: bool,
+    pub name: String,
+}
+
+/// The process phase at the fault (`plx_crash_phase`, `src/crashfmt.h`'s `PLX_PHASE_*`): a crash
+/// during `Exiting` is libc's exit-time destructors running, not the running app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrashPhase {
+    Running,
+    Shutdown,
+    Exiting,
+}
+
+impl CrashPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CrashPhase::Running => "running",
+            CrashPhase::Shutdown => "shutdown",
+            CrashPhase::Exiting => "exiting",
+        }
+    }
 }
 
 /// One `/proc/self/maps` line the tracer kept because it contains the fault's `pc` or `lr`.
@@ -223,7 +258,7 @@ const ZERO_DEBUG_ID: &str = "00000000-0000-0000-0000-000000000000";
 
 /// Resolve each mapped module of `f` to an image entry. `read` returns the head of the file the
 /// mapping was made from ([`read_module_head`] refuses a file that is no longer that one); a module
-/// whose file cannot be read, or is not an ELF, is left out, like the app's own image.
+/// whose file cannot be read, or is not an ELF, is still listed, with no ids (see below).
 ///
 /// **A module with no GNU build id is still named.** The firmware's glibc has none (only
 /// `NT_GNU_ABI_TAG` and a `.gnu_debuglink`), so a crash inside it used to name no module at all.
@@ -250,18 +285,21 @@ fn images_of_mappings(
         .iter()
         .filter(|m| m.file_name() != CODE_FILE)
         .filter_map(|m| {
-            let head = read(m)?;
-            let (code_id, debug_id) = match super::sentry::gnu_build_id(&head) {
-                Some(id) => {
-                    let debug_id = super::sentry::debug_id(&id)?;
-                    (Some(id), debug_id)
-                }
-                // Only a file that really is an ELF: the dev+inode check says it is the mapped
-                // file, and this keeps a truncated or foreign file from being listed as a module.
-                None if head.starts_with(b"\x7fELF") => (None, ZERO_DEBUG_ID.to_string()),
-                None => return None,
-            };
             let image_addr = m.lo.checked_sub(m.offset)?;
+            // **A module that cannot be identified is still named.** The file may fail the
+            // dev/inode re-identification (the maps line's device need not equal `stat`'s on a
+            // stacked filesystem), be gone, or not be an ELF; the maps line alone still says which
+            // library the address was in, which is most of what a crash report is for. It gets the
+            // zero `debug_id` and no `code_id`, exactly as a library without a build id: named,
+            // never symbolicated against a guess.
+            let identified = read(m).and_then(|head| match super::sentry::gnu_build_id(&head) {
+                Some(id) => super::sentry::debug_id(&id).map(|d| (Some(id), d)),
+                // Only a file that really is an ELF: the dev+inode check says it is the mapped
+                // file, and this keeps a truncated or foreign file from lending an id.
+                None if head.starts_with(b"\x7fELF") => Some((None, ZERO_DEBUG_ID.to_string())),
+                None => None,
+            });
+            let (code_id, debug_id) = identified.unwrap_or((None, ZERO_DEBUG_ID.to_string()));
             Some(ModuleImage {
                 file: m.file_name().to_string(),
                 image_addr,
@@ -632,6 +670,17 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 }
                 _ => {}
             }
+        } else if let Some(rest) = l.strip_prefix("thread: ") {
+            if let (Some(Report::Fault(f)), Some(t)) = (out.last_mut(), parse_thread(rest)) {
+                f.thread.get_or_insert(t);
+            }
+        } else if let Some(rest) = l.strip_prefix("phase: ") {
+            if let (Some(Report::Fault(f)), Some((p, up))) = (out.last_mut(), parse_phase(rest)) {
+                if f.phase.is_none() {
+                    f.phase = Some(p);
+                    f.uptime_secs = Some(up);
+                }
+            }
         } else if let Some(rest) = l.strip_prefix("time: ") {
             // The record's own wall-clock second. Applied to the report just above it and only if
             // that report has none yet, so a stray later line cannot move a recorded time, and a
@@ -704,7 +753,49 @@ fn parse_fault(rest: &str, whole: &str, image: Option<ImageIdentity>) -> Option<
         },
         modules: Vec::new(),
         crash_time: None,
+        thread: None,
+        phase: None,
+        uptime_secs: None,
     })
+}
+
+/// `tid=<n> main=<0|1> name=<comm>` (the text after `thread: `). The name is held to the tracer's
+/// own alphabet and 15 bytes (`plx_fmt_thread`); a line outside that is not a thread line, so a
+/// corrupted log cannot put free text into the event.
+fn parse_thread(rest: &str) -> Option<CrashThread> {
+    let mut it = rest.split(' ');
+    let tid = it.next()?.strip_prefix("tid=")?;
+    let main = it.next()?.strip_prefix("main=")?;
+    let name = it.next()?.strip_prefix("name=")?;
+    if it.next().is_some()
+        || tid.is_empty()
+        || tid.len() > 10
+        || !tid.bytes().all(|b| b.is_ascii_digit())
+        || name.is_empty()
+        || name.len() > 15
+        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'?'))
+    {
+        return None;
+    }
+    let main = match main {
+        "1" => true,
+        "0" => false,
+        _ => return None,
+    };
+    Some(CrashThread { tid: tid.parse().ok()?, main, name: name.to_string() })
+}
+
+/// `<running|shutdown|exiting> uptime=<secs>` (the text after `phase: `). An `unknown` phase (a
+/// value this build does not define) is no phase line at all.
+fn parse_phase(rest: &str) -> Option<(CrashPhase, u64)> {
+    let (word, up) = rest.split_once(' ')?;
+    let phase = match word {
+        "running" => CrashPhase::Running,
+        "shutdown" => CrashPhase::Shutdown,
+        "exiting" => CrashPhase::Exiting,
+        _ => return None,
+    };
+    Some((phase, parse_crash_time(up.strip_prefix("uptime=")?)?))
 }
 
 /// `*** FREEZE seq=<n> pc=0x… lr=0x…`, the line `plx_fmt_freeze` (`src/crashfmt.h`) writes.
@@ -1011,6 +1102,21 @@ pub fn sentry_body(
         "type": "crash",
         "native_path": extra.native_path.as_str(),
     });
+    if let Some(p) = f.phase {
+        body["contexts"]["crash"]["phase"] = p.as_str().into();
+    }
+    if let Some(up) = f.uptime_secs {
+        body["contexts"]["crash"]["uptime_secs"] = up.into();
+        body["extra"] = serde_json::json!({"crash.uptime_secs": up});
+    }
+    if let Some(t) = &f.thread {
+        body["exception"]["values"][0]["thread_id"] = t.tid.into();
+        body["threads"] = serde_json::json!({"values": [{
+            "id": t.tid, "name": t.name, "crashed": true, "current": true, "main": t.main,
+        }]});
+    }
+    body["tags"] = fault_tags(f);
+    body["fingerprint"] = serde_json::json!(fault_fingerprint(f, &plx_platform::tv::device::info().build));
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -1071,15 +1177,83 @@ pub fn panic_sentry_body(
 /// constant [`CODE_FILE`] for the app's own image. `None` for an address no recorded mapping and no
 /// image identity vouches for.
 fn freeze_locate(f: &Freeze, addr: u64) -> Option<(String, u64, bool)> {
-    if let Some(i) = &f.image {
+    locate_in(f.image.as_ref(), &f.modules, addr)
+}
+
+/// [`freeze_locate`] over an image identity and mappings, for a fault as well as a freeze. Only the
+/// maps line and the recorded image are read, never the module's file, so it answers even where
+/// [`read_module_head`] could not identify the file.
+fn locate_in(image: Option<&ImageIdentity>, modules: &[ModuleMapping], addr: u64) -> Option<(String, u64, bool)> {
+    if let Some(i) = image {
         if let Some(off) = addr.checked_sub(i.image_addr).filter(|o| *o < i.image_size) {
             return Some((CODE_FILE.to_string(), off, true));
         }
     }
-    f.modules.iter().find(|m| (m.lo..m.hi).contains(&addr)).and_then(|m| {
+    modules.iter().find(|m| (m.lo..m.hi).contains(&addr)).and_then(|m| {
         let off = addr.checked_sub(m.lo.checked_sub(m.offset)?)?;
         Some((m.file_name().to_string(), off, m.file_name() == CODE_FILE))
     })
+}
+
+/// Where a fault's `pc` and `lr` sit, as `(module basename, offset in the module)` each.
+fn fault_sites(f: &Fault) -> (Option<(String, u64)>, Option<(String, u64)>) {
+    let at = |a: u64| locate_in(f.image.as_ref(), &f.modules, a).map(|(file, off, _)| (file, off));
+    (at(f.pc), at(f.lr))
+}
+
+/// The explicit Sentry `fingerprint` of a fault.
+///
+/// **Why it is explicit.** Sentry's default groups by stack frames, and these events carry two
+/// unsymbolicated addresses: every near-null SIGSEGV with no resolvable frame lands in one issue
+/// (PLX-NATIVE-P merged four unrelated crashes that way). A crash whose `pc` is inside a recorded
+/// module groups on the signal, the module's basename and the `pc` and `lr` OFFSETS in their
+/// modules (load-address independent, so one cause is one issue across boots and televisions); the
+/// `lr` module is part of the key because the same libc offset reached from two callers is two
+/// bugs. When no module vouches for `pc` there is no stable name, so it falls back to the signal,
+/// the firmware's OS build (`os_build`, nyx's `core_os_release`) and the low 12 bits of `pc` and
+/// `lr`: the in-page offset survives ASLR, the build pins the library binaries.
+pub fn fault_fingerprint(f: &Fault, os_build: &str) -> Vec<String> {
+    let name = signal_name(f.signal).to_string();
+    match fault_sites(f) {
+        (Some((pc_module, pc_off)), lr) => {
+            let (lr_module, lr_off) = match lr {
+                Some((m, o)) => (m, format!("0x{o:x}")),
+                None => ("-".to_string(), "-".to_string()),
+            };
+            vec![name, pc_module, format!("0x{pc_off:x}"), lr_module, lr_off]
+        }
+        (None, _) => vec![
+            name,
+            "unknown-module".to_string(),
+            os_build.to_string(),
+            format!("0x{:x}", f.pc & 0xfff),
+            format!("0x{:x}", f.lr & 0xfff),
+        ],
+    }
+}
+
+/// The searchable tags a fault carries: where `pc` and `lr` sit, which thread, which phase. An
+/// address no module vouches for reads `unknown` with its in-page offset (the raw address is a
+/// per-boot value). Every value is a fixed word, a module basename this crate owns, hex numbers,
+/// or a thread name held to the tracer's alphabet by [`parse_thread`].
+fn fault_tags(f: &Fault) -> serde_json::Value {
+    let (pc, lr) = fault_sites(f);
+    let mut tags = serde_json::Map::new();
+    let mut site = |which: &str, s: Option<(String, u64)>, addr: u64| {
+        let (module, off) = s.unwrap_or_else(|| ("unknown".to_string(), addr & 0xfff));
+        tags.insert(format!("crash.{which}_module"), module.into());
+        tags.insert(format!("crash.{which}_offset"), format!("0x{off:x}").into());
+    };
+    site("pc", pc, f.pc);
+    site("lr", lr, f.lr);
+    if let Some(t) = &f.thread {
+        tags.insert("crash.thread".into(), t.name.clone().into());
+        tags.insert("crash.main_thread".into(), (if t.main { "yes" } else { "no" }).into());
+    }
+    if let Some(p) = f.phase {
+        tags.insert("crash.phase".into(), p.as_str().into());
+    }
+    serde_json::Value::Object(tags)
 }
 
 /// The addresses of a freeze's stack, nearest first: `pc`, then `lr` (only when a mapping or the
@@ -1234,6 +1408,9 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         modules: Vec::new(),
         // So the real serializer emits the field; the value is replaced by a placeholder below.
         crash_time: Some(now_secs()),
+        thread: Some(CrashThread { tid: 4242, main: false, name: "example-worker".to_string() }),
+        phase: Some(CrashPhase::Running),
+        uptime_secs: Some(57),
     };
     let mut fault_json: serde_json::Value = serde_json::from_slice(&sentry_body(
         &fault,
@@ -2358,11 +2535,13 @@ mod tests {
     }
 
     #[test]
-    fn a_module_that_cannot_be_read_or_is_not_an_elf_is_still_left_out() {
+    fn a_module_that_cannot_be_read_or_is_not_an_elf_is_listed_without_ids() {
         let f = only_fault(WAYLAND_REC);
-        assert!(module_images(&f, |_| None).is_empty(), "dev+inode mismatch or unreadable");
-        assert!(module_images(&f, |_| Some(b"not an elf".to_vec())).is_empty());
-        assert!(module_images(&f, |_| Some(Vec::new())).is_empty());
+        for read in [None, Some(b"not an elf".to_vec()), Some(Vec::new())] {
+            let m = module_images(&f, |_| read.clone());
+            assert_eq!(m.len(), 1, "dev+inode mismatch or unreadable still names the module");
+            assert_eq!((m[0].code_id.as_deref(), m[0].debug_id.as_str()), (None, ZERO_DEBUG_ID));
+        }
     }
 
     #[test]
@@ -2374,8 +2553,103 @@ mod tests {
         assert_eq!((m[0].code_id.as_deref(), m[0].debug_id.as_str()), (None, ZERO_DEBUG_ID));
         let (dir2, replaced) = installed_module_with("plain-replaced", 1, &elf_without_build_id());
         let f = Fault { modules: vec![replaced], ..Fault::default() };
-        assert!(module_images(&f, read_module_head).is_empty());
+        // Not the file that crashed: named from the maps line with no ids, never given its ids.
+        let m = module_images(&f, read_module_head);
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].code_id.as_deref(), m[0].debug_id.as_str()), (None, ZERO_DEBUG_ID));
         let _ = (std::fs::remove_dir_all(dir), std::fs::remove_dir_all(dir2));
+    }
+
+    const THREAD_REC: &str = "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n\
+        *** SIGNAL 11 (SIGSEGV) addr=0x10 pc=0xb6f10123 lr=0xb6f10456\n\
+        time: 1750000000\n\
+        thread: tid=4242 main=0 name=tokio-rt.worker\n\
+        phase: exiting uptime=57\n\
+        at: b6f00000-b6f21000 r-xp 00010000 fe:01 1234 /lib/libpthread.so.0\n";
+
+    #[test]
+    fn the_thread_and_phase_lines_are_read_and_an_old_record_has_neither() {
+        let f = only_fault(THREAD_REC);
+        assert_eq!(f.thread, Some(CrashThread { tid: 4242, main: false, name: "tokio-rt.worker".into() }));
+        assert_eq!((f.phase, f.uptime_secs), (Some(CrashPhase::Exiting), Some(57)));
+        let old = only_fault(REC);
+        assert_eq!((old.thread, old.phase, old.uptime_secs), (None, None, None));
+        // Free text or an out-of-alphabet name is not a thread line.
+        for bad in [
+            "tid=1 main=1 name=a b",
+            "tid=1 main=2 name=x",
+            "tid=x main=1 name=x",
+            "tid=1 main=1 name=0123456789abcdefg",
+            "tid=1 main=1 name=",
+            "tid=1 main=1 name=x extra",
+        ] {
+            assert_eq!(parse_thread(bad), None, "{bad}");
+        }
+        assert_eq!(parse_phase("unknown uptime=1"), None);
+        assert_eq!(parse_phase("running uptime=x"), None);
+    }
+
+    #[test]
+    fn the_body_carries_thread_phase_tags_and_the_fingerprint() {
+        let f = only_fault(THREAD_REC);
+        let body: serde_json::Value =
+            serde_json::from_slice(&sentry_body(&f, "e", "b", None, None, &extra())).unwrap();
+        assert_eq!(body["tags"]["crash.thread"], "tokio-rt.worker");
+        assert_eq!(body["tags"]["crash.main_thread"], "no");
+        assert_eq!(body["tags"]["crash.phase"], "exiting");
+        assert_eq!(body["tags"]["crash.pc_module"], "libpthread.so.0");
+        assert_eq!(body["tags"]["crash.pc_offset"], "0x20123");
+        assert_eq!(body["tags"]["crash.lr_offset"], "0x20456");
+        assert_eq!(body["contexts"]["crash"]["phase"], "exiting");
+        assert_eq!(body["contexts"]["crash"]["uptime_secs"], 57);
+        assert_eq!(body["extra"]["crash.uptime_secs"], 57);
+        assert_eq!(body["exception"]["values"][0]["thread_id"], 4242);
+        assert_eq!(body["threads"]["values"][0]["name"], "tokio-rt.worker");
+        assert_eq!(body["threads"]["values"][0]["main"], false);
+        assert_eq!(body["threads"]["values"][0]["crashed"], true);
+        assert_eq!(
+            body["fingerprint"],
+            serde_json::json!(["SIGSEGV", "libpthread.so.0", "0x20123", "libpthread.so.0", "0x20456"])
+        );
+        // An older record: no thread or phase fields, but the tags and fingerprint still appear.
+        let old: serde_json::Value =
+            serde_json::from_slice(&sentry_body(&only_fault(REC), "e", "b", None, None, &extra())).unwrap();
+        assert!(old.get("threads").is_none() && old["tags"].get("crash.thread").is_none());
+        assert_eq!(old["tags"]["crash.pc_module"], "plxnative", "pc is inside the app's own image");
+        assert_eq!(old["tags"]["crash.lr_offset"], "0x4accd0");
+    }
+
+    #[test]
+    fn the_fingerprint_names_module_and_offsets_or_falls_back_to_os_build_and_page_offsets() {
+        let f = only_fault(THREAD_REC);
+        let known = fault_fingerprint(&f, "6.5.3-47");
+        assert_eq!(known, ["SIGSEGV", "libpthread.so.0", "0x20123", "libpthread.so.0", "0x20456"]);
+        // Same bug, other boot: the load address moved, the fingerprint did not.
+        let moved = THREAD_REC.replace("b6f00000-b6f21000", "b6a00000-b6a21000").replace("0xb6f10", "0xb6a10");
+        assert_eq!(fault_fingerprint(&only_fault(&moved), "other build"), known);
+        // pc in a module, lr unmapped: still the module branch, with a placeholder lr.
+        let no_lr = Fault { lr: 0x1234, ..f.clone() };
+        assert_eq!(
+            fault_fingerprint(&no_lr, "x"),
+            ["SIGSEGV", "libpthread.so.0", "0x20123", "-", "-"]
+        );
+        // No module for pc: signal, OS build, and the in-page offsets of pc and lr.
+        let unknown = Fault { modules: Vec::new(), ..f };
+        assert_eq!(
+            fault_fingerprint(&unknown, "6.5.3-47"),
+            ["SIGSEGV", "unknown-module", "6.5.3-47", "0x123", "0x456"]
+        );
+    }
+
+    #[test]
+    fn an_unidentifiable_module_still_yields_an_image_from_the_maps_line() {
+        let f = only_fault(THREAD_REC);
+        let m = module_images(&f, |_| None);
+        assert_eq!(m.len(), 1, "a failed read must not drop the module");
+        assert_eq!(m[0].file, "libpthread.so.0");
+        assert_eq!((m[0].image_addr, m[0].image_size), (0xb6ef0000, 0x31000));
+        assert_eq!((m[0].code_id.as_deref(), m[0].debug_id.as_str()), (None, ZERO_DEBUG_ID));
+        assert_eq!(module_images(&f, |_| Some(b"not an elf".to_vec())).len(), 1);
     }
 
     #[test]
