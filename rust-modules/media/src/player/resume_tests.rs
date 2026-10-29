@@ -166,7 +166,7 @@ fn a_suspend_during_a_cold_resume_drops_the_flight_and_leaves_the_foreground_res
     let mut rig = Rig::new(100);
     assert_eq!(rig.begin(), ResumeStart::Pending);
     rig.flight.wait_for("the resume's request", |f| f.decisions() == 1);
-    // What the run loop snapshots for `lifecycle.suspend` (`app::intended_pos`), BEFORE the suspend
+    // What the run loop snapshots for the lifecycle's `Park` (`app::intended_pos`), BEFORE the suspend
     // tears the flight down: the flight's own offset is where the viewer is, and no landing has
     // seeded the clock yet.
     let saved_ns = intended_pos_ns(&rig.ps);

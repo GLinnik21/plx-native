@@ -10,6 +10,13 @@ policy. Read that one first — its four rules bind here too.
 they are the authority on the module list and the application bundle. This guide holds only what
 they do not: the rules that span screens.
 
+## Sans-IO
+
+A screen is a machine: it starts no worker, reads no process-global registry and carries no
+`cfg(test)` fork. It asks for work by pushing an `AppFx` and reads what the stores publish.
+
+@../../../docs/sans-io-guide.md
+
 ## The layer rule is the thing that will bite you
 
 A screen may name `ui/`, `appkit/` (the widgets several screens share — `player_hud`,

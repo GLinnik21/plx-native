@@ -2,6 +2,36 @@
 //! by the fresh-root simulator artifact; these tests do not claim native rendering or network.
 use super::*;
 use plx_data::stores::tape;
+use crate::app::adapters::stores::StoreRunner;
+
+/// One controlled Hubs step as the Bridge's controlled arm runs it: the store's step against an
+/// empty Browse directory and the registry's keys (`cmd: None` is the tick), then every job it
+/// emitted started through the run's admission ledger.
+fn controlled_hubs(io: &mut HomeIo, runner: &mut StoreRunner, hubs: &mut plx_data::stores::hubs::HubsStore,
+    cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32) -> plx_data::stores::StoreOutcome {
+    let directory = plx_data::stores::browse::DirectorySnapshot::default();
+    let mut keys = plx_plex::plex::ClientKeys::default();
+    crate::app::adapters::stores::refill_client_keys(&mut keys);
+    let outcome = match cmd {
+        Some(cmd) => hubs.run_with_directory(cmd, directory.view(), &keys),
+        None => hubs.tick_with_directory(dt, directory.view(), &keys),
+    };
+    for job in hubs.take_jobs() {
+        runner.start_admitted(job, Some(io));
+    }
+    outcome
+}
+
+/// One controlled discovery step as the Bridge's controlled arm runs it: the registry's keys, the
+/// store's step, then every job it emitted started through the run's admission ledger.
+fn controlled_discovery(io: &mut HomeIo, runner: &mut StoreRunner, stores: &mut plx_data::stores::Stores) {
+    let mut keys = plx_plex::plex::ClientKeys::default();
+    crate::app::adapters::stores::refill_client_keys(&mut keys);
+    stores.browse_controlled_discover(&keys);
+    for job in stores.take_jobs_of(plx_data::stores::StoreId::Browse) {
+        runner.start_admitted(job, Some(io));
+    }
+}
 
 #[test]
 fn filmography_initial_requires_complete_typed_inputs() {
@@ -284,13 +314,14 @@ fn controlled_hubs_commands_preserve_normal_store_notice_bookkeeping() {
     let mut io = HomeIo { replay:true,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
     let mut hubs = plx_data::stores::hubs::HubsStore::default();
+    let mut runner = StoreRunner::live();
     for command in [plx_data::stores::hubs::HubsCmd::Reset,plx_data::stores::hubs::HubsCmd::RefetchHubs,
         plx_data::stores::hubs::HubsCmd::Retry] {
         let before = hubs.gen();
         let normal = hubs.run(command.clone());
         let delta = hubs.gen().wrapping_sub(before);
         let before = hubs.gen();
-        let controlled = io.hubs(&mut hubs, Some(command),0.0);
+        let controlled = controlled_hubs(&mut io, &mut runner, &mut hubs, Some(command),0.0);
         assert_eq!(controlled.changed,normal.changed);
         assert_eq!(hubs.gen().wrapping_sub(before),delta,
             "controlled resource execution must not drop the Store machine's notice");
@@ -307,8 +338,11 @@ fn controlled_admission_records_real_discovery_spawn_refusal() {
     let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
-    let stores = plx_data::stores::Stores::default();
-    io.discovery_owned_with(&stores, &mut |_| false);
+    let mut stores = plx_data::stores::Stores::default();
+    let mut runner = StoreRunner::live();
+    crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
+        controlled_discovery(&mut io, &mut runner, &mut stores);
+    });
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
     plx_plex::plex::reset_servers_for_test();
@@ -326,9 +360,18 @@ fn controlled_admission_records_real_hubs_spawn_refusal() {
     let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
-    assert!(plx_data::pms::with_refused_fetches_for_test(|| io.hubs(&mut hubs, Some(plx_data::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
+    let mut runner = StoreRunner::live();
+    assert!(crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| controlled_hubs(
+        &mut io, &mut runner, &mut hubs, Some(plx_data::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
+    assert!(!hubs.owed(), "a launch the system refused holds no claim");
+    assert!(!hubs.source_settled(sid), "the refused read stays out until the next step settles it");
+    let next = controlled_hubs(&mut io, &mut runner, &mut hubs, None, 0.0);
+    assert_eq!(next.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid],
+        "the next step finds the refusal and asks for the endpoint again");
+    assert!(hubs.source_settled(sid));
+    assert_eq!(io.requests.len(), 1, "settling a refusal asks nothing new");
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -351,7 +394,10 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
         let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo { replay,preferences:Default::default(),requests:Vec::new(),
             admissions:Default::default(),failure:None,profile:publisher.snapshot() };
-        let mut attempts = 0;
+        // The runner parks every Hubs job it launches, so the test reads the request and fabricates
+        // its answer; the first launch is refused by the system instead.
+        let mut runner = StoreRunner::held_all();
+        let mut launches = 0;
         let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
         let header = plx_ui::rec::Header::new(17,&plx_ui::press::Press::new());
@@ -362,16 +408,21 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                     .map(|effect| effect["payload"].clone()).collect();
             }
             let command = (frame == 0).then_some(plx_data::stores::hubs::HubsCmd::RefetchHubs);
-            let outcome = io.hubs_with(&mut hubs, command, 0.05, &mut |request| {
+            let outcome = if frame == 0 && !replay {
+                crate::app::adapters::stores::with_refused_hubs_launches_for_test(||
+                    controlled_hubs(&mut io, &mut runner, &mut hubs, command, 0.05))
+            } else {
+                controlled_hubs(&mut io, &mut runner, &mut hubs, command, 0.05)
+            };
+            for job in runner.take_held() {
                 assert!(!replay, "no live executor during replay");
-                attempts += 1;
-                if attempts == 1 { return false; }
-                let (epoch,req,sid,instance,token_gen) = request.descriptor();
+                let plx_data::stores::StoreJob::Hubs(job, _) = job else { panic!("another store's job on the Hubs outbox") };
+                launches += 1;
+                let (epoch,req,sid,instance,token_gen) = job.req.descriptor();
                 completion = Some((frame,serde_json::json!({"kind":"hubs","version":1,
                     "gen":epoch,"seq":req,"sid":sid,"client":instance,"token_gen":token_gen,
                     "build":{"cw":[],"shelves":[]}})));
-                true
-            });
+            }
             if let Some((at,wire)) = &completion {
                 if *at == frame {
                     let result = plx_data::pms::record::decode(wire.clone(), |id|
@@ -393,9 +444,10 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                 writer.flush_frame().unwrap();
                 transcript.push(requests); states.push(state);
             }
-            if frame == 0 { assert_eq!(outcome.endpoints.iter().count(),1); }
+            // the refusal recorded at frame 0 is settled by the next step, not by the kick
+            assert_eq!(outcome.endpoints.iter().count(), usize::from(frame == 1));
         }
-        assert_eq!(attempts,if replay {0} else {2});
+        assert_eq!(launches,if replay {0} else {1}, "the first launch was refused; replay launches nothing");
         assert!(completion.is_some(),"backoff must recover with an admitted result");
         writer.finish().unwrap();
         if !replay {
@@ -426,10 +478,10 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
     assert!(plx_plex::plex::set_current(sid));
     let _cleanup = ResetServers;
     let client = plx_plex::plex::client_for(sid).unwrap();
-    let stores = plx_data::stores::Stores::default();
+    let mut stores = plx_data::stores::Stores::default();
     // Two independent executions start from this pre-request store value (the epoch a freshly
-    // reset table starts from). No worker is running: only the OS executor is substituted, below
-    // the real discovery policy.
+    // reset table starts from). No worker is running: the test runner parks the one admitted launch
+    // and the OS refusing the first thread is substituted, below the real discovery policy.
     let initial_epoch = stores.browse.borrow().table_epoch_for_test().wrapping_add(1);
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut transcript: Vec<std::collections::VecDeque<serde_json::Value>> = Vec::new();
@@ -449,7 +501,8 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
             failure: None,
             profile: publisher.snapshot(),
         };
-        let mut attempts = 0;
+        let mut runner = StoreRunner::held_all();
+        let mut parked = 0;
         let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
         let header = plx_ui::rec::Header::new(17, &plx_ui::press::Press::new());
@@ -462,17 +515,25 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
                     .map(|effect| effect["payload"].clone())
                     .collect();
             }
-            io.discovery_owned_with(&stores, &mut |request| {
+            if frame == 0 {
+                // the system refuses the first launch: the recorded answer is `admitted:false`
+                crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
+                    controlled_discovery(&mut io, &mut runner, &mut stores);
+                });
+            } else {
+                controlled_discovery(&mut io, &mut runner, &mut stores);
+            }
+            for job in runner.take_held() {
                 assert!(!replay, "replay must never execute live admission");
-                attempts += 1;
-                if attempts == 1 { return false; }
-                let descriptor = request.descriptor();
+                let plx_data::stores::StoreJob::BrowseDiscovery(job, _port) = job
+                    else { panic!("only the discovery read is parked") };
+                parked += 1;
+                let descriptor = job.req.admission();
                 successful_result = Some(serde_json::json!({"kind":"discovery","version":1,
                     "epoch":descriptor["epoch"],"source":descriptor["source"],"sid":descriptor["sid"],
                     "client":descriptor["client"],"token_gen":descriptor["token_gen"],
                     "name":"s00000001","what":{"Sections":[]}}));
-                true
-            });
+            }
             if frame == 600 {
                 let result =
                     plx_data::browse::record::decode(successful_result.clone().expect("retry admitted"), |id| {
@@ -524,7 +585,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
             stores.browse.borrow().discovery_policy_for_test().2,
             "admitted retry delivers its real result"
         );
-        assert_eq!(attempts, if replay { 0 } else { 2 });
+        assert_eq!(parked, if replay { 0 } else { 1 }, "one admitted launch is parked, and none in replay");
         writer.finish().unwrap();
         if !replay {
             let bytes = bytes.borrow();

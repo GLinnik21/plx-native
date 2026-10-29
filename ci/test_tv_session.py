@@ -700,6 +700,114 @@ class SoundSubcommand(unittest.TestCase):
             self.assertIn("usage: tv-session.sh sound off|on|status", result.stdout)
 
 
+class ScreenSubcommand(unittest.TestCase):
+    """Host regression for `tv-session.sh screen off|on`.
+
+    `tv()` is stubbed to print a canned `power/turnOnScreen` / `turnOffScreen` reply EXACTLY as
+    `script -qc luna-send` prints it on the set: pretty-printed over several lines with CRLF line
+    ends, which cmd_screen collapses before matching. The -102 reply below is the verbatim reply
+    the television gave to `screen on` on an already-lit panel (2026-10-24), reflowed to the
+    multi-line shape; the -101 and success replies are the same shape with their own fields.
+    """
+
+    ON_WHILE_LIT = (
+        '{\n'
+        '    "state": "Active",\n'
+        '    "errorCode": "-102",\n'
+        '    "returnValue": false,\n'
+        '    "errorText": "The current state must be \'Screen Off\'"\n'
+        '}'
+    )
+    ON_WHILE_STANDBY = ON_WHILE_LIT.replace('"Active"', '"Active Standby"')
+    OFF_WHILE_DARK = (
+        '{\n'
+        '    "state": "Screen Off",\n'
+        '    "errorCode": "-101",\n'
+        '    "returnValue": false,\n'
+        '    "errorText": "The current state must be \'Active\'"\n'
+        '}'
+    )
+    OFF_WHILE_LIT_REFUSED = ON_WHILE_LIT  # -102 asked of `off`: the mirror reading must not apply
+    ON_REFUSED_WITH_101 = OFF_WHILE_DARK  # -101 asked of `on`: "already off" must not read as lit
+    ACCEPTED = '{\n    "state": "%s",\n    "returnValue": true\n}'
+
+    def _run(self, want, reply):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            SoundSubcommand._fake_make(bin_dir)
+            canned = root / "reply"
+            canned.write_bytes(reply.replace("\n", "\r\n").encode("utf-8") + b"\r\n")
+
+            harness = textwrap.dedent(
+                f"""\
+                source "$1" selftest
+                require_lock() {{ return 0; }}
+                ensure_awake() {{ return 0; }}
+                tv() {{ cat "{canned}"; }}
+                cmd_screen {want}
+                echo "RC:$?"
+                """
+            )
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "screen-subcommand", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=10,
+            )
+            return result.stdout
+
+    def test_on_accepted_reports_the_new_state(self):
+        out = self._run("on", self.ACCEPTED % "Active")
+        self.assertIn("RC:0", out)
+        self.assertIn("panel on (Active)", out)
+
+    def test_on_while_the_panel_is_already_lit_is_a_no_op_success(self):
+        # `tests/run.py --fps --mock --panel on` asks for `screen on` and refused to run at all
+        # when the panel was lit, because -102 was read as a refusal.
+        out = self._run("on", self.ON_WHILE_LIT)
+        self.assertIn("RC:0", out)
+        self.assertIn("panel already on", out)
+        self.assertNotIn("refused", out)
+
+    def test_on_while_the_set_is_not_lit_is_still_a_refusal(self):
+        # -102 alone is not "already lit": with any state but Active the panel did not come on.
+        out = self._run("on", self.ON_WHILE_STANDBY)
+        self.assertIn("RC:1", out)
+        self.assertIn("screen on refused", out)
+        self.assertNotIn("panel already", out)
+
+    def test_off_while_the_panel_is_already_dark_is_a_no_op_success(self):
+        out = self._run("off", self.OFF_WHILE_DARK)
+        self.assertIn("RC:0", out)
+        self.assertIn("panel already off", out)
+
+    def test_off_refused_with_102_is_still_a_refusal(self):
+        # -102 means "already lit" only for `on`; asked of `off` it is a refusal to report.
+        out = self._run("off", self.OFF_WHILE_LIT_REFUSED)
+        self.assertIn("RC:1", out)
+        self.assertIn("screen off refused", out)
+        self.assertNotIn("panel already", out)
+
+    def test_on_refused_with_101_is_still_a_refusal(self):
+        # -101 means "already off" only for `off`; asked of `on` it would report a lit panel that
+        # the reply says is dark, and skip a real turn-on. Whether turnOnScreen can return -101 at
+        # all is unknown; if it ever does, it is a refusal to report, never "panel already on".
+        out = self._run("on", self.ON_REFUSED_WITH_101)
+        self.assertIn("RC:1", out)
+        self.assertIn("screen on refused", out)
+        self.assertNotIn("panel already", out)
+
+
 class LifecycleSubcommand(unittest.TestCase):
     """`background` / `foreground`: launch a full-screen app, then ours, and ASSERT each took.
 
@@ -781,6 +889,86 @@ class LifecycleSubcommand(unittest.TestCase):
         out = self._run("foreground", fg="org.webosbrew.hbchannel", pid_after="9999")
         self.assertIn("RC:1", out)
         self.assertIn("app pid changed", out)
+
+
+class ForegroundIsReadOnly(unittest.TestCase):
+    """`fg` is the advisory read: it never wakes the set and never needs a lease.
+
+    The guard (.claude/hooks/tv-lock-guard.py) lets `tv-session.sh fg` through with no lease on the
+    strength of this, so an asleep or unreachable television must report "nothing read" and exit 0
+    WITHOUT a Wake-on-LAN packet (a decoy wake-tv.sh records any attempt). The real `ensure_awake` runs, so a
+    change that put the wake back would fail here rather than at the next dark living room.
+    """
+
+    def _run(self, call, *, reachable, fg="com.webos.app.youtube"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            SoundSubcommand._fake_make(bin_dir)
+            woke = root / "woke"
+            wake_dir = root / ".agents" / "skills" / "wake-tv"
+            wake_dir.mkdir(parents=True)
+            wake = wake_dir / "wake-tv.sh"
+            wake.write_text(f"#!/bin/sh\n: > {woke}\n", encoding="utf-8")
+            wake.chmod(0o755)
+            up = "1" if reachable else "0"
+            body = textwrap.dedent(
+                f"""\
+                require_lock() {{ return 0; }}
+                advise_lock() {{ return 0; }}
+                tvq() {{
+                  case "$1" in
+                    true) [ {up} = 1 ] ;;
+                    *getForegroundAppInfo*) printf '{{"appId": "{fg}", "returnValue": true}}\\n' ;;
+                    fuser*) echo 4242 ;;
+                  esac
+                }}
+                tv() {{ :; }}
+                cmd_lifecycle {call}
+                echo "RC:$?"
+                """
+            )
+            harness = 'source "$1" selftest\n' + body
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "lifecycle", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=20,
+            )
+            return result.stdout, woke.exists()
+
+    def test_fg_reads_the_foreground_app(self):
+        out, woke = self._run("fg", reachable=True)
+        self.assertIn("RC:0", out)
+        self.assertIn("foreground app: com.webos.app.youtube", out)
+        self.assertFalse(woke)
+
+    def test_fg_on_an_asleep_set_reads_nothing_and_sends_no_wake_packet(self):
+        out, woke = self._run("fg", reachable=False)
+        self.assertIn("RC:0", out)
+        # Not "idle": nothing was read. tools/tv-lock.sh's idle_verdict calls an unread foreground
+        # UNKNOWN unless the panel reads Active Standby, and `fg` never reads the panel, so it says
+        # "nothing read", not "idle". The wording says what is true (nothing read, no wake sent).
+        self.assertIn("TV unreachable or asleep (nothing read, no wake sent)", out)
+        self.assertNotIn("idle", out)
+        self.assertNotIn("foreground app:", out)
+        self.assertNotIn("waking", out)
+        self.assertFalse(woke, "fg sent a wake packet to a sleeping set")
+
+    def test_the_other_lifecycle_subcommands_still_wake_an_asleep_set(self):
+        # Pinned so "fg never wakes" is not widened to the subcommands that drive the set.
+        out, woke = self._run("foreground", reachable=False)
+        self.assertIn("TV asleep", out)
+        self.assertTrue(woke)
 
 
 if __name__ == "__main__":

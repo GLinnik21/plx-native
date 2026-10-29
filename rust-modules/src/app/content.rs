@@ -143,18 +143,18 @@ pub(super) fn request_play_intent(
 ) -> bool {
     match play {
         plx_screens::registry::PlayIntent::Item {
-            sid, rk, part, vcodec, acodec, title, context,
+            sid, rk, part, vcodec, acodec, title, context, version,
         } => {
             let ok = plx_media::route::request_play(
-                session, meta, *sid, rk, part, vcodec, acodec, title, context,
+                session, meta, super::playback::start_caps(), *sid, rk, part, vcodec, acodec, title, context, *version,
             );
             if ok {
                 note_extra_now_playing(meta, *sid, rk, context);
             }
             ok
         }
-        plx_screens::registry::PlayIntent::Movie(m) =>
-            plx_media::route::request_play_movie(session, meta, m, &super::playback::movie_ctx(m)),
+        plx_screens::registry::PlayIntent::Movie { item, version } =>
+            plx_media::route::request_play_movie(session, meta, super::playback::start_caps(), item, &super::playback::movie_ctx(item), *version),
     }
 }
 
@@ -349,6 +349,7 @@ mod held_feature_tests {
             acodec: String::new(),
             title: "Official Trailer".into(),
             context: context.into(),
+            version: None,
         }
     }
 
@@ -562,6 +563,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 let ok = plx_media::route::request_preview(
                     &mut app.player.session,
                     app.bridge.metadata_mut(),
+                    super::playback::start_caps(),
                     sid,
                     &rk,
                     &part,
@@ -1112,6 +1114,7 @@ mod library_publication_tests {
         }, Vec::new());
         *frame_no += 1;
         pages.prune(&report.unmounted);
+        rig.assert_no_store_jobs_left_for_test();
     }
 
     fn seed_detail_return(
@@ -1208,12 +1211,13 @@ mod library_publication_tests {
         plx_data::metadata::land_detail_for_test(state, adapter, sid, rk, gen, detail)
     }
 
-    /// Complete every detail fetch the rig admitted and install the landings. Deterministic: under
-    /// `cfg(test)` those fetches are held rather than threaded (see
-    /// `MetadataAdapter::run_held_detail_fetches_for_test`); this helper used to spin a hundred
-    /// `yield_now`s hoping a real worker had finished, which a loaded CI runner did not honour.
+    /// Complete every detail fetch the rig admitted and install the landings. Deterministic: a
+    /// test Bridge's store runner holds those fetches rather than threading them (see
+    /// `adapters::stores::StoreRunner::Held` and `Bridge::run_held_store_jobs_for_test`); this
+    /// helper used to spin a hundred `yield_now`s hoping a real worker had finished, which a loaded
+    /// CI runner did not honour.
     fn drain_detail_workers(rig: &mut bridge::Bridge) {
-        rig.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.run_held_store_jobs_for_test();
         rig.metadata_mut().pump_detail();
     }
 
@@ -1426,8 +1430,8 @@ mod library_publication_tests {
 
         // Each `RequestDetail` admission bumps the generation exactly once (`begin_detail_request`),
         // whether or not it is later superseded — so the generation delta is a direct count of how
-        // many detail fetches this one open issued, even though a superseded one is consumed
-        // synchronously under `cfg(test)` and never shows up as still "parked" in `held_detail`.
+        // many detail fetches this one open issued, even though a superseded one is answered when
+        // the next job reaches the test runner and never shows up as still held there.
         assert_eq!(after - before, 1,
             "opening a fresh Detail page must issue exactly one detail fetch, not one per mount \
              plus one per Enter");

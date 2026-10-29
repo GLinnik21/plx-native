@@ -104,17 +104,17 @@
     },
     {
       "name": "site-fan",
-      "state": "The website's libraries card fans three posters, supersampled 3x: the library-grid scene (Movies, All grid, focus on the third card of the first row), cropped to the first row's first, fourth and fifth cards, which are unfocused and so at rest size. Crops in canvas pixels sit 4 px inside each card, past its rounded corner, so the card's own background never shows; the page rounds them again.",
+      "state": "The website's libraries card fans three posters, supersampled 3x: the library-grid scene (Movies, All grid, focus on the third card of the first row), cropped to the first row's first, fourth and fifth cards, which are unfocused and so at rest size. Cards at rest are 250x375 canvas pixels, the first row at y 244 to 619 (since the Library redesign moved the grid up 88 px; a crop left at the old y 336 started 92 px down each poster and ran 83 px past its foot, onto the card's dark body). Crops in canvas pixels sit 4 px inside each card, past its rounded corner, so the card's own background never shows; the page rounds them again.",
       "triggers": {"library": "0", "libgrid": "0,2"},
       "render_scale": 3,
       "expect": ["libgrid: focus seated at row 0 col 2"],
-      "outputs": [{"file": "closeup-fan-caligari.jpg", "dest": "site", "crop": [385, 336, 242, 366], "size": "240x363"},
-                  {"file": "closeup-fan-cosmos.jpg", "dest": "site", "crop": [1241, 336, 242, 366], "size": "240x363"},
-                  {"file": "closeup-fan-elephants.jpg", "dest": "site", "crop": [1526, 336, 242, 366], "size": "240x363"}]
+      "outputs": [{"file": "closeup-fan-caligari.jpg", "dest": "site", "crop": [385, 248, 242, 366], "size": "240x363"},
+                  {"file": "closeup-fan-cosmos.jpg", "dest": "site", "crop": [1241, 248, 242, 366], "size": "240x363"},
+                  {"file": "closeup-fan-elephants.jpg", "dest": "site", "crop": [1526, 248, 242, 366], "size": "240x363"}]
     },
     {
       "name": "site-glass",
-      "state": "The website's glass close-up, supersampled 3x. The Movies library's Recommended page (libtype=recommended: shelves live there since the Library redesign); focus is seated on the third card of its last shelf (shelf 3), so the shelves above scroll up under the tab bar, which sits over poster art. Crop in canvas pixels: centred on the bar, which the app centres on the canvas (canvas x 688 to 1233, centre 960): 880 wide, so 168 px of shelf shows either side, at the page's 5.5:1 desktop shape. The phone crop (site-glass-narrow) stays cut from the bar's left end.",
+      "state": "The website's glass close-up, supersampled 3x. The Movies library's Recommended page (libtype=recommended: shelves live there since the Library redesign); focus is seated on the third card of its last shelf (shelf 3), so the shelves above scroll up under the tab bar, which sits over poster art. Crop in canvas pixels: centred on the bar, which the app centres on the canvas (canvas x 650 to 1272, centre 961): 880 wide, so 130 px of shelf shows either side, at the page's 5.5:1 desktop shape. The phone layout shows the middle 76% of this render (12% to 88%, canvas x 626 to 1294) so the whole bar fits. The phone crop site-glass-narrow still starts where the hand cut began, which is now inside the bar's left end; the page no longer uses it.",
       "triggers": {"library": "0", "libtype": "recommended", "libshelf": "3,2"},
       "render_scale": 3,
       "expect": ["libshelf: focus seated on shelf 3 col 2", "libhubs: section 0 landed 4 shelves"],
@@ -130,7 +130,7 @@
     },
     {
       "name": "site-glass-narrow",
-      "state": "The website's phone crop of the glass close-up: the same state as site-glass, supersampled 4x, cut from 13 canvas px left of the bar's left end (where the hand cut began). 4x because the phone layout shows it up to 698 CSS px wide, 1396 px at DPR 2, which the 3x cut (1120 px) could not fill.",
+      "state": "The website's phone crop of the glass close-up: the same state as site-glass, supersampled 4x, cut from canvas x 675 (where the hand cut began, 13 px left of the bar's old left end; the bar now starts at 650, so this cut clips it and the page does not use it). 4x because the phone layout shows it up to 698 CSS px wide, 1396 px at DPR 2, which the 3x cut (1120 px) could not fill.",
       "triggers": {"library": "0", "libtype": "recommended", "libshelf": "3,2"},
       "render_scale": 4,
       "expect": ["libshelf: focus seated on shelf 3 col 2", "libhubs: section 0 landed 4 shelves"],

@@ -20,9 +20,13 @@ use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
 
-/// How many controls the hero row can hold at most: Play + bookmark + Restart + Trailer + Alt + one
-/// watch face. [`row_rect`] sizes its stack storage by it.
-pub const MAX_CTLS: usize = 6;
+/// How many controls the hero row can hold at most: Play + bookmark + Play Version + Restart +
+/// Trailer + Alt + one watch face. [`row_rect`] sizes its stack storage by it.
+pub const MAX_CTLS: usize = 7;
+
+/// How many of the row's controls are discs that unfurl to a verb on focus: Restart, Trailer, the
+/// watch toggle and Play Version (the bookmark disc never unfurls).
+pub const DISCS: usize = 4;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = 168.0;
@@ -89,8 +93,8 @@ pub fn play_text(resumes: bool) -> &'static str {
 pub struct HeroWidths {
     pub pill: f32,
     pub alt: f32,
-    /// the three discs, in the page's disc slot order, each already unfurled
-    pub disc: [f32; 3],
+    /// the unfurling discs, in the page's disc slot order, each already unfurled
+    pub disc: [f32; DISCS],
 }
 
 /// The accumulation itself, PURE: the drawn frame of control `i` in a row whose controls, in drawn
@@ -121,29 +125,26 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
 }
 
 /// Every disc's drawn width right now. `last_right(disc)` is the right edge of the row's LAST
-/// control when the three discs are `disc` wide; `label_w` is each disc's measured verb and
+/// control when the `N` discs are `disc` wide; `label_w` is each disc's measured verb and
 /// `unfurl` its 0..1 open fraction.
 ///
 /// The widest verb must fit wholly before the People column as a single extra, and the last
 /// control of the trial layout must still sit at or before [`FACTS_R`], otherwise every disc
-/// remains a circle. Three discs can unfurl at once, so a pair-wide budget is not enough: two
-/// extras that each fit can still push the third across the People column.
-pub fn disc_caps_with(
-    unfurl: [f32; 3],
-    label_w: [f32; 3],
-    last_right: impl Fn([f32; 3]) -> f32,
-) -> [f32; 3] {
-    let budget = CircleButton::label_budget(CD, FACTS_R - last_right([CD; 3]));
+/// remains a circle. Every disc can be mid-unfurl at once (one opening while another closes), so a
+/// pair-wide budget is not enough: two extras that each fit can still push a third across the
+/// People column.
+pub fn disc_caps_with<const N: usize>(
+    unfurl: [f32; N],
+    label_w: [f32; N],
+    last_right: impl Fn([f32; N]) -> f32,
+) -> [f32; N] {
+    let budget = CircleButton::label_budget(CD, FACTS_R - last_right([CD; N]));
     if label_w.iter().copied().fold(0.0f32, f32::max) > budget {
-        return [CD; 3];
+        return [CD; N];
     }
-    let open = [
-        CircleButton::cap_w(CD, unfurl[0], label_w[0]),
-        CircleButton::cap_w(CD, unfurl[1], label_w[1]),
-        CircleButton::cap_w(CD, unfurl[2], label_w[2]),
-    ];
+    let open = std::array::from_fn(|i| CircleButton::cap_w(CD, unfurl[i], label_w[i]));
     if last_right(open) > FACTS_R + 0.01 {
-        return [CD; 3];
+        return [CD; N];
     }
     open
 }

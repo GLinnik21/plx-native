@@ -490,8 +490,8 @@ same resolver instead of open-coding it.
 The session file became a **probed search order**, because there is no single writable persistent
 directory common to both layouts: `/media/developer/<id>-auth.json` (Dev Mode, survives a
 reinstall) → `/media/internal/.<id>-auth.json` (the production jail's only rw persistent location)
-→ `<appdir>/auth.json` → the legacy path, read-only, for migration. `peek()` takes the first plain
-file that parses, so a half-written file at a preferred location cannot shadow a good one. A
+→ `<appdir>/auth.json` → the legacy path, read-only, for migration. The read behind `peek()` takes
+the first plain file that parses, so a half-written file at a preferred location cannot shadow a good one. A
 recognized encrypted envelope deliberately does shadow lower candidates when its device key is
 unavailable: skipping it could resurrect stale plaintext and a later save could destroy the only
 live credentials;

@@ -3,6 +3,9 @@
 //! page teardown is as against the FADE a BACK is).
 
 use super::*;
+use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::table::{MENU_MAX_W, MENU_MIN_W};
+use plx_ui::popover::{under_or_above, PANEL_EDGE, PANEL_EDGE_X, PANEL_GAP};
 use plx_data::metadata::{alt_source_count, alt_stand_in};
 use plx_data::stores::metadata::MetadataCmd;
 
@@ -668,34 +671,34 @@ fn a_landing_for_another_servers_copy_with_the_same_key_is_refused() {
 #[test]
 fn the_panel_hangs_off_its_button_and_stays_on_screen() {
     let btn = Rect::new(plx_ui::consts::MARGIN_X, 300.0, 300.0, 60.0);
-    let r = panel_at(btn, 500.0, 224.0);
+    let r = under_or_above(btn, 500.0, 224.0);
     assert_eq!(r.w, MENU_MAX_W.min(500.0).max(MENU_MIN_W), "the panel hugs its content width");
     assert_eq!(
         r.y,
-        btn.y + btn.h + BTN_GAP,
+        btn.y + btn.h + PANEL_GAP,
         "under the button when there is room"
     );
     assert_eq!(r.x, btn.x, "and aligned to its left edge");
 
     // a button low on the page flips the panel ABOVE it rather than off the bottom
     let low = Rect::new(plx_ui::consts::MARGIN_X, 900.0, 300.0, 60.0);
-    let r = panel_at(low, 500.0, 224.0);
+    let r = under_or_above(low, 500.0, 224.0);
     assert!(
-        r.y + r.h <= low.y - BTN_GAP + 0.01,
+        r.y + r.h <= low.y - PANEL_GAP + 0.01,
         "flipped above the button"
     );
-    assert!(r.y >= EDGE);
+    assert!(r.y >= PANEL_EDGE);
 
     // a button near the right edge pulls the panel back inside the keep-out
     let right = Rect::new(SCR_W - 200.0, 300.0, 180.0, 60.0);
-    let r = panel_at(right, 500.0, 224.0);
+    let r = under_or_above(right, 500.0, 224.0);
     assert!(
-        r.x + r.w <= SCR_W - EDGE_X + 0.01,
+        r.x + r.w <= SCR_W - PANEL_EDGE_X + 0.01,
         "a panel must not run off the panel"
     );
     // …and a list taller than the screen is clamped rather than drawn past both edges
-    let tall = panel_at(btn, 500.0, 4000.0);
-    assert!(tall.y >= EDGE && tall.y + tall.h <= SCR_H - EDGE + 0.01);
+    let tall = under_or_above(btn, 500.0, 4000.0);
+    assert!(tall.y >= PANEL_EDGE && tall.y + tall.h <= SCR_H - PANEL_EDGE + 0.01);
 
     // Every one of those worst cases is inside the overscan frame — the keep-out is per AXIS
     // precisely so that the horizontal clamp is `MARGIN_X` and not the `space::XL` the vertical
@@ -704,7 +707,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
     for (what, p) in [
         ("under", r),
         ("tall", tall),
-        ("right-edge", panel_at(right, 500.0, 224.0)),
+        ("right-edge", under_or_above(right, 500.0, 224.0)),
     ] {
         assert!(
             plx_ui::consts::inside_safe(p),
@@ -730,7 +733,7 @@ fn the_panel_hangs_off_its_button_and_stays_on_screen() {
         plx_data::stores::metadata::MetadataStore::default().view(),
     );
     let measure = plx_ui::fixture::FixtureMeasure;
-    let want = panel_at(low, p.form.table.measured_width(&measure), p.form.table.measured_height());
+    let want = under_or_above(low, p.form.table.measured_width(&measure), p.form.table.measured_height());
     let got = p.frame(&measure);
     assert_eq!((got.x, got.y, got.w, got.h), (want.x, want.y, want.w, want.h));
 }

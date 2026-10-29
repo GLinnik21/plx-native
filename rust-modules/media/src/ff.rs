@@ -15,6 +15,7 @@ use crate::aq::AuQueue;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
+use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,6 +41,41 @@ static PUSHED_ANY: AtomicBool = AtomicBool::new(false);
 static SWS_OK: AtomicBool = AtomicBool::new(false);
 pub fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
+}
+
+/// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed into one word:
+/// channels in bits 0-7, sample bits in 8-15, the declared rate in 16-31, [`PCM_LOSSY_BIT`] at 32 and the
+/// track's own rate ([`ff_pcm::PcmOut::source_rate`](crate::ff_pcm::PcmOut), at most `i32::MAX`: 31 bits) in
+/// 33-63; 0 = this Load declares no PCM.
+static PCM_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Bit set in [`PCM_OUT`] when the Load's PCM is the LOSSY app decode's (a lossy codec the attempt decodes in the app).
+const PCM_LOSSY_BIT: u64 = 1 << 32;
+/// Where [`PCM_OUT`] keeps the track's own rate.
+const PCM_SOURCE_SHIFT: u32 = 33;
+/// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned. `lossy`: the Load
+/// declared the lossy decode's shape (`route::stream_pcm_is_lossy`), so a lossy stream is the app's
+/// to decode only then, never because some lossless PCM Load happens to be 48 kHz stereo.
+pub fn set_pcm_out(f: Option<crate::ff_pcm::PcmOut>, lossy: bool) {
+    let v = f.map_or(0, |o| {
+        u64::from(o.channels & 0xff)
+            | u64::from(o.bits & 0xff) << 8
+            | u64::from(o.rate & 0xffff) << 16
+            | u64::from(o.source_rate & 0x7fff_ffff) << PCM_SOURCE_SHIFT
+            | if lossy { PCM_LOSSY_BIT } else { 0 }
+    });
+    PCM_OUT.store(v, Ordering::Relaxed);
+}
+fn pcm_lossy() -> bool {
+    PCM_OUT.load(Ordering::Relaxed) & PCM_LOSSY_BIT != 0
+}
+fn pcm_out() -> Option<crate::ff_pcm::PcmOut> {
+    let v = PCM_OUT.load(Ordering::Relaxed);
+    (v != 0).then(|| crate::ff_pcm::PcmOut {
+        channels: (v & 0xff) as u32,
+        bits: ((v >> 8) & 0xff) as u32,
+        rate: ((v >> 16) & 0xffff) as u32,
+        source_rate: (v >> PCM_SOURCE_SHIFT) as u32,
+    })
 }
 
 // ---- opaque handles (pointer-only, never dereferenced) ----
@@ -435,6 +471,17 @@ plx_base::dynlib! {
     fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
+    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and lossless → PCM (`ff_pcm`).
+    fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
+    fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
+    // A seek: drop what the decoder carries from before it. Public libavcodec API since the
+    // 1.x series and in the bundled `libavcodec-plx` (the library `dynlib!` opens is OUR build,
+    // not the television's): an export of both the ARM and the host build, checked by hand with
+    // `readelf --dyn-syms`. No CI step compares a `dynlib!` table with the bundled library's
+    // exports (`ci/check-elf.sh` reads only the app binary): a name the build did not export would
+    // leave this whole table `Incomplete` at start-up and refuse playback on every firmware.
+    fn avcodec_flush_buffers(ctx: *mut AVCodecContext);
+    fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
 }}
 plx_base::dynlib! {
     // avformat_version lives in libavformat, not libavutil — but it was declared here and the
@@ -457,6 +504,7 @@ plx_base::dynlib! {
     fn av_frame_free(frame: *mut *mut c_void);
     fn av_frame_get_buffer(frame: *mut c_void, align: c_int) -> c_int;
     fn av_frame_make_writable(frame: *mut c_void) -> c_int;
+    fn av_frame_unref(frame: *mut c_void);
     fn av_opt_set(obj: *mut c_void, name: *const c_char, val: *const c_char, search_flags: c_int) -> c_int;
     fn av_get_pix_fmt(name: *const c_char) -> c_int;
     // Container tags. Borrowed, never freed: the entry belongs to the dictionary, which belongs to
@@ -512,7 +560,9 @@ pub const AV_CODEC_ID_AV1: c_int = 222;
 pub const AV_PKT_FLAG_KEY: c_int = 1;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 pub const AVERROR_EOF: c_int = -541478725;
-pub const AVERROR_EAGAIN: c_int = -11;
+/// `AVERROR(EAGAIN)`: FFmpeg negates the HOST libc's errno, which is 11 on Linux (the television)
+/// but 35 on macOS (the simulator), so it cannot be a literal.
+pub const AVERROR_EAGAIN: c_int = -(libc::EAGAIN as c_int);
 /// `AVERROR(EIO)`: unlike EOF, tells libavformat and our producer that the source was truncated by
 /// a transport failure.
 pub const AVERROR_IO: c_int = -5;
@@ -766,7 +816,7 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
 // asserts them per major, so if anyone ever needs to poke them again the proven numbers are there.
 // AVFrame (avutil 55, 32-bit ARM). pts sits at +104: a 4-byte pad at +100
 // 8-aligns the int64 on ARM EABI (the classic AVFrame-on-ARM quirk).
-const OFF_FRAME_DATA: usize = 0; // u8*[8] — the only one that does not move
+pub(crate) const OFF_FRAME_DATA: usize = 0; // u8*[8] — the only one that does not move
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_LINESIZE: usize = 32; // c_int[8]
 #[cfg(target_pointer_width = "32")]
@@ -774,7 +824,7 @@ const OFF_FRAME_WIDTH: usize = 68;
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_HEIGHT: usize = 72;
 #[cfg(target_pointer_width = "32")]
-const OFF_FRAME_FORMAT: usize = 80;
+pub(crate) const OFF_FRAME_FORMAT: usize = 80;
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_PTS: usize = 96;
 // 64-bit: `data` is eight POINTERS rather than eight 32-bit ones, so `linesize` doubles and
@@ -787,9 +837,151 @@ const OFF_FRAME_WIDTH: usize = 104;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_HEIGHT: usize = 108;
 #[cfg(target_pointer_width = "64")]
-const OFF_FRAME_FORMAT: usize = 116;
+pub(crate) const OFF_FRAME_FORMAT: usize = 116;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_PTS: usize = 136;
+// The AUDIO half of AVFrame, read by `SpeedDecoder` and by `ff_pcm::PcmDecoder` (FFmpeg 9, the bundled build). `ch_layout` is an
+// embedded AVChannelLayout whose `nb_channels` sits 4 bytes in (after the `order` enum) on both
+// widths. Every one is asserted in `ci/ffabi-assert.c` against the bundled headers.
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_EXTENDED_DATA: usize = 64; // u8**
+#[cfg(target_pointer_width = "32")]
+pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 76;
+#[cfg(target_pointer_width = "32")]
+pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 132;
+#[cfg(target_pointer_width = "32")]
+pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
+// The layout's `order` (offset 0 of the AVChannelLayout) and its `u.mask` (8-aligned after
+// `nb_channels`); `mask` is only meaningful when `order` is native (`CH_ORDER_NATIVE`).
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_CH_ORDER: usize = 256;
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_CH_MASK: usize = 264;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_EXTENDED_DATA: usize = 96;
+#[cfg(target_pointer_width = "64")]
+pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 112;
+#[cfg(target_pointer_width = "64")]
+pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 180;
+#[cfg(target_pointer_width = "64")]
+pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_CH_ORDER: usize = 384;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_CH_MASK: usize = 392;
+
+/// `AV_CHANNEL_ORDER_NATIVE`: the layout is a bit mask, channels in ascending bit order
+/// (`ci/ffabi-assert.c` proves the value).
+const CH_ORDER_NATIVE: c_int = 1;
+
+/// The native channel mask of a decoded audio frame (`frame` points at the `AVFrame`), or 0 when the
+/// layout is not a mask (the union then holds a pointer, or nothing): the caller mixes by count.
+/// The ONE reader of `OFF_AFRAME_CH_ORDER` / `OFF_AFRAME_CH_MASK`, for the lossy app decode
+/// (`ff_pcm`) and the speed decoder alike.
+pub(crate) unsafe fn frame_channel_mask(frame: *const u8) -> u64 {
+    if *(frame.add(OFF_AFRAME_CH_ORDER) as *const c_int) == CH_ORDER_NATIVE {
+        std::ptr::read_unaligned(frame.add(OFF_AFRAME_CH_MASK) as *const u64)
+    } else {
+        0
+    }
+}
+
+/// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
+/// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
+/// PCM AUs. Exists only while the speed is not 1x; at 1x the compressed audio goes to the TV as it
+/// always has, except the app-decoded set (FLAC, ALAC, LPCM, and the lossy codecs an attempt decodes in
+/// the app, `Caps::app_decodes_lossy_track`), which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this decoder takes those too and `PcmDecoder` is not
+/// opened. Opened per demux run from the stream's own codec parameters.
+pub(crate) struct SpeedDecoder {
+    ctx: *mut AVCodecContext,
+    frame: *mut c_void,
+    audio: crate::speed_audio::SpeedAudio,
+    logged: bool,
+}
+
+impl SpeedDecoder {
+    /// `None` when the bundled FFmpeg has no decoder for the stream (`ci/build-ffmpeg.sh`'s list)
+    /// or it fails to open; the caller then cannot honour the speed.
+    pub(crate) unsafe fn open(cp: *const AVCodecParameters, permille: i32) -> Option<SpeedDecoder> {
+        let codec = avcodec_find_decoder((*cp).codec_id);
+        if codec.is_null() {
+            return None;
+        }
+        let ctx = avcodec_alloc_context3(codec);
+        if ctx.is_null() {
+            return None;
+        }
+        let frame = av_frame_alloc();
+        if frame.is_null()
+            || avcodec_parameters_to_context(ctx, cp) < 0
+            || avcodec_open2(ctx, codec, std::ptr::null_mut()) < 0
+        {
+            let mut c = ctx;
+            avcodec_free_context(&mut c);
+            if !frame.is_null() {
+                let mut f = frame;
+                av_frame_free(&mut f);
+            }
+            return None;
+        }
+        Some(SpeedDecoder { ctx, frame, audio: crate::speed_audio::SpeedAudio::new(permille), logged: false })
+    }
+
+    /// Decode one packet whose content time is `pts_ns`; returns the PCM AUs now complete, each
+    /// with its CONTENT pts. A packet the decoder rejects yields nothing (the stretch bridges it).
+    pub(crate) unsafe fn decode(&mut self, pkt: *const AVPacket, pts_ns: i64) -> Vec<(i64, Vec<u8>)> {
+        let mut aus = Vec::new();
+        if avcodec_send_packet(self.ctx, pkt) < 0 {
+            return aus;
+        }
+        let f = self.frame as *const u8;
+        loop {
+            // EAGAIN (wants the next packet), EOF and errors all end this packet's frames
+            if avcodec_receive_frame(self.ctx, self.frame) < 0 {
+                break;
+            }
+            let rd = |off: usize| std::ptr::read_unaligned(f.add(off) as *const c_int);
+            let nb = rd(OFF_AFRAME_NB_SAMPLES).max(0) as usize;
+            let rate = rd(OFF_AFRAME_SAMPLE_RATE).max(0) as u32;
+            let channels = rd(OFF_AFRAME_NB_CHANNELS).max(0) as usize;
+            let fmt = rd(OFF_FRAME_FORMAT); // video's field, read here as an `AVSampleFormat`
+            let ext = std::ptr::read_unaligned(f.add(OFF_AFRAME_EXTENDED_DATA) as *const *const *const u8);
+            if !self.logged {
+                self.logged = true;
+                crate::player::log(&format!(
+                    "speed: decoding audio fmt={fmt} ch={channels} rate={rate} nb={nb}"
+                ));
+            }
+            if let Some((sf, planar)) = crate::speed_audio::SampleFormat::from_av(fmt) {
+                if nb > 0 && channels > 0 && !ext.is_null() {
+                    let width = sf.bytes();
+                    let planes: Vec<&[u8]> = if planar {
+                        (0..channels).map(|c| std::slice::from_raw_parts(*ext.add(c), nb * width)).collect()
+                    } else {
+                        vec![std::slice::from_raw_parts(*ext, nb * width * channels)]
+                    };
+                    let mask = frame_channel_mask(f);
+                    let stereo = crate::speed_audio::downmix_by_mask(sf, planar, mask, channels, nb, &planes);
+                    aus.extend(self.audio.push(pts_ns, rate, &stereo));
+                }
+            }
+            av_frame_unref(self.frame);
+        }
+        aus
+    }
+}
+
+impl Drop for SpeedDecoder {
+    fn drop(&mut self) {
+        unsafe {
+            let mut c = self.ctx;
+            avcodec_free_context(&mut c);
+            let mut f = self.frame;
+            av_frame_free(&mut f);
+        }
+    }
+}
+
 const SWS_BILINEAR: c_int = 2;
 const VENC_TB: AVRational = AVRational { num: 1, den: 30 };
 
@@ -1355,6 +1547,34 @@ fn load_libraries() -> bool {
     ok
 }
 
+/// Can the bundled FFmpeg decode the route's audio codec `codec` (`route::stream_acodec`'s
+/// lower-case name) for a playback-speed session? Asked at Load, because a speed session declares
+/// PCM and so must decode — a codec missing from `ci/build-ffmpeg.sh`'s list means 1x instead.
+pub fn speed_decoder_available(codec: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    if FORCE_SPEED_DECODER.load(Ordering::Relaxed) {
+        return true;
+    }
+    if !abi_ok() {
+        return false;
+    }
+    let name = match codec {
+        "dts" | "dca" => "dca",
+        other => other,
+    };
+    let Ok(c) = std::ffi::CString::new(name) else { return false };
+    unsafe { !avcodec_find_decoder_by_name(c.as_ptr()).is_null() }
+}
+
+/// Test-only: answer [`speed_decoder_available`] as if the bundled FFmpeg had every decoder, so a
+/// host test (which loads no FFmpeg) can reach the speed paths.
+#[cfg(any(test, feature = "test-support"))]
+static FORCE_SPEED_DECODER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_speed_decoder_for_test(on: bool) {
+    FORCE_SPEED_DECODER.store(on, Ordering::Relaxed);
+}
+
 /// Did the bundled FFmpeg load and match the ABI table? The diagnostics read-out's first question
 /// about the demuxer: false means every playback will refuse before it opens a socket, which from
 /// the outside looks identical to a stall.
@@ -1731,6 +1951,8 @@ fn arm_active_stall_guard(
 mod acquisition;
 #[path = "ff_subs.rs"]
 mod subs;
+#[path = "ff_native_audio.rs"]
+pub(crate) mod native_audio;
 #[path = "ff_subside.rs"]
 pub(crate) mod subside;
 use subs::{SubKind, SubTracks};
@@ -3643,6 +3865,46 @@ mod dts_core_tests {
         let mut frame = vec![0x55; 128];
         frame[..10].copy_from_slice(&[0x7f, 0xfe, 0x80, 0x01, 0xfc, 0x00, 0x07, 0xf0, 0, 0]);
         frame
+    }
+
+    /// The lossy bit travels with the declared PCM and never leaks into its shape: a lossless PCM
+    /// Load of the same 48 kHz stereo S16 does not make a DTS stream the app's.
+    #[test]
+    fn the_lossy_bit_is_the_loads_own_and_does_not_change_the_shape() {
+        use crate::ff_pcm::PcmOut;
+        let _g = plx_base::testlock::serial();
+        let shape = Some(PcmOut::exact(48_000, 16, 2));
+        super::set_pcm_out(shape, true);
+        assert!(super::pcm_lossy());
+        let lossy = super::pcm_out().unwrap();
+        super::set_pcm_out(shape, false);
+        assert!(!super::pcm_lossy(), "a lossless PCM Load of the same shape");
+        assert_eq!(super::pcm_out().unwrap(), lossy);
+        super::set_pcm_out(None, true);
+        assert!(!super::pcm_lossy() && super::pcm_out().is_none(), "no PCM declared, nothing lossy");
+    }
+
+    /// The declared PCM roundtrips through its one word, with the track's own rate in its 31 high bits: the
+    /// largest rate FFmpeg can state (`i32::MAX`) comes back whole, and the lossy flag, which sits just below it,
+    /// neither clobbers it nor is clobbered by it.
+    #[test]
+    fn the_declared_pcm_roundtrips_with_the_source_rate_and_the_lossy_flag_beside_it() {
+        use crate::ff_pcm::PcmOut;
+        let _g = plx_base::testlock::serial();
+        for out in [
+            PcmOut::exact(48_000, 16, 2),
+            PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 },
+            PcmOut { rate: 44_100, bits: 32, channels: 1, source_rate: i32::MAX as u32 },
+            PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 1 << 30 },
+        ] {
+            for lossy in [false, true] {
+                super::set_pcm_out(Some(out), lossy);
+                assert_eq!(super::pcm_out(), Some(out), "{out:?} lossy={lossy}");
+                assert_eq!(super::pcm_lossy(), lossy, "{out:?}");
+            }
+        }
+        super::set_pcm_out(None, false);
+        assert!(super::pcm_out().is_none());
     }
 
     #[test]
@@ -8434,6 +8696,63 @@ mod audio_codec_name_tests {
     }
 }
 
+/// PURE: whether the demuxer would hand the TV this stream's packets RAW although the Load declared
+/// PCM. `pcm_declared`: `pcm_out()` is set (1x, an app-decoded codec was planned); `audio_fed`:
+/// audio goes to the TV at all; `app_decoded`: the stream's own FFmpeg codec has an app decoder
+/// (`devcaps::app_decoded_by_ffmpeg_name`, and for a lossy one the Load's lossy claim).
+///
+/// The planner's `pcm` is PMS's spelling and covers LPCM flavours the app cannot decode (float,
+/// 8-bit); the TV reads raw bytes under a PCM Load as the declared S16/S32, which is full-scale
+/// noise or the wrong speed with no error. Such a stream must be refused, never fed.
+fn pcm_load_feeds_raw(pcm_declared: bool, audio_fed: bool, app_decoded: bool) -> bool {
+    pcm_declared && audio_fed && !app_decoded
+}
+
+#[cfg(test)]
+mod pcm_load_guard_tests {
+    use super::pcm_load_feeds_raw;
+
+    /// Every FFmpeg codec name a track PMS calls `pcm` (or any other planned-as-PCM track) can
+    /// open as, under a PCM Load: only the ones with an app decoder may go on.
+    #[test]
+    fn a_pcm_load_never_feeds_a_stream_the_app_cannot_decode() {
+        for (name, decodable) in [
+            ("flac", true), ("alac", true), ("pcm_s16le", true), ("pcm_s24be", true), ("pcm_s32le", true),
+            ("pcm_f32le", false), ("pcm_f64le", false), ("pcm_s8", false), ("pcm_u8", false),
+            ("pcm_bluray", false), ("pcm_dvd", false), ("ac3", false), ("eac3", false), ("aac", false),
+            ("dts", false), // lossy: the app's only when the Load itself claimed the lossy decode
+            ("mp3", false), ("vorbis", false), ("truehd", false), // likewise
+        ] {
+            let app_decoded = plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some_and(|c| !c.lossy);
+            assert_eq!(app_decoded, decodable, "{name}: the table the guard reads");
+            assert_eq!(pcm_load_feeds_raw(true, true, app_decoded), !decodable, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_a_pcm_load_that_feeds_audio_is_guarded() {
+        assert!(!pcm_load_feeds_raw(false, true, false), "a native Load feeds compressed audio as it always did");
+        assert!(!pcm_load_feeds_raw(true, false, false), "no audio fed (the dev video-only switch)");
+        assert!(!pcm_load_feeds_raw(true, true, true), "decoded in the app");
+    }
+}
+
+#[cfg(test)]
+mod averror_errno_tests {
+    use super::*;
+
+    /// `AVERROR(e)` is `-e` of the host libc: `EAGAIN` is 11 on Linux and 35 on macOS, so the drain
+    /// loop's "no more output yet" return must follow the platform, not a Linux literal.
+    #[test]
+    fn averror_eagain_is_the_negated_host_errno() {
+        assert_eq!(AVERROR_EAGAIN, -libc::EAGAIN);
+        #[cfg(target_os = "macos")]
+        assert_eq!(AVERROR_EAGAIN, -35);
+        #[cfg(target_os = "linux")]
+        assert_eq!(AVERROR_EAGAIN, -11);
+    }
+}
+
 #[cfg(test)]
 mod pre_audio_headroom_tests {
     use super::*;
@@ -8689,7 +9008,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsFailed);
                 }
             }
             Ok(Err(HlsExit::NotReady)) => {
@@ -8697,7 +9016,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsNotReady);
                 }
             }
             Ok(Err(HlsExit::PrimeExpired)) => {
@@ -8712,13 +9031,13 @@ pub fn demux(
             }
             Err(_) => {
                 crate::player::log("hls: demux panicked");
-                SHARED.demux_failed.store(true, Ordering::Release);
+                SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
             }
         }
         if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
             crate::aq::aq_is_aborted(aq_p)
         }) {
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
         }
         crate::aq::aq_set_eof(aq_p);
         crate::aq::aq_set_eof(aqa_p);
@@ -8808,7 +9127,7 @@ pub fn demux(
                         Ok(r) => Some(r),
                         Err(e) => {
                             crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsReserveFailed);
                             break;
                         }
                     }
@@ -8846,7 +9165,7 @@ pub fn demux(
                                 SHARED.dg_http_status.store(st, Ordering::Relaxed);
                             }
                             crate::player::log(&format!("ff: https open FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsOpenFailed);
                             break;
                         }
                     }
@@ -8859,7 +9178,7 @@ pub fn demux(
                             break;
                         }
                         Err(MediaOpenFail::Failed) => {
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpOpenFailed);
                             break;
                         }
                     }
@@ -8889,6 +9208,7 @@ pub fn demux(
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {
                     crate::player::log("ff: av_malloc failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     break;
                 }
                 let avio = avio_alloc_context(
@@ -8902,12 +9222,14 @@ pub fn demux(
                 );
                 if avio.is_null() {
                     crate::player::log("ff: avio_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_ptr(buf as *mut c_void);
                     break;
                 }
                 let mut fmt = avformat_alloc_context();
                 if fmt.is_null() {
                     crate::player::log("ff: avformat_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_avio(avio);
                     break;
                 }
@@ -8919,12 +9241,20 @@ pub fn demux(
                     std::ptr::null_mut(),
                 );
                 if r < 0 || fmt.is_null() {
-                    crate::player::log(&open_input_failure_note(r, crate::aq::aq_is_aborted(aq_p)));
+                    let lane_aborted = crate::aq::aq_is_aborted(aq_p);
+                    crate::player::log(&open_input_failure_note(r, lane_aborted));
+                    // A stop teardown asked for is not the source failing to open.
+                    if !lane_aborted {
+                        SHARED.note_demux_exit(DemuxExitClass::OpenInputFailed);
+                    }
                     free_avio(avio);
                     break;
                 }
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
                     crate::player::log("ff: find_stream_info failed");
+                    if !crate::aq::aq_is_aborted(aq_p) {
+                        SHARED.note_demux_exit(DemuxExitClass::FindStreamInfoFailed);
+                    }
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -8992,6 +9322,7 @@ pub fn demux(
                     } else {
                         crate::player::log("ff: no video stream");
                     }
+                    SHARED.note_demux_exit(DemuxExitClass::NoVideoStream);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9012,16 +9343,111 @@ pub fn demux(
                 } else {
                     None
                 };
-                let dts_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
+                // Native DTS: the set's own decoder takes the core. Not when the Load declared the lossy PCM,
+                // which is the app decoding DTS itself (`pcm_dec` below, `Caps::app_decodes_lossy_track`).
+                let dts_audio = ai >= 0 && !pcm_lossy() && std::ffi::CStr::from_ptr(avcodec_get_name(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"dts";
                 if dts_audio {
                     crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
                 }
+                // Playback speed: this session's Load declared PCM, so the audio must be decoded,
+                // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
+                // engine refused the speed at Load (`player::session_rate`), so this is a guard.
+                let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
+                // App-decoded audio (FLAC, ALAC, LPCM, and the lossy rows of `devcaps::APP_DECODED` the attempt decodes in the app): decode to the PCM the
+                // Load declared, or refuse the stream — the Load and the file must agree, or the
+                // panel plays the wrong pitch. Not at a speed: that session's Load declares the
+                // speed decoder's own PCM (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes
+                // it too, and the two must never both decode one stream.
+                let app_decoded = if ai >= 0 {
+                    let name = std::ffi::CStr::from_ptr(avcodec_get_name(
+                        (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                    )).to_string_lossy();
+                    // A lossy codec is the app's only when the Load declared PCM for it (the attempt
+                    // decodes it in the app); otherwise it is native audio and the set's decoder takes it.
+                    plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name)
+                        .filter(|c| !c.lossy || pcm_lossy())
+                        .map(|_| name.into_owned())
+                } else {
+                    None
+                };
+                // The Load said PCM but this stream has no app decoder (float or 8-bit LPCM under
+                // PMS's `pcm`): refuse it the way an open refusal ends. Fed raw, the TV would play
+                // it as the declared S16/S32 — noise, with no error to recover from.
+                if ai >= 0 && pcm_load_feeds_raw(
+                    pcm_out().is_some(), FEED_AUDIO.load(Ordering::Relaxed), app_decoded.is_some(),
+                ) {
+                    let name = std::ffi::CStr::from_ptr(avcodec_get_name(
+                        (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                    )).to_string_lossy();
+                    crate::player::log(&format!(
+                        "ff: {name} refused — the Load declared PCM but the app has no {name} decoder"
+                    ));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
+                let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
+                if let Some(name) = app_decoded.as_deref().filter(|_| {
+                    FEED_AUDIO.load(Ordering::Relaxed) && speed_permille == crate::player::RATE_NORMAL
+                }) {
+                    let opened = match pcm_out() {
+                        Some(out) => crate::ff_pcm::PcmDecoder::open(
+                            stream_codecpar(*streams.add(ai as usize)), out,
+                        ),
+                        None => Err(format!("the Load declared no PCM for a {name} track")),
+                    };
+                    match opened {
+                        Ok(d) => {
+                            crate::player::log(&format!(
+                                "ff: {name} -> PCM decoding on{}",
+                                if d.core_only() { " (core only)" } else { "" }
+                            ));
+                            pcm_dec = Some(d);
+                        }
+                        Err(why) => {
+                            crate::player::log(&format!("ff: {name} refused — {why}"));
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            avformat_close_input(&mut fmt);
+                            free_avio(avio);
+                            break;
+                        }
+                    }
+                }
+                // Decoded blocks shorter than 10 ms (TrueHD's 1/1200 s access units) go to the lane
+                // gathered into AUs of about that length (`ff_pcm::AuBatcher`).
+                let mut pcm_batch = pcm_dec.as_ref().map(|d| d.au_batcher());
                 if let Some((fi, ch)) = aac_adts {
                     crate::player::log(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
                     ));
+                }
+                let mut speed_dec = if ai >= 0 && speed_permille != crate::player::RATE_NORMAL {
+                    let d = SpeedDecoder::open(stream_codecpar(*streams.add(ai as usize)), speed_permille);
+                    crate::player::log(&format!(
+                        "speed: audio decoder for {speed_permille} {}",
+                        if d.is_some() { "open" } else { "UNAVAILABLE" }
+                    ));
+                    d
+                } else {
+                    None
+                };
+                // Opus goes to the television's own decoder (`ff_native_audio.rs`; its header travels
+                // in the Load). What is fed natively is recorded for the player, which learns a
+                // refusal from it. FLAC, ALAC and LPCM are decoded in the app (`pcm_dec`) and are not native.
+                if ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed) && speed_dec.is_none() {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
+                    if let Some(kind) = native_audio::Kind::from_ffmpeg_name(&aname) {
+                        let channels = u32::try_from((*acp).ch_layout.nb_channels).unwrap_or(0);
+                        crate::player::log(&format!(
+                            "ff: {aname} fed to the TV's own decoder (channels={channels} rate={})",
+                            (*acp).sample_rate
+                        ));
+                        native_audio::publish_fed(kind, channels);
+                    }
                 }
                 let dur = fmt_duration(fmt);
                 if dur > 0 {
@@ -9049,7 +9475,7 @@ pub fn demux(
                         "ff: no framing for video codec {cname} (codec_id={}); refusing the stream",
                         (*vcp).codec_id
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::NoFraming);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9063,7 +9489,7 @@ pub fn demux(
                         "ff: the Load declared {} but the file is {cname}; refusing the stream",
                         crate::player::load_v_name(declared)
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::LoadMismatch);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9263,6 +9689,12 @@ pub fn demux(
                             seek_began.elapsed().as_millis()
                         ));
                         headroom.restart(aq_p);
+                        if let Some(dec) = pcm_dec.as_mut() {
+                            dec.reset_stream();
+                        }
+                        if let Some(batch) = pcm_batch.as_mut() {
+                            batch.clear();
+                        }
                         SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
                     }
                     let r = av_read_frame(fmt, pkt);
@@ -9270,6 +9702,12 @@ pub fn demux(
                         // Genuine end of stream, teardown, or an unrecovered I/O error published by
                         // `frame_read_failed`. NOT an app seek — that is serviced at the top of this
                         // loop and never surfaces as a read error.
+                        if let Some((au_pts, au)) = pcm_batch.as_mut().and_then(|b| b.take()) {
+                            crate::aq::aq_push_gated(
+                                aqa_p, au.as_ptr(), au.len() as c_int, au_pts, 1, 2, audio_push_gate(aq_p, headroom.video_reach_ns()),
+                                || state.drain_wire(),
+                            );
+                        }
                         break;
                     }
                     let si = (*pkt).stream_index;
@@ -9358,7 +9796,7 @@ pub fn demux(
                                     crate::aq::aq_cap(aq_p),
                                     PRE_AUDIO_VIDEO_HEADROOM
                                 ));
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::NoAudioAu);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
@@ -9391,7 +9829,19 @@ pub fn demux(
                         // The audio lane runs past its soft cap while the video lane is starved
                         // ([`AUDIO_AHEAD_HEADROOM`]); the gate is what makes that decision, here.
                         let gate = audio_push_gate(aq_p, headroom.video_reach_ns());
-                        let pushed = if let Some((freq_idx, chan_cfg)) = aac_adts {
+                        let pushed = if let Some(dec) = speed_dec.as_mut() {
+                            let mut rv = 0;
+                            for (au_pts, pcm) in dec.decode(pkt, pts) {
+                                rv = crate::aq::aq_push_gated(
+                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, au_pts, 1, 2, gate,
+                                    || state.drain_wire(),
+                                );
+                                if rv != 0 {
+                                    break;
+                                }
+                            }
+                            rv
+                        } else if let Some((freq_idx, chan_cfg)) = aac_adts {
                             // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
                             let plen = (*pkt).size as usize;
                             let mut framed = Vec::with_capacity(7 + plen);
@@ -9407,11 +9857,32 @@ pub fn demux(
                                 gate,
                                 || state.drain_wire(),
                             )
+                        } else if let Some(dec) = pcm_dec.as_mut() {
+                            let (pcm_pts, pcm) = match dec.decode(pkt, pts) {
+                                Ok(decoded) => decoded,
+                                Err(why) => {
+                                    crate::player::log(&format!(
+                                        "ff: {} decode failed — {why}; refusing audio feed",
+                                        app_decoded.as_deref().unwrap_or("audio")
+                                    ));
+                                    SHARED.demux_failed.store(true, Ordering::Release);
+                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    av_packet_unref(pkt);
+                                    break;
+                                }
+                            };
+                            match pcm_batch.as_mut().and_then(|b| b.push(pcm_pts, pcm)) {
+                                None => 0,
+                                Some((au_pts, au)) => crate::aq::aq_push_gated(
+                                    aqa_p, au.as_ptr(), au.len() as c_int, au_pts, 1, 2, gate,
+                                    || state.drain_wire(),
+                                ),
+                            }
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
                             let Some(core) = dts_core_packet(raw) else {
                                 crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::DtsCoreMissing);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
@@ -9446,7 +9917,7 @@ pub fn demux(
                                 AUDIO_AHEAD_HEADROOM,
                                 headroom.video_reach_ns() / 1_000_000
                             ));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::NoUsableVideo);
                             SHARED.demux_io_failed.store(true, Ordering::Release);
                             break;
                         }
@@ -9634,7 +10105,7 @@ pub fn demux(
         // the pump waiting on a stage it can never reach. This is the same flag the `http_open`
         // failure above raises, and `pump` turns it into `PlaybackState::Error` (gated on
         // `frames == 0`, so a panic MID-playback is left to the EOF/EOS path below instead).
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
     }
     // A demux that ends having produced NOTHING is a failure, whatever route it took out.
     // Only two exits used to say so — the http_open failure and the panic handler — while every
@@ -9650,7 +10121,7 @@ pub fn demux(
         crate::aq::aq_is_aborted(aq_p)
     }) {
         crate::player::log("ff: demux produced no access units — treating as a failure");
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
     }
     crate::aq::aq_set_eof(aq_p);
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too
@@ -9697,6 +10168,10 @@ mod subtitle_charset_tests;
 #[cfg(test)]
 #[path = "ff_redirect_tests.rs"]
 mod redirect_tests;
+
+#[cfg(test)]
+#[path = "ff_pcm_decode_tests.rs"]
+mod pcm_decode_tests;
 
 #[cfg(test)]
 #[path = "ff_late_audio_tests.rs"]
