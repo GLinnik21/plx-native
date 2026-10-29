@@ -346,7 +346,6 @@ impl ViewEdit {
             ViewEdit::Watched(on) => {
                 crate::pms::set_watched(m, on);
                 if let Some(facts) = &mut m.sort_info {
-                    let facts = Arc::make_mut(facts);
                     facts.view_count = None; facts.last_viewed_at = None;
                 }
             },
@@ -355,7 +354,7 @@ impl ViewEdit {
                 m.unwatched = unwatched;
                 m.resume_ms = resume_ms;
                 if let Some(sort) = sort {
-                    let facts = Arc::make_mut(m.sort_info.get_or_insert_with(Default::default));
+                    let facts = m.sort_info.get_or_insert_with(Default::default);
                     facts.view_count = sort.count;
                     facts.last_viewed_at = sort.viewed_at;
                 }
@@ -2563,25 +2562,15 @@ mod sort_caption_reconcile_tests {
     fn optimistic_watch_changes_hide_unknown_counts_until_authoritative_readback() {
         let mut row = crate::pms::PmsMovie { sort_info: Some(crate::pms::SortInfo {
             view_count: Some(3), last_viewed_at: Some(1700000000),
-            ..Default::default() }.into()), ..Default::default() };
-        let retained = row.clone();
-        assert!(Arc::ptr_eq(row.sort_info.as_ref().unwrap(), retained.sort_info.as_ref().unwrap()),
-            "retained poster copies share immutable sort facts");
+            ..Default::default() }), ..Default::default() };
         ViewEdit::Watched(true).apply(&mut row);
         assert!(row.sort_info.as_ref().unwrap().view_count.is_none());
         assert!(row.sort_info.as_ref().unwrap().last_viewed_at.is_none());
-        assert_eq!(retained.sort_info.as_ref().unwrap().view_count, Some(3),
-            "optimistic edits must not mutate a retained publication");
         let sort = WatchSortFacts { count: Some(4), viewed_at: Some(1700000100) };
         let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: Some(sort) };
         assert!(facts.changes(&row), "equal watch flags must not hide a changed play count");
-        let retained_after_optimistic = row.clone();
         facts.apply(&mut row);
-        assert!(retained_after_optimistic.sort_info.as_ref().unwrap().view_count.is_none(),
-            "authoritative readback detaches its shared facts before writing");
         assert_eq!(WatchSortFacts::of(&row), Some(sort));
-        assert_eq!(retained.sort_info.as_ref().unwrap().last_viewed_at, Some(1700000000),
-            "authoritative edits must not mutate a retained publication either");
         assert!(!facts.changes(&row));
         row.sort_info = None;
         facts.apply(&mut row);

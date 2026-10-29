@@ -70,7 +70,7 @@ pub const SEASON_UNKNOWN: c_int = -1;
 /// A catalog row — owned strings (the old C-ABI fixed `[u8; N]` buffers are gone; no C
 /// consumer remains). Fields pub so the UI / route / player read them directly.
 #[derive(Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, remote = "Self")]
 pub struct PmsMovie {
     /// WHICH SERVER this row came from. Every other identity on it — `rk`, `show_rk`, `part` — is a
     /// server-local key that a second server reuses from 1 (docs/shared-servers.md §2 measured the
@@ -174,10 +174,26 @@ pub struct PmsMovie {
     /// item menu's Play Version row; empty for a single-version item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<MediaVersion>,
-    /// Listing-only sort facts, shared across retained row copies. Watch edits detach with
-    /// Arc::make_mut, keeping the optional block out of the compact poster's inline storage.
+    /// Listing-only sort facts. No detail fetch is needed to caption a movie grid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sort_info: Option<Arc<SortInfo>>,
+    pub sort_info: Option<SortInfo>,
+}
+
+// Remote derive keeps the field rules in one place while allowing non-inlined trait entry
+// points. The retained stores and recording adapters otherwise inline separate copies of this
+// large row's typed codec into their generic visitors (tens of KB in the ARM release binary).
+impl serde::Serialize for PmsMovie {
+    #[inline(never)]
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        PmsMovie::serialize(self, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PmsMovie {
+    #[inline(never)]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        PmsMovie::deserialize(deserializer)
+    }
 }
 
 /// Facts lost by the compact poster projection before sort captions were introduced.
@@ -606,7 +622,7 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         m.child_count = it.child_count.max(0);
     }
     fill_caption_facts(&mut m, it);
-    if m.kind == 0 { m.sort_info = Some(Arc::new(SortInfo::of(it))); }
+    if m.kind == 0 { m.sort_info = Some(SortInfo::of(it)); }
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);

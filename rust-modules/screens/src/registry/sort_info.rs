@@ -90,7 +90,7 @@ mod tests {
             sort_info: Some(SortInfo { rating: Some(10.0), rating_image: "rottentomatoes://image.rating.ripe".into(),
                 audience_image: "rottentomatoes://image.rating.spilled".into(), user_rating: Some(8.0),
                 view_count: Some(3), last_viewed_at: Some(1_793_188_800),
-                bitrate_kbps: Some(8000), media_count: 1, ..Default::default() }.into()), ..Default::default() }
+                bitrate_kbps: Some(8000), media_count: 1, ..Default::default() }), ..Default::default() }
     }
     fn text(m: &PmsMovie, key: &str) -> Option<String> { label(m, key).sort_info.map(|s| s.to_string_lossy().into_owned()) }
 
@@ -131,9 +131,9 @@ mod tests {
         m.watched = false; m.resume_ms = i64::MAX;
         // Avoid using resume_frac on a corrupt wire offset (see the caption's range guard).
         assert!(text(&m, "viewOffset").is_none());
-        std::sync::Arc::make_mut(m.sort_info.as_mut().unwrap()).media_count = 2;
+        m.sort_info.as_mut().unwrap().media_count = 2;
         assert_eq!(text(&m, "mediaHeight").as_deref(), Some("4K · Default"));
-        std::sync::Arc::make_mut(m.sort_info.as_mut().unwrap()).rating_image = "unknown://score".into();
+        m.sort_info.as_mut().unwrap().rating_image = "unknown://score".into();
         assert_eq!(text(&m, "rating").as_deref(), Some("10.0/10"));
         assert!(label(&m, "rating").sort_mark.is_empty());
     }
@@ -174,8 +174,8 @@ mod tests {
         for (key, field, image) in [("rating", true, "rotten"), ("audienceRating", false, "upright"),
             ("audienceRating", false, "spilled")] {
             let wire = format!("rottentomatoes://image.rating.{image}");
-            if field { std::sync::Arc::make_mut(m.sort_info.as_mut().unwrap()).rating_image = wire; }
-            else { std::sync::Arc::make_mut(m.sort_info.as_mut().unwrap()).audience_image = wire; }
+            if field { m.sort_info.as_mut().unwrap().rating_image = wire; }
+            else { m.sort_info.as_mut().unwrap().audience_image = wire; }
             assert_eq!(label(&m, key).sort_mark, mark(RatingArt::from_image(
                 if field { &m.sort_info.as_ref().unwrap().rating_image } else { &m.sort_info.as_ref().unwrap().audience_image }
             ).unwrap()));
@@ -207,7 +207,7 @@ fn review_timestamp_dates_follow_timezone() {
         let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
         let stamp = 1_793_233_800; // 2026-10-29 00:30 UTC
         let item = PmsMovie { added_at: Some(stamp),
-            sort_info: Some(plx_data::pms::SortInfo { last_viewed_at: Some(stamp), ..Default::default() }.into()),
+            sort_info: Some(plx_data::pms::SortInfo { last_viewed_at: Some(stamp), ..Default::default() }),
             ..Default::default() };
         for key in ["addedAt", "lastViewedAt"] {
             let value = label(&item, key).sort_info.unwrap();
