@@ -8,7 +8,7 @@
 //! The table is `'static` data: plain `&'static` slices and `Copy` types, no `Vec`, no `Box`, no
 //! globals to read, no IO.
 //!
-//! **Contract freeze.** The TYPES and the lookup functions below are final, and the DATA is complete
+//! **Complete for 1.0.** The TYPES and the lookup functions below, and the DATA, are complete
 //! for 1.0: [`COMMANDS`], [`CONDITIONS`], [`BINDINGS`], the resolver tables, and every node from
 //! [`ROOT`] down (`layout`, bands, the twelve cell kinds, control items, the strip card, Up Next). A
 //! [`Ty::Object`] whose node is missing is a table bug, which the tests of this module rule out.

@@ -6,11 +6,6 @@
 //! list of [`Finding`]s come out. Wave B builds the draw-list compiler, the reachability check and `lint`
 //! on top of these types and reuses [`Finding`] as it is.
 //!
-//! **Contract freeze.** This file, the three submodules' signatures and `ui::rec::strict_json::Ordered`
-//! are the interfaces the parallel packages compile against. A body marked `CONTRACT FREEZE` is a stub its
-//! owner replaces; everything else is final. Do not change a signature here without telling the
-//! coordinator: three other packages depend on it.
-//!
 //! ## The finding
 //!
 //! `{code, severity, pointer, rule, message, hint, nearest}` (the lint shape of the plan's "LLM
@@ -143,6 +138,10 @@ pub fn pointer_index(base: &str, index: usize) -> String {
 /// The most names [`nearest`] returns: a hint that lists the whole vocabulary is a table, not a hint.
 pub const MAX_NEAREST: usize = 3;
 
+/// How much of a candidate [`nearest`] compares: the edit distance is quadratic, and a candidate is
+/// an author's name from a file whose names have no other bound than its size.
+const COMPARED_CHARS: usize = 48;
+
 /// The closest of `candidates` to `name` by Levenshtein distance over the ASCII-lower-cased text (so a
 /// token spelt in the wrong case is still the nearest), at most [`MAX_NEAREST`], nearest first. Ties
 /// break on the candidate's own text, so the same input always gives the same list; a candidate listed
@@ -158,7 +157,11 @@ where
         .into_iter()
         .map(|c| {
             let c = c.as_ref();
-            let hay: Vec<char> = c.to_ascii_lowercase().chars().collect();
+            let hay: Vec<char> = c
+                .to_ascii_lowercase()
+                .chars()
+                .take(COMPARED_CHARS)
+                .collect();
             (edit_distance(&needle, &hay), c.to_owned())
         })
         .collect();

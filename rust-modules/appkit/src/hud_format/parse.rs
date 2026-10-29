@@ -7,8 +7,11 @@
 //!
 //! **One walker, two doors.** [`parse`] (the version gate, then the top level) and [`validate_json`] (one
 //! fragment against one node) both run the SAME `Walker`; there is no second copy of a rule. A key, a cell
-//! kind, a command, a condition or a theme token is never named in this file: the walker reads them from
-//! the table. What this file does name is the format's own grammar, which is not a table row: the
+//! kind, a command, a condition or a theme token is never named in this file to JUDGE it: the walker reads
+//! them from the table. The one place keys are named is [`Package::from_object`], which READS the package's
+//! top-level scalars and the `app` range out of an object that has already passed the table; a test
+//! (`the_package_reader_names_only_keys_the_table_has`) fails if the table drops or renames one. What
+//! this file also names is the format's own grammar, which is not a table row: the
 //! `{"value": v, "if": {...}}` keys of a state-keyed value, the `builtin:` face prefix, the `#rrggbb`
 //! palette form, the string shapes a [`schema::Pattern`] checks, and the node `card`, which is the scope
 //! of the `item.*` bindings and conditions (the table carries no flag for it; see `schema`'s module doc).
@@ -53,10 +56,10 @@ use super::{
 pub const MAX_PACKAGE_BYTES: usize = 1024 * 1024;
 
 /// The decoded-memory budget given to `decode_ordered`, which charges three times the source and then
-/// every node: 64 MiB admits a 1 MiB package of up to about 230 000 values, far more than a real one
-/// (the worked example has about 600 nodes in 6 KiB), and bounds what an attacker's file can make the
-/// reader allocate. It is the recorder's own reservation (`rec::CAP_BYTES`).
-const DECODE_MEMORY_BYTES: usize = 64 * 1024 * 1024;
+/// every node (a string eight times its length, a value a few hundred bytes). 16 MiB holds a full
+/// 1 MiB package of inline SVG text (about 11 MiB) and about 45 000 other values, many times the worked
+/// example's 600 nodes; past it the file is refused as too large, not read into 64 MiB of tree.
+const DECODE_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 /// The longest identifier ([`schema::Pattern::Id`]: a band, segment or control id, an asset id).
 const ID_LEN: usize = 40;
 /// The longest a reverse-DNS id or a schema URL may be: the table gives these no bound, and a package
@@ -66,6 +69,9 @@ const PATTERN_LEN: usize = 256;
 const CANVAS_H_PX: i64 = 1080;
 /// How much of a name a message quotes and `nearest` compares: a key of a hostile file can be a megabyte.
 const CLIP_CHARS: usize = 48;
+/// How many declared names a hint lists: a package may declare thousands of assets, and every unknown
+/// face would otherwise carry them all.
+const HINT_NAMES: usize = 12;
 /// The node whose subtree is a strip card: `item.*` bindings and conditions are legal inside it only.
 /// `schema`'s module doc records that the table has no flag for this and that the walker enters card
 /// scope at the node named `card`.
@@ -370,6 +376,17 @@ fn decode(bytes: &[u8], pointer: &str) -> Result<Ordered, Finding> {
         ));
     }
     decode_ordered(bytes, DECODE_MEMORY_BYTES).map_err(|error| {
+        let error = error.to_string();
+        if error.contains("budget exceeded") {
+            return Finding::new(
+                &codes::E0100,
+                pointer,
+                format!(
+                    "the package is too large to read: it decodes to more than {DECODE_MEMORY_BYTES} bytes"
+                ),
+                "a HUD package is a small description of a layout: shorten the SVG assets and drop repeated or unused parts",
+            );
+        }
         Finding::new(
             &codes::E0100,
             pointer,
@@ -596,7 +613,11 @@ impl Walker {
     ) -> Option<Object> {
         let errors_before = self.errors;
         let cmd = if matches!(node.kind, NodeKind::CommandDispatched) {
-            Some(self.resolve_command(node, pairs, pointer)?)
+            let Some(cmd) = self.resolve_command(node, pairs, pointer) else {
+                self.walk_unresolved(node, pairs, pointer, scope);
+                return None;
+            };
+            Some(cmd)
         } else {
             None
         };
@@ -683,6 +704,42 @@ impl Walker {
         })
     }
 
+    /// The keys the NODE owns, judged when the command could not be resolved, so that one round reports
+    /// every mistake of the item. A key the node does not have may be a parameter of the command the author
+    /// meant, which nobody can name, so it is not reported; the cross-key rules need the command and are
+    /// skipped. Whatever the command's own finding said stands.
+    fn walk_unresolved(
+        &mut self,
+        node: &'static Node,
+        pairs: &[(String, Ordered)],
+        pointer: &str,
+        scope: Scope,
+    ) {
+        let field_scope = Scope {
+            in_card: scope.in_card,
+            cmd: None,
+        };
+        let mut seen = BTreeSet::new();
+        for (key, value) in pairs {
+            let first = seen.insert(key.as_str());
+            let owned = lookup(node, None, key).is_some_and(|(f, _)| !matches!(f.ty, Ty::Command));
+            if !first || owned {
+                self.walk_pair(node, None, field_scope, key, value, pointer, first);
+            }
+        }
+        let format = self.format;
+        for field in node.fields {
+            let skipped = matches!(field.ty, Ty::Command);
+            if field.required
+                && field.since <= format
+                && !skipped
+                && !pairs.iter().any(|(k, _)| k == field.key)
+            {
+                self.missing_key(&codes::E0103, field, pointer);
+            }
+        }
+    }
+
     fn missing_key(&mut self, code: &Code, field: &Field, pointer: &str) {
         self.report(
             code,
@@ -693,7 +750,8 @@ impl Walker {
     }
 
     /// The command a control names, read before any other key of the item is judged. `None` after a
-    /// finding (`E0103`, `E0104`, `E0301`, or `E0107`): the item's other keys are judged by no command.
+    /// finding (`E0103`, `E0104`, `E0301`, or `E0107`): the item's other keys are then judged by no
+    /// command ([`Self::walk_unresolved`]).
     fn resolve_command(
         &mut self,
         node: &'static Node,
@@ -1408,7 +1466,7 @@ impl Walker {
         } else {
             format!(
                 "write one of the declared assets: {}",
-                self.assets.iter().cloned().collect::<Vec<_>>().join(", ")
+                listed(self.assets.iter().map(String::as_str), self.assets.len())
             )
         };
         self.report_near(
@@ -1888,6 +1946,15 @@ fn clip(text: &str) -> &str {
     }
 }
 
+/// The first [`HINT_NAMES`] of `names` (`total` of them), comma-separated, and how many more there are.
+fn listed<'a>(names: impl Iterator<Item = &'a str>, total: usize) -> String {
+    let mut text = names.take(HINT_NAMES).collect::<Vec<_>>().join(", ");
+    if total > HINT_NAMES {
+        text.push_str(&format!(", and {} more", total - HINT_NAMES));
+    }
+    text
+}
+
 fn since_text(since: Since) -> String {
     format!("{}.{}", since.0, since.1)
 }
@@ -2043,9 +2110,10 @@ fn is_id(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
-/// `[a-z][a-z0-9_]*`: a palette name, and the shape of an ink that refers to one.
+/// `[a-z][a-z0-9_]*`, at most [`ID_LEN`]: a palette name, and the shape of an ink that refers to one.
 fn is_palette_name(text: &str) -> bool {
-    matches!(text.bytes().next(), Some(b) if b.is_ascii_lowercase())
+    text.len() <= ID_LEN
+        && matches!(text.bytes().next(), Some(b) if b.is_ascii_lowercase())
         && text
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
@@ -2491,9 +2559,88 @@ mod tests {
         let parsed = parse(&oversize);
         let finding = only(&parsed, &codes::E0100, "");
         assert!(finding.message.contains(&MAX_PACKAGE_BYTES.to_string()));
+        // Within the byte cap but past the decoded-memory bound the HUD gives the reader: 100 000
+        // array nodes in 200 KB. The refusal is worded for a package, not for the recorder.
+        let mut many = String::from("{\"layout\": [0");
+        many.push_str(&",0".repeat(100_000));
+        many.push_str("]}");
+        assert!(many.len() < MAX_PACKAGE_BYTES);
+        let parsed = parse(many.as_bytes());
+        let finding = only(&parsed, &codes::E0100, "");
+        assert!(finding.message.contains("too large"), "{}", finding.message);
+        assert!(
+            !finding.message.contains("recording"),
+            "{}",
+            finding.message
+        );
         // A duplicate-free but non-object root is not E0100: it is JSON.
         only(&parse(b"[]"), &codes::E0104, "");
         only(&parse(b"null"), &codes::E0104, "");
+    }
+
+    #[test]
+    fn one_hostile_name_or_a_crowd_of_assets_cannot_make_a_finding_huge_or_slow() {
+        // A palette name is bounded like an id: 41 letters is not a name, declared or referenced.
+        let long = "a".repeat(ID_LEN + 1);
+        let declared = with_header(&format!(r##""palette": {{ "{long}": "#f2b535" }}"##));
+        refuses(&declared, &codes::E0505, &format!("/palette/{long}"));
+        let finding = refuses(
+            &edit(
+                MINIMAL,
+                &[(r#""fill": "ACCENT""#, &format!(r#""fill": "{long}""#))],
+            ),
+            &codes::E0105,
+            &format!("{PLAYBAR_AT}/fill"),
+        );
+        assert!(finding.nearest.is_empty());
+        // A 500 000-letter name is one finding with a clipped message, not a 500 000-step compare per ink.
+        let huge = "a".repeat(500_000);
+        let finding = refuses(
+            &edit(
+                MINIMAL,
+                &[(r#""fill": "ACCENT""#, &format!(r#""fill": "{huge}""#))],
+            ),
+            &codes::E0105,
+            &format!("{PLAYBAR_AT}/fill"),
+        );
+        assert!(finding.message.len() < 200, "{}", finding.message.len());
+        // `nearest` compares only the start of a candidate, so a hostile candidate costs what any does.
+        let long_candidate = format!("{}{}", "a".repeat(48), "b".repeat(500_000));
+        let near = nearest(&"a".repeat(48), [long_candidate.as_str(), &"b".repeat(48)]);
+        assert_eq!(near.first(), Some(&long_candidate));
+        // An unknown face lists a dozen declared assets and counts the rest, however many are declared.
+        let assets: Vec<String> = (0..40).map(|n| format!(r#""a{n:02}": "{SVG}""#)).collect();
+        let text = with_header(&format!(r#""assets": {{ {} }}"#, assets.join(", ")));
+        let finding = refuses(
+            &edit(
+                &text,
+                &[(r#""size": 52 }"#, r#""size": 52, "face": "nope" }"#)],
+            ),
+            &codes::E0203,
+            &format!("{ITEM_AT}/face"),
+        );
+        assert!(finding.hint.contains("a00"), "{}", finding.hint);
+        assert!(!finding.hint.contains("a39"), "{}", finding.hint);
+        assert!(finding.hint.contains("and 28 more"), "{}", finding.hint);
+    }
+
+    #[test]
+    fn the_package_reader_names_only_keys_the_table_has() {
+        for key in [
+            "id", "version", "name", "author", "license", "app", "palette", "assets", "layout",
+        ] {
+            assert!(
+                schema::ROOT.fields.iter().any(|f| f.key == key),
+                "`Package::from_object` reads `{key}`, which `schema::ROOT` does not list"
+            );
+        }
+        let app = schema::node("app").expect("the `app` node");
+        for key in ["min", "max"] {
+            assert!(
+                app.fields.iter().any(|f| f.key == key),
+                "`Package::from_object` reads `app.{key}`, which the `app` node does not list"
+            );
+        }
     }
 
     #[test]
@@ -2968,6 +3115,32 @@ mod tests {
             &with_command(r#""command": 7"#),
             &codes::E0104,
             &format!("{ITEM_AT}/command"),
+        );
+        // ... but it still judges the item's OWN keys, so one round reports every mistake: here a bad
+        // command, a repeated `size`, a bad `widget` and a missing `id`. A key only the command's
+        // parameters could own (`bogus`) is not reported against a command nobody could resolve.
+        let text = edit(
+            MINIMAL,
+            &[
+                (
+                    r#""id": "more", "command": "open_more""#,
+                    r#""command": "open_mre", "bogus": 1"#,
+                ),
+                (
+                    r#""widget": "disc", "size": 52"#,
+                    r#""widget": "nope", "size": 52, "size": 9"#,
+                ),
+            ],
+        );
+        let parsed = parse_text(&text);
+        assert_eq!(
+            found(&parsed.findings),
+            [
+                (codes::E0301.id, &*format!("{ITEM_AT}/command")),
+                (codes::E0201.id, &*format!("{ITEM_AT}/widget")),
+                (codes::E0101.id, &*format!("{ITEM_AT}/size")),
+                (codes::E0103.id, ITEM_AT),
+            ]
         );
 
         // E0302: a key the command does not have, with the item's keys and its parameters as the nearest.

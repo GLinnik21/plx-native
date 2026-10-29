@@ -34,7 +34,10 @@
 //! * **Prolog and comments.** An optional BOM and whitespace, an optional leading `<?xml ... ?>`
 //!   declaration, and XML comments anywhere (real icons carry long ones) are skipped. A comment ends
 //!   at the first `-->`; `<!-->` and `<!--->` are refused, because HTML-style parsers close those at
-//!   once and a scanner that disagrees about where a comment ends is how an element gets smuggled.
+//!   once, and so is a comment with a `<` after a `>` in its body: nanosvg ends any `<!` construct at
+//!   the first `>` and reads the rest as content, so that `<` starts an element the checker never saw
+//!   (a `>` alone, as in prose that mentions `<path>`, leaves only text). A scanner that disagrees about
+//!   where a comment ends is how an element gets smuggled.
 //!   Any other `<?` is a processing instruction, any other `<!` a declaration: `HUD-E0703`.
 //! * **Quotes.** Attribute values may use either quote; an unquoted value, a repeated attribute or a
 //!   missing separator is `HUD-E0704`. A NUL byte is `HUD-E0704` (a C string would end there).
@@ -504,6 +507,16 @@ impl<'a> Checker<'a> {
         match rest.find("-->") {
             Some(i) => {
                 self.pos = body + i + "-->".len();
+                if let Some((_, after)) = rest[..i].split_once('>') {
+                    if after.contains('<') {
+                        return Err(self.halt(
+                            &codes::E0704,
+                            at,
+                            "a comment with markup after a `>` inside it".to_owned(),
+                            "nanosvg ends a comment at the first `>` and reads what follows as markup: leave `<` out of a comment after a `>`, or write no `>` in it",
+                        ));
+                    }
+                }
                 Ok(())
             }
             None => Err(self.halt(
@@ -1313,6 +1326,22 @@ mod tests {
         );
         accepts("<!----><svg viewBox='0 0 24 24'><path d='M0 0'/></svg>");
         // No path.
+        // nanosvg ends any `<!` construct at the first `>`, so a `>` inside a comment would hand the
+        // C parser everything after it, gradients and colour included.
+        let smuggled = "<svg viewBox='0 0 24 24'><path d='M0 0h1v1z'/><!-- > <linearGradient id='g'><stop stop-color='red'/></linearGradient><path fill='url(#g)' d='M0 0'/> --></svg>";
+        only(smuggled, "HUD-E0704");
+        only(
+            "<svg viewBox='0 0 24 24'><!-- a > <b --><path d='M0 0'/></svg>",
+            "HUD-E0704",
+        );
+        only(
+            "<svg viewBox='0 0 24 24'><path d='M0 0'/><!-- <path d='M1 1'/> <path d='M2 2'/> --></svg>",
+            "HUD-E0704",
+        );
+        // A `>` with only text after it, or a `<` with no `>` before it, hides nothing from nanosvg.
+        accepts("<svg viewBox='0 0 24 24'><!-- one <path> so a > b --><path d='M0 0'/></svg>");
+        accepts("<svg viewBox='0 0 24 24'><!-- a < b --><path d='M0 0'/></svg>");
+        accepts("<svg viewBox='0 0 24 24'><!-- a - b -- c --><path d='M0 0'/></svg>");
         only("<svg viewBox='0 0 24 24'></svg>", "HUD-E0704");
         only("<svg viewBox='0 0 24 24'/>", "HUD-E0704");
         // The xml declaration must close.
