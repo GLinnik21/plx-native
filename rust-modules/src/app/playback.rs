@@ -56,7 +56,7 @@ pub(crate) fn playpos() -> i64 {
 /// so anything that snapshots "where are we?" inside that window snapshots the position the user
 /// just left. The rule — an in-flight seek target wins, else the published position — was open-coded
 /// at each reader that remembered it (the scrub seed below; the HUD's frozen playhead in
-/// `appkit/player_hud.rs`) and simply MISSING at the one that did not: the OS-background save took a bare
+/// `appkit/player_hud/state.rs`) and simply MISSING at the one that did not: the OS-background save took a bare
 /// `playpos()`, so backgrounding right after a seek stored the pre-seek spot and the foreground
 /// restore replayed from there — and teardown clears the pending target, so nothing self-corrected.
 /// Use this at every reader that means "where the user is"; keep the raw `playpos()` only where the
