@@ -196,10 +196,11 @@ pub struct MoreMenuState {
     side: std::cell::Cell<plx_ui::popover::Side>,
 }
 
-/// **The tallest page this menu shows with app-owned rows** — the Quality page with Auto enabled
-/// (its title band, seven rungs and the table's padding, about 600), which decides the SIDE of the
+/// **The tallest page this menu shows with app-owned rows** — the Quality page, its title band,
+/// seven rungs (Auto first) and the table's padding: 536 px in English. It decides the SIDE of the
 /// opener the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`), so it is the same on
-/// every page. Classic's room above its row is 710, which this stays under, so classic opens upward.
+/// every page. 600 leaves room for a longer label that wraps. Classic's room above its row is 710,
+/// which this stays under, so classic opens upward.
 const NEED_H: f32 = 600.0;
 
 /// The hand-assigned focus key of each row. `SetQuality` rungs are an exhaustive match, so a new
@@ -607,7 +608,7 @@ impl MoreMenuState {
     /// screen while the card resizes.
     ///
     /// The height is the table's own, and the placer cuts it to the room on the side the panel took.
-    /// The Quality page can reach 600 when Auto is enabled (its title band plus seven rungs AND the
+    /// The Quality page is 536 tall with Auto's rung (its title band plus seven rungs AND the
     /// table's own top/bottom padding): a 320 cap put four of nine rows on screen and silently
     /// scrolled the rest, which is a picker whose options you cannot see, and a `bottom - <margin>`
     /// literal put a later version 4px UNDER the content for the same reason. A cap that is the
@@ -868,13 +869,15 @@ fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
     }
 }
 
-/// The panel at its WIDEST and TALLEST ([`NEED_H`]), for the overscan audit
-/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside classic's anchor.
+/// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`]) and TALLEST, for the overscan audit
+/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside classic's anchor:
+/// asked for the whole screen's height it gets the whole room, which is what a list longer than
+/// the room fills (the track menu's audit asks the same).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let placed = plx_ui::popover::anchor_panel(
         crate::player_hud::ctrl_row_hit_rect(),
-        (plx_ui::table::MENU_MAX_W, NEED_H),
+        (plx_ui::table::MENU_MAX_W, plx_ui::consts::SCR_H),
         NEED_H,
         theme::layout::PLAYER_MENU_GAP,
         plx_ui::popover::Placement::PLAYER_MENU,
@@ -1877,23 +1880,33 @@ mod classic_placement_tests {
         assert_eq!((pushed.x + pushed.w, pushed.y), (first.x + first.w, first.y));
     }
 
-    /// `NEED_H` covers the tallest page (Quality) and fits classic's room above the row, so classic opens upward.
+    /// `NEED_H` covers the tallest page, the Quality page with its whole ladder, Auto included
+    /// (`route::auto_quality_ready` is a const `true`, so the shipping ladder has Auto and the page
+    /// is the seven-rung 536 px one), and fits classic's room above the row, so classic opens
+    /// upward. A page that outgrew `NEED_H` (a longer label that wraps, an eighth rung) would scroll
+    /// an app-owned row on a side with less room.
     #[test]
-    fn need_h_covers_the_quality_page_and_fits_classics_room() {
+    fn need_h_covers_the_quality_page_with_auto_and_fits_classics_room() {
         plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _g = plx_base::testlock::serial();
-        let tallest = MoreMenuState::new_quality(&plx_media::route::PlaybackSession::IDLE).form.table.measured_height();
+        let st = MoreMenuState::new_quality(&plx_media::route::PlaybackSession::IDLE);
+        assert_eq!(st.page(), Some(MorePage::Quality));
+        let auto = Action::SetQuality(plx_media::route::Quality::Auto);
+        assert!(st.form.index_of_key(auto.key()).is_some(), "the page measured has the Auto row");
+        let tallest = st.form.table.measured_height();
         assert!(tallest > 400.0, "the Quality page was measured: {tallest}");
-        assert!(tallest <= NEED_H);
+        assert!(tallest <= NEED_H, "the Quality page is {tallest} px, taller than NEED_H {NEED_H}");
         assert!(NEED_H <= 764.0 - plx_ui::consts::SAFE.y);
     }
 
-    /// The overscan audit's rect is the placer's, and sits inside SAFE.
+    /// The overscan audit's rect is the placer's whole room, the same extent the track menu's audit
+    /// takes, and sits inside SAFE.
     #[test]
     fn the_overscan_rect_comes_from_the_placer() {
         let mut out = Vec::new();
         overscan_rects(&mut out);
         let r = out[0].1;
-        assert_eq!((r.x + r.w, r.y + r.h, r.w, r.h), (1824.0, 764.0, plx_ui::table::MENU_MAX_W, NEED_H));
+        assert_eq!((r.x + r.w, r.y + r.h, r.w), (1824.0, 764.0, plx_ui::table::MENU_MAX_W));
+        assert_eq!(r.y, plx_ui::consts::SAFE.y, "the whole room above the row");
     }
 }

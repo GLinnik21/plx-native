@@ -1170,18 +1170,40 @@ fn every_classic_opener_hands_its_menu_the_control_rows_anchor() {
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let row = plx_appkit::player_hud::ctrl_row_hit_rect();
     assert_eq!(row.x + row.w, plx_appkit::player_hud::CTRL_RIGHT);
-    for (kind, name) in [
-        (OverlayKind::Tracks { tab: 0 }, "Audio disc"),
-        (OverlayKind::Tracks { tab: 1 }, "Subtitles disc"),
-        (OverlayKind::More { quality: false }, "More disc"),
-        (OverlayKind::More { quality: true }, "failure read-out"),
-    ] {
-        let page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, kind);
-        let got = match page.panel() {
-            Panel::Tracks(p) => p.anchor(),
-            Panel::More(p) => p.anchor(),
-            _ => panic!("{name}: a menu"),
-        };
-        assert_eq!(got, row, "{name}");
+    for (kind, name) in MENUS {
+        let page = PlayerOverlayScreen::new_with(&ps, meta.view(), ENTRY, kind, false);
+        assert_eq!(menu_anchor_of(&page, name), row, "{name}");
+    }
+}
+
+/// The menus' own default is classic's row too, so the test above cannot tell a screen that hands
+/// the anchor over from one that forgot to. Here the anchor is one no opener produces, and every
+/// menu arm of the mount reachable from a host test must arrive with exactly it. (More's Force
+/// Direct Play fallback of the quality entry needs a forced session no host test can build.)
+#[test]
+fn every_menu_arm_latches_the_anchor_it_is_handed() {
+    let _g = plx_base::testlock::serial();
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let anchor = plx_ui::Rect::new(333.0, 222.0, 111.0, 55.0);
+    assert_ne!(anchor, plx_appkit::player_hud::ctrl_row_hit_rect());
+    for (kind, name) in MENUS {
+        let page = PlayerOverlayScreen::new_anchored(&ps, meta.view(), ENTRY, kind, false, anchor);
+        assert_eq!(menu_anchor_of(&page, name), anchor, "{name}");
+    }
+}
+
+const MENUS: [(OverlayKind, &str); 4] = [
+    (OverlayKind::Tracks { tab: 0 }, "Audio disc"),
+    (OverlayKind::Tracks { tab: 1 }, "Subtitles disc"),
+    (OverlayKind::More { quality: false }, "More disc"),
+    (OverlayKind::More { quality: true }, "failure read-out"),
+];
+
+fn menu_anchor_of(page: &PlayerOverlayScreen, name: &str) -> plx_ui::Rect {
+    match page.panel() {
+        Panel::Tracks(p) => p.anchor(),
+        Panel::More(p) => p.anchor(),
+        _ => panic!("{name}: a menu"),
     }
 }

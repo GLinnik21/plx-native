@@ -180,18 +180,20 @@ fn anchors_ending_at_one_segment_edge_share_the_panels_edge() {
     }
 }
 
-/// Every placement is deterministic in the anchor alone: the same anchor and size give the same
-/// rect however often it is asked, which is what a menu that LATCHES its anchor at open relies on
-/// (the HUD row changing under an open menu cannot reach it, there is nothing to re-read).
+/// The placer is a pure function of the anchor and the sizes: the same inputs give the same rect
+/// however often it is asked, and a different anchor gives a different one. This is the half of the
+/// latch the placer owns (it reads nothing live); the other half, that a menu keeps the anchor it
+/// was opened with, is structural (`with_anchor` sets a private field once) and is pinned where
+/// the menus are, by `every_menu_arm_latches_the_anchor_it_is_handed` and the menus' own tests.
 #[test]
-fn a_latched_anchor_places_the_same_panel_every_time() {
+fn the_same_anchor_and_size_place_the_same_panel_every_time() {
     let anchor = Rect::new(1400.0, 792.0, 424.0, 64.0);
     let first = menu(anchor, 440.0, 500.0, 600.0);
     for _ in 0..8 {
         assert_eq!(menu(anchor, 440.0, 500.0, 600.0), first);
     }
     let moved = menu(Rect::new(1400.0, 300.0, 424.0, 64.0), 440.0, 500.0, 600.0);
-    assert_ne!(moved.rect, first.rect, "a different anchor is a different panel; only the latch keeps this one still");
+    assert_ne!(moved.rect, first.rect, "a different anchor is a different panel");
 }
 
 /// The rise comes from the opener's side: from below for a panel above its opener, from above for
