@@ -431,10 +431,12 @@ impl UriEvent {
     /// whitelisted [`Message`] goes on. A transport failure's text is the hub's, scrubbed.
     pub fn from_reply(reply: &UriReply) -> UriEvent {
         let method = Method::of(reply.method);
-        let message = if !reply.ok {
-            Message { error_text: Some(scrub_text(&reply.payload)), ..Message::default() }
-        } else if method == Method::Dropped {
+        // `dropped` comes first: the transport's queue sends it with `ok: false` and a count, not a
+        // refusal's text (`ReplyQueue::drain`).
+        let message = if method == Method::Dropped {
             Message { dropped: reply.payload.trim().parse().ok(), ..Message::default() }
+        } else if !reply.ok {
+            Message { error_text: Some(scrub_text(&reply.payload)), ..Message::default() }
         } else if method == Method::Register {
             Message::default()
         } else {
@@ -958,6 +960,7 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_platform::tv::uri::ReplyQueue;
 
     const WINDOW: &str = "_Window_Id_7";
     /// A media URL as the planner hands it over: a `plex.direct` host, a port, a path and a token.
@@ -1402,8 +1405,17 @@ mod tests {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.start();
         assert!(rig.msg("subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#).is_empty(), "no load was sent yet");
-        let fx = rig.msg("dropped", "3");
-        assert_eq!(logs(&fx), ["uriprobe: t=0 transport dropped 3 replies"]);
+        // The `dropped` reply exactly as the transport's own queue makes it (`ok: false`), by
+        // overflowing a real one: three pushes into a queue of one lose two.
+        let queue = ReplyQueue::new(1);
+        for _ in 0..3 {
+            queue.push("subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#.to_owned(), true);
+        }
+        let replies = queue.drain();
+        let marker = replies.last().expect("the drain ends with the dropped reply");
+        assert_eq!((marker.method, marker.ok), ("dropped", false), "the shape the queue sends");
+        let fx: Vec<UriEffect> = replies.iter().flat_map(|reply| rig.feed(UriEvent::from_reply(reply))).collect();
+        assert_eq!(logs(&fx), ["uriprobe: t=0 transport dropped 2 replies"]);
     }
 
     #[test]

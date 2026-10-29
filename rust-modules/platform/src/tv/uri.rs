@@ -65,7 +65,8 @@ pub trait UriMedia: Sync {
     fn close(&self);
 }
 
-/// The transport the installed port holds. Only `tv` reads the table, so this is the one way out.
+/// The transport the installed port holds. Only `tv` reads the table; this is the `devtriggers` build's
+/// second way out of it (the other is the sink), read by the URI-mode probe's driver.
 pub fn installed() -> &'static dyn UriMedia { super::port().uri_media }
 
 /// The bounded queue between a transport's worker (which pushes) and its poller (which drains).

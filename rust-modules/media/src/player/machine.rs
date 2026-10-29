@@ -42,8 +42,10 @@ pub struct Player {
     /// **Is the hardware video plane bound to our sink?** (spec §9, §4.4, §16 risk 10.)
     ///
     /// A DECISION of this machine, with defined transitions, not an expression the frame
-    /// re-derives: it is set when the ACB bind transaction has actually reached the sink and
-    /// cleared only when the sink is confirmed unbound. Read it; never recompute it. Through
+    /// re-derives: it is set when the ACB bind transaction has actually reached the sink (in a
+    /// `devtriggers` build also when a URI-mode probe session's service reports `playing`, which
+    /// binds no sink of ours) and cleared only when the sink is confirmed unbound (or the probe
+    /// session ends). Read it; never recompute it. Through
     /// phase 8 the same question was asked as `matches!(app.route, Route::Player)` at three
     /// separate places in the loop, which is a claim about which SCREEN is up — true a second
     /// before the plane binds and a second after it unbinds, when the compositor has an ordinary

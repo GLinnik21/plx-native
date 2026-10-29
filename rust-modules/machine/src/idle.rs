@@ -199,7 +199,8 @@ static LAST_CHANGE: AtomicU32 = AtomicU32::new(0);
 /// Kill switch (`/tmp/plxnative-noidle`), so a device A/B is one file apart and a bad frame on the
 /// panel is one `rm` from being ruled out as this feature's fault.
 static ENABLED: AtomicBool = AtomicBool::new(true);
-/// **Is the hardware video plane bound to our sink?** The gate's only non-damage INPUT (spec §4.4,
+/// **Is the hardware video plane bound to our sink (or, in a `devtriggers` build, does the URI-mode
+/// probe's service say it plays)?** The gate's only non-damage INPUT (spec §4.4,
 /// [`crate::present::PresentEvent::VideoPlane`]). While it is set every frame presents,
 /// unconditionally: the plane is *slaved* to this wayland surface (`system::clear_opaque_region`),
 /// and "we stop presenting while a plane is slaved to it" is a claim about this compositor that

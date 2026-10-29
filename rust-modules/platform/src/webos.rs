@@ -571,10 +571,11 @@ pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia
 
 /// One LS2 request/reply, on the calling thread.
 ///
-/// **The one LS2 client this process has**, shared by every caller that speaks to the bus from
-/// this application: [`super::launch_home`] (one 600 ms call on the SDL main thread) and
-/// `keymanager::platform::Client` (a registration kept alive across begin → finish, 4 s budget).
-/// Until 2026-09-04 it was two private copies, both registering with
+/// **The one LS2 client the frame-thread callers share**, [`super::launch_home`] (one 600 ms call
+/// on the SDL main thread) and `keymanager::platform::Client` (a registration kept alive across
+/// begin → finish, 4 s budget). A `devtriggers` build's URI-mode probe runs a separate client on
+/// its own thread (`ls2::uri`).
+/// Until 2026-09-04 that client was two private copies, both registering with
 /// `LSRegisterApplicationService(NULL, app_id)`, and on this set that registration is REFUSED:
 /// `ls-hubd LSHUB_ROLE_FILE: Can not find service "" permissions for executable ".../plxnative"`
 /// once per root press, the app logging `stage=register after 2ms` having freed the LSError
@@ -591,10 +592,13 @@ pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia
 /// | `LSRegisterApplicationService(NULL, app_id)` | `-1027 Invalid permissions for (null)` — the `""` name has no permissions entry |
 /// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it |
 ///
-/// So every caller registers as a plain anonymous client, [`register`]. The role file still
-/// decides what such a client may CALL — the probe proves SAM's read-only method; `launch_home`
-/// grades the reply of the one that matters — and the hub's refusal, when there is one, travels
-/// in [`RegisterFail`] to the caller's log line instead of being freed. Anonymous clients do not
+/// Every production caller registers as a plain anonymous client, [`register`]. The one exception
+/// is the `devtriggers` URI-mode probe's worker (`ls2::uri`): it owns its own handle and thread
+/// and tries the named shape `com.webos.media.client.plxprobe` first, because whether the hub
+/// accepts that is what the probe measures. The role file still decides what such a client may
+/// CALL — the probe proves SAM's read-only method; `launch_home` grades the reply of the one that
+/// matters — and the hub's refusal, when there is one, travels in [`RegisterFail`] to the
+/// caller's log line instead of being freed. Anonymous clients do not
 /// collide with each other, so nothing here is serialised; a registration lives for one caller's
 /// use and is unregistered on drop, as both copies always did.
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
