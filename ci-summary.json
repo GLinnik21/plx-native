@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-29T21:53:21Z",
+ "generated": "2026-10-29T21:58:16Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -123,6 +123,27 @@
    "unit": "s"
   },
   {
+   "change30_pct": null,
+   "change7_pct": 20.7,
+   "d30": null,
+   "delta30": null,
+   "delta7": 31,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 75,
+   "n_prev": 77,
+   "now": 181,
+   "prev7": 150,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": -58.8,
    "change7_pct": 8.4,
    "d30": 905.5,
@@ -132,7 +153,7 @@
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 226,
+   "n_now": 228,
    "n_prev": 172,
    "now": 373.0,
    "prev7": 344.0,
@@ -145,17 +166,17 @@
   },
   {
    "change30_pct": -59.9,
-   "change7_pct": 10.9,
-   "d30": 912,
-   "delta30": -546,
-   "delta7": 36.0,
+   "change7_pct": 10.8,
+   "d30": 912.5,
+   "delta30": -547.0,
+   "delta7": 35.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 89,
+   "n_now": 90,
    "n_prev": 82,
-   "now": 366,
+   "now": 365.5,
    "prev7": 330.0,
    "shown": true,
    "state": "flat",
@@ -282,10 +303,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 4.8,
+   "change30_pct": 4.2,
    "change7_pct": 13.0,
-   "d30": 2237,
-   "delta30": 106.5,
+   "d30": 2248.5,
+   "delta30": 95.0,
    "delta7": 270.5,
    "group": "ci",
    "id": "minutes",
@@ -366,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 56.2,
-   "change7_pct": 2.5,
-   "d30": 170,
-   "delta30": 95.5,
-   "delta7": 6.5,
+   "change30_pct": 53.6,
+   "change7_pct": 2.3,
+   "d30": 172.5,
+   "delta30": 92.5,
+   "delta7": 6,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 77,
-   "now": 265.5,
+   "now": 265,
    "prev7": 259,
    "shown": true,
    "state": "flat",
@@ -408,43 +429,22 @@
    "unit": "s"
   },
   {
-   "change30_pct": -65.3,
-   "change7_pct": 2.5,
-   "d30": 598,
-   "delta30": -390.5,
-   "delta7": 5.0,
+   "change30_pct": -67.9,
+   "change7_pct": 2.7,
+   "d30": 648.5,
+   "delta30": -440.5,
+   "delta7": 5.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 76,
-   "now": 207.5,
+   "now": 208,
    "prev7": 202.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
-   "threshold_abs": 30.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 19.7,
-   "d30": null,
-   "delta30": null,
-   "delta7": 29.5,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 74,
-   "n_prev": 77,
-   "now": 179.5,
-   "prev7": 150,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
    "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
@@ -536,18 +536,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 12.5,
+   "change30_pct": 9.1,
    "change7_pct": 0.0,
-   "d30": 16,
-   "delta30": 2.0,
-   "delta7": 0.0,
+   "d30": 16.5,
+   "delta30": 1.5,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 77,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -601,8 +601,8 @@
   {
    "change30_pct": -98.9,
    "change7_pct": 0.0,
-   "d30": 283.0,
-   "delta30": -280.0,
+   "d30": 284,
+   "delta30": -281.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -622,8 +622,8 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 903.0,
-   "delta30": -900.0,
+   "d30": 902,
+   "delta30": -899.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -667,11 +667,6 @@
    "change_pct": 69.9,
    "commits": [
     {
-     "pr": 1085,
-     "sha": "da8424b7e",
-     "title": "Player: an H.264 non-IDR I-slice at a random access point is a keyframe (seeks in Blu-ray remuxes stuck on Buffering)"
-    },
-    {
      "pr": 1100,
      "sha": "5486598a9",
      "title": "Detail: a focused episode that left the landed list re-seats on its neighbour"
@@ -715,6 +710,11 @@
      "pr": 1141,
      "sha": "9986d528c",
      "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
+    },
+    {
+     "pr": 1142,
+     "sha": "a51d70e7b",
+     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
     }
    ],
    "from": 176.0,
@@ -728,11 +728,6 @@
    "change_pct": 28.6,
    "commits": [
     {
-     "pr": 1085,
-     "sha": "da8424b7e",
-     "title": "Player: an H.264 non-IDR I-slice at a random access point is a keyframe (seeks in Blu-ray remuxes stuck on Buffering)"
-    },
-    {
      "pr": 1100,
      "sha": "5486598a9",
      "title": "Detail: a focused episode that left the landed list re-seats on its neighbour"
@@ -776,6 +771,11 @@
      "pr": 1141,
      "sha": "9986d528c",
      "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
+    },
+    {
+     "pr": 1142,
+     "sha": "a51d70e7b",
+     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
     }
    ],
    "from": 120.3,
@@ -789,10 +789,66 @@
    "change_pct": 22.1,
    "commits": [
     {
-     "pr": 1085,
-     "sha": "da8424b7e",
-     "title": "Player: an H.264 non-IDR I-slice at a random access point is a keyframe (seeks in Blu-ray remuxes stuck on Buffering)"
+     "pr": 1100,
+     "sha": "5486598a9",
+     "title": "Detail: a focused episode that left the landed list re-seats on its neighbour"
     },
+    {
+     "pr": 1030,
+     "sha": "19eaaca6f",
+     "title": "Library: keep the A-Z rail under Unwatched and genre filters"
+    },
+    {
+     "pr": 1007,
+     "sha": "411f6d33c",
+     "title": "UI text: Arabic and Hebrew with RTL paragraphs"
+    },
+    {
+     "pr": 1134,
+     "sha": "decb0aafa",
+     "title": "CI: the globals rule names the registry readers it missed, and the forks rule reads every machine crate"
+    },
+    {
+     "pr": 1135,
+     "sha": "b763b41db",
+     "title": "CI: a ledger or allowlist count that rises above the base branch's fails the PR"
+    },
+    {
+     "pr": 1129,
+     "sha": "64e7bf443",
+     "title": "Library: optional sort information below movie library posters"
+    },
+    {
+     "pr": 1136,
+     "sha": "656ed590e",
+     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
+    },
+    {
+     "pr": 1139,
+     "sha": "2623e4560",
+     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
+    },
+    {
+     "pr": 1141,
+     "sha": "9986d528c",
+     "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
+    },
+    {
+     "pr": 1142,
+     "sha": "a51d70e7b",
+     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
+    }
+   ],
+   "from": 258,
+   "id": "ci|host unit tests (hostsim)",
+   "label": "CI: host unit tests (hostsim)",
+   "since": "2026-10-29",
+   "threshold_pct": 20.0,
+   "to": 315.0
+  },
+  {
+   "change_pct": 20.7,
+   "commits": [
     {
      "pr": 1100,
      "sha": "5486598a9",
@@ -837,14 +893,19 @@
      "pr": 1141,
      "sha": "9986d528c",
      "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
+    },
+    {
+     "pr": 1142,
+     "sha": "a51d70e7b",
+     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
     }
    ],
-   "from": 258,
-   "id": "ci|host unit tests (hostsim)",
-   "label": "CI: host unit tests (hostsim)",
+   "from": 150,
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-29",
    "threshold_pct": 20.0,
-   "to": 315.0
+   "to": 181
   }
  ],
  "schema": 2,
