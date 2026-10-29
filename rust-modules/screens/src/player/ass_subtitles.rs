@@ -102,8 +102,9 @@ impl AssSubtitles {
     }
 
     /// `lift` is the transport HUD being up. It moves a text subtitle's bottom regions and nothing
-    /// else: an authored script keeps its own placement.
-    pub fn draw(&mut self, lift: bool) {
+    /// else: an authored script keeps its own placement. `model` is the frame's HUD snapshot, which
+    /// the caption ink's tone is read from.
+    pub fn draw(&mut self, lift: bool, model: &plx_appkit::player_hud::model::HudModel) {
         let Some(frame) = self.frame.clone() else {
             if self.source == 0 {
                 clear_textures(&mut self.textures);
@@ -158,7 +159,7 @@ impl AssSubtitles {
         self.spans.clear();
         self.spans.extend(frame.rects.iter().map(|r| (r.y, r.height)));
         lift_dys(origin, lift, &self.spans, aligns, &mut self.dys);
-        let ink = plx_appkit::player_hud::subtitle_ink();
+        let ink = plx_appkit::player_hud::subtitle_ink(model);
         for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
             let dy = self.dys[i];
             Painter::root().tex(

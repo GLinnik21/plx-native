@@ -71,7 +71,8 @@ impl PlayerScreen {
                     self.scrub.begin(now, forward);
                     self.scrub.ns = seed;
                     self.scrub.reveal = true;
-                    self.hud.nav.focus = 0;
+                    self.hud.nav.focus = GROUP_SCRUB;
+                    Self::repair_focus(fx, GROUP_SCRUB);
                     if !self.hud.visible_at_press { self.hud.hide(false); }
                 }
                 Edge::Repeat => {
@@ -110,6 +111,7 @@ impl PlayerScreen {
 
 #[cfg(test)]
 mod tests {
+    use super::super::travel_rig::Rig;
     use super::super::*;
     use crate::player::overlay_tests::TestHost;
     use plx_machine::machine::{InputEvent, InputOwner, MachineId, Source, Tick};
@@ -263,9 +265,12 @@ mod tests {
             (player_hud::Controls::NONE, 2, 3, 2),
         ] {
             page.slot = ControlSlot::Discs(controls);
-            page.hud.nav.focus = 0;
+            page.hud.nav.focus = GROUP_SCRUB;
             page.hud.visible_at_press = true;
-            page.key_updown(consts::Key::Up, 1_000);
+            // UP from the scrubber is the engine's: the declared link lands the row's own seat.
+            let mut travel = Rig::on(&page, EntryId(9));
+            travel.key(&mut page, consts::SDLK_UP, 0, Edge::Down, 1_000);
+            assert_eq!(page.hud.nav.focus, GROUP_ROW);
             assert_eq!(page.hud.nav.btn, primary);
             let mut engine = FocusEngine::new();
             let start = <PlayerScreen as Focusable<TestHost>>::seat(&page, GROUP_ROW,
