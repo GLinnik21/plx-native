@@ -518,7 +518,7 @@ fn pre_boot_diagnostics() -> plx_telemetry::telemetry::native::Guard {
 /// The run+teardown sequence `run_application` hands the mounted `App` to, split out for the same
 /// reason as [`pre_boot_diagnostics`] (D4): `run_application` stays a ten-line skeleton naming only
 /// the THREE real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
-unsafe fn run_and_shutdown(app: &mut App) -> c_int {
+unsafe fn run_and_shutdown(app: &mut App) -> ! {
     run::run(app);
     // Quit: the last screen's visit has not been reported, and no route change will.
     run::end_route_visit(app, false);
@@ -526,18 +526,33 @@ unsafe fn run_and_shutdown(app: &mut App) -> c_int {
         || app.bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
     let code = i32::from(failed);
-    match run::shutdown(&mut app.player.session, &mut app.adapters.player) {
-        run::Teardown::Return => code,
-        run::Teardown::ExitNow => {
-            // A worker is still inside firmware: returning would drop the `App` and run libc's
-            // `exit`, whose `atexit`/C++ static finalizers (libStarfishMediaAPIs, libpf, libAcbAPI)
-            // would race that worker. `shutdown` has flushed the event log, scrobble, capture,
-            // posters and the telemetry session; the crash-channel guard is the one thing left
-            // whose `Drop` a clean exit runs, so it is dropped here (no firmware involved).
-            drop(app.telemetry_guard.take());
-            // SAFETY: `_exit` is async-signal-safe and touches no Rust or C++ state.
-            unsafe { libc::_exit(code) }
-        }
+    run::shutdown(&mut app.player.session, &mut app.adapters.player);
+    // The crash-channel guard is the one `Drop` that persists something (it closes the capture
+    // backend and removes its database), so it runs here explicitly: nothing drops the `App`.
+    drop(app.telemetry_guard.take());
+    end_process(code)
+}
+
+/// The one way the app process ends: `_exit`, never a return into libc's `exit` (#1115).
+///
+/// `exit` runs `atexit` handlers, among them OpenSSL's `OPENSSL_cleanup`, which frees and NULLs
+/// libcrypto's global locks while the detached curl workers (notification feed, metadata, watchlist,
+/// auth probes) are still running; their next `CRYPTO_THREAD_*_lock` is `pthread_rwlock_*lock(NULL)`,
+/// a SIGSEGV at 0x1c on a clean exit. It would also run the firmware libraries' C++ finalizers
+/// (libStarfishMediaAPIs, libpf, libAcbAPI) under a worker still inside them. Returning is not an
+/// option either: the `App` would drop and the process would reach `exit` anyway.
+///
+/// What `exit` would have flushed is flushed by hand first: C stdio, and Rust's stdout/stderr (the
+/// event log is appended unbuffered per line, and every persistent store has saved by now).
+fn end_process(code: c_int) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: `fflush(NULL)` flushes every open C output stream; `_exit` is async-signal-safe and
+    // touches no Rust or C++ state, so no destructor or `atexit` handler runs under a live worker.
+    unsafe {
+        libc::fflush(std::ptr::null_mut());
+        libc::_exit(code)
     }
 }
 
@@ -604,8 +619,10 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
 }
 
 /// The ten-line public skeleton: preflight/construction, then the ordinary loop and teardown.
-pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> c_int {
-    let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => return code };
+pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> ! {
+    // An early-boot refusal ends the same way: the workers it has already started (diagnostics,
+    // capability probe, telemetry) are as live as after a played session.
+    let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => end_process(code) };
     unsafe { run_and_shutdown(&mut app) }
 }
 

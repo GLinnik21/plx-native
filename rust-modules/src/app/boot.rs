@@ -531,6 +531,39 @@ mod seam_order_tests {
         );
     }
 
+    /// **No exit of the app process returns into libc's `exit`.** `exit` runs libcrypto's
+    /// `OPENSSL_cleanup`, which frees and NULLs its global locks while the detached curl workers
+    /// (notification feed, metadata, watchlist, auth probes) still run, and the next
+    /// `pthread_rwlock_*lock(NULL)` is a SIGSEGV (#1115). So the run-and-shutdown sequence is typed
+    /// `-> !` (a path that returns does not compile) and `run_application` is too, so an early-boot
+    /// `Err` is routed through the same `end_process` as a clean exit. Reads the source like the
+    /// tests around it, because no host test can run `run_application`.
+    #[test]
+    fn a_clean_exit_never_returns_into_libc_exit() {
+        let source = include_str!("mod.rs");
+        assert!(
+            source.contains("unsafe fn run_and_shutdown(app: &mut App) -> !"),
+            "run_and_shutdown must be `-> !`: every exit ends in `end_process`"
+        );
+        assert!(
+            source.contains("fn run_application(pms_host: *const c_char, pms_port: c_int) -> !"),
+            "run_application must be `-> !`"
+        );
+        let body = source
+            .split_once("fn run_application(")
+            .expect("run_application")
+            .1;
+        assert!(
+            body.contains("Err(code) => end_process(code)"),
+            "an early-boot failure ends through `end_process` too, not `return code`"
+        );
+        assert_eq!(
+            source.matches("libc::_exit(").count(),
+            1,
+            "`end_process` is the one `_exit` site"
+        );
+    }
+
     /// `enter_application` installs the player's error-trace eraser before telemetry first loads a
     /// decision (`pre_boot_diagnostics` -> `telemetry::boot`, which already erases through it) and
     /// before anything can play. It was installed by `player::report::requested`, which a
