@@ -637,4 +637,272 @@ mod tests {
             assert!(!rig.pa.uri_plane_open());
         });
     }
+    /// The tests which need the host sink to export a window (the webOS 5+ path) or the whole
+    /// engine around the driver: `make test-hostsim C=plx_media T=uriprobe`.
+    #[cfg(feature = "hostsim")]
+    mod hostsim {
+        use super::*;
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+
+        /// The host sink exports a window (`VP_EXPORTED`, id `clocksink-window`) while this lives
+        /// and is put back as it was found.
+        struct ExportedHost;
+
+        impl ExportedHost {
+            fn arm() -> ExportedHost {
+                crate::player::ffi_host::reset_native_lifecycle_for_test();
+                crate::player::ffi_host::force_clocksink_for_test(true);
+                ExportedHost
+            }
+        }
+
+        impl Drop for ExportedHost {
+            fn drop(&mut self) {
+                crate::player::ffi_host::force_clocksink_for_test(false);
+            }
+        }
+
+        #[test]
+        fn uriprobe_driver_on_an_exporting_set_names_the_window_in_the_load_and_places_it_on_videoinfo() {
+            let _serial = plx_base::testlock::serial();
+            let _host = ExportedHost::arm();
+            let log = logged(|| {
+                let mut rig = Rig::new(Variant::AtLoad);
+                assert!(rig.session.as_ref().unwrap().window, "the window was created");
+                rig.frame(10);
+                rig.transport.say("register", "");
+                rig.frame(10);
+                let load: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
+                assert_eq!(load["payload"]["option"]["windowId"], "clocksink-window", "{load}");
+                rig.transport.say("load", r#"{"returnValue":true,"mediaId":"_m1"}"#);
+                rig.frame(10);
+                rig.transport.say("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":3840,"height":2160,"codec":"hevc"}}"#);
+                rig.frame(10);
+                rig.back();
+            });
+            assert!(line_with(&log, " armed ").contains("window=exported"), "{log}");
+            assert!(log.contains("window id=clocksink-window"), "{log}");
+            assert!(log.contains("window placed src=1920x1080 rv=1"), "placed over the canvas as soon as it exists:\n{log}");
+            assert!(log.contains("window placed src=3840x2160 rv=1"), "re-placed for the coded size videoInfo reported:\n{log}");
+            assert!(line_with(&log, " summary ").contains("window=exported"), "{log}");
+        }
+
+        #[test]
+        fn uriprobe_driver_late_variant_sends_the_window_after_loadcompleted_and_plays_after_its_reply() {
+            let _serial = plx_base::testlock::serial();
+            let _host = ExportedHost::arm();
+            let log = logged(|| {
+                let mut rig = Rig::new(Variant::Late);
+                rig.load_answered();
+                let load: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
+                assert!(load["payload"]["option"].get("windowId").is_none(), "the late variant loads without it: {load}");
+                rig.transport.say("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
+                rig.frame(10);
+                assert_eq!(rig.transport.sent(), ["load", "subscribe", "setWindowId"], "play waits for the window call");
+                assert!(rig.transport.payload_of("setWindowId").contains("clocksink-window"));
+                assert_eq!(rig.status(), crate::route::RouteStartStatus::Started, "loadCompleted settles the attempt");
+                rig.transport.say("setWindowId", r#"{"returnValue":true}"#);
+                rig.frame(10);
+                assert_eq!(rig.transport.sent(), ["load", "subscribe", "setWindowId", "play"]);
+                rig.back();
+            });
+            assert!(line_with(&log, " summary ").contains("setWindowId=ok variant=late"), "{log}");
+        }
+
+        #[test]
+        fn uriprobe_driver_no_window_variant_creates_none_even_on_an_exporting_set() {
+            let _serial = plx_base::testlock::serial();
+            let _host = ExportedHost::arm();
+            let log = logged(|| {
+                let mut rig = Rig::new(Variant::NoWindow);
+                assert!(!rig.session.as_ref().unwrap().window, "no window was created");
+                rig.frame(10);
+                rig.transport.say("register", "");
+                rig.frame(10);
+                let load: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
+                assert!(load["payload"]["option"].get("windowId").is_none(), "{load}");
+                rig.back();
+            });
+            assert!(line_with(&log, " armed ").contains("window=none"), "{log}");
+            assert!(!log.contains("window id="), "{log}");
+            assert!(!log.contains("window placed"), "{log}");
+        }
+
+        /// A stand-in for the media server that answers every request `200 {}` and remembers the
+        /// request lines, so a test can say what the route sent and what it did not.
+        struct CountingPms {
+            port: i32,
+            seen: Arc<Mutex<Vec<String>>>,
+            stop: Arc<AtomicBool>,
+            thread: Option<std::thread::JoinHandle<()>>,
+        }
+
+        impl CountingPms {
+            fn start() -> CountingPms {
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+                let port = i32::from(listener.local_addr().unwrap().port());
+                let seen = Arc::new(Mutex::new(Vec::new()));
+                let stop = Arc::new(AtomicBool::new(false));
+                let (log, flag) = (seen.clone(), stop.clone());
+                let thread = std::thread::spawn(move || {
+                    for socket in listener.incoming() {
+                        if flag.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let Ok(mut socket) = socket else { continue };
+                        let _ = socket.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                        let mut request = String::new();
+                        {
+                            let mut reader = BufReader::new(&socket);
+                            if reader.read_line(&mut request).unwrap_or(0) == 0 {
+                                continue;
+                            }
+                            loop {
+                                let mut header = String::new();
+                                match reader.read_line(&mut header) {
+                                    Ok(0) | Err(_) => break,
+                                    Ok(_) if header == "\r\n" || header == "\n" => break,
+                                    Ok(_) => {}
+                                }
+                            }
+                        }
+                        log.lock().unwrap().push(request.trim_end().to_owned());
+                        let body = br#"{"MediaContainer":{}}"#;
+                        let _ = write!(
+                            socket,
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = socket.write_all(body);
+                    }
+                });
+                CountingPms { port, seen, stop, thread: Some(thread) }
+            }
+
+            fn requests(&self) -> Vec<String> {
+                self.seen.lock().unwrap().clone()
+            }
+        }
+
+        impl Drop for CountingPms {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::SeqCst);
+                let _ = std::net::TcpStream::connect(("127.0.0.1", u16::try_from(self.port).unwrap_or(0)));
+                if let Some(thread) = self.thread.take() {
+                    let _ = thread.join();
+                }
+            }
+        }
+
+        /// A playback the route prepared: a server registered at the stand-in, an encoder the stop
+        /// owes that server, and the stream URL the engine would open. The host sink exports a window.
+        struct Fork {
+            ps: PlaybackSession,
+            pa: crate::player::adapter::PlayerAdapter,
+            pms: CountingPms,
+            _host: ExportedHost,
+        }
+
+        impl Fork {
+            fn new() -> Fork {
+                let host = ExportedHost::arm();
+                crate::player::SHARED.reset_session();
+                plx_plex::plex::reset_servers_for_test();
+                let pms = CountingPms::start();
+                let mut ps = PlaybackSession::IDLE;
+                crate::route::reset_player_control_for_test(&ps);
+                let sid = plx_plex::plex::register_for_test("uriprobe-fork-test", "127.0.0.1", pms.port, "token", "uriprobe-client");
+                crate::route::swap_cur_sid_for_test(&mut ps, sid);
+                crate::route::install_active_encoder_for_test("probe-encoder");
+                crate::route::set_url(&mut ps, URL);
+                let pa = crate::player::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+                Fork { ps, pa, pms, _host: host }
+            }
+
+            /// The requests the server saw, once the stop worker has finished.
+            fn requests_after_stop(&self) -> Vec<String> {
+                crate::route::drain_scrobble();
+                self.pms.requests()
+            }
+        }
+
+        impl Drop for Fork {
+            fn drop(&mut self) {
+                plx_plex::plex::reset_servers_for_test();
+            }
+        }
+
+        /// What the server must never hear from a playback that decoded nothing and watched nothing.
+        fn viewing_writes(requests: &[String]) -> Vec<&String> {
+            requests.iter().filter(|r| ["/:/timeline", "/:/scrobble", "/:/unscrobble"].iter().any(|p| r.contains(p))).collect()
+        }
+
+        fn only_the_encoder_stop(requests: &[String]) {
+            assert!(viewing_writes(requests).is_empty(), "the probe reported viewing to the server: {requests:?}");
+            let stops = requests.iter().filter(|r| r.contains("/video/:/transcode/universal/stop") && r.contains("probe-encoder")).count();
+            assert_eq!(stops, 1, "positive control: the stand-in is the server the route talks to, and the stop retired the encoder: {requests:?}");
+            assert_eq!(requests.len(), 1, "nothing but the encoder stop: {requests:?}");
+        }
+
+        #[test]
+        fn uriprobe_fork_builds_no_engine_and_a_back_posts_nothing_to_plex_but_the_encoder_stop() {
+            let _serial = plx_base::testlock::serial();
+            let mut fork = Fork::new();
+            let log = logged(|| {
+                plx_base::devtrig::with_private_triggers(|| {
+                    std::fs::write(plx_base::devtrig::path("uriprobe"), "late\n").expect("arm the trigger");
+                    let attempt = match crate::player::start_bufferfeed_tracked(&mut fork.ps, &mut fork.pa) {
+                        crate::player::BufferfeedStartOutcome::Launched(attempt) => attempt,
+                        other => panic!("the fork did not launch: {other:?}"),
+                    };
+                    assert!(fork.pa.uri_live(), "the probe session is installed");
+                    assert!(!fork.pa.is_live(), "and no Engine exists");
+                    assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending);
+                    assert_eq!(
+                        crate::player::start_bufferfeed_tracked(&mut fork.ps, &mut fork.pa),
+                        crate::player::BufferfeedStartOutcome::AlreadyRunning,
+                        "a second Play under a live session is a no-op"
+                    );
+                    crate::player::stop_bufferfeed(&mut fork.ps, &mut fork.pa);
+                    assert!(!fork.pa.uri_live(), "the stop ended the session");
+                    assert!(!fork.pa.uri_plane_open());
+                });
+            });
+            only_the_encoder_stop(&fork.requests_after_stop());
+            assert!(line_with(&log, " armed ").contains("variant=late"), "{log}");
+            assert!(line_with(&log, " armed ").contains("window=exported"), "{log}");
+            assert!(line_with(&log, " summary ").contains("end=back"), "{log}");
+            for leak in LEAKS {
+                assert!(!log.contains(leak), "{leak:?} reached the log:\n{log}");
+            }
+        }
+
+        #[test]
+        fn uriprobe_fork_without_a_bus_fails_the_start_on_the_first_frame_and_frees_the_slot() {
+            let _serial = plx_base::testlock::serial();
+            let mut fork = Fork::new();
+            let log = logged(|| {
+                plx_base::devtrig::with_private_triggers(|| {
+                    std::fs::write(plx_base::devtrig::path("uriprobe"), "").expect("arm the trigger");
+                    let attempt = match crate::player::start_bufferfeed_tracked(&mut fork.ps, &mut fork.pa) {
+                        crate::player::BufferfeedStartOutcome::Launched(attempt) => attempt,
+                        other => panic!("the fork did not launch: {other:?}"),
+                    };
+                    assert!(fork.pa.uri_live());
+                    // The host has no bus: every registration is refused, and the machine ends the
+                    // session on the next frame, which fails the attempt and frees the slot.
+                    drive(&mut fork.ps, &mut fork.pa);
+                    assert!(!fork.pa.uri_live(), "a session which ended by itself is released");
+                    assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Failed);
+                    crate::player::stop_bufferfeed(&mut fork.ps, &mut fork.pa);
+                });
+            });
+            only_the_encoder_stop(&fork.requests_after_stop());
+            assert!(line_with(&log, "register shape=named refused").contains("no bus"), "{log}");
+            assert!(line_with(&log, " summary ").contains("end=refused:register"), "{log}");
+        }
+    }
 }

@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 42] = [
+const DIAG: [&str; 43] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -175,6 +175,12 @@ const DIAG: [&str; 42] = [
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
+    // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
+    // or `none` (empty = `load`), read at each playback start. It changes how ONE play is carried
+    // out and nothing about the boot: the tester signs in and picks a profile as always, then
+    // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that
+    // boot away from the one the probe is meant to run on.
+    "plxnative-uriprobe",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
@@ -1294,6 +1300,17 @@ mod tests {
     #[test]
     fn servers_trigger_is_not_diagnostic() {
         assert!(!super::DIAG.contains(&"plxnative-servers"));
+    }
+
+    // ---- plxnative-uriprobe (the URI-mode probe, issue #1064) ----
+
+    /// The probe changes how one play is carried out, never which screen the app boots to: a tester
+    /// signs in through the normal boot, then plays. Out of DIAG, the file would suppress the
+    /// who's-watching picker and the probe would run on a different boot than the one it is meant
+    /// to be run on.
+    #[test]
+    fn uriprobe_trigger_is_diagnostic() {
+        assert!(super::DIAG.contains(&"plxnative-uriprobe"));
     }
 
     // ---- plxnative-playurl (the pipeline test tier's one trigger) ----
