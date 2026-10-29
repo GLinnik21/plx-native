@@ -809,7 +809,7 @@ mod seam_order_tests {
 /// there, but measured on that set it also stops pointer motion reaching the app until the pointer
 /// re-enters the window (opening and closing the Settings overlay), so no motion could bring it
 /// back. With a transparent cursor the motion keeps arriving, and [`show_cursor_after_motion`] puts
-/// the previous cursor back on the next one. Every SDL call is dlsym'd, so the binary gains no
+/// the previous cursor back after deliberate movement clears the D-pad gate. Every SDL call is dlsym'd, so the binary gains no
 /// import.
 #[inline]
 pub(crate) unsafe fn hide_cursor() {

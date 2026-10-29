@@ -1287,29 +1287,32 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     } else if et == SDL_MOUSEMOTION {
         app.last_input = clock::now();
         app.ptr.last_motion = app.last_input;
-        if app.ptr.cur_hidden {
-            show_cursor_after_motion();
-        }
-        app.ptr.cur_hidden = false;
         let (mx, my) = ptr_xy(&app.ev);
         if app.boot_initial.is_none() {
             app.rec.input(super::recorder::enc_pointer("pointer", mx as i32, my as i32));
         }
-        if app.ptr.prev_mx >= 0.0 {
-            app.ptr.mot_accum += (mx - app.ptr.prev_mx).abs() + (my - app.ptr.prev_my).abs();
+        app.ptr.note_motion(mx, my);
+        // The same deliberate-motion gate owns visibility and focus. In particular,
+        // a nudge while pressing OK must not reveal the transparent cursor or the HUD.
+        if app.ptr.dpad_mode {
+            if app.ptr.mot_accum < super::input::DPAD_MOTION_GATE {
+                hide_cursor(); // LG may have made its compositor cursor visible on motion.
+                return;
+            }
+            app.ptr.dpad_mode = false;
         }
-        app.ptr.prev_mx = mx;
-        app.ptr.prev_my = my;
+        if app.ptr.cur_hidden {
+            show_cursor_after_motion();
+        }
+        app.ptr.cur_hidden = false;
         // **The BARE transport's pointer, handed to the page that owns it** (phase 12,
         // PX-PLAYER). This arm used to raise the HUD and move the scrub preview HERE, on the
         // screen's own fields, and then `return` — so the player page never saw a pointer event
         // at all, and the drag preview kept reading a flag whose producer had become unreachable.
         // Both halves are `PlayerScreen`'s now; what is left is the choice of EVENT.
         //
-        // It stays AHEAD of the D-pad accumulation gate below, deliberately and as it always was:
-        // over full-screen video a mouse nudge is how the transport is found, and 120 px of
-        // accumulated travel is not what that costs. (`ui::hit`'s own dpad gate still suppresses
-        // hover-driven focus underneath, which is the half that rule is actually about.)
+        // Deliberate pointer movement reaches the player only after the same gate
+        // used by menus, so incidental motion cannot reveal its transport either.
         //
         // A button held down makes this a DRAG rather than a move — §7.5, the one pointer kind
         // that drives a control with no hover and no click.
@@ -1324,12 +1327,6 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                 super::bridge::pointer_input(mx, my, at)
             });
             return;
-        }
-        if app.ptr.dpad_mode {
-            if app.ptr.mot_accum < super::input::DPAD_MOTION_GATE {
-                return;
-            }
-            app.ptr.dpad_mode = false;
         }
         // Hover is the tree's on every screen it owns — `ui::route_screen`'s rule 11
         // ("hover parks focus on every screen in the family") is the HIT MAP's job now.
