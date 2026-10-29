@@ -576,13 +576,24 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     the system refused, refuses the job: the claim is lowered in the refusing call and the
     request id remembered. `settle_refused_reads` takes the three markers at the head of the next
     step and wakes the pump (`idle::invalidate`); nothing is recorded and nothing backs off. The
-    directory is owed again (`*_done` is still false, and the menu's tick sends the work again),
+    directory is owed again (`genres_done` is still false, or the letters are still not current
+    (`SecState::letters_current`), and the menu's tick sends the work again),
     and the page is still the first one missing, so the next pump asks again with the then-current
     key, exactly what the old `!spawned` arms left.
   - **The guard is in the body, the landing outside it.** A page read that panics lands as a failed
-    page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a directory
-    read that panics lands as an empty list. The seams `finish_page_with` and
+    page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a genre read
+    that panics lands as an empty list, and a letters read that fails or panics lands as `ok: false`:
+    the landed list stays as it was (hidden, it no longer describes the grid) and the same key waits
+    120 steps (`SecState::letters_backoff`), an edit asking at once. The seams `finish_page_with` and
     `finish_directory_with` take the read as a closure so a test can swap in one that panics.
+  - **The letters carry the grid's terms.** The Letters job is asked with `SecState::query_filters`,
+    the terms of the page read, and a `LettersKey` (applied Unwatched, applied genre, a generation
+    that a membership change moves and, for an Unwatched key only, a watched state read back from
+    the server; `data/src/browse/letters.rs`) that the answer returns. A list is current, and
+    shown, only while its key is the section's present one, checked where it is read. The landed
+    list and the one it replaced are both held (`SecState::letters_kept`: an unfiltered list
+    survives a genre or Unwatched switched on and off; an Unwatched list is never the kept one),
+    and a third key evicts the oldest.
 - **The discovery lane.** The Library's source discovery (`data/src/browse/mod.rs`,
   `maybe_discover_owned`) is the twelfth store job: the section list, the server's name and the
   item counts of one source, as `StoreJob::BrowseDiscovery(Job<BrowseDiscoveryReq>,

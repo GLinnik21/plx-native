@@ -194,7 +194,8 @@ through the one `marquee::Block`. A label that names a tile whose face cut the n
 Collections page) is held to its tile instead: `TileLabel::within_tile` gives the block a
 tile-wide window (never the neighbours' room) and the run dissolves at BOTH of the window's edges
 over `card_row::LABEL_EDGE_FADE` px (`Painter::text_fade_edges`: out into the right edge, in from the
-left edge once the run has glided past it, a band that grows with the travel and is none at rest)
+left edge once the run has glided past it, a band that grows with the travel and is none at rest;
+an Arabic or Hebrew run rests flush right and is the mirror image, `card_row::block_text`)
 as the shared marquee glides it. All of it is judged where the tile will REST
 (`CardRow::settle_lag`, passed through `TileLabel::settling`), so a scroll glide never flips the
 block's alignment or width mid-flight. A headshot's credit label is not placed this way: it is a

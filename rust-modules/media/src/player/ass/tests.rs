@@ -666,10 +666,10 @@ fn faces_script(lines: &str) -> String {
 
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_the_facade_is_abi_three() {
+fn native_the_facade_is_abi_four() {
     assert!(native_ass::load(Some(asset_dir())).ok());
-    assert_eq!(unsafe { plx_ass_abi_version() }, 3);
-    assert_eq!(NATIVE_ABI, 3);
+    assert_eq!(unsafe { plx_ass_abi_version() }, 4);
+    assert_eq!(NATIVE_ABI, 4);
 }
 
 /// The bundled libass was built without libunibreak until the ABI 3 bump, so a CJK line with no

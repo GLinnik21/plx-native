@@ -99,7 +99,7 @@ libass and HarfBuzz copyright notices are retained in their licence files above.
 
 The exact upstream archives, checksums and licences are recorded in
 `ci/dependencies.json`. Each versioned PlxNative source release contains all
-five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_internal.h`,
+five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_text.c`, `src/ass_internal.h`,
 `include/ass.h`), its complete build recipe (`ci/build-libass.sh`, `ci/build-libass.py`) and the
 one local patch to libass. **libass carries that local patch; every other archive is unmodified.**
 `ci/patches/libass-0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
@@ -267,6 +267,29 @@ which pins the input by sha256.
 
 *Why it ships:* it is the emoji link of the application's font fallback chain, so an emoji in a
 library or title name draws instead of an empty box.
+
+**Noto Kufi Arabic** — `appfont-arabic.ttf`, `appfont-arabic-bold.ttf`
+Copyright 2019-2022 Google LLC, per the fonts' own name table. Version 2.110 (the
+`notofonts/arabic` release `NotoKufiArabic-v2.110`), the unhinted static Regular and Bold TTFs
+`fonts/NotoKufiArabic/unhinted/ttf/NotoKufiArabic-{Regular,Bold}.ttf` of
+`github.com/notofonts/notofonts.github.io` at commit `5c3913063bb189df4edc94b766584dfb4c04a187`.
+**Noto Sans Hebrew** — `appfont-hebrew.ttf`, `appfont-hebrew-bold.ttf`
+Copyright 2024 The Noto Project Authors (https://github.com/notofonts/hebrew), per the fonts' own
+name table. Version 3.001 (the `notofonts/hebrew` release `NotoSansHebrew-v3.001`), the unhinted
+static Regular and Bold TTFs `fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-{Regular,Bold}.ttf`
+of the same repository at the same commit.
+Licence (all four): **SIL Open Font License 1.1**, the same text that ships in this package as
+`OFL.txt`. Neither copyright statement declares a **Reserved Font Name**, so the family names
+"Noto Kufi Arabic" and "Noto Sans Hebrew" are retained. The fonts carry the upstream trademark
+statement "Noto is a trademark of Google LLC" (the Hebrew cut: "Google Inc.").
+*Unmodified*: shipped byte for byte as published, every layout table kept (Arabic needs `GSUB`
+joining and `GPOS` mark placement). The recipe is `tools/fetch-noto-rtl.py`, which pins each input
+by URL, size and sha256.
+
+*Why they ship:* they are the Arabic and Hebrew links of the application's font fallback chain.
+Their runs are shaped by the bundled ASS renderer's UI text surface (HarfBuzz, FriBidi and
+FreeType, section 1.2), so Arabic, Persian, Urdu and Hebrew titles draw joined and in reading
+order instead of as empty boxes.
 
 ### 2.4 Rust code statically linked into `plxnative`
 

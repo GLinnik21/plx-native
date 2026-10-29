@@ -3679,9 +3679,44 @@ fn nal_end(i: usize, nl: usize, size: usize) -> Option<usize> {
     Some(end as usize)
 }
 
+/// Is this H.264 non-IDR slice NAL (header byte included) an I-slice? Reads the slice header's
+/// first two Exp-Golomb fields, `first_mb_in_slice` and `slice_type` (I is 2 or 7); a header too
+/// short to hold them is not one. Both fields sit in the first bytes, ahead of any emulation-
+/// prevention byte a valid header can need there.
+fn h264_slice_is_intra(nal: &[u8]) -> bool {
+    let bits = nal.get(1..).unwrap_or(&[]);
+    let mut pos = 0usize;
+    let mut ue = || -> Option<u32> {
+        let bit = |p: usize| bits.get(p / 8).map(|b| (b >> (7 - p % 8)) & 1);
+        let mut zeros = 0;
+        while bit(pos)? == 0 {
+            zeros += 1;
+            pos += 1;
+            if zeros > 31 {
+                return None;
+            }
+        }
+        pos += 1;
+        let mut v = 0u32;
+        for _ in 0..zeros {
+            v = (v << 1) | u32::from(bit(pos)?);
+            pos += 1;
+        }
+        Some((1u32 << zeros) - 1 + v)
+    };
+    ue().and_then(|_| ue()).is_some_and(|t| t == 2 || t == 7)
+}
+
 /// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
-/// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5 / HEVC IRAP
-/// types 16-23). Returns true if it is a keyframe. Mirrors mkv_handle_block.
+/// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5, or a non-IDR
+/// I-slice at a random access point, see `container_key`; HEVC IRAP types 16-23). Returns true if
+/// it is a keyframe. Mirrors mkv_handle_block.
+///
+/// `container_key`: the demuxer flagged the packet a keyframe (`AV_PKT_FLAG_KEY`). For H.264 that,
+/// or an SPS ahead of the slice in the same AU, also makes a non-IDR I-slice one: a Blu-ray remux's
+/// random access points after its first frame are I-slices behind a recovery point (with the
+/// parameter sets repeated in band), and its Cues index them, so a seek lands on one and counting
+/// only IDR left the post-seek rebase waiting for a keyframe that never came.
 ///
 /// `dv_p7`: the stream is a Dolby Vision Profile 7 converted to 8.1 on the way to the pipeline
 /// ([`dovi_converts_to_p81`]). Every enhancement-layer NAL ([`is_dv_enhancement_layer`]) is
@@ -3693,6 +3728,7 @@ unsafe fn packet_to_annexb(
     nls: usize,
     is_hevc: bool,
     dv_p7: bool,
+    container_key: bool,
     param: &[u8],
     out: &mut Vec<u8>,
 ) -> bool {
@@ -3703,6 +3739,7 @@ unsafe fn packet_to_annexb(
     let d = std::slice::from_raw_parts(data, size);
     // pass 1: is this AU a keyframe?
     let mut is_key = false;
+    let mut in_band_sps = false;
     let mut i = 0usize;
     while i + nls <= size {
         let mut nl = 0usize;
@@ -3717,7 +3754,11 @@ unsafe fn packet_to_annexb(
         let key = if is_hevc {
             (16..=23).contains(&((b0 >> 1) & 0x3f))
         } else {
+            in_band_sps |= (b0 & 0x1f) == 7;
             (b0 & 0x1f) == 5
+                || ((container_key || in_band_sps)
+                    && (b0 & 0x1f) == 1
+                    && h264_slice_is_intra(&d[i..i + nl]))
         };
         if key {
             is_key = true;
@@ -9747,6 +9788,7 @@ pub fn demux(
                                 nal_len_size,
                                 is_hevc,
                                 dv_p7,
+                                (*pkt).flags & AV_PKT_FLAG_KEY != 0,
                                 &param_blob,
                                 &mut aubuf,
                             )

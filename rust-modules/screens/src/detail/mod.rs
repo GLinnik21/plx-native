@@ -183,8 +183,9 @@ pub struct DetailScreen {
     /// `local_by_key` as the pass before the current one saw it: those keys are kept by
     /// [`Self::prune_keys`] so a season switch and straight back keeps every identity's key.
     prev_by_key: std::collections::HashMap<u32, u32>,
-    /// Where each card-shelf card that left the page last stood (engine key to local key), kept so
-    /// `reconcile` can put focus on the same position in that shelf; dropped if the card returns.
+    /// Where each card-shelf card or strip episode that left the page last stood (engine key to
+    /// local key), kept so `reconcile` can put focus on the same position in that shelf (an
+    /// episode: the nearest loaded one, on the same row); dropped if it returns.
     /// Not logical state: it is a projection of past publications, like the two maps above.
     gone: std::collections::HashMap<u32, u32>,
     return_pending: bool,
@@ -614,7 +615,12 @@ impl DetailScreen {
             self.keys.iter().map(|key| key.elem).max().and_then(|n| n.checked_add(1)).unwrap_or(FIRST_ITEM_ELEM));
         let newer_restore = self.restore_intent.take()
             .filter(|_| self.refresh != DetailRefreshPhase::None);
+        // A covered live body keeps the scroll it was left at: `restore` sends a page to the top,
+        // and `reveal_focus` holds off while the return waits, so the page would run to the top
+        // and back once the re-read lands. A rebuilt body starts at 0 anyway.
+        let scroll_target = self.scroll_target;
         self.restore(&memory.spot, meta);
+        self.scroll_target = scroll_target;
         if let Some(newer_restore) = newer_restore {
             // The entry memory is the request-time navigation snapshot. A ViewState completion
             // delivered while covered is newer and carries the episode whose write just settled.
@@ -752,17 +758,19 @@ impl DetailScreen {
         cx.focus.current.iter().map(|key| key.elem).chain(cx.focus.remembered.iter().map(|(_, elem)| *elem)).collect()
     }
 
-    /// Whether `local` is a card on one of the four card shelves (Related, Collection, Extras, Cast).
+    /// Whether `local` is a card on one of the four card shelves (Related, Collection, Extras,
+    /// Cast) or an episode of the strip: the cells [`Self::shelf_recovery`] re-seats.
     fn card_shelf_of(local: u32) -> bool {
         matches!(
             Self::locate_local(local, false),
-            Some(Located::Related(_) | Located::Collection(_) | Located::Extras(_) | Located::Cast(_))
+            Some(Located::Related(_) | Located::Collection(_) | Located::Extras(_) | Located::Cast(_) | Located::Episode(..))
         )
     }
 
     /// The shared recovery rule for a card shelf's focused card that is no longer there: the slot it
-    /// held, clamped to the shelf's new length. `None` for any other element, and for a shelf that
-    /// is now empty or gone, which fall to the page's own fallback.
+    /// held, clamped to the shelf's new length (an episode: the nearest loaded one, on the same
+    /// row). `None` for any other element, and for a shelf that is now empty or gone, which fall
+    /// to the page's own fallback.
     fn shelf_recovery(&self, elem: u32, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
         let d = self.detail(meta)?;
         let local = match Self::locate_local(*self.gone.get(&elem)?, false)? {
@@ -770,6 +778,7 @@ impl DetailScreen {
             Located::Collection(i) => collection::elem(ui_cards::clamp_slot(i, collection::len(d))?),
             Located::Extras(i) => extras::elem(ui_cards::clamp_slot(i, extras::len(d))?),
             Located::Cast(i) => cast::elem(ui_cards::clamp_slot(i, d.credits_len())?),
+            Located::Episode(i, row) => episodes::elem(d.episodes.nearest_loaded(i)?, row),
             _ => None,
         }?;
         self.engine_key(local)
@@ -3534,6 +3543,10 @@ impl DetailScreen {
         if self.detail(meta).is_none() && meta.detail_request_status(self.sid, &self.rk) == Some(false) {
             self.restore_intent = None;
             self.return_pending = false;
+            // Nothing draws without a detail but the hero, which is faded out past `HERO_FADE`, and
+            // `reveal_focus` holds off without one: a body that kept its scroll through
+            // `restore_memory` would sit on the backdrop alone.
+            self.scroll_target = 0.0;
             return;
         }
         let Some(d) = self.detail(meta) else { return };

@@ -1753,7 +1753,10 @@ fn draw_player_title(
             }
         }
         if offset > 0.0 {
-            p.text(title, SB_X - offset, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+            // an Arabic or Hebrew title's end is on its left: it moves right instead
+            let rtl = plx_gfx::text::is_rtl_paragraph(&label);
+            let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
+            p.text(title, SB_X + x, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
             return;
         }
     } else {
@@ -2386,6 +2389,31 @@ mod tests {
         assert_eq!(paint(true)[1].at.x, ended[1].at.x, "the title must stay at the end");
         assert!(paint(false)[1].text.ends_with('…'), "resume restores a static ellipsis");
         assert!(paint(true)[1].text.ends_with('…'), "a later pause starts from the beginning");
+    }
+
+    /// An Arabic title's end is on its LEFT: the paused reveal moves it right, from its first words
+    /// on the window's right edge to its last words on the window's left edge, then rests there.
+    #[test]
+    fn a_paused_right_to_left_title_reveals_its_end_to_the_left() {
+        let _g = plx_base::testlock::serial();
+        let clock = plx_ui::marquee::Clock::new();
+        let long = c"فيلم طويل جدا يجب أن يكشف كلماته الأخيرة ببطء بعد الإيقاف المؤقت للتشغيل";
+        let right = title_right(ControlSlot::Discs(Controls::NONE), &TransportRow::new(), &FM);
+        let (full, window) = (FM.width(long, HUD_TITLE_SZ, true), right - SB_X);
+        assert!(full > window, "the fixture title overflows");
+        let paint = |paused| plx_ui::draw_census::capture_runs(|| {
+            draw_player_title(Painter::recording(), Kicker::Context(c"Movie".as_ptr()),
+                long.as_ptr(), right, &FM, paused, &clock);
+        });
+        let _ = paint(true);
+        plx_machine::idle::frame_begin(2.0);
+        let moving = paint(true);
+        let elapsed = 2000.0 - plx_ui::marquee::TITLE.hold_ms;
+        let off = elapsed / 1000.0 * plx_ui::marquee::SPEED;
+        assert_eq!(moving[1].at.x, SB_X + window - full + off, "first words flush right, moving right");
+        plx_machine::idle::frame_begin(60.0);
+        assert_eq!(paint(true)[1].at.x, SB_X, "the last words rest on the window's left edge");
+        assert_eq!(paint(true)[1].at.x, SB_X, "and stay");
     }
 
     /// The host tests' text capability (half an em per byte).
