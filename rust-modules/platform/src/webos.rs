@@ -564,7 +564,7 @@ pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 /// #1064): the bus worker on the television, nothing in the simulator and in tests, like
 /// [`bind_window`].
 #[cfg(all(feature = "devtriggers", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
-pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
+pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &ls2::uri::Transport;
 
 #[cfg(all(feature = "devtriggers", any(feature = "hostsim", test, feature = "test-support")))]
 pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
@@ -602,6 +602,10 @@ pub mod ls2 {
     use std::ffi::{CStr, CString};
     use std::os::raw::{c_char, c_int, c_void};
     use std::time::{Duration, Instant};
+
+    /// The URI-mode probe's transport (issue #1064): a worker that owns its own bus handle.
+    #[cfg(feature = "devtriggers")]
+    pub(super) mod uri;
 
     /// How long [`call_once`] waits for SAM's reply.
     ///
@@ -642,6 +646,18 @@ pub mod ls2 {
         fn LSGmainContextAttach(
             handle: *mut c_void,
             context: *mut c_void,
+            error: *mut LSError,
+        ) -> bool;
+        /// `LSCall`: the call that keeps its token and delivers EVERY message the callee sends on
+        /// it. The URI-mode probe's subscription needs that; every other caller wants one reply.
+        #[cfg(feature = "devtriggers")]
+        fn LSCall(
+            handle: *mut c_void,
+            uri: *const c_char,
+            payload: *const c_char,
+            callback: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
+            context: *mut c_void,
+            token: *mut libc::c_ulong,
             error: *mut LSError,
         ) -> bool;
         fn LSCallOneReply(
@@ -748,6 +764,12 @@ pub mod ls2 {
     /// Register as a plain anonymous client — the one shape the hub accepts from this process
     /// (module doc) — on a private glib context.
     pub fn register() -> Result<Registration, RegisterFail> {
+        register_as(None)
+    }
+
+    /// [`register`] under `name`, or anonymously for `None`. The named shape is the developer
+    /// probe's (`uri`): a name the Developer Mode role file grants outbound permission to.
+    pub fn register_as(name: Option<&CStr>) -> Result<Registration, RegisterFail> {
         let mut error: LSError = unsafe { std::mem::zeroed() };
         unsafe { LSErrorInit(&mut error) };
         let context = unsafe { g_main_context_new() };
@@ -759,7 +781,7 @@ pub mod ls2 {
             });
         }
         let mut handle = std::ptr::null_mut();
-        let registered = unsafe { LSRegister(std::ptr::null(), &mut handle, &mut error) };
+        let registered = unsafe { LSRegister(name.map_or(std::ptr::null(), CStr::as_ptr), &mut handle, &mut error) };
         if !registered || handle.is_null() {
             let code = Some(error.error_code);
             let detail = error_text(&error);
@@ -791,13 +813,21 @@ pub mod ls2 {
         Ok(Registration { handle, context })
     }
 
-    impl Drop for Registration {
-        fn drop(&mut self) {
+    impl Registration {
+        /// Unregister and free the context. `false` when the hub refused: the handle is then still
+        /// attached to the context, which is leaked rather than freed under it, so anything its
+        /// callbacks point at must stay valid too. Idempotent: once it has succeeded, a second
+        /// call (and the drop after it) does nothing.
+        fn unregister(&mut self) -> bool {
+            if self.handle.is_null() {
+                return true;
+            }
             let mut error: LSError = unsafe { std::mem::zeroed() };
             unsafe { LSErrorInit(&mut error) };
             let unregistered = unsafe { LSUnregister(self.handle, &mut error) };
             if unregistered {
                 unsafe { g_main_context_unref(self.context) };
+                self.handle = std::ptr::null_mut();
             } else {
                 // A handle that would not unregister is still attached to this context, so the
                 // context is leaked rather than freed under it — a bounded leak, once per failed
@@ -808,6 +838,13 @@ pub mod ls2 {
                 ));
             }
             unsafe { LSErrorFree(&mut error) };
+            unregistered
+        }
+    }
+
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.unregister();
         }
     }
 

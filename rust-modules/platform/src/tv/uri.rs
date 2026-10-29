@@ -68,6 +68,42 @@ pub trait UriMedia: Sync {
 /// The transport the installed port holds. Only `tv` reads the table, so this is the one way out.
 pub fn installed() -> &'static dyn UriMedia { super::port().uri_media }
 
+/// The bounded queue between a transport's worker (which pushes) and its poller (which drains).
+/// A full queue drops the NEWEST reply and counts it; the count comes back as one `dropped` reply
+/// at the end of the next drain, so a poller that fell behind says so instead of silently missing
+/// messages.
+pub struct ReplyQueue {
+    sender: std::sync::mpsc::SyncSender<UriReply>,
+    receiver: std::sync::Mutex<std::sync::mpsc::Receiver<UriReply>>,
+    dropped: std::sync::atomic::AtomicU64,
+}
+
+impl ReplyQueue {
+    /// A queue that holds `depth` replies.
+    pub fn new(depth: usize) -> ReplyQueue {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(depth);
+        ReplyQueue { sender, receiver: std::sync::Mutex::new(receiver), dropped: std::sync::atomic::AtomicU64::new(0) }
+    }
+
+    /// Queue one reply, or count it dropped. Never blocks.
+    pub fn push(&self, method: &'static str, payload: String, ok: bool) {
+        if self.sender.try_send(UriReply { method, payload, ok }).is_err() {
+            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Everything queued, oldest first, then the `dropped` reply if any were lost.
+    pub fn drain(&self) -> Vec<UriReply> {
+        let receiver = self.receiver.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut replies: Vec<UriReply> = receiver.try_iter().collect();
+        let dropped = self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if dropped > 0 {
+            replies.push(UriReply { method: "dropped", payload: dropped.to_string(), ok: false });
+        }
+        replies
+    }
+}
+
 /// No bus: host and test builds, and a port that was never installed.
 pub struct NoUriMedia;
 
@@ -104,6 +140,20 @@ mod tests {
         assert_eq!(none.call("load", "{}"), Err("no bus".to_owned()));
         assert!(none.poll().is_empty());
         none.close();
+    }
+
+    #[test]
+    fn a_full_queue_drops_the_newest_and_reports_the_count_once() {
+        let queue = ReplyQueue::new(2);
+        for n in 0..5 {
+            queue.push("load", n.to_string(), true);
+        }
+        let drained = queue.drain();
+        let shown: Vec<(&str, &str, bool)> = drained.iter().map(|r| (r.method, r.payload.as_str(), r.ok)).collect();
+        assert_eq!(shown, [("load", "0", true), ("load", "1", true), ("dropped", "3", false)]);
+        assert!(queue.drain().is_empty(), "the count is reported once");
+        queue.push("play", String::new(), true);
+        assert_eq!(queue.drain().len(), 1, "room again after a drain");
     }
 
     #[test]
