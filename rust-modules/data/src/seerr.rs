@@ -13,8 +13,8 @@
 //! [`WatchlistInput`]: crate::watchlist::WatchlistInput
 use plx_plex::plex::seerr::{live_transport, SeerrClient};
 pub use plx_plex::plex::seerr::{
-    Availability, DiscoverRow, MediaKind, MyRequest, Page, RequestStatus, Season, SeerrError, SeerrSession, SeerrUser,
-    Title, TitleDetail,
+    default_server, ArrOptions, ArrServer, Availability, DiscoverRow, MediaKind, MyRequest, Page, QualityProfile,
+    RequestOptions, RequestStatus, RootFolder, Season, SeerrError, SeerrSession, SeerrUser, Title, TitleDetail,
 };
 
 /// What one job asks of the server.
@@ -26,8 +26,13 @@ pub enum SeerrOp {
     Discover { row: DiscoverRow, page: u32 },
     Detail { kind: MediaKind, tmdb: i64 },
     MyRequests { page: u32 },
-    /// `POST /api/v1/request`. A show names its seasons; a movie none.
-    Request { kind: MediaKind, tmdb: i64, seasons: Vec<i32> },
+    /// The Radarr (a movie) or Sonarr (a show) servers a request can go to.
+    Servers { kind: MediaKind },
+    /// One of those servers' quality profiles and root folders.
+    ServerOptions { kind: MediaKind, server: i64 },
+    /// `POST /api/v1/request`. A show names its seasons; a movie none. `options` names where it goes
+    /// (each `None` is the server's to decide).
+    Request { kind: MediaKind, tmdb: i64, seasons: Vec<i32>, options: RequestOptions },
 }
 
 /// What a job that ran brought back.
@@ -37,6 +42,8 @@ pub enum SeerrData {
     Titles(Page<Title>),
     Detail(TitleDetail),
     Requests(Page<MyRequest>),
+    Servers(Vec<ArrServer>),
+    ServerOptions(ArrOptions),
     Requested,
 }
 
@@ -68,8 +75,11 @@ impl SeerrIo for LiveSeerrIo {
             SeerrOp::Discover { row, page } => client.discover(session, *row, *page, &mut t).map(SeerrData::Titles),
             SeerrOp::Detail { kind, tmdb } => client.detail(session, *kind, *tmdb, &mut t).map(SeerrData::Detail),
             SeerrOp::MyRequests { page } => client.my_requests(session, user.id, *page, &mut t).map(SeerrData::Requests),
-            SeerrOp::Request { kind, tmdb, seasons } =>
-                client.request(session, *kind, *tmdb, seasons, &mut t).map(|()| SeerrData::Requested),
+            SeerrOp::Servers { kind } => client.servers(session, *kind, &mut t).map(SeerrData::Servers),
+            SeerrOp::ServerOptions { kind, server } =>
+                client.server_options(session, *kind, *server, &mut t).map(SeerrData::ServerOptions),
+            SeerrOp::Request { kind, tmdb, seasons, options } =>
+                client.request(session, *kind, *tmdb, seasons, options, &mut t).map(|()| SeerrData::Requested),
         };
         answer
     }
@@ -160,7 +170,7 @@ mod tests {
     }
 
     fn user() -> SeerrUser {
-        SeerrUser { id: 1, name: "s00000001".into() }
+        SeerrUser { id: 1, name: "s00000001".into(), permissions: 0 }
     }
 
     fn script(sign_ins: Vec<Result<(SeerrSession, SeerrUser), SeerrError>>, runs: Vec<Result<SeerrData, SeerrError>>) -> Script {

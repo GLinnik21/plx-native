@@ -3114,6 +3114,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 | AppArg::PlayerOverlay(_)
                 | AppArg::AltSources(_)
                 | AppArg::VersionsPanel(_)
+                | AppArg::SeerrRequest(_)
                 | AppArg::TracksPanel(_)
                 | AppArg::AboutPanel
                 | AppArg::PersonBio

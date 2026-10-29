@@ -63,7 +63,7 @@ struct Script {
 }
 impl SeerrIo for Script {
     fn sign_in(&self, _: &str, _: &str) -> Result<(SeerrSession, SeerrUser), SeerrError> {
-        Ok((SeerrSession::for_test("connect.sid=x"), SeerrUser { id: 1, name: "s00000001".into() }))
+        Ok((SeerrSession::for_test("connect.sid=x"), SeerrUser { id: 1, name: "s00000001".into(), permissions: 0 }))
     }
     fn run(&self, _: &str, _: &SeerrSession, _: &SeerrUser, op: &SeerrOp) -> Result<SeerrData, SeerrError> {
         if self.fail {
@@ -74,7 +74,7 @@ impl SeerrIo for Script {
             SeerrOp::Discover { row: DiscoverRow::Trending, .. } => page(self.trending.clone()),
             SeerrOp::Discover { .. } => page(Vec::new()),
             SeerrOp::MyRequests { .. } => SeerrData::Requests(Listing { items: self.mine.clone(), page: 1, pages: 1 }),
-            SeerrOp::Detail { kind, tmdb } => SeerrData::Detail(TitleDetail { title: title(*kind, *tmdb), seasons: Vec::new() }),
+            SeerrOp::Detail { kind, tmdb } => SeerrData::Detail(TitleDetail { title: title(*kind, *tmdb), ..Default::default() }),
             other => panic!("the Requests page asked for {other:?}"),
         })
     }

@@ -165,15 +165,107 @@ fn my_requests_pages_by_skip_and_reads_kind_status_and_seasons() {
 #[test]
 fn a_request_posts_the_kind_the_id_and_a_shows_seasons() {
     let (got, seen) = run(vec![Ok(SeerrResponse { status: 201, ..Default::default() })],
-        |c, t| c.request(&session(), MediaKind::Movie, 61, &[], t));
+        |c, t| c.request(&session(), MediaKind::Movie, 61, &[], &RequestOptions::default(), t));
     assert_eq!(got, Ok(()));
     assert_eq!((seen[0].method, seen[0].url.as_str()), ("POST", "http://127.0.0.1:5055/api/v1/request"));
     assert_eq!(body_json(&seen[0]), json!({ "mediaType": "movie", "mediaId": 61 }));
     let (_, seen) = run(vec![Ok(SeerrResponse { status: 201, ..Default::default() })],
-        |c, t| c.request(&session(), MediaKind::Tv, 62, &[2, 3], t));
+        |c, t| c.request(&session(), MediaKind::Tv, 62, &[2, 3], &RequestOptions::default(), t));
     assert_eq!(body_json(&seen[0]), json!({ "mediaType": "tv", "mediaId": 62, "seasons": [2, 3] }));
-    let (got, seen) = run(vec![], |c, t| c.request(&session(), MediaKind::Tv, 62, &[], t));
+    let (got, seen) = run(vec![], |c, t| c.request(&session(), MediaKind::Tv, 62, &[], &RequestOptions::default(), t));
     assert!(got.is_err() && seen.is_empty(), "a show request with no season never goes out");
+}
+
+/// A request names only the choices it was given: each one left out is the server's to make.
+#[test]
+fn a_request_names_the_server_profile_and_folder_it_was_given_and_nothing_else() {
+    let options = RequestOptions { server: Some(1), profile: Some(7), folder: Some("/media/tv".into()) };
+    let (_, seen) = run(vec![Ok(SeerrResponse { status: 201, ..Default::default() })],
+        |c, t| c.request(&session(), MediaKind::Tv, 62, &[1], &options, t));
+    assert_eq!(body_json(&seen[0]), json!({ "mediaType": "tv", "mediaId": 62, "seasons": [1],
+        "serverId": 1, "profileId": 7, "rootFolder": "/media/tv" }));
+    let only_profile = RequestOptions { profile: Some(4), ..Default::default() };
+    let (_, seen) = run(vec![Ok(SeerrResponse { status: 201, ..Default::default() })],
+        |c, t| c.request(&session(), MediaKind::Movie, 61, &[], &only_profile, t));
+    assert_eq!(body_json(&seen[0]), json!({ "mediaType": "movie", "mediaId": 61, "profileId": 4 }));
+}
+
+/// The servers a request can go to: Radarr's for a movie, Sonarr's for a show, with their defaults.
+#[test]
+fn the_servers_of_a_kind_are_read_with_their_defaults() {
+    let body = r#"[{"id":0,"name":"s00000001","is4k":false,"isDefault":true,"activeDirectory":"/movies",
+        "activeProfileId":4,"activeTags":[]},
+        {"id":1,"name":"s00000002","is4k":true,"isDefault":true,"activeDirectory":"/movies4k","activeProfileId":5},
+        {"name":"no id"}]"#;
+    let (got, seen) = run(vec![ok(body)], |c, t| c.servers(&session(), MediaKind::Movie, t));
+    assert_eq!(seen[0].url, "http://127.0.0.1:5055/api/v1/service/radarr");
+    let servers = got.unwrap();
+    assert_eq!(servers.len(), 2, "a row with no id is dropped");
+    assert_eq!(servers[0], ArrServer { id: 0, name: "s00000001".into(), is4k: false, is_default: true,
+        profile: Some(4), folder: Some("/movies".into()), anime_profile: None, anime_folder: None });
+    assert!(servers[1].is4k);
+    let (_, seen) = run(vec![ok("[]")], |c, t| c.servers(&session(), MediaKind::Tv, t));
+    assert_eq!(seen[0].url, "http://127.0.0.1:5055/api/v1/service/sonarr");
+    let (got, _) = run(vec![ok("{}")], |c, t| c.servers(&session(), MediaKind::Tv, t));
+    assert_eq!(got, Err(SeerrError::Unreadable), "a list is an array");
+}
+
+/// One server's quality profiles and root folders, in the server's order.
+#[test]
+fn a_servers_profiles_and_folders_are_read() {
+    let body = r#"{"server":{"id":2},"profiles":[{"id":1,"name":"s00000011"},{"id":6,"name":"s00000012"},{"id":9}],
+        "rootFolders":[{"id":1,"path":"/tv","freeSpace":1099511627776,"totalSpace":2},{"id":2,"path":"/anime"},{"id":3}],
+        "tags":[]}"#;
+    let (got, seen) = run(vec![ok(body)], |c, t| c.server_options(&session(), MediaKind::Tv, 2, t));
+    assert_eq!(seen[0].url, "http://127.0.0.1:5055/api/v1/service/sonarr/2");
+    let options = got.unwrap();
+    assert_eq!(options.profiles, [QualityProfile { id: 1, name: "s00000011".into() },
+        QualityProfile { id: 6, name: "s00000012".into() }], "a profile with no name is dropped");
+    assert_eq!(options.folders, [RootFolder { path: "/tv".into(), free: Some(1 << 40) },
+        RootFolder { path: "/anime".into(), free: None }]);
+}
+
+/// The default server is the non-4K one marked default, else the first non-4K one; an anime show
+/// takes a Sonarr server's anime profile and folder when it has them.
+#[test]
+fn the_default_server_and_its_defaults_follow_seerrs_rules() {
+    let server = |id, is4k, is_default| ArrServer { id, is4k, is_default, ..Default::default() };
+    assert_eq!(default_server(&[server(0, true, true), server(1, false, false), server(2, false, true)]).map(|s| s.id), Some(2));
+    assert_eq!(default_server(&[server(0, true, true), server(1, false, false)]).map(|s| s.id), Some(1));
+    assert_eq!(default_server(&[server(0, true, true)]), None, "a 4K server is never this client's");
+    let sonarr = ArrServer { profile: Some(1), folder: Some("/tv".into()), anime_profile: Some(3),
+        anime_folder: Some("/anime".into()), ..Default::default() };
+    assert_eq!(sonarr.defaults(false), (Some(1), Some("/tv")));
+    assert_eq!(sonarr.defaults(true), (Some(3), Some("/anime")));
+    let plain = ArrServer { profile: Some(1), folder: Some("/tv".into()), ..Default::default() };
+    assert_eq!(plain.defaults(true), (Some(1), Some("/tv")), "no anime pair: the ordinary one");
+}
+
+/// A show under TMDB's anime keyword reads as anime; a movie never does.
+#[test]
+fn a_shows_anime_keyword_is_read() {
+    let body = r#"{"id":71,"name":"s00000071","keywords":[{"id":1,"name":"x"},{"id":210024,"name":"anime"}]}"#;
+    let (got, _) = run(vec![ok(body)], |c, t| c.detail(&session(), MediaKind::Tv, 71, t));
+    assert!(got.unwrap().anime);
+    let (got, _) = run(vec![ok(r#"{"id":72,"name":"s00000072","keywords":[{"id":5}]}"#)],
+        |c, t| c.detail(&session(), MediaKind::Tv, 72, t));
+    assert!(!got.unwrap().anime);
+    let (got, _) = run(vec![ok(r#"{"id":73,"title":"s00000073","keywords":[{"id":210024}]}"#)],
+        |c, t| c.detail(&session(), MediaKind::Movie, 73, t));
+    assert!(!got.unwrap().anime);
+}
+
+/// The permission bits say whether this user may choose a request's server, profile and folder.
+#[test]
+fn only_an_admin_or_an_advanced_requester_may_choose_options() {
+    let (got, _) = run(vec![Ok(SeerrResponse { status: 200, body: br#"{"id":7,"permissions":32}"#.to_vec(),
+        cookies: vec!["connect.sid=x".into()] })], |c, t| c.sign_in("t", t));
+    let (_, user) = got.unwrap();
+    assert_eq!(user.permissions, 32);
+    assert!(!user.may_choose_options(), "Request alone");
+    for bits in [PERMISSION_ADMIN, PERMISSION_MANAGE_REQUESTS, PERMISSION_REQUEST_ADVANCED | 32] {
+        assert!(SeerrUser { id: 1, name: String::new(), permissions: bits }.may_choose_options(), "{bits}");
+    }
 }
 
 #[test]
@@ -251,6 +343,6 @@ fn a_tmdb_image_url_is_built_only_from_a_plain_path() {
 #[test]
 fn a_session_and_a_user_never_print_their_secrets() {
     assert_eq!(format!("{:?}", session()), "SeerrSession(<cookie>)");
-    let user = SeerrUser { id: 3, name: "s00000003".into() };
+    let user = SeerrUser { id: 3, name: "s00000003".into(), permissions: 2 };
     assert!(!format!("{user:?}").contains("s00000003"));
 }

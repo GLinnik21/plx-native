@@ -4,8 +4,10 @@
 //! It reads the Seerr store's view (`SearchLike::seerr`) and asks it through `StoreCmd::Seerr`:
 //! the title's detail when it mounts, the request when the pill is pressed, the detail once more
 //! when a request went through (so the status line says what the server now says). A movie's pill
-//! requests it; a show's requests every season the server neither holds nor was asked for. A title
-//! with nothing left to request shows its status and no pill.
+//! requests it; a show's requests every season the server neither holds nor was asked for. For a
+//! user Seerr lets choose where a request goes, the pill opens the request menu
+//! (`screens::seerr_request`) instead, which sends on the same slot. A title with nothing left to
+//! request shows its status and no pill.
 //!
 //! The hero is laid out the way the catalog page's is (`detail_layout::TITLE_BOTTOM` and the
 //! `theme::space` rungs, the backdrop through a household server's photo proxy, the shared scrim).
@@ -32,7 +34,7 @@ use plx_ui::vstack::VFlow;
 use plx_ui::widgets::{Button, ControlGround, CtlPop, StatusKind, StatusOverlay};
 use plx_ui::{detail_layout, theme, Env, Painter, Rect, View};
 
-use crate::registry::{AppFx, ContentReq, SearchLike};
+use crate::registry::{AppFx, ContentPanel, ContentReq, SearchLike};
 
 pub const PILL_ELEM: u32 = 0;
 const GROUP: GroupId = GroupId(0);
@@ -159,17 +161,31 @@ impl SeerrTitleScreen {
         if elem != PILL_ELEM {
             return Handled::No;
         }
-        if let Offer::Request(seasons) = self.pill(H::seerr(cx)) {
-            self.refreshed = false;
-            self.ask(self.request_slot(), SeerrOp::Request { kind: self.kind, tmdb: self.tmdb, seasons }, fx);
+        let seerr = H::seerr(cx);
+        let Offer::Request(seasons) = self.pill(seerr) else { return Handled::Yes };
+        if seerr.is_some_and(SeerrStore::may_choose_options) {
+            if let Some(rect) = self.pill_rect(seerr, cx.measure) {
+                let anchor = [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits);
+                fx.push(Fx::App(AppFx::Content(ContentReq::Panel(ContentPanel::SeerrRequest {
+                    kind: self.kind, tmdb: self.tmdb, anchor,
+                }))));
+            }
+        } else {
+            let op = SeerrOp::Request { kind: self.kind, tmdb: self.tmdb, seasons, options: Default::default() };
+            self.ask(self.request_slot(), op, fx);
             fx.invalidate(Provenance::Input);
         }
         Handled::Yes
     }
 
-    /// A request that went through is read back once: the detail is asked again.
+    /// A request that went through is read back once: the detail is asked again. A request on its
+    /// way (from the pill or the request menu) owes a fresh read-back.
     fn follow_request<H: SearchLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
-        let done = matches!(self.request(H::seerr(cx)), Some(Answer::Ready(SeerrData::Requested)));
+        let request = self.request(H::seerr(cx));
+        if matches!(request, Some(Answer::Loading)) {
+            self.refreshed = false;
+        }
+        let done = matches!(request, Some(Answer::Ready(SeerrData::Requested)));
         if done && !self.refreshed {
             self.refreshed = true;
             self.ask_detail(fx);

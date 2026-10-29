@@ -16,8 +16,8 @@
 //! ([`SessionChange`]). It is never persisted, and it goes with the profile it was signed in for.
 
 use super::{StoreId, StoreJob};
-use crate::seerr::{run_op, Availability, DiscoverRow, LiveSeerrIo, MediaKind, SeerrData, SeerrError, SeerrIo, SeerrOp,
-    SeerrOutcome, SeerrSession, SeerrUser, SessionChange, TitleDetail};
+use crate::seerr::{run_op, ArrOptions, ArrServer, Availability, DiscoverRow, LiveSeerrIo, MediaKind, SeerrData, SeerrError,
+    SeerrIo, SeerrOp, SeerrOutcome, SeerrSession, SeerrUser, SessionChange, TitleDetail};
 use crate::watchlist::{WatchlistAuth, WatchlistInput};
 use plx_machine::job::{Job, Port};
 use plx_machine::machine::{Addr, MachineId, RequestId};
@@ -53,6 +53,10 @@ pub enum Slot {
     Detail(MediaKind, i64),
     /// A request write for one title.
     Request(MediaKind, i64),
+    /// The request menu's list of the Radarr (a movie) or Sonarr (a show) servers.
+    Servers(MediaKind),
+    /// The request menu's profiles and folders of one of those servers.
+    ServerOptions(MediaKind, i64),
 }
 
 /// The connection, as Settings states it.
@@ -320,6 +324,28 @@ impl SeerrStore {
             Answer::Ready(SeerrData::Detail(detail)) => Some(detail),
             _ => None,
         }
+    }
+
+    /// The servers a request of `kind` can go to, once their [`Slot::Servers`] ask has landed.
+    pub fn servers(&self, kind: MediaKind) -> Option<&[ArrServer]> {
+        match self.answer(&Slot::Servers(kind))? {
+            Answer::Ready(SeerrData::Servers(servers)) => Some(servers),
+            _ => None,
+        }
+    }
+
+    /// One server's profiles and folders, once their [`Slot::ServerOptions`] ask has landed.
+    pub fn server_options(&self, kind: MediaKind, server: i64) -> Option<&ArrOptions> {
+        match self.answer(&Slot::ServerOptions(kind, server))? {
+            Answer::Ready(SeerrData::ServerOptions(options)) => Some(options),
+            _ => None,
+        }
+    }
+
+    /// May the signed-in user choose where a request goes (`SeerrUser::may_choose_options`)? A
+    /// request surface opens the request menu only then; `false` while nobody is signed in.
+    pub fn may_choose_options(&self) -> bool {
+        self.session.as_ref().is_some_and(|(_, user)| user.may_choose_options())
     }
 
     /// What `slot` was last asked: a surface reads [`Self::answer`] only when this is its question.

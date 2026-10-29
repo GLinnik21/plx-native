@@ -2384,14 +2384,17 @@ class SeerrFixture:
     """A Seerr / Overseerr / Jellyseerr server (`/api/v1`), in memory, on the same listener (no PMS or
     plex.tv path starts `/api/v1/`). Enough for the app's client (`plex/src/plex/seerr.rs`,
     docs/seerr.md): the Plex sign-in, the session cookie, search, the discover rows, a title's detail
-    with a show's seasons, the user's requests, and `POST /api/v1/request`, which the server records
-    as a WRITE (`MockPms.note_write`).
+    with a show's seasons, the user's requests, the Radarr / Sonarr servers a request can go to with
+    their quality profiles and root folders (`/api/v1/service/...`), and `POST /api/v1/request`, which
+    the server records as a WRITE (`MockPms.note_write`) with the server, profile and folder it named.
 
     Synthetic data only: 12 titles from the closed alphabet with TMDB ids 9100001.., movies and
     shows alternating, every availability represented; each show has three seasons. Every route but
     the sign-in answers 403 without the session cookie, as Overseerr does.
     `POST /_mock/seerr {"plex_login": "refuse"}` makes the sign-in answer 403 (a Plex account the
-    server does not let in); `{"plex_login": "allow"}` restores it.
+    server does not let in); `{"plex_login": "allow"}` restores it. The user is an admin, who may
+    choose a request's server, profile and folder (the app's request menu); `{"advanced": false}`
+    makes it a plain requester (Seerr's Request permission alone), `{"advanced": true}` an admin again.
     """
 
     COOKIE = "connect.sid"
@@ -2414,14 +2417,46 @@ class SeerrFixture:
         self.sessions = set()
         self.requests = []
         self.refuse_login = False
-        self.user = {"id": 1, "displayName": "s5eeb0001", "plexUsername": "s5eeb0001", "username": "s5eeb0001"}
+        self.user = {"id": 1, "displayName": "s5eeb0001", "plexUsername": "s5eeb0001", "username": "s5eeb0001",
+                     "permissions": self.ADMIN}
+        # Seerr's `/service/{radarr|sonarr}` rows. Movies have one ordinary server and a 4K one (never
+        # offered: the app sends no 4K request); shows have two ordinary ones, so the menu offers a
+        # server choice, and the default one has an anime profile and folder.
+        server = lambda sid, name, is4k, default, profile, folder, **extra: dict(
+            {"id": sid, "name": name, "is4k": is4k, "isDefault": default, "activeProfileId": profile,
+             "activeDirectory": folder, "activeTags": []}, **extra)
+        self.services = {
+            "radarr": [server(0, "s5eeb0101", False, True, 4, "/media/movies"),
+                       server(1, "s5eeb0102", True, True, 5, "/media/movies-4k")],
+            "sonarr": [server(0, "s5eeb0201", False, True, 4, "/media/tv",
+                              activeAnimeProfileId=6, activeAnimeDirectory="/media/anime"),
+                       server(1, "s5eeb0202", False, False, 1, "/media/tv-archive")],
+        }
+        profiles = [{"id": 1, "name": "Any"}, {"id": 4, "name": "HD-1080p"}, {"id": 5, "name": "Ultra-HD"},
+                    {"id": 6, "name": "HD - 720p/1080p"}]
+        folders = lambda *paths: [{"id": i + 1, "path": path, "freeSpace": (i + 2) * 750 * 1024 ** 3,
+                                   "totalSpace": 4 * 1024 ** 4} for i, path in enumerate(paths)]
+        self.service_options = {
+            ("radarr", 0): {"profiles": profiles[:3], "rootFolders": folders("/media/movies", "/media/kids")},
+            ("radarr", 1): {"profiles": profiles[2:3], "rootFolders": folders("/media/movies-4k")},
+            ("sonarr", 0): {"profiles": profiles, "rootFolders": folders("/media/tv", "/media/anime")},
+            ("sonarr", 1): {"profiles": profiles[:2], "rootFolders": folders("/media/tv-archive")},
+        }
+
+    ADMIN = 2
+    REQUEST = 32
 
     def configure(self, patch):
         if "plex_login" in patch:
             if patch["plex_login"] not in ("refuse", "allow"):
                 return 400, {"error": "plex_login is refuse|allow"}
             self.refuse_login = patch["plex_login"] == "refuse"
-        return 200, {"plex_login": "refuse" if self.refuse_login else "allow"}
+        if "advanced" in patch:
+            if not isinstance(patch["advanced"], bool):
+                return 400, {"error": "advanced is true|false"}
+            self.user["permissions"] = self.ADMIN if patch["advanced"] else self.REQUEST
+        return 200, {"plex_login": "refuse" if self.refuse_login else "allow",
+                     "advanced": self.user["permissions"] != self.REQUEST}
 
     def by_id(self, kind, tmdb):
         return next((t for t in self.titles if t["kind"] == kind and t["id"] == tmdb), None)
@@ -2495,6 +2530,14 @@ class SeerrFixture:
                 out["numberOfSeasons"] = len(t["seasons"])
                 out["seasons"] = [{"seasonNumber": n, "episodeCount": 8} for n in t["seasons"]]
             return j(out)
+        if segs[:1] == ["service"] and len(segs) in (2, 3) and segs[1] in self.services:
+            servers = self.services[segs[1]]
+            if len(segs) == 2:
+                return j(servers)
+            server = next((s for s in servers if segs[2].isdigit() and s["id"] == int(segs[2])), None)
+            if server is None:
+                return j({"message": "Server with provided ID does not exist."}, 404)
+            return j(dict({"server": server, "tags": []}, **self.service_options[(segs[1], server["id"])]))
         if segs == ["request"] and method == "GET":
             take, skip = int(q.get("take", "20")), int(q.get("skip", "0"))
             mine = self.requests[::-1]
@@ -2519,7 +2562,9 @@ class SeerrFixture:
                     (t["kind"] == "tv" and all(n in open_seasons or t["seasons"].get(n) for n in seasons)):
                 return j({"message": "Request for this media already exists."}, 409)
             req = {"id": len(self.requests) + 1, "kind": t["kind"], "tmdb": t["id"], "status": 1,
-                   "seasons": [n for n in seasons if n not in open_seasons]}
+                   "seasons": [n for n in seasons if n not in open_seasons],
+                   "serverId": ask.get("serverId"), "profileId": ask.get("profileId"),
+                   "rootFolder": ask.get("rootFolder")}
             self.requests.append(req)
             if t["kind"] == "movie":
                 t["status"] = 2
@@ -4255,6 +4300,18 @@ def _selftest_seerr():
         assert call("/api/v1/request", {"mediaType": "tv", "mediaId": show["id"], "seasons": [2]}, cookie)[0] == 409
         mine = call("/api/v1/request?take=20&skip=0&filter=all&sort=added&requestedBy=1", cookie=cookie)[1]
         assert mine["results"][0]["media"]["tmdbId"] == show["id"]
+        # The request menu's reads, and a request that names where it goes.
+        assert user["permissions"] == SeerrFixture.ADMIN
+        servers = call("/api/v1/service/sonarr", cookie=cookie)[1]
+        assert [s["id"] for s in servers] == [0, 1] and servers[0]["isDefault"]
+        options = call("/api/v1/service/sonarr/1", cookie=cookie)[1]
+        assert options["server"]["id"] == 1 and options["profiles"] and options["rootFolders"]
+        assert call("/api/v1/service/radarr/9", cookie=cookie)[0] == 404
+        status, _, _ = call("/api/v1/request", {"mediaType": "tv", "mediaId": show["id"], "seasons": [3],
+                                                "serverId": 1, "profileId": 1, "rootFolder": "/media/tv-archive"}, cookie)
+        assert status == 201 and pms.seerr.requests[-1]["rootFolder"] == "/media/tv-archive"
+        pms.seerr.configure({"advanced": False})
+        assert call("/api/v1/auth/me", cookie=cookie)[1]["permissions"] == SeerrFixture.REQUEST
         pms.seerr.configure({"plex_login": "refuse"})
         assert call("/api/v1/auth/plex", {"authToken": DEMO_ACCOUNT_TOKEN})[0] == 403
         assert seerr_stand_in_problem("seerr: base=stand-in writes=open") is None

@@ -12,5 +12,11 @@
   "seerr.request.already": "Ужо запытана",
   "seerr.request.forbidden": "Вам нельга запытаць гэта на серверы",
   "seerr.request.failed": "Не атрымалася запытаць. Паспрабуйце яшчэ раз.",
-  "seerr.title.unreachable": "Не ўдаецца звязацца з Seerr."
+  "seerr.title.unreachable": "Не ўдаецца звязацца з Seerr.",
+  "seerr.menu.server": "Сервер",
+  "seerr.menu.quality": "Якасць",
+  "seerr.menu.folder": "Папка",
+  "seerr.menu.free": "Вольна {size}",
+  "seerr.menu.loading": "Загрузка…",
+  "seerr.menu.unavailable": "Не ўдалося загрузіць варыянты"
 }

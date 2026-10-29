@@ -12,5 +12,11 @@
   "seerr.request.already": "Già richiesto",
   "seerr.request.forbidden": "Non puoi richiederlo su questo server",
   "seerr.request.failed": "Richiesta non riuscita. Riprova.",
-  "seerr.title.unreachable": "Impossibile raggiungere Seerr."
+  "seerr.title.unreachable": "Impossibile raggiungere Seerr.",
+  "seerr.menu.server": "Server",
+  "seerr.menu.quality": "Qualità",
+  "seerr.menu.folder": "Cartella",
+  "seerr.menu.free": "{size} liberi",
+  "seerr.menu.loading": "Caricamento…",
+  "seerr.menu.unavailable": "Impossibile caricare le opzioni"
 }

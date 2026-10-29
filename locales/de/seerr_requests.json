@@ -12,5 +12,11 @@
   "seerr.request.already": "Bereits angefragt",
   "seerr.request.forbidden": "Du darfst das auf dem Server nicht anfragen",
   "seerr.request.failed": "Anfrage fehlgeschlagen. Versuch es noch einmal.",
-  "seerr.title.unreachable": "Seerr ist nicht erreichbar."
+  "seerr.title.unreachable": "Seerr ist nicht erreichbar.",
+  "seerr.menu.server": "Server",
+  "seerr.menu.quality": "Qualität",
+  "seerr.menu.folder": "Ordner",
+  "seerr.menu.free": "{size} frei",
+  "seerr.menu.loading": "Wird geladen…",
+  "seerr.menu.unavailable": "Optionen konnten nicht geladen werden"
 }

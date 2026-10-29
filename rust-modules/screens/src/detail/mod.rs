@@ -4496,8 +4496,10 @@ impl DetailScreen {
                 }
             }
             // The Seerr request disc: every season the server neither holds nor was asked for, as
-            // one request (the title page's pill, `plx_data::stores::seerr::offer`). The store's
-            // answer turns the face; a refused or failed request is pressed again.
+            // one request (the title page's pill, `plx_data::stores::seerr::offer`). A user Seerr
+            // lets choose where it goes gets the request menu (`screens::seerr_request`), anchored
+            // to the disc; anyone else's press sends it. The store's answer turns the face; a
+            // refused or failed request is pressed again.
             hero::HeroCtl::Request => {
                 let Some(tmdb) = self.seerr_tmdb(meta) else { return };
                 let Some(store) = H::seerr(cx) else { return };
@@ -4505,10 +4507,22 @@ impl DetailScreen {
                     return;
                 }
                 let Some(detail) = store.title_detail(MediaKind::Tv, tmdb) else { return };
-                if let Offer::Request(seasons) = offer(detail, store.answer(&Slot::Request(MediaKind::Tv, tmdb))) {
+                let Offer::Request(seasons) = offer(detail, store.answer(&Slot::Request(MediaKind::Tv, tmdb))) else {
+                    return;
+                };
+                if store.may_choose_options() {
+                    let set = self.hero_set(meta);
+                    let Some(i) = hero::index_of(set, ctl) else { return };
+                    let widths = hero::hero_widths(cx.measure, set, set.restart, self.disc_unfurl.map(|s| s.pos),
+                        self.named_show(meta));
+                    let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y, widths);
+                    rect.y -= self.scroll.pos;
+                    let anchor = [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits);
+                    self.content(fx, ContentReq::Panel(ContentPanel::SeerrRequest { kind: MediaKind::Tv, tmdb, anchor }));
+                } else {
                     fx.push(Fx::App(AppFx::Store(StoreId::Seerr, StoreCmd::Seerr(SeerrCmd::Ask {
                         slot: Slot::Request(MediaKind::Tv, tmdb),
-                        op: SeerrOp::Request { kind: MediaKind::Tv, tmdb, seasons },
+                        op: SeerrOp::Request { kind: MediaKind::Tv, tmdb, seasons, options: Default::default() },
                     }))));
                 }
             }

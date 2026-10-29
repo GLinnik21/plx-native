@@ -29,7 +29,7 @@ impl SeerrIo for Script {
 }
 
 fn signed_in() -> Result<(SeerrSession, SeerrUser), SeerrError> {
-    Ok((SeerrSession::for_test("connect.sid=x"), SeerrUser { id: 4, name: "s00000004".into() }))
+    Ok((SeerrSession::for_test("connect.sid=x"), SeerrUser { id: 4, name: "s00000004".into(), permissions: 0 }))
 }
 
 fn store(io: &Arc<Script>) -> SeerrStore {
@@ -152,7 +152,8 @@ fn a_failed_call_with_a_good_session_keeps_the_connection() {
     store.ask(Slot::Search, search("a"), &input);
     run_jobs(&mut store);
     store.pump(input.profile());
-    store.ask(Slot::Request(MediaKind::Movie, 7), SeerrOp::Request { kind: MediaKind::Movie, tmdb: 7, seasons: vec![] }, &input);
+    store.ask(Slot::Request(MediaKind::Movie, 7), SeerrOp::Request { kind: MediaKind::Movie, tmdb: 7, seasons: vec![],
+        options: crate::seerr::RequestOptions::default() }, &input);
     run_jobs(&mut store);
     store.pump(input.profile());
     assert_eq!(store.answer(&Slot::Request(MediaKind::Movie, 7)), Some(&Answer::Failed(SeerrError::Forbidden)));
@@ -301,7 +302,7 @@ fn unwanting_a_slot_forgets_its_wait_its_ask_and_its_answer() {
 }
 
 fn movie(status: Availability) -> TitleDetail {
-    TitleDetail { title: Title { kind: Some(MediaKind::Movie), tmdb: 1, status, ..Default::default() }, seasons: vec![] }
+    TitleDetail { title: Title { kind: Some(MediaKind::Movie), tmdb: 1, status, ..Default::default() }, ..Default::default() }
 }
 
 fn show(statuses: &[Availability]) -> TitleDetail {
@@ -309,6 +310,7 @@ fn show(statuses: &[Availability]) -> TitleDetail {
         title: Title { kind: Some(MediaKind::Tv), tmdb: 2, status: Availability::PartlyAvailable, ..Default::default() },
         seasons: statuses.iter().enumerate()
             .map(|(i, &status)| Season { number: i as i32 + 1, episodes: Some(8), status }).collect(),
+        anime: false,
     }
 }
 
@@ -333,4 +335,34 @@ fn a_request_in_flight_or_done_takes_the_offer_and_a_failed_one_offers_it_again(
     assert_eq!(offer(&detail, Some(&Answer::Loading)), Offer::Sending);
     assert_eq!(offer(&detail, Some(&Answer::Ready(SeerrData::Requested))), Offer::Nothing);
     assert_eq!(offer(&detail, Some(&Answer::Failed(SeerrError::Transport))), Offer::Request(vec![]));
+}
+
+/// The request menu opens only for a user Seerr lets choose where a request goes, and reads the
+/// servers and one server's options from their own slots.
+#[test]
+fn the_menu_reads_the_users_permission_and_the_servers_and_options_slots() {
+    use crate::seerr::{ArrOptions, ArrServer, QualityProfile};
+    let advanced = Ok((SeerrSession::for_test("connect.sid=x"),
+        SeerrUser { id: 4, name: "s00000004".into(), permissions: plx_plex::plex::seerr::PERMISSION_REQUEST_ADVANCED }));
+    let servers = vec![ArrServer { id: 0, name: "s00000001".into(), is_default: true, ..Default::default() }];
+    let options = ArrOptions { profiles: vec![QualityProfile { id: 4, name: "s00000002".into() }], folders: vec![] };
+    let io = Script::new(advanced, vec![Ok(SeerrData::Servers(servers.clone())), Ok(SeerrData::ServerOptions(options.clone()))]);
+    let mut store = store(&io);
+    let input = WatchlistInput::for_test(1);
+    assert!(!store.may_choose_options(), "nobody is signed in yet");
+    store.ask(Slot::Servers(MediaKind::Tv), SeerrOp::Servers { kind: MediaKind::Tv }, &input);
+    store.ask(Slot::ServerOptions(MediaKind::Tv, 0), SeerrOp::ServerOptions { kind: MediaKind::Tv, server: 0 }, &input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    assert!(store.may_choose_options());
+    assert_eq!(store.servers(MediaKind::Tv), Some(&servers[..]));
+    assert_eq!(store.servers(MediaKind::Movie), None, "a movie's servers are another slot");
+    assert_eq!(store.server_options(MediaKind::Tv, 0), Some(&options));
+
+    let io = Script::new(signed_in(), vec![Ok(titles(0))]);
+    let mut plain = self::store(&io);
+    plain.ask(Slot::Search, search("a"), &input);
+    run_jobs(&mut plain);
+    plain.pump(input.profile());
+    assert!(!plain.may_choose_options(), "a user with Request alone sends straight away");
 }

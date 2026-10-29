@@ -54,5 +54,32 @@
   "seerr.title.unreachable": {
     "value": "Seerr couldn't be reached.",
     "description": "Requesting a title through the household's Seerr server: Whole-page message when the title could not be loaded from Seerr"
+  },
+  "seerr.menu.server": {
+    "value": "Server",
+    "description": "Requesting a title through the household's Seerr server: Request menu section heading: which of the Seerr owner's Radarr/Sonarr servers the request goes to"
+  },
+  "seerr.menu.quality": {
+    "value": "Quality",
+    "description": "Requesting a title through the household's Seerr server: Request menu section heading: the quality profile the download uses"
+  },
+  "seerr.menu.folder": {
+    "value": "Folder",
+    "description": "Requesting a title through the household's Seerr server: Request menu section heading: the folder on the server the download is saved in"
+  },
+  "seerr.menu.free": {
+    "value": "{size} free",
+    "description": "Requesting a title through the household's Seerr server: Request menu, a folder row's sub-line: {size} is the free disk space there, e.g. \"1.8 GB\"",
+    "args": {
+      "size": "str"
+    }
+  },
+  "seerr.menu.loading": {
+    "value": "Loading…",
+    "description": "Requesting a title through the household's Seerr server: Request menu note while the server's choices are on their way"
+  },
+  "seerr.menu.unavailable": {
+    "value": "Couldn't load the choices",
+    "description": "Requesting a title through the household's Seerr server: Request menu note: the servers, profiles or folders could not be read; the request can still be sent"
   }
 }

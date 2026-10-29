@@ -49,7 +49,7 @@ const INSTANCE: InstanceId = InstanceId(65);
 struct Canned(Vec<Title>);
 impl SeerrIo for Canned {
     fn sign_in(&self, _: &str, _: &str) -> Result<(SeerrSession, SeerrUser), SeerrError> {
-        Ok((SeerrSession::for_test("connect.sid=x"), SeerrUser { id: 1, name: "s00000001".into() }))
+        Ok((SeerrSession::for_test("connect.sid=x"), SeerrUser { id: 1, name: "s00000001".into(), permissions: 0 }))
     }
     fn run(&self, _: &str, _: &SeerrSession, _: &SeerrUser, _: &SeerrOp) -> Result<SeerrData, SeerrError> {
         Ok(SeerrData::Titles(Page { items: self.0.clone(), page: 1, pages: 1 }))

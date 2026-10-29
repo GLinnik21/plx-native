@@ -20,6 +20,13 @@
 //! pending, 3 processing, 4 partly available, 5 available (6 blocklisted and 7 deleted are the newer
 //! servers'); a request is 1 pending approval, 2 approved, 3 declined. A missing `mediaInfo` is a
 //! title nobody has asked for.
+//!
+//! A request can name where it goes (`serverId`, `profileId`, `rootFolder`): the Radarr / Sonarr
+//! servers the Seerr server sends to are read with `GET /api/v1/service/{radarr|sonarr}` and one
+//! server's quality profiles and root folders with `GET /api/v1/service/{radarr|sonarr}/{id}`
+//! (Seerr's `server/routes/service.ts`). Seerr's own request dialog offers that choice only to a user
+//! with Manage Requests or Advanced Requests ([`SeerrUser::may_choose_options`]); for anyone else the
+//! server applies its override rules over whatever the body names.
 use super::account::{endpoint_shape, loopback_http};
 use super::client::QueryBuilder;
 use serde_json::{json, Value};
@@ -39,6 +46,13 @@ impl MediaKind {
         match self {
             MediaKind::Movie => "movie",
             MediaKind::Tv => "tv",
+        }
+    }
+    /// The service a request of this kind goes to: Radarr for a movie, Sonarr for a show.
+    fn service(self) -> &'static str {
+        match self {
+            MediaKind::Movie => "radarr",
+            MediaKind::Tv => "sonarr",
         }
     }
     fn of_wire(s: &str) -> Option<Self> {
@@ -135,7 +149,13 @@ pub struct Season {
 pub struct TitleDetail {
     pub title: Title,
     pub seasons: Vec<Season>,
+    /// A show TMDB files under the "anime" keyword ([`ANIME_KEYWORD`]): Seerr sends it to a Sonarr
+    /// server's anime profile and folder unless the request names others ([`ArrServer::defaults`]).
+    pub anime: bool,
 }
+
+/// TMDB's "anime" keyword, the one Seerr reads a show's anime-ness from (`ANIME_KEYWORD_ID`).
+pub const ANIME_KEYWORD: i64 = 210024;
 
 impl TitleDetail {
     /// The season numbers a request could still ask for.
@@ -171,6 +191,24 @@ pub struct SeerrUser {
     pub id: i64,
     /// `displayName`, else the Plex user name. Shown in Settings only, never logged.
     pub name: String,
+    /// Seerr's permission bits (`server/lib/permissions.ts`); 0 when the server sent none.
+    pub permissions: u64,
+}
+
+/// Seerr's `Permission.ADMIN`: every permission.
+pub const PERMISSION_ADMIN: u64 = 2;
+/// Seerr's `Permission.MANAGE_REQUESTS`.
+pub const PERMISSION_MANAGE_REQUESTS: u64 = 16;
+/// Seerr's `Permission.REQUEST_ADVANCED`: may pick a request's server, quality profile and folder.
+pub const PERMISSION_REQUEST_ADVANCED: u64 = 8192;
+
+impl SeerrUser {
+    /// May this user choose a request's server, quality profile and root folder? Seerr's own
+    /// dialog shows the choice to the same users (admin, Manage Requests, Advanced Requests), and its
+    /// server keeps their choices over its override rules.
+    pub fn may_choose_options(&self) -> bool {
+        self.permissions & (PERMISSION_ADMIN | PERMISSION_MANAGE_REQUESTS | PERMISSION_REQUEST_ADVANCED) != 0
+    }
 }
 
 impl std::fmt::Debug for SeerrUser {
@@ -197,6 +235,74 @@ impl std::fmt::Debug for SeerrSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("SeerrSession(<cookie>)")
     }
+}
+
+/// One Radarr (movies) or Sonarr (shows) server the Seerr server sends requests to, from
+/// `GET /api/v1/service/{radarr|sonarr}`: its name and the profile and folder a request gets when it
+/// names none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArrServer {
+    pub id: i64,
+    /// The name the Seerr owner gave it (server text).
+    pub name: String,
+    /// A 4K server: the request this client sends is never a 4K one, so these are not offered.
+    pub is4k: bool,
+    pub is_default: bool,
+    /// `activeProfileId` and `activeDirectory`: the server's defaults.
+    pub profile: Option<i64>,
+    pub folder: Option<String>,
+    /// A Sonarr server's `activeAnimeProfileId` and `activeAnimeDirectory`, for an anime show.
+    pub anime_profile: Option<i64>,
+    pub anime_folder: Option<String>,
+}
+
+impl ArrServer {
+    /// The profile and folder Seerr gives a request that names neither: a Sonarr server's anime
+    /// pair for an anime show when it has one, else its ordinary pair.
+    pub fn defaults(&self, anime: bool) -> (Option<i64>, Option<&str>) {
+        let profile = if anime { self.anime_profile.or(self.profile) } else { self.profile };
+        let folder = if anime { self.anime_folder.as_deref().or(self.folder.as_deref()) } else { self.folder.as_deref() };
+        (profile, folder)
+    }
+}
+
+/// The server a request goes to when it names none: the non-4K server marked default, else the
+/// first non-4K one (Seerr's own order).
+pub fn default_server(servers: &[ArrServer]) -> Option<&ArrServer> {
+    servers.iter().filter(|s| !s.is4k).find(|s| s.is_default).or_else(|| servers.iter().find(|s| !s.is4k))
+}
+
+/// One quality profile of a Radarr / Sonarr server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QualityProfile {
+    pub id: i64,
+    /// The profile's name (server text).
+    pub name: String,
+}
+
+/// One root folder of a Radarr / Sonarr server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootFolder {
+    /// The folder's path on that server, what a request names (server text).
+    pub path: String,
+    /// Bytes free there, when the server said.
+    pub free: Option<i64>,
+}
+
+/// `GET /api/v1/service/{radarr|sonarr}/{id}`: one server's quality profiles and root folders.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArrOptions {
+    pub profiles: Vec<QualityProfile>,
+    pub folders: Vec<RootFolder>,
+}
+
+/// What a request names beyond the title: each `None` leaves that choice to the server (its default,
+/// and for a user who may not choose, its override rules).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct RequestOptions {
+    pub server: Option<i64>,
+    pub profile: Option<i64>,
+    pub folder: Option<String>,
 }
 
 /// Which discover row to read.
@@ -582,7 +688,36 @@ fn user_from(v: &Value) -> Option<SeerrUser> {
     let id = int(v, "id")?;
     let name = text(v, "displayName").or_else(|| text(v, "plexUsername")).or_else(|| text(v, "username"))
         .unwrap_or_default();
-    Some(SeerrUser { id, name })
+    let permissions = int(v, "permissions").and_then(|p| u64::try_from(p).ok()).unwrap_or(0);
+    Some(SeerrUser { id, name, permissions })
+}
+
+/// Does a show's detail carry TMDB's anime keyword?
+fn anime_from(v: &Value) -> bool {
+    v.get("keywords").and_then(Value::as_array).is_some_and(|k| k.iter().any(|k| int(k, "id") == Some(ANIME_KEYWORD)))
+}
+
+fn server_from(v: &Value) -> Option<ArrServer> {
+    Some(ArrServer {
+        id: int(v, "id").filter(|id| *id >= 0)?,
+        name: text(v, "name").unwrap_or_default(),
+        is4k: v.get("is4k").and_then(Value::as_bool).unwrap_or(false),
+        is_default: v.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
+        profile: int(v, "activeProfileId"),
+        folder: text(v, "activeDirectory"),
+        anime_profile: int(v, "activeAnimeProfileId"),
+        anime_folder: text(v, "activeAnimeDirectory"),
+    })
+}
+
+fn options_from(v: &Value) -> ArrOptions {
+    let rows = |key: &str| v.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+    ArrOptions {
+        profiles: rows("profiles").iter()
+            .filter_map(|p| Some(QualityProfile { id: int(p, "id")?, name: text(p, "name")? })).collect(),
+        folders: rows("rootFolders").iter()
+            .filter_map(|f| Some(RootFolder { path: text(f, "path")?, free: int(f, "freeSpace") })).collect(),
+    }
 }
 
 /// One Seerr server, by its base URL ([`base_for`]).
@@ -657,7 +792,30 @@ impl SeerrClient {
         let body = parse(&response)?;
         let title = title_from(&body, Some(kind)).ok_or(SeerrError::Unreadable)?;
         let seasons = if kind == MediaKind::Tv { seasons_from(&body) } else { Vec::new() };
-        Ok(TitleDetail { title, seasons })
+        Ok(TitleDetail { title, seasons, anime: kind == MediaKind::Tv && anime_from(&body) })
+    }
+
+    /// `GET /api/v1/service/radarr` (a movie) or `/sonarr` (a show): the servers a request of that
+    /// kind can go to.
+    pub fn servers(&self, session: &SeerrSession, kind: MediaKind, req: SeerrTransport)
+        -> Result<Vec<ArrServer>, SeerrError>
+    {
+        let response = call(req, "GET", self.url(&format!("/api/v1/service/{}", kind.service())), Some(session), None)?;
+        let body = parse(&response)?;
+        let rows = body.as_array().ok_or(SeerrError::Unreadable)?;
+        Ok(rows.iter().filter_map(server_from).collect())
+    }
+
+    /// `GET /api/v1/service/{radarr|sonarr}/{id}`: one server's quality profiles and root folders.
+    pub fn server_options(&self, session: &SeerrSession, kind: MediaKind, server: i64, req: SeerrTransport)
+        -> Result<ArrOptions, SeerrError>
+    {
+        if server < 0 {
+            return Err(SeerrError::NotFound);
+        }
+        let path = format!("/api/v1/service/{}/{server}", kind.service());
+        let response = call(req, "GET", self.url(&path), Some(session), None)?;
+        Ok(options_from(&parse(&response)?))
     }
 
     /// One page of the signed-in user's own requests, newest first.
@@ -676,17 +834,28 @@ impl SeerrClient {
         Ok(Page { items, page: page.max(1), pages })
     }
 
-    /// `POST /api/v1/request`: a movie, or a show's `seasons` (the server rejects an empty list).
-    pub fn request(&self, session: &SeerrSession, kind: MediaKind, tmdb: i64, seasons: &[i32], req: SeerrTransport)
-        -> Result<(), SeerrError>
+    /// `POST /api/v1/request`: a movie, or a show's `seasons` (the server rejects an empty list),
+    /// with the server, quality profile and root folder `options` names (each one left out when
+    /// `None`, so the server decides it).
+    pub fn request(&self, session: &SeerrSession, kind: MediaKind, tmdb: i64, seasons: &[i32], options: &RequestOptions,
+        req: SeerrTransport) -> Result<(), SeerrError>
     {
         if tmdb <= 0 || (kind == MediaKind::Tv && seasons.is_empty()) {
             return Err(SeerrError::NotFound);
         }
-        let body = match kind {
+        let mut body = match kind {
             MediaKind::Movie => json!({ "mediaType": "movie", "mediaId": tmdb }),
             MediaKind::Tv => json!({ "mediaType": "tv", "mediaId": tmdb, "seasons": seasons }),
         };
+        if let Some(server) = options.server {
+            body["serverId"] = json!(server);
+        }
+        if let Some(profile) = options.profile {
+            body["profileId"] = json!(profile);
+        }
+        if let Some(folder) = &options.folder {
+            body["rootFolder"] = json!(folder);
+        }
         call(req, "POST", self.url("/api/v1/request"), Some(session), Some(body)).map(|_| ())
     }
 }

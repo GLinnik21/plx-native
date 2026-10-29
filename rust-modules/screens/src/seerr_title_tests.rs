@@ -4,7 +4,7 @@ use super::*;
 use plx_data::seerr::Title;
 
 fn movie(status: Availability) -> TitleDetail {
-    TitleDetail { title: Title { kind: Some(MediaKind::Movie), tmdb: 1, status, ..Default::default() }, seasons: vec![] }
+    TitleDetail { title: Title { kind: Some(MediaKind::Movie), tmdb: 1, status, ..Default::default() }, ..Default::default() }
 }
 
 #[test]

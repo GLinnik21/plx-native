@@ -20,6 +20,7 @@ pub mod versions_panel; // the Detail hero's Play Version list
 pub mod consent;
 pub mod catalog; // the catalog page's view-model (plan W6)
 pub mod seerr_title; // a title on the household's Seerr server: the page that requests it (docs/seerr.md)
+pub mod seerr_request; // the request menu: a Seerr request's server, quality profile and folder (docs/seerr.md)
 pub mod requests; // the Requests tab: Seerr suggestions and this account's requests (docs/seerr.md)
 pub mod collection;
 #[cfg(test)]

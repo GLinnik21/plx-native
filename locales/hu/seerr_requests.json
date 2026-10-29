@@ -12,5 +12,11 @@
   "seerr.request.already": "Már kérték",
   "seerr.request.forbidden": "Ezt nem kérheted ezen a szerveren",
   "seerr.request.failed": "A kérés nem sikerült. Próbáld újra.",
-  "seerr.title.unreachable": "A Seerr nem érhető el."
+  "seerr.title.unreachable": "A Seerr nem érhető el.",
+  "seerr.menu.server": "Szerver",
+  "seerr.menu.quality": "Minőség",
+  "seerr.menu.folder": "Mappa",
+  "seerr.menu.free": "{size} szabad",
+  "seerr.menu.loading": "Betöltés…",
+  "seerr.menu.unavailable": "Nem sikerült betölteni a lehetőségeket"
 }

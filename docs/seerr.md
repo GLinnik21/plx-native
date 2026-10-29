@@ -13,14 +13,15 @@ it is reached at exactly that address.
 | piece | module | role |
 |---|---|---|
 | transport | `net::Resp::cookies` | each `Set-Cookie`'s `name=value`, beside `ETag` |
-| client | `plex::seerr` (`SeerrClient`, `live_transport`) | sign-in, search, discover rows, a title's detail, my requests, `POST /api/v1/request`; injectable transport; the dev-build write failsafe |
+| client | `plex::seerr` (`SeerrClient`, `live_transport`) | sign-in, search, discover rows, a title's detail, my requests, the Radarr / Sonarr servers and one server's profiles and folders, `POST /api/v1/request`; injectable transport; the dev-build write failsafe |
 | address | `Preferences::seerr_address` (`session::set_seerr_address`) | install-wide, kept across sign-out, no credential |
 | job body | `data::seerr` (`SeerrOp`, `run_op`, `SeerrIo`) | signs in when it holds no session, once more after a 401 |
 | store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands |
 | app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, the runner's `seerr-call` | hands the store the stored address, signs a seated profile in once |
 | Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`), Connect with the live connection line, Remove |
-| Requests tab | `screens/src/requests.rs` (`AppArg::Requests`, `TAB_KEY_REQUESTS`) | on the strip between the Watchlist mark and Search while an address is set (`chrome::StripSource::requests`); rows My requests (the first `MINE_SHOWN`, each title read by its own `Detail`), Trending, Popular movies and shows, Upcoming movies and shows; a card opens the Seerr title page |
+| Requests tab | `screens/src/requests.rs` (`AppArg::Requests`, `TAB_KEY_REQUESTS`) | on the strip after the type pills and just before the Watchlist mark while an address is set (`chrome::StripSource::requests`); rows My requests (the first `MINE_SHOWN`, each title read by its own `Detail`), Trending, Popular movies and shows, Upcoming movies and shows; a card opens the Seerr title page |
 | Detail page | `screens/src/detail` (`HeroCtl::Request`, `RequestFace`, `request_face`) | a show's missing seasons: the last disc of the hero row (see below) |
+| request menu | `screens/src/seerr_request.rs` (`ContentPanel::SeerrRequest`, `AppArg::SeerrRequest`) | where a request goes: server, quality profile, root folder (see below) |
 
 What a title page's pill and a show's request disc offer is ONE decision, the store's
 `stores::seerr::offer` (a movie nobody asked for, or a show's seasons the server neither holds nor
@@ -50,6 +51,26 @@ when a press tries again. A show with nothing missing, a show without a TMDB id,
 and an episode have no disc. The page asks again whenever it is opened again; while that answer is
 on its way the disc is absent.
 
+## Where a request goes (the request menu)
+
+For a user Seerr lets choose (its admin, Manage Requests or Advanced Requests permission:
+`SeerrUser::may_choose_options`, read from the sign-in's `permissions`), the title page's Request
+pill and a show's request disc open a menu anchored to them instead of sending. Its first row,
+Request, sends; under it the servers to choose from (only when there is more than one non-4K one),
+then the chosen server's quality profiles and root folders, each folder with its free space. Every
+row starts checked on what the server would pick unasked: its default non-4K server
+(`default_server`), that server's default profile and folder, a Sonarr server's anime pair for a
+show TMDB files under the anime keyword (`TitleDetail::anime`). Choosing another server starts its
+profile and folder over on its own defaults. Request names only what was changed
+(`seerr_request::request_options`), so a row left alone stays the server's to decide, override rules
+included. It is sent on the title's own `Slot::Request`, so the page's pill or disc follows its
+answer as it follows its own press. A user without the permission sends at once, as before, and
+Seerr applies its defaults.
+
+The menu reads `GET /api/v1/service/{radarr|sonarr}` (`Slot::Servers`) when it opens and
+`GET /api/v1/service/{radarr|sonarr}/{id}` (`Slot::ServerOptions`) for the server it stands on.
+Until they land, or if they cannot be read, the menu says so in a note and Request still sends.
+
 ## Wire facts (Overseerr's `overseerr-api.yml`; not yet checked against a live server)
 
 - Lists: `{page, totalPages, results}`; rows have `mediaType` `movie`/`tv`/`person` (people are
@@ -60,8 +81,16 @@ on its way the disc is absent.
   holds (`mediaInfo.seasons`) with what open requests asked for; specials (season 0) are left out.
 - `GET /api/v1/request?take&skip&filter=all&sort=added&requestedBy=<id>`: the user's own requests;
   the rows carry the TMDB id but no title.
-- `POST /api/v1/request {mediaType, mediaId, seasons?}`: 201; 409 when already requested; 403 when
-  the user may not (no permission, over quota).
+- `POST /api/v1/request {mediaType, mediaId, seasons?, serverId?, profileId?, rootFolder?}`: 201;
+  409 when already requested; 403 when the user may not (no permission, over quota). For a user
+  without Manage Requests or Advanced Requests the server's override rules replace the last three.
+- `GET /api/v1/service/radarr|sonarr`: `[{id, name, is4k, isDefault, activeProfileId,
+  activeDirectory, …}]` (Sonarr's also `activeAnimeProfileId`, `activeAnimeDirectory`); `GET
+  /api/v1/service/radarr|sonarr/{id}`: `{server, profiles: [{id, name}], rootFolders: [{id, path,
+  freeSpace, totalSpace}], tags}` (Seerr's `server/routes/service.ts`). Any signed-in user may read
+  them.
+- Permission bits (`server/lib/permissions.ts`): ADMIN 2, MANAGE_REQUESTS 16, REQUEST 32,
+  REQUEST_ADVANCED 8192. A show's anime-ness is TMDB keyword 210024 in the detail's `keywords`.
 - Every search term is percent-encoded byte for byte (Overseerr refuses a raw quote or space).
 
 ## The write failsafe and the stand-in
@@ -71,6 +100,8 @@ the loopback stand-in or the owner's live switch is armed:
 
 - `plxnative-seerr=http://127.0.0.1:<port>` replaces the configured address with
   `tests/mock_pms.py`'s Seerr (`SeerrFixture`, same listener). Anything not loopback is refused.
+  Its user is an admin (the request menu opens); `POST /_mock/seerr {"advanced": false}` makes it a
+  plain requester, whose press sends at once.
 - `plxnative-seerr-live` lets a debug build write to the owner's real Seerr. **No agent creates it
   unless the owner asks in that session**; `.claude/hooks/watchlist-live-guard.py` refuses a command
   that would.
@@ -82,7 +113,8 @@ query, a title, the token or the cookie.
 ## Known limits
 
 - Managed Plex Home profiles may not be allowed to sign in to Seerr; Settings shows the refusal.
-- Requests use the server's defaults: no 4K, quality profile or server choice.
+- Requests are never 4K: a 4K server is not offered, and there is no 4K request.
+- The menu has no tag or language-profile choice: the server's defaults apply.
 - "My requests" shows the first page of the list, newest first, and only its first `MINE_SHOWN`
   titles: Seerr's request list carries no title, so each card costs one more call. It is read
   again whenever the tab is uncovered.

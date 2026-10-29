@@ -1172,6 +1172,10 @@ pub enum ContentPanel {
     /// About sheet (`screens::about_panel`) reading the collection store's current collection; it
     /// carries nothing, for `Bio`'s reason.
     CollectionAbout,
+    /// The **request menu** (`screens::seerr_request`, docs/seerr.md): where a Seerr request for the
+    /// title goes, anchored to the control that opened it (the Seerr title page's pill, the Detail
+    /// page's request disc). It names its own title, so it takes no subject.
+    SeerrRequest { kind: plx_data::seerr::MediaKind, tmdb: i64, anchor: [u32; 4] },
 }
 
 impl ContentPanel {
@@ -1227,6 +1231,10 @@ impl ContentPanel {
             Self::About => (Style::Alert, AppArg::AboutPanel),
             Self::Bio => (Style::Alert, AppArg::PersonBio),
             Self::CollectionAbout => (Style::Alert, AppArg::CollectionAbout),
+            Self::SeerrRequest { kind, tmdb, anchor } => (
+                Style::Compact,
+                AppArg::SeerrRequest(crate::seerr_request::SeerrRequestArg { kind, tmdb, anchor }),
+            ),
         })
     }
 }
@@ -1852,6 +1860,9 @@ pub enum AppArg {
     /// The Detail page's *Play Version* list (§6.2's page-owned panels), anchored to the hero disc
     /// that opened it, [`Self::AltSources`]'s shape.
     VersionsPanel(crate::versions_panel::VersionsArg),
+    /// The request menu of a Seerr title (`screens::seerr_request`, docs/seerr.md), anchored to the
+    /// control that opened it; the title it is for travels on the argument.
+    SeerrRequest(crate::seerr_request::SeerrRequestArg),
     /// The Detail page's *Track information* sheet (§6.2's page-owned panels). It carries only the
     /// 1-based PAGE the sheet opens at — a boot address like `Settings`'s root, not an identity —
     /// because the sheet describes `metadata::current()` and the host it is presented over is the
@@ -1935,7 +1946,8 @@ pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryC
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
      ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32}},\
      host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool,catalog:Option<{guid:str}>},\
-     WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]}}";
+     WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]},\
+     SeerrRequest{tv:bool,tmdb:u64,anchor:[u32;4]}}";
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
@@ -1960,6 +1972,8 @@ impl LogicalState for AppArg {
             Self::WatchlistMenu(arg) => { c.u32(13); arg.write(c); }
             // 14, forward of the Watchlist menu's 13.
             Self::VersionsPanel(arg) => { c.u32(14); arg.write(c); }
+            // 15, forward of Play Version's 14.
+            Self::SeerrRequest(arg) => { c.u32(15); arg.write(c); }
             // The seven PAGE variants keep the canon bytes `Legacy(Route)` wrote — a `0` tag and
             // then the route's own — so a recording taken before the fold and one taken after are
             // byte-comparable at every page frame. Only the SHAPE STRING moved, which is what the
@@ -2011,6 +2025,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             | AppArg::PlayerOverlay(_)
             | AppArg::AltSources(_)
             | AppArg::VersionsPanel(_)
+            | AppArg::SeerrRequest(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
             | AppArg::PersonBio
@@ -2072,6 +2087,8 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::SeerrTitle { .. }) => 31,
             // 30, forward of the Recommended page's 29.
             AppArg::VersionsPanel(_) => 30,
+            // 33, forward of the Requests page's 32.
+            AppArg::SeerrRequest(_) => 33,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -2184,6 +2201,7 @@ where
                     .map_or(&[][..], crate::detail::hero_versions);
                 Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
             }
+            AppArg::SeerrRequest(arg) => Box::new(crate::seerr_request::SeerrRequestScreen::new(entry, *arg)),
             AppArg::TracksPanel(arg) => Box::new(
                 crate::tracks_panel::TracksPanelScreen::new(entry, *arg),
             ),
@@ -2384,6 +2402,11 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             rk: "1".into(),
             anchor: [0; 4],
         }),
+        AppArg::SeerrRequest(crate::seerr_request::SeerrRequestArg {
+            kind: plx_data::seerr::MediaKind::Tv,
+            tmdb: 1,
+            anchor: [0; 4],
+        }),
         AppArg::TracksPanel(crate::tracks_panel::TracksPanelArg { page: 1 }),
         AppArg::AboutPanel,
         AppArg::PersonBio,
@@ -2401,6 +2424,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::WatchlistMenu(_)
             | AppArg::AltSources(_)
             | AppArg::VersionsPanel(_)
+            | AppArg::SeerrRequest(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
             | AppArg::PersonBio
@@ -2488,6 +2512,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::seerr_title::SeerrTitleScreen::SHAPE,
     crate::requests::RequestsScreen::SHAPE,
     crate::versions_panel::SHAPE,
+    crate::seerr_request::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -2680,7 +2705,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // `RequestsScreen::SHAPE`; the previous pin was 0x8023_3869_e2e9_13dd.
 // A show's missing seasons (docs/seerr.md): the Detail page's shape gains `seerr_asked:opt<u64>`
 // (the show it asked Seerr about); the previous pin was 0x996c_f958_8b43_8bcb.
-const SCREEN_SHAPES_PIN: u64 = 0xc7ee_9398_b737_249e;
+// The request menu (docs/seerr.md): `ARG_SHAPE` gains `SeerrRequest{tv,tmdb,anchor}` and
+// `SCREEN_SHAPES` gains `seerr_request::SHAPE`; the previous pin was 0xc7ee_9398_b737_249e.
+const SCREEN_SHAPES_PIN: u64 = 0x5234_18a3_2b35_8218;
 
 #[cfg(test)]
 mod arg_tests {

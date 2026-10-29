@@ -54,6 +54,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         | AppArg::PlayerOverlay(_)
         | AppArg::AltSources(_)
         | AppArg::VersionsPanel(_)
+        | AppArg::SeerrRequest(_)
         | AppArg::TracksPanel(_)
         | AppArg::AboutPanel
         | AppArg::PersonBio

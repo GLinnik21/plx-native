@@ -12,5 +12,11 @@
   "seerr.request.already": "Déjà demandé",
   "seerr.request.forbidden": "Vous ne pouvez pas demander ceci",
   "seerr.request.failed": "La demande a échoué. Réessayez.",
-  "seerr.title.unreachable": "Impossible de joindre Seerr."
+  "seerr.title.unreachable": "Impossible de joindre Seerr.",
+  "seerr.menu.server": "Serveur",
+  "seerr.menu.quality": "Qualité",
+  "seerr.menu.folder": "Dossier",
+  "seerr.menu.free": "{size} libres",
+  "seerr.menu.loading": "Chargement…",
+  "seerr.menu.unavailable": "Impossible de charger les options"
 }

@@ -26,8 +26,8 @@ pub(crate) struct StripSource<'a> {
     pub(crate) requests: bool,
 }
 
-/// The strip's destination keys in strip order: Home, one key per type pill, the Watchlist
-/// bookmark, Requests while a Seerr address is set, Search. The one
+/// The strip's destination keys in strip order: Home, one key per type pill, Requests while a
+/// Seerr address is set, the Watchlist bookmark, Search. The one
 /// place that order is written; `refresh` publishes it and the pill maps below read it, so no
 /// map assumes which index Search holds.
 fn strip_keys(source: StripSource<'_>) -> Vec<u32> {
@@ -37,10 +37,10 @@ fn strip_keys(source: StripSource<'_>) -> Vec<u32> {
         SecKind::Movie => widgets::TAB_KEY_MOVIES,
         SecKind::Show => widgets::TAB_KEY_SHOWS,
     }));
-    keys.push(widgets::TAB_KEY_WATCHLIST);
     if source.requests {
         keys.push(widgets::TAB_KEY_REQUESTS);
     }
+    keys.push(widgets::TAB_KEY_WATCHLIST);
     keys.push(widgets::TAB_KEY_SEARCH);
     keys
 }
@@ -332,23 +332,24 @@ mod tests {
     }
 
     #[test]
-    fn a_seerr_address_puts_the_requests_pill_between_the_watchlist_and_search() {
+    fn a_seerr_address_puts_the_requests_pill_just_before_the_watchlist_bookmark() {
         let directory = directory(&[SecKind::Movie, SecKind::Show]);
         let view = source(&directory, true);
         assert_eq!(strip_keys(view), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_SHOWS,
-            widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_REQUESTS, widgets::TAB_KEY_SEARCH]);
-        assert_eq!(pill_of(view, Pill::Requests), Some(4));
+            widgets::TAB_KEY_REQUESTS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+        assert_eq!(pill_of(view, Pill::Requests), Some(3));
+        assert_eq!(pill_of(view, Pill::Watchlist), Some(4));
         assert_eq!(pill_of(view, Pill::Search), Some(5));
-        assert_eq!(pill_at(view, 4), Pill::Requests);
+        assert_eq!(pill_at(view, 3), Pill::Requests);
         let mut snapshot = ChromeSnapshot {
             profile_generation: Some(plx_plex::plex::session::current_gen()), ..Default::default()
         };
         snapshot.refresh(&plx_ui::fixture::FixtureMeasure, source(&directory, false));
         assert!(!snapshot.keys.contains(&widgets::TAB_KEY_REQUESTS));
         snapshot.refresh(&plx_ui::fixture::FixtureMeasure, view);
-        assert_eq!(snapshot.keys[4], widgets::TAB_KEY_REQUESTS,
+        assert_eq!(snapshot.keys[3], widgets::TAB_KEY_REQUESTS,
             "setting an address rebuilds the strip without a directory change");
-        assert_eq!(snapshot.faces[4], TabFace::Label(plx_platform::i18n::msg::requests_tab().into()));
+        assert_eq!(snapshot.faces[3], TabFace::Label(plx_platform::i18n::msg::requests_tab().into()));
     }
 
     #[test]
