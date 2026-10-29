@@ -322,14 +322,18 @@ pub enum DeliveryReason {
     /// re-encoded: a fixed rung re-encodes at that rung (a transcode), and Auto, when it cannot
     /// keep the bytes on screen, rebuilds the adaptive HLS ladder at its re-entry rung.
     QualityPick,
+    /// A refusal before the first picture was retried with the suspect stream converted: the
+    /// open-recovery ladder's facet rung.
+    RefusalRecovery,
 }
 
 impl DeliveryReason {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::LinkFallback,
         Self::OriginalRecovery,
         Self::OriginalOpenRollback,
         Self::QualityPick,
+        Self::RefusalRecovery,
     ];
 
     pub const fn code(self) -> &'static str {
@@ -338,6 +342,7 @@ impl DeliveryReason {
             Self::OriginalRecovery => "original_recovery",
             Self::OriginalOpenRollback => "original_open_rollback",
             Self::QualityPick => "quality_pick",
+            Self::RefusalRecovery => "refusal_recovery",
         }
     }
 }
@@ -743,6 +748,135 @@ impl TransportClass {
     }
 }
 
+/// **Which demuxer exit failed the session, as a class.** About half of all playback failures
+/// reach the report as `media_source`, and more than ten places in the demuxer (and the Load
+/// builder) raise the one `demux_failed` flag that becomes it, so the report could not say which
+/// one dominates. The demuxer records the FIRST exit that failed the session (a later teardown
+/// cascade never overwrites the real cause) in a one-byte latch, and this is its closed reading.
+/// It rides on every handled playback error, whatever its kind: most exits end as `media_source`,
+/// but the audio/video-starvation and DTS-core exits (`NoAudioAu`, `NoUsableVideo`,
+/// `DtsCoreMissing`) raise `demux_io_failed` too and so report as `playback_interrupted`. The
+/// latch is per session, so a higher-ranked cause (`tv_pipeline`, `load_timeout`,
+/// `playback_interrupted`) can ride with a non-`None` exit.
+///
+/// The numbers are the latch's stable mapping (`latch` / `from_latch`), pinned by a test: a value
+/// is never renumbered, only appended. `None` (0) is "no demux exit was recorded".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DemuxExitClass {
+    /// No demux exit was recorded.
+    None = 0,
+    /// The https source's connection slot could not be reserved before opening.
+    HttpsReserveFailed = 1,
+    /// The https media GET did not open (a transport failure or a status we could not stream).
+    HttpsOpenFailed = 2,
+    /// The plain-http progressive source did not open.
+    HttpOpenFailed = 3,
+    /// `avformat_open_input` returned no context (teardown's own abort is not recorded).
+    OpenInputFailed = 4,
+    /// `avformat_find_stream_info` failed.
+    FindStreamInfoFailed = 5,
+    /// The container has no video stream (an audio-only stream included).
+    NoVideoStream = 6,
+    /// The video codec has no framing the pipeline can be fed.
+    NoFraming = 7,
+    /// The Load declared a different video codec than the file carries.
+    LoadMismatch = 8,
+    /// Video filled the pre-audio ceiling and no audio access unit ever arrived.
+    NoAudioAu = 9,
+    /// Audio filled its ceiling and no usable video ever arrived.
+    NoUsableVideo = 10,
+    /// A DTS packet had no complete supported core to feed.
+    DtsCoreMissing = 11,
+    /// The HLS demuxer failed before delivering anything.
+    HlsFailed = 12,
+    /// The HLS playlist resource was not ready before anything was delivered.
+    HlsNotReady = 13,
+    /// The demux thread panicked.
+    DemuxPanicked = 14,
+    /// The demuxer ended without producing a single access unit, and no earlier exit named why.
+    NoAccessUnits = 15,
+    /// The engine refused to build the Load (a codec the pipeline cannot be declared to feed).
+    LoadRefused = 16,
+    /// Any other exit.
+    Other = 17,
+}
+
+impl DemuxExitClass {
+    pub const ALL: [Self; 18] = [
+        Self::None,
+        Self::HttpsReserveFailed,
+        Self::HttpsOpenFailed,
+        Self::HttpOpenFailed,
+        Self::OpenInputFailed,
+        Self::FindStreamInfoFailed,
+        Self::NoVideoStream,
+        Self::NoFraming,
+        Self::LoadMismatch,
+        Self::NoAudioAu,
+        Self::NoUsableVideo,
+        Self::DtsCoreMissing,
+        Self::HlsFailed,
+        Self::HlsNotReady,
+        Self::DemuxPanicked,
+        Self::NoAccessUnits,
+        Self::LoadRefused,
+        Self::Other,
+    ];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::HttpsReserveFailed => "https_reserve_failed",
+            Self::HttpsOpenFailed => "https_open_failed",
+            Self::HttpOpenFailed => "http_open_failed",
+            Self::OpenInputFailed => "open_input_failed",
+            Self::FindStreamInfoFailed => "find_stream_info_failed",
+            Self::NoVideoStream => "no_video_stream",
+            Self::NoFraming => "no_framing",
+            Self::LoadMismatch => "load_mismatch",
+            Self::NoAudioAu => "no_audio_au",
+            Self::NoUsableVideo => "no_usable_video",
+            Self::DtsCoreMissing => "dts_core_missing",
+            Self::HlsFailed => "hls_failed",
+            Self::HlsNotReady => "hls_not_ready",
+            Self::DemuxPanicked => "demux_panicked",
+            Self::NoAccessUnits => "no_access_units",
+            Self::LoadRefused => "load_refused",
+            Self::Other => "other",
+        }
+    }
+
+    /// The byte the demuxer's latch stores for this exit.
+    pub const fn latch(self) -> u8 {
+        self as u8
+    }
+
+    /// The class a latch byte stands for; a byte no variant owns is `Other`, never a panic.
+    pub const fn from_latch(raw: u8) -> Self {
+        match raw {
+            0 => Self::None,
+            1 => Self::HttpsReserveFailed,
+            2 => Self::HttpsOpenFailed,
+            3 => Self::HttpOpenFailed,
+            4 => Self::OpenInputFailed,
+            5 => Self::FindStreamInfoFailed,
+            6 => Self::NoVideoStream,
+            7 => Self::NoFraming,
+            8 => Self::LoadMismatch,
+            9 => Self::NoAudioAu,
+            10 => Self::NoUsableVideo,
+            11 => Self::DtsCoreMissing,
+            12 => Self::HlsFailed,
+            13 => Self::HlsNotReady,
+            14 => Self::DemuxPanicked,
+            15 => Self::NoAccessUnits,
+            16 => Self::LoadRefused,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// **How long the failed transfer had lived, as a bucket — never the millisecond count.** A proxy
 /// or middlebox that cuts every transfer at a fixed time shows up as one bucket on every report
 /// (30-90 s for a minute), which is the pattern that names it. `Unknown` is "no transport failure
@@ -805,6 +939,8 @@ pub struct PlaybackErrorContext {
     pub transport: TransportClass,
     /// How long that transfer had lived.
     pub transfer_age: TransferAgeClass,
+    /// Which demuxer exit failed the session (`none` when none was recorded); see [`DemuxExitClass`].
+    pub demux_exit: DemuxExitClass,
     /// Whether the PLAYBACK ever put a picture on the panel (the session's own latch).
     pub started: bool,
     /// The route the failed attempt was opening, as against `delivery`, which is the route the
@@ -976,6 +1112,14 @@ pub enum FailureClass {
     JailMissingRtkmem,
     /// The native `Load` budget fired: the call never returned, or `loadCompleted` never arrived.
     LoadTimeout,
+    /// A start waited on the previous native object's `Unload`, which did not return inside its
+    /// deadline: the object stays parked until it does.
+    ReleaseTimeout,
+    /// The resolve produced no playable plan and no verdict: no Engine ever ran (a resolve with no
+    /// client, or whose worker never spawned).
+    ResolveFailed,
+    /// A hero/trailer preview refused because its route was not a direct play.
+    PreviewNotDirect,
     /// Everything else. Honest rather than tidy.
     Unspecified,
 }
@@ -984,7 +1128,7 @@ impl FailureClass {
     /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
     /// built from.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 14] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
         Self::NoVideoTranscodeTarget,
@@ -995,6 +1139,9 @@ impl FailureClass {
         Self::OriginalRollback,
         Self::JailMissingRtkmem,
         Self::LoadTimeout,
+        Self::ReleaseTimeout,
+        Self::ResolveFailed,
+        Self::PreviewNotDirect,
         Self::Unspecified,
     ];
 
@@ -1012,7 +1159,174 @@ impl FailureClass {
             Self::OriginalRollback => "original_rollback",
             Self::JailMissingRtkmem => "jail_missing_rtkmem",
             Self::LoadTimeout => "load_timeout",
+            Self::ReleaseTimeout => "release_timeout",
+            Self::ResolveFailed => "resolve_failed",
+            Self::PreviewNotDirect => "preview_not_direct",
             Self::Unspecified => "unspecified",
         }
     }
+}
+
+/// **A refusal the app recovered from, as the wire's closed vocabulary** (`refusal_recovered`).
+///
+/// The television refused a Load before its first picture and the open-recovery ladder
+/// (`player::recovery`) then put a picture on the panel by another route. Four closed fields say
+/// which stream was refused, how wide it was, what the pipeline said and which rung played; the
+/// event carries nothing else of the playback: no raster, no title, no path, no server, no id of
+/// the attempt. Every enum's `code` is the wire string.
+///
+/// **The rung that played.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryRung {
+    /// The suspect stream was converted by the server (an audio track, or a video encode under the
+    /// 1080p ceiling) and the route otherwise kept.
+    Facet,
+    /// The HLS contingency of a cold Auto Original played.
+    Hls,
+    /// The HLS route an Original trial replaced was restored.
+    Rollback,
+    /// A manual pick's both-facets encode played: the video encoded by the server with no copy, the
+    /// audio converted as the narrowed attempt plans it.
+    Encode,
+}
+
+impl RecoveryRung {
+    pub const ALL: [Self; 4] = [Self::Facet, Self::Hls, Self::Rollback, Self::Encode];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Facet => "facet",
+            Self::Hls => "hls",
+            Self::Rollback => "rollback",
+            Self::Encode => "encode",
+        }
+    }
+}
+
+/// The stream the refusal put under suspicion, by codec class only: the video's or the audio's
+/// closed codec domain, or none when the refusal named no stream (a Load timeout of a play whose
+/// streams were not narrowed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusedStream {
+    None,
+    Video(VideoCodecClass),
+    Audio(AudioCodecClass),
+}
+
+impl RefusedStream {
+    /// `none` / `video` / `audio`.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Video(_) => "video",
+            Self::Audio(_) => "audio",
+        }
+    }
+
+    /// The codec class's own wire code; `unknown` when no stream was named.
+    pub const fn codec(self) -> &'static str {
+        match self {
+            Self::None => "unknown",
+            Self::Video(c) => c.code(),
+            Self::Audio(c) => c.code(),
+        }
+    }
+}
+
+/// The refused audio's channel count as a bucket (an exact layout beside a codec is a fingerprint
+/// of a file; the bucket answers "stereo or surround").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelBucket {
+    /// A video stream, or an audio stream whose channel count was not known.
+    Unknown,
+    UpToStereo,
+    Surround,
+    Immersive,
+}
+
+impl ChannelBucket {
+    pub const ALL: [Self; 4] = [Self::Unknown, Self::UpToStereo, Self::Surround, Self::Immersive];
+
+    pub const fn from_channels(channels: u32) -> Self {
+        match channels {
+            0 => Self::Unknown,
+            1..=2 => Self::UpToStereo,
+            3..=6 => Self::Surround,
+            _ => Self::Immersive,
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::UpToStereo => "1-2",
+            Self::Surround => "3-6",
+            Self::Immersive => "7+",
+        }
+    }
+}
+
+/// The firmware's `type=18` error number as a closed class for the usage event: the numbers this
+/// project has measured (`100`, `200` Audio Codec Not Supported, `601` Resource Allocation Error),
+/// `0` for none recorded, and `other` for any number it has not. Sentry keeps the exact integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineErrorClass {
+    None,
+    E100,
+    E200,
+    E601,
+    Other,
+}
+
+impl PipelineErrorClass {
+    pub const ALL: [Self; 5] = [Self::None, Self::E100, Self::E200, Self::E601, Self::Other];
+
+    pub const fn from_number(n: i32) -> Self {
+        match n {
+            0 => Self::None,
+            100 => Self::E100,
+            200 => Self::E200,
+            601 => Self::E601,
+            _ => Self::Other,
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "0",
+            Self::E100 => "100",
+            Self::E200 => "200",
+            Self::E601 => "601",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// What the pipeline said: the firmware's own `type=18` number, a Load budget that ran out in
+/// silence, or the surround native-audio stall (the pipeline took the Load and swallowed the feed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalError {
+    Number(i32),
+    Timeout,
+    Stall,
+}
+
+impl RefusalError {
+    /// The number as a decimal string, else `timeout` / `stall`.
+    pub fn code(self) -> String {
+        match self {
+            Self::Number(n) => n.to_string(),
+            Self::Timeout => "timeout".to_owned(),
+            Self::Stall => "stall".to_owned(),
+        }
+    }
+}
+
+/// The whole of a `refusal_recovered` event's own content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusalRecoveredContext {
+    pub stream: RefusedStream,
+    pub channels: ChannelBucket,
+    pub error: RefusalError,
+    pub rung: RecoveryRung,
 }

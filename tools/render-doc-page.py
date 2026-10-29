@@ -246,7 +246,6 @@ PAGE_TEMPLATE = """<!doctype html>
             <nav class="site-nav" aria-label="Primary navigation">
               <a href="{root}#features">Features</a>
               <a href="{root}#approach">Approach</a>
-              <a href="{root}#install">Install</a>
               <a href="{root}#faq">FAQ</a>
             </nav>
             <div class="header-actions">

@@ -166,6 +166,10 @@ checks the captured installation and account credentials against the session und
 an old account's pending history cannot be written into a replacement account. The queue admits
 64 distinct profiles at once (a resource ceiling, not a Plex limit); when full it refuses a new
 profile's edit without evicting accepted saves and retries the background drain.
+The write itself is a store job: the Search step that made the edit emits `StoreJob::SaveRecents`,
+`Bridge::search_run` hands it to the application's runner in the same call, and the runner starts the
+drain on a worker. A drain the runner refuses is remembered, and the next edit (even one that
+changes nothing) asks for it again (`docs/sans-io.md`, "The Search lane").
 The renderer in `screens/search/render.rs` keeps only geometry and a glyph cache keyed on that
 publication. `SearchSnapshot` includes recents beside query/results and is retained at the bridge's
 frame boundary. `SearchScreen` consumes these retained views and never reads the session or stores

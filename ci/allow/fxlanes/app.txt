@@ -1,0 +1,16 @@
+# count: 11
+# Bridge::app_effect arms off the ordered lane (docs/sans-io.md), area `app`: one line per `AppFx::<Variant>` arm that does not push `Fx::Deliver(..)`,
+# keyed `<path>::AppFx::<Variant>`. An arm that parks its request on a side queue of the bridge is a second lane with its own timing; a result returns as one addressed event on the FIFO.
+# Spec: ci/check-deps.sh `fxlanes`.
+# The gate compares this list to the tree as an exact multiset: a new site fails it, and so does a line whose site is gone, so it only shrinks. A migration lands by deleting its lines; do not add one to make a new site pass.
+rust-modules/src/app/bridge.rs::AppFx::Catalog
+rust-modules/src/app/bridge.rs::AppFx::Content
+rust-modules/src/app/bridge.rs::AppFx::Home
+rust-modules/src/app/bridge.rs::AppFx::ItemMenu
+rust-modules/src/app/bridge.rs::AppFx::Library
+rust-modules/src/app/bridge.rs::AppFx::Loop
+rust-modules/src/app/bridge.rs::AppFx::Player
+rust-modules/src/app/bridge.rs::AppFx::Preferences
+rust-modules/src/app/bridge.rs::AppFx::Search
+rust-modules/src/app/bridge.rs::AppFx::SessionEffect
+rust-modules/src/app/bridge.rs::AppFx::Watchlist

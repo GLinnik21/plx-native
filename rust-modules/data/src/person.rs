@@ -1,10 +1,13 @@
 //! person — the actor/person page's data layer (the store `ui/person.rs` draws).
 //!
 //! Sibling of `metadata.rs` (the detail page's item store) and `browse.rs` (the Library's paged
-//! catalog), and built on the same three pieces: [`plx_base::task::spawn_small`] + a `Mutex` mailbox
-//! + a generation, applied on the MAIN thread by [`PersonState::pump`] once a frame. One
-//! `PersonState` and rotated `Arc<PersonAdapter>` belong to each production Bridge; screens borrow
-//! a `PersonView` through their frame `Cx`, so neither reads nor workers select process state.
+//! catalog), and built on the same three pieces: a request the pump emits as a
+//! [`StoreJob`](crate::stores::StoreJob) (the application's runner starts it on a worker; this
+//! module starts none and reads no client registry: which client each server holds arrives as
+//! [`ClientKeys`]) + a `Mutex` mailbox + a generation, applied on the MAIN thread by
+//! [`PersonState::pump`] once a frame. One `PersonState` and rotated `Arc<PersonAdapter>` belong to
+//! each production Bridge; screens borrow a `PersonView` through their frame `Cx`, so neither reads
+//! nor workers select process state.
 //!
 //! ## A filmography is a fact about a PERSON, not about a server
 //!
@@ -75,7 +78,9 @@
 //! source, resolved rather than given; [`Person::guid`] is the `tagKey` and is the ONLY thing
 //! plex.tv answers to — the numeric id 404s there (`"Invalid value provided for metadataId!"`).
 //! Keep all three; do not collapse them.
-use plx_plex::plex::{Hub, ServerId, Tag};
+use plx_machine::job::{Job, Port};
+use plx_machine::machine::{Addr, MachineId, RequestId};
+use plx_plex::plex::{ClientKey, ClientKeys, Hub, ServerId, Tag};
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::sync::Arc;
@@ -334,6 +339,14 @@ pub struct PersonState {
     session_identity: (String, String),
     /// Which servers may have a request out this pump ([`crate::stores::fanout`]).
     fanout: crate::stores::fanout::Fanout,
+    /// The requests the pump has emitted and its owner has not yet taken, in the order they were
+    /// emitted (ascending slot within a pump): the store's outbox, taken by
+    /// `PersonStore::take_jobs`.
+    pub(crate) jobs: Vec<crate::stores::StoreJob>,
+    /// The next job's [`Addr::req`]: one per emitted job, so no two jobs of this store share an
+    /// address. It survives `Reset` (the state is not rebuilt), so a job emitted before a reset
+    /// and one emitted after never collide either. Wraps.
+    next_job: u32,
 }
 
 impl Default for PersonState {
@@ -349,6 +362,8 @@ impl Default for PersonState {
             session_watch: Default::default(),
             session_identity: Default::default(),
             fanout: Default::default(),
+            jobs: Vec::new(),
+            next_job: 0,
         }
     }
 }
@@ -403,7 +418,8 @@ pub fn facts_pending(p: &Person) -> bool {
 /// discarded by [`PersonState::pump`], so a slow fetch for the actor you just left can never repopulate the
 /// one you are looking at now.
 /// The three requests this page makes OF ONE SERVER. Adding one is a constant, one arm in
-/// [`address`] and one in [`maybe_spawn`]; [`supersede`] picks it up with no edit at all.
+/// [`address`], a variant of [`LocalKind`] and one arm in [`local_landing`]; [`supersede`] picks it
+/// up with no edit at all.
 const K_RESOLVE: usize = 0;
 const K_MEDIA: usize = 1;
 const K_ROLES: usize = 2;
@@ -650,6 +666,14 @@ impl PersonAdapter {
     fn mailbox(&self, i: usize) -> Arc<Fetch> {
         Arc::clone(self.table().entry(i).or_insert_with(|| Arc::new(Fetch::IDLE)))
     }
+
+    /// Is slot `slot`'s claim held (a request out, or its answer not yet taken)?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn busy_for_test(&self, slot: usize) -> bool { self.mailbox(slot).busy() }
+
+    /// Is an answer waiting in slot `slot`'s mailbox?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_mail_for_test(&self, slot: usize) -> bool { self.mailbox(slot).has_mail() }
 
     /// The indices with a worker out or an answer waiting, ascending. These are visited whether or
     /// not the open page still has the source, so the landing of a server that has since left the
@@ -914,8 +938,8 @@ fn apply_view(state: &mut PersonState, at: &crate::viewstate::ViewAt, edit: crat
 
 /// Open the page for the person the ORIGIN server `sid` knows as `key`, with the header the caller
 /// already has — the cast row's name + headshot. MAIN THREAD, NON-BLOCKING: nothing is fetched
-/// here, [`PersonState::pump`] spawns every request on the next frame, so the page mounts on its header
-/// immediately and fills in around it.
+/// here, [`PersonState::pump`] emits every request as a job on the next frame, so the page mounts on
+/// its header immediately and fills in around it.
 ///
 /// `sid` is the server whose credit row this is, captured by the caller. It is where `key` means
 /// something and where the headshot comes from — but it is NOT the only server read: [`sources`]
@@ -1156,7 +1180,16 @@ impl PersonState {
         at
     }
 
-    pub fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &plx_machine::landgate::Gate) -> bool {
+    /// One pump: take the landings, and emit the requests the open page wants. `keys` is the
+    /// registry's answer as of this call: which client each server holds. The pump starts no
+    /// worker. Every request it emits is a [`StoreJob`](crate::stores::StoreJob) on [`PersonState::jobs`],
+    /// pushed in ascending slot order, which its owner takes and owes to a runner in the same turn;
+    /// the tape's admission record is written there, after the visit loop. Admissions and results
+    /// are separate tape streams, a take for one slot needs the admission evidence of an earlier
+    /// pump (`tape::person_completion` is keyed by slot and generation), and the admissions stay in
+    /// emission order.
+    pub fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys) -> bool {
         let mut session_changed = false;
         if !crate::stores::tape::active() && self.session_watch.changed() {
             if let Some(session) = plx_plex::plex::session::peek_settled() {
@@ -1184,8 +1217,8 @@ impl PersonState {
             let mailbox = adapter.mailbox(i);
             // The take releases the single-flight claim with the mail that answers it; a
             // superseded request's late answer is dropped inside the take and leaves the new
-            // claim alone (`Fetch::take_current`). Under replay it happens on the recorded frame; spawning remains outside
-            // that gate so the request still leaves on time.
+            // claim alone (`Fetch::take_current`). Under replay it happens on the recorded frame; emitting a request
+            // remains outside that gate so the request still leaves on time.
             let reply = crate::stores::tape::take_store_landing(
                 gate, crate::stores::StoreId::Person, "person", i as u32, &mailbox, |m| m.gen);
             if let Some(reply) = reply {
@@ -1207,7 +1240,7 @@ impl PersonState {
                 // A superseded landing is news about neither person. In particular, its failure
                 // must not arm a retry delay for the replacement identity.
             }
-            maybe_spawn(self, adapter, i, &mut turn);
+            maybe_spawn(self, adapter, i, &mut turn, keys);
         }
         // The credits seed runs HERE rather than at `open`, unlike the biography's, and the difference
         // is what it needs: it joins itself against the shelves so the availability column and the
@@ -1220,8 +1253,8 @@ impl PersonState {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn pump(&mut self, adapter: &Arc<PersonAdapter>) -> bool {
-        self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate())
+    pub fn pump(&mut self, adapter: &Arc<PersonAdapter>, keys: &ClientKeys) -> bool {
+        self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate(), keys)
     }
 }
 
@@ -1649,11 +1682,19 @@ fn fanout_standing(state: &PersonState, adapter: &PersonAdapter, i: usize) -> cr
 }
 
 /// One fetch per mailbox at a time, and only while the open person still wants it. Re-entered every
-/// frame by [`PersonState::pump`], which is what makes the failure path self-healing: a refused `spawn_small`
-/// (the device's thread ceiling) or a transient network error simply retries after the backoff
-/// instead of latching the page on a spinner forever.
+/// frame by [`PersonState::pump`], which is what makes the failure path self-healing: a refused
+/// launch (the device's thread ceiling, a client the registry has since retired) or a transient
+/// network error simply retries after the backoff instead of latching the page on a spinner
+/// forever.
+///
+/// Every decision is made HERE, on the pump's thread, and the request leaves as a job
+/// ([`PersonState::emit`]); the runner starts it. What stays in the step and why: the tape and the
+/// settled session decide whether a job exists and which identity it carries (both are
+/// thread-local to the pump), and a refused plex.tv read lands synchronously with no worker
+/// (a refusal is fixed at boot; routing it through the runner would turn it into a release and
+/// respawn every ~2 s).
 fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
-    turn: &mut crate::stores::fanout::FanoutTurn) {
+    turn: &mut crate::stores::fanout::FanoutTurn, keys: &ClientKeys) {
     if adapter.mailbox(i).busy() || state.retry_cd[i] > 0 {
         return;
     }
@@ -1682,33 +1723,18 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
             adapter.land(i, generation, Landing::Refused);
             return;
         }
-        let worker_adapter = Arc::clone(adapter);
-        let spawned = crate::stores::tape::admit(serde_json::json!({
-            "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid}), ||
-            plx_base::task::spawn_small("person", move || {
-            // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
-            // as an empty biography / an empty filmography
-            let what = if profile {
-                Landing::Profile(if controlled { None } else { catch_unwind(|| fetch_profile(&arg[0], session.as_deref().expect("settled spawn identity"))).unwrap_or(None) })
-            } else {
-                Landing::Credits(if controlled { None } else { catch_unwind(|| fetch_credits(&arg[0], session.as_deref().expect("settled spawn identity"))).unwrap_or(None) })
-            };
-            worker_adapter.land(i, generation, what);
-        }));
-        if !spawned {
-            adapter.mailbox(i).release();
-        }
+        let identity = session.map_or(Identity::Controlled, Identity::Settled);
+        let work = if profile { PersonWork::Profile(identity) } else { PersonWork::Credits(identity) };
+        state.emit(adapter, PersonReq { slot: i, generation, arg, guid, work });
         return;
     }
     let Some((sid, kind)) = un_fx(i) else { return };
-    // CAPTURE AT THE SPAWN SITE — `pms::kick` states the rule and this store now needs it for the
-    // same reason. The worker is handed THIS server's own `&'static Client`, never `client()`: a
-    // slot re-pointed mid-request cannot redirect a fetch already out (`plex::servers` leaks each
-    // client precisely so the reference stays live), and a worker that asked which server is
-    // current would answer for whichever machine the user has since walked onto.
-    let Some(c) = plx_plex::plex::client_for(sid) else {
-        // a source whose slot holds no client has nothing to contribute right now — back off rather
-        // than re-asking every frame; `pump` retries by itself
+    let Some(kind) = LocalKind::of(kind) else { return };
+    // The client THIS server holds, as the registry answered when the host filled `keys`. The job
+    // names it, and the runner starts the request only if the registry still holds that very
+    // client at the launch. A source whose slot holds no client has nothing to contribute right
+    // now: back off rather than re-asking every frame; `pump` retries by itself.
+    let Some(key) = keys.key(sid) else {
         state.retry_cd[i] = RETRY_FRAMES;
         return;
     };
@@ -1728,69 +1754,254 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
     }
     adapter.mailbox(i).claim(generation);
     state.stamps.insert(i, state.ledger.stamp());
-    let worker_adapter = Arc::clone(adapter);
-    let spawned = crate::stores::tape::admit(serde_json::json!({
-        "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid,
-        "local":local,"client":c.instance_gen(),"sid":sid.raw()}), || plx_base::task::spawn_small("person", move || {
-        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
-        // (None), not as an empty filmography / a source silently written off / no captions
-        let what = match kind {
-            K_RESOLVE => Landing::Resolve(
-                catch_unwind(|| {
-                    // sectionId 0 = every section. `opt_int` omits a zero, and scoping would be
-                    // wrong anyway: this asks a server we have never addressed before whether it
-                    // knows this person AT ALL, so it must see the whole library.
-                    // `""` is the ANSWER "no record of them here" — see `Landing::Resolve`
-                    resolve_grown(&arg[0], &guid, |limit| c.search(&arg[0], limit, 0))
-                })
-                .unwrap_or(None),
-            ),
-            K_MEDIA => Landing::Media(
-                catch_unwind(|| {
-                    let mc = c.person_media(&arg[0])?;
-                    Some(MediaLanding {
-                        shelves: split_by_type(&mc, sid),
-                        matches: guid_index(&mc),
-                    })
-                })
-                .unwrap_or(None),
-            ),
-            K_ROLES => Landing::Roles(
-                catch_unwind(|| {
-                    // One request per chunk, in shelf order, on this one worker. A chunk that gets
-                    // no answer is skipped rather than ending the batch: the others still caption
-                    // their credits, and `incomplete` tells the store to re-ask the whole list.
-                    let mut pairs = Vec::new();
-                    let mut incomplete = false;
-                    for chunk in arg.chunks(ROLES_CHUNK) {
-                        let keys: Vec<&str> = chunk.iter().map(String::as_str).collect();
-                        match c.metadata_many(&keys) {
-                            Some(mc) => pairs.extend(roles_from(&mc, &local, &guid)),
-                            None => incomplete = true,
-                        }
-                    }
-                    Some(RolesLanding {
-                        keys: arg.clone(),
-                        pairs,
-                        incomplete,
-                    })
-                })
-                .unwrap_or(None),
-            ),
-            _ => return, // `un_fx` only ever yields 0..NKIND
-        };
-        worker_adapter.land(i, generation, what);
-    }));
-    if !spawned {
-        // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
-        // here or this source never fetches again. `maybe_spawn` runs every frame, so this retries
-        // by itself.
-        adapter.mailbox(i).release();
+    state.emit(adapter, PersonReq { slot: i, generation, arg, guid, work: PersonWork::Local { sid, kind, local, key } });
+}
+
+impl PersonState {
+    /// Push one request on the outbox, addressed to this store with the next job number.
+    fn emit(&mut self, adapter: &Arc<PersonAdapter>, req: PersonReq) {
+        let addr = person_addr(self.next_job);
+        self.next_job = self.next_job.wrapping_add(1);
+        let port = PersonPort::to(adapter, req.slot, req.generation);
+        self.jobs.push(crate::stores::StoreJob::Person(Job { addr, req }, port));
     }
 }
 
-/// WORKER THREAD: the blocking plex.tv biography request, using the settled identity captured
-/// before spawning. Storage recovery is observed by the owner before retrying these requests.
+/// Which per-server read a local job makes. A typed set, so no job can name a kind the worker has
+/// no arm for (the index space has three per-server kinds, [`K_RESOLVE`], [`K_MEDIA`], [`K_ROLES`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalKind { Resolve, Media, Roles }
+
+impl LocalKind {
+    fn of(kind: usize) -> Option<Self> {
+        match kind {
+            K_RESOLVE => Some(Self::Resolve),
+            K_MEDIA => Some(Self::Media),
+            K_ROLES => Some(Self::Roles),
+            _ => None,
+        }
+    }
+}
+
+/// Whose plex.tv account a global read is made as, captured by the step.
+///
+/// `Controlled` is a controlled run (the tape is armed): the read is not made and the answer is the
+/// failure value. `Settled` is the account the session held when
+/// the step decided, so a sign-in that lands while the request is out cannot redirect it.
+#[derive(Clone)]
+enum Identity {
+    Controlled,
+    Settled(Arc<plx_plex::plex::session::Session>),
+}
+
+impl PartialEq for Identity {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Controlled, Self::Controlled) => true,
+            (Self::Settled(a), Self::Settled(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+/// Redacted: a session holds the account's tokens, and a job is printed by `assert_fx!`.
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Controlled => f.write_str("Identity::Controlled"),
+            Self::Settled(_) => f.write_str("Identity::Settled(..)"),
+        }
+    }
+}
+
+/// What one person request asks for.
+#[derive(Clone, Debug, PartialEq)]
+enum PersonWork {
+    /// The plex.tv biography, [`F_PROFILE`].
+    Profile(Identity),
+    /// The plex.tv filmography, [`F_CREDITS`].
+    Credits(Identity),
+    /// A read of one registered server. `key` is the client the step decided on; a runner starts
+    /// the request only if the registry still holds that client at the launch. `local` is that
+    /// source's own id for the person (the roles filter).
+    Local { sid: ServerId, kind: LocalKind, local: String, key: ClientKey },
+}
+
+/// The one request a [`StoreJob::Person`](crate::stores::StoreJob::Person) carries: everything the
+/// worker needs, captured by the step. `slot` and `generation` name the fetch it answers (the
+/// mailbox, and the listing it was asked for); they are recorded in the tape's admission and are
+/// what the job's [`PersonPort`] lands under.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PersonReq {
+    slot: usize,
+    generation: u32,
+    arg: Vec<String>,
+    guid: String,
+    work: PersonWork,
+}
+
+impl PersonReq {
+    /// The server to ask and the client the step decided to ask it through. `None` for the two
+    /// plex.tv reads, which are made as an account and ask no server.
+    pub fn server(&self) -> Option<(ServerId, ClientKey)> {
+        match &self.work {
+            PersonWork::Local { sid, key, .. } => Some((*sid, *key)),
+            PersonWork::Profile(_) | PersonWork::Credits(_) => None,
+        }
+    }
+
+    /// The tape's admission record for this request, a pure function of the job: the shape a
+    /// recording holds and a replay compares byte for byte (`stores::tape::admit`). `gen` is the
+    /// person's generation, not the job's address: the tape binds a person's answer to its
+    /// `(slot, gen)`.
+    pub fn admission(&self) -> serde_json::Value {
+        match &self.work {
+            PersonWork::Profile(_) | PersonWork::Credits(_) => serde_json::json!({
+                "store":"person","slot":self.slot,"gen":self.generation,"arg":self.arg,"guid":self.guid}),
+            PersonWork::Local { sid, local, key, .. } => serde_json::json!({
+                "store":"person","slot":self.slot,"gen":self.generation,"arg":self.arg,"guid":self.guid,
+                "local":local,"client":key.instance,"sid":sid.raw()}),
+        }
+    }
+}
+
+/// A request's answer, opaque to the runner: the landing the step applies. The runner never names
+/// [`Landing`].
+pub struct PersonAnswer(Landing);
+
+/// Where a person request's ONE answer goes: the mailbox of its slot in the adapter the request
+/// was made from, under the listing generation it was made for. Captured with the job when it was
+/// emitted, so a store that has since been `Reset` (a new adapter) never receives it: the port
+/// still lands into the retired adapter nobody pumps. Two ports are equal when they reach the same
+/// slot of the same adapter at the same generation.
+///
+/// The job's [`Addr::req`] is its sequence number and names nothing here: several slots of one
+/// listing are out at once, so the slot and the generation travel in the port.
+#[derive(Clone)]
+pub struct PersonPort {
+    adapter: Arc<PersonAdapter>,
+    slot: usize,
+    generation: u32,
+}
+
+impl PersonPort {
+    /// The port to slot `slot` of `adapter`, under listing generation `generation`.
+    fn to(adapter: &Arc<PersonAdapter>, slot: usize, generation: u32) -> Self {
+        Self { adapter: Arc::clone(adapter), slot, generation }
+    }
+}
+
+impl PartialEq for PersonPort {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.adapter, &other.adapter) && self.slot == other.slot && self.generation == other.generation
+    }
+}
+
+impl std::fmt::Debug for PersonPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PersonPort({:p}, slot {}, gen {})", Arc::as_ptr(&self.adapter), self.slot, self.generation)
+    }
+}
+
+impl Port<PersonAnswer> for PersonPort {
+    /// The request's answer (a failed read answers with its failure value). Stamped with the
+    /// request's generation, so the pump discards an answer for a listing it has since superseded.
+    fn done(&self, _addr: Addr, out: PersonAnswer) {
+        self.adapter.land(self.slot, self.generation, out.0);
+    }
+
+    /// The request was never started, so nothing will land and nothing will release its claim:
+    /// hand it back, so the next pump asks again. A refusal that comes after a newer request has
+    /// claimed the slot leaves that claim alone ([`Fetch::release_for`](crate::stores::Fetch::release_for)).
+    /// This is NOT `Landing::Refused`: the step reads that as the permanent discover refusal and
+    /// stops asking.
+    fn refused(&self, _addr: Addr) {
+        self.adapter.mailbox(self.slot).release_for(self.generation);
+    }
+}
+
+/// A person request's address: this store and the job's sequence number.
+fn person_addr(seq: u32) -> Addr {
+    Addr { to: MachineId::Store(crate::stores::StoreId::Person.ord()), req: RequestId(seq) }
+}
+
+/// WORKER THREAD: the request's IO body and its completion: read the server (or plex.tv) and post
+/// the answer, or its failure, to `port`. `client` is the client the runner resolved for a local
+/// job (`None` for the two plex.tv reads). A read that unwinds still answers, as a FAILURE (`None`)
+/// and not as an empty biography / an empty filmography / a source silently written off / no
+/// captions, so the claim is always released by the take of its answer.
+pub fn finish_person_job(port: &PersonPort, addr: Addr, client: Option<&'static plx_plex::plex::Client>,
+                         req: PersonReq) {
+    let PersonReq { arg, guid, work, .. } = req;
+    let what = match work {
+        PersonWork::Profile(identity) => Landing::Profile(match identity {
+            Identity::Controlled => None,
+            Identity::Settled(session) => catch_unwind(|| fetch_profile(&arg[0], &session)).unwrap_or(None),
+        }),
+        PersonWork::Credits(identity) => Landing::Credits(match identity {
+            Identity::Controlled => None,
+            Identity::Settled(session) => catch_unwind(|| fetch_credits(&arg[0], &session)).unwrap_or(None),
+        }),
+        PersonWork::Local { sid, kind, local, .. } => {
+            // A local job runs through a client; one handed none was never startable.
+            let Some(c) = client else { return port.refused(addr) };
+            local_landing(c, sid, kind, arg, &guid, &local)
+        }
+    };
+    port.done(addr, PersonAnswer(what));
+}
+
+/// One per-server read, as its landing.
+fn local_landing(c: &plx_plex::plex::Client, sid: ServerId, kind: LocalKind, arg: Vec<String>, guid: &str,
+                 local: &str) -> Landing {
+    match kind {
+        LocalKind::Resolve => Landing::Resolve(
+            catch_unwind(|| {
+                // sectionId 0 = every section. `opt_int` omits a zero, and scoping would be
+                // wrong anyway: this asks a server we have never addressed before whether it
+                // knows this person AT ALL, so it must see the whole library.
+                // `""` is the ANSWER "no record of them here" — see `Landing::Resolve`
+                resolve_grown(&arg[0], guid, |limit| c.search(&arg[0], limit, 0))
+            })
+            .unwrap_or(None),
+        ),
+        LocalKind::Media => Landing::Media(
+            catch_unwind(|| {
+                let mc = c.person_media(&arg[0])?;
+                Some(MediaLanding {
+                    shelves: split_by_type(&mc, sid),
+                    matches: guid_index(&mc),
+                })
+            })
+            .unwrap_or(None),
+        ),
+        LocalKind::Roles => Landing::Roles(
+            catch_unwind(move || {
+                // One request per chunk, in shelf order, on this one worker. A chunk that gets
+                // no answer is skipped rather than ending the batch: the others still caption
+                // their credits, and `incomplete` tells the store to re-ask the whole list.
+                let mut pairs = Vec::new();
+                let mut incomplete = false;
+                for chunk in arg.chunks(ROLES_CHUNK) {
+                    let keys: Vec<&str> = chunk.iter().map(String::as_str).collect();
+                    match c.metadata_many(&keys) {
+                        Some(mc) => pairs.extend(roles_from(&mc, local, guid)),
+                        None => incomplete = true,
+                    }
+                }
+                Some(RolesLanding {
+                    keys: arg,
+                    pairs,
+                    incomplete,
+                })
+            })
+            .unwrap_or(None),
+        ),
+    }
+}
+
+/// WORKER THREAD: the blocking plex.tv biography request, using the settled identity the step
+/// captured into the job. Storage recovery is observed by the owner before retrying these requests.
 #[cfg(not(any(test, feature = "test-support")))]
 fn fetch_profile(guid: &str, s: &plx_plex::plex::session::Session) -> Option<plx_plex::plex::discover::PersonProfile> {
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
@@ -1830,8 +2041,8 @@ fn fetch_profile(_guid: &str, _session: &plx_plex::plex::session::Session) -> Op
     None
 }
 
-/// HOST SUITE: how many times a worker reached the plex.tv transport (the two cuts above), counted
-/// across threads because the workers are real threads. A test that reads them holds
+/// HOST SUITE: how many times a job reached the plex.tv transport (the two cuts above). Atomics,
+/// because a runner's workers are real threads. A test that reads them holds
 /// `plx_base::testlock::serial()`.
 #[cfg(test)]
 mod transport_asks {
@@ -2281,8 +2492,8 @@ mod tests {
     use plx_plex::plex::{Hub, MediaContainer, Metadata};
 
     /// Slot 0 — the server every single-source test opens on. A real slot, so its mailboxes exist,
-    /// but nothing is registered at it: `maybe_spawn` therefore refuses to dial (`client_for` is
-    /// `None`) and every test below drives the mailbox by hand.
+    /// but nothing is registered at it: the registry holds no client for it, so `maybe_spawn`
+    /// emits no server read and every test below drives the mailbox by hand.
     const S0: ServerId = ServerId::from_raw(0);
     const S1: ServerId = ServerId::from_raw(1);
 
@@ -2295,6 +2506,13 @@ mod tests {
         fn default() -> Self {
             Self { state: Default::default(), adapter: Arc::new(Default::default()) }
         }
+    }
+
+    /// The registry's answer as of now, as the host fills it (`adapters::stores::refill_client_keys`).
+    /// Test code only: the data layer's step reads no registry.
+    fn registry_keys() -> ClientKeys {
+        ClientKeys::of(plx_plex::plex::server_ids()
+            .filter_map(|sid| plx_plex::plex::client_for(sid).map(|c| (sid, c))))
     }
 
     /// A Roles landing recorded before chunking has no `incomplete` key. The tape check re-encodes
@@ -2346,7 +2564,34 @@ mod tests {
         fn apply(&mut self, slot: usize, landing: Landing) -> bool {
             apply_landing(&mut self.state, slot, landing)
         }
-        fn pump(&mut self) -> bool { self.state.pump(&self.adapter) }
+        /// One pump over the registry's current answer. The requests it emits stay on the outbox,
+        /// for [`Owner::jobs`] / [`Owner::run_jobs`]: the step starts nothing.
+        fn step(&mut self) -> bool { self.step_with(&registry_keys()) }
+        /// One pump over `keys` instead of the registry's answer.
+        fn step_with(&mut self, keys: &ClientKeys) -> bool { self.state.pump(&self.adapter, keys) }
+        /// The requests on the outbox, taken, in the order they were emitted.
+        fn jobs(&mut self) -> Vec<crate::stores::StoreJob> { std::mem::take(&mut self.state.jobs) }
+        /// Run the whole outbox on THIS thread through the production completion path
+        /// ([`finish_person_job`]), each job with the client the registry holds for the key it
+        /// names; their answers wait in the mailboxes for the next pump. Returns how many ran.
+        fn run_jobs(&mut self) -> usize {
+            let jobs = person_jobs(self.jobs());
+            let n = jobs.len();
+            for (job, port) in jobs {
+                let client = job.req.server().map(|(sid, key)| {
+                    plx_plex::plex::client_for(sid).filter(|c| ClientKey::of(c) == key)
+                        .expect("the registry still holds the client the job names")
+                });
+                finish_person_job(&port, job.addr, client, job.req);
+            }
+            n
+        }
+        /// A pump, then every request it emitted run to its answer on this thread.
+        fn pump(&mut self) -> bool {
+            let changed = self.step();
+            self.run_jobs();
+            changed
+        }
         fn sync_roster(&mut self) -> bool { sync_roster(&mut self.state, &self.adapter) }
         fn loading(&self) -> bool { self.state.view().loading() }
         /// Park every spawn: a backoff on each index the original layout had and on all three
@@ -2379,14 +2624,19 @@ mod tests {
             crate::stores::tape::init(None, replay);
             let _tape = ResetTape;
             let mut owner = Owner::default();
-            owner.open(S0, "1001", "", "Synthetic person", "");
+            // A guid, so the two plex.tv reads would be wanted if the flags below were not honoured.
+            owner.open(S0, "1001", "plex://person/1001", "Synthetic person", "");
             owner.state.current.as_mut().unwrap().profiled = true;
             owner.state.current.as_mut().unwrap().credited = true;
             let generation = owner.gen();
             // Minimized from ARM: the ambient cache recovered at frame 26 while
             // recording, but frame 20 on replay, retiring/reissuing Person work.
             plx_plex::plex::session::save(&saved);
-            let changed = owner.pump();
+            // The step alone, with the outbox pinned empty: `run_jobs` hands a job to
+            // `finish_person_job` and never to `tape::admit`, so the tape assertions below see
+            // nothing a controlled step emitted. The outbox is where "no request" is observed.
+            let changed = owner.step();
+            plx_machine::assert_fx!(owner.jobs(), []);
             assert_eq!(owner.gen(), generation,
                 "controlled Person must not retire recorded work on an ambient storage completion");
             assert!(!changed);
@@ -2440,7 +2690,6 @@ mod tests {
             assert!(out.len() <= crate::stores::fanout::WIDTH, "{} requests out at once", out.len());
             asked.extend(out.iter().map(|s| s.raw()));
             if asked.len() == 40 { break; }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(asked.len(), 40, "a wanted server was never asked");
         owner.reset();
@@ -2544,7 +2793,6 @@ mod tests {
         owner.apply(slot, media(vec![tile("3"), tile("4")], Vec::new()));
         assert_eq!(landed(&owner), [("3".to_string(), false), ("4".to_string(), true)],
             "the pressed tile stays watched; the server's own earlier answer is not made again");
-        plx_base::task::drain_workers_for_test();
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }
@@ -2598,7 +2846,6 @@ mod tests {
         owner.state.ledger.record(&ViewAt::leaf(a, "4"), ViewEdit::Watched(true));
         owner.apply(slot, media(vec![PmsMovie { unwatched: true, ..movie_on(a, "4") }], Vec::new()));
         assert!(!owner.current().unwrap().srcs[0].shelves[0].items[0].watched);
-        plx_base::task::drain_workers_for_test();
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }
@@ -3227,7 +3474,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(at(S0, K_MEDIA), gen, media(vec![PmsMovie::default()], Vec::new()));
         });
-        assert!(owner.state.pump_with_gate(&owner.adapter, &gate),
+        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &ClientKeys::default()),
             "the answer the pump owed must be taken by the pump that asked");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
         assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "the TAKE released the claim");
@@ -3258,7 +3505,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(at(S0, K_MEDIA), current, media(vec![PmsMovie::default()], Vec::new()));
         });
-        assert!(owner.state.pump_with_gate(&owner.adapter, &gate),
+        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &ClientKeys::default()),
             "B was out when the pump ran, so B's answer must land on this pump");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
         assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "B's own answer released B's claim");
@@ -3437,19 +3684,8 @@ mod tests {
         let _session = plx_plex::plex::session::TempSession::new("person-discover-refused");
         plx_plex::plex::reset_servers_for_test();
         let asks = || (transport_asks::PROFILE.load(SeqCst), transport_asks::CREDITS.load(SeqCst));
-        // One simulated frame: the pump, then the wait a real frame gives a worker.
-        let frame = |owner: &mut Owner| {
-            owner.pump();
-            for slot in [F_PROFILE, F_CREDITS] {
-                let mailbox = owner.adapter.mailbox(slot);
-                for _ in 0..2000 {
-                    if !mailbox.busy() || mailbox.has_mail() {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-            }
-        };
+        // One simulated frame: the pump, and every request it emitted run to its answer.
+        let frame = |owner: &mut Owner| { owner.pump(); };
 
         // The instrument is live: with nothing refused, an open page does reach the transport.
         plx_base::devtrig::with_private_triggers(|| {
@@ -3474,7 +3710,9 @@ mod tests {
             let mut owner = Owner::default();
             owner.open(S0, "6059", "5d77682aeb5d26001f1de4b0", "Nobody", "");
             for _ in 0..(10 * 60) {
-                frame(&mut owner);
+                // the refusal is answered on the pump's thread: no job ever leaves for it
+                owner.step();
+                plx_machine::assert_fx!(owner.jobs(), []);
             }
             let (profile, credits) = asks();
             assert!(profile <= 1 && credits <= 1,
@@ -3830,13 +4068,13 @@ mod tests {
         (sid, at(sid, K_ROLES))
     }
 
-    /// Pump until `done`, bounded, because the roles worker answers on a real thread.
+    /// Pump until `done`, bounded. Each pump runs the requests it emitted to their answers (the
+    /// loopback server answers on its own thread), and the next pump takes them.
     fn pump_until(owner: &mut Owner, what: &str, done: impl Fn(&Owner) -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while !done(owner) {
             assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
             owner.pump();
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 
@@ -4219,6 +4457,281 @@ mod tests {
         p.profiled = true;
         assert!(!facts_pending(p));
         owner.supersede();
+    }
+
+    // ---- a person request is a job the pump emits, not a thread it starts ----
+    //
+    // What a pump emits and when, what each job says, how its answer or refusal comes back, and
+    // what the registry's answer does to the page. The step reads no registry: these tests hand it
+    // the keys (`Owner::step_with`) or, where the registry is the point, the host's own fill
+    // (`Owner::step`).
+
+    /// The client a server holds, as the registry's answer names it.
+    const KEY: ClientKey = ClientKey { instance: 7, token: 3 };
+
+    /// Puts the tape back to its inactive state when a test ends, however it ends.
+    struct TapeOff;
+    impl Drop for TapeOff {
+        fn drop(&mut self) { crate::stores::tape::reset_for_test(); }
+    }
+
+    fn job(seq: u32, port: PersonPort, req: PersonReq) -> crate::stores::StoreJob {
+        crate::stores::StoreJob::Person(Job { addr: person_addr(seq), req }, port)
+    }
+
+    fn req(slot: usize, generation: u32, arg: &[&str], guid: &str, work: PersonWork) -> PersonReq {
+        PersonReq { slot, generation, arg: arg.iter().map(|a| (*a).to_string()).collect(), guid: guid.into(), work }
+    }
+
+    fn local(sid: ServerId, kind: LocalKind, local: &str) -> PersonWork {
+        PersonWork::Local { sid, kind, local: local.into(), key: KEY }
+    }
+
+    fn person_jobs(jobs: Vec<crate::stores::StoreJob>) -> Vec<(Job<PersonReq>, PersonPort)> {
+        jobs.into_iter().map(|j| match j {
+            crate::stores::StoreJob::Person(job, port) => (job, port),
+            _ => panic!("not a person job"),
+        }).collect()
+    }
+
+    /// The registry's answer when server 0 holds the client [`KEY`].
+    fn holding() -> ClientKeys { ClientKeys::from_keys([(S0, KEY)]) }
+
+    /// Open a person on [`S0`], pump once over [`holding`], and take the Media read's job and port.
+    fn media_job(owner: &mut Owner) -> (Job<PersonReq>, PersonPort) {
+        owner.open(S0, "7", "plex://person/7", "Actor", "");
+        owner.step_with(&holding());
+        let media = at(S0, K_MEDIA);
+        person_jobs(owner.jobs()).into_iter().find(|(job, _)| job.req.slot == media).expect("the media read")
+    }
+
+    /// A pump over an opened page emits each request the page wants, one job per slot, in
+    /// ascending slot order, and every job says which client it decided on; opening emits nothing;
+    /// and a slot with a request out is not asked again.
+    #[test]
+    fn a_pump_emits_one_job_per_wanted_slot_in_ascending_order_naming_the_client_it_decided_on() {
+        let _g = plx_base::testlock::serial();
+        let _tape = TapeOff;
+        plx_plex::plex::reset_servers_for_test();
+        crate::stores::tape::init(None, false); // a controlled run: the plex.tv reads need no session
+        let mut owner = Owner::default();
+        owner.open(S0, "7", "plex://person/7", "Actor", "");
+        plx_machine::assert_fx!(owner.jobs(), []);
+
+        owner.step_with(&holding());
+        let (g, adapter) = (owner.gen(), Arc::clone(&owner.adapter));
+        let port = |slot| PersonPort::to(&adapter, slot, g);
+        let media = at(S0, K_MEDIA);
+        plx_machine::assert_fx!(owner.jobs(), [
+            job(0, port(media), req(media, g, &["7"], "plex://person/7", local(S0, LocalKind::Media, "7"))),
+            job(1, port(F_PROFILE), req(F_PROFILE, g, &["plex://person/7"], "plex://person/7",
+                PersonWork::Profile(Identity::Controlled))),
+            job(2, port(F_CREDITS), req(F_CREDITS, g, &["plex://person/7"], "plex://person/7",
+                PersonWork::Credits(Identity::Controlled))),
+        ]);
+        for slot in [media, F_PROFILE, F_CREDITS] {
+            assert!(owner.adapter.mailbox(slot).busy(), "slot {slot} holds its claim while its request is out");
+        }
+
+        owner.step_with(&holding());
+        plx_machine::assert_fx!(owner.jobs(), []);
+    }
+
+    /// The fan-out gate still caps the per-server reads of one pump, and the jobs it lets through
+    /// leave in ascending slot order, each routed to the slot it names.
+    #[test]
+    fn at_most_the_fan_out_width_of_server_reads_leave_in_one_pump() {
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let ids: Vec<ServerId> = (0..6)
+            .map(|n| plx_plex::plex::register_for_test(&format!("person-width-{n}"), "127.0.0.1", 1, "t", "cid"))
+            .collect();
+        let mut owner = Owner::default();
+        owner.reset();
+        owner.open(ids[0], "7", "plex://person/7", "Actor", "");
+        owner.step();
+        let locals: Vec<_> = person_jobs(owner.jobs()).into_iter().filter(|(job, _)| job.req.server().is_some()).collect();
+        assert_eq!(locals.len(), crate::stores::fanout::WIDTH, "six servers want a read; four leave");
+        let slots: Vec<usize> = locals.iter().map(|(job, _)| job.req.slot).collect();
+        assert!(slots.windows(2).all(|w| w[0] < w[1]), "ascending slots, got {slots:?}");
+        for (job, port) in &locals {
+            assert_eq!(*port, PersonPort::to(&owner.adapter, job.req.slot, job.req.generation));
+            let (sid, key) = job.req.server().unwrap();
+            assert_eq!(Some(key), registry_keys().key(sid), "the key is the registry's answer for that server");
+        }
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A source whose server holds no client has nothing to ask: no job, no claim, and the slot
+    /// backs off in the same pump.
+    #[test]
+    fn a_source_whose_server_holds_no_client_emits_no_job_and_backs_off() {
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let mut owner = Owner::default();
+        owner.open(S0, "7", "plex://person/7", "Actor", "");
+        owner.step_with(&ClientKeys::default());
+        assert!(person_jobs(owner.jobs()).iter().all(|(job, _)| job.req.server().is_none()),
+            "no server read left for a server that holds no client");
+        let media = at(S0, K_MEDIA);
+        assert_eq!(owner.state.retry_cd[media], RETRY_FRAMES);
+        assert!(!owner.adapter.mailbox(media).busy());
+
+        // The backoff holds the slot off for its length; then a client appearing is asked at once.
+        for _ in 0..RETRY_FRAMES {
+            owner.step_with(&holding());
+        }
+        assert!(person_jobs(owner.jobs()).iter().any(|(job, _)| job.req.slot == media));
+        owner.close();
+    }
+
+    /// The two plex.tv reads carry the identity the step decided on: a controlled run asks as
+    /// nothing (the worker lands the failure value), any other asks as the settled session.
+    #[test]
+    fn plex_tv_jobs_carry_the_identity_the_step_decided_on() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        let _g = plx_base::testlock::serial();
+        let _tape = TapeOff;
+        let _session = plx_plex::plex::session::TempSession::new("person-job-identity");
+        plx_plex::plex::reset_servers_for_test();
+        plx_base::devtrig::with_private_triggers(|| {
+            let works = |tape: bool| {
+                if tape { crate::stores::tape::init(None, false); } else { crate::stores::tape::reset_for_test(); }
+                let mut owner = Owner::default();
+                owner.open(S0, "7", "plex://person/7", "Actor", "");
+                owner.step_with(&ClientKeys::default());
+                person_jobs(owner.jobs()).into_iter().map(|(job, _)| job.req.work).collect::<Vec<_>>()
+            };
+            assert!(matches!(works(false).as_slice(),
+                [PersonWork::Profile(Identity::Settled(_)), PersonWork::Credits(Identity::Settled(_))]));
+            assert_eq!(works(true), [PersonWork::Profile(Identity::Controlled), PersonWork::Credits(Identity::Controlled)]);
+        });
+    }
+
+    /// Job addresses are unique per job, and a `Reset` does not restart the sequence: a job emitted
+    /// before the reset and one emitted after never share an address.
+    #[test]
+    fn job_addresses_are_unique_and_survive_a_reset() {
+        let _g = plx_base::testlock::serial();
+        let _tape = TapeOff;
+        plx_plex::plex::reset_servers_for_test();
+        crate::stores::tape::init(None, false);
+        let mut owner = Owner::default();
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            owner.open(S0, "7", "plex://person/7", "Actor", "");
+            owner.step_with(&holding());
+            seen.extend(person_jobs(owner.jobs()).into_iter().map(|(job, _)| job.addr));
+            owner.reset();
+        }
+        assert_eq!(seen.len(), 6);
+        assert_eq!(seen, (0..6).map(person_addr).collect::<Vec<_>>());
+    }
+
+    /// A job's port lands into the adapter the request was made from. After a `Reset` that is the
+    /// retired adapter, which nobody pumps: the answer reaches no new page.
+    #[test]
+    fn a_port_captured_before_reset_lands_only_into_the_old_adapter() {
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let mut owner = Owner::default();
+        let media = at(S0, K_MEDIA);
+        let (job, port) = media_job(&mut owner);
+        let old = Arc::clone(&owner.adapter);
+        owner.reset();
+        assert_ne!(port, PersonPort::to(&owner.adapter, media, job.req.generation));
+
+        port.done(job.addr, PersonAnswer(Landing::Media(None)));
+        assert!(old.mailbox(media).has_mail(), "the answer reached the adapter the request came from");
+        assert!(!owner.adapter.mailbox(media).has_mail(), "and no mail reached the new page's adapter");
+    }
+
+    /// A refusal hands back the claim of the request it answers, and only that one: a refusal that
+    /// arrives after a newer request has claimed the slot must not free the newer claim.
+    #[test]
+    fn a_refusal_releases_only_its_own_generations_claim() {
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let mut owner = Owner::default();
+        let media = at(S0, K_MEDIA);
+        let (job, port) = media_job(&mut owner);
+        assert!(owner.adapter.mailbox(media).busy());
+
+        port.refused(job.addr);
+        assert!(!owner.adapter.mailbox(media).busy(), "the refusal released its own claim");
+        owner.step_with(&holding());
+        assert!(person_jobs(owner.jobs()).iter().any(|(job, _)| job.req.slot == media), "and the next pump asks again");
+
+        // a NEWER request now holds the slot; the older job's late refusal leaves it alone
+        owner.supersede();
+        let newer = owner.gen();
+        owner.adapter.mailbox(media).claim(newer);
+        port.refused(job.addr);
+        assert!(owner.adapter.mailbox(media).busy(), "an older request's refusal freed a newer claim");
+        owner.adapter.mailbox(media).release_for(newer);
+        owner.close();
+    }
+
+    /// A job's admission record is the bytes a recording holds and a replay compares: value-equal
+    /// to the recorded shape (fixture 12, frames 38, 39).
+    #[test]
+    fn the_admission_record_names_the_request_in_the_recorded_shape() {
+        use serde_json::json;
+        let sf = "sf06c144a";
+        let media = req(1, 1, &["19"], sf, local(S0, LocalKind::Media, "19"));
+        assert_eq!(media.admission(),
+            json!({"arg":["19"],"client":7,"gen":1,"guid":sf,"local":"19","sid":0,"slot":1,"store":"person"}));
+        assert_eq!(media.server(), Some((S0, KEY)));
+        assert_eq!(req(F_PROFILE, 1, &[sf], sf, PersonWork::Profile(Identity::Controlled)).admission(),
+            json!({"arg":[sf],"gen":1,"guid":sf,"slot":48,"store":"person"}));
+        assert_eq!(req(F_CREDITS, 1, &[sf], sf, PersonWork::Credits(Identity::Controlled)).admission(),
+            json!({"arg":[sf],"gen":1,"guid":sf,"slot":49,"store":"person"}));
+        assert_eq!(req(F_PROFILE, 1, &[sf], sf, PersonWork::Profile(Identity::Controlled)).server(), None);
+        assert_eq!(req(2, 1, &["1001", "1003"], sf, local(S0, LocalKind::Roles, "19")).admission(),
+            json!({"arg":["1001","1003"],"client":7,"gen":1,"guid":sf,"local":"19","sid":0,"slot":2,"store":"person"}));
+        assert_eq!(req(0, 3, &["Actor"], sf, local(S1, LocalKind::Resolve, "")).admission(),
+            json!({"arg":["Actor"],"client":7,"gen":3,"guid":sf,"local":"","sid":1,"slot":0,"store":"person"}));
+    }
+
+    /// A controlled run's plex.tv reads are not made: the worker answers the failure value, and
+    /// the page treats it as any failed read.
+    #[test]
+    fn a_controlled_plex_tv_job_answers_the_failure_value_without_a_read() {
+        let _g = plx_base::testlock::serial();
+        let _tape = TapeOff;
+        plx_plex::plex::reset_servers_for_test();
+        crate::stores::tape::init(None, false);
+        let mut owner = Owner::default();
+        owner.open(S0, "7", "plex://person/7", "Actor", "");
+        owner.step_with(&ClientKeys::default());
+        assert_eq!(owner.run_jobs(), 2);
+        // The tape would refuse these answers (no admission was recorded: the runner writes it); the
+        // jobs already carry their identity, so take them as an uncontrolled pump does.
+        crate::stores::tape::reset_for_test();
+        owner.step_with(&ClientKeys::default());
+        let p = owner.current().unwrap();
+        assert!(p.profile_tried && !p.profiled, "the profile read answered None");
+        assert_eq!(owner.state.retry_cd[F_PROFILE], RETRY_FRAMES);
+        assert_eq!(owner.state.retry_cd[F_CREDITS], RETRY_FRAMES, "and so did the filmography read");
+        owner.close();
+    }
+
+    /// A server read handed no client was never startable: it is refused (its claim comes back)
+    /// rather than answered, and nothing lands.
+    #[test]
+    fn a_server_job_finished_without_a_client_is_refused_not_answered() {
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let mut owner = Owner::default();
+        let media = at(S0, K_MEDIA);
+        let (job, port) = media_job(&mut owner);
+        finish_person_job(&port, job.addr, None, job.req);
+        assert!(!owner.adapter.mailbox(media).has_mail(), "a refusal answers nothing");
+        assert!(!owner.adapter.mailbox(media).busy(), "and gives the claim back");
+        owner.close();
     }
 
 }

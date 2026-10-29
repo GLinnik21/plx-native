@@ -184,9 +184,11 @@ def png_size(png):
 
 def fit_capture(png, w, h):
     """The capture at exactly `w`x`h` (the canvas times the scene's render scale), which `output_spec`'s crops
-    assume. The simulator writes its DRAWABLE, and a window on a HiDPI display (a Retina Mac) has one 2x the
-    window: 3840x2160 for the 1920x1080 canvas, whose top-left quadrant a canvas-sized crop then cut, a
-    Library that looked zoomed 2x. A whole multiple is downscaled (Lanczos, bit-exact); anything else is refused."""
+    assume. The simulator writes its DRAWABLE, which it now sizes to the canvas on any display density
+    (`app::boot::plan_desktop_window`), so a capture arrives at exactly `w`x`h` and passes through untouched.
+    A binary from before that had a drawable 2x the window on a HiDPI display (a Retina Mac): 3840x2160 for the
+    1920x1080 canvas, whose top-left quadrant a canvas-sized crop then cut, a Library that looked zoomed 2x.
+    That is what this still guards: a whole multiple is downscaled (Lanczos, bit-exact); anything else is refused."""
     have = png_size(png)
     if have == (w, h):
         return png

@@ -166,8 +166,18 @@ fi
 #              h264/hevc are the raw Annex-B paths (/tmp/sample.h264 and the dev triggers).
 #   parsers    needed by avformat_find_stream_info to fill AVCodecParameters.
 #   bsf        AVCC -> Annex-B for mp4-family video, which the Starfish pipeline requires.
-#   decoders   SUBTITLES ONLY. Video and audio are decoded by the TV's hardware via Starfish;
-#              FFmpeg here never touches a video frame.
+#   decoders   SUBTITLES, and AUDIO decoded in the app. Video is decoded by the TV's hardware via
+#              Starfish; FFmpeg here never touches a video frame. The audio decoders run in two
+#              cases. (1) FLAC, ALAC and LPCM at 1x: libpf has no input for them, so the app decodes
+#              them and feeds the TV PCM (`devcaps::APP_DECODED` names the decoders, and a test
+#              holds that list to this one); DTS (`dca`) joins them in a release build where Force Direct Play
+#              has no native path for it or a refused open falls back to it (its decode is measured),
+#              and MP3, Vorbis and TrueHD only behind the debug-only `appdecodelossy` trigger, until the
+#              TV has measured what each costs. (2) Every audio format, those included, while the viewer has picked a speed
+#              other than 1x: LG's pipeline cannot change rate itself (see
+#              docs/parity-gaps.md, Playback Speed), so the app decodes the sound, time-stretches
+#              it (rust-modules/media/src/speed_audio.rs) and feeds it as PCM. All are LGPL; the
+#              AC-3 patents have expired.
 #   encoder/   mpeg1video + mpegts are the DEV capture stream only, dropped by RELEASE=1 along
 #   muxer      with swscale, which nothing else uses.
 #
@@ -217,9 +227,10 @@ set -- "$@" \
   --disable-autodetect \
   --enable-zlib \
   --enable-demuxer=matroska,mov,mpegts,h264,hevc \
-  --enable-parser=h264,hevc,aac,ac3,dvdsub,dvbsub \
+  --enable-parser=h264,hevc,aac,ac3,flac,dvdsub,dvbsub \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,extract_extradata \
   --enable-decoder=pgssub,dvdsub,dvbsub,ass,srt,subrip,text,mov_text,webvtt \
+  --enable-decoder=aac,ac3,eac3,dca,mp3,mp2,flac,opus,vorbis,truehd,mlp,alac,pcm_s16le,pcm_s24le,pcm_s16be,pcm_s24be,pcm_s32le,pcm_s32be \
   --enable-protocol=file
 
 if [ "${RELEASE:-}" = "1" ]; then

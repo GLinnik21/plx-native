@@ -5,3 +5,4 @@
 pub(crate) mod consent;
 pub(crate) mod poster;
 pub(crate) mod session;
+pub(crate) mod stores;

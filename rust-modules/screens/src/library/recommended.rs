@@ -749,7 +749,8 @@ impl RecommendedScreen {
     /// **The shelves are held at rest while the page is not yet seen** (`Shelf::dormant`): under
     /// the route dip's image (`page_image_held`) or while the shelves dissolve in (the page's
     /// `fade`). Under the image a card that was lifted (a page returning from a Detail it froze
-    /// mid-ease) is put at rest on the first tick, as the Library's grid does, because an ease
+    /// mid-ease) is put at rest on the first tick, as the Library's grid is on an ENTRY (a grid that
+    /// RETURNS keeps its seat, `Grid::dormant`; a shelf has no such rule), because an ease
     /// stepped under the image would hold it past the dissolve; while the shelves dissolve in the
     /// page is in view and the let-go eases like an unfocused shelf's. The seat the page makes for
     /// itself then grows from rest the frame the page can be seen, on the standard lift spring, and

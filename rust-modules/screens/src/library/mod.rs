@@ -1196,10 +1196,17 @@ impl LibraryScreen {
                 self.sync(cx);
                 self.follow_listing_type(cx, fx);
                 // A read-back that lands while a page is pushed over this one is acted on at once.
-                if self.buried { self.requery_stale(cx, fx); }
+                // A page being mounted finds a listing the server changed while no Library page
+                // was there to act on it (the notice came while the section was on screen, and the
+                // reader then left by a tab, which buries nothing): nobody is looking at its
+                // cached rows yet, so it is listed again now.
+                if self.buried || matches!(ev, ScreenEvent::Mount) { self.requery_stale(cx, fx); }
             }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
             ScreenEvent::Enter(enter) => {
+                // A page that returns (`Enter::Restored`: BACK onto it, a modal's dismissal) keeps its
+                // seat lifted under the dip's image or a fade, as it was left: the grid's own rule.
+                self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 self.live = true;
                 self.buried = false;
                 // The engine seats the target right after this event, so a key it names must hold
@@ -1259,8 +1266,9 @@ impl LibraryScreen {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
                 // tile from rest over the frames after this. A restore or a reconcile announced
                 // here is adopted whole by its next tick, unless a dormant tick ran since (a page
-                // returning from a Detail push under the held image, `Tick` below), in which case
-                // the first awake tick regrows the tile from rest (`ui::cards`, the pop rule).
+                // ENTERED under the held image, `Tick` below), in which case the first awake tick
+                // grows the tile from rest (`ui::cards`, the pop rule); a page that RETURNS runs
+                // none (`Grid::dormant`).
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 // The engine seats a page it has just mounted in the first group it can (the bar), before a
                 // page whose listing is still loading has anything to seat. Such a page holds no seat
@@ -1347,6 +1355,7 @@ impl LibraryScreen {
                     // A page still dissolving in shows its seat unpopped: the lift starts on the
                     // dissolve's last frame, where it can be seen, instead of playing out under the
                     // fade or the held image of a route dip (the page arrives in its first poster).
+                    // A page that returns is not put to sleep (`Grid::dormant`).
                     self.pair.detail.dormant(self.page_fade.is_arriving() || plx_ui::containers::transition::page_image_held());
                     self.handoff.step(dt, self.scroll.pos, self.scroll_target, self.layout.grid_pitch(), self.capsule_wanted());
                     // The grid steps its pop and bands. A content landing that moved the focused

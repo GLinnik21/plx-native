@@ -193,6 +193,7 @@ fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
             edit: ViewEdit::Watched(true),
         },
         directory.view(),
+        &registry_keys_for_test(),
     );
 
     assert!(outcome.changed);
@@ -207,7 +208,7 @@ fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
 #[test]
 fn a_publication_shares_cards_with_its_source() {
     let _g = plx_base::testlock::serial();
-    let mut source = Src::new(sid(0), String::new());
+    let mut source = Src::new(sid(0), String::new(), &registry_keys_for_test());
     source.state = HubState::Ready;
     source.last = Some(built(
         0,
@@ -306,7 +307,7 @@ fn a_show_scoped_edit_reaches_its_episode_rows_and_a_deck_removal_stays_on_one_r
 #[test]
 fn a_source_read_in_flight_across_edits_lands_with_them_made_again() {
     let _g = plx_base::testlock::serial();
-    let mut s = Src::new(sid(0), String::new());
+    let mut s = Src::new(sid(0), String::new(), &registry_keys_for_test());
     s.stamp = s.ledger.stamp(); // the read goes out…
     let p7 = s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // …then two presses
     let p8 = s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::LeftDeck);
@@ -342,9 +343,9 @@ fn a_source_request_takes_its_ledger_stamp_at_the_request() {
     let registered = plx_plex::plex::register_for_test("pms-ledger", "127.0.0.1", 9, "t", "cid");
     assert_eq!(registered, sid(0));
     let client = plx_plex::plex::client_for(registered).unwrap();
-    let mut s = Src::new(sid(0), String::new());
+    let mut s = Src::new(sid(0), String::new(), &registry_keys_for_test());
     s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // before the request
-    assert!(s.begin_request(client, 1, || 1).is_some());
+    assert!(s.begin_request(ClientKey::of(client), 1, || 1).is_some());
     s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::Watched(true)); // while it is out
     let mut brought = SourceBuild { lane: Default::default(), cw: Vec::new(),
         shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };

@@ -753,7 +753,8 @@ fn audio_only_write_back_keeps_a_server_selected_download() {
     assert_eq!(param(&puts[0], "subtitleStreamID"), Some("55009"), "the download stays selected: {}", puts[0]);
     assert_eq!(w.pms.selection(PART), (36015, 55009));
     // The sidecar is still there to fetch: a fresh read of the item still lists it.
-    let fresh = plx_data::metadata::fetch_playing_item(w.sid, RK).expect("item");
+    let client = plx_plex::plex::client_for(w.sid).expect("the registered slot");
+    let fresh = plx_data::metadata::fetch_playing_item(client, w.sid, RK, None).expect("item").0;
     assert!(fresh.subs.iter().any(|s| s.id == 55009 && s.selected && s.external), "the download survived");
 }
 

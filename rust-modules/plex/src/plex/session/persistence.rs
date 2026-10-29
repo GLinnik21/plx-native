@@ -1377,6 +1377,22 @@ mod db8_policy_tests {
     }
 }
 
+/// [`write_session`] that logs how long the canonical write took. The timing is an instrument of
+/// this IO body, so the session module (whose clock reads the `wall` gate scans) never reads a
+/// clock around it.
+pub fn write_session_timed(
+    session: &super::Session,
+    authority: super::SaveAuthority,
+) -> CanonicalCommit {
+    let started = std::time::Instant::now();
+    let commit = write_session(session, authority);
+    plx_base::eventlog::log(&format!(
+        "session: canonical write took {} ms",
+        started.elapsed().as_millis()
+    ));
+    commit
+}
+
 /// The authority-selected write used by the shared worker. ARM has exactly one authority: DB8.
 pub fn write_session(
     session: &super::Session,

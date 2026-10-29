@@ -82,13 +82,20 @@
 # taken this way. `power/turnOnScreen` is the reverse; both are on this firmware's api-permissions
 # list, unlike the newer-webOS `power/turnOff` the wake-tv skill records as `Unknown method` here.
 #
-# USE IT FOR the measurement tiers — ABR, transaction cost, anything read out of the event log —
-# where it saves the panel over long runs and costs nothing. DO NOT use it for the fps scenes,
-# `shot`, or the capture stream: `plx_machine::idle` gates presents and the panel is the thing those
-# measure, so a dark screen makes them either meaningless or silently wrong.
-# The one exception is a scene on the PLAYER route: the bound video plane forces presents
-# (`plx_machine::idle`'s VIDEO_PLANE gate), so its frame times are real with the panel off
-# (docs/player-submenus.md, "Device frame-time check").
+# Screen off is only the backlight, and it is fine for every measurement tier — ABR, transaction
+# cost, anything read out of the event log, and the fps scenes too (`tests/run.py --fps --mock`
+# blanks it by default). Nothing in the app reads the panel state, so the app keeps presenting at full rate:
+# `plx_machine::idle` keys on the UI's own changes ("nothing on screen changed, so don't repaint
+# it"), not on the physical panel. Measured on the dev TV 2026-10-24 (Home `grid-pong`, release
+# build): panel off 73 frames/cycle at 59.9 fps with 9 missed refreshes in cycles 2-60; panel on
+# 73 frames/cycle at 59.6-59.9 fps with 8, 13 and 14. It saves the panel over long runs and costs
+# nothing.
+# `shot` (the DISPLAY compositor read) works with the panel off: docs/measurements/
+# tv-session-7-2026-09-10.md ran `screen off` first and got a 1920x1080 DISPLAY capture with real
+# pixel values (opener p95 246.9, row-mate 167.0), and docs/measurements/
+# library-all-types-and-fps-2026-09-26.md checked native captures of the final card rendering with
+# the panel off. NOT on record: the live capture stream (`/tmp/plxnative-capture`, the app's own
+# GLES frames) with the panel off; check the first frame instead of assuming either way.
 #
 # SOUND is the television's own mute, separate from the panel above and from playback: it silences
 # whatever the set would otherwise put out, panel on or off, app running or not.
@@ -112,8 +119,8 @@
 # would fight a human who muted the set on purpose before handing it to a lane.
 #
 # THE TV LOCK: every subcommand that DRIVES the set (up, key, click, shot, down) requires the
-# television's lock and refuses when another lane holds it; `status` and `log` are read-only and
-# only name the holder. Take one for a whole session rather than letting each command take its own
+# television's lock and refuses when another lane holds it; `status`, `log` and `fg` are read-only
+# and only name the holder. Take one for a whole session rather than letting each command take its own
 # 10-minute implicit lease — the gap between two of your own commands is exactly where another
 # job lands:  tools/tv-lock.sh acquire --why "…"  …  tools/tv-lock.sh release.
 #
@@ -252,7 +259,7 @@ app_pids() {
 # One television, no OS-level mutex: two jobs on it do not fail cleanly, they produce plausible
 # WRONG data (an fps number measured while somebody else's binary was deployed underneath, a
 # capture of a screen the other job navigated away from). Every subcommand here that DRIVES the
-# set goes through the lock; the two read-only ones only say who is on it. tools/tv-lock.sh is the
+# set goes through the lock; the three read-only ones (log, status, fg) only name the holder. tools/tv-lock.sh is the
 # mechanism and .agents/skills/tv-lock/SKILL.md is the workflow.
 LOCKTOOL="$REPO/tools/tv-lock.sh"
 require_lock() {  # $1 = what this session is for, for the holder read-out
@@ -1204,8 +1211,8 @@ cmd_down() {
   echo "== TV is yours"
 }
 
-# Blank or restore the PANEL, leaving the app and playback untouched. See the header for why
-# this is safe for the measurement tiers and disqualifying for the visual ones.
+# Blank or restore the PANEL, leaving the app and playback untouched. See the header: it is only
+# the backlight, so the app presents the same either way (`shot` works with it dark; see the header).
 cmd_screen() {
   local want="${1:-}"
   case "$want" in
@@ -1226,15 +1233,17 @@ cmd_screen() {
   flat=$(printf '%s' "$reply" | tr -d '\r\n' | tr -s ' ')
   if printf '%s' "$flat" | grep -q '"returnValue": *true'; then
     ok "panel $want ($(printf '%s' "$flat" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p'))"
-  elif printf '%s' "$flat" | grep -q '"errorCode": *"-101"'; then
+  elif [ "$want" = off ] && printf '%s' "$flat" | grep -q '"errorCode": *"-101"'; then
     # -101 "The current state must be 'Active'" means the panel is ALREADY off. Asking for a state
     # the set is already in is a no-op, not a failure -- and reporting it as one makes every script
-    # that re-asserts screen-off after a relaunch look broken.
+    # that re-asserts screen-off after a relaunch look broken. Only for `off`: a -101 answering
+    # `on` would say "panel already on" about a panel the reply calls dark, and skip a real
+    # turn-on, so it falls through to the refusal below.
     ok "panel already $want"
   elif [ "$want" = on ] && printf '%s' "$flat" | grep -q '"errorCode": *"-102"' \
     && printf '%s' "$flat" | grep -q '"state": *"Active"'; then
     # The mirror: -102 "The current state must be 'Screen Off'" with state Active means the panel is
-    # ALREADY lit (`tests/run.py --fps` asks for `screen on` by default and would refuse to run on a
+    # ALREADY lit (`tests/run.py --fps --panel on` asks for `screen on` and would refuse to run on a
     # lit set). Any other state -- "Active Standby" -- is a set that is NOT lit, so it stays a refusal.
     ok "panel already on"
   else
@@ -1250,7 +1259,8 @@ cmd_screen() {
 # the foreground app. `foreground` launches THIS flavour's own id again -- the same call `up` makes,
 # but with NO close-first, so the pid must be unchanged (a changed pid means the app died, which is
 # a finding, not a relaunch) -- and asserts the app is the foreground app again. No setting is
-# changed and nothing is injected; `fg` only reads the foreground app (read-only, advisory lock).
+# changed and nothing is injected; `fg` only reads the foreground app (read-only: advisory lock, no lease,
+# and an asleep set is never woken: it reports that nothing was read, which is not "idle").
 fg_app() {
   tvq "script -qc \"luna-send -n 1 -f luna://com.webos.applicationManager/getForegroundAppInfo '{}'\" /dev/null" \
     | tr -d '\r\n' | tr -s ' ' | sed -En 's/.*"appId": *"([^"]*)".*/\1/p'
@@ -1262,7 +1272,18 @@ launch_app() {  # $1 = app id. -i keeps the subscriber open for the launch to ta
 cmd_lifecycle() {
   local what="${1:-}" target pid before after
   case "$what" in
-    fg) advise_lock "tv-session fg"; ensure_awake || exit 1; info "foreground app: $(fg_app)"; return 0 ;;
+    fg)
+      # The one lifecycle word that is a pure read, and tv-lock-guard.py lets it through with no
+      # lease for that reason: so it must stay one. `ensure_awake` would send Wake-on-LAN to a
+      # sleeping set (a mutation, and the exact thing a person in the next room notices); a set
+      # that does not answer is left alone and the line says so: nothing was read and no wake was
+      # sent (tv-lock.sh's idle_verdict calls an unread foreground UNKNOWN unless the panel reads Active
+      # Standby, and `fg` never reads the panel, so it says "nothing read", not "idle").
+      # advise_lock is `tv-lock.sh require --advisory`: it only names a holder (and renews a lease
+      # THIS lane already holds), takes nothing and wakes nothing.
+      tvq true || { info "TV unreachable or asleep (nothing read, no wake sent)"; return 0; }
+      advise_lock "tv-session fg"
+      ok "TV reachable"; info "foreground app: $(fg_app)"; return 0 ;;
     background) target="${2:-${PLX_BG_APP:-org.webosbrew.hbchannel}}" ;;
     foreground) target="$APPID" ;;
     *) echo "usage: tv-session.sh background [APPID] | foreground | fg" >&2; exit 2 ;;

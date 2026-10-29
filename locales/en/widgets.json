@@ -30,6 +30,14 @@
     "value": "Your Plex server is converting this video.",
     "description": "One-line sub-label under the checked entry of the player's Quality page when the Quality row reports a conversion the viewer did not pick by name ('Original \u00b7 Converted', 'Auto \u00b7 720p'). Always the same neutral sentence; it names no cause."
   },
+  "widgets.menu.speed": {
+    "value": "Playback speed",
+    "description": "Row in the player overflow menu that opens the playback speed choices (0.5x to 2x)."
+  },
+  "widgets.speed.normal": {
+    "value": "Normal",
+    "description": "Playback speed choice for regular 1x speed, beside 0.5×, 0.75×, 1.25×, 1.5×, 1.75× and 2×."
+  },
   "widgets.menu.stats": {
     "value": "Stats for nerds",
     "description": "Option or section label in the player overflow menu."
@@ -88,6 +96,13 @@
   "widgets.tracks.converted_by_server": {
     "value": "{track} · converted by your server",
     "description": "Sub-line under an audio track in the player's audio menu when the TV cannot decode that track and the server converts its audio. {track} is the codec and channel layout, e.g. AAC 7.1.",
+    "args": {
+      "track": "str"
+    }
+  },
+  "widgets.tracks.decoded_in_app_stereo": {
+    "value": "{track} · played in stereo",
+    "description": "Audio track sub-line: this surround track is decoded by the app and played in stereo.",
     "args": {
       "track": "str"
     }

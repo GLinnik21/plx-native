@@ -122,6 +122,32 @@ fn a_plan_that_never_resolved_makes_no_claim_about_the_source() {
     );
 }
 
+/// **The failure read-out's actions after the Engine is released.** Try again, Play automatically
+/// and a quality pick all begin with a new playback request of the same item; Back ends the session.
+/// The released Engine's standing error (its cause, with the playhead it left in the unpresented
+/// resume slot) is what they find: a retry resumes from that position, and the new request ends the
+/// standing error, so the read-out does not outlive the attempt it described.
+#[test]
+fn a_new_request_ends_the_standing_error_of_a_released_engine() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    note_engine_failure(&mut ps, crate::player::RuntimeFailure::PlaybackInterrupted, 60_000_000_000);
+    assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error, "the read-out stands with no Engine");
+    assert_eq!(unpresented_resume_ns(&ps), 60_000_000_000, "and a retry resumes from the playhead");
+
+    assert!(request_play(
+        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
+    ));
+    assert!(engine_failure(&ps).is_none(), "the new attempt ends the standing error");
+    assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+
+    cancel_play(&mut ps);
+    let _ = wait_resolve_workers_for_test(std::time::Duration::from_secs(10));
+    reset_player_control_for_test(&ps);
+    reset_session(&mut ps);
+}
+
 /// Issue #266: `apply_plan` is the ONE place a resolve's audio facts enter the session. The
 /// contract's `audio` (what the URL asked for), the outcome (what the decision did with it) and
 /// the carried track (what the pipeline feeds) are installed exactly as the plan built them —
@@ -138,6 +164,8 @@ fn apply_plan_installs_contract_outcome_audio() {
         channels: 8,
         can_normalize_loudness: true,
         immersive: false,
+        sample_rate: 0,
+        bit_depth: 0,
     };
     let audio = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     apply_plan(
@@ -224,7 +252,7 @@ fn remux_review_http_200_refusal_never_gets_media() {
     assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
     let sid = plx_plex::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
-    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, false, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
+    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), &plx_platform::devcaps::caps(), "rk", 0, "refused-session", 2, 0, false, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(sample.is_none());
@@ -1666,6 +1694,16 @@ fn an_undecodable_dts_only_file_does_not_direct_play_when_mde_says_it_may() {
     }
 }
 
+/// The dev set's table shape for DTS: the decoder is listed with a 6-channel ceiling.
+#[cfg(feature = "devtriggers")]
+fn dts_row_caps() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts".into(),
+        audio_channels: [("dts".into(), 6)].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    }
+}
+
 /// The other side of #584: on a set whose table DOES list a DTS decoder (here the dev set's 6ch
 /// row), PMS's `dca` 5.1 track direct-plays when MDE allows, and the profile the request carries
 /// names DTS in PMS's spelling. Before the canonicaliser the `dca` track never matched the `dts`
@@ -1674,13 +1712,12 @@ fn an_undecodable_dts_only_file_does_not_direct_play_when_mde_says_it_may() {
 #[cfg(feature = "devtriggers")]
 fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
     use std::time::Duration;
-    let _caps = plx_platform::devcaps::caps_on_this_thread_for_test(plx_platform::devcaps::Caps {
-        audio: "aac,ac3,eac3,dts".into(),
-        audio_channels: [("dts".into(), 6)].into(),
-        ..plx_platform::devcaps::Caps::assumed()
-    });
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
+    // The start edge a play request runs (`request_play_with_queue`): the attempt carries the
+    // capability value the play start derived, and the resolve below plans and profiles from that
+    // value alone. This set's table lists a DTS row, so that value is handed in, not installed.
+    ps.begin_attempt(std::sync::Arc::new(dts_row_caps()));
     assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms_within(3, MDE_DIRECTPLAY, Duration::from_secs(3), false);
     let sid = plx_plex::plex::register_for_test("dca-row", "127.0.0.1", port, "token", "dca-row-client");
@@ -1703,5 +1740,34 @@ fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
     assert!(plan.url.contains("/library/parts/"), "dca on a DTS-row set must direct-play: {} / {requests:?}", plan.url);
     let decision = requests.iter().find(|l| l.contains("/decision?")).expect("MDE was asked");
     assert!(decision.contains("dca") && !decision.contains("dts"), "the profile names DTS as PMS does: {decision}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+
+/// **The profile PMS reads is built from the attempt's own capability value.** Two attempts in one
+/// process, one with a DTS row (`a`) and one narrowed by [`plx_platform::devcaps::Caps::without`]
+/// (`b`): the ProgressiveMkv transcode URL of `a` carries the `dca` copy lane and the one of `b`
+/// does not, from the `caps` each [`TranscodeSpec`] holds. No global is installed or read; before
+/// the attempt carried its value, both URLs came from the one process-wide answer.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_transcode_profile_names_the_codecs_of_the_attempts_own_caps() {
+    use plx_platform::devcaps::{Caps, Facet};
+    let a = dts_row_caps();
+    let b = a.without(&Facet::Audio { codec: "dts".into(), channels: 2 });
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let sid = plx_plex::plex::register_for_test("attempt-caps", "127.0.0.1", 1, "token", "attempt-caps-client");
+    let client = plx_plex::plex::client_for(sid).expect("the registered server");
+    let url = |caps: &Caps| {
+        let contract = plx_plex::plex::EncodeContract::original(false, plx_plex::plex::AudioEnhancements::NONE);
+        assert_eq!(contract.delivery, plx_plex::plex::TranscodeDelivery::ProgressiveMkv);
+        let spec = crate::route::plan::transcode_spec(caps, "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 0, 0, contract);
+        client.transcode_start_url(&spec).to_url()
+    };
+    let (with_dts, without_dts) = (url(&a), url(&b));
+    assert!(with_dts.contains("dca"), "the DTS row lists the copy lane: {with_dts}");
+    assert!(!without_dts.contains("dca"), "the narrowed attempt must not ask PMS to copy DTS: {without_dts}");
+    assert!(without_dts.contains("ac3"), "the rest of the profile is unchanged: {without_dts}");
     plx_plex::plex::reset_servers_for_test();
 }

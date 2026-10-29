@@ -39,8 +39,8 @@
 //!   pure formatting/policy, no state at all; free functions.
 //!
 //! **Two names that LOOK like reads and are not, on purpose — read the exclusion, not just the
-//! list.** `fetch_playing_item(sid, rk) -> Option<PlayingItem>` performs a BLOCKING `plex::client`
-//! network call (`route.rs`'s one caller runs it on the resolve WORKER, never the main thread); a
+//! list.** `fetch_playing_item(client, sid, rk, version) -> Option<(PlayingItem, Option<PlayedVersion>)>` performs a BLOCKING
+//! network call through the `client` its caller holds (`route.rs`'s one caller runs it on the resolve WORKER, never the main thread); a
 //! screen must route it through a request/pump, never call it from `step`/`draw`. `sync_now_playing()`
 //! mutates `NOW` and its one remaining caller is already inside the WRITE surface below
 //! (`install_landed_detail`) — no external caller reaches it directly today, and none should start
@@ -53,8 +53,9 @@
 //!
 //! ## 2. The WRITE surface — every [`MetadataCmd`] variant, and what it wraps
 //!
-//! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, fetch
-//!   off-thread; lands through the identity-keyed `DETAIL_LANDING` and `pump_detail`. A show opens on
+//! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, emit the
+//!   fetch as a job the application starts off-thread; lands through the identity-keyed
+//!   `DETAIL_LANDING` and `pump_detail`. A show opens on
 //!   its on-deck episode's season; a re-read of the show already loaded keeps the season selected on
 //!   it (read from the store at request time, `metadata::selected_season_number`).
 //! - `Clear` → `metadata::clear` — drop the loaded item, supersede everything in flight.
@@ -72,13 +73,16 @@
 //!   another page: a Closing surface carried into covered modals is re-entered by the container and
 //!   asks for its own item too, and nested presented copies (a copy presented from inside another
 //!   copy) are not covered.
-//! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
-//!   the episodes off-thread (debounced landing through `pump_season`).
-//! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — fetch the pages of a long
-//!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
-//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
-//!   (`pump_related`, at the start of the frame, installs it).
-//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
+//! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically and emit
+//!   the episodes' fetch as a `StoreJob::MetaSeason` the owner starts (debounced landing through
+//!   `pump_season`).
+//! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — emit the fetch of the pages
+//!   of a long season the screen needs as a `StoreJob::MetaEpisodes` and evict the ones it does
+//!   not (`pump_episode_pages` installs them).
+//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window:
+//!   take the single-flight claim and emit the read as a `StoreJob::MetaRelated` the owner starts
+//!   (`pump_related`, at the start of the frame, installs the window it lands).
+//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same job, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `ApplyView{at, edit}` → `metadata::set_watched_local` — the optimistic half of a view-state
 //!   change, answers whether it actually changed anything.
@@ -170,7 +174,8 @@ use super::StoreEv;
 
 #[derive(Clone)]
 pub enum MetadataCmd {
-    /// Supersede any in-flight load and fetch `(sid, rk)` off-thread; lands through `pump_detail`.
+    /// Supersede any in-flight load and emit the fetch of `(sid, rk)` as a job the application
+    /// starts off-thread; lands through `pump_detail`.
     RequestDetail { sid: ServerId, rk: String },
     /// Close the page: drop the item and supersede everything in flight.
     Clear,
@@ -188,7 +193,7 @@ pub enum MetadataCmd {
     /// Unlike `Clear`, this one must not leave a previous profile's playback descriptor or track
     /// store reachable from the next profile's Bridge.
     Reset,
-    /// The season strip: flip optimistically, fetch the episodes off-thread.
+    /// The season strip: flip optimistically, emit the episodes' fetch as a job the owner starts.
     LoadSeason(usize),
     /// The selected season's episodes the screen needs, as indices `lo..hi` (what is on screen plus
     /// a lead in the direction of travel), with the focused index and the target of a pending
@@ -309,6 +314,26 @@ impl MetadataStore {
 
     pub fn adapter_ref(&self) -> &crate::metadata::MetadataAdapter { &self.adapter }
 
+    /// Take the jobs this owner's commands have emitted since the last take, in order. The caller
+    /// OWES each one to a runner: a job dropped here is a request whose reservation is never
+    /// handed back and whose spinner never settles, so the application drains them in the same
+    /// call that ran the command (`Bridge::metadata_run`).
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        std::mem::take(&mut self.state.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.state.jobs.is_empty()
+    }
+
+    /// The port that lands a detail answer into THIS owner's current adapter: what a job emitted
+    /// now carries (`assert_fx!` compares it by adapter identity).
+    pub fn detail_port(&self) -> crate::metadata::DetailPort {
+        crate::metadata::DetailPort::of(&self.adapter)
+    }
+
     /// Arms this owner's replay-tracking `Tracker` for controlled-content recording/replay. Call
     /// exactly once, right after construction (`crate::metadata::record::arm`'s own doc has the
     /// full rationale and history) — the one caller is `Bridge::controlled_home`.
@@ -403,6 +428,11 @@ impl MetadataStore {
     }
 }
 
+/// **`step` does not drain the outbox.** It runs the command, so a `RequestDetail` stepped through
+/// here leaves its job in [`MetadataStore::take_jobs`] and nothing starts it: whoever steps this
+/// store owns draining it, in the same call. The application's Bridge runs a command through
+/// `Stores::metadata_run` and drains right after it (`docs/sans-io.md`, "The store job lane"),
+/// which is the rule a new caller of this `step` has to meet by itself.
 impl<H: Host> Machine<H> for MetadataStore {
     type Ev = StoreEv<MetadataCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {

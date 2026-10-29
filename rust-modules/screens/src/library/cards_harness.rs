@@ -79,7 +79,7 @@ impl Harness {
                 let stores = plx_data::stores::Stores::default();
                 stores.browse.borrow_mut().seed_two_source_table_for_test();
                 stores.capture_browse(&mut directory);
-                stores.browse_run(BrowseCmd::SetCur(0));
+                stores.browse_run_for_test(BrowseCmd::SetCur(0));
                 {
                     let mut browse = stores.browse.borrow_mut();
                     browse.seed_items_for_test(120);
@@ -425,5 +425,51 @@ mod pop_tests {
         }
         assert!(ring(handed(&mut h, 1.0)) > 0.99, "a resting focused tile wears the whole shadow and sheen");
         assert!(ring(handed(&mut h, 0.918)) < 0.1, "…and lets go of them under a full press");
+    }
+}
+
+/// **A page the stack let go of and rebuilt returns lifted.** BACK onto a Library whose body was
+/// evicted builds a fresh instance, restores its memory and delivers `Enter(Restored)`; the grid
+/// of that instance has never slept, and the dip's image is up when it ticks. Its seat comes back
+/// lifted with the caption band open through the image, and the page that never left is the same.
+mod return_tests {
+    use super::*;
+    use plx_machine::machine::Enter;
+
+    /// The page image a test sets must not outlive it.
+    struct ImageHeld;
+    impl Drop for ImageHeld {
+        fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
+    }
+
+    #[test]
+    fn a_rebuilt_library_page_returns_lifted_under_the_dips_image() {
+        let _held = ImageHeld;
+        let full = RowStyle::HOME.focus_scale;
+        let mut left = Harness::new(Set::Grid, 40);
+        let first = left.cards()[0];
+        left.focus(first, By::Dir);
+        left.tick(200);
+        assert!(left.scale(first).unwrap() > 1.05, "premise: the card is left lifted");
+        let memory = Screen::<LibHost>::memory_at(&left.screen, left.focus);
+        let PageMemory::Library(memory) = memory else { panic!("memory_at did not return PageMemory::Library") };
+
+        let mut fresh = Harness::new(Set::Grid, 40);
+        fresh.screen.restore(&memory);
+        fresh.sync();
+        fresh.screen.initial = false;
+        plx_ui::containers::transition::set_page_image_held(true);
+        fresh.step(ScreenEvent::Enter(Enter::Restored));
+        fresh.focus(first, By::Restore);
+        assert_eq!(fresh.scale(first), Some(full), "whole on the first frame, before any tick");
+        for frame in 0..20 {
+            fresh.tick(1);
+            assert_eq!(fresh.scale(first), Some(full), "lifted under the held image, frame {frame}");
+        }
+        plx_ui::containers::transition::set_page_image_held(false);
+        for frame in 0..20 {
+            fresh.tick(1);
+            assert_eq!(fresh.scale(first), Some(full), "still lifted once the image is let go, frame {frame}");
+        }
     }
 }

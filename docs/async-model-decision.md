@@ -257,8 +257,8 @@ already have."*
 
 **"if any caller needs a per-site flag to fit" — fired outright.** `browse.rs` gates its spawn on
 `done` — a landed-empty list is an answer, not an absence — which is screen state, not in-flight
-state, and `Job` cannot own it. `browse::kick_directory` is *already* a local generic over `T`
-serving its two callers. Meanwhile the three in-flight representations across the five sites
+state, and `Job` cannot own it. `browse::kick_directory` was *already* a local generic over `T`
+serving its two callers (the `T` now lives in `directory_list`; the read itself is a `StoreJob::BrowseDirectory`). Meanwhile the three in-flight representations across the five sites
 (`PLAY_BUSY` bool, `GEN`/`DONE` counter pair, a single-flight `AtomicBool`) are not
 interchangeable: each drives a different spinner with different semantics.
 

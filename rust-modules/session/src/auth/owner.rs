@@ -578,6 +578,15 @@ pub enum SessionFx {
     /// (`plex::grant::answer`) and the persisted choice (`Preferences::plaintext_consent`), under
     /// `account` — `plex::grant::account_key` of the account signed in when it was given.
     PlaintextAnswer { machine_id: String, choice: plx_plex::plex::session::PlaintextChoice, account: String },
+    /// Read the session cache's authority once and install it (`plex::session::refresh_cache_job`),
+    /// installing only while the cache is still at `generation`. The adapter answers EVERY one of
+    /// these with at most one [`SessionEvent::CacheRefreshed`] carrying the same `req`: the
+    /// adapter when the queue refuses the job or the job ends, the app's frame step when the
+    /// adapter that began it was replaced. A controlled run (it has no cache to refill) answers
+    /// with none and fails loudly instead. The owner takes only the answer for the request in
+    /// flight and drops any other. `req` comes from the owner's own counter, not
+    /// [`SessionInit::next_req`]: it names no pending work and never enters the recorded state.
+    RefreshCache { req: u32, generation: u64 },
 }
 
 pub trait SessionHost: plx_machine::machine::Host {
@@ -600,6 +609,39 @@ pub enum SessionEvent {
     Erased { epoch: u64, leftovers: usize },
     /// What became of a [`SessionFx::Incident`]; fenced by the offer's id.
     IncidentReported { id: u32, delivery: IncidentDelivery },
+    /// The frame step saw the session cache lacking a read (`plex::session::refresh_need`). Decided
+    /// on the frame tick: one [`SessionFx::RefreshCache`], or nothing while one is in flight or its
+    /// backoff holds. Changes no recorded state and no publication.
+    CacheObserved(plx_plex::plex::session::RefreshNeed),
+    /// How a [`SessionFx::RefreshCache`] ended; fenced only by its own `req`, so a sign-out that
+    /// advanced the epoch while it ran still clears the in-flight marker.
+    CacheRefreshed { req: u32, outcome: plx_plex::plex::session::CacheRefreshOutcome },
+}
+
+/// The owner's private bookkeeping for refilling the session cache (`plex::session`'s [`peek`] is a
+/// pure read; this is who asks for the read). Lives beside [`SessionInit`], never in it: it is not
+/// logical session state, so it stays out of the snapshot, the replay shape and the subhash.
+/// Changed only by [`SessionMachine::step`]; time enters only as `cx.tick.ms`.
+///
+/// [`peek`]: plx_plex::plex::session::peek
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CacheRefresh {
+    /// Nothing asked for and nothing held back.
+    Idle,
+    /// One [`SessionFx::RefreshCache`] is out, waiting for its [`SessionEvent::CacheRefreshed`].
+    InFlight { req: u32, generation: u64 },
+    /// Hold the next refresh back for [`LOCKED_RETRY_MS`] after the frame tick `armed_ms` it was
+    /// armed at: held while `now.wrapping_sub(armed_ms) < LOCKED_RETRY_MS`. That is the unsigned
+    /// time since arming, so a backoff nothing ever observed again (its need went away inside the
+    /// second) cannot come back to hold a later need after the tick has run 2^31 ms past it, as a
+    /// signed compare against a deadline would; it can only alias inside one second of every
+    /// 2^32 ms (49.7 days), at the cost of one extra second of hold.
+    /// `generation: Some(g)` holds back only observations of cache generation `g` (a transient
+    /// read that is still standing: a drop to `Unloaded` bumps the generation and refreshes at
+    /// once); `None` holds back every generation (the job was refused or never completed).
+    ///
+    /// [`LOCKED_RETRY_MS`]: plx_plex::plex::session::LOCKED_RETRY_MS
+    Backoff { armed_ms: u32, generation: Option<u64> },
 }
 
 impl CredentialPatch {
@@ -1219,6 +1261,9 @@ pub struct SessionMachine {
     publication: Arc<SessionSnapshot>,
     subhash: u64,
     logical_dirty: bool,
+    /// See [`CacheRefresh`]. Not in `state`, `snapshot_init` or `subhash`.
+    cache_refresh: CacheRefresh,
+    next_cache_req: u32,
     #[cfg(test)]
     publication_payload_allocations: [usize; 3],
 }
@@ -1232,12 +1277,19 @@ impl SessionMachine {
         let subhash = canon.finish();
         let publication = Arc::new(SessionSnapshot::from_state(&state));
         Self { state, publication, subhash, logical_dirty: true,
+            cache_refresh: CacheRefresh::Idle, next_cache_req: 0,
             #[cfg(test)] publication_payload_allocations: [0; 3] }
     }
     // Required controlled-init boundary; full AppInit capture remains a following stage.
     pub fn snapshot_init(&self) -> SessionInit { self.state.clone() }
     pub fn read(&self) -> SessionRead<'_> { self.publication.read() }
     pub fn publication(&self) -> Arc<SessionSnapshot> { Arc::clone(&self.publication) }
+    /// The request of the [`SessionFx::RefreshCache`] still awaiting its answer, if any. The app's
+    /// frame step compares it with the adapter's own slot to reconcile a job the adapter began and
+    /// then lost.
+    pub fn cache_refresh_in_flight(&self) -> Option<u32> {
+        match self.cache_refresh { CacheRefresh::InFlight { req, .. } => Some(req), _ => None }
+    }
     pub fn subhash(&self) -> u64 { self.subhash }
     // Cached hashes already change on logical transitions; aggregate dirty consumption is
     // separate from UI Arc damage and remains a following-stage App recording integration.
@@ -2734,6 +2786,45 @@ impl SessionMachine {
         }
     }
 
+    /// The frame step reports what the cache lacks. At most one refresh is out at a time; a backoff
+    /// holds the next one back on the frame clock; and the first transient observation of a cache
+    /// entry arms the backoff instead of reading, so a boot with the storage helper down retries
+    /// about a second later, as the in-line retry timer did, not on frame one.
+    fn observe_cache(&mut self, need: plx_plex::plex::session::RefreshNeed, now_ms: u32,
+        emit: &mut impl FnMut(SessionFx)) {
+        use plx_plex::plex::session::LOCKED_RETRY_MS;
+        let tracked = match self.cache_refresh {
+            CacheRefresh::InFlight { .. } => return,
+            CacheRefresh::Backoff { armed_ms, generation } => {
+                let covers = generation.is_none_or(|g| g == need.generation);
+                if covers && now_ms.wrapping_sub(armed_ms) < LOCKED_RETRY_MS { return; }
+                covers
+            }
+            CacheRefresh::Idle => false,
+        };
+        if need.transient && !tracked {
+            self.cache_refresh = CacheRefresh::Backoff { armed_ms: now_ms, generation: Some(need.generation) };
+            return;
+        }
+        self.next_cache_req = self.next_cache_req.wrapping_add(1);
+        let req = self.next_cache_req;
+        self.cache_refresh = CacheRefresh::InFlight { req, generation: need.generation };
+        emit(SessionFx::RefreshCache { req, generation: need.generation });
+    }
+
+    /// A refresh ended. Only the request in flight can end it: a duplicate or stale answer is dropped.
+    fn cache_refreshed(&mut self, req: u32, outcome: plx_plex::plex::session::CacheRefreshOutcome, now_ms: u32) -> bool {
+        use plx_plex::plex::session::CacheRefreshOutcome;
+        if self.cache_refresh_in_flight() != Some(req) { return false; }
+        let armed_ms = now_ms;
+        self.cache_refresh = match outcome {
+            CacheRefreshOutcome::Settled | CacheRefreshOutcome::Superseded => CacheRefresh::Idle,
+            CacheRefreshOutcome::Transient { generation } => CacheRefresh::Backoff { armed_ms, generation: Some(generation) },
+            CacheRefreshOutcome::Refused => CacheRefresh::Backoff { armed_ms, generation: None },
+        };
+        true
+    }
+
     fn replace_publication(&mut self) {
         // Compare borrowed fields first: constructing a throwaway snapshot here would copy
         // QR/roster payloads even if equality then retained all of the old handles.
@@ -2751,7 +2842,7 @@ impl SessionMachine {
 impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
     type Ev = SessionEvent;
 
-    fn step(&mut self, ev: &SessionEvent, _cx: &plx_machine::machine::Cx<'_, H>,
+    fn step(&mut self, ev: &SessionEvent, cx: &plx_machine::machine::Cx<'_, H>,
         fx: &mut plx_machine::machine::Effects<'_, H>) -> plx_machine::machine::Handled {
         use plx_machine::machine::{Fx, Handled};
         let before = self.publication();
@@ -2818,11 +2909,20 @@ impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
                 self.pump_one(&mut emit);
                 true
             }
+            SessionEvent::CacheObserved(need) => {
+                self.observe_cache(*need, cx.tick.ms, &mut emit);
+                true
+            }
+            SessionEvent::CacheRefreshed { req, outcome } => self.cache_refreshed(*req, *outcome, cx.tick.ms),
         };
         if !Arc::ptr_eq(&before, &self.publication) {
             fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
         }
-        self.refresh_subhash();
+        // The cache bookkeeping is outside the recorded state, so its events (the first of them on
+        // EVERY frame a read is missing) cannot move the subhash: skip the whole-state rehash.
+        if !matches!(ev, SessionEvent::CacheObserved(_) | SessionEvent::CacheRefreshed { .. }) {
+            self.refresh_subhash();
+        }
         if handled { Handled::Yes } else { Handled::No }
     }
 }
@@ -2833,7 +2933,161 @@ pub mod scenarios;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::scenarios::{roster_refresh_fixture, step, OwnerHost};
+    use super::scenarios::{roster_refresh_fixture, step, step_at, OwnerHost};
+
+    /// The session-cache refresh bookkeeping (`CacheRefresh`): driven by tick values, no sleeping.
+    mod cache_refresh {
+        use super::*;
+        use plx_plex::plex::session::{CacheRefreshOutcome, RefreshNeed, LOCKED_RETRY_MS};
+
+        fn need(generation: u64, transient: bool) -> SessionEvent {
+            SessionEvent::CacheObserved(RefreshNeed { generation, transient })
+        }
+        fn refreshed(req: u32, outcome: CacheRefreshOutcome) -> SessionEvent {
+            SessionEvent::CacheRefreshed { req, outcome }
+        }
+        fn refreshes(effects: &[SessionFx]) -> Vec<(u32, u64)> {
+            effects.iter().filter_map(|fx| match fx {
+                SessionFx::RefreshCache { req, generation } => Some((*req, *generation)),
+                _ => None,
+            }).collect()
+        }
+        fn owner() -> SessionMachine { SessionMachine::from_init(captured_session()) }
+
+        #[test]
+        fn one_refresh_per_need_and_nothing_while_one_is_in_flight() {
+            let mut owner = owner();
+            assert_eq!(refreshes(&step_at(&mut owner, need(4, false), 0)), [(1, 4)]);
+            assert_eq!(owner.cache_refresh_in_flight(), Some(1));
+            for ms in [1, 16, 5_000] {
+                assert!(step_at(&mut owner, need(4, false), ms).is_empty(), "in flight at {ms}");
+                assert!(step_at(&mut owner, need(9, true), ms).is_empty(), "any need, in flight at {ms}");
+            }
+            assert_eq!(owner.cache_refresh_in_flight(), Some(1));
+            step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Settled), 20);
+            assert_eq!(owner.cache_refresh_in_flight(), None);
+            assert_eq!(refreshes(&step_at(&mut owner, need(5, false), 21)), [(2, 5)], "a new request id");
+        }
+
+        #[test]
+        fn a_transient_result_holds_back_only_its_own_generation() {
+            let mut owner = owner();
+            step_at(&mut owner, need(4, false), 0);
+            step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Transient { generation: 5 }), 10);
+            assert_eq!(owner.cache_refresh_in_flight(), None);
+            assert!(step_at(&mut owner, need(5, true), 500).is_empty(), "the standing transient waits");
+            assert!(step_at(&mut owner, need(5, true), 10 + LOCKED_RETRY_MS - 1).is_empty());
+            assert_eq!(refreshes(&step_at(&mut owner, need(6, false), 500)), [(2, 6)],
+                "a drop to Unloaded inside the window still refreshes at once");
+            step_at(&mut owner, refreshed(2, CacheRefreshOutcome::Transient { generation: 7 }), 600);
+            assert_eq!(refreshes(&step_at(&mut owner, need(7, true), 600 + LOCKED_RETRY_MS)), [(3, 7)],
+                "the deadline is on the tick the result arrived, and it reads at the deadline");
+        }
+
+        #[test]
+        fn a_refused_result_holds_back_every_generation() {
+            let mut owner = owner();
+            step_at(&mut owner, need(4, false), 0);
+            step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Refused), 10);
+            for generation in [4, 5, 99] {
+                assert!(step_at(&mut owner, need(generation, false), 500).is_empty(), "generation {generation}");
+            }
+            assert_eq!(refreshes(&step_at(&mut owner, need(5, false), 10 + LOCKED_RETRY_MS)), [(2, 5)]);
+        }
+
+        #[test]
+        fn settled_and_superseded_clear_the_backoff() {
+            for outcome in [CacheRefreshOutcome::Settled, CacheRefreshOutcome::Superseded] {
+                let mut owner = owner();
+                step_at(&mut owner, need(4, false), 0);
+                step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Refused), 10);
+                step_at(&mut owner, need(4, false), 10 + LOCKED_RETRY_MS);
+                step_at(&mut owner, refreshed(2, outcome), 2_000);
+                assert_eq!(refreshes(&step_at(&mut owner, need(8, false), 2_001)), [(3, 8)], "{outcome:?}");
+            }
+        }
+
+        #[test]
+        fn the_first_transient_observation_arms_a_backoff_instead_of_reading() {
+            // A boot that read Locked/Blocked (the storage helper down) keeps the old first retry
+            // about a second later, not a read on frame one.
+            let mut owner = owner();
+            assert!(step_at(&mut owner, need(3, true), 100).is_empty());
+            assert_eq!(owner.cache_refresh_in_flight(), None);
+            assert!(step_at(&mut owner, need(3, true), 100 + LOCKED_RETRY_MS - 1).is_empty());
+            assert_eq!(refreshes(&step_at(&mut owner, need(3, true), 100 + LOCKED_RETRY_MS)), [(1, 3)]);
+        }
+
+        #[test]
+        fn backoff_deadlines_survive_the_tick_wrapping() {
+            let mut owner = owner();
+            step_at(&mut owner, need(4, false), u32::MAX - 20);
+            step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Refused), u32::MAX - 5);
+            assert!(step_at(&mut owner, need(4, false), 10).is_empty(), "16 ms into the window");
+            assert!(step_at(&mut owner, need(4, false), LOCKED_RETRY_MS - 7).is_empty());
+            assert_eq!(refreshes(&step_at(&mut owner, need(4, false), LOCKED_RETRY_MS - 6)), [(2, 4)]);
+        }
+
+        /// A backoff that outlives its need (a write filled the cache inside its second, so no
+        /// observation ever cleared it) must not come back to hold a much later need: a deadline
+        /// compared as a signed wrapping difference flips to "not over" once the process has run
+        /// 2^31 ms (24.8 days) past it. The hold is the unsigned time since it was armed.
+        #[test]
+        fn a_backoff_left_behind_does_not_hold_a_need_a_long_time_later() {
+            // `10 + 2^31 + 1` is the review's tick; the signed deadline compare first flips at
+            // `10 + LOCKED_RETRY_MS + 2^31`, so both are asked.
+            for later in [10u32.wrapping_add(1 << 31).wrapping_add(1),
+                10u32.wrapping_add(LOCKED_RETRY_MS).wrapping_add(1 << 31)] {
+                let mut owner = owner();
+                step_at(&mut owner, need(4, false), 0);
+                step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Refused), 10);
+                assert_eq!(refreshes(&step_at(&mut owner, need(4, false), later)), [(2, 4)], "at tick {later}");
+            }
+            // The transient arm reads the same clock: armed on the first observation, asked again
+            // a long gap later.
+            let mut owner = owner();
+            assert!(step_at(&mut owner, need(3, true), 10).is_empty());
+            let later = 10u32.wrapping_add(LOCKED_RETRY_MS).wrapping_add(1 << 31);
+            assert_eq!(refreshes(&step_at(&mut owner, need(3, true), later)), [(1, 3)], "at tick {later}");
+        }
+
+        #[test]
+        fn a_stale_or_unsolicited_answer_changes_nothing() {
+            let mut owner = owner();
+            step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Refused), 5);
+            assert_eq!(refreshes(&step_at(&mut owner, need(4, false), 6)), [(1, 4)],
+                "an answer with nothing in flight does not start a backoff");
+            step_at(&mut owner, refreshed(77, CacheRefreshOutcome::Settled), 7);
+            assert_eq!(owner.cache_refresh_in_flight(), Some(1), "another request's answer is not ours");
+        }
+
+        #[test]
+        fn a_sign_out_while_a_refresh_is_in_flight_still_clears_the_flag() {
+            let mut owner = owner();
+            step_at(&mut owner, need(4, false), 0);
+            let epoch = owner.snapshot_init().epoch;
+            step(&mut owner, SessionEvent::Command(Command::SignOut));
+            assert_ne!(owner.snapshot_init().epoch, epoch, "the sign-out advanced the epoch");
+            assert_eq!(owner.cache_refresh_in_flight(), Some(1), "the sign-out does not answer for the job");
+            step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Superseded), 50);
+            assert_eq!(owner.cache_refresh_in_flight(), None);
+            assert_eq!(refreshes(&step_at(&mut owner, need(9, false), 51)), [(2, 9)]);
+        }
+
+        #[test]
+        fn the_bookkeeping_is_outside_the_recorded_state() {
+            let mut owner = owner();
+            let (hash, publication, init) = (owner.subhash(), owner.publication(), owner.snapshot_init().hash());
+            for (ev, ms) in [(need(4, false), 0), (refreshed(1, CacheRefreshOutcome::Refused), 10),
+                (need(4, false), 2_000), (refreshed(2, CacheRefreshOutcome::Transient { generation: 5 }), 2_010)] {
+                step_at(&mut owner, ev, ms);
+                assert_eq!(owner.subhash(), hash);
+                assert!(Arc::ptr_eq(&owner.publication(), &publication), "no publication, so no invalidation");
+                assert_eq!(owner.snapshot_init().hash(), init);
+                assert!(!owner.take_logical_dirty() || ms == 0, "no logical change");
+            }
+        }
+    }
 
     #[test]
     fn delete_leftovers_is_recorded_and_reread_without_being_consumed() {

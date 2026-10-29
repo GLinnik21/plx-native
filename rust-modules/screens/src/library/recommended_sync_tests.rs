@@ -21,7 +21,7 @@ fn fixture_of(rows: usize) -> Fixture {
 
 fn hold(fixture: &mut Fixture, lo: usize, hi: usize) {
     let id = fixture.listing.view().id().expect("a section");
-    fixture.stores.as_ref().unwrap().browse_run(BrowseCmd::Addressed {
+    fixture.stores.as_ref().unwrap().browse_run_for_test(BrowseCmd::Addressed {
         target: SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section },
         work: LibraryWork::HubHold { lo, hi },
     });

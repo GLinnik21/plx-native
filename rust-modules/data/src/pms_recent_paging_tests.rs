@@ -26,12 +26,12 @@ fn page(start: usize, count: usize, more: bool) -> SourceBuild {
 fn ask(owner: &mut Owner, before: bool) -> Option<HubRequest> {
     let mut held = None;
     let _ = request_page(&mut owner.state, &owner.adapter, sid(0), "home.movies.recent",
-        "/hubs/home/recentlyAdded?type=1", before, &BrowseScope::standalone(), &mut |request| { held = Some(request); true });
+        "/hubs/home/recentlyAdded?type=1", before, &BrowseScope::standalone(), &mut |request| { held = Some(request); });
     held
 }
 
 fn deliver(owner: &mut Owner, request: HubRequest, build: Option<SourceBuild>) {
-    let result = request.complete(build);
+    let result = request.complete_for_test(build);
     let encoded = record::encode(&result);
     let result = record::decode(encoded, |_| plx_plex::plex::client_for(sid(0))).unwrap();
     let _ = super::land(&mut owner.state, &owner.adapter, &result);
@@ -78,7 +78,7 @@ fn failed_pages_retry_without_blanking_home_and_old_profile_results_are_rejected
     assert_eq!(hub_state(&owner.state), HubState::Ready);
     let mut held = None;
     let _ = step_landings_with(&mut owner.state, &owner.adapter, Some(RETRY_MIN_S), Vec::new,
-        &mut |request| { held = Some(request); true });
+        &mut |request| { held = Some(request); });
     let request = held.unwrap();
     assert_eq!(request.page.as_ref().unwrap().start, 12);
     plx_plex::plex::client_for(sid(0)).unwrap().set_token("changed-profile");
@@ -200,9 +200,9 @@ fn check_refetch_window(change_profile: bool) {
     if change_profile { plx_plex::plex::client_for(registered).unwrap().set_token("new-synthetic-profile"); }
     let mut held = None;
     let _ = request_refetch_hubs_with_scope(&mut owner.state, &owner.adapter, &BrowseScope::standalone(),
-        &mut |request| { held = Some(request); true });
+        &mut |request| { held = Some(request); });
     let request = held.unwrap();
-    let result = request.fetch();
+    let result = request.fetch_for_test();
     deliver(&mut owner, request, result);
     let paths = server.join().unwrap();
     assert_eq!(hubs_snapshot(&owner.state).view().hub(0).unwrap().offset,if change_profile { 0 } else { 36 });
@@ -223,7 +223,7 @@ fn a_page_that_never_succeeds_stops_retrying_and_releases_the_source() {
         deliver(&mut owner, request, None);
         let mut retry = None;
         let _ = step_landings_with(&mut owner.state, &owner.adapter, Some(plx_plex::plex::retry::RETRY_MAX_S), Vec::new,
-            &mut |request| { retry = Some(request); true });
+            &mut |request| { retry = Some(request); });
         if attempt == 2 {
             assert!(retry.is_none(), "a page has a finite retry budget");
             break;
@@ -246,7 +246,7 @@ fn leaving_a_page_releases_another_row_and_rejects_the_abandoned_result() {
         tv.hub_id = "home.television.recent".into();
         tv.key = "/hubs/home/recentlyAdded?type=2".into();
         owner.state.srcs[0].last.as_mut().unwrap().shelves.push(tv);
-        let old = ask(&mut owner, false).unwrap().complete(Some(page(0, 24, true)));
+        let old = ask(&mut owner, false).unwrap().complete_for_test(Some(page(0, 24, true)));
         if failed {
             let mut failure = old.clone();
             failure.build = None;
@@ -257,7 +257,7 @@ fn leaving_a_page_releases_another_row_and_rejects_the_abandoned_result() {
                 key: "/hubs/home/recentlyAdded?type=1".into() }), 0.0, &mut |_| panic!("cancel must not launch"));
         let mut next = None;
         let _ = request_page(&mut owner.state, &owner.adapter, sid(0), "home.television.recent",
-            "/hubs/home/recentlyAdded?type=2", false, &BrowseScope::standalone(), &mut |request| { next = Some(request); true });
+            "/hubs/home/recentlyAdded?type=2", false, &BrowseScope::standalone(), &mut |request| { next = Some(request); });
         let next = next.expect("another row can use the released source");
         let _ = super::land(&mut owner.state, &owner.adapter, &old);
         assert_eq!(owner.state.srcs[0].page.as_ref().unwrap().id, "home.television.recent");
@@ -312,16 +312,16 @@ fn paging_a_sparse_pinned_row_retains_its_selected_visible_card() {
         Arc::make_mut(item).sec=if i%8==0 { 7 } else { 8 };
     }
     seed(&mut owner.state,vec![src(registered.raw(),"",HubState::Ready,Some(build))]);
-    let scope=BrowseScope { sections_gen:1,pins:vec![(registered,7,true),(registered,8,false)] };
+    let scope=BrowseScope { sections_gen:1,pins:vec![(registered,7,true),(registered,8,false)],clients:std::borrow::Cow::Owned(registry_keys_for_test()) };
     let mut held=None;
     let seen=owner.state.catalog_gen;
-    let _=controlled_work_with_scope(&mut owner.state,&owner.adapter,
-        Some(crate::stores::hubs::HubsCmd::Page { sid:registered,id:"home.movies.recent".into(),
-            key:"/hubs/home/recentlyAdded?type=1".into(),before:false,seen }),0.0,&scope,
-        &mut |request| { held=Some(request);true });
+    let _=run_with_scope(&mut owner.state,&owner.adapter,
+        crate::stores::hubs::HubsCmd::Page { sid:registered,id:"home.movies.recent".into(),
+            key:"/hubs/home/recentlyAdded?type=1".into(),before:false,seen },&scope);
+    start_for_test(&mut owner.state,&mut |request| { held=Some(request); true });
     let request=held.unwrap();
-    let result=request.fetch();
-    let landing=request.complete(result);
+    let result=request.fetch_for_test();
+    let landing=request.complete_for_test(result);
     let _=step_landings_with_scope(&mut owner.state,&owner.adapter,None,||vec![landing],&scope,
         &mut |_| panic!("landing must not launch"));
     server.join().unwrap();
@@ -527,10 +527,10 @@ fn a_failed_window_reload_keeps_the_first_page_instead_of_failing_the_refresh() 
     seed(&mut owner.state, vec![src(registered.raw(), "", HubState::Ready, Some(page(36,24,true)))]);
     let mut held = None;
     let _ = request_refetch_hubs_with_scope(&mut owner.state, &owner.adapter, &BrowseScope::standalone(),
-        &mut |request| { held = Some(request); true });
+        &mut |request| { held = Some(request); });
     let request = held.unwrap();
     assert!(!request.windows.is_empty(), "the refresh must try to reload the paged window");
-    let result = request.fetch();
+    let result = request.fetch_for_test();
     server.join().unwrap();
     let build = result.expect("a failed window reload must not fail the source refresh");
     assert_eq!(build.shelves[0].items[0].title, "Fresh movie");

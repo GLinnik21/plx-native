@@ -218,7 +218,7 @@ fn owned_search_external_departure_never_submits_the_draft() {
     session.watching("synthetic-external-leave");
     let mut rig = Bridge::for_test(|| 0);
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("unfinished draft".into()));
-    rig.search = rig.stores.search_snapshot(rig.directory.view());
+    rig.search = rig.stores.search_snapshot(rig.directory.view(), &Bridge::household_ids());
     let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(1)) };
     let split = rig.split();
@@ -695,7 +695,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
         if changed {
             rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("replacement".into()));
             rig.stores.search.publish_shelves_for_test(catalog());
-            rig.search = rig.stores.search_snapshot(rig.directory.view());
+            rig.search = rig.stores.search_snapshot(rig.directory.view(), &Bridge::household_ids());
         }
         let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
         let mut restored = plx_screens::search::SearchScreen::new(key.entry, InstanceId(900));

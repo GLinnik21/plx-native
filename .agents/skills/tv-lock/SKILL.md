@@ -5,11 +5,11 @@ description: >
   ANY device work — "deploy to the TV", "run the test suite", "screenshot the TV", "reproduce it
   on device", "measure the frame rate", "capture the video plane" — and whenever a command is
   refused with "the television is held by another lane", "BLOCKED: this lane does not hold the
-  television's lock", or a tool says somebody else is on the set. Also covers running SEVERAL
-  agents at once against one TV ("fan this out", "run these in parallel", "another agent is using
-  the TV"), what to do while you wait, and when it is safe to break a lease. There is one set, one
-  app instance, and no OS-level mutex: two jobs on it do not fail cleanly, they produce plausible
-  WRONG data that reads exactly like a real regression.
+  television's lock", a pre-flight prints a line starting "IN USE:", or a tool says somebody else is
+  on the set. Also covers running SEVERAL agents at once against one TV ("fan this out", "run these
+  in parallel", "another agent is using the TV"), what to do while you wait, and when it is safe to
+  break a lease. There is one set, one app instance, and no OS-level mutex: two jobs on it do not
+  fail cleanly, they produce plausible WRONG data that reads exactly like a real regression.
 ---
 
 # The television is a mutex — this is how you hold it
@@ -88,15 +88,16 @@ released. Pass `--ttl 30` (or less) for an ordinary run.
 
 Four layers, so there is no "I forgot" path:
 
-1. **`tools/tv-session.sh`** — `up`, `key`, `click`, `shot` and `down` require the lock. `log` and
-   `status` are read-only: they take nothing and refuse nothing, but they name the holder, because
-   reading a log another lane's app is writing is how a session gets graded as your own.
+1. **`tools/tv-session.sh`** — `up`, `key`, `click`, `shot` and `down` require the lock. `log`,
+   `status` and `fg` are read-only: they take nothing and refuse nothing, but they name the holder,
+   because reading a log another lane's app is writing is how a session gets graded as your own.
 2. **The Makefile** — `deploy`, `run`, `run-stream`, `kill`, `install` and `uninstall` take
    `tv-lock-require` as a prerequisite (last in the list for `deploy`, so a two-minute FFmpeg build
    does not happen while holding the set).
 3. **`tests/run.py`** — acquires where it commits to driving the TV and releases in the same
    `finally` as the teardown; it *inherits* a lease this lane already holds rather than re-taking
-   it, so `with -- ./tests/run.py` works unchanged. `tools/capture-screen.sh` requires it too.
+   it (and reads the pre-flight again, below), so `with -- ./tests/run.py` works unchanged.
+   `tools/capture-screen.sh` requires it too.
 4. **A `PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) — refuses any Bash command that
    drives the set without a lease: a raw `ssh root@…`, an `scp` into the app directory, a
    `sshpass` one-liner, `tools/tv-ssh`, `make deploy`, `tests/run.py`. It reads one local file, never the network,
@@ -126,15 +127,40 @@ Four layers, so there is no "I forgot" path:
    you how long it has left; `break --yes` takes it anyway. An expired lease needs no break at all
    — the next `acquire` takes it and says whose it was.
 
-## Two things the lock cannot see
+## What the lock cannot see
 
-- **A human watching television.** The lock knows about jobs, not about the household. `status`
-  therefore also runs the old pre-flight — `fuser` on **both** installs' own binaries (inode-scoped;
-  `pidof plxnative` matches both, since both binaries carry that name) and a count of ssh sessions
-  on the set. `N ssh sessions (one is mine)` is the check that actually fires, and it sees machines
-  whose processes you cannot: read the warning, do not dismiss it as your own connection.
+- **A human watching television.** The lock knows about jobs, not about the household, so the
+  pre-flight reads the set too: `fuser` on **both** installs' own binaries (inode-scoped; `pidof
+  plxnative` matches both), a count of ssh sessions on the set, and what is in front.
+  `N ssh sessions (one is mine)` is the check that actually fires, and it sees machines whose
+  processes you cannot: read the warning, do not dismiss it as your own connection. Still unseen: a
+  person who picks up the remote after the read, anything the set will not tell it (`UNKNOWN`), and
+  what a `Screen Off` panel means. That is only the backlight, left blanked over somebody's unmuted
+  YouTube once, so the verdict ignores it and judges the app.
 - **Work started before the lock existed**, or from a checkout without these tools. Same warning,
   same rule.
+
+**Is anybody watching?** A new `acquire` (your own expired lease re-taken included) and every
+`status` print a verdict; a live renew prints none, and on a new acquire the `HEADS-UP:` line follows
+it. `Active Standby` is IDLE. Otherwise the foreground app decides: this project's debug app, the
+parking app (`org.webosbrew.hbchannel`, where `tv-session.sh background` leaves the set), LG Home and
+live TV (no antenna in this household) are IDLE; our STABLE app, the household's own client, is IDLE
+only when muted, IN USE with the sound on, `UNKNOWN` when mute is unreadable; any other app is IN USE.
+An unreadable, ambiguous, `returnValue:false` or multi-valued FOREGROUND reply, or a read that overruns
+its 10 s (`PLX_TV_PREFLIGHT_SECS`), is `UNKNOWN`. An ambiguous panel reply only demotes an otherwise-IDLE
+app to `UNKNOWN` (an unread one does not even do that) and never hides an app that is IN USE, and a bad
+volume reply matters only when our stable app is in front: IDLE is therefore not proof that every read
+succeeded.
+
+IN USE is one stdout line starting `IN USE: <app id>: stop and tell the owner` at column 0. For
+`acquire` and `status` it is a warning (exit 0, lease kept): do not drive the set, tell the owner. A
+subagent releases the lease before its turn ends and puts the line first in its report; the main
+session keeps it only while waiting for the owner's answer. For `tv-lock.sh with` and `tests/run.py`
+it is a refusal, unless `PLX_TV_IN_USE_OK=1`, which only the owner's go allows: they do not start
+(`with` exits 3), on a lease they just took or one this lane already held (they read the pre-flight
+again either way), and they release a lease they took but leave an inherited one held.
+`tools/tv-session.sh fg` is the same foreground read alone: the guard allows it without a lease
+because it changes nothing and sends no Wake-on-LAN (an unreachable set says `TV unreachable or asleep (nothing read, no wake sent)`).
 
 ## Fleets
 
@@ -147,19 +173,24 @@ plan the work so only one lane needs the device.
 A lane is a **checkout**: the lease belongs to the worktree, so every Bash call, `make` and nested
 tool inside it inherits the same lease, and a second worktree on the same Mac is a different lane.
 
-**A subagent takes its OWN lane by prefixing `PLX_TV_LOCK_LANE=<its worktree path>` on every
+**A subagent names its OWN lane by prefixing `PLX_TV_LOCK_LANE=<its worktree path>` on each
 device command**, not by exporting it once for the session. The harness reports the SESSION's own
-checkout as the Bash `cwd` for every subagent's call, whatever worktree that agent is actually
-running in — so the `PreToolUse` hook cannot tell one subagent's lease from another's by reading
-`cwd`, and exporting `PLX_TV_LOCK_LANE` into the shared session environment instead collapses
-every agent onto one lane, which is the exact failure this exists to prevent (the 2026-09-03
-collision: one lane's `make deploy` ran inside another's lease). A per-command prefix is the one
-spelling that can vary call to call: `PLX_TV_LOCK_LANE=$(pwd) tools/tv-lock.sh with --ttl 30
---wait 300 -- ./tests/run.py --filter seek`, repeated per test run, one lease per run rather than
-one for the whole fleet. `tools/tv-lock.sh` already reads the same variable
-(`LANE="${PLX_TV_LOCK_LANE:-$REPO}"`); the hook's `lane_from_command()` resolves it the same way —
-the prefix, else the hook's own environment, else `cwd` — so the two agree on which lane a command
-belongs to.
+checkout as the Bash `cwd` for a plain subagent's call, whatever worktree that agent is actually
+running in (only an `isolation: worktree` subagent reports its own) — so the `PreToolUse` hook
+cannot tell one subagent's lease from another's by reading `cwd` alone, and exporting
+`PLX_TV_LOCK_LANE` into the shared session environment instead collapses every agent onto one lane,
+which is the exact failure this exists to prevent (the 2026-09-03 collision: one lane's `make
+deploy` ran inside another's lease). A per-command prefix is the one spelling that can vary call to
+call: `PLX_TV_LOCK_LANE=$(pwd) tools/tv-lock.sh with --ttl 30 --wait 300 -- ./tests/run.py --filter
+seek`, repeated per test run, one lease per run rather than one for the whole fleet.
+`tools/tv-lock.sh` already reads the same variable (`LANE="${PLX_TV_LOCK_LANE:-$REPO}"`), and the
+hook gives each device segment the lane the tool it runs will compute: the first of the prefix,
+that variable in the hook's own environment, the segment's own absolute `tools/` or `tests/`
+script path (or an absolute `make -C <dir>`), an absolute `cd <dir>` the shell certainly kept, and
+the `cwd`'s checkout (`decide()`'s docstring has the exact rules). A lane read from a script path
+or a `cd` that is not the `cwd`'s own also needs the caller's session in the lease's `SESSIONS`
+(only `tools/tv-lock.sh` writes it). Keep the prefix as the habit: it names the lane of the whole
+command and is the only source for a relative script path or a `cd "$W"`.
 
 ## Under the hood (enough to debug it)
 
@@ -185,10 +216,10 @@ belongs to.
   **half its cases are false positives** — `pgrep -fl "…|make deploy"`, a heredoc that documents
   the lock, a commit message that mentions it. That is the guard's real failure mode: refusing
   work that never touches the set teaches the reader to reach for the bypass. Add a case there
-  before widening what the guard matches. It also grades `lane_from_command()` — the prefix, the
-  hook's own environment, and the `cwd` fallback, each against a disposable mirror directory
-  rather than the real `~/.plxnative/tv-lock` — including that a comment or a heredoc BODY
-  mentioning `PLX_TV_LOCK_LANE=` must never be read as the prefix.
+  before widening what the guard matches. It also grades `decide()`'s lane for each device
+  segment — the five sources, in order — each against a disposable mirror directory rather
+  than the real `~/.plxnative/tv-lock` — including that a comment or a heredoc BODY mentioning
+  `PLX_TV_LOCK_LANE=` must never be read as the prefix.
 
 The escape hatch is `PLX_TV_LOCK_BYPASS=1 <command>`, which both the tools and the hook honour. It
 is for a human who knows the set is theirs. Reaching for it because a lock said no is the one move

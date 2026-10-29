@@ -10,6 +10,8 @@
 //! network/adapter effect is allowed to read wall time) but as of this split carries none either.
 
 mod decision;
+mod queue_navigation;
+pub use queue_navigation::{QueueContinuation, QueueStep, previous_restarts, queue_neighbor, queue_neighbors};
 mod flight;
 mod plan;
 mod prefs;

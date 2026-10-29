@@ -42,7 +42,7 @@ fn ring_home(rows: usize, make: fn(u16, usize) -> Shelf) -> (Owner, ServerId) {
     let shelves = (0..rows).map(|r| make(id.raw(), r)).collect();
     let mut o = Owner::default();
     let mut source = src(id.raw(), "", HubState::Ready, Some(built(id.raw(), &[], shelves)));
-    source.client = plx_plex::plex::client_for(id);
+    source.key = plx_plex::plex::client_for(id).map(plx_plex::plex::ClientKey::of);
     o.state.srcs = vec![source];
     let scope = BrowseScope::standalone();
     let mut srcs = std::mem::take(&mut o.state.srcs);
@@ -77,7 +77,7 @@ fn serve(request: HubRequest) -> Landing {
             Some(serde_json::from_value(serde_json::json!({"Metadata": items})).unwrap())
         };
         let build = fetch_kept(request.sid, &page, window, &mut many);
-        return request.complete(build);
+        return request.complete_for_test(build);
     }
     // a listing that is a different sample every time it is read
     let keys: Vec<String> = (page.start..page.start + CARDS).map(|c| format!("fresh-{row}-{c}")).collect();
@@ -89,7 +89,7 @@ fn serve(request: HubRequest) -> Landing {
     answer.more = true;
     answer.total = 1000;
     let build = SourceBuild { shelves: vec![answer], ..Default::default() };
-    request.complete(Some(build))
+    request.complete_for_test(Some(build))
 }
 
 struct Ring { o: Owner, launched: Vec<(String, usize, usize)>, pending: Vec<Landing> }
@@ -107,7 +107,6 @@ impl Ring {
             let page = request.page.clone().unwrap();
             launched.push((page.id.clone(), page.start, request.window.as_ref().map_or(0, |w| w.end)));
             pending.push(serve(request));
-            true
         };
         let _ = run_hold(&mut self.o.state, &self.o.adapter, &scope, lo, hi, &mut launch);
     }
@@ -121,7 +120,6 @@ impl Ring {
             let page = request.page.clone().unwrap();
             launched.push((page.id.clone(), page.start, request.window.as_ref().map_or(0, |w| w.end)));
             pending.push(serve(request));
-            true
         };
         let _ = step_landings_with_scope(&mut self.o.state, &self.o.adapter, Some(0.0), move || landed, &scope, &mut launch);
         n
@@ -372,7 +370,7 @@ fn merge_held_equals_a_merge_of_the_settled_ring_across_sources_the_deck_pins_an
         src(b.raw(), "", HubState::Ready, Some(built(b.raw(), &deck[..3], shelves(b)))),
     ];
     settle_deck(&mut srcs, true);
-    let scope = BrowseScope { sections_gen: 1, pins: vec![(a, 5, false)] };
+    let scope = BrowseScope { sections_gen: 1, pins: vec![(a, 5, false)], clients: Default::default() };
     let keys = |build: &HubBuild| build.0.iter().map(|m| (m.sid, m.rk.clone(), m.art.clone())).collect::<Vec<_>>();
     let rows = |build: &HubBuild| build.1.iter().map(|h| (h.title.clone(), h.hub_id.clone(), h.key.clone(),
         h.source.clone(), h.total, h.start, h.len, h.offset, h.more, h.epoch)).collect::<Vec<_>>();
