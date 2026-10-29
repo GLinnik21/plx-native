@@ -1,8 +1,9 @@
 //! **Settings > Libraries > Under posters**: what the focused poster shows beneath it.
 //!
 //! One global setting, saved per profile (`plx_plex::plex::session::UnderPosters`). The page holds
-//! four rows: a Title switch, a Show sort information switch, a Details row that opens [`DetailsPage`] (its pushed picker, one
-//! checked choice per details line, each with a sample of what it shows) and Reset. Both pages carry
+//! four rows: a Title switch, a Details row that opens [`DetailsPage`] (its pushed picker, one
+//! checked choice per details line, each with a sample of what it shows), a Show sort information
+//! switch and Reset. Both pages carry
 //! a framed preview: a still row of three posters from the library the Library last showed, drawn by
 //! the shelves' own tile painters ([`plx_ui::cards::SampleRow`]), the middle one lifted and captioned
 //! by the SAME policy the Library, Collections, the Watchlist, Home and
@@ -16,7 +17,9 @@
 //! Detail's Related and collection shelves and a collection's members included); a landscape still
 //! or a headshot is not a poster and wears none of it. The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows
-//! the focused choice.
+//! the focused choice. With Show sort information on, the sort captions (on every tile, as the movie
+//! grids wear them) preview only while the Sort row has focus, and never in the picker: Title and
+//! Details still govern every other poster surface, so their preview stays the page's default.
 //!
 //! The write goes through the one door every live setting uses (`PreferenceCmd::Choose`, Confirm):
 //! the row shows the pick at once, the stored value settles it when the receipt answers, and a
@@ -211,6 +214,15 @@ impl UnderPostersPage {
             UpAction::Reset => UnderPosters::DEFAULT,
         };
         self.send(next, fx);
+    }
+
+    /// The value the preview words: the rows' own, except that the sort captions (which replace the
+    /// Title and Details words under every poster) show only while the Sort row has focus. Title
+    /// and Details still govern Home, Search, the Watchlist and Collections, so the preview of their
+    /// rows stays the caption they set.
+    fn previewed(&self) -> UnderPosters {
+        let v = self.state.value;
+        UnderPosters { show_sort_info: v.show_sort_info && self.state.sel == UpId::SortInfo.key(), ..v }
     }
 
     /// With no write of its own in flight, the rows read the stored value: the Details picker
@@ -424,7 +436,7 @@ impl Screen<InnerHost> for UnderPostersPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
-        draw_preview(f.painter, self.state.value, &preview_posters(f.cx), f.cx.measure);
+        draw_preview(f.painter, self.previewed(), &preview_posters(f.cx), f.cx.measure);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }
@@ -648,7 +660,10 @@ impl Screen<InnerHost> for DetailsPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
-        draw_preview(f.painter, UnderPosters { details: self.state.focused(), ..self.state.value }, &preview_posters(f.cx), f.cx.measure);
+        // The picker chooses the Details line, so its preview words that line: the sort caption would
+        // hide every choice behind the same words.
+        let previewed = UnderPosters { details: self.state.focused(), show_sort_info: false, ..self.state.value };
+        draw_preview(f.painter, previewed, &preview_posters(f.cx), f.cx.measure);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }

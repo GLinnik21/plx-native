@@ -248,6 +248,73 @@ fn the_pickers_preview_follows_the_focused_choice() {
     assert_eq!(page.state.value.details, UnderPostersDetails::YearLength, "focus is not a pick");
 }
 
+/// Three posters whose genre and year say different things: a title/details caption words the
+/// middle one's genre ("Western"), a sort caption words its year ("2004").
+fn captioned_posters() -> Vec<PmsMovie> {
+    let minutes = |n: i64| n * 60_000_000_000;
+    vec![
+        PmsMovie { dur_ns: minutes(98), ..poster("Alpha", 1999, "Noir") },
+        PmsMovie { dur_ns: minutes(134), ..poster("Bravo", 2004, "Western") },
+        PmsMovie { dur_ns: minutes(121), ..poster("Charlie", 2011, "Comedy") },
+    ]
+}
+
+/// The lines the page's preview captions wear, read off the label blocks of one draw of the page:
+/// the page's own rows are not label blocks, so a row's sample cannot stand for the preview.
+fn previewed_lines<S: Screen<InnerHost>>(page: &mut S) -> Vec<String> {
+    let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new()).with_sample(captioned_posters());
+    let c = cx_with(None, snapshot.view());
+    let mut f = DrawFrame::new(&c, plx_ui::Painter::recording());
+    let runs = plx_ui::draw_census::capture_runs(|| page.draw(&mut f));
+    plx_ui::draw_census::label_lines(&runs)
+}
+
+#[test]
+fn the_pickers_preview_follows_the_focused_choice_with_sort_information_on() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::YearLength, show_sort_info: true });
+    let mut page = DetailsPage::new(EntryId(0));
+    page.state.sel = DetailsId(UnderPostersDetails::Genre).key();
+    let genre = previewed_lines(&mut page);
+    assert!(genre.iter().any(|l| l == "Western"), "the focused Genre choice is what the preview words: {genre:?}");
+    assert!(!genre.iter().any(|l| l == "2004"), "the sort caption is not the picker's preview: {genre:?}");
+    page.state.sel = DetailsId(UnderPostersDetails::None).key();
+    let none = previewed_lines(&mut page);
+    assert!(!none.iter().any(|l| l == "Western" || l == "2004"), "the None choice words no details line: {none:?}");
+    assert!(none.iter().any(|l| l == "Bravo"), "the Title switch still shows the title: {none:?}");
+}
+
+#[test]
+fn the_pages_preview_shows_the_sort_caption_only_while_the_sort_row_has_focus() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: true });
+    let mut page = UnderPostersPage::new(EntryId(0));
+    for row in [UpId::Title, UpId::Details, UpId::Reset] {
+        page.state.sel = row.key();
+        let lines = previewed_lines(&mut page);
+        assert!(lines.iter().any(|l| l == "Western"), "{row:?} focused: the Title/Details caption: {lines:?}");
+        assert!(!lines.iter().any(|l| l == "2004"), "{row:?} focused: no sort caption: {lines:?}");
+    }
+    page.state.sel = UpId::SortInfo.key();
+    let lines = previewed_lines(&mut page);
+    assert!(lines.iter().any(|l| l == "2004"), "the Sort row focused: the sort caption: {lines:?}");
+    assert!(!lines.iter().any(|l| l == "Western"), "the Sort row focused: not the Title/Details caption: {lines:?}");
+}
+
+#[test]
+fn a_sort_row_with_the_switch_off_previews_the_title_and_details_caption() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
+    let mut page = UnderPostersPage::new(EntryId(0));
+    page.state.sel = UpId::SortInfo.key();
+    let lines = previewed_lines(&mut page);
+    assert!(lines.iter().any(|l| l == "Western"), "{lines:?}");
+    assert!(!lines.iter().any(|l| l == "2004"), "{lines:?}");
+}
+
 #[test]
 fn reset_restores_the_default_and_is_inert_at_the_default() {
     let _guard = plx_base::testlock::serial();

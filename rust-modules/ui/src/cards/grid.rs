@@ -1034,8 +1034,9 @@ impl Grid {
         Some(CardPaint { rect, p, label })
     }
 
-    /// The caption block under card `paint` (a label the card carries: the focused card's, or the
-    /// closing band's of a card the focus left), painted ahead of every tile ([`draw`](Self::draw)).
+    /// Hands `read` the label card `i` carries, `None` when it carries none: with persistent
+    /// captions the source's own cached label (every card has one), otherwise the one `paint` holds
+    /// (the focused card's, or the closing band's of a card the focus left).
     fn with_caption<H: Host, S: CardSource<H>, R>(
         &self, src: &S, i: usize, paint: &CardPaint, read: impl FnOnce(&super::TileLabel) -> R,
     ) -> Option<R> {
@@ -1043,6 +1044,10 @@ impl Grid {
         else { paint.label.as_ref().map(read) }
     }
 
+    /// The caption block under card `paint` ([`with_caption`](Self::with_caption)'s label), painted
+    /// ahead of every tile ([`draw`](Self::draw)). `focused` marks the lifted card: it opens the
+    /// `devtriggers` card probe, and with persistent captions it is the only card whose cached words
+    /// are not drawn static.
     fn draw_caption<H: Host, S: CardSource<H>>(
         &self, f: &DrawFrame<'_, '_, H>, src: &S, i: usize, paint: &CardPaint, s: f32, focused: bool,
     ) {
