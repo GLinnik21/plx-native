@@ -987,7 +987,7 @@ mod tests {
         ], CollectionStatus::Ready);
         let mut run = |rk: &str, edit| state.run_bare(&adapter, CollectionCmd::ApplyView {
             at: ViewAt::leaf(ServerId::UNSET, rk), edit });
-        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
         assert!(run("a", facts));
         assert!(!run("a", facts), "facts that agree with the member change nothing");
         assert!(run("b", ViewEdit::Offset { ms: 55 }));

@@ -467,6 +467,9 @@ pub struct Metadata {
     pub audience_rating: f64,
     #[serde(rename = "audienceRatingImage", default)]
     pub audience_rating_image: String,
+    /// The seated viewer's own score, independent of both review-score fields.
+    #[serde(rename = "userRating", default, deserialize_with = "de_f64")]
+    pub user_rating: f64,
 }
 
 /// The 12 bytes of a catalog id, from a `plex://movie/<hex>` or `plex://show/<hex>` guid. `None` for

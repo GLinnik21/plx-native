@@ -404,18 +404,22 @@ pub struct Geom {
     pub w: f32,
     pub h: f32,
     pub gap: f32,
+    pub persistent_captions: bool,
 }
 
 impl Geom {
     #[cfg(test)]
-    pub const DEFAULT: Self = Self { cols: COLS, left: MARGIN_X, w: CARD_W, h: CARD_H, gap: GAP };
+    pub const DEFAULT: Self = Self { cols: COLS, left: MARGIN_X, w: CARD_W, h: CARD_H, gap: GAP, persistent_captions: false };
 
     pub const fn of(cols: usize, left: f32, style: &RowStyle) -> Self {
-        Self { cols, left, w: style.w, h: style.h, gap: style.gap }
+        Self { cols, left, w: style.w, h: style.h, gap: style.gap, persistent_captions: false }
     }
 
     /// A COLLAPSED row's pitch.
-    pub fn pitch(&self) -> f32 { self.h + LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR }
+    pub fn pitch(&self) -> f32 {
+        self.h + if self.persistent_captions { card_row::TileLabel::SORT_BAND_H }
+            else { LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR }
+    }
 }
 
 #[cfg(test)]
@@ -504,7 +508,7 @@ pub fn snap_row_in_for(band_h: f32, g: &Geom, current: f32, row: usize, len: usi
     if row == 0 || len == 0 { return 0.0; }
     let bands = settled(Some(row));
     let focused_top = row_top_in_for(band_h, g, row, top, &bands);
-    let min = card_row::reveal(current, focused_top + g.h + shown_band(band_h) - (SCR_H - MARGIN_Y),
+    let min = card_row::reveal(current, focused_top + g.h + (if g.persistent_captions { card_row::TileLabel::SORT_BAND_H } else { shown_band(band_h) }) - (SCR_H - MARGIN_Y),
         focused_top - edge, f32::INFINITY);
     if min <= 0.0 { return 0.0; }
     (0..=row).map(|k| row_top_in_for(band_h, g, k, top, &bands) - edge).find(|&at| at >= min - 0.5)
@@ -560,7 +564,7 @@ pub fn visible_in(g: &Geom, len: usize, top: f32, scroll: f32) -> std::ops::Rang
 pub fn visible_in_for(band_h: f32, g: &Geom, len: usize, top: f32, scroll: f32) -> std::ops::Range<usize> {
     if len == 0 { return 0..0; }
     let pitch = g.pitch();
-    let first = ((scroll - top - g.h - shown_band(band_h)) / pitch).floor().max(0.0) as usize;
+    let first = ((scroll - top - g.h - (if g.persistent_captions { card_row::TileLabel::SORT_BAND_H } else { shown_band(band_h) })) / pitch).floor().max(0.0) as usize;
     let last = ((scroll + SCR_H - top) / pitch).ceil().max(0.0) as usize + 1;
     first.saturating_mul(g.cols)..last.saturating_mul(g.cols).min(len)
 }

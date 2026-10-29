@@ -66,5 +66,17 @@
   "under_posters.sample_genre": {
     "value": "Drama",
     "description": "Sample genre shown in the Under posters preview, one word."
+  },
+  "under_posters.show_sort_info": {
+    "value": "Show sort information",
+    "description": "Switch: persistent title, year and current sort fact in movie-library grids only. Default off, per profile."
+  },
+  "under_posters.sort_info_detail": {
+    "value": "Title, year and sort value in movie libraries.",
+    "description": "Detail under Show sort information. Other poster surfaces keep their Title and Details settings."
+  },
+  "under_posters.default_version": {
+    "value": "Default",
+    "description": "Compact qualifier after resolution or bitrate when a film has multiple media versions: this describes the default version."
   }
 }

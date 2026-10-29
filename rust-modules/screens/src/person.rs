@@ -3157,7 +3157,7 @@ mod tests {
         use crate::registry::captions::TEST_UNDER_POSTERS;
         use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
         let _serial = plx_base::testlock::serial();
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::YearLength })));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::YearLength, show_sort_info: false })));
         let (mut store, mut s) = shelved_page(PORTRAIT_EXP);
         let (movies, shows) = (focus_of(&s, &store, 0, 0), focus_of(&s, &store, 1, 0));
         settle_shelves(&mut s, &store, movies, 120);

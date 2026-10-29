@@ -1,4 +1,4 @@
-//! [`Grid`] — the poster grid with a collapsing caption band under the focused row: six
+//! [`Grid`] — a poster grid with focused captions, or fixed captions on every visible tile: six
 //! `poster_grid::STYLE` columns by default, any column count / style / left edge through
 //! [`GridSpec`] (`poster_grid`'s `_in` functions are its geometry). The Collection page is its first
 //! adopter; [`ScrollMode::External`] serves a grid inside a document another owner scrolls.
@@ -81,12 +81,14 @@ pub struct GridSpec {
     pub landings: bool,
     /// Rows REST rather than snap (see [`resting`](Self::resting)).
     pub rests: bool,
+    /// Every visible cell carries a fixed three-line caption band.
+    pub persistent_captions: bool,
 }
 
 impl GridSpec {
     /// A grid that scrolls home when focus leaves it.
     pub const fn new(top: f32, edge: f32) -> Self {
-        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false, rests: false }
+        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false, rests: false, persistent_captions: false }
     }
 
     /// **A grid whose rows rest where the first row does** (the Library's rule, `poster_grid::rest_scroll`):
@@ -135,7 +137,9 @@ impl GridSpec {
         Self { landings: on, ..self }
     }
 
-    fn geom(&self) -> Geom { Geom::of(self.cols, self.left, &self.style) }
+    fn geom(&self) -> Geom {
+        Geom { persistent_captions: self.persistent_captions, ..Geom::of(self.cols, self.left, &self.style) }
+    }
 }
 
 /// What [`Grid::card_paint`] decides for one card (see there).
@@ -280,8 +284,13 @@ impl Grid {
         self.caption_policy
     }
 
-    /// The focused band's height: the policy's (0 / 80 / 112), else the legacy band.
+    /// Keep captions beneath every tile, without opening a focused band.
+    pub fn set_persistent_captions(&mut self, on: bool) { self.spec.persistent_captions = on; }
+
+    /// The focused band's height: 0 with persistent captions, the policy's (0 / 80 / 112),
+    /// else the legacy band.
     pub fn band_h(&self) -> f32 {
+        if self.spec.persistent_captions { return 0.0; }
         self.caption_policy.as_ref().map_or(card_row::LEGACY_BAND_H, crate::caption_policy::band_h)
     }
 
@@ -867,9 +876,9 @@ impl Grid {
         // Captions BENEATH the tiles: every caption of the frame is painted before any tile, so a
         // line that is still arriving (the band opening under the focused row) never paints over
         // the poster tops of the row below it. Draw order only; the band's timing is its own.
-        for (_, s, focused, paint) in &paints {
+        for (i, s, focused, paint) in &paints {
             if let Some(paint) = paint {
-                self.draw_caption(f, paint, *s, *focused);
+                self.draw_caption(f, src, *i, paint, *s, *focused);
             }
         }
         for (i, s, focused, paint) in paints {
@@ -969,7 +978,7 @@ impl Grid {
         let cards = pool::let_go_cards(&self.pop, src);
         let s = super::press_scale(self.pop_in(cards, src, i, Some(i)), i, pressed, f.cx);
         let Some(paint) = self.card_paint(f, p, src, cards, i, s, true, &self.bands.geometry()) else { return };
-        self.draw_caption(f, &paint, s, true);
+        self.draw_caption(f, src, i, &paint, s, true);
         self.draw_card(f, src, i, s, true, paint, None);
     }
 
@@ -996,29 +1005,27 @@ impl Grid {
         if super::lifted_out(f, self.entry, src, i) {
             return None;
         }
-        // The caption a card carries: the focused card's, at its band's progress; or, on a card the
-        // focus has left, the caption its row's band is still closing on, at that band's progress.
-        // Either way each line is revealed by the band's own progress and the room it has made
-        // (`card_row::line_reveal_for`), so the caption goes with the gap and never stands over
-        // the row under it.
-        let label = if focused {
-            let row = i / self.spec.cols;
-            let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
-            // The focused card left as a ghost that is still waiting for the landing to step: the
-            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
-            // focus reconciled to takes it up with the landing's first step.
-            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            Some((label, open))
+        // Cull before asking the source for any words. Persistent captions have a fixed band;
+        // a focused/closing legacy caption reserves the same room whether its words are empty.
+        let open = if focused {
+            Some(bands.iter().find(|band| band.row == i / self.spec.cols).map_or(0.0, |band| band.expansion))
         } else {
-            self.bands.closing()
-                .find(|&(row, card, _)| card == i && row == i / self.spec.cols)
-                .map(|(_, _, open)| (src.label(i), open))
-        }
-        .map(|(label, open)| label.revealed(self.band_h(), open, self.rise_below(cards, f.cx, src, i, bands)));
+            self.bands.closing().find(|&(row, card, _)| card == i && row == i / self.spec.cols)
+                .map(|(_, _, open)| open)
+        };
         let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
-        if !card_row::paint_visible(p, rect, s, label.is_some()) {
-            return None;
-        }
+        let visible = if self.spec.persistent_captions {
+            card_row::paint_visible_with_label_h(p, rect, s, super::TileLabel::SORT_BAND_H)
+        } else { card_row::paint_visible(p, rect, s, open.is_some()) };
+        if !visible { return None; }
+        // Persistent words stay in the source cache until draw_caption borrows them. Legacy bands
+        // retain their per-frame reveal, including the focused ghost's held caption.
+        let label = if self.spec.persistent_captions { None } else {
+            open.map(|open| {
+                let label = if focused && self.caption_held() { super::TileLabel::default() } else { src.label(i) };
+                label.revealed(self.band_h(), open, self.rise_below(cards, f.cx, src, i, bands))
+            })
+        };
         // an arriving card fades in
         let p = match self.landing.alpha(src.len(), i) {
             a if a < 1.0 => p.alpha(a),
@@ -1027,17 +1034,32 @@ impl Grid {
         Some(CardPaint { rect, p, label })
     }
 
-    /// The caption block under card `paint` (a label the card carries: the focused card's, or the
-    /// closing band's of a card the focus left), painted ahead of every tile ([`draw`](Self::draw)).
-    fn draw_caption<H: Host>(&self, f: &DrawFrame<'_, '_, H>, paint: &CardPaint, s: f32, focused: bool) {
-        let Some(label) = &paint.label else { return };
-        #[cfg(feature = "devtriggers")]
-        if focused {
-            crate::card_probe::begin_card();
-        }
-        #[cfg(not(feature = "devtriggers"))]
-        let _ = focused;
-        card_row::draw_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure);
+    /// Hands `read` the label card `i` carries, `None` when it carries none: with persistent
+    /// captions the source's own cached label (every card has one), otherwise the one `paint` holds
+    /// (the focused card's, or the closing band's of a card the focus left).
+    fn with_caption<H: Host, S: CardSource<H>, R>(
+        &self, src: &S, i: usize, paint: &CardPaint, read: impl FnOnce(&super::TileLabel) -> R,
+    ) -> Option<R> {
+        if self.spec.persistent_captions { Some(src.with_label(i, read)) }
+        else { paint.label.as_ref().map(read) }
+    }
+
+    /// The caption block under card `paint` ([`with_caption`](Self::with_caption)'s label), painted
+    /// ahead of every tile ([`draw`](Self::draw)). `focused` marks the lifted card: it opens the
+    /// `devtriggers` card probe, and with persistent captions it is the only card whose cached words
+    /// are not drawn static.
+    fn draw_caption<H: Host, S: CardSource<H>>(
+        &self, f: &DrawFrame<'_, '_, H>, src: &S, i: usize, paint: &CardPaint, s: f32, focused: bool,
+    ) {
+        self.with_caption(src, i, paint, |label| {
+            #[cfg(feature = "devtriggers")]
+            if focused { crate::card_probe::begin_card(); }
+            if self.spec.persistent_captions {
+                card_row::draw_persistent_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure, focused);
+            } else {
+                card_row::draw_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure);
+            }
+        });
     }
 
     /// The tile of card `i`, drawn after the captions: the art, its lift, its resume bar and the
@@ -1083,10 +1105,11 @@ impl Grid {
         self.draw_plan(src.len(), focus, &bands).into_iter().filter_map(|(role, i)| {
             let s = super::press_scale(self.pop_in(cards, src, i, focus), i, pressed, f.cx);
             let paint = self.card_paint(f, p, src, cards, i, s, role == DrawRole::Focus, &bands)?;
-            let label = paint.label?;
-            (label.title.is_some() || label.caption.is_some()).then(|| {
-                (i, label.lines().iter().flatten().map(|l| l.alpha).fold(0.0, f32::max) * paint.p.opacity())
-            })
+            self.with_caption(src, i, &paint, |label| {
+                (label.title.is_some() || label.caption.is_some()).then(|| {
+                    (i, label.lines().iter().flatten().map(|l| l.alpha).fold(0.0, f32::max) * paint.p.opacity())
+                })
+            }).flatten()
         }).collect()
     }
 
@@ -1104,11 +1127,12 @@ impl Grid {
         for (role, i) in self.draw_plan(src.len(), focus, &bands) {
             let s = super::press_scale(self.pop_in(cards, src, i, focus), i, pressed, f.cx);
             let Some(paint) = self.card_paint(f, p, src, cards, i, s, role == DrawRole::Focus, &bands) else { continue };
-            let Some(label) = paint.label else { continue };
-            let bottom = card_row::unscaled_bottom(paint.rect, s);
-            for line in label.lines().into_iter().flatten().filter(|l| l.alpha * paint.p.opacity() > 0.0) {
-                out.push((i, bottom + line.top, bottom + line.bottom, line.alpha * paint.p.opacity()));
-            }
+            self.with_caption(src, i, &paint, |label| {
+                let bottom = card_row::unscaled_bottom(paint.rect, s);
+                for line in label.all_lines().into_iter().flatten().filter(|l| l.alpha * paint.p.opacity() > 0.0) {
+                    out.push((i, bottom + line.top, bottom + line.bottom, line.alpha * paint.p.opacity()));
+                }
+            });
         }
         out
     }

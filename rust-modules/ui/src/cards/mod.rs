@@ -238,6 +238,12 @@ pub trait CardSource<H: Host> {
     fn art(&self, i: usize) -> Art<'_>;
     /// The block drawn under the FOCUSED card (asked for that one card per frame).
     fn label(&self, i: usize) -> TileLabel;
+    /// Scoped access to cached words without cloning their CStrings. Sources without a cache
+    /// keep the owned builder; the grid asks only after visibility has been established.
+    fn with_label<R>(&self, i: usize, draw: impl FnOnce(&TileLabel) -> R) -> R {
+        draw(&self.label(i))
+    }
+
     /// The amber resume fraction of card `i`, if it is partly watched.
     fn progress(&self, _i: usize) -> Option<f32> {
         None

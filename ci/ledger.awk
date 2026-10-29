@@ -2,7 +2,7 @@
 # Any number of Rust files per run (repo-relative paths):   awk -f ci/ledger.awk <path> <path> ...
 # It prints one line per PRODUCTION site, keyed so a ledger can hold the site as an exact multiset:
 #
-#     <path>::<enclosing fn>                 blocking, forks
+#     <path>::<enclosing fn>                 blocking, forks   (forks: a field under a cfg is keyed by its struct)
 #     <path>::<enclosing fn>::<spelling>     workers, globals   (LG_KEYSPELL=1)
 #     <path>::AppFx::<Variant>               fxlanes            (LG_MODE=arm; `AppFx::_` for an arm with no variant)
 #
@@ -205,8 +205,20 @@ function itemname(code,    s) {
   return ""
 }
 
-function enclosing() { return (top > 0) ? stack[top] : ((pending != "") ? pending : "?") }
-function pop_to(d) { while (top > 0 && sdepth[top] > d) top-- }
+# the name of the struct / enum / union / trait / impl a line opens, or "" (`impl` first: an `impl<const N: usize>`
+# header would otherwise read as the `const` item `N`)
+function contname(code,    s) {
+  if (code ~ /^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?((unsafe|default)[[:space:]]+)*impl[[:space:]<]/) {
+    s = code; sub(/^.*(^|[^A-Za-z0-9_])impl/, "impl", s); sub(/[[:space:]]*(where.*|\{.*)?$/, "", s)
+    gsub(/[[:space:]]+/, " ", s); return s
+  }
+  return itemname(code)
+}
+
+# the fn around the line; outside every fn, the container (a struct, enum, union, trait or impl) around it --
+# a field under a `#[cfg(..)]` has no fn, and its container is the only name it has; `?` when it has neither
+function enclosing() { return (top > 0) ? stack[top] : ((pending != "") ? pending : ((ctop > 0) ? cstack[ctop] : "?")) }
+function pop_to(d) { while (top > 0 && sdepth[top] > d) top--; while (ctop > 0 && csdepth[ctop] > d) ctop-- }
 
 function emit_calls(code, hit,    rest, m) {
   rest = code
@@ -301,7 +313,7 @@ function widen_site(    i, code, stmt, k) {
 }
 
 function scan_file(    i, code, scan, uline, name, k, hit, rest, p, txt, v, n, o, c, v0, v1, nf) {
-  depth = 0; top = 0; pending = ""; skipping = 0; pendfork = 0; inuse = 0
+  depth = 0; top = 0; pending = ""; skipping = 0; pendfork = 0; inuse = 0; ctop = 0; cpending = ""
   inarm = 0; armhead = ""; armok = 0; armdepth = 0; armopen = 0; abal = 0; headdone = 0
   if (MODE == "call") widen_site()
   for (i = 1; i <= N; i++) {
@@ -347,6 +359,7 @@ function scan_file(    i, code, scan, uline, name, k, hit, rest, p, txt, v, n, o
     if (match(code, /(^|[^A-Za-z0-9_])fn[[:space:]]+[A-Za-z0-9_]+/)) {
       name = substr(code, RSTART, RLENGTH); sub(/.*fn[[:space:]]+/, "", name); pending = name
     }
+    if (MODE == "fork" && cpending == "" && code ~ CONTSTART) cpending = contname(code)
 
     if (MODE == "call") {
       # the definition's own header is neither a site nor a mention; the rest of its line still is
@@ -377,9 +390,14 @@ function scan_file(    i, code, scan, uline, name, k, hit, rest, p, txt, v, n, o
     }
 
     o = gsub(/\{/, "{", code); c = gsub(/\}/, "}", code)
-    for (k = 0; k < o; k++) { depth++; if (pending != "") { top++; stack[top] = pending; sdepth[top] = depth; pending = "" } }
+    for (k = 0; k < o; k++) {
+      depth++
+      if (cpending != "") { ctop++; cstack[ctop] = cpending; csdepth[ctop] = depth; cpending = "" }
+      else if (pending != "") { top++; stack[top] = pending; sdepth[top] = depth; pending = "" }
+    }
     for (k = 0; k < c; k++) { depth--; pop_to(depth) }
     if (pending != "" && code ~ /;[[:space:]]*$/) pending = ""
+    if (cpending != "" && code ~ /;[[:space:]]*$/) cpending = ""
     if (armopen) { armdepth = depth; armopen = 0 }
   }
   flush_arm()
@@ -393,6 +411,8 @@ BEGIN {
   ARMFN = ENVIRON["LG_ARM_FN"]; ARMMATCH = ENVIRON["LG_ARM_MATCH"]; ARMOK = ENVIRON["LG_ARM_OK"]
   # the first line of an item: its keyword, after a visibility and any qualifiers
   ITEMKW = "^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?((unsafe|async|default|const|extern([[:space:]]+\"[^\"]*\")?)[[:space:]]+)*(fn|impl|mod|trait|struct|enum|union|type|static|const|use|extern|macro_rules!)([^A-Za-z0-9_]|$)"
+  # the first line of a container: its keyword, after a visibility and any qualifiers
+  CONTSTART = "^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?((unsafe|default)[[:space:]]+)*(struct|enum|union|trait|impl)([^A-Za-z0-9_]|$)"
   REFUSEONLY = ENVIRON["LG_REF_USE_ONLY"]
   ASRE = "(^|[^A-Za-z0-9_])as[[:space:]]"
   NBARE = split_pairs(ENVIRON["LG_BARE"], BIM, BSI)

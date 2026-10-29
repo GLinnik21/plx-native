@@ -65,6 +65,7 @@ struct Cards {
     first: usize,
     /// Every card carries a two-line caption (the Under posters setting's title over its details).
     captioned: bool,
+    sort_caption: bool,
     /// ...with the title alone (the 80 px Under posters band, no details line).
     title_only: bool,
     /// ...with the details line alone (the stored default: title off, Year · Length).
@@ -79,7 +80,7 @@ const TILE_PAINTED: u64 = 9999;
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, title_only: false, details_only: false, elem_calls: Default::default() }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, sort_caption: false, title_only: false, details_only: false, elem_calls: Default::default() }
     }
 }
 
@@ -101,14 +102,16 @@ impl CardSource<FixtureHost> for Cards {
         Art::Poster(None)
     }
     fn label(&self, i: usize) -> TileLabel {
-        if self.captioned {
+        let mut label = if self.captioned {
             TileLabel::from_lines([
                 (!self.details_only).then(|| format!("Title {}", self.elems[i])),
                 (!self.title_only).then(|| "2005 \u{b7} 1h 40m".into()),
             ])
         } else {
             TileLabel::default()
-        }
+        };
+        if self.sort_caption { label.sort_info = std::ffi::CString::new("100%").ok(); }
+        label
     }
     fn more(&self) -> bool {
         self.more
@@ -5138,4 +5141,97 @@ fn the_rows_in_view_and_their_hold_reach_fit_the_rows_the_store_keeps() {
     // and the premise of ROWS_IN_VIEW_MAX: the fixed pitch of a row, whole rows that fit, plus two cut
     let pitch = crate::card_row::ROW_PITCH_FIXED;
     assert!(ROWS_IN_VIEW_MAX as f32 * pitch >= crate::consts::SCR_H + pitch, "{ROWS_IN_VIEW_MAX} rows of {pitch}px");
+}
+
+#[test]
+fn persistent_grid_captions_draw_every_visible_card_and_keep_focus_and_next_row_clear() {
+    let _guard = plx_base::testlock::serial();
+    let mut r = Rig::<Grid>::new(30);
+    r.src.captioned = true; r.src.sort_caption = true;
+    r.sect.set_persistent_captions(true);
+    r.land_focus(100, By::Dir); r.run(120);
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    let lines = r.sect.caption_lines_probe(&f, f.painter, &r.src);
+    for i in 0..6 {
+        assert_eq!(lines.iter().filter(|(index, ..)| *index == i).count(), 3,
+            "each poster is captioned, not just the focused one: {i}");
+    }
+    let runs = crate::draw_census::capture_runs(|| {
+        let mut frame = DrawFrame::new(&cx, Painter::recording());
+        let p = frame.painter;
+        r.sect.draw(&mut frame, p, &r.src);
+    });
+    assert!(runs.iter().any(|run| run.text == "100%"), "a fitting sort value has no ellipsis");
+    assert!(runs.iter().any(|run| run.text == "Title 101"), "an unfocused fitting title has no ellipsis");
+    let c0 = r.sect.place(&cx, &r.src, &100, At::SpringTarget).unwrap();
+    let c6 = r.sect.place(&cx, &r.src, &106, At::SpringTarget).unwrap();
+    let last = lines.iter().filter(|(i, ..)| *i == 0).map(|(_, _, bottom, _)| *bottom).fold(0.0, f32::max);
+    let next_lifted_top = c6.rest_rect.y;
+    assert!(last < next_lifted_top, "last caption stays above even a popped next row");
+    assert!((c0.rest_rect.w / GRID.style.focus_scale - GRID.style.w).abs() < 0.01);
+    assert!((c0.rest_rect.h / GRID.style.focus_scale - GRID.style.h).abs() < 0.01);
+    let first_top = c0.rest_rect.y;
+    r.land_focus(101, By::Dir); r.run(120);
+    assert_eq!(r.focus, Some(r.key(101)));
+    assert_eq!(r.sect.place(&r.cx(), &r.src, &100, At::SpringTarget).unwrap().rest_rect.y, first_top,
+        "moving horizontally cannot change the permanent row pitch");
+    r.sect.set_persistent_captions(false);
+    r.run(120);
+    let cx = r.cx(); let f = DrawFrame::new(&cx, Painter::recording());
+    assert!(r.sect.caption_probe(&f, f.painter, &r.src).iter().all(|(index, _)| *index == 1),
+        "turning the mode off restores focused-only captions");
+}
+
+#[test]
+fn plain_sort_caption_uses_the_regular_details_face() {
+    let _guard = plx_base::testlock::serial();
+    for (value, bold) in [("25 июн. 2026", false), ("2 ч 14 мин", false), ("64%", true)] {
+        let label = TileLabel { sort_info: Some(std::ffi::CString::new(value).unwrap()),
+            sort_bold: bold,
+            ..TileLabel::from_lines([Some("Film".into()), Some("2026".into())]) };
+        let runs = crate::draw_census::capture_runs(|| crate::card_row::draw_label(
+            Painter::recording(), Rect::new(100.0, 100.0, GRID.style.w, GRID.style.h),
+            1.0, &GRID.style, &label, &FixtureMeasure));
+        let value_run = runs.iter().find(|run| run.text == value).unwrap();
+        assert_eq!(value_run.bold, bold, "only ratings have emphasis");
+        assert_eq!(value_run.size, if bold { crate::theme::size::LABEL } else { crate::theme::size::CAPTION });
+    }
+}
+
+#[test]
+fn review_persistent_grid_borrows_labels_only_after_culling() {
+    struct CachedCards {
+        cards: Cards,
+        label: TileLabel,
+        reads: std::cell::RefCell<Vec<usize>>,
+    }
+    impl CardSource<FixtureHost> for CachedCards {
+        fn len(&self) -> usize { self.cards.len() }
+        fn elem(&self, i: usize) -> u32 { self.cards.elem(i) }
+        fn index_of(&self, e: &u32) -> Option<usize> { self.cards.index_of(e) }
+        fn art(&self, _: usize) -> Art<'_> { Art::Poster(None) }
+        fn label(&self, _: usize) -> TileLabel { panic!("persistent painting must borrow the cached label") }
+        fn with_label<R>(&self, i: usize, read: impl FnOnce(&TileLabel) -> R) -> R {
+            self.reads.borrow_mut().push(i);
+            read(&self.label)
+        }
+    }
+    let _guard = plx_base::testlock::serial();
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    let _discovery = crate::frame::backdrop::discover(sources);
+    let view = FixtureView::default();
+    let cx = cx9(&view, 0, 1.0, None);
+    let painter = Painter::root();
+    let frame = DrawFrame::new(&cx, painter);
+    let mut grid = Grid::new(ENTRY, GRID.columns(GRID.cols, GRID.style, 5000.0));
+    grid.set_persistent_captions(true);
+    let src = CachedCards { cards: Cards::new((100..130).collect(), false),
+        label: TileLabel::titled("Cached", "1997"), reads: Default::default() };
+    assert!(grid.caption_probe(&frame, painter, &src).is_empty());
+    assert!(src.reads.borrow().is_empty(), "culled tiles must not ask for words");
+    grid.set_columns(GRID.cols, GRID.style, crate::consts::MARGIN_X);
+    assert!(!grid.caption_probe(&frame, painter, &src).is_empty());
+    assert!(!src.reads.borrow().is_empty(), "visible captions use the borrowed path");
 }

@@ -15,5 +15,8 @@
   "under_posters.reset": "Скінуць па змаўчанні",
   "under_posters.reset_detail": "Год і працягласць, без назвы.",
   "under_posters.sample_title": "Фільм",
-  "under_posters.sample_genre": "Драма"
+  "under_posters.sample_genre": "Драма",
+  "under_posters.show_sort_info": "Паказваць звесткі сартавання",
+  "under_posters.sort_info_detail": "Назва, год і сартаванне ў бібліятэцы фільмаў.",
+  "under_posters.default_version": "Прадвызначаная"
 }

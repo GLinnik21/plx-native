@@ -207,13 +207,13 @@ Captures are the check — see the `ui-sim` and `which-tier` skills, and `../../
 ## Under posters settings page (library redesign)
 
 `SettingsPage::UnderPosters` (ScreenId 113, `settings_under_posters.rs`) is pushed from Settings >
-Libraries, which now has two rows (Favorite libraries, Under posters). The page has three rows (Title switch, Details › with the current line on the right, Reset to default) and a framed preview (a still row of three posters from the library the Library last showed, `cards::SampleRow`, the middle one lifted and captioned, a blank face carrying no word); Details pushes `SettingsPage::UnderPostersDetails` (ScreenId 114, `DetailsPage` in the same file), the picker of the one details line (Nothing first, a sample on each row), which pops on a durable write. `settings::caption_policy_of`
+Libraries, which now has two rows (Favorite libraries, Under posters). The page has four rows (Title switch, Details › with the current line on the right, Show sort information switch, Reset to default) and a framed preview (a still row of three posters from the library the Library last showed, `cards::SampleRow`, the middle one lifted and captioned, a blank face carrying no word); Details pushes `SettingsPage::UnderPostersDetails` (ScreenId 114, `DetailsPage` in the same file), the picker of the one details line (Nothing first, a sample on each row), which pops on a durable write. `settings::caption_policy_of`
 maps the stored `UnderPosters` to the ui `CaptionPolicy`. **EVERY poster tile reads that one policy through
 `registry::captions`** (`policy()` with the one `TEST_UNDER_POSTERS` test override, `label()` the one builder of a focused
 poster's `[title, details]`, `shelf_label()` for Home's and Recommended's shelves): the Library grid, the Collections page, the Watchlist,
 Home's shelves, Recommended's poster shelves, **Search's poster rows** (Movies, Shows, Collections; a result from a server that is not the
 household's own is credited after its details line, `CaptionFacts::source`), **the person page's filmography**, **Detail's Related and
-collection shelves** and **the Collection screen's members** (an episode member's poster already prints its "S3 · E4" mark, so its caption names the show instead: `CaptionFacts::address_on_art`). A grid page hands its grid the policy through `StackPage::caption_policy`
+collection shelves** and **the Collection screen's members** (an episode member's poster already prints its "S3 · E4" mark, so its caption names the show instead: `CaptionFacts::address_on_art`). The primary movie grid is the exception when Show sort information is on: it uses the persistent title/year/sort block described below. A grid page otherwise hands its grid the policy through `StackPage::caption_policy`
 (Stack hands it to a `Body::Shelf` as well as a `Body::Grid`); Detail owns its shelves and sets the policy on Related and the
 collection each step. **Landscape tiles and headshots are not posters and do not read it**: the Library's Episodes listing, Search's Episode stills and Person
 headshots, Detail's Extras and Cast, and Recommended's landscape rows keep the legacy block under every setting (the Episodes listing's grid is handed
@@ -232,3 +232,13 @@ Library grid's episodes keep their own wording (title and release date). **A col
 size under every details kind but Nothing, the Title switch governs its title line, and a name its face cuts (`registry::tile_facts::face_cuts_name`) rides the details line
 ("Name · 7 films") when the title line is off; the Collections page has no caption transform of its own. The Library page is the full grid under one
 header row (`library/header.rs`); the hub shelves live on the Recommended page (`library/recommended.rs`), which the header's Recommended control pushes.
+
+The optional **Show sort information** switch is also in `UnderPosters`, saved per profile and off
+by default. The primary movie-library grid uses persistent title/year/sort-fact captions while it
+is on (`registry::sort_info`); other poster surfaces keep the Title/Details policy above. Its
+fixed pitch comes from the shared grid, not the focused row's collapsing band. The settings
+preview illustrates the persistent mode with each sample's duration. It never adds sort choices.
+Sort dates use the interface language's abbreviated month (an English TV numeric-format locale
+does not override Russian month names); ordinary metadata uses the regular details face,
+while ratings retain emphasis. Critic and audience marks follow the server's image state through
+the shared `captions::rating_mark`: fresh or hollow fruit and the audience crowd, with the original verdict tints.

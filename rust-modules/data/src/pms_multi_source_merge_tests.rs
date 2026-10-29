@@ -1106,7 +1106,7 @@ fn mark_watched_on_a_merged_tile_does_not_flip_to_the_other_copy() {
     assert_eq!(rks(&o.state, 0), ["own"], "between Done and the refetch");
     assert!(hub_item(&o.state, 0, 0).is_some_and(|m| m.watched));
     // a refused origin write: the refetch's answer puts the facts back
-    let back = ViewEdit::Facts { watched: false, unwatched: false, resume_ms: 0 };
+    let back = ViewEdit::Facts { watched: false, unwatched: false, resume_ms: 0, sort: None };
     assert!(edit_item(&mut o.state, &ViewAt::leaf(h[0].0, "own"), back));
     assert_eq!(rks(&o.state, 0), ["own"], "a failed origin write leaves the tile where it was");
     reset(&mut o.state, &o.adapter);

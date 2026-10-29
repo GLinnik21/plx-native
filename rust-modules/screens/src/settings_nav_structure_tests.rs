@@ -221,7 +221,7 @@ fn the_details_picker_opens_seated_on_the_stored_line_not_its_first_row() {
     let _g = plx_base::testlock::serial();
     let _sess = seated_scratch_session("nav-walk-under-posters-seat");
     for stored in [UnderPostersDetails::Genre, UnderPostersDetails::AgeRatingScore, UnderPostersDetails::None] {
-        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: stored });
+        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: stored, show_sort_info: false });
         let (d, rig, id) = opened();
         let mut w = Walk { d, rig, id, ms: 0 };
         w.ms = settle_frames(&mut w.d, &mut w.rig, 16);
@@ -336,7 +336,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     // Under posters: Details, the fourth ladder line.
     {
         use ses::{UnderPosters, UnderPostersDetails};
-        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore });
+        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore, show_sort_info: false });
         let items = super::under_posters::nav_items_for_test();
         assert_eq!(items.len(), 1, "{items:?}");
         let (row, dest) = items[0];
@@ -428,7 +428,7 @@ fn the_under_posters_page_walks_title_details_reset_and_back_with_keys() {
 
     // The Title switch.
     w.press(Key::Ok);
-    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::YearLength }], "OK on Title asks for the switch on");
+    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::YearLength, show_sort_info: false }], "OK on Title asks for the switch on");
     assert!(plx_media::route::under_posters().title);
     assert!(w.on("title=true"), "the page reads the stored value: {}", path(&w.d, w.id));
 
@@ -450,7 +450,7 @@ fn the_under_posters_page_walks_title_details_reset_and_back_with_keys() {
     w.press(Key::Down);
     assert_eq!(w.elem(), Some(genre), "Down moves to the next line (Genre)");
     w.press(Key::Ok);
-    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::Genre }], "the pick is one write, title kept");
+    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false }], "the pick is one write, title kept");
     assert!(w.on("under_posters sel=2 "), "a durable pick pops the picker onto the Details row: {}", path(&w.d, w.id));
     assert_eq!(plx_media::route::under_posters().details, UnderPostersDetails::Genre);
     assert!(w.on("details=1"), "the Details row reads the pick (Genre, ladder index 1): {}", path(&w.d, w.id));
@@ -460,12 +460,16 @@ fn the_under_posters_page_walks_title_details_reset_and_back_with_keys() {
     w.press(Key::Up);
     assert_eq!(w.elem(), Some(1), "Up from Details reaches Title");
     w.press(Key::Ok);
-    assert_eq!(w.answer(), [UnderPosters { title: false, details: UnderPostersDetails::Genre }], "a Title toggle after the pick keeps the picked details");
+    assert_eq!(w.answer(), [UnderPosters { title: false, details: UnderPostersDetails::Genre, show_sort_info: false }], "a Title toggle after the pick keeps the picked details");
 
     // Reset restores both.
     w.press(Key::Down);
     w.press(Key::Down);
-    assert_eq!(w.elem(), Some(30), "Down from Details reaches Reset");
+    assert_eq!(w.elem(), Some(3), "Down from Details reaches Sort information");
+    w.press(Key::Ok);
+    assert!(w.answer()[0].show_sort_info);
+    w.press(Key::Down);
+    assert_eq!(w.elem(), Some(30), "Down from Sort information reaches Reset");
     w.press(Key::Ok);
     assert_eq!(w.answer(), [UnderPosters::DEFAULT], "Reset asks for the default of both");
     assert_eq!(plx_media::route::under_posters(), UnderPosters::DEFAULT);

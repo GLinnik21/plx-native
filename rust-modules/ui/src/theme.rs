@@ -1218,7 +1218,7 @@ pub const TINT_WHITE: [f32; 4] = WHITE;
 // ── Review-score marks (detail hero ratings row) ─────────────────────────────
 // These used to be the ONE place the palette borrowed someone else's colour, justified by the
 // badge being a BRAND MARK. That justification is gone with the marks: Rotten Tomatoes' fruit,
-// seal and popcorn tub were removed 2026-08-02 (no licensing route exists, and a redraw is the
+// seal and popcorn tub were removed 2026-08-02 (no public licence, none held, and a redraw is the
 // infringement pattern, not a defence), and every provider is NAMED in text instead. So these are
 // now our own semantic colours for a VERDICT, and only two still sit near a brand's hue because a
 // ripe tomato that isn't red has stopped being a tomato.

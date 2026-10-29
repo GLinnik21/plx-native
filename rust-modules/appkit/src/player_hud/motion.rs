@@ -6,7 +6,8 @@
 //! `HudMotion::step` and `note_transport` still sample the transport globals themselves: they run at
 //! input and Tick time, and moving them onto a [`super::model::HudModel`] sampled at prepare time
 //! would shift them by a frame. The prewarm ([`ClockWarm::queue`]) is a draw-side read and so takes
-//! the model.
+//! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
+//! because the app's snapshot is a frame old by then.
 use super::classic::fmt_time;
 use super::geometry::GROUP_ROW;
 use super::model::HudModel;
@@ -50,6 +51,12 @@ impl ClockWarm {
     pub fn queue(&mut self, model: &HudModel) {
         let pos = display_pos_ns(model.loading, model.seek_display_ns, model.scrub_ns, model.playpos_ns);
         self.queue_at(pos, model.duration_ns);
+    }
+
+    /// The (elapsed, remaining) seconds the last queue was formatted for.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn warmed_for_test(&self) -> Option<(i64, i64)> {
+        self.key
     }
 
     /// Queue the clocks [`draw_playbar`](super::classic::draw_playbar) draws at `pos_ns` of

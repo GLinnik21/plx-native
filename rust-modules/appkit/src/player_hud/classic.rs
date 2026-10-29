@@ -256,7 +256,7 @@ impl FailureReadout {
 /// pointer grab zone. Placed by `PlayerScreen::place` and registered from it as the LOWEST stop, so
 /// every control over the band outranks it (issue #162); it was `scrub_hit`'s own rectangle until phase 12 made
 /// the hit map the one thing that tests it.
-pub fn scrub_hit_rect() -> Rect {
+pub(super) fn scrub_hit_rect() -> Rect {
     Rect::new(SB_X, SCR_H - 270.0, sb_w(), 160.0)
 }
 
@@ -267,7 +267,7 @@ pub fn scrub_hit_rect() -> Rect {
 /// [`ControlSlot::item_rect`]. This one region used to BE the stand-ins' registered stop, which
 /// left *Watch Credits* (drawn left of it) unclickable and made a click on *Next Episode* land on
 /// item 0, *Watch Credits* (issue #162's audit).
-pub fn ctrl_row_hit_rect() -> Rect {
+pub(super) fn ctrl_row_hit_rect() -> Rect {
     let w = ctrl_row_w();
     Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
 }
@@ -353,19 +353,10 @@ pub fn icon_hit(slot: ControlSlot, cx: f32, cy: f32) -> Option<i32> {
 // (`scrub_hit` stood here — the scrub band's own `(cx,cy) -> Option<frac>` predicate, `icon_hit`'s
 // twin for the bar. Restructure phase 12 (PX-PLAYER) retired it: the band is a registered `Stop`
 // now ([`scrub_hit_rect`], the SAME rectangle it tested), so the shared hit map answers "is the
-// pointer on the bar" and the screen asks only "where along it" — which is `scrub_frac_x` below,
-// the half that was always x-only. Deleting it is also what makes `ci/check-deps.sh`'s `hittest`
+// pointer on the bar" and the screen asks only "where along it" — `HudGeometry::scrub_frac`, the
+// half that was always x-only. Deleting it is also what makes `ci/check-deps.sh`'s `hittest`
 // gate meaningful rather than merely satisfied: there is no raw hit-tester left for `app/` to
 // call.)
-
-/// **Where along the bar a pointer at `mx` is pointing**, `0..1`.
-///
-/// X only, on purpose: an engaged drag tracks the pointer even when it wanders off the band
-/// vertically, which is why `PlayerScreen::handle_drag` never re-tests the hit once a click has
-/// seated the gesture.
-pub fn scrub_frac_x(mx: f32) -> f32 {
-    ((mx - SB_X) / sb_w()).clamp(0.0, 1.0)
-}
 
 // ---- the rail carries NO marks ------------------------------------------------------------
 // Nothing is drawn on the scrubber but the track, the watched fill and the playhead. Two kinds of
@@ -498,7 +489,10 @@ pub(super) fn draw_player_title(
             }
         }
         if offset > 0.0 {
-            p.text(title, SB_X - offset, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+            // an Arabic or Hebrew title's end is on its left: it moves right instead
+            let rtl = plx_gfx::text::is_rtl_paragraph(&label);
+            let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
+            p.text(title, SB_X + x, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
             return;
         }
     } else {

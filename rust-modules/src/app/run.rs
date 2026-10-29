@@ -395,7 +395,9 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // draw it a frame late. Ahead of everything that reads the model: the clock fingerprint just
     // below (the present gate's input) and, on a presenting frame, the draw (`draw`). The
     // dispatcher's own `prepare` pass runs earlier, inside `bridge::frame_with_tap`, and so reads
-    // the PREVIOUS frame's snapshot exactly as it reads the previous frame's `busy` and `transport`.
+    // the PREVIOUS frame's snapshot exactly as it reads the previous frame's `busy` and `transport` —
+    // except `scrub_ns`, which the page's `prepare` takes from its own scrub (a held scrub moves the
+    // target by seconds a frame, and the clock prewarm warms only the displayed second and the next).
     if fr.player {
         let model = hud_model(&app.player.session);
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
@@ -1222,8 +1224,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // that is open and returned; the fall-through, which a surface cannot perform, is
         // `PlayerReq::Transport` — see `screens::player::overlay`'s module doc.)
         // (The player's UP/DOWN arm stood here. It walked the HUD ring on the mounted
-        // `PlayerScreen`'s own `hud`/`scrub` — which the page also does, from `key_updown`, for the
-        // same key — and was unreachable behind `tree_owns_key` above from the moment the page
+        // `PlayerScreen`'s own `hud`/`scrub` — which the page also does, through `Screen::links`, the
+        // groups' edge rules and `answer_edge`, for the same key — and was unreachable behind `tree_owns_key` above from the moment the page
         // answered `FocusSource::Engine`. Deleted in phase 12, PX-PLAYER.)
         // `Route::Search` is deliberately absent here (phase 6/7 Search cutover, mirroring
         // `Route::Login | Route::Profiles` above): Search is unconditionally an OWNED screen
@@ -4247,7 +4249,14 @@ mod lifecycle_regression_tests {
         use std::sync::atomic::Ordering::Relaxed;
         let _serial = plx_base::testlock::serial();
         let app = app();
+        use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
         let _paused = TransportPaused::set(true);
+        let (size, position, tone) =
+            (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::player::subtitle_tone());
+        let state = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
+        plx_media::route::restore_subtitle_size(SubtitleSize::Large);
+        plx_media::route::restore_subtitle_position(SubtitlePosition::High);
+        plx_media::player::restore_subtitle_tone(SubtitleTone::Charcoal);
         let (tx, shared) = (&plx_media::player::TX, &plx_media::player::SHARED);
         let before = (
             tx.scrub_ns.load(Relaxed),
@@ -4263,6 +4272,10 @@ mod lifecycle_regression_tests {
         shared.desired_sub_idx.store(3, Relaxed);
         let model = hud_model(&app.player.session);
         // restore before grading: a failed assertion must not leak a scrub target into the next test
+        plx_media::player::restore_state_for_test(state);
+        plx_media::route::restore_subtitle_size(size);
+        plx_media::route::restore_subtitle_position(position);
+        plx_media::player::restore_subtitle_tone(tone);
         tx.scrub_ns.store(before.0, Relaxed);
         shared.playpos_ns.store(before.1, Relaxed);
         shared.seek_display_ns.store(before.2, Relaxed);
@@ -4273,13 +4286,35 @@ mod lifecycle_regression_tests {
         assert_eq!(model.playpos_ns, 7_000_000_000, "playpos_ns()");
         assert_eq!(model.seek_display_ns, 9_000_000_000, "seek_display_ns()");
         assert_eq!(model.duration_ns, 100_000_000_000, "duration_ns()");
-        assert_eq!(model.loading, plx_media::player::loading(&app.player.session), "loading(ps)");
+        assert!(model.loading, "loading(ps): Buffering is a busy state");
         assert_eq!(model.sub_sel, 3, "desired_sub_idx()");
         assert_eq!(model.bitmap_key, None, "no image cue is stored, so none is active");
-        assert_eq!(model.sub_size, plx_media::route::subtitle_size(), "subtitle_size()");
-        assert_eq!(model.sub_position, plx_media::route::subtitle_position(), "subtitle_position()");
-        assert_eq!(model.sub_tone, plx_media::player::subtitle_tone(), "subtitle_tone()");
+        assert_eq!(model.sub_size, SubtitleSize::Large, "subtitle_size()");
+        assert_eq!(model.sub_position, SubtitlePosition::High, "subtitle_position()");
+        assert_eq!(model.sub_tone, SubtitleTone::Charcoal, "subtitle_tone()");
         assert!((model.bitmap_by_key)(1).is_none(), "the lookup is the media function, over an empty store");
+    }
+
+    /// **An app-side write to the player's ring is paired with an engine re-seat.** `nav.focus` is
+    /// the group the engine sits on; the headless pin writes it from outside a step, so without
+    /// `reseat_player_focus` the engine would stay on the scrubber and the next OK would toggle
+    /// play/pause on a HUD that shows the ring on a tab.
+    #[test]
+    fn pinning_the_headless_hud_on_a_tab_seats_the_engine_there_too() {
+        use plx_appkit::player_hud::{geometry::GROUP_TABS, ELEM_SCRUB, ELEM_TAB_BASE};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        pin_headless_hud(&mut app, 16, Some(0));
+        for now in [32, 48, 64] {
+            frame(&mut app, now);
+        }
+        let player = super::super::bridge::player(&app.pages).expect("the player page is mounted");
+        assert_eq!(player.hud.nav.focus, GROUP_TABS, "the cursor the pin wrote");
+        assert_eq!(player.hud.nav.tab, 0);
+        assert_ne!(app.pages.focus().map(|k| k.elem), Some(ELEM_SCRUB), "the engine left the scrubber");
+        assert_eq!(app.pages.focus().map(|k| k.elem), Some(ELEM_TAB_BASE), "…for the tab the pin named");
     }
 
     #[test]

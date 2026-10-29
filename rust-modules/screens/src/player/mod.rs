@@ -214,8 +214,13 @@ impl PlayerScreen {
         // tabs away and floats the card, and a tap that only raises the transport must not blink
         // them. The bar shows the same position either way (the seed IS the playhead); the ramp
         // retires `reveal` on real travel and the preview is published from that frame.
-        let live = if self.scrub.reveal { -1 } else { self.scrub.ns };
-        plx_media::player::TX.scrub_ns.store(live, Relaxed);
+        plx_media::player::TX.scrub_ns.store(self.published_scrub(), Relaxed);
+    }
+
+    /// The scrub target [`publish`](Self::publish) writes to `TX.scrub_ns`, and so what the draw's
+    /// `HudModel::scrub_ns` reads: -1 while nothing has travelled.
+    fn published_scrub(&self) -> i64 {
+        if self.scrub.reveal { -1 } else { self.scrub.ns }
     }
 
     /// **A teardown or an engine reload has retired the transport's mailboxes.**
@@ -1649,6 +1654,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
         let ps = H::session(cx);
         if self.transport && self.hud_drawn(ps, cx.tick.ms) {
+            // `model` is the app's snapshot of the PREVIOUS frame, and a held scrub moves the
+            // target by seconds a frame: the one field the page already holds fresher (its `Tick`
+            // ran before this pass), so the prewarm and the draw agree on it.
+            self.model.scrub_ns = self.published_scrub();
             self.clock_warm.queue(&self.model);
         }
     }
@@ -2329,6 +2338,33 @@ mod step_ladder_tests {
         page.transport = true;
         Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
         assert!(plx_gfx::text::prewarm_pending(), "the playbar's clocks were left for the draw to rasterise");
+        plx_gfx::text::reset_prewarm_for_test();
+    }
+
+    /// **The prewarm reads the scrub this frame's draw reads.** `self.model` is the app's snapshot of
+    /// the PREVIOUS frame, but a held scrub moves its target by seconds a frame, and the clocks warm
+    /// only the displayed second and the next: a prewarm one frame behind the target misses every
+    /// clock the draw then rasterises after the back-buffer wait. The page's own scrub, which the
+    /// `Tick` before `prepare` has already advanced, is the value the draw publishes.
+    #[test]
+    fn prepare_warms_the_clocks_for_the_scrub_the_draw_will_show_not_last_frames() {
+        let _g = plx_base::testlock::serial();
+        plx_gfx::text::reset_prewarm_for_test();
+        const S: i64 = 1_000_000_000;
+        let mut budget = Budget::new();
+        let cx = cx();
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        page.set_hud_policy(HudPolicy::Lifted);
+        page.model.playpos_ns = 10 * S;
+        page.model.duration_ns = 7_200 * S;
+        page.model.scrub_ns = -1;
+        page.scrub.ns = 600 * S;
+        Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
+        assert_eq!(page.clock_warm.warmed_for_test(), Some((600, 6_600)), "the scrub target's second");
+        page.scrub.ns = -1;
+        Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
+        assert_eq!(page.clock_warm.warmed_for_test(), Some((10, 7_190)), "no scrub: the playhead's");
         plx_gfx::text::reset_prewarm_for_test();
     }
 

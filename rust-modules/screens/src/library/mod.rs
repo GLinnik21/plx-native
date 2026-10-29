@@ -613,12 +613,14 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
+        let persistent = self.kind == SecKind::Movie && self.listed == plx_data::browse::LibraryType::Primary
+            && crate::registry::captions::show_sort_info();
         let band_h = self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h);
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
-        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h)
+        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h).with_sort_info(persistent)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h)
+        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h).with_sort_info(persistent)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);

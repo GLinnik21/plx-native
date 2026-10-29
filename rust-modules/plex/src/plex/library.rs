@@ -156,19 +156,19 @@ impl Client {
     /// lists (`genre`/`year`/`decade`/`collection`/…, rows carry the tag id in `key` + a
     /// ready-made `fastKey` listing URL) and the `firstCharacter` per-letter index.
     /// → `.directory[]`.
-    /// `metadata_type` scopes genre values and letter counts to the same flat listing as
-    /// `/all?type=`. Without it a TV library's counts describe shows even in episode view.
+    /// `filters` are the wire terms of the flat listing the values describe, in the order its
+    /// `/all` request sends them (`type=`, `unwatched`/`unwatchedLeaves`, `genre`, see
+    /// [`section_items_query`](Self::section_items_query)): `type=` scopes genre values and letter
+    /// counts to the same flat listing as `/all?type=` (without it a TV library's counts describe
+    /// shows even in episode view), and the filters scope the counts to what the grid shows, so a
+    /// letter's running sum is the offset of that letter's first title in the filtered listing.
     pub fn section_directory(
         &self,
         section_key: i64,
         directory: &str,
-        metadata_type: Option<i64>,
+        filters: &[(String, String)],
     ) -> Option<MediaContainer> {
-        let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/{directory}"));
-        if let Some(metadata_type) = metadata_type {
-            query = query.int("type", metadata_type);
-        }
-        self.get_json(&query.build())
+        self.get_json(&section_directory_path(section_key, directory, filters))
     }
 
     /// A SHOW's language settings (its Advanced dialog in Plex Web: `audioLanguage`,
@@ -421,6 +421,17 @@ fn guid_lookup_paths(kind: GuidKind, guids: &[String]) -> Vec<(String, Vec<Strin
         .collect()
 }
 
+/// The path of a section's secondary directory, `filters` appended the way
+/// [`Client::section_items_query`] appends its own (one `QueryBuilder::str` per pair, in order), so
+/// the grid page and the directory it is read against are built by the same call shape.
+fn section_directory_path(section_key: i64, directory: &str, filters: &[(String, String)]) -> String {
+    let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/{directory}"));
+    for (k, v) in filters {
+        query = query.str(k, v);
+    }
+    query.build()
+}
+
 /// PMS's numeric `type` for a `plex://<kind>/<id>` guid — the metadata provider's own kind, which is
 /// the one thing about an item a guid states outright.
 ///
@@ -445,6 +456,23 @@ mod library_guid_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn terms(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    /// A directory read without terms is byte-identical to what it always was, and the terms
+    /// follow in the order given, as `/all` sends them.
+    #[test]
+    fn a_directory_path_carries_the_listings_terms_in_order() {
+        assert_eq!(section_directory_path(1, "firstCharacter", &[]), "/library/sections/1/firstCharacter");
+        assert_eq!(section_directory_path(2, "genre", &terms(&[("type", "2")])), "/library/sections/2/genre?type=2");
+        assert_eq!(section_directory_path(1, "firstCharacter", &terms(&[("unwatched", "1"), ("genre", "7")])),
+            "/library/sections/1/firstCharacter?unwatched=1&genre=7");
+        assert_eq!(
+            section_directory_path(2, "firstCharacter", &terms(&[("type", "3"), ("unwatchedLeaves", "1")])),
+            "/library/sections/2/firstCharacter?type=3&unwatchedLeaves=1");
+    }
 
     #[cfg(feature = "devtriggers")]
     #[test]

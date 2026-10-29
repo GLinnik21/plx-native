@@ -15,5 +15,8 @@
   "under_posters.reset": "Repor predefinição",
   "under_posters.reset_detail": "Ano e duração, sem título.",
   "under_posters.sample_title": "Filme",
-  "under_posters.sample_genre": "Drama"
+  "under_posters.sample_genre": "Drama",
+  "under_posters.show_sort_info": "Mostrar informações de ordenação",
+  "under_posters.sort_info_detail": "Título, ano e ordem na biblioteca de filmes.",
+  "under_posters.default_version": "Principal"
 }
