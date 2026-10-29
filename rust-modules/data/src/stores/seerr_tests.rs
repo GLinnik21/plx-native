@@ -259,3 +259,43 @@ fn a_job_that_panics_still_answers() {
     store.pump(input.profile());
     assert_eq!(store.answer(&Slot::Search), Some(&Answer::Failed(SeerrError::Transport)));
 }
+
+#[test]
+fn a_typed_in_ask_waits_for_the_term_to_settle_and_a_repeat_is_nothing_new() {
+    let io = Script::new(signed_in(), vec![Ok(titles(1))]);
+    let mut store = store(&io);
+    let input = WatchlistInput::for_test(1);
+    store.want(Slot::Search, search("a"));
+    for _ in 0..SETTLE_FRAMES - 1 {
+        assert!(store.take_due().is_none(), "not before the term has stood");
+    }
+    store.want(Slot::Search, search("ab"));
+    assert!(store.take_due().is_none(), "a new term starts the wait again");
+    for _ in 0..SETTLE_FRAMES - 2 {
+        assert!(store.take_due().is_none());
+    }
+    let (slot, op) = store.take_due().expect("settled");
+    assert_eq!((slot.clone(), op.clone()), (Slot::Search, search("ab")));
+    store.ask(slot, op, &input);
+    assert_eq!(store.asked(&Slot::Search), Some(&search("ab")));
+    store.want(Slot::Search, search("ab"));
+    for _ in 0..SETTLE_FRAMES * 2 {
+        assert!(store.take_due().is_none(), "the term already asked is not asked again");
+    }
+}
+
+#[test]
+fn unwanting_a_slot_forgets_its_wait_its_ask_and_its_answer() {
+    let io = Script::new(signed_in(), vec![Ok(titles(1))]);
+    let mut store = store(&io);
+    let input = WatchlistInput::for_test(1);
+    store.ask(Slot::Search, search("a"), &input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    store.want(Slot::Search, search("b"));
+    store.unwant(&Slot::Search);
+    assert_eq!((store.answer(&Slot::Search), store.asked(&Slot::Search)), (None, None));
+    for _ in 0..SETTLE_FRAMES * 2 {
+        assert!(store.take_due().is_none());
+    }
+}

@@ -14,6 +14,9 @@ pub enum ContentArg {
     /// the 12 bytes of the catalog id (`watchlist::decode_hex` / `encode_hex`). Appended last so the
     /// recorded tags of every earlier variant stand.
     Catalog { hex: [u8; 12] },
+    /// A title on the household's Seerr server (docs/seerr.md), by its kind and TMDB id: the page
+    /// that requests it. Appended last, like `Catalog`.
+    SeerrTitle { kind: crate::seerr::MediaKind, tmdb: i64 },
 }
 
 impl plx_machine::machine::LogicalState for ContentArg {
@@ -26,6 +29,7 @@ impl plx_machine::machine::LogicalState for ContentArg {
                 c.u32(3).u32(u32::from(id.sid.raw())).str(&id.rk).u64(id.sec as u64).u64(id.tag as u64).str(&id.name);
             }
             Self::Catalog { hex } => { c.u32(4).str(&crate::watchlist::encode_hex(hex)); }
+            Self::SeerrTitle { kind, tmdb } => { c.u32(5).bool(*kind == crate::seerr::MediaKind::Tv).u64(*tmdb as u64); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("content_arg"); }
@@ -43,6 +47,7 @@ impl ContentArg {
                 a == b && x == y,
             (Self::Collection(a), Self::Collection(b)) => a.same_collection(b),
             (Self::Catalog { hex: a }, Self::Catalog { hex: b }) => a == b,
+            (Self::SeerrTitle { kind: a, tmdb: x }, Self::SeerrTitle { kind: b, tmdb: y }) => a == b && x == y,
             _ => false,
         }
     }

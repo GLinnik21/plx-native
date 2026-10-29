@@ -30,6 +30,17 @@ use std::sync::{Arc, Mutex};
 /// Frames a refused job waits before the next try. A refused job never blocks a frame.
 const RETRY_FRAMES: u32 = 120;
 
+/// Frames a typed-in ask ([`SeerrStore::want`], Search's query) must stay the same before it is
+/// asked: one call per settled term, not one per key.
+const SETTLE_FRAMES: u32 = 18;
+
+/// What a screen asks of the Seerr store (`StoreCmd::Seerr`): the Bridge runs it as the seated
+/// profile ([`SeerrStore::ask`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SeerrCmd {
+    Ask { slot: Slot, op: SeerrOp },
+}
+
 /// One surface's question. A new ask of a slot replaces the old one's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
@@ -200,6 +211,10 @@ pub struct SeerrStore {
     /// The profile generation the last Connect was asked for, so the frame pass signs a profile in
     /// once and does not ask again every frame for one that cannot be.
     tried: Option<u32>,
+    /// Each slot's latest ask, so a surface can tell whose answer it reads.
+    asked: HashMap<Slot, SeerrOp>,
+    /// A typed-in ask waiting for its term to settle, and the frames it has stood.
+    wanted: Option<(Slot, SeerrOp, u32)>,
     req: u32,
     io: Arc<dyn SeerrIo>,
     mailbox: Arc<Mailbox>,
@@ -227,6 +242,8 @@ impl SeerrStore {
             flights: HashMap::new(),
             owed: HashMap::new(),
             tried: None,
+            asked: HashMap::new(),
+            wanted: None,
             req: 0,
             io,
             mailbox: Arc::new(Mailbox::default()),
@@ -266,6 +283,47 @@ impl SeerrStore {
         self.answers.get(slot)
     }
 
+    /// What `slot` was last asked: a surface reads [`Self::answer`] only when this is its question.
+    pub fn asked(&self, slot: &Slot) -> Option<&SeerrOp> {
+        self.asked.get(slot)
+    }
+
+    /// A typed-in ask: `op` for `slot` once it has stood unchanged for [`SETTLE_FRAMES`] frames
+    /// ([`Self::take_due`]). The same op as the slot's last ask, or as the one already waiting, is
+    /// nothing new.
+    pub fn want(&mut self, slot: Slot, op: SeerrOp) {
+        if self.asked.get(&slot) == Some(&op) || self.wanted.as_ref().is_some_and(|(s, o, _)| *s == slot && *o == op) {
+            return;
+        }
+        self.wanted = Some((slot, op, 0));
+    }
+
+    /// Nothing is wanted of `slot` any more (Search's field holds no real query): forget the waiting
+    /// ask, the slot's answer and its last ask.
+    pub fn unwant(&mut self, slot: &Slot) {
+        if self.wanted.as_ref().is_some_and(|(s, ..)| s == slot) {
+            self.wanted = None;
+        }
+        if self.asked.remove(slot).is_some() | self.answers.remove(slot).is_some() {
+            if let Some(req) = self.asks.remove(slot) {
+                self.flights.remove(&req);
+                self.owed.remove(&req);
+            }
+            self.bump();
+        }
+    }
+
+    /// One frame of the settle wait: the wanted ask, once it has stood long enough. The caller asks
+    /// it ([`Self::ask`]) with the input it reads then.
+    pub fn take_due(&mut self) -> Option<(Slot, SeerrOp)> {
+        let (_, _, frames) = self.wanted.as_mut()?;
+        *frames += 1;
+        if *frames < SETTLE_FRAMES {
+            return None;
+        }
+        self.wanted.take().map(|(slot, op, _)| (slot, op))
+    }
+
     /// Forget the session, every answer and every ask in flight. A job not yet taken to a runner
     /// goes with them, credential and all.
     fn forget(&mut self) {
@@ -274,6 +332,8 @@ impl SeerrStore {
         self.asks.clear();
         self.flights.clear();
         self.owed.clear();
+        self.asked.clear();
+        self.wanted = None;
         self.mailbox = Arc::new(Mailbox::default());
         self.jobs.clear();
     }
@@ -326,6 +386,7 @@ impl SeerrStore {
         if slot == Slot::Connect || self.session.is_none() {
             self.connection = Connection::Connecting;
         }
+        self.asked.insert(slot.clone(), op.clone());
         self.answers.insert(slot.clone(), Answer::Loading);
         self.start(slot, op);
         self.bump();

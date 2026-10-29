@@ -1,0 +1,58 @@
+{
+  "search.request.heading": {
+    "value": "Request with Seerr",
+    "description": "Requesting a title through the household's Seerr server: Search results row heading: titles found on the Seerr server, to request"
+  },
+  "seerr.title.request": {
+    "value": "Request",
+    "description": "Requesting a title through the household's Seerr server: Button on a movie's page: ask the Seerr server for it"
+  },
+  "seerr.title.request_seasons": {
+    "value": "Request missing seasons",
+    "description": "Requesting a title through the household's Seerr server: Button on a show's page: ask for every season not on the server yet"
+  },
+  "seerr.title.requesting": {
+    "value": "Requesting…",
+    "description": "Requesting a title through the household's Seerr server: Button while the request is being sent"
+  },
+  "seerr.status.pending": {
+    "value": "Requested, waiting for approval",
+    "description": "Requesting a title through the household's Seerr server: Status line: already requested, the server's owner has not approved it yet"
+  },
+  "seerr.status.processing": {
+    "value": "Requested, on its way",
+    "description": "Requesting a title through the household's Seerr server: Status line: approved and being downloaded"
+  },
+  "seerr.status.partly": {
+    "value": "Partly on your server",
+    "description": "Requesting a title through the household's Seerr server: Status line: some seasons/parts are on the Plex server"
+  },
+  "seerr.status.available": {
+    "value": "On your server",
+    "description": "Requesting a title through the household's Seerr server: Status line: the title is on the Plex server"
+  },
+  "seerr.status.blocked": {
+    "value": "Can't be requested",
+    "description": "Requesting a title through the household's Seerr server: Status line: the server's owner blocked requests for it"
+  },
+  "seerr.request.done": {
+    "value": "Requested",
+    "description": "Requesting a title through the household's Seerr server: Status line after a request went through"
+  },
+  "seerr.request.already": {
+    "value": "Already requested",
+    "description": "Requesting a title through the household's Seerr server: Status line: somebody already requested it"
+  },
+  "seerr.request.forbidden": {
+    "value": "You can't request this on the server",
+    "description": "Requesting a title through the household's Seerr server: Status line: this account may not request (no permission or over its limit)"
+  },
+  "seerr.request.failed": {
+    "value": "Couldn't request it. Try again.",
+    "description": "Requesting a title through the household's Seerr server: Status line: the request did not go through"
+  },
+  "seerr.title.unreachable": {
+    "value": "Seerr couldn't be reached.",
+    "description": "Requesting a title through the household's Seerr server: Whole-page message when the title could not be loaded from Seerr"
+  }
+}

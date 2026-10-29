@@ -741,6 +741,10 @@ fn search_requests(app: &mut App) {
                 let Some(target) = search_target(&item, &request) else { continue };
                 bridge::nav_push_with_return(&mut app.pages, target, ret);
             }
+            SearchReq::SeerrTitle { kind, tmdb } => {
+                bridge::nav_push_with_return(&mut app.pages,
+                    AppArg::Content(ContentArg::SeerrTitle { kind: *kind, tmdb: *tmdb }), ret);
+            }
             SearchReq::ItemMenu { sid, rk } => {
                 let Some((plx_data::search::Item::Media(item), opener)) = app.bridge.search_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != *sid || item.rk != *rk || !plx_screens::item_menu::has_actions(&item) { continue; }

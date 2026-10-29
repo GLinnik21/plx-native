@@ -1,0 +1,16 @@
+{
+  "search.request.heading": "Solicitar con Seerr",
+  "seerr.title.request": "Solicitar",
+  "seerr.title.request_seasons": "Solicitar temporadas que faltan",
+  "seerr.title.requesting": "Solicitando…",
+  "seerr.status.pending": "Solicitado, pendiente de aprobación",
+  "seerr.status.processing": "Solicitado, en camino",
+  "seerr.status.partly": "En parte en tu servidor",
+  "seerr.status.available": "En tu servidor",
+  "seerr.status.blocked": "No se puede solicitar",
+  "seerr.request.done": "Solicitado",
+  "seerr.request.already": "Ya solicitado",
+  "seerr.request.forbidden": "No puedes solicitar esto en el servidor",
+  "seerr.request.failed": "No se pudo solicitar. Inténtalo de nuevo.",
+  "seerr.title.unreachable": "No se pudo contactar con Seerr."
+}

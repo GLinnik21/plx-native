@@ -938,6 +938,8 @@ pub enum StoreCmd {
     Collection(collection::CollectionCmd),
     ViewState(viewstate::ViewStateCmd),
     SubtitleSearch(subsearch::SubSearchCmd),
+    /// An ask of the household's Seerr server (`stores::seerr`), run by the Bridge as the seated profile.
+    Seerr(seerr::SeerrCmd),
 }
 
 impl StoreCmd {
@@ -951,6 +953,7 @@ impl StoreCmd {
             StoreCmd::Collection(_) => StoreId::Collection,
             StoreCmd::ViewState(_) => StoreId::ViewState,
             StoreCmd::SubtitleSearch(_) => StoreId::SubtitleSearch,
+            StoreCmd::Seerr(_) => StoreId::Seerr,
         }
     }
 }

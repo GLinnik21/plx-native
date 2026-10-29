@@ -1,0 +1,16 @@
+{
+  "search.request.heading": "Richiedi con Seerr",
+  "seerr.title.request": "Richiedi",
+  "seerr.title.request_seasons": "Richiedi le stagioni mancanti",
+  "seerr.title.requesting": "Richiesta in corso…",
+  "seerr.status.pending": "Richiesto, in attesa di approvazione",
+  "seerr.status.processing": "Richiesto, in arrivo",
+  "seerr.status.partly": "In parte sul tuo server",
+  "seerr.status.available": "Sul tuo server",
+  "seerr.status.blocked": "Non richiedibile",
+  "seerr.request.done": "Richiesto",
+  "seerr.request.already": "Già richiesto",
+  "seerr.request.forbidden": "Non puoi richiederlo su questo server",
+  "seerr.request.failed": "Richiesta non riuscita. Riprova.",
+  "seerr.title.unreachable": "Impossibile raggiungere Seerr."
+}

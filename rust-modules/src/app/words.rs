@@ -35,6 +35,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => "person",
         AppArg::Content(ContentArg::Collection(_)) => "collection",
         AppArg::Content(ContentArg::Catalog { .. }) => "catalog",
+        AppArg::Content(ContentArg::SeerrTitle { .. }) => plx_screens::seerr_title::SeerrTitleScreen::WORD,
         AppArg::Search => "search",
         AppArg::Watchlist => "watchlist",
         AppArg::Player => "player",

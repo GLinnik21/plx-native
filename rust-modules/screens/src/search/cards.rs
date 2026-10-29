@@ -80,3 +80,93 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
         }
     }
 }
+
+/// One card of the Request row: a title the household's Seerr server found for the query and the
+/// household's servers do not hold yet (docs/seerr.md). Owned by the page, built from the store's
+/// answer by [`SearchScreen::sync_request`].
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct RequestCard {
+    pub(super) kind: plx_data::seerr::MediaKind,
+    pub(super) tmdb: i64,
+    pub(super) title: String,
+    pub(super) status: plx_data::seerr::Availability,
+    /// The TMDB poster's URL (`plex::seerr::tmdb_image`), drawn through a household server's proxy.
+    pub(super) poster: Option<String>,
+}
+
+/// What a Request card says under its title: what has become of a request for it.
+pub(super) fn request_caption(status: plx_data::seerr::Availability) -> &'static str {
+    use plx_data::seerr::Availability;
+    use plx_platform::i18n::msg;
+    match status {
+        Availability::Pending => msg::seerr_status_pending(),
+        Availability::Processing => msg::seerr_status_processing(),
+        Availability::PartlyAvailable => msg::seerr_status_partly(),
+        Availability::Available => msg::seerr_status_available(),
+        Availability::Blocked => msg::seerr_status_blocked(),
+        Availability::Unknown => "",
+    }
+}
+
+/// The Request row's cards.
+pub struct RequestCards<'a> {
+    pub(super) elems: &'a [u32],
+    pub(super) cards: &'a [RequestCard],
+    /// A household server whose photo proxy fetches the TMDB posters; `None` draws blank faces.
+    pub(super) art_server: Option<u16>,
+}
+
+impl<H: SearchLike> CardSource<H> for RequestCards<'_> {
+    fn len(&self) -> usize { self.elems.len().min(self.cards.len()) }
+    fn elem(&self, i: usize) -> u32 { self.elems[i] }
+    fn index_of(&self, e: &u32) -> Option<usize> {
+        self.elems.iter().position(|elem| elem == e).filter(|&i| i < self.cards.len())
+    }
+    fn art(&self, i: usize) -> Art<'_> {
+        match (self.cards.get(i).and_then(|card| card.poster.as_deref()), self.art_server) {
+            (Some(url), Some(sid)) => Art::Thumb { sid, key: url, res: (250, 375) },
+            _ => Art::Poster(None),
+        }
+    }
+    fn label(&self, i: usize) -> TileLabel {
+        self.cards.get(i).map_or_else(TileLabel::default, |card| TileLabel::titled(&card.title, request_caption(card.status)))
+    }
+}
+
+/// The cards of any section of the page: a result row's, or the Request row's.
+pub enum PageCards<'a> {
+    Row(RowCards<'a>),
+    Request(RequestCards<'a>),
+}
+
+macro_rules! each {
+    ($self:ident, $c:ident => $e:expr) => {
+        match $self {
+            PageCards::Row($c) => $e,
+            PageCards::Request($c) => $e,
+        }
+    };
+}
+
+impl<H: SearchLike> CardSource<H> for PageCards<'_> {
+    fn len(&self) -> usize { each!(self, c => CardSource::<H>::len(c)) }
+    fn elem(&self, i: usize) -> u32 { each!(self, c => CardSource::<H>::elem(c, i)) }
+    fn index_of(&self, e: &u32) -> Option<usize> { each!(self, c => CardSource::<H>::index_of(c, e)) }
+    fn art(&self, i: usize) -> Art<'_> { each!(self, c => CardSource::<H>::art(c, i)) }
+    fn label(&self, i: usize) -> TileLabel { each!(self, c => CardSource::<H>::label(c, i)) }
+    fn progress(&self, i: usize) -> Option<f32> { each!(self, c => CardSource::<H>::progress(c, i)) }
+    fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
+        each!(self, c => CardSource::<H>::overlay(c, p, i, tile, measure))
+    }
+    fn loaded(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::loaded(c, i)) }
+    fn unread(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::unread(c, i)) }
+    fn focus_index(&self, e: &u32) -> Option<usize> { each!(self, c => CardSource::<H>::focus_index(c, e)) }
+    fn hover(&self, i: usize) -> plx_ui::screen::Hover { each!(self, c => CardSource::<H>::hover(c, i)) }
+    fn gap_before(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::gap_before(c, i)) }
+    fn global(&self, i: usize) -> usize { each!(self, c => CardSource::<H>::global(c, i)) }
+    fn holdable(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::holdable(c, i)) }
+    fn more(&self) -> bool { each!(self, c => CardSource::<H>::more(c)) }
+    fn more_before(&self) -> bool { each!(self, c => CardSource::<H>::more_before(c)) }
+    fn page_epoch(&self) -> u32 { each!(self, c => CardSource::<H>::page_epoch(c)) }
+    fn revision(&self) -> Option<u64> { each!(self, c => CardSource::<H>::revision(c)) }
+}

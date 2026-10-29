@@ -3091,6 +3091,8 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     crate::focusprobe::Screen::Collection,
                 AppArg::Content(plx_screens::registry::ContentArg::Catalog { .. }) =>
                     crate::focusprobe::Screen::Catalog,
+                AppArg::Content(plx_screens::registry::ContentArg::SeerrTitle { .. }) =>
+                    crate::focusprobe::Screen::SeerrTitle,
                 AppArg::Search => crate::focusprobe::Screen::Search,
                 AppArg::Watchlist => crate::focusprobe::Screen::Watchlist,
                 // The same words the heartbeat's `overlay=` uses, and — since phase 9 — from the

@@ -249,6 +249,8 @@ pub enum SearchReq {
     /// hit from a server that ignored `includeCollections`), `tag` its tag id; both are checked
     /// against the retained selection before the route is built from it.
     Collection { sid: plx_plex::plex::ServerId, rk: String, tag: i64 },
+    /// OK on a card of the Request row: the Seerr title page of that title (docs/seerr.md).
+    SeerrTitle { kind: plx_data::seerr::MediaKind, tmdb: i64 },
     Tab(HomeTab),
     Account,
 }
@@ -1298,6 +1300,11 @@ pub trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
 
 pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {
     fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a>;
+    /// The household's Seerr store (docs/seerr.md): Search's Request row and the Seerr title page
+    /// read its answers. A provided method, `None` for a host that publishes none (a fixture).
+    fn seerr<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        None
+    }
 }
 
 /// A host that publishes all three retained Library views captured at the frame split.
@@ -1898,7 +1905,7 @@ impl AppArg {
     }
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str},SeerrTitle{tv:bool,tmdb:u64}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
@@ -2035,6 +2042,8 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Collection(_)) => page_id::COLLECTION.0,
             // 27, forward of the Watchlist menu's 26: the catalog page (plan W6).
             AppArg::Content(ContentArg::Catalog { .. }) => 27,
+            // 31, the Seerr title page (docs/seerr.md).
+            AppArg::Content(ContentArg::SeerrTitle { .. }) => 31,
             // 30, forward of the Recommended page's 29.
             AppArg::VersionsPanel(_) => 30,
         })
@@ -2195,6 +2204,7 @@ where
                 Box::new(page)
             }
             AppArg::Content(ContentArg::Catalog { hex }) => Box::new(crate::catalog::CatalogScreen::new(entry, *hex)),
+            AppArg::Content(ContentArg::SeerrTitle { kind, tmdb }) => Box::new(crate::seerr_title::SeerrTitleScreen::new(entry, *kind, *tmdb)),
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::onboard::OnboardScreen::first_run(
@@ -2447,6 +2457,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::watchlist::page::WatchlistScreen::SHAPE,
     crate::watchlist::menu::SHAPE,
     crate::catalog::CatalogScreen::SHAPE,
+    crate::seerr_title::SeerrTitleScreen::SHAPE,
     crate::versions_panel::SHAPE,
 ];
 
@@ -2633,7 +2644,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Immediate jump state adds SeekBurst target/time and the pending FF/REW tap flag.
 // The independent settings also update the Preferences and Picker state versions.
 // Previous pin: 0x3cf2_5b06_5ed9_8faa. Re-record the incompatible anchors through plxnative-rec.
-const SCREEN_SHAPES_PIN: u64 = 0x9425f33f3f536aa5;
+// Seerr (docs/seerr.md): `ARG_SHAPE` gains `Content::SeerrTitle{tv,tmdb}`, `SCREEN_SHAPES` gains
+// `SeerrTitleScreen::SHAPE`, and the Search page's shape gains `request:[u32]` (its Request row);
+// the previous pin was 0x9425_f33f_3f53_6aa5. Replay fixtures need `tools/plxnative-rec rerecord`.
+const SCREEN_SHAPES_PIN: u64 = 0x80233869e2e913dd;
 
 #[cfg(test)]
 mod arg_tests {

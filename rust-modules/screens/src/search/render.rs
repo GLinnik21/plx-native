@@ -148,6 +148,18 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
             shelf.draw(f, p, &src, frame);
         }
     }
+    // The Request row (docs/seerr.md): headed like a result row, no count, no source.
+    if screen.has_request() {
+        if let Some((frame, shelf)) = screen.request_frame(f.cx) {
+            let top = frame.y - layout::HEAD_TO_ROW;
+            if plx_ui::on_axis(top, layout::block_h(Kind::Movie, shelf.under_band()), SCR_H, 0.0) {
+                plx_ui::cards::draw_heading_c(p, plx_platform::i18n::msg::search_request_heading_c(), c"", c"",
+                    MARGIN_X, top - shelf.heading_lift(), screen.owner_alpha.pos, f.cx.measure);
+                let src = screen.request_cards(f.cx);
+                shelf.draw(f, p, &src, frame);
+            }
+        }
+    }
     // A standing note, never a target: the page paints through here, not `StackView::paint`, so it
     // ends the draw itself, over everything the page painted.
     screen.stack.draw_hold_hint(f.painter.alpha(f.page_alpha), f.measure);

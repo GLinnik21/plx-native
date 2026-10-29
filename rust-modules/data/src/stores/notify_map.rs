@@ -338,8 +338,8 @@ impl Stores {
                 }
                 ContentArg::Person { .. } | ContentArg::Filmography { .. } => add(self.person.held_keys(page)),
                 ContentArg::Collection(_) => add(self.collection.held_keys(page)),
-                // A title no server holds: no card of its own to owe a read-back.
-                ContentArg::Catalog { .. } => {}
+                // A title no server holds (a discover record, a Seerr title): no card to owe a read-back.
+                ContentArg::Catalog { .. } | ContentArg::SeerrTitle { .. } => {}
             }
         }
         Held { cards, details }

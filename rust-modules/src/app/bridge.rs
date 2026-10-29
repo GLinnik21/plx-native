@@ -244,6 +244,7 @@ impl plx_screens::registry::PlayerLike for AppHost {
 
 impl plx_screens::registry::SearchLike for AppHost {
     fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a> { cx.views.search }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> { Some(cx.views.seerr) }
 }
 
 impl plx_screens::registry::LibraryLike for AppHost {
@@ -1353,10 +1354,35 @@ impl Bridge {
             self.stores.seerr.connect(&Self::watchlist_input());
             changed = true;
         }
+        // The Search page's Request row follows the query the Search store holds: a real term is
+        // asked once it has settled, anything else forgets the row.
+        if self.stores.seerr.configured() {
+            use plx_data::stores::seerr::Slot;
+            let query = self.search.view().query();
+            match plx_data::search::terms(query) {
+                Some(term) => self.stores.seerr.want(Slot::Search,
+                    plx_data::seerr::SeerrOp::Search { query: term.to_string(), page: 1 }),
+                None => self.stores.seerr.unwant(&Slot::Search),
+            }
+            if let Some((slot, op)) = self.stores.seerr.take_due() {
+                self.stores.seerr.ask(slot, op, &Self::watchlist_input());
+                changed = true;
+            }
+        }
         self.start_store_jobs_of(StoreId::Seerr);
         if changed {
             plx_machine::idle::invalidate();
         }
+    }
+
+    /// A screen's ask of the Seerr store (`StoreCmd::Seerr`), as the seated profile; the call it
+    /// emitted is started in this call.
+    pub(crate) fn seerr_run(&mut self, cmd: plx_data::stores::seerr::SeerrCmd) {
+        match cmd {
+            plx_data::stores::seerr::SeerrCmd::Ask { slot, op } =>
+                self.stores.seerr.ask(slot, op, &Self::watchlist_input()),
+        }
+        self.start_store_jobs_of(StoreId::Seerr);
     }
 
     /// Settings > Services > Seerr's Connect: sign the seated profile in afresh at the stored
@@ -2149,6 +2175,10 @@ impl Bridge {
                 self.subsearch_run(command.clone());
                 return Handled::Yes;
             }
+            AppMsg::Store(StoreCmd::Seerr(command)) => {
+                self.seerr_run(command.clone());
+                return Handled::Yes;
+            }
             AppMsg::Store(StoreCmd::ViewState(command)) => {
                 let due = self.viewstate_run(command.clone()).endpoints;
                 return Self::carry(&mut self.endpoint_carry, due);
@@ -2510,6 +2540,7 @@ fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHo
         StoreCmd::Collection(_) => unreachable!("Collection is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
         StoreCmd::SubtitleSearch(_) => unreachable!("SubtitleSearch is stepped by Bridge's owned store"),
+        StoreCmd::Seerr(_) => unreachable!("Seerr is stepped by Bridge's owned store"),
     }
 }
 
