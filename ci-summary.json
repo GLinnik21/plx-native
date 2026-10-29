@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-29T09:18:00Z",
+ "generated": "2026-10-29T09:26:51Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -168,7 +168,7 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 220,
-   "n_prev": 193,
+   "n_prev": 191,
    "now": 371.0,
    "prev7": 445,
    "shown": true,
@@ -179,18 +179,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.6,
-   "change7_pct": 6.3,
+   "change30_pct": -60.8,
+   "change7_pct": 6.0,
    "d30": 902,
-   "delta30": -547.0,
-   "delta7": 21.0,
+   "delta30": -548,
+   "delta7": 20.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 98,
-   "now": 355.0,
+   "now": 354,
    "prev7": 334.0,
    "shown": true,
    "state": "flat",
@@ -410,18 +410,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 62.6,
-   "change7_pct": 4.3,
+   "change30_pct": 62.9,
+   "change7_pct": 4.5,
    "d30": 163,
-   "delta30": 102,
-   "delta7": 11,
+   "delta30": 102.5,
+   "delta7": 11.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 93,
-   "now": 265,
+   "now": 265.5,
    "prev7": 254,
    "shown": true,
    "state": "flat",
@@ -452,18 +452,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -58.0,
-   "change7_pct": 1.8,
+   "change30_pct": -57.9,
+   "change7_pct": 2.0,
    "d30": 482,
-   "delta30": -279.5,
-   "delta7": 3.5,
+   "delta30": -279,
+   "delta7": 4,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 93,
-   "now": 202.5,
+   "now": 203,
    "prev7": 199,
    "shown": true,
    "state": "flat",
@@ -474,17 +474,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.7,
+   "change7_pct": 15.3,
    "d30": null,
    "delta30": null,
-   "delta7": 22,
+   "delta7": 23.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 93,
-   "now": 172,
+   "now": 173.0,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 5.9,
    "change7_pct": 0.0,
    "d30": 17,
-   "delta30": 1,
-   "delta7": 0,
+   "delta30": 1.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 93,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 71.3,
    "commits": [
     {
-     "pr": 1097,
-     "sha": "944d9c290",
-     "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
-    },
-    {
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
@@ -715,6 +710,11 @@
      "pr": 1120,
      "sha": "959440fae",
      "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
+    },
+    {
+     "pr": 1121,
+     "sha": "414419c75",
+     "title": "Crash reports: modules are never dropped, the crashing thread and exit phase are recorded, firmware-library crashes grou"
     }
    ],
    "from": 171,
@@ -728,11 +728,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1097,
-     "sha": "944d9c290",
-     "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
-    },
-    {
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
@@ -776,6 +771,11 @@
      "pr": 1120,
      "sha": "959440fae",
      "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
+    },
+    {
+     "pr": 1121,
+     "sha": "414419c75",
+     "title": "Crash reports: modules are never dropped, the crashing thread and exit phase are recorded, firmware-library crashes grou"
     }
    ],
    "from": 1116.6,
@@ -789,11 +789,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1097,
-     "sha": "944d9c290",
-     "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
-    },
-    {
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
@@ -837,6 +832,11 @@
      "pr": 1120,
      "sha": "959440fae",
      "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
+    },
+    {
+     "pr": 1121,
+     "sha": "414419c75",
+     "title": "Crash reports: modules are never dropped, the crashing thread and exit phase are recorded, firmware-library crashes grou"
     }
    ],
    "from": 1116.0,
@@ -850,11 +850,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1097,
-     "sha": "944d9c290",
-     "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
-    },
-    {
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
@@ -898,6 +893,11 @@
      "pr": 1120,
      "sha": "959440fae",
      "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
+    },
+    {
+     "pr": 1121,
+     "sha": "414419c75",
+     "title": "Crash reports: modules are never dropped, the crashing thread and exit phase are recorded, firmware-library crashes grou"
     }
    ],
    "from": 973.0,
