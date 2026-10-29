@@ -347,4 +347,42 @@ mod freeze_tests {
         assert!(decode_ordered(br#"{} x"#, 1 << 20).is_err());
         assert!(decode_ordered(b"", 1 << 20).is_err());
     }
+
+    #[test]
+    fn nesting_past_serde_jsons_recursion_limit_is_an_error_not_a_panic() {
+        // The visitor never lifts serde_json's limit (128), so a package cannot recurse the stack away.
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        assert!(decode(deep.as_bytes()).is_err());
+        assert!(decode_ordered(deep.as_bytes(), 1 << 24).is_err());
+        let objects = format!("{}1{}", "{\"a\":".repeat(200), "}".repeat(200));
+        assert!(decode(objects.as_bytes()).is_err());
+        assert!(decode_ordered(objects.as_bytes(), 1 << 24).is_err());
+        // Well inside the limit it decodes.
+        let shallow = format!("{}{}", "[".repeat(100), "]".repeat(100));
+        assert!(decode(shallow.as_bytes()).is_ok());
+        assert!(decode_ordered(shallow.as_bytes(), 1 << 24).is_ok());
+    }
+
+    #[test]
+    fn both_outputs_refuse_an_over_budget_document_with_the_same_text() {
+        let doc = br#"{"a":[1,2,3],"b":{"c":"text","d":null}}"#;
+        // Too small for the source charge (three times its length): refused before any node.
+        let source_cap = doc.len() * 3 - 1;
+        let by_source = decode_ordered(doc, source_cap).unwrap_err().to_string();
+        let budget = Budget::new(source_cap);
+        let value_charge = budget.charge(doc.len() * 3).unwrap_err();
+        assert_eq!(by_source, value_charge);
+        assert_eq!(by_source, "decoded recording budget exceeded");
+        // Room for the source and not for the nodes: the one visitor charges both the same way.
+        let cap = doc.len() * 3 + 64;
+        let budget = Budget::new(cap);
+        budget.charge(doc.len() * 3).unwrap();
+        let by_value = decode_with(doc, &budget).unwrap_err().to_string();
+        let by_ordered = decode_ordered(doc, cap).unwrap_err().to_string();
+        assert_eq!(by_value, by_ordered);
+        assert!(by_ordered.contains("budget exceeded"), "{by_ordered}");
+        // And a generous budget decodes the same document through both.
+        assert!(decode_ordered(doc, 1 << 20).is_ok());
+        assert!(decode(doc).is_ok());
+    }
 }
