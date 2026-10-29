@@ -589,7 +589,13 @@ struct BodySink {
     overflowed: bool,
     /// The `ETag` of the response being read (see [`header_cb`]); the last hop's, never a redirect's.
     etag: Option<String>,
+    /// Each `Set-Cookie`'s `name=value`, in order, at most [`COOKIES_KEPT`]; the last hop's only.
+    cookies: Vec<String>,
 }
+
+/// How many `Set-Cookie` headers one response keeps. A session cookie is one; the bound only
+/// stops a hostile server from growing the sink a header at a time.
+const COOKIES_KEPT: usize = 8;
 
 impl BodySink {
     fn new(max: Option<usize>) -> BodySink {
@@ -598,6 +604,7 @@ impl BodySink {
             max,
             overflowed: false,
             etag: None,
+            cookies: Vec::new(),
         }
     }
 
@@ -642,9 +649,9 @@ extern "C" fn write_cb(
     }
 }
 
-/// libcurl `CURLOPT_HEADERFUNCTION`: keep the one response header this client reads, `ETag`.
-/// libcurl hands over each header line whole (CRLF included) and each hop's status line, so a
-/// status line forgets the previous hop's validator and the final response's wins. Always takes the
+/// libcurl `CURLOPT_HEADERFUNCTION`: keep the response headers this client reads, `ETag` and
+/// `Set-Cookie`. libcurl hands over each header line whole (CRLF included) and each hop's status
+/// line, so a status line forgets the previous hop's and the final response's win. Always takes the
 /// line (returning anything else aborts the transfer); a line that is not UTF-8 text is ignored.
 /// Infallible code, so nothing can unwind across the C frame. The line is not capped here: libcurl
 /// bounds a header line itself, and a validator is kept verbatim (weak `W/` prefix and quotes too).
@@ -665,20 +672,27 @@ extern "C" fn header_cb(
 }
 
 impl BodySink {
-    /// One raw header line: a status line clears the validator, an `ETag:` line sets it.
+    /// One raw header line: a status line clears the validator and the cookies, an `ETag:` line
+    /// sets the validator, a `Set-Cookie:` line adds its `name=value` (the attributes after the
+    /// first `;` are dropped: a client sends a cookie back by name and value alone).
     fn note_header(&mut self, line: &[u8]) {
         if line.starts_with(b"HTTP/") {
             self.etag = None;
+            self.cookies.clear();
             return;
         }
         let Some(colon) = line.iter().position(|&b| b == b':') else { return };
-        if !line[..colon].eq_ignore_ascii_case(b"etag") {
-            return;
-        }
-        if let Ok(value) = std::str::from_utf8(&line[colon + 1..]) {
+        let name = &line[..colon];
+        let Ok(value) = std::str::from_utf8(&line[colon + 1..]) else { return };
+        if name.eq_ignore_ascii_case(b"etag") {
             let value = value.trim();
             if !value.is_empty() {
                 self.etag = Some(value.to_owned());
+            }
+        } else if name.eq_ignore_ascii_case(b"set-cookie") && self.cookies.len() < COOKIES_KEPT {
+            let pair = value.split(';').next().unwrap_or("").trim();
+            if pair.split_once('=').is_some_and(|(name, _)| !name.trim().is_empty()) {
+                self.cookies.push(pair.to_owned());
             }
         }
     }
@@ -719,6 +733,9 @@ pub struct Resp {
     /// prefix and quotes), or `None` when it sent none. A 304 normally repeats the validator.
     /// Present on every buffered request; the caller's own `If-None-Match` goes in `headers`.
     pub etag: Option<String>,
+    /// The final response's `Set-Cookie` headers as `name=value`, in order, attributes dropped;
+    /// empty when it set none. The caller sends one back as a `Cookie:` line in `headers`.
+    pub cookies: Vec<String>,
 }
 impl Resp {
     pub fn ok(&self) -> bool {
@@ -802,7 +819,7 @@ fn finish_response(
             verify,
         });
     }
-    Ok(Resp { status: status.unwrap(), body: sink.body, peer_pin: None, etag: sink.etag })
+    Ok(Resp { status: status.unwrap(), body: sink.body, peer_pin: None, etag: sink.etag, cookies: sink.cookies })
 }
 
 /// **How long one call may take.** The values are a PER-CALL argument rather than constants
