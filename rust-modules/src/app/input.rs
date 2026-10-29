@@ -1569,14 +1569,14 @@ pub(crate) unsafe fn key_ok(
         };
         // Row 1 is the transport's CONTROL ROW — the Subtitles / Audio / ⋯ discs, or whichever
         // stand-in has taken their place (Skip, Up Next). Every occupant is a control FACE with a
-        // pop of its own (`player_hud::ROW_POP`), so OK takes the tvOS press: dip now, act on the
+        // pop of its own (`player_hud::motion::HudMotion`'s `RowPop`), so OK takes the tvOS press: dip now, act on the
         // spring-back, in `activate_player_row` from the per-frame loop. Both of its arms open
         // something OVER this HUD rather than leaving the route, which makes this the one control
         // row in the app where the whole dip → ring is on screen either side of the activation.
-        if vis && focus == 1 {
+        if vis && focus == plx_appkit::player_hud::geometry::GROUP_ROW {
             press.begin_ctl(now);
             *ok_armed = true;
-        } else if vis && focus == 2 {
+        } else if vis && focus == plx_appkit::player_hud::geometry::GROUP_TABS {
             if tab == 0 {
                 super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, plx_screens::player::overlay::OverlayKind::Info);
             } else if tab == 1 {
