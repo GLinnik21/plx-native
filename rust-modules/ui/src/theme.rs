@@ -809,7 +809,7 @@ pub const RAIL_FILL: [f32; 4] = with_a(WHITE, 0.95);
 /// "this bit is special", and the rail sits straight over moving video.
 // (RAIL_MARKER, white @ 0.42, was the intro/credits band on the scrubber. Removed 2026-08-04 with
 // the band itself — at twice the track's opacity it read as a rendering artifact rather than as
-// information. See the "the rail carries NO marks" note in appkit/player_hud.rs.)
+// information. See the "the rail carries NO marks" note in appkit/player_hud/classic.rs.)
 /// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
 /// keying it (the person page's header state, `Person Screen.dc.html`'s
 /// `rgba(233,230,224,.10)`). The palette's one warm stop, and the only survivor of the warm "Snow"

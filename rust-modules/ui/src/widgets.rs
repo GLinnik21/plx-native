@@ -1581,7 +1581,7 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 // read-out's whole output format, and a keyline survives a phone camera's chroma subsampling where
 // a colour or weight change does not.
 //
-// The idiom was written first as a private `draw_hint_with_keycap` in `player_hud.rs`, screen-local
+// The idiom was written first as a private `draw_hint_with_keycap` in the player HUD (`appkit/player_hud/`), screen-local
 // and centred on `SCR_W`. It is here because the alert panels want the same object RIGHT-aligned
 // inside a panel, and the guide's rule 4 answers that: promote the widget, don't fork it. Three
 // alert lanes reached for it independently and all three rejected the HUD's CONSTRUCTION for the
