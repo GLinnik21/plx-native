@@ -100,6 +100,7 @@ pub mod testapp; // RESTRUCTURE (spec §15.1): a screen under test with no SDL �
 pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced by a chosen pattern
 pub mod text_view;
 pub mod text_buffer;
+pub mod text_field; // one line of editable text with a caret: the Search field and the Seerr address
 pub mod text_lift; // the animated focus treatment (lift + plate + shadow) for a block of prose that is a focus stop but not a card
 pub mod theme;
 pub mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay

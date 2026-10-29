@@ -9,18 +9,12 @@ use plx_ui::widgets::{Art, Button, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, View};
 use std::ffi::{CStr, CString};
 
-const CARET_W: f32 = 5.0;
-const CARET_GAP: f32 = 8.0;
 const GHOST_GAP: f32 = theme::size::BODY as f32;
 
 #[derive(Default)]
 pub(super) struct Resources {
-    query: String,
-    caret: usize,
-    run: CString,
-    head: CString,
-    run_w: f32,
-    head_w: f32,
+    /// The query as the field draws it: `plx_ui::text_field`'s measured run.
+    field: plx_ui::text_field::FieldRun,
     scope: Option<SourceScopeSnapshot>,
     scope_line: Option<CString>,
     recents: Option<plx_data::search::recents::RecentsSnapshot>,
@@ -39,28 +33,8 @@ impl Resources {
         owner: &str,
         cx: &Cx<'_, H>,
     ) {
-        let q = query.split('\0').next().unwrap_or("");
-        let mut caret = caret.min(q.len());
-        while !q.is_char_boundary(caret) {
-            caret -= 1;
-        }
-        if self.query != q || self.caret != caret || self.run.is_empty() {
-            self.query = q.into();
-            self.caret = caret;
-            self.run = if q.trim().is_empty() {
-                plx_platform::i18n::msg::browse_search_placeholder_c().into()
-            } else {
-                cstring(q)
-            };
-            let (_, head) = run_and_head(q, caret);
-            self.head = cstring(head);
-            self.run_w = cx.measure.width(&self.run, theme::size::HERO, true);
-            self.head_w = if q.trim().is_empty() {
-                0.0
-            } else {
-                cx.measure.width(&self.head, theme::size::HERO, true)
-            };
-        }
+        self.field.prepare(query, caret, plx_platform::i18n::msg::browse_search_placeholder_c(),
+            theme::size::HERO, true, cx.measure);
         let scope = H::search(cx).scope();
         if self
             .scope
@@ -187,58 +161,27 @@ fn field<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>, p: 
         layout::FIELD.w,
         layout::FIELD.h,
     );
-    let blank = data.query.trim().is_empty();
     let hot = screen.hot.pos;
-    let ink = if blank {
+    let ink = if data.field.blank() {
         theme::cross(theme::TEXT_TERTIARY, theme::TEXT_SECONDARY, hot)
     } else {
         theme::cross(theme::TEXT_SECONDARY, ink_target(screen.editing), hot)
     };
-    let (run_dx, caret_dx) = run_layout(
-        data.run_w,
-        run_caret_w(blank, data.head_w),
-        rect.w,
-        screen.editing,
-    );
-    let (cap_top, cap_base) = plx_gfx::text::text_cap_band(theme::size::HERO, 1);
-    let pad = descent_pad(
-        rect.h,
-        plx_gfx::text::text_height(theme::size::HERO, 1),
-        cap_top,
-        cap_base,
-    );
-    {
-        let _clip = f.clip(p, Rect::new(rect.x, rect.y, rect.w, rect.h + pad));
-        Label::new(data.run.as_ptr(), theme::size::HERO, ink)
-            .bold()
-            .draw(p, Rect::new(rect.x + run_dx, rect.y, rect.w, rect.h));
+    let caret_on = screen.blink_us < super::BLINK_US;
+    let caret_dx = plx_ui::text_field::draw(f, p, rect, &data.field, ink, theme::TEXT_PRIMARY, screen.editing, caret_on);
+    if ghost_shown(data.field.text()) {
+        let _clip = f.clip(p, plx_ui::text_field::clip_rect(rect, theme::size::HERO));
         let text_y = plx_gfx::text::text_vcenter_y(theme::size::HERO, 1, rect.cy());
-        if caret_shown(screen.editing, screen.blink_us < super::BLINK_US) {
-            p.rect(
-                Rect::new(
-                    rect.x + caret_dx,
-                    text_y + cap_top,
-                    CARET_W,
-                    cap_base - cap_top,
-                ),
-                0.0,
-                theme::TEXT_PRIMARY,
-                theme::TEXT_PRIMARY,
-                0.0,
-            );
-        }
-        if ghost_shown(&data.query) {
-            let y = plx_gfx::text::baseline_y(theme::size::BODY, 0, theme::size::HERO, 1, text_y);
-            p.text(
-                plx_platform::i18n::msg::browse_search_one_more_c().as_ptr(),
-                rect.x + caret_dx + CARET_W + GHOST_GAP,
-                y,
-                theme::size::BODY,
-                theme::cross(theme::TEXT_TERTIARY, theme::TEXT_SECONDARY, hot),
-                0,
-                0,
-            );
-        }
+        let y = plx_gfx::text::baseline_y(theme::size::BODY, 0, theme::size::HERO, 1, text_y);
+        p.text(
+            plx_platform::i18n::msg::browse_search_one_more_c().as_ptr(),
+            rect.x + caret_dx + plx_ui::text_field::CARET_W + GHOST_GAP,
+            y,
+            theme::size::BODY,
+            theme::cross(theme::TEXT_TERTIARY, theme::TEXT_SECONDARY, hot),
+            0,
+            0,
+        );
     }
     if let Some(line) = &data.scope_line {
         Label::new(line.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY).draw(
@@ -447,43 +390,9 @@ fn elide(
         measure.width(&cstring(s), size, bold)
     })
 }
-fn run_layout(run: f32, caret: f32, width: f32, editing: bool) -> (f32, f32) {
-    let available = (width - if editing { CARET_W + CARET_GAP } else { 0.0 }).max(0.0);
-    let overflow = (caret - available).max(0.0).min((run - available).max(0.0));
-    (
-        -overflow,
-        (caret - overflow + CARET_GAP).min((width - CARET_W).max(0.0)),
-    )
-}
-
-fn run_and_head(q: &str, caret: usize) -> (&str, &str) {
-    let run = &q[..q.find('\0').unwrap_or(q.len())];
-    let mut caret = caret.min(run.len());
-    while caret > 0 && !run.is_char_boundary(caret) {
-        caret -= 1;
-    }
-    (run, &run[..caret])
-}
-
-fn run_caret_w(blank: bool, head_w: f32) -> f32 {
-    if blank {
-        0.0
-    } else {
-        head_w
-    }
-}
-
 fn ghost_shown(q: &str) -> bool {
     let n = q.trim().chars().count();
     n > 0 && n + 1 == plx_data::search::MIN_QUERY
-}
-
-fn caret_shown(editing: bool, phase_on: bool) -> bool {
-    editing && phase_on
-}
-
-fn descent_pad(box_h: f32, full_h: f32, cap_top: f32, cap_base: f32) -> f32 {
-    (full_h - box_h * 0.5 - (cap_top + cap_base) * 0.5).max(0.0)
 }
 
 fn ink_target(editing: bool) -> [f32; 4] {
@@ -737,128 +646,6 @@ mod tests {
         assert!(luma(waiting) - luma(idle) > 0.15);
         assert!(luma(editing) - luma(idle) > 0.15);
         assert!(luma(waiting) > luma(editing));
-    }
-
-    #[test]
-    fn the_caret_is_visible_only_during_the_on_phase_of_an_editing_field() {
-        assert!(caret_shown(true, true));
-        assert!(!caret_shown(true, false));
-        assert!(!caret_shown(false, true));
-        assert!(!caret_shown(false, false));
-    }
-
-    #[test]
-    fn a_run_that_fits_starts_at_the_edge_and_the_caret_trails_it() {
-        let (run, caret) = run_layout(100.0, 100.0, 756.0, true);
-        assert_eq!(run, 0.0);
-        assert_eq!(caret, 100.0 + CARET_GAP);
-    }
-
-    #[test]
-    fn an_overlong_run_slides_left_so_the_caret_lands_on_the_boxs_right_edge() {
-        let box_w = 756.0;
-        let (run, caret) = run_layout(900.0, 900.0, box_w, true);
-        assert!(run < 0.0);
-        assert_eq!(run + 900.0, box_w - CARET_GAP - CARET_W);
-        assert_eq!(caret + CARET_W, box_w);
-    }
-
-    #[test]
-    fn with_no_caret_the_run_uses_the_whole_box() {
-        let box_w = 756.0;
-        let (run, _) = run_layout(900.0, 900.0, box_w, false);
-        assert_eq!(run + 900.0, box_w);
-    }
-
-    #[test]
-    fn an_empty_run_keeps_the_designs_caret_gap() {
-        let (run, caret) = run_layout(0.0, 0.0, 756.0, true);
-        assert_eq!(run, 0.0);
-        assert_eq!(caret, CARET_GAP);
-    }
-
-    #[test]
-    fn the_caret_follows_the_insertion_point_whether_or_not_the_run_has_slid() {
-        for run_w in [0.0, 1.0, 400.0, 753.0, 900.0, 5000.0] {
-            let (run, caret) = run_layout(run_w, run_w, 756.0, true);
-            assert_eq!(caret, run + run_w + CARET_GAP, "run_w={run_w}");
-        }
-    }
-
-    #[test]
-    fn the_run_scrolls_to_the_caret_rather_than_to_the_tail() {
-        let box_w = 756.0;
-        let avail = box_w - CARET_GAP - CARET_W;
-        assert_eq!(run_layout(2000.0, 0.0, box_w, true), (0.0, CARET_GAP));
-        assert_eq!(
-            run_layout(2000.0, avail - 10.0, box_w, true),
-            (0.0, avail - 10.0 + CARET_GAP)
-        );
-        let (run, caret) = run_layout(2000.0, 1000.0, box_w, true);
-        assert_eq!(run, -(1000.0 - avail));
-        assert_eq!(caret + CARET_W, box_w);
-        for c in [0.0, 1.0, 500.0, 1999.0, 2000.0] {
-            let (_, caret) = run_layout(2000.0, c, box_w, true);
-            assert!(
-                (0.0..=box_w - CARET_W).contains(&caret),
-                "caret at {c} drew at {caret}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_head_is_the_text_before_the_insertion_point() {
-        assert_eq!(run_and_head("wallace", 0), ("wallace", ""));
-        assert_eq!(run_and_head("wallace", 3), ("wallace", "wal"));
-        assert_eq!(run_and_head("wallace", 7), ("wallace", "wallace"));
-        assert_eq!(run_and_head("wallace ", 8), ("wallace ", "wallace "));
-        assert_eq!(run_and_head("", 0), ("", ""));
-    }
-
-    #[test]
-    fn a_caret_inside_a_multi_byte_character_never_splits_it() {
-        for q in ["суббота", "千と千尋", "Amélie", "🎬🎬", "aé千🎬z"] {
-            for c in 0..=q.len() + 4 {
-                let (run, head) = run_and_head(q, c);
-                assert_eq!(run, q);
-                assert!(q.starts_with(head), "the head must be a prefix: {head:?}");
-                assert!(head.len() <= c.min(q.len()));
-                assert!(c.min(q.len()) - head.len() < 4);
-            }
-        }
-    }
-
-    #[test]
-    fn a_nul_cuts_the_run_and_the_caret_lands_inside_what_is_left() {
-        assert_eq!(run_and_head("wal\0lace", 3), ("wal", "wal"));
-        assert_eq!(run_and_head("wal\0lace", 8), ("wal", "wal"));
-        assert_eq!(run_and_head("\0wallace", 4), ("", ""));
-        assert_eq!(run_and_head("су\0ббота", 99), ("су", "су"));
-    }
-
-    #[test]
-    fn a_box_too_narrow_for_the_caret_does_not_go_negative() {
-        assert_eq!(run_layout(0.0, 0.0, 2.0, true), (0.0, 0.0));
-    }
-
-    #[test]
-    fn a_blank_field_puts_the_caret_at_the_field_start_not_after_the_placeholder() {
-        assert_eq!(run_caret_w(true, 999.0), 0.0);
-        assert_eq!(run_caret_w(false, 42.0), 42.0);
-        let (run, caret) = run_layout(480.0, run_caret_w(true, 0.0), 756.0, true);
-        assert_eq!(run, 0.0);
-        assert_eq!(caret, CARET_GAP);
-        let (buggy_run, buggy_caret) = run_layout(480.0, 480.0, 756.0, true);
-        assert_eq!(buggy_run, 0.0);
-        assert_eq!(buggy_caret, 480.0 + CARET_GAP);
-        assert!(caret < buggy_caret);
-    }
-
-    #[test]
-    fn the_clip_reserves_only_the_descent_centering_does_not_already_clear() {
-        assert_eq!(descent_pad(80.0, 87.0, 17.0, 70.0), 3.5);
-        assert_eq!(descent_pad(80.0, 40.0, 17.0, 20.0), 0.0);
-        assert_eq!(descent_pad(80.0, 10.0, 17.0, 70.0), 0.0);
     }
 
     #[test]
