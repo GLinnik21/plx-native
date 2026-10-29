@@ -20,9 +20,13 @@ rust-modules/screens/src/preferences/picker.rs::durable::peek
 rust-modules/screens/src/profiles.rs::avatar_art::current_server
 rust-modules/screens/src/settings.rs::plaintext_inputs::grant::offers
 rust-modules/screens/src/settings.rs::plaintext_inputs::grant::offers
-rust-modules/screens/src/detail/mod.rs::collapse_full_trailer::preview::paused
-rust-modules/screens/src/detail/mod.rs::draw::preview::paused
-rust-modules/screens/src/detail/mod.rs::preview_tick::preview::paused
 rust-modules/screens/src/settings.rs::rebuild::session::peek_settled
 rust-modules/screens/src/settings.rs::step::session::peek_settled
 rust-modules/screens/src/settings.rs::step::session::peek_settled
+# COVERAGE EXPANSION of Sans-IO lifecycle PR B (2026-10-24): these three are not new reads, they are reads the gate could not see. The player's transport helpers
+# (`paused`, `viewer_paused`, ...) left `lifecycle.rs` for `player/transport.rs`, and the `globals` spellings now also name the helpers a machine reads the pause
+# through: `transport::paused`, `transport::viewer_paused` and `preview::paused` (`TX.paused` behind `occupies()`). The detail page's trailer collapse, its
+# draw and its preview tick read the last of them; nothing under the scanned areas names the other two. Each is a candidate to become a value on an event.
+rust-modules/screens/src/detail/mod.rs::collapse_full_trailer::preview::paused
+rust-modules/screens/src/detail/mod.rs::draw::preview::paused
+rust-modules/screens/src/detail/mod.rs::preview_tick::preview::paused

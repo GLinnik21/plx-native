@@ -59,9 +59,8 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
   `active(` is a site only in a file that imports it from `task`, `storage_worker`, `session`, `keypin`,
   `grant` or `tape` (singly, as the last or any other item of a braced group, or through a glob;
   `Builder::spawn`, a local fn, `it.peek()` and another module's `active()` are not workers or registry
-  reads); `peek`, `current_gen(` and `active(` are also sites in `plex/src/plex/session.rs` and
-  `data/src/stores/tape.rs`, the modules that define them (`stores/tape.rs` calls its own `active()`
-  six times). `current_gen` and `active` are generic names, so their bare form counts only as a call; a
+  reads); `peek` and `current_gen(` are also sites inside `plex/src/plex/session.rs`, the module that
+  defines them. `current_gen` and `active` are generic names, so their bare form counts only as a call; a
   `use ... as` rename of `tape`, `tape::active` or any of the new names fails outright. A local launcher
   (`launch_browse_discovery`) is no site of its own: the real call inside it is.
 - The roster, session-cache and tape readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
@@ -74,7 +73,7 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
   same hazard as a fork. The four `server_*` names and `peek_settled` are as distinctive as `client_for`
   and are sites bare anywhere (`x.server_ids()` is not); the spelling the rule keys is the one the call
   uses (`session::peek_settled` when qualified, `peek_settled` when bare). Widening the rule to them
-  was a coverage expansion: it recorded 63 reads that were already there (`globals` 57 to 120) and
+  was a coverage expansion: it recorded 57 reads that were already there (`globals` 57 to 114) and
   deleted none. Not in the list on purpose: `i18n::current` (a display read) and the
   `plx_media::route::*()` settings getters, which the architecture board kept out of this gate; and the
   other registry accessors (`server_facts`, `server_count`, `describe_server`, ...), which the rule does

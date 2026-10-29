@@ -6825,8 +6825,21 @@ impl PersonOwnerGateFixture {
         Planted in a store file (data/src/stores/) they are sites: qualified, bare after an import (singly, in a
         group, through a glob), and the rename that would hide the calls fails outright. A method or a local of
         the same name (`it.active()`, `it.server_ids()`, a struct field `active`, a local `fn active()`) is no
-        read; `active` and `current_gen` count only where the file imports them from `tape` / `session`."""
+        read; `active` and `current_gen` count only where the file imports them from `tape` / `session`.
+        `plex/src/plex/session.rs` calls its own `peek_settled()` / `current_gen()` with no `use` to say so, as
+        it always did for `peek`; a bare call planted there is a site. `data/src/stores/tape.rs` is the
+        registry the stores call through, not a machine, so its own bare `active()` is NOT one. All of it is
+        graded by ONE gate run (a run is ~14 s)."""
         crate = "data"
+        session = "rust-modules/plex/src/plex/session.rs"
+        tape = "rust-modules/data/src/stores/tape.rs"
+        with open(os.path.join(self.tree, session), "a", encoding="utf-8") as f:
+            f.write("\nfn planted_settled() -> bool {\n    peek_settled().is_some() && current_gen() > 0\n}\n")
+        with open(os.path.join(self.tree, tape), "a", encoding="utf-8") as f:
+            # the `client_for` read gets the file past the candidate prefilter (a bare `active()` alone holds
+            # none of its tokens), so the scan really reads the file and the bare `active()` is graded
+            f.write("\nfn planted_active() -> bool {\n    let _ = it.active();\n    active()\n}\n"
+                    "pub fn real() { let _ = plx_plex::plex::client_for(0); }\n")
         r = self._plant_many({
             "stores/_check_deps_selftest_qualified.rs": (
                 "pub fn qualified() {\n"
@@ -6860,10 +6873,12 @@ impl PersonOwnerGateFixture {
                 "    pub fn active(&self) -> bool {\n        self.active\n    }\n}\n"
                 "fn local() -> bool {\n    true\n}\n"
                 "pub fn no_import(p: &Pane, current_gen: u32) -> bool {\n"
-                "    let _ = (p.active(), current_gen, helper::active(), local());\n    active()\n}\n"),
+                "    let _ = (p.active(), current_gen, helper::active(), local());\n    active()\n}\n"
+                "pub fn real() { let _ = plx_plex::plex::client_for(0); }\n"),
             "stores/_check_deps_selftest_defines.rs": (
                 "fn active() -> bool {\n    true\n}\n\n"
-                "pub fn defines() -> bool {\n    active()\n}\n"),
+                "pub fn defines() -> bool {\n    active()\n}\n"
+                "pub fn real() { let _ = plx_plex::plex::client_for(0); }\n"),
         }, crate)
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
@@ -6887,27 +6902,19 @@ impl PersonOwnerGateFixture {
                          "`it.server_ids()` is not a registry read\n" + out)
         for stem in ("no_import", "defines"):
             with self.subTest(not_a_read=stem):
-                self.assertNotIn(f"{base}{stem}.rs", out,
-                                 "a method, a field, a local or another module's `active` is no registry read\n" + out)
-
-    def test_globals_ledger_sees_bare_calls_inside_the_defining_modules(self):
-        """RED: `session.rs` calls its own `peek_settled()` / `current_gen()` and `stores/tape.rs` its own
-        `active()` with no `use` to say so, as `session.rs` always did for `peek`; a bare call planted in
-        either file is a site. The file's other `active` (the `Tape` field, the `fn active` header) and
-        `it.active()` are not."""
-        session = "rust-modules/plex/src/plex/session.rs"
-        tape = "rust-modules/data/src/stores/tape.rs"
-        with open(os.path.join(self.tree, session), "a", encoding="utf-8") as f:
-            f.write("\nfn planted_settled() -> bool {\n    peek_settled().is_some() && current_gen() > 0\n}\n")
-        with open(os.path.join(self.tree, tape), "a", encoding="utf-8") as f:
-            f.write("\nfn planted_active() -> bool {\n    let _ = it.active();\n    active()\n}\n")
-        r = self._deps()
-        out = r.stdout + r.stderr
-        self.assertNotEqual(r.returncode, 0, out)
-        self.assertIn("globals:", out)
+                # each fixture also holds one real read, so the file reaches the scan and the only line that
+                # names it is that read: its `active` (a method, a field, a local, another module's) is no site
+                self.assertIn(f"{base}{stem}.rs::real::client_for  (ledger: ", out)
+                naming = [line for line in out.splitlines() if f"{base}{stem}.rs" in line]
+                self.assertEqual(len(naming), 1,
+                                 "a method, a field, a local or another module's `active` is no registry read\n"
+                                 + out)
         self.assertIn(f"{session}::planted_settled::peek_settled  (ledger: ci/allow/globals/plex.txt)", out)
         self.assertIn(f"{session}::planted_settled::current_gen  (ledger: ci/allow/globals/plex.txt)", out)
-        self.assertEqual(out.count(f"{tape}::planted_active::active  (ledger: "), 1, out)
+        self.assertIn(f"{tape}::real::client_for  (ledger: ", out)
+        naming = [line for line in out.splitlines() if tape in line]
+        self.assertEqual(len(naming), 1,
+                         "`stores/tape.rs` is the registry, not a machine: its own bare `active()` is no site\n" + out)
 
     def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
         """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
@@ -7601,12 +7608,12 @@ impl PersonOwnerGateFixture {
         # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
         # Attempt-caps (#1044) moved the pin by nothing: the spellings widened to `devcaps::caps` and the zero-argument
         # `is_dp_audio` / `is_dp_audio_track` (a coverage expansion, not a shrink), and the planner reads none of them.
-        # Ledger widening (a one-time re-baseline that RECORDS sites that already existed; no new code and no
+        # Ledger widening (a one-time coverage expansion that RECORDS sites that already existed; no new code and no
         # new read): the globals rule gained the registry readers its closed list had missed (`server_ids`,
         # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
-        # `session::current_gen`, `tape::active`), +63 (57 -> 120); the forks rule gained the machine crates
+        # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
-        "globals": 120,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 114,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 75,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }

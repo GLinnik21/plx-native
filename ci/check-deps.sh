@@ -1302,8 +1302,9 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 # imports it from `session` / `keypin` / `grant` / `transport` / `preview` / `devcaps` /
 # `plex` / `transcoder` / `tape` (alone, last in a braced group, or
 # by glob; `transport`, `preview`, `devcaps` and `tape` count only as a whole path segment, because `scrub_preview::*` and
-# `hud_transport::*` are common module names that import neither) and, for `peek`, `current_gen(` and `active(`, in
-# plex/src/plex/session.rs and data/src/stores/tape.rs, the modules that define them. `current_gen` and `active` are
+# `hud_transport::*` are common module names that import neither) and, for `peek` and `current_gen(`, in
+# plex/src/plex/session.rs, the module that defines them (`data/src/stores/tape.rs` defines `active()` but is the
+# registry the stores call through, not a machine, so its own bare calls are no sites). `current_gen` and `active` are
 # generic names (a field, a method, another module's `active()`), so their bare form counts only as a call and only
 # where that import or module says it is the registry's; `peek_settled` and the four `server_*` names are as
 # distinctive as `client_for` and count bare anywhere (a method call, `x.server_ids()`, never does). A getter named without
@@ -1312,13 +1313,13 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 # not a site.
 globals_sites=$(
   { ledger_candidates G
-    printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs" "$SRC_DATA/stores/tape.rs"; } \
+    printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
     | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
       LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|session::peek_settled|session::current_gen|grant::offers|transport::paused|transport::viewer_paused|preview::paused|devcaps::caps|is_dp_audio_track|is_dp_audio|tape::active|server_ids|server_roster_gen|server_facts_gen|server_probe_result|peek_settled)([^A-Za-z0-9_]|$)' \
       LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|active|server_ids|server_roster_gen|server_facts_gen|server_probe_result)[[:space:]]*[(<]' \
       LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|server_ids|server_roster_gen|server_facts_gen|server_probe_result|tape::active|TX|session|keypin|grant|player|transport|preview|devcaps|tape)[[:space:]]+as[[:space:]]|(^|[^A-Za-z0-9_])tape::\{([^}]*[^A-Za-z0-9_])?active[[:space:]]+as[[:space:]]' \
       LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])devcaps::(caps([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?caps([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])caps[[:space:]]*\(;;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio_track([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio_track([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio_track([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])session::(current_gen([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?current_gen([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;(^|[^A-Za-z0-9_])tape::(active([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?active([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])active[[:space:]]*\(' \
-      LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;rust-modules/data/src/stores/tape.rs@@(^|[^A-Za-z0-9_.:])active[[:space:]]*\(;;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
+      LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
       ledger_scan | sort
 )
 LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
