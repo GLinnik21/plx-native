@@ -168,11 +168,11 @@ fn discovery_rig() -> Bridge {
 fn the_controlled_home_discovery_take_waits_for_a_request_it_owes_under_dump_mode() {
     let _guard = plx_base::testlock::serial();
     let mut rig = discovery_rig();
-    // A launcher that holds the request instead of spawning: the claim is up and no worker will
-    // ever answer.
-    let mut held = false;
-    rig.stores.browse.borrow_mut().controlled_discover(&mut |_| { held = true; true });
-    assert!(held && rig.stores.browse.borrow().discovery_owed(), "the request is out");
+    // The request is held, never started: the step raised the claim and no worker will ever
+    // answer.
+    rig.stores.browse.borrow_mut().controlled_discover(&plx_data::pms::registry_keys_for_test());
+    assert!(rig.stores.browse.borrow().has_jobs() && rig.stores.browse.borrow().discovery_owed(),
+        "the request is out");
     rig.stores.landgate.arm_dump(std::time::Duration::from_millis(20));
     // A take that waits must hit the fail-closed timeout. A plain take would poll once and return
     // nothing, and this would not panic.

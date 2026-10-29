@@ -82,10 +82,10 @@ was the last to complete its port): each `Bridge` owns one of each store. `Brows
 state/adapter/notice, `HubsStore`'s `PmsState`/`Arc<PmsAdapter>`/notice, `SearchStore`'s
 state/adapter/notice, `MetadataStore`'s state/`Arc<MetadataAdapter>`/notice and `ViewStateStore`'s
 queue, flight, retry and refresh state, worker adapter and notice are per-instance. The Browse
-adapter holds Browse's source-discovery mailbox and single-flight flag, and a `Fetch` (claim,
+adapter holds Browse's source-discovery mailbox beside a `Fetch` claim (its slot unused), and a `Fetch` (claim,
 mailbox and refusal list) for each of the page, the genre list, the letter list and the section
-hubs (one for both the list and the row reads); those four reads are started by the app's runner
-(`StoreJob::{BrowsePage,BrowseDirectory,BrowseHubs}`), not by the store. Person's adapter keeps the recorded fetch numbering (`slot * 3 + kind` for
+hubs (one for both the list and the row reads); those five reads are started by the app's runner
+(`StoreJob::{BrowsePage,BrowseDirectory,BrowseHubs,BrowseDiscovery}`), not by the store. Person's adapter keeps the recorded fetch numbering (`slot * 3 + kind` for
 servers 0..15, the two global fetches at 48 and 49, then `50 + (slot - 16) * 3 + kind`; see
 `person::fx`) and the controlled-record schema; Person, Search, Metadata and ViewState all rotate adapters on reset
 (D3: Metadata's `Clear` is the one exception — see `stores/metadata.rs`'s struct doc). `metadata`'s
@@ -103,9 +103,9 @@ exactly these (file: callers):
 
 | store | mutator | callers outside the store |
 |---|---|---|
-| browse | `BrowseCmd` (including `Reset`) | owned screens emit `AppFx::Store`; `app/bridge.rs` delivers the command to that Bridge's `BrowseStore`; synchronous app boundaries call `Stores::browse_run` on an explicit aggregate |
+| browse | `BrowseCmd` (including `Reset`) | owned screens emit `AppFx::Store`; `app/bridge.rs` delivers the command to that Bridge's `BrowseStore`; synchronous app boundaries call `Stores::browse_run` on an explicit aggregate; the Bridge hands the step the session it reads after the store observed its pin write (`Bridge::browse_session`) |
 | browse::listing_jobs | `kick_directory` (reached through `BrowseCmd::Addressed` with `Genres` or `Letters`) and `maybe_spawn_owned` (the `StoreWork::Browse` pump) | The step takes the section's `ClientKey` from the `ClientKeys` the Bridge filled, raises the read's claim and leaves a `StoreJob::BrowseDirectory` / `StoreJob::BrowsePage` on the outbox, drained by the same entries as the section hubs. The landings are unchanged; a refused read is settled by the store's next step. A controlled Home run never emits either |
-| browse | `StoreWork::{BrowseDiscovery,Browse}` | Onboard schedules the roster-only owned pass; Library schedules the full owned landing pass; `app/bridge.rs` delivers both to the addressed Bridge's `BrowseStore` |
+| browse | `StoreWork::{BrowseDiscovery,Browse}` | Onboard schedules the roster-only owned pass; Library schedules the full owned landing pass; `app/bridge.rs` delivers both to the addressed Bridge's `BrowseStore`. The discovery step takes the source's `ClientKey` from the `ClientKeys` the Bridge filled, raises the claim and leaves a `StoreJob::BrowseDiscovery` on the outbox, drained by `Bridge::browse_discover_pump` (and, in a controlled Home run, inside the `StoreWork::BrowseDiscovery` arm, which admits it as a `Home` job); a refused read backs the source off in the store's next step |
 | browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` (reached through `BrowseCmd::ApplyView`) | Library mutations are carried by `StoreCmd::Browse`; the BrowseStore owns the section-hub adapter and its per-section state. A step that needs a read decides it from the `ClientKeys` the Bridge filled and leaves it as a `StoreJob::BrowseHubs` on the store's outbox; every Bridge entry that can run such a step starts it in the same call (`Bridge::browse_run`, the `StoreWork::Browse` arm, `Bridge::reconcile_pump`, and `viewstate_pump` / `notify_pump` through their `*_FILLS` lists) |
 | viewstate | `ViewStateCmd::{Request,Reset}` | owned Detail emits `AppFx::Store`; `app/bridge.rs` delivers to its `ViewStateStore`; synchronous item-menu/boot boundaries call that Bridge; run pumps and drains addressed Detail refreshes through the same owner |
 | person | `PersonCmd::{Open,Close,Reset,ApplyView}` + owner pump | Person emits addressed Open/Close effects; Bridge boot/run and ViewState call the same aggregate's `PersonStore` |
@@ -132,7 +132,7 @@ the "legacy callers' combined pass" it was the last caller of — is deleted wit
 `stores::hubs::pump`. HubsStore forwards commands through `run_with_directory`/`tick_with_directory`. Every step
 captures its immutable `HubRequest` and emits it as a `StoreJob::Hubs`, which the app's runner
 launches or refuses; a controlled Home arm steps through the same calls and differs only in
-admission (`admit_hubs_jobs`). `pms::controlled_work` is a data-layer test driver, not a capture path. The owned Home emits `StoreCmd::Hubs(..)` and never calls a catalog
+admission (`admit_home_jobs`). `pms::controlled_work` is a data-layer test driver, not a capture path. The owned Home emits `StoreCmd::Hubs(..)` and never calls a catalog
 mutator. The store owns the work and result handling. Person, Filmography and
 PersonBio read only the owner-borrowed
 `PersonView`; Filmography reacts to Person notices but does not mutate the store.
@@ -276,8 +276,8 @@ point of the vocabulary is that the mutation set is one `match` a reviewer can r
 
 The stores are machines in state but not yet in IO: their modules still start their own workers,
 read `client_for(current_server())` and the other process-global registries (the Metadata detail
-fetch chain, the season switch and the episode-page window no longer do: each runs through the one
-client the runner resolved for its job, `docs/sans-io.md`, "The store job lane"), and a few arms are
+fetch chain, the season switch, the episode-page window and the Related row's tail window no
+longer do: each runs through the one client the runner resolved for its job, `docs/sans-io.md`, "The store job lane"), and a few arms are
 `cfg(not(test))` forks. `docs/sans-io.md` states the rule that retires those (a machine performs no
 IO; its work leaves as a typed effect and every result returns as one addressed event) and the four
 ledgers, `ci/allow/{workers,globals,forks,fxlanes}/`, that freeze today's sites. A new worker start,

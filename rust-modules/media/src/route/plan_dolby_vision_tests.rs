@@ -22,6 +22,9 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     for bl_compat in [1, 2, 4] {
         let dovi = Dovi {
@@ -63,6 +66,9 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     for capability in [
         plx_platform::devcaps::dv::DvCapability::Unknown,
@@ -181,6 +187,9 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
     assert!(
@@ -225,6 +234,9 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     let dv = p5().presentation(DECLARED, plx_platform::devcaps::dv::DvCapability::Supported, true);
     assert!(
@@ -276,6 +288,9 @@ fn a_cross_compatible_profile_7_source_direct_plays_as_profile_8() {
         audio: "eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     for signal in [SILENT, DECLARED] {
         let dv = p7().presentation(signal, Supported, true);
@@ -347,6 +362,9 @@ fn profile_8_and_plain_files_are_unaffected() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     for signal in [SILENT, DECLARED] {
         assert!(
@@ -499,6 +517,9 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     for capability in [
         plx_platform::devcaps::dv::DvCapability::Unknown,
@@ -581,6 +602,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     let part = "/library/parts/1/2/movie.mp4";
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
@@ -595,6 +617,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     // reading the new field and not something else that happens to differ
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
@@ -606,6 +629,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     );
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
@@ -619,6 +643,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     // route no longer performs — the preview reads the same predicate the gate does
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
@@ -650,6 +675,9 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     // the codec agrees; the frame size must still refuse — on either codec
     assert!(!video_direct_plays(
@@ -701,6 +729,9 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         audio: "aac".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
+        app_lossy: plx_platform::devcaps::AppLossy::Off,
+        app_lossy_in_force: Default::default(),
     };
     assert!(video_direct_plays(
         "h264",
@@ -757,6 +788,52 @@ fn decision_copies_video_follows_the_lane_then_the_contract() {
         assert!(decision_copies_video(&decision_body(lane), true), "a silent lane follows a remux");
         assert!(!decision_copies_video(&decision_body(lane), false), "a silent lane follows a re-encode");
     }
+}
+
+/// **`decision_lanes` is each lane's own word and never the contract.** The recovery ladder's proof
+/// rule reads it, so a body that states nothing is `Unstated` on both lanes (where
+/// [`decision_copies_video`] would follow the contract), and `copy`, `transcode` and `directplay`
+/// map to their lanes; the FIRST stream of each type speaks for its lane.
+#[test]
+fn decision_lanes_reads_each_lane_and_never_the_contract() {
+    use crate::player::recovery::{Lane, Lanes};
+    let body = |streams: &str| -> plx_plex::plex::MediaContainer {
+        serde_json::from_str(&format!(
+            r#"{{"Metadata":[{{"Media":[{{"Part":[{{"decision":"transcode","Stream":{streams}}}]}}]}}]}}"#
+        ))
+        .expect("a decision body")
+    };
+    let lanes = |video, audio| Lanes { video, audio };
+    let silent = lanes(Lane::Unstated, Lane::Unstated);
+    let nothing: plx_plex::plex::MediaContainer = serde_json::from_str("{}").expect("an empty body");
+    assert_eq!(decision_lanes(&nothing), silent, "no Metadata");
+    assert_eq!(decision_lanes(&body("[]")), silent, "no streams");
+    assert_eq!(decision_lanes(&body(r#"[{"streamType":1},{"streamType":2}]"#)), silent, "lanes without a decision");
+    assert_eq!(
+        decision_lanes(&body(r#"[{"streamType":1,"decision":""},{"streamType":2,"decision":"ignore"}]"#)),
+        silent,
+        "an empty or unknown word states nothing"
+    );
+    for (video, audio, want) in [
+        ("copy", "transcode", lanes(Lane::Copy, Lane::Transcode)),
+        ("directplay", "copy", lanes(Lane::DirectPlay, Lane::Copy)),
+        ("transcode", "directplay", lanes(Lane::Transcode, Lane::DirectPlay)),
+    ] {
+        let streams = format!(r#"[{{"streamType":1,"decision":"{video}"}},{{"streamType":2,"decision":"{audio}"}}]"#);
+        assert_eq!(decision_lanes(&body(&streams)), want, "{video} / {audio}");
+    }
+    assert_eq!(
+        decision_lanes(&body(r#"[{"streamType":2,"decision":"copy"}]"#)),
+        lanes(Lane::Unstated, Lane::Copy),
+        "a lane with no stream is unstated beside one that speaks"
+    );
+    assert_eq!(
+        decision_lanes(&body(
+            r#"[{"streamType":1,"decision":"copy"},{"streamType":1,"decision":"transcode"},{"streamType":2,"decision":"transcode"},{"streamType":2,"decision":"copy"}]"#
+        )),
+        lanes(Lane::Copy, Lane::Transcode),
+        "the first stream of each type speaks for its lane"
+    );
 }
 
 /// The one rule every server-built route asks: the file's declaration rides a COPY of a usable

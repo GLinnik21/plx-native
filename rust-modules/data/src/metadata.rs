@@ -158,8 +158,9 @@ pub struct MetadataState {
     alt: AltStore,
     /// The IO this owner has asked the application to start and the application has not yet taken
     /// (`MetadataStore::take_jobs`): one [`crate::stores::StoreJob::Detail`] per accepted detail
-    /// request, one [`crate::stores::StoreJob::MetaSeason`] per season switch and one
-    /// [`crate::stores::StoreJob::MetaEpisodes`] per episode-page window. The owner never starts
+    /// request, one [`crate::stores::StoreJob::MetaSeason`] per season switch, one
+    /// [`crate::stores::StoreJob::MetaEpisodes`] per episode-page window and one
+    /// [`crate::stores::StoreJob::MetaRelated`] per Related tail window. The owner never starts
     /// the work itself, so no thread, clock or network read happens in the step that asks. A job
     /// taken is a job owed to its runner: the application's `Bridge` starts each one in the same
     /// call that stepped the store (`app::adapters::stores`).
@@ -3499,19 +3500,11 @@ fn project_extras(
     d.trailer_rk = winner.rk;
 }
 
-fn fetch_related(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
-    let mc = match client.related(rk) {
-        Some(m) => m,
-        None => {
-            // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
-            // an item with no related hub and a refused GET both reach `fetch_full`'s `related=0`.
-            plx_base::eventlog::log(&format!(
-                "detail: rk={rk} /related did not answer — the related= below is that refusal"
-            ));
-            return RelatedRows::default();
-        }
-    };
-    related_rows(&mc, sid, rk)
+/// `None` when the GET did not answer: the caller words that refusal ([`fetch_full`]), because it
+/// runs beside the item's own GET and only the caller knows whether the item exists.
+fn fetch_related(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> Option<RelatedRows> {
+    let mc = client.related(rk)?;
+    Some(related_rows(&mc, sid, rk))
 }
 
 /// `/related`'s response for item `rk` → the page's collection shelf and Related row. **PURE**,
@@ -3671,7 +3664,10 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// The full detail fetch for `rk` (movie or show): item metadata + cast + streams, plus — for
 /// shows — seasons, the opening season's episodes ([`initial_season`]) and a stream backfill, plus
 /// the related hub.
-/// 2 PMS round-trips for a movie, 5 for a show.
+/// Round trips one after another: 2 for a movie (the item, with Related beside it; then extras,
+/// beside what is left of Related); for a show the item, then its seasons, then the opening
+/// season's episodes, with Related, the on-deck episode and extras beside them (a show nobody has
+/// started reads its first episode after those).
 ///
 /// Every GET goes through `client`, the one the runner resolved for the job
 /// ([`finish_detail_fetch`]), the opening season's episodes included.
@@ -3699,21 +3695,48 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
     // Worded as "no metadata" rather than "the GET failed": `fetch_detail` is `client.metadata(rk)?`,
     // and `metadata` answers `None` for a transport failure, a non-2xx and an unparseable body alike.
     // One line for all of them is right — the page is equally empty — but it must not assert which.
-    let Some((mut d, primary_extra_key)) = fetch_detail(client, sid, rk) else {
-        plx_base::eventlog::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (the server refused or did not answer)"));
-        return None;
-    };
-    if d.is_show {
-        load_show_seasons(client, rk, &mut d, prefer);
+    //
+    // Everything that needs nothing from the rest is asked beside it, on sibling threads of ONE
+    // scope (`plx_base::task::beside`), so the page waits for the slowest chain, not their sum:
+    // Related needs only the key, so it goes beside the item; extras and a show's on-deck episode
+    // need the item (its kind, its on-deck key) and go beside the seasons. The scope joins every
+    // sibling on every exit, the item-refused one included.
+    let (mut d, primary_extra_key, related, extras) = std::thread::scope(|s| {
+        let related = plx_base::task::beside(s, "detail-related", move || fetch_related(client, sid, rk));
+        let Some((mut d, primary_extra_key)) = fetch_detail(client, sid, rk) else {
+            plx_base::eventlog::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (the server refused or did not answer)"));
+            // The Related request was asked before this was known; its answer is dropped unread —
+            // and so is its `/related did not answer` line (`fetch_related` returns the refusal
+            // instead of logging it), which would read as a fact about an item that never loaded.
+            return None;
+        };
+        // Movie/show: the extras GET. Episode/season pages never show the Trailer control, so
+        // they must not pay extras I/O.
+        let extras = extras_wanted(&d.kind)
+            .then(|| plx_base::task::beside(s, "detail-extras", move || fetch_extras_rows(client, rk)));
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
         // its first). Everything downstream reads this as "the show's" media, so borrowing from
         // a different episode than the button plays would have the chips, the About footer and
-        // "how this plays" describing a file the user is not about to watch.
-        let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
-        let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
-        if let Some(ep_rk) = ep {
-            fetch_item_streams(client, &ep_rk, &mut d);
+        // "how this plays" describing a file the user is not about to watch. The on-deck episode is
+        // known from the item, so it is read beside the seasons; the first episode is known only
+        // once they land.
+        let on_deck = d.is_show.then(|| d.on_deck.as_ref().map(|e| e.rk.clone())).flatten()
+            .map(|ep| plx_base::task::beside(s, "detail-hero", move || client.metadata(&ep)));
+        if d.is_show {
+            load_show_seasons(client, rk, &mut d, prefer);
+            match on_deck {
+                Some(on_deck) => {
+                    if let Some(it) = on_deck.finish() {
+                        parse_streams(&it, &mut d);
+                    }
+                }
+                None => {
+                    if let Some(ep_rk) = d.episodes.first().map(|e| e.rk.clone()) {
+                        fetch_item_streams(client, &ep_rk, &mut d);
+                    }
+                }
+            }
             // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
             // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
             // play trigger reads it as "this is a show, take the episode's resume point instead",
@@ -3722,26 +3745,19 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
             // (`ui::detail::draw_play_mode`), which is also the only place that knows which
             // episode the button would start.
         }
-    }
-    // Movie/show: extras GET overlaps `/related` on a sibling thread so serial depth stays 2 / 5.
-    // Episode/season pages never show the Trailer control, so they must not pay extras I/O.
-    // Spawn failure omits the trailer rather than adding a serial extras hop behind related.
+        Some((d, primary_extra_key, related.finish(), extras.map(|e| e.finish())))
+    })?;
+    // Same shape as `fetch_seasons`: the degrade is deliberate, the silence is not — an item with
+    // no related hub and a refused GET both reach `related=0` below.
+    let related = related.unwrap_or_else(|| {
+        plx_base::eventlog::log(&format!("detail: rk={rk} /related did not answer — the related= below is that refusal"));
+        RelatedRows::default()
+    });
+    d.related = related.related;
+    d.related_tail = related.tail;
+    d.collection = related.collection;
     let extras_src: &'static str;
-    if extras_wanted(&d.kind) {
-        let (related, extras) = std::thread::scope(|s| {
-            let extras_h = std::thread::Builder::new()
-                .name("detail-extras".into())
-                .spawn_scoped(s, || fetch_extras_rows(client, rk));
-            let related = fetch_related(client, sid, rk);
-            let extras = match extras_h {
-                Ok(h) => h.join().ok().flatten(),
-                Err(_) => None,
-            };
-            (related, extras)
-        });
-        d.related = related.related;
-        d.related_tail = related.tail;
-        d.collection = related.collection;
+    if let Some(extras) = extras {
         match extras {
             Some(rows) => {
                 extras_src = "extras";
@@ -3763,10 +3779,6 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
         }
     } else {
         extras_src = "skip";
-        let related = fetch_related(client, sid, rk);
-        d.related = related.related;
-        d.related_tail = related.tail;
-        d.collection = related.collection;
     }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
     // on every line in every build, but nothing in a line distinguishes a programme title from
@@ -4019,13 +4031,13 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
 /// re-resolved its client before each sub-fetch, so after a sign-out its later GETs found no
 /// client (`None`) and after a re-point they went to the slot's new client. This one keeps the
 /// client it was handed (the registry leaks its clients, so the reference stays valid), which is
-/// `pms::kick_with`'s capture-at-the-step rule. (`ask_related` also keeps one client for its whole
-/// window, but it resolves that client inside its worker, which is why it is still on the globals
-/// ledger.) The registry blanks that client's token on both events (`revoke_all`, and the
-/// re-point arm of `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For
-/// a sign-out that is the old outcome, with the requests now sent and refused where they used to
-/// be skipped. For a re-point it is a page with its hero but empty seasons, streams, extras,
-/// trailer and related, where the old chain went on to the slot's new client and finished.
+/// `pms::kick_with`'s capture-at-the-step rule. (The Related window job keeps one client for its
+/// whole window the same way: the runner resolves it at the launch and hands it to
+/// [`finish_related_job`].) The registry blanks that client's token on both events (`revoke_all`,
+/// and the re-point arm of `register_lazy`), so the rest of the chain asks tokenless and lands
+/// `None`. For a sign-out that is the old outcome, with the requests now sent and refused where
+/// they used to be skipped. For a re-point it is a page with its hero but empty seasons, streams,
+/// extras, trailer and related, where the old chain went on to the slot's new client and finished.
 ///
 /// `None` is a server the registry held no client for when the job was admitted: there is nothing
 /// to ask, so `fetch` is not called and the answer is the failure, as it was when the first
@@ -5173,9 +5185,9 @@ fn season_addr(gen: u32) -> plx_machine::machine::Addr {
 
 /// A page job's address: the sequence of its own (`EpPages.sent`). It shares the id space of
 /// [`season_addr`] and of the Detail job's address (`Addr { to: Store(Metadata), req }`), so a page
-/// job, a season job and a detail job can carry an identical `Addr`. Nothing routes by `Addr`
-/// alone (each typed port keeps its answers apart); anything that later keys by it has to add the
-/// kind, or give the kinds disjoint ranges.
+/// job, a season job, a Related window job ([`related_addr`]) and a detail job can carry an
+/// identical `Addr`. Nothing routes by `Addr` alone (each typed port keeps its answers apart);
+/// anything that later keys by it has to add the kind, or give the kinds disjoint ranges.
 fn pages_addr(seq: u32) -> plx_machine::machine::Addr {
     season_addr(seq)
 }
@@ -5247,9 +5259,10 @@ impl plx_machine::job::Port<SeasonAnswer> for MetaSeasonPort {
     }
 }
 
-/// One read of a season or page job through the client the runner resolved: `None` when it held none for the
-/// server (no GET is made), and `None` when the read failed or panicked. The panic is caught HERE,
-/// so a caller posts its answer outside the guard and a panicking read still lands, as a failure.
+/// One read of a season, page or Related window job through the client the runner resolved: `None`
+/// when it held none for the server (no GET is made), and `None` when the read failed or panicked.
+/// The panic is caught HERE, so a caller posts its answer outside the guard and a panicking read
+/// still lands, as a failure.
 fn read_through<T>(
     client: Option<&'static plx_plex::plex::Client>,
     read: impl FnOnce(&'static plx_plex::plex::Client) -> Option<T>,
@@ -5376,14 +5389,17 @@ fn finish_episodes_with(
 // ---- Related tail window ----------------------------------------------------------------------
 // The Related row is its head (every preview of `/related`) and a window of the hubs' own listings
 // past their previews ([`RelatedTail`]). The screen names an edge ([`MetadataCmd::WantRelated`]),
-// the window moves off-thread through the shared sliding window, and [`pump_related_pages`]
-// installs it on the page it was read for.
+// the window is read by a typed job the application's runner starts (`StoreJob::MetaRelated`,
+// `Direct`: it is not on the tape) through the shared sliding window, and [`pump_related_pages`]
+// installs it on the page it was read for. The step starts no thread and reads no registry: the
+// runner resolves the server's client at the launch and hands it to [`finish_related_job`].
 
 #[derive(Default)]
 struct RelPages {
-    /// A window read is out; the next edge is asked for once it lands. Held until the worker is
-    /// finished, withdrawn or not: a read cannot be stopped, and a second one beside it would read
-    /// the same hubs twice for a reader rocking across the edge.
+    /// A window read is out; the next edge is asked for once it lands. Held until the job has
+    /// answered or been refused, withdrawn or not: a read cannot be stopped, and a second one
+    /// beside it would read the same hubs twice for a reader rocking across the edge. A job the
+    /// runner parks holds it too, as a worker that has not answered does.
     inflight: bool,
     /// The reader withdrew the read that is out: its answer is discarded when it lands.
     withdrawn: bool,
@@ -5391,6 +5407,8 @@ struct RelPages {
     /// seek opens at), so an ask for the same thing meanwhile adopts it and no other does.
     out: Option<(plx_plex::plex::ServerId, String, (usize, usize), bool, Option<usize>)>,
     landed: Vec<RelLanded>,
+    /// Window jobs emitted so far: the next job's address.
+    sent: u32,
 }
 
 struct RelLanded {
@@ -5400,8 +5418,7 @@ struct RelLanded {
     from: (usize, usize),
     /// `None` = the read failed: nothing installs, and the asker repeats it on its ladder while the need
     /// stands (the shelf at either edge; `pump_seek` in the detail screen for a restore).
-    window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>,
-        crate::stores::paging::RowState)>,
+    window: Option<RelatedWindow>,
     /// Where in the view-state publish order this read was requested ([`crate::viewledger`]).
     stamp: crate::viewledger::Stamp,
 }
@@ -5451,8 +5468,8 @@ fn tail_page(
 }
 
 /// What a Related window read is for.
-#[derive(Clone, Copy)]
-enum RelatedAsk {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelatedAsk {
     /// The window slides one step: the previous (`before`) or the next.
     Edge { before: bool },
     /// The window is opened where tail position `at` lies, whatever it held before: a page read
@@ -5461,13 +5478,20 @@ enum RelatedAsk {
 }
 
 /// Ask for the previous or next window of the Related tail. False when there is nothing to ask:
-/// no tail, no more in that direction, or a read already out. Main thread only.
+/// no tail, no more in that direction, or a read already out. True when the read's job was left on
+/// the outbox ([`ask_related`]). Main thread only.
 fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, before: bool,
     seen: (usize, usize)) -> bool {
     ask_related(state, adapter, RelatedAsk::Edge { before }, seen)
 }
 
 /// [`want_related`], or a window opened at a tail position ([`MetadataCmd::SeekRelated`]).
+///
+/// The step takes the single-flight claim in `rel_pages` and leaves the read on the outbox as a
+/// [`MetaRelatedReq`] job; it starts no thread and reads no registry. True means the job was
+/// emitted: the claim is up until the job's port gives it back, by its answer or by a refusal
+/// ([`MetaRelatedPort`]), so a true for a read the OS then refuses is followed by the claim lowered
+/// and the next edge asking again, exactly as a spawn that failed left it.
 fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, ask: RelatedAsk,
     seen: (usize, usize)) -> bool {
     use crate::stores::paging::{PageInfo, Row};
@@ -5487,7 +5511,7 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         || (seek && t.hubs.split_last().is_some_and(|(_, earlier)| earlier.iter().any(|h| h.len.is_none()))) {
         return false;
     }
-    {
+    let seq = {
         let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
         if rel.inflight {
             if rel.withdrawn && rel.out.as_ref().is_some_and(|(sid, rk, from, was_before, was_seek)|
@@ -5506,8 +5530,11 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         rel.inflight = true;
         rel.withdrawn = false;
         rel.out = Some((d.sid, d.rk.clone(), seen, before, seek_at));
-    }
-    let stamp = state.ledger.stamp(); // at the request, before the worker reads
+        // The job's own sequence, minted only for a job that is sent.
+        rel.sent += 1;
+        rel.sent
+    };
+    let stamp = state.ledger.stamp(); // at the request, before the read
     let (sid, rk) = (d.sid, d.rk.clone());
     let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
     // A seek opens its window on the listing alone: the window it replaces is not an overlap to
@@ -5516,39 +5543,19 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         .zip(d.related[t.head..].iter().map(|m| std::sync::Arc::new(m.clone()))).collect() };
     let skip: std::collections::HashSet<String> =
         t.exclude.iter().cloned().chain(d.related[..t.head].iter().map(|m| m.rk.clone())).collect();
-    let mut hubs = t.hubs.clone();
-    let state = if seek { Default::default() } else { t.row.clone() };
-    let worker = std::sync::Arc::clone(adapter);
-    let spawned = plx_base::task::spawn_small("related-tail", move || {
-        let window = catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let client = plx_plex::plex::client_for(sid)?;
-            let start = match ask {
-                RelatedAsk::Seek(at) => related_seek_start(at),
-                RelatedAsk::Edge { before: true } => info.offset,
-                RelatedAsk::Edge { before: false } => info.end,
-            };
-            let ask = crate::stores::paging::Ask { start, before, hidden: &[] };
-            let current = (!rows.is_empty()).then_some((rows.as_slice(), info));
-            // The shared row reader: a listing that shifts between reads moves the window onto its
-            // ledger of shown keys instead of stopping it, so no card repeats and the end is reached.
-            let current = current.map(|(rows, info)| (rows.to_vec(), info));
-            let (rows, info, state) = crate::stores::paging::read_row(sid, &ask, current, state, 0, |start, size| {
-                tail_page(&mut hubs, &skip, start, size, &mut |key, at, count| client.hub_items_paged(key, at as i64, count as i64))
-            }, |keys| client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>()))?;
-            Some((rows, info, std::mem::take(&mut hubs), state))
-        })).unwrap_or(None);
-        let mut rel = worker.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
-        rel.inflight = false;
-        rel.out = None;
-        if std::mem::take(&mut rel.withdrawn) { return; }
-        rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window, stamp });
-    });
-    if !spawned {
-        let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
-        rel.inflight = false;
-        rel.out = None;
-    }
-    spawned
+    let hubs = t.hubs.clone();
+    let row = if seek { Default::default() } else { t.row.clone() };
+    // The read is the application's to start. A launch that starts nothing is
+    // `MetaRelatedPort::refused`, which gives the claim taken above back, so the next edge asks
+    // again.
+    state.jobs.push(crate::stores::StoreJob::MetaRelated(
+        plx_machine::job::Job {
+            addr: related_addr(seq),
+            req: MetaRelatedReq { sid, rk, ask, info, rows, skip, hubs, row, stamp },
+        },
+        MetaRelatedPort::of(adapter),
+    ));
+    true
 }
 
 /// Where a window opened at tail position `at` starts: half a window before it, so the card has the
@@ -5558,8 +5565,9 @@ fn related_seek_start(at: usize) -> usize {
 }
 
 /// Withdraws the Related read: one out is discarded when it lands, one landed and not yet installed
-/// is dropped. The read out keeps its single-flight latch until it has finished, so the next edge
-/// asks again only after it (or adopts it, for the same window). Main thread only.
+/// is dropped. The read out keeps its single-flight latch until its job has answered or been
+/// refused (a job the runner has parked holds it too), so the next edge asks again only after it
+/// (or adopts it, for the same window). Main thread only.
 fn cancel_related(adapter: &MetadataAdapter) -> bool {
     let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
     if rel.inflight { rel.withdrawn = true; }
@@ -5568,7 +5576,7 @@ fn cancel_related(adapter: &MetadataAdapter) -> bool {
 }
 
 /// Test seam: a tail read that started from window `from` of `next`'s item has answered with
-/// `next`'s tail window, and waits for [`pump_related_pages`] exactly as a worker's answer does.
+/// `next`'s tail window, and waits for [`pump_related_pages`] exactly as the job port's answer does.
 #[cfg(any(test, feature = "test-support"))]
 pub fn land_related_for_test(adapter: &MetadataAdapter, from: (usize, usize), next: &Detail) {
     plx_base::testlock::assert_held("the detail store (land_related_for_test)");
@@ -5580,6 +5588,23 @@ pub fn land_related_for_test(adapter: &MetadataAdapter, from: (usize, usize), ne
         sid: next.sid, rk: next.rk.clone(), from, window: Some((rows, info, t.hubs.clone(), t.row.clone())),
         stamp: 0,
     });
+}
+
+/// Test seam: the Related read's single-flight claim, as `(a read is out, the reader withdrew it)`.
+/// A test that drives a runner reads it to prove a read's ONE answer, or its refusal, gave the claim
+/// back.
+#[cfg(any(test, feature = "test-support"))]
+pub fn related_claim_for_test(adapter: &MetadataAdapter) -> (bool, bool) {
+    let rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+    (rel.inflight, rel.withdrawn)
+}
+
+/// Test seam: how many Related answers wait in the mailbox for [`pump_related_pages`]. A job that
+/// answered the failure left one (with no window); a refused job left none, and gave the claim back
+/// the same way, so the claim alone cannot tell the two apart.
+#[cfg(any(test, feature = "test-support"))]
+pub fn related_landed_for_test(adapter: &MetadataAdapter) -> usize {
+    adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).landed.len()
 }
 
 /// Main-thread pump: install a Related window that landed on the page and the window it was read
@@ -5610,6 +5635,151 @@ pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         replay_views(state, since);
     }
     changed
+}
+
+// ---- the Related window job -------------------------------------------------------------------
+// `ask_related` takes the single-flight claim in `rel_pages` and leaves a `StoreJob::MetaRelated`
+// on the outbox (`Direct`: a controlled run never emits it, `bootstrap/effects.rs` has no related
+// arm). The application's runner resolves the server's client at the launch and runs
+// [`finish_related_job`]; the answer comes back through the job's port, which gives the claim back
+// and lands the window into the mailbox [`pump_related_pages`] reads (an ungated take, as before).
+
+/// A Related window job's address: the sequence of its own (`RelPages.sent`). Another kind of
+/// Metadata job can carry an identical `Addr` (see [`pages_addr`]); nothing routes by it alone.
+fn related_addr(seq: u32) -> plx_machine::machine::Addr {
+    season_addr(seq)
+}
+
+/// What one tail window read is for and everything it reads from, captured on the main thread at
+/// the ask: `sid` and `rk` name the loaded item, `ask` the edge or the seek, `info` the window it
+/// starts from (also the landing's `from`), `rows` the cards of that window (empty for a seek,
+/// which opens on the listing alone), `skip` the keys the tail must not show, `hubs` the lists it
+/// reads (with the lengths learned so far), `row` the ledger the window carries and `stamp` the
+/// view-state publish order at the request. The runner resolves `sid` to its client at the launch;
+/// a server it holds none for answers the failure without a GET.
+#[derive(Clone, PartialEq)]
+pub struct MetaRelatedReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub rk: String,
+    pub ask: RelatedAsk,
+    pub info: crate::stores::paging::PageInfo,
+    pub rows: Vec<crate::stores::paging::Row>,
+    pub skip: std::collections::HashSet<String>,
+    pub hubs: Vec<TailHub>,
+    pub row: crate::stores::paging::RowState,
+    pub stamp: crate::viewledger::Stamp,
+}
+
+/// Counts, not cards: a card (`PmsMovie`) has no `Debug` of its own.
+impl std::fmt::Debug for MetaRelatedReq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MetaRelatedReq {{ sid: {:?}, rk: {:?}, ask: {:?}, from: ({}, {}), {} row(s), {} skipped, {} hub(s), stamp: {} }}",
+            self.sid, self.rk, self.ask, self.info.offset, self.info.end, self.rows.len(), self.skip.len(),
+            self.hubs.len(), self.stamp)
+    }
+}
+
+/// A window the read produced: the cards, where the window sits, the hubs with the lengths the read
+/// learned, and the ledger the window carries.
+type RelatedWindow = (Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>,
+    crate::stores::paging::RowState);
+
+/// Where a window read's ONE answer goes: the mailbox of the adapter the request was made from (an
+/// owner that has since been `Reset` holds a new one; this port still lands into the retired one
+/// nobody pumps). Two ports are equal when they reach the same adapter.
+#[derive(Clone)]
+pub struct MetaRelatedPort(std::sync::Arc<MetadataAdapter>);
+
+impl MetaRelatedPort {
+    pub(crate) fn of(adapter: &std::sync::Arc<MetadataAdapter>) -> Self {
+        Self(std::sync::Arc::clone(adapter))
+    }
+}
+
+impl PartialEq for MetaRelatedPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for MetaRelatedPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MetaRelatedPort({:p})", std::sync::Arc::as_ptr(&self.0))
+    }
+}
+
+/// A window read's answer, opaque to the runner: `window` is `None` for a FAILED read.
+pub struct RelatedAnswer {
+    sid: plx_plex::plex::ServerId,
+    rk: String,
+    from: (usize, usize),
+    window: Option<RelatedWindow>,
+    stamp: crate::viewledger::Stamp,
+}
+
+impl plx_machine::job::Port<RelatedAnswer> for MetaRelatedPort {
+    /// The read finished: give the claim back, then land the window unless the reader withdrew the
+    /// read while it was out (a withdrawn answer is dropped, and the flag is spent with it).
+    fn done(&self, _addr: plx_machine::machine::Addr, a: RelatedAnswer) {
+        let mut rel = self.0.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        rel.inflight = false;
+        rel.out = None;
+        if std::mem::take(&mut rel.withdrawn) { return; }
+        rel.landed.push(RelLanded { sid: a.sid, rk: a.rk, from: a.from, window: a.window, stamp: a.stamp });
+    }
+
+    /// The read was never started: give the claim back in the call that refused it, which is where
+    /// the inline spawn's `!spawned` arm gave it back, so the next edge asks again. `withdrawn` goes
+    /// with it: no read is out for it to discard, and a later read must not be dropped on a stale
+    /// flag.
+    fn refused(&self, _addr: plx_machine::machine::Addr) {
+        let mut rel = self.0.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        rel.inflight = false;
+        rel.out = None;
+        rel.withdrawn = false;
+    }
+}
+
+/// The window read's IO body and its completion: read the window through `client` and post the
+/// answer to `port`. `client` is the one the runner resolved at the launch; `None` is a server it
+/// held none for, which answers the failure without a GET. The answer is posted OUTSIDE the guard,
+/// so a read that panics still lands, as a FAILURE.
+///
+/// WORKER THREAD.
+pub fn finish_related_job(
+    port: &MetaRelatedPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaRelatedReq,
+) {
+    finish_related_with(port, addr, client, req, read_related_window);
+}
+
+fn finish_related_with(
+    port: &MetaRelatedPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaRelatedReq,
+    read: impl FnOnce(&'static plx_plex::plex::Client, MetaRelatedReq) -> Option<RelatedWindow>,
+) {
+    use plx_machine::job::Port;
+    let (sid, rk, stamp, from) = (req.sid, req.rk.clone(), req.stamp, (req.info.offset, req.info.end));
+    let window = read_through(client, |client| read(client, req));
+    port.done(addr, RelatedAnswer { sid, rk, from, window, stamp });
+}
+
+/// The window itself: one page of the hubs' listings from where the ask starts, read through the
+/// shared row reader.
+fn read_related_window(client: &'static plx_plex::plex::Client, req: MetaRelatedReq) -> Option<RelatedWindow> {
+    let MetaRelatedReq { sid, ask, info, rows, skip, mut hubs, row, .. } = req;
+    let (start, before) = match ask {
+        RelatedAsk::Seek(at) => (related_seek_start(at), false),
+        RelatedAsk::Edge { before } => (if before { info.offset } else { info.end }, before),
+    };
+    let ask = crate::stores::paging::Ask { start, before, hidden: &[] };
+    let current = (!rows.is_empty()).then_some((rows, info));
+    // The shared row reader: a listing that shifts between reads moves the window onto its
+    // ledger of shown keys instead of stopping it, so no card repeats and the end is reached.
+    let (rows, info, row) = crate::stores::paging::read_row(sid, &ask, current, row, 0, |start, size| {
+        tail_page(&mut hubs, &skip, start, size, &mut |key, at, count| client.hub_items_paged(key, at as i64, count as i64))
+    }, |keys| client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>()))?;
+    Some((rows, info, hubs, row))
 }
 
 /// True while a season fetch is in flight — drives the episode row's loading dim + spinner.
@@ -6451,6 +6621,10 @@ mod detail_client_tests;
 #[cfg(test)]
 #[path = "metadata_season_job_tests.rs"]
 mod season_job_tests;
+
+#[cfg(test)]
+#[path = "metadata_related_job_tests.rs"]
+mod related_job_tests;
 
 /// #814: the runtime an *Also available* row carries is a fact about one FILE, so only a leaf has
 /// one. A show container's `duration` is the metadata agent's nominal per-episode figure.

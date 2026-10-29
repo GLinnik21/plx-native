@@ -70,8 +70,10 @@ outside one add/check/remove/check pair on that profile.
 
 The Watchlist is written and read with **the active profile's own plex.tv token**, never the owner's
 `account_token` and never a per-server PMS access token (a PMS token is refused on plex.tv, 401). It
-comes from `session::plex_tv_credential(&UserRef)`, captured on the MAIN thread at spawn into a
-`WatchlistAuth { client_id, credential, user, generation }` that the worker owns. New sessions carry
+comes from `session::plex_tv_credential(&UserRef)`, read on the MAIN thread by the Bridge (`Bridge::watchlist_input`,
+from one snapshot of the published profile) and handed to the store's `Open`, which builds the
+`WatchlistAuth { client_id, credential, user, generation }` that the worker owns. The store reads no registry:
+the frame pass is handed the seated profile (`Bridge::seated_profile`) to notice a switch. New sessions carry
 the profile's token explicitly; the one fallback is a proven legacy owner session. A managed or
 unknown legacy profile therefore has **no credential**: the page shows the account read-out
 (`Status::NoAccount`), `CatalogStore` reports `Unreachable`, and nothing is fetched.
@@ -266,7 +268,7 @@ card, the Sort & Filter pill) is not in the lens.
 `CatalogScreen` (`ContentArg::Catalog { hex }`) is the page for a Discover-only title. It is not a
 Detail mode: it never reads `metadata::current()`, so it has no Play, Restart, Also available, Mark
 watched, extras, seasons, cast or Related. `CatalogStore` owns the one `GET discover
-/library/metadata/<hex>`, captures the same `WatchlistAuth`, and reads membership from the
+/library/metadata/<hex>`, takes the same `WatchlistAuth` from the Bridge's input, and reads membership from the
 WatchlistStore, keeping no copy. It draws the art ground (proxied through a reachable server's photo
 transcoder, since `metadata-static.plex.tv` art needs a PMS; else the neutral ground), title, meta,
 a line-clamped summary, genres, a status line (clock for coming soon, circle-slash for not on your servers,

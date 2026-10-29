@@ -20,8 +20,8 @@
 //! `Browse(Discovery(..))` and refuses `StoreWork::Browse`).
 
 use super::{
-    genre_entry, fetch_listing_page, DirectoryResult, GenreEntry, LibraryType, ListingPage, PageResult,
-    Restore, SectionQuery, PAGE,
+    genre_entry, fetch_listing_page, DirectoryResult, GenreEntry, LettersKey, LibraryType, ListingPage,
+    PageResult, Restore, SectionQuery, PAGE,
 };
 use plx_machine::job::Port;
 use plx_machine::machine::{Addr, MachineId, RequestId};
@@ -92,8 +92,11 @@ pub struct BrowseDirectoryReq {
     /// The section's key on its server.
     section: i64,
     library_type: LibraryType,
-    /// The `type=` the section's current listing is asked for, if any.
-    metadata_type: Option<i64>,
+    /// The wire terms the read is scoped by: the listing's `type=` for the genre list, and for the
+    /// letters the very terms the grid's page read sends (`SecState::query_filters`).
+    filters: Vec<(String, String)>,
+    /// What a letters read counts, to come back with its answer ([`LettersKey`]); `None` for genres.
+    letters: Option<LettersKey>,
     which: Directory,
 }
 
@@ -141,8 +144,8 @@ impl std::fmt::Debug for BrowseDirectoryPort {
 }
 
 impl Port<BrowseDirectoryAnswer> for BrowseDirectoryPort {
-    /// The request's answer (a panicked read answers an empty list). One read of each directory is
-    /// out at a time (its claim), so the answer replaces whatever is waiting.
+    /// The request's answer (a failed or panicked read answers `ok: false`). One read of each
+    /// directory is out at a time (its claim), so the answer replaces whatever is waiting.
     fn done(&self, _addr: Addr, out: BrowseDirectoryAnswer) {
         match out.0 {
             DirectoryAnswer::Genres(result) => self.adapter.genres.post(result, |_| true),
@@ -169,20 +172,22 @@ pub(super) fn listing_addr(id: u32) -> Addr {
 }
 
 impl BrowseDirectoryReq {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(sid: ServerId, key: ClientKey, epoch: u32, sec: usize, section: i64,
-        library_type: LibraryType, metadata_type: Option<i64>, which: Directory) -> Self {
-        Self { sid, key, epoch, sec, section, library_type, metadata_type, which }
+        library_type: LibraryType, filters: Vec<(String, String)>, letters: Option<LettersKey>,
+        which: Directory) -> Self {
+        Self { sid, key, epoch, sec, section, library_type, filters, letters, which }
     }
 }
 
 /// The request's IO body and its completion: read the directory through `client` and post the
-/// answer to `port`. The answer is posted OUTSIDE the guard, so a read that panics lands as an empty
-/// list, as a read that found nothing does.
+/// answer to `port`. The answer is posted OUTSIDE the guard, so a read that panics lands like one that
+/// failed (`ok: false`), never as the empty list of a read that found nothing.
 pub fn finish_browse_directory_job(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
     req: BrowseDirectoryReq) {
-    let (section, metadata_type, which) = (req.section, req.metadata_type, req.which);
+    let (section, which, filters) = (req.section, req.which, req.filters.clone());
     finish_directory_with(port, addr, client, req, move || {
-        client.section_directory(section, which.wire(), metadata_type)
+        client.section_directory(section, which.wire(), &filters)
     });
 }
 
@@ -190,27 +195,32 @@ pub fn finish_browse_directory_job(port: &BrowseDirectoryPort, addr: Addr, clien
 /// test swaps for a read that panics.
 fn finish_directory_with(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
     req: BrowseDirectoryReq, read: impl FnOnce() -> Option<MediaContainer>) {
-    let BrowseDirectoryReq { key, epoch, sec, library_type, which, .. } = req;
+    let BrowseDirectoryReq { key, epoch, sec, library_type, letters, which, .. } = req;
     let answer = match which {
-        Directory::Genres => DirectoryAnswer::Genres(DirectoryResult {
-            epoch, sec, client, token_gen: key.token, library_type, list: directory_list(read, genre_entry),
-        }),
-        Directory::Letters => DirectoryAnswer::Letters(DirectoryResult {
-            epoch, sec, client, token_gen: key.token, library_type, list: directory_list(read, letter_entry),
-        }),
+        Directory::Genres => {
+            let list = directory_list(read, genre_entry);
+            DirectoryAnswer::Genres(DirectoryResult {
+                epoch, sec, client, token_gen: key.token, library_type, ok: list.is_some(),
+                list: list.unwrap_or_default(), letters: None,
+            })
+        }
+        Directory::Letters => {
+            let list = directory_list(read, letter_entry);
+            DirectoryAnswer::Letters(DirectoryResult {
+                epoch, sec, client, token_gen: key.token, library_type, ok: list.is_some(),
+                list: list.unwrap_or_default(), letters,
+            })
+        }
     };
     port.done(addr, BrowseDirectoryAnswer(answer));
 }
 
-/// The rows `read` brings back, projected; empty when the read failed or panicked.
+/// The rows `read` brings back, projected; `None` when the read failed or panicked. An answer with
+/// no rows is `Some(vec![])`: a filter that matches nothing is a list, not a fault.
 fn directory_list<T>(read: impl FnOnce() -> Option<MediaContainer>,
-    project: fn(&LibrarySection) -> Option<T>) -> Vec<T> {
+    project: fn(&LibrarySection) -> Option<T>) -> Option<Vec<T>> {
     catch_unwind(AssertUnwindSafe(|| {
-        let mut values = Vec::new();
-        if let Some(container) = read() {
-            values.extend(container.directory.iter().filter_map(project));
-        }
-        values
+        read().map(|container| container.directory.iter().filter_map(project).collect())
     }))
     .unwrap_or_default()
 }

@@ -175,3 +175,19 @@ pub(super) fn start_season_jobs() {
         }
     }
 }
+
+/// TEST ONLY: start the Related window jobs `ask_related` left on the outbox, each on a worker thread
+/// through the production body, as the application's `Live` runner starts them (the client is
+/// resolved here, at the launch). Any other job stays where it is.
+pub(super) fn start_related_jobs() {
+    use crate::stores::StoreJob;
+    for job in std::mem::take(&mut test_state().jobs) {
+        match job {
+            StoreJob::MetaRelated(job, port) => {
+                let client = plx_plex::plex::client_for(job.req.sid);
+                assert!(plx_base::task::spawn_small("related-tail", move || finish_related_job(&port, job.addr, client, job.req)));
+            }
+            other => test_state().jobs.push(other),
+        }
+    }
+}

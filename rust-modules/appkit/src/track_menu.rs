@@ -331,27 +331,38 @@ type EnhState = (
     plx_media::route::SubtitleEffect,
 );
 
-/// **A tab root's natural panel rect** — the layout of `table` as the panel would hug it. Each
-/// tab hugs its own rows (shared menu rule); the right edge is fixed, so switching tabs moves only
-/// the left edge.
-fn table_natural(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
+/// **The tallest page this menu shows with app-owned rows** — what decides which SIDE of its opener
+/// the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`), so the side is the same on
+/// every page and never flips under a viewer who pushes one. A server-length list (audio dubs,
+/// subtitle tracks) may be taller and scrolls inside the panel. Classic's room above its row is
+/// 710, which this stays under, so classic always opens upward.
+const NEED_H: f32 = 600.0;
+
+/// **A tab root's natural panel**, placed beside `anchor` — the layout of `table` as the panel would
+/// hug it. Each tab hugs its own rows (shared menu rule); the edge the opener's segment ends at is
+/// fixed, so switching tabs moves only the far edge.
+///
+/// The panel grows away from the opener and its height is capped at the room on that side, so a
+/// long list (an item with many audio dubs) SCROLLS inside the panel instead of the panel itself
+/// spilling over the opener or past the safe frame.
+fn table_natural(
+    table: &TableView,
+    anchor: Rect,
+    measure: &dyn plx_machine::machine::Measure,
+) -> plx_ui::popover::Anchored {
     let pw = table.menu_panel_width(measure);
-    // the transport control row's own right edge — one number for the discs and both panels
-    let px = crate::player_hud::CTRL_RIGHT - pw;
-    // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
-    // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
-    // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
-    // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
-    // the bottom edge steady.
-    let bottom = theme::layout::PLAYER_MENU_BOTTOM; // 764 — ~28px above the buttons
     // A note row wraps, so its line count depends on the width: it is resolved HERE, against the
     // same `measure` and `pw` the panel is sized with, so no caller (`update`, hit-testing,
     // `draw`) can read the count a rebuild left stale. Idempotent and a few short strings.
     table.fit_notes(pw, measure);
-    let top_min = 60.0;
-    let ph = table.measured_height().clamp(160.0, bottom - top_min);
-    let py = bottom - ph; // ≥ top_min by construction
-    Rect::new(px, py, pw, ph)
+    let ph = table.measured_height().max(160.0);
+    plx_ui::popover::anchor_panel(
+        anchor,
+        (pw, ph),
+        NEED_H,
+        theme::layout::PLAYER_MENU_GAP,
+        plx_ui::popover::Placement::PLAYER_MENU,
+    )
 }
 
 /// The renderer the ACTIVE subtitle is drawn by — what decides whether the caption's Size and
@@ -541,6 +552,13 @@ pub struct TrackMenuState {
     /// without the item in hand. A copy, refreshed wherever the subs list is re-read, so a
     /// subtitle that lands (or is replaced) while the page is up marks its hit at once.
     item_sidecars: Vec<metadata::Stream>,
+    /// The opener's rect, handed in when the menu opened ([`Self::with_anchor`]) and never read
+    /// from anywhere again: a stand-in taking the HUD row, or a language change, cannot move an
+    /// open panel.
+    anchor: Rect,
+    /// The side of [`Self::anchor`] the panel took, as of the last placement: where its rise
+    /// comes from.
+    side: std::cell::Cell<plx_ui::popover::Side>,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -699,11 +717,28 @@ impl TrackMenuState {
             search: offer_search.then(|| plx_data::subsearch::SubSearchSnapshot::idle(0)),
             search_watching: false,
             item_sidecars: Vec::new(),
+            anchor: crate::player_hud::classic::frame_geometry().row,
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
         s.rebuild(ps, meta, tab, false);
         s
+    }
+
+    /// Open beside `anchor`, the rect of the control (widened to the end of its segment) that
+    /// opened the menu, as the player screen hands it over. Without it the menu opens where classic
+    /// does: the control row's rect, whose right edge is `CTRL_RIGHT`. Called once, on the
+    /// freshly built menu and before its first frame: the placement is cached against the table's
+    /// layout, and the anchor is latched for the menu's whole life.
+    pub fn with_anchor(mut self, anchor: Rect) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// The anchor the menu was opened with ([`Self::with_anchor`]).
+    pub fn anchor(&self) -> Rect {
+        self.anchor
     }
 
     /// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the
@@ -1816,8 +1851,9 @@ impl TrackMenuState {
     /// idiom the Subtitles tab's Timing/Style pair uses, plus an optional non-selectable note (an
     /// inert slot: it takes a layout row and has no identity). Mirrors [`Self::layout`] for the
     /// Subtitles tab.
-    fn audio_form(&self, meta: metadata::MetadataView<'_>) -> TrackForm {
+    fn audio_form(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> TrackForm {
         self.audio_form_for(
+            ps,
             meta,
             (self.enhance_shown, self.enhance_route, self.enhance_disabled, self.enhance_subtitle_effect),
         )
@@ -1825,7 +1861,7 @@ impl TrackMenuState {
 
     /// [`Self::audio_form`] against an explicit enhancement answer ([`Self::enh_state`]'s shape),
     /// so the Audio root can be built while the menu shows Subtitles and has not stored one.
-    fn audio_form_for(&self, meta: metadata::MetadataView<'_>, enh: EnhState) -> TrackForm {
+    fn audio_form_for(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, enh: EnhState) -> TrackForm {
         let (enhance_shown, enhance_route, enhance_disabled, enhance_subtitle_effect) = enh;
         let mut sec = FormSection::new(plx_platform::i18n::msg::widgets_tracks_audio());
         let d = match tracks(meta) {
@@ -1858,7 +1894,7 @@ impl TrackMenuState {
             } else {
                 name
             };
-            let sub = audio_sub_line(sub, s);
+            let sub = audio_sub_line(ps, sub, s);
             if !sub.is_empty() {
                 row = row.detail(sub);
             }
@@ -2010,7 +2046,7 @@ impl TrackMenuState {
     fn rebuild(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
         if tab == 0 {
             let (shown, route, disabled, subtitle_effect) = Self::enh_state(ps);
-            self.rebuild_audio(shown, route, disabled, subtitle_effect, meta, slide);
+            self.rebuild_audio(ps, shown, route, disabled, subtitle_effect, meta, slide);
         } else {
             let form = self.layout(ps, meta);
             let keep = self.active_sub_id();
@@ -2048,6 +2084,7 @@ impl TrackMenuState {
     /// below — landing on the checked track — is exactly the existing open/switch behaviour.
     fn rebuild_audio(
         &mut self,
+        ps: &plx_media::route::PlaybackSession,
         enhance_shown: Option<plx_plex::plex::AudioEnhancements>,
         enhance_route: Option<plx_media::route::EnhancementRoute>,
         enhance_disabled: Option<plx_media::route::DisabledReason>,
@@ -2068,7 +2105,7 @@ impl TrackMenuState {
         self.enhance_route = enhance_route;
         self.enhance_disabled = enhance_disabled;
         self.enhance_subtitle_effect = enhance_subtitle_effect;
-        let form = self.audio_form(meta);
+        let form = self.audio_form(ps, meta);
         // The offer is back: prefer the banked identity over `prev_target` (which names whatever
         // row the cursor happened to sit on while the rows were gone) whenever it still exists.
         let restored = if enhance_shown.is_some() { self.sticky_audio_target.take() } else { None };
@@ -2088,7 +2125,11 @@ impl TrackMenuState {
     /// [`TableView::layout_rev`]: text is measured when the table changed, not once per caller per
     /// frame. What is on screen is [`Self::shown_rect`], which springs toward this.
     fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        self.motion.natural(self.form.table.layout_rev(), || table_natural(&self.form.table, measure))
+        self.motion.natural(self.form.table.layout_rev(), || {
+            let placed = table_natural(&self.form.table, self.anchor, measure);
+            self.side.set(placed.side);
+            placed.rect
+        })
     }
 
     /// The card as it is drawn this frame: its top and left edges on their springs toward
@@ -2126,7 +2167,7 @@ impl TrackMenuState {
                 || disabled != self.enhance_disabled
                 || subtitle_effect != self.enhance_subtitle_effect
             {
-                self.rebuild_audio(shown, route, disabled, subtitle_effect, meta, false);
+                self.rebuild_audio(ps, shown, route, disabled, subtitle_effect, meta, false);
             }
         } else {
             self.poll_subtitle_state(ps, meta);
@@ -2182,12 +2223,12 @@ impl TrackMenuState {
                 let forced = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
                 self.sub_root_form(ps, meta, forced.as_deref()).0
             } else {
-                self.audio_form_for(meta, Self::enh_state(ps))
+                self.audio_form_for(ps, meta, Self::enh_state(ps))
             };
             let mut other = TrackTable::new(BAND_BASE);
             other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
             other.set(form, None);
-            let natural = table_natural(&other.table, measure);
+            let natural = table_natural(&other.table, self.anchor, measure).rect;
             PanelMotion::prewarm_background_text(natural, &other.table, measure)
         });
         self.background_owner = Some(owner);
@@ -2197,13 +2238,14 @@ impl TrackMenuState {
         // The appear fade/rise — the container drives the phase and the appear spring. The dim
         // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
         // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
-        let p = Painter::root()
-            .alpha(appear)
-            .translate(0.0, Popover::RISE * (1.0 - appear));
+        // The panel rises from the side its opener is on (placed first: that is where the side is read).
+        let natural = self.panel_rect(measure);
+        let (dx, dy) = Popover::rise_offset(self.side.get(), Popover::RISE, appear);
+        let p = Painter::root().alpha(appear).translate(dx, dy);
         // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
         // dark card approximates it); only a hint of video shows through. ONE background at the
         // animated rect, the page(s) under its clip (`PanelMotion::draw`).
-        self.motion.draw(p, self.panel_rect(measure), 28.0, &self.form.table, measure);
+        self.motion.draw(p, natural, 28.0, &self.form.table, measure);
     }
 }
 
@@ -2374,17 +2416,28 @@ use plx_data::metadata::track_label::Kind;
 /// The sub-line under an audio track, saying so when the server would convert it: a track the TV
 /// cannot decode ("AAC 7.1" here) plays through the server's remux with only its audio converted,
 /// and the menu names that on the track it concerns rather than leaving the viewer to learn it
-/// from a log. Whether a track is converted is the planner's capability answer
-/// (`route::audio_converted_by_server`). Always ONE line: the longest label is graded against the
-/// panel by `converted_audio_sub_lines_fit_the_panel_in_every_language`.
-fn audio_sub_line(sub: String, s: &metadata::Stream) -> String {
-    audio_sub_line_for(sub, plx_media::route::audio_converted_by_server(&s.codec, s.channels, s.sampling_rate))
+/// from a log. Whether a track is converted is the planner's capability answer for THIS playback's
+/// attempt (`route::audio_converted_by_server`, which reads `ps`). A surround track the APP decodes
+/// (`route::audio_decoded_in_app`: a codec the recovery put in force as its very last rung, or the
+/// `appdecodelossy` debug trigger; never Force Direct Play, which refuses a surround track the set
+/// cannot decode instead of mixing it down) says it plays in stereo, since the descriptor ("DTS 5.1")
+/// would otherwise promise a layout the downmix does not keep; the server mark outranks it. Always ONE line: the
+/// longest label is graded against the panel by `converted_audio_sub_lines_fit_the_panel_in_every_language`.
+fn audio_sub_line(ps: &plx_media::route::PlaybackSession, sub: String, s: &metadata::Stream) -> String {
+    let converted = plx_media::route::audio_converted_by_server(ps, &s.codec, s.channels, s.sampling_rate);
+    let in_app = plx_platform::devcaps::app_decode_mixes_down(s.channels)
+        && plx_media::route::audio_decoded_in_app(ps, &s.codec, s.channels, s.sampling_rate);
+    audio_sub_line_for(sub, converted, in_app)
 }
 
-/// [`audio_sub_line`] with the conversion fact given — the pure choice, host-testable.
-fn audio_sub_line_for(sub: String, converted: bool) -> String {
-    if converted && !sub.is_empty() {
+/// [`audio_sub_line`] with the facts given — the pure choice, host-testable.
+fn audio_sub_line_for(sub: String, converted: bool, decoded_in_app: bool) -> String {
+    if sub.is_empty() {
+        sub
+    } else if converted {
         plx_platform::i18n::msg::widgets_tracks_converted_by_server(&sub)
+    } else if decoded_in_app {
+        plx_platform::i18n::msg::widgets_tracks_decoded_in_app_stereo(&sub)
     } else {
         sub
     }
@@ -2605,17 +2658,20 @@ fn table_form(
 }
 
 /// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`], the shared cap — either tab may hug
-/// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — the full
-/// `top_min`→`bottom` span, since the measured height comes from a `TableView` no host test can
-/// measure.
+/// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — placed by the
+/// same placer as the live panel, beside classic's anchor, with the height of the whole room (the
+/// measured height comes from a `TableView` no host test can measure).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (bottom, top_min) = (theme::layout::PLAYER_MENU_BOTTOM, 60.0);
     let pw = plx_ui::table::MENU_MAX_W;
-    out.push((
-        "track menu panel (widest)",
-        Rect::new(crate::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
-    ));
+    let placed = plx_ui::popover::anchor_panel(
+        crate::player_hud::classic::frame_geometry().row,
+        (pw, plx_ui::consts::SCR_H),
+        NEED_H,
+        theme::layout::PLAYER_MENU_GAP,
+        plx_ui::popover::Placement::PLAYER_MENU,
+    );
+    out.push(("track menu panel (widest)", placed.rect));
 }
 
 #[cfg(test)]
@@ -4332,14 +4388,61 @@ mod enhancement_menu_tests {
     #[test]
     fn a_converted_track_names_the_server_on_its_sub_line_and_a_playable_one_does_not() {
         let _g = plx_base::testlock::serial();
-        assert_eq!(audio_sub_line_for("AAC 7.1".into(), true), "AAC 7.1 \u{b7} converted by your server");
-        assert_eq!(audio_sub_line_for("Dolby Digital 5.1".into(), false), "Dolby Digital 5.1");
-        assert_eq!(audio_sub_line_for(String::new(), true), "", "no descriptor, nothing to extend");
+        assert_eq!(audio_sub_line_for("AAC 7.1".into(), true, false), "AAC 7.1 \u{b7} converted by your server");
+        assert_eq!(audio_sub_line_for("Dolby Digital 5.1".into(), false, false), "Dolby Digital 5.1");
+        assert_eq!(audio_sub_line_for(String::new(), true, false), "", "no descriptor, nothing to extend");
+        assert_eq!(audio_sub_line_for(String::new(), false, true), "", "no descriptor, nothing to extend");
+        assert_eq!(
+            audio_sub_line_for("DTS 5.1".into(), true, true),
+            "DTS 5.1 \u{b7} converted by your server",
+            "the server mark outranks the app's"
+        );
         // the capability answer it is fed: TrueHD is outside the profile's audio list, AC-3 is not
         let truehd = metadata::Stream { codec: "truehd".into(), channels: 8, ..Default::default() };
         let ac3 = metadata::Stream { codec: "ac3".into(), channels: 6, ..Default::default() };
-        assert!(plx_media::route::audio_converted_by_server(&truehd.codec, truehd.channels, truehd.sampling_rate));
-        assert!(!plx_media::route::audio_converted_by_server(&ac3.codec, ac3.channels, ac3.sampling_rate));
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        assert!(plx_media::route::audio_converted_by_server(&ps, &truehd.codec, truehd.channels, truehd.sampling_rate));
+        assert!(!plx_media::route::audio_converted_by_server(&ps, &ac3.codec, ac3.channels, ac3.sampling_rate));
+    }
+
+    /// **A surround track the app decodes says it plays in stereo** (Auto's very last rung, which put DTS
+    /// in force on a set whose pipeline refused it): the descriptor alone ("DTS 5.1") would promise a
+    /// layout the downmix does not keep. Force Direct Play never takes a surround track down, so it says
+    /// nothing of the kind there. A stereo track, a track the set decodes itself and a codec nothing
+    /// enabled say nothing extra, and the server mark outranks it.
+    #[test]
+    fn an_app_decoded_surround_track_says_it_plays_in_stereo() {
+        let _g = plx_base::testlock::serial();
+        assert_eq!(audio_sub_line_for("DTS 7.1".into(), false, true), "DTS 7.1 \u{b7} played in stereo");
+        assert_eq!(audio_sub_line_for("DTS 7.1".into(), false, false), "DTS 7.1");
+        let dts = |channels| metadata::Stream { codec: "dca".into(), channels, sampling_rate: 48_000, ..Default::default() };
+        let measured = std::sync::Arc::new(plx_platform::devcaps::Caps {
+            app_lossy: plx_platform::devcaps::AppLossy::Measured,
+            ..plx_platform::devcaps::Caps::assumed()
+        });
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        plx_media::route::begin_attempt_for_test(&mut ps, measured.clone());
+        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1 \u{b7} converted by your server", "Auto: the server converts it");
+        // The recovery's last rung put DTS in force: the attempt now plays the 5.1 track as stereo.
+        let rung = std::sync::Arc::new((*measured).clone().with_app_lossy_for("dts"));
+        plx_media::route::begin_attempt_for_test(&mut ps, rung.clone());
+        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1 \u{b7} played in stereo");
+        assert_eq!(audio_sub_line(&ps, "DTS 2.0".into(), &dts(2)), "DTS 2.0", "a stereo track is not a downmix");
+        // Force Direct Play refuses a surround track the set cannot decode instead of mixing it down, even
+        // with the codec in force: no mark, because nothing plays it.
+        plx_media::route::set_direct_play_mode_for_test(&mut ps, plx_media::route::DirectPlayMode::Forced);
+        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "Forced: no downmix, so no mark");
+        plx_media::route::begin_attempt_for_test(&mut ps, measured.clone());
+        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "Forced on a measured set: the refusal, no mark");
+        let truehd = metadata::Stream { codec: "truehd".into(), channels: 8, sampling_rate: 48_000, ..Default::default() };
+        assert_eq!(audio_sub_line(&ps, "Dolby TrueHD 7.1".into(), &truehd), "Dolby TrueHD 7.1", "unmeasured: not decoded here");
+        let native = std::sync::Arc::new(plx_platform::devcaps::Caps {
+            audio: "aac,ac3,eac3,dts".into(),
+            audio_channels: [("dts".into(), 6)].into(),
+            ..(*measured).clone()
+        });
+        plx_media::route::begin_attempt_for_test(&mut ps, native);
+        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "the set decodes it itself");
     }
 
     /// **The longest converted sub-line fits the Audio panel in every shipped language** — graded
@@ -4352,13 +4455,26 @@ mod enhancement_menu_tests {
         for language in SHIPPED {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
-            let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
+            let (mut ps, _sid) = enhancement_test_session(EnhTestFixture::default());
             let mk = |id: i64, codec: &str| metadata::Stream {
                 id, index: id, lang: "English".into(), lang_code: "eng".into(),
                 codec: codec.into(), channels: 8, layout: "7.1".into(), default: id == 1, ..Default::default()
             };
             let store = super::tests::store_with_audio(vec![mk(1, "truehd"), mk(2, "eac3"), mk(3, "dts")]);
             let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
+            // The same track menu once the recovery's last rung put DTS in force on a measured set: the DTS
+            // 7.1 track is decoded in the app, and its "played in stereo" line is graded the same way.
+            plx_media::route::begin_attempt_for_test(&mut ps, std::sync::Arc::new(
+                plx_platform::devcaps::Caps {
+                    app_lossy: plx_platform::devcaps::AppLossy::Measured,
+                    ..plx_platform::devcaps::Caps::assumed()
+                }
+                .with_app_lossy_for("dts"),
+            ));
+            let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
+            let line = audio_sub_line(&ps, "DTS 7.1".into(), &mk(3, "dts"));
+            assert_ne!(line, "DTS 7.1", "{}: the app-decoded track says so", language.tag());
             out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
             teardown(&ps);
         }
@@ -5395,6 +5511,8 @@ mod focus_tests {
             search: None,
             search_watching: false,
             item_sidecars: Vec::new(),
+            anchor: crate::player_hud::classic::frame_geometry().row,
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         }
     }
 
@@ -7185,5 +7303,164 @@ mod motion_tests {
         assert!(store.run(append(sidecar(11, "", "nld"))), "an empty title names nothing, so matches nothing");
         let ids: Vec<i64> = store.view().playing().unwrap().subs.iter().map(|s| s.id).collect();
         assert_eq!(ids, [5, 6, 9, 10, 11]);
+    }
+}
+
+/// **Classic's settled Tracks panel does not move** when its placement comes from an anchor: the
+/// right edge is the control row's (`CTRL_RIGHT`), the bottom edge 764, the width the hug, and the
+/// height the measured one up to the room above the row.
+#[cfg(test)]
+mod classic_placement_tests {
+    use super::tests::stream;
+    use super::*;
+    use plx_base::fontcov::advances::ShippedMeasure;
+
+    fn item(audio: usize) -> plx_data::stores::metadata::MetadataStore {
+        let mut store = plx_data::stores::metadata::MetadataStore::default();
+        let mut item = metadata::PlayingItem::with_subs(vec![stream(10, 0, "English", "eng", ""), stream(11, 1, "French", "fra", "SDH")]);
+        item.audio = (0..audio).map(|i| stream(100 + i as i64, i as i64, &format!("Dub {i}"), "eng", "")).collect();
+        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        store
+    }
+
+    /// (name, right edge, bottom edge, width, height) of each settled page.
+    fn settled(audio: usize) -> Vec<(String, [f32; 4])> {
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = item(audio);
+        let mut out = Vec::new();
+        for (tab, name) in [(0, "audio root"), (1, "subtitles root")] {
+            let mut menu = TrackMenuState::new(&ps, store.view(), tab, vec!["eng".into()]);
+            let r = menu.panel_rect(&ShippedMeasure);
+            out.push((format!("{name} ({audio} dubs)"), [r.x + r.w, r.y + r.h, r.w, r.h]));
+            if let Some(i) = menu.form.index_of(&TrackRow::Style) {
+                menu.focus_row(i as c_int);
+                assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+                let r = menu.panel_rect(&ShippedMeasure);
+                out.push((format!("style page ({audio} dubs)"), [r.x + r.w, r.y + r.h, r.w, r.h]));
+            }
+        }
+        plx_plex::plex::reset_servers_for_test();
+        out
+    }
+
+    /// Captured from the constants-placed panels (`CTRL_RIGHT - pw`, bottom 764) before the
+    /// placement came from an anchor: (right, bottom, width, height).
+    #[test]
+    fn classic_tracks_panels_settle_where_they_always_did() {
+        let got = settled(3);
+        assert_eq!(
+            got.iter().map(|(n, r)| (n.as_str(), *r)).collect::<Vec<_>>(),
+            [
+                ("audio root (3 dubs)", [1824.0, 764.0, 468.0, 356.0]),
+                ("subtitles root (3 dubs)", [1824.0, 764.0, 447.0, 488.0]),
+                ("style page (3 dubs)", [1824.0, 764.0, 440.0, 296.0]),
+            ],
+        );
+    }
+
+    /// A list taller than the room scrolls inside a panel that stops at the cap. The cap was 704
+    /// (`bottom - 60`) and is now the room above the row, 710: the one settled frame that differs,
+    /// and only for a list taller than the old cap.
+    #[test]
+    fn a_long_dub_list_stops_at_the_room_above_the_row() {
+        let got = settled(40);
+        let (name, [right, bottom, w, h]) = &got[0];
+        assert!(name.starts_with("audio root"));
+        assert_eq!((*right, *bottom, *w, *h), (1824.0, 764.0, 468.0, 710.0));
+        assert_eq!(*bottom - *h, plx_ui::consts::SAFE.y, "the room is what is left under SAFE's top");
+    }
+
+    /// Every opener of classic gets the same anchor from the player screen, and it is the control
+    /// row's, ending at the segment's edge: that is why the Audio, Subtitles and `…` discs all open
+    /// a panel at `CTRL_RIGHT - pw`, bottom 764.
+    #[test]
+    fn the_classic_anchor_is_the_row_ending_at_the_segment_edge_above_the_gap() {
+        let a = crate::player_hud::classic::frame_geometry().row;
+        assert_eq!(a.x + a.w, crate::player_hud::classic::CTRL_RIGHT, "the segment's outer edge");
+        assert_eq!(a.y - theme::layout::PLAYER_MENU_GAP, 764.0, "PLAYER_MENU_GAP above the row is classic's bottom edge");
+        assert_eq!((a.y, a.h), (crate::player_hud::classic::CTRL_Y, crate::player_hud::classic::CTRL_H), "the discs' own band");
+    }
+
+    fn menu_at(anchor: Rect, tab: c_int) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = item(3);
+        (TrackMenuState::new(&ps, store.view(), tab, vec!["eng".into()]).with_anchor(anchor), store)
+    }
+
+    /// The panel opens beside the anchor it was handed, whichever side that is.
+    #[test]
+    fn the_panel_opens_beside_the_anchor_it_was_handed() {
+        let _g = plx_base::testlock::serial();
+        use plx_ui::popover::Side;
+        let gap = theme::layout::PLAYER_MENU_GAP;
+        // an opener high on the screen: the panel hangs BELOW it, from its right edge
+        let high = Rect::new(1500.0, 120.0, 324.0, 64.0);
+        let (menu, _store) = menu_at(high, 1);
+        let r = menu.panel_rect(&ShippedMeasure);
+        assert_eq!(menu.side.get(), Side::Below);
+        assert_eq!((r.y, r.x + r.w), (high.y + high.h + gap, high.x + high.w));
+        // an opener in the middle of the right edge with no room above or below for NEED_H: to its left
+        let mid = Rect::new(1700.0, 560.0, 64.0, 64.0);
+        let (menu, _store) = menu_at(mid, 1);
+        let r = menu.panel_rect(&ShippedMeasure);
+        assert_eq!(menu.side.get(), Side::Start);
+        assert_eq!(r.x + r.w, mid.x - gap);
+        assert!(plx_ui::consts::SAFE.contains(r.x, r.y) && r.y + r.h <= plx_ui::consts::SAFE.y + plx_ui::consts::SAFE.h);
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// **The anchor is latched**: the panel's side and its edge by the opener stay put as the page
+    /// changes under it (a push, the other tab: both change the width and height), because nothing
+    /// re-reads where the opener is.
+    #[test]
+    fn the_panel_does_not_move_off_its_anchor_while_it_is_open() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, store) = menu_at(Rect::new(1500.0, 300.0, 324.0, 64.0), 1);
+        let first = menu.panel_rect(&ShippedMeasure);
+        let side = menu.side.get();
+        assert_eq!(side, plx_ui::popover::Side::Below, "the opener is high: the panel hangs under it");
+        let i = menu.form.index_of(&TrackRow::Style).expect("Style row");
+        menu.focus_row(i as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        let pushed = menu.panel_rect(&ShippedMeasure);
+        assert_ne!((pushed.w, pushed.h), (first.w, first.h), "the page changed the panel's size");
+        assert_eq!(menu.side.get(), side);
+        assert_eq!(pushed.x + pushed.w, first.x + first.w, "the edge by the opener");
+        assert_eq!(pushed.y, first.y, "and the panel's start (below the opener: its top)");
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// `NEED_H` is what the side is decided on, so it has to cover the tallest page the menu shows
+    /// with app-owned rows, and has to fit classic's room above the row (710) or classic would flip.
+    #[test]
+    fn need_h_covers_the_app_owned_pages_and_fits_classics_room() {
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = item(0);
+        let mut tallest = 0.0f32;
+        for tab in [0, 1] {
+            let mut menu = TrackMenuState::new_with(&ps, store.view(), tab, vec!["eng".into()], true);
+            tallest = tallest.max(menu.form.table.measured_height());
+            if let Some(i) = menu.form.index_of(&TrackRow::Style) {
+                menu.focus_row(i as c_int);
+                assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+                tallest = tallest.max(menu.form.table.measured_height());
+            }
+        }
+        assert!(tallest > 200.0, "something was measured: {tallest}");
+        assert!(tallest <= NEED_H, "a page of {tallest} px is taller than NEED_H {NEED_H}");
+        assert!(NEED_H <= 764.0 - plx_ui::consts::SAFE.y, "classic's room above the row holds NEED_H");
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The overscan audit's rect is the placer's, and sits inside SAFE.
+    #[test]
+    fn the_overscan_rect_comes_from_the_placer() {
+        let mut out = Vec::new();
+        overscan_rects(&mut out);
+        let r = out[0].1;
+        assert_eq!((r.x + r.w, r.y + r.h, r.w), (1824.0, 764.0, plx_ui::table::MENU_MAX_W));
+        assert_eq!(r.y, plx_ui::consts::SAFE.y, "the whole room");
     }
 }

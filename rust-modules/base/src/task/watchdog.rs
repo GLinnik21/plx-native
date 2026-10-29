@@ -533,6 +533,33 @@ impl Freezes {
 #[allow(non_upper_case_globals)]
 pub static plx_freeze_seq: AtomicU32 = AtomicU32::new(0);
 
+/// How far the process has got, as the tracer's fault handler (`src/crashtrace.c`) reads it from
+/// `plx_crash_phase` and writes it on the crash record's `phase:` line. Rust owns the storage (like
+/// [`plx_freeze_seq`]) so the C file links without Rust and Rust without the C file; the values
+/// are `PLX_PHASE_*` in `src/crashfmt.h`. A crash in the teardown or in the last flushes before
+/// `_exit` is a different bug from one in the running app, and this is the only thing that tells
+/// them apart.
+#[no_mangle]
+#[allow(non_upper_case_globals)]
+pub static plx_crash_phase: AtomicU32 = AtomicU32::new(0);
+
+/// The values [`plx_crash_phase`] takes; keep in step with `PLX_PHASE_*` in `src/crashfmt.h`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrashPhase {
+    /// The main loop, or anything before it.
+    Running = 0,
+    /// The loop has ended and the teardown is running.
+    Shutdown = 1,
+    /// The teardown is over; the process is ending. Set by `process::exit_now`, which runs no
+    /// `atexit` handler or static destructor.
+    Exiting = 2,
+}
+
+/// Record the process phase for the crash tracer. One relaxed store; async-signal-safe to read.
+pub fn set_crash_phase(phase: CrashPhase) {
+    plx_crash_phase.store(phase as u32, Ordering::Relaxed);
+}
+
 /// Send the freeze probe `seq` to the main thread, if there is a handler to answer it.
 ///
 /// The probe is `SIGUSR2` (`src/crashtrace.c` says why that number and what the handler does).

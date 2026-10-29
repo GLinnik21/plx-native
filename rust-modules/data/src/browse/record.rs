@@ -97,11 +97,11 @@ pub fn validate_binding(value: serde_json::Value, instance: u32) -> std::result:
 }
 
 pub fn apply_to(state: &mut BrowseState, adapter: &Arc<BrowseAdapter>, result: &Result,
-    preferences: Option<&plx_plex::plex::session::Session>)
+    session: &plx_plex::plex::session::Session, user: &str)
     -> crate::stores::StoreOutcome {
     if result.adapter.as_ref().is_some_and(|origin| !Arc::ptr_eq(origin, adapter)) {
         return Default::default();
     }
     state.apply_discovery(
-        result.epoch, result.source, result.landing.clone(), preferences, adapter)
+        result.epoch, result.source, result.landing.clone(), session, user, adapter)
 }

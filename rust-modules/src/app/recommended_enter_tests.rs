@@ -13,19 +13,12 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use plx_ui::containers::transition::{PageDip, PageImage, PagePaint};
+use plx_ui::containers::transition::{PageDip, PagePaint};
 use plx_ui::screen::At;
 
 /// The pop is a multiple of the card's resting size: the Recommended page's shelves are `HOME`
 /// shelves (`hub_style`), so the style's own focus scale is the card whole in its lift.
 const FULL_LIFT: f32 = plx_ui::cards::RowStyle::HOME.focus_scale;
-
-/// The page image a test leaves behind must not be the next test's (`PAGE_IMAGE_HELD` is a
-/// thread-local the dispatcher sets and the screens read on their next tick).
-struct ImageHeld;
-impl Drop for ImageHeld {
-    fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
-}
 
 /// One frame of an entry: the dip's phase, what the image decision made of the page, what the
 /// focused card was drawn at and what the first shelf's heading was drawn at.
@@ -42,35 +35,21 @@ struct Frame {
 
 /// The product's frame loop plus its page-image decision, recorded.
 struct Entry {
-    image: PageImage,
-    valid: bool,
+    dip: DipImage,
     frames: Vec<Frame>,
 }
 
 impl Entry {
-    fn new() -> Self { Entry { image: PageImage::default(), valid: false, frames: Vec::new() } }
+    fn new() -> Self { Entry { dip: DipImage::default(), frames: Vec::new() } }
 
-    /// One World frame, then the dispatcher's image decision on it (`Dispatcher::draw_with`: plan
-    /// from the transition and the page's quiescence, state `page_image_held` for the NEXT tick),
-    /// then the frame read. `draw` also runs the page's draw through a recording painter.
+    /// One World frame, then the dispatcher's image decision on it (`World::step_dip`), then the
+    /// frame read. `draw` also runs the page's draw through a recording painter.
     fn step(&mut self, w: &mut World, inputs: Vec<InputEvent<u32>>, draw: bool) {
-        w.step(inputs);
-        let quiescent = !plx_machine::idle::page_layout_moving();
-        let transition = &w.d.nav.tabs.stack.transition;
-        let (phase, alpha, flight) = (transition.phase_word(), transition.page_alpha(), transition.in_flight());
-        let Some(entry) = w.d.nav.top_page().map(|e| e.id) else { return };
-        let paint = self.image.plan(entry, flight, alpha, w.frame * 16, self.valid, quiescent);
-        match paint {
-            PagePaint::Capture => { self.image.captured(entry); self.valid = true; }
-            PagePaint::ReplacementCapture => { self.image.replacement_captured(entry); self.valid = true; }
-            PagePaint::Live => { self.image = PageImage::default(); self.valid = false; }
-            PagePaint::Held(_) => {}
-        }
-        let held = !matches!(paint, PagePaint::Live);
-        plx_ui::containers::transition::set_page_image_held(held);
+        let Some(paint) = w.step_dip(&mut self.dip, inputs) else { return };
+        let phase = w.d.nav.tabs.stack.transition.phase_word();
         let heading = draw.then(|| heading_alpha(w)).flatten();
         // The test's draw is not the product's image pass: it must not undo the plan above.
-        plx_ui::containers::transition::set_page_image_held(held);
+        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
         self.frames.push(Frame { phase, paint, scale: drawn_scale(w), heading });
     }
 

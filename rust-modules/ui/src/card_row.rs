@@ -868,7 +868,15 @@ fn tile_paint_bounds(rect: Rect, scale: f32, labelled: bool) -> Rect {
 pub fn paint_visible(p: Painter, rect: Rect, scale: f32, labelled: bool) -> bool {
     // Recording follows the buffered composition's text queries, including its offscreen rows.
     if p.is_recording() { return true; }
-    let mut bounds = tile_paint_bounds(rect, scale, labelled);
+    let label_h = if labelled { UNDER_LABEL_H } else { 0.0 };
+    paint_visible_with_label_h(p, rect, scale, label_h)
+}
+
+/// A card whose caller declares a taller persistent caption block.
+pub fn paint_visible_with_label_h(p: Painter, rect: Rect, scale: f32, label_h: f32) -> bool {
+    if p.is_recording() { return true; }
+    let mut bounds = tile_paint_bounds(rect, scale, label_h > 0.0);
+    if label_h > 0.0 { bounds.h = bounds.h.max(unscaled_bottom(rect, scale) + label_h - bounds.y); }
     bounds.x += p.dx();
     bounds.y += p.dy();
     let visible = bounds.intersect(Rect::FULL);
@@ -908,10 +916,17 @@ pub fn draw_tile(
 /// every shelf must reserve room for it in its own flow, and `reveal`/`scroll_into_view` only keep
 /// air under the block a screen *declares*. Before this, five call sites hand-authored that number
 /// from constants they could not see — [`TileLabel::height`] is the answer they were restating.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct TileLabel {
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
+    /// A grid's optional third line, below its identity (title and year).
+    pub sort_info: Option<std::ffi::CString>,
+    pub sort_mark: &'static [crate::widgets::MarkLayer],
+    /// Scores have emphasis; ordinary sort metadata uses the regular details face.
+    pub sort_bold: bool,
+    /// Unfocused persistent captions elide; only the focused caption may marquee.
+    pub static_text: bool,
     /// lead the FIRST line drawn with the amber play triangle (Continue Watching's tile has no play
     /// disc): the title when the block has one, else the details line. The mark hangs to the left of
     /// the line, which is centred as if it were not there. Set only while a press on the tile plays
@@ -965,6 +980,15 @@ pub struct LineBox {
 }
 
 impl TileLabel {
+    /// Fixed room for three lines; unknown values leave their own slot blank.
+    pub const SORT_BAND_H: f32 = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP
+        + 2.0 * UNDER_CAPTION_H + crate::consts::UNDER_LABEL_AIR;
+
+    pub fn all_lines(&self) -> [Option<LineBox>; 3] {
+        let [title, caption] = self.lines();
+        let top = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP + UNDER_CAPTION_H;
+        [title, caption, self.sort_info.as_ref().map(|_| self.line(top, top + UNDER_CAPTION_H))]
+    }
     /// **A line of the block is the label BAND's content, so it may not be on screen before the
     /// room for it is.** `band_h` is the band's whole height ([`CardRow::band_h`],
     /// `Grid::band_h`), `e` its live expansion, 0 collapsed → 1 open, and `rise` how far the tile
@@ -1161,6 +1185,22 @@ pub fn draw_label(
     label: &TileLabel,
     measure: &dyn plx_machine::machine::Measure,
 ) {
+    draw_label_mode(p, rect, s, sty, label, measure, label.static_text, label.within_tile);
+}
+
+/// Persistent grid presentation borrows the cached words; focus changes only their presentation.
+pub(crate) fn draw_persistent_label(
+    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
+    measure: &dyn plx_machine::machine::Measure, focused: bool,
+) {
+    draw_label_mode(p, rect, s, sty, label, measure, !focused, true);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_label_mode(
+    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
+    measure: &dyn plx_machine::machine::Measure, static_text: bool, within_tile: bool,
+) {
     // The label block anchors to the UNSCALED card bottom (rect is scaled about its center, so
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
@@ -1170,10 +1210,22 @@ pub fn draw_label(
     // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
     // only about whether the room under it holds the line yet.
     let lines = label.lines();
-    if lines.iter().flatten().all(|l| l.alpha <= 0.0) {
+    if label.all_lines().iter().flatten().all(|l| l.alpha <= 0.0) {
         return;
     }
-    draw_label_block(p, rect, sty, label, lines, bottom, measure);
+    draw_label_block(p, rect, sty, label, lines, bottom, measure, static_text, within_tile);
+    if let (Some(text), Some(line)) = (&label.sort_info, label.all_lines()[2].filter(|l| l.alpha > 0.0)) {
+        let raw = text.to_string_lossy();
+        if !label.sort_bold && label.sort_mark.is_empty() {
+            let run = measure.fit_line(&raw, sty.w, theme::size::CAPTION, false);
+            p.alpha(line.alpha).text(run.as_ptr(), rect.cx(), bottom + line.top,
+                theme::size::CAPTION, theme::CAPTION_DETAIL_INK, 1, 0);
+            return;
+        }
+        crate::widgets::rating_cell_fitted(p.alpha(line.alpha), rect.cx(),
+            bottom + line.top + UNDER_CAPTION_H * 0.5, sty.w,
+            &crate::widgets::RatingCell { mark: label.sort_mark, value: &raw, suffix: "" }, measure);
+    }
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
 /// caption rung of the deck's state, replacing the details line, and always shown on the deck (the
@@ -1573,11 +1625,23 @@ fn lead_band(x: f32, left: f32) -> Option<(f32, f32)> {
     (past > LEAD_REST_EPS).then(|| (past, past + past.min(LABEL_EDGE_FADE)))
 }
 
+/// **The mirror of [`lead_band`] for a right-to-left run**, whose head is its RIGHT end: the
+/// dissolve over the part of the run that is `x + run_w - right` px past the window's right edge,
+/// as `(from, to)` px from the string's own left edge, glyph alpha 1 at `from` and 0 at the
+/// window's edge. `None` at rest, where the run's first words sit on that edge and draw crisp.
+/// It grows with the travel for the same reason the leading band does.
+fn head_band_right(x: f32, run_w: f32, right: f32) -> Option<(f32, f32)> {
+    let past = x + run_w - right;
+    (past > LEAD_REST_EPS).then(|| (right - x - past.min(LABEL_EDGE_FADE), right - x))
+}
+
 /// One line of a label block at `x`, plain, or — given the window it glides inside, `(left, right)`
 /// — dissolving over the window's first [`LABEL_EDGE_FADE`] px for the part of a run that has
 /// glided past the left edge ([`lead_band`]) and over its last [`LABEL_EDGE_FADE`] px for the part
 /// that reaches the right. `run_w` is the line's drawn width; a run clear of both edges takes the
-/// plain program.
+/// plain program. A right-to-left run (`rtl`) is the mirror image: its head is at the right, so
+/// the band that grows with the travel is the right one ([`head_band_right`]), and its cut tail
+/// dissolves over the window's first [`LABEL_EDGE_FADE`] px at the left.
 fn block_text(
     p: Painter,
     text: *const c_char,
@@ -1588,12 +1652,20 @@ fn block_text(
     bold: std::os::raw::c_int,
     run_w: f32,
     window: Option<(f32, f32)>,
+    rtl: bool,
 ) {
     let (lead, trail) = window.map_or((None, None), |(left, right)| {
-        (
-            lead_band(x, left),
-            (x + run_w > right - LABEL_EDGE_FADE).then_some((right - LABEL_EDGE_FADE - x, right - x)),
-        )
+        if rtl {
+            (
+                (x < left + LABEL_EDGE_FADE).then_some((left - x, left + LABEL_EDGE_FADE - x)),
+                head_band_right(x, run_w, right),
+            )
+        } else {
+            (
+                lead_band(x, left),
+                (x + run_w > right - LABEL_EDGE_FADE).then_some((right - LABEL_EDGE_FADE - x, right - x)),
+            )
+        }
     });
     if lead.is_none() && trail.is_none() {
         p.text(text, x, y, sz, ink, 0, bold);
@@ -1692,6 +1764,8 @@ fn title_marquee(
         draw_play_mark(p, at.x, y, sz, bold);
     }
     let text_x0 = at.x + lead;
+    // an Arabic or Hebrew title glides mirrored, from its first words at the window's right edge
+    let rtl = !text.is_null() && plx_gfx::text::is_rtl_paragraph(&unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy());
     TITLE_CLOCK.with(|clock| {
         MARQUEE.glide_in(
             clock,
@@ -1700,13 +1774,14 @@ fn title_marquee(
             w,
             block.cycle_w,
             Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
+            rtl,
             |dx| {
                 let window = fade.then_some((text_x0, text_x0 + budget));
                 if shadowed {
                     block_text(p, text, text_x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz,
-                        crate::caption_policy::CAPTION_SHADOW, bold, w, window);
+                        crate::caption_policy::CAPTION_SHADOW, bold, w, window, rtl);
                 }
-                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, window);
+                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, window, rtl);
             },
         )
     });
@@ -1753,6 +1828,7 @@ pub fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
 /// caption — placed ONCE by [`place_label_wide`] from the wider of its two runs (plus the uncapped
 /// `want`), so both lines share one alignment: centred together, starting together at the card's
 /// leading edge, or ending together at its trailing edge when the room to the right is too small.
+#[allow(clippy::too_many_arguments)]
 fn draw_label_block(
     p: Painter,
     rect: Rect,
@@ -1761,15 +1837,36 @@ fn draw_label_block(
     lines: [Option<LineBox>; 2],
     bottom: f32,
     measure: &dyn plx_machine::machine::Measure,
+    static_text: bool,
+    within_tile: bool,
 ) {
     // Every run of the block is a label block's to a recording census, whatever its ink.
     #[cfg(any(test, feature = "test-support"))]
     let _label_scope = crate::draw_census::label_scope();
+    if static_text {
+        for (text, line, size, bold, ink) in [
+            (label.title.as_ref(), lines[0], theme::size::LABEL, true, theme::TEXT_PRIMARY),
+            (label.caption.as_ref(), lines[1], theme::size::CAPTION, false, theme::CAPTION_DETAIL_INK),
+        ] {
+            if let (Some(text), Some(line)) = (text, line.filter(|l| l.alpha > 0.0)) {
+                let run = measure.fit_line(&text.to_string_lossy(), sty.w, size, bold);
+                let p = p.alpha(line.alpha);
+                let y = bottom + line.top;
+                if label.shadowed {
+                    p.text(run.as_ptr(), rect.cx(), y + crate::caption_policy::CAPTION_SHADOW_DY, size,
+                        crate::caption_policy::CAPTION_SHADOW, 1, i32::from(bold));
+                }
+                p.text(run.as_ptr(), rect.cx(), y, size, ink, 1, i32::from(bold));
+            }
+        }
+        return;
+    }
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
     // Measured once and threaded through: the title's drawn width feeds both how wide the block
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
-    let title_w_val = label.title.as_ref().map(|t| title_w(t.as_ptr(), measure));
+    let title_w_val = label.title.as_ref().map(|t| measure.fit_line_measured(
+        &t.to_string_lossy(), f32::INFINITY, theme::size::LABEL, true).1);
     // The play mark leads the FIRST line drawn: the title, or the details line of a block with none.
     let title_mark = label.glyph && label.title.is_some();
     let caption_mark = label.glyph && label.title.is_none() && label.caption.is_some();
@@ -1779,12 +1876,12 @@ fn draw_label_block(
     // room on both sides of the text (`2 * lead`): the line stays on the block's centre.
     let title_run = title_w_val.map_or(0.0, |w| (w + 2.0 * lead).min(full));
     let caption_str = label.caption.as_ref().map(|c| c.to_string_lossy());
-    let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.width_str(s, csz, false));
+    let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.fit_line_measured(s, f32::INFINITY, csz, false).1);
     let caption_run = caption_w + 2.0 * caption_lead;
     // …and the UNCAPPED widest run, which only a block that reaches left of its card may use
     // ([`anchor_label`]).
     let want = title_w_val.map_or(0.0, |w| w + 2.0 * lead).max(caption_run);
-    let at = if label.within_tile {
+    let at = if within_tile {
         tile_window(rect.cx() - sty.w * 0.5, sty.w, want)
     } else {
         place_label_wide(p, rect, sty, title_run.max(caption_run.min(full)), want, label.settle_lag)
@@ -1814,11 +1911,10 @@ fn draw_label_block(
     let [title_line, caption_line] = lines.map(|line| line.filter(|l| l.alpha > 0.0));
     if let (Some(t), Some(line)) = (&label.title, title_line) {
         title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top, title_mark, title_w_val.unwrap_or(0.0),
-            block.as_ref(), label.shadowed, label.within_tile);
+            block.as_ref(), label.shadowed, within_tile);
     }
-    if let (Some(s), Some(line)) = (&caption_str, caption_line) {
+    if let (Some(tc), Some(line)) = (&label.caption, caption_line) {
         let (p, y) = (p.alpha(line.alpha), bottom + line.top);
-        let Ok(tc) = std::ffi::CString::new(s.as_ref()) else { return };
         // The mark hangs left of the text; a gliding line keeps it fixed at the window's left edge
         // and glides inside the window after it (the title's rule, `title_marquee`).
         if let Some(block) = block.as_ref().filter(|_| caption_over) {
@@ -1826,6 +1922,7 @@ fn draw_label_block(
                 draw_play_mark(p, at.x, y, csz, 0);
             }
             let x0 = at.x + caption_lead;
+            let caption_rtl = plx_gfx::text::is_rtl_paragraph(&tc.to_string_lossy());
             TITLE_CLOCK.with(|clock| {
                 MARQUEE.glide_in(
                     clock,
@@ -1834,13 +1931,15 @@ fn draw_label_block(
                     caption_w,
                     block.cycle_w,
                     Rect::new(x0, y - MARQUEE_AIR, (at.w - caption_lead).max(0.0), UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
+                    caption_rtl,
                     |dx| {
-                        let window = label.within_tile.then_some((x0, at.x + at.w));
+                        let window = within_tile.then_some((x0, at.x + at.w));
                         if label.shadowed {
                             block_text(p, tc.as_ptr(), x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
-                                crate::caption_policy::CAPTION_SHADOW, 0, caption_w, window);
+                                crate::caption_policy::CAPTION_SHADOW, 0, caption_w, window, caption_rtl);
                         }
-                        block_text(p, tc.as_ptr(), x0 + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, window);
+                        block_text(p, tc.as_ptr(), x0 + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, window,
+                            caption_rtl);
                     },
                 )
             });
@@ -1932,6 +2031,7 @@ pub fn draw_credit_label(
                 run_w,
                 block.cycle_w,
                 Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, frame.h + 2.0 * MARQUEE_AIR),
+                plx_gfx::text::is_rtl_paragraph(text),
                 |dx| {
                     label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, frame.h));
                 },
@@ -3406,5 +3506,186 @@ mod tests {
         let _ = plx_machine::idle::take_local_damage();
         assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "a fitting label never reports");
+    }
+
+    // ---- right-to-left lines glide mirrored ---------------------------------------------------
+
+    const LONG_ARABIC_TITLE: &str = "المغامرات الطويلة جدا لألكسندرا وولكوفيتش هارينغتون سميث وأطبائها الكثيرين في البيت الملكي";
+    const LONG_ARABIC_CAPTION: &str = "الدكتورة ألكسندرا وولكوفيتش هارينغتون سميث، كبيرة الأطباء في البيت الملكي";
+
+    /// `text`'s run and its follower in `runs`, as (follower, run), and the clip they glide in.
+    fn glide_pair(runs: &[crate::draw_census::Run], text: &str) -> (f32, f32, Rect) {
+        let mut xs: Vec<&crate::draw_census::Run> = runs.iter().filter(|r| r.text == text).collect();
+        assert_eq!(xs.len(), 2, "{text:?} glides as a run and its follower: {runs:?}");
+        xs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+        (xs[0].at.x, xs[1].at.x, xs[1].clip.expect("a gliding run is clipped to its window"))
+    }
+
+    /// The mirror image, checked line by line: at rest the run's RIGHT edge is on its window's (the
+    /// first words show), its follower waits one gap to its LEFT; 500 ms into the glide it has
+    /// moved 20 px RIGHT (40 px/s).
+    fn assert_glides_mirrored(rest: &[crate::draw_census::Run], moved: &[crate::draw_census::Run], text: &str, sz: i32) {
+        let w = measure_w(text, sz);
+        let (follower, run, clip) = glide_pair(rest, text);
+        assert!((run + w - (clip.x + clip.w)).abs() < 0.01, "{text:?} rests flush right: {run} + {w} vs {clip:?}");
+        assert!((follower + w + marquee::GAP - run).abs() < 0.01, "the follower one gap to the left");
+        let (_, later, _) = glide_pair(moved, text);
+        assert!((later - run - 20.0).abs() < 0.01, "{text:?} glides right: {run} -> {later}");
+    }
+
+    /// **An Arabic title reads from its right edge**, so a focused one that overflows glides as the
+    /// mirror image of a Latin one, and its caption with it.
+    #[test]
+    fn a_right_to_left_title_and_caption_rest_on_their_first_words_and_glide_right() {
+        let _serial = plx_base::testlock::serial();
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(700.0, 300.0, sty.w, sty.h);
+        let label = TileLabel::titled(LONG_ARABIC_TITLE, LONG_ARABIC_CAPTION);
+        let draw = || crate::draw_census::capture_runs(|| {
+            draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, &label,
+                &crate::fixture::FixtureMeasure);
+        });
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let rest = draw();
+        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        let _ = draw();
+        plx_machine::idle::frame_begin(0.5);
+        let moved = draw();
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        TITLE_CLOCK.with(|c| c.release());
+    }
+
+    /// And a headshot's Arabic name and role.
+    #[test]
+    fn a_right_to_left_credit_label_glides_mirrored() {
+        let _serial = plx_base::testlock::serial();
+        let at = Rect::new(500.0, 100.0, 222.0, 60.0);
+        let draw = || crate::draw_census::capture_runs(|| {
+            CREDIT_CLOCK.with(|c| draw_credit_label(Painter::recording(), c, at, LONG_ARABIC_TITLE,
+                LONG_ARABIC_CAPTION, true, &crate::fixture::FixtureMeasure));
+        });
+        CREDIT_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let rest = draw();
+        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        let _ = draw();
+        plx_machine::idle::frame_begin(0.5);
+        let moved = draw();
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        CREDIT_CLOCK.with(|c| c.release());
+    }
+
+    /// **A right-to-left line dissolves where it is cut, the mirror of a Latin one.** At rest an
+    /// overflowing Arabic line sits flush right on its first words, so it draws crisp at the
+    /// window's right edge and dissolves into the LEFT one, where its last words are cut.
+    #[test]
+    fn a_right_to_left_within_tile_line_at_rest_is_crisp_at_its_head_and_dissolves_at_its_left() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        assert_eq!(runs.len(), 2, "a run and its follower: {runs:?}");
+        let run = &runs[1];
+        let (left, right) = window_of(run);
+        let w = measure_w(LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        assert!(near(run.at.x + w, right), "at rest the first words sit on the window's right edge: {run:?}");
+        assert!(run.fade.is_none(), "the head draws crisp at the window's right edge at rest: {run:?}");
+        let (from, to) = run.lead.expect("the cut tail dissolves into the window's left edge");
+        assert!(near(from, left) && near(to, left + LABEL_EDGE_FADE),
+            "the left band covers [{left}, {}], got {from}..{to}", left + LABEL_EDGE_FADE);
+        TITLE_CLOCK.with(|c| c.release());
+    }
+
+    /// Once it glides right, the head leaves through the window's right edge, and that band grows
+    /// with the travel up to the full [`LABEL_EDGE_FADE`] (the leading band's rule, mirrored), so
+    /// the first glide frame is the rest picture.
+    #[test]
+    fn a_gliding_right_to_left_line_dissolves_out_at_the_right_edge_growing_with_the_travel() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        let w = measure_w(LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        // a quarter second into the glide: 10 px travelled at 40 px/s
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 250.0) / 1000.0);
+        let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        let run = &runs[1];
+        let (_, right) = window_of(run);
+        let travelled = run.at.x + w - right;
+        assert!(travelled > 5.0 && travelled < LABEL_EDGE_FADE, "10 px into the glide: {travelled}");
+        let (from, to) = run.fade.expect("a head past the right edge dissolves out there");
+        assert!(near(from, right - travelled) && near(to, right),
+            "the band is as wide as the travel ({travelled} px to {right}): {from}..{to}");
+        // two seconds on, past the full band
+        plx_machine::idle::frame_begin(1.75);
+        let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        let run = &runs[1];
+        let (_, right) = window_of(run);
+        assert!(run.at.x + w - right > LABEL_EDGE_FADE, "well into the glide: {run:?}");
+        let (from, to) = run.fade.expect("the head still dissolves out at the right edge");
+        assert!(near(from, right - LABEL_EDGE_FADE) && near(to, right), "the full band: {from}..{to}");
+        TITLE_CLOCK.with(|c| c.release());
+    }
+}
+
+#[cfg(test)]
+mod sort_caption_review_tests {
+    use super::*;
+    use plx_machine::machine::Measure;
+    use std::{cell::{Cell, RefCell}, ffi::CStr, rc::Rc};
+
+    #[derive(Default)]
+    struct CachedMeasure {
+        fits: RefCell<plx_gfx::text::FittedLines>,
+        widths: Cell<usize>,
+    }
+    impl Measure for CachedMeasure {
+        fn fit_line(&self, s: &str, budget: f32, size: i32, bold: bool) -> Rc<CStr> {
+            self.fits.borrow_mut().fit(self, s, budget, size, bold)
+        }
+        fn fit_line_measured(&self, s: &str, budget: f32, size: i32, bold: bool) -> (Rc<CStr>, f32) {
+            self.fits.borrow_mut().fit_measured(self, s, budget, size, bold)
+        }
+        fn width(&self, s: &CStr, size: i32, _: bool) -> f32 {
+            self.widths.set(self.widths.get() + 1);
+            s.to_bytes().len() as f32 * size as f32 * 0.5
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 }
+    }
+
+    #[test]
+    fn review_persistent_captions_reuse_fitted_text_and_rating_widths() {
+        let _guard = plx_base::testlock::serial();
+        let measure = CachedMeasure::default();
+        let mut label = TileLabel::titled("A very long movie title repeated across frames", "1997");
+        label.static_text = true;
+        label.sort_info = std::ffi::CString::new("100%").ok();
+        label.sort_bold = true;
+        label.sort_mark = &[(crate::icons::Icon::Crowd, theme::RATING_AUDIENCE)];
+        let rect = Rect::new(100.0, 100.0, 200.0, 300.0);
+        let style = RowStyle { w: 200.0, ..crate::poster_grid::STYLE };
+        let draw = || draw_label(Painter::recording(), rect, 1.0, &style, &label, &measure);
+        draw();
+        let cold = measure.widths.get();
+        assert!(cold > 0);
+        draw();
+        assert_eq!(measure.widths.get(), cold, "a warm persistent caption must not measure again");
+        // Focused identity lines keep the existing shared marquee, but reuse full-run metrics.
+        let mut focused = label.clone();
+        focused.static_text = false;
+        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        let focused_cold = measure.widths.get();
+        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        assert_eq!(measure.widths.get(), focused_cold);
+        // The ordinary metadata face takes the same fitted path, with no rating group.
+        let plain = TileLabel { sort_bold: false, sort_mark: &[], ..label };
+        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
+        let plain_cold = measure.widths.get();
+        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
+        assert_eq!(measure.widths.get(), plain_cold);
     }
 }

@@ -685,11 +685,19 @@ mod tests {
         }
     }
 
-    /// Every string literal that directly follows `prefix` in `text`.
+    /// Every string literal that directly follows `prefix` in `text`. A match inside a longer
+    /// identifier (`parse_phase("…")`, the crash report's own parser) is not the profiler's call.
     fn literals_after(text: &str, prefix: &str, out: &mut BTreeSet<String>) {
         let mut rest = text;
+        let mut before = None::<char>;
         while let Some(at) = rest.find(prefix) {
+            let prev = rest[..at].chars().next_back().or(before);
+            let own_call = !prev.is_some_and(|c| c.is_alphanumeric() || c == '_');
             rest = &rest[at + prefix.len()..];
+            before = Some('"');
+            if !own_call {
+                continue;
+            }
             if let Some(end) = rest.find('"') {
                 out.insert(rest[..end].to_string());
             }

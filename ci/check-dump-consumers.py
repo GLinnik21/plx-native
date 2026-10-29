@@ -13,7 +13,8 @@ lists every consumer with the kind it is. This gate holds the list of FILES to t
     two test guards included: a test that arms the switch is a race against its neighbours), or
     imports from the module with a brace list, a glob or an alias, and is not in the list, fails; and
   * a listed file that no longer names it fails as stale (the list is exact, and goes down as well
-    as up), and so does a `# count:` line that disagrees with the entries.
+    as up, but a PR that makes it longer also fails `ci/check-ledger-ratchet.py`), and so does a
+    `# count:` line that disagrees with the entries.
 
 References are read from the source with comments and string literals blanked out, so prose that
 mentions the switch (as this module's neighbours' docs do) is not a use. Test code in a listed file
@@ -21,7 +22,8 @@ is covered by the file's entry.
 
 Adding a line is a design decision, not a way to make a new file pass: read the admission rule in
 `dump.rs`, make the branch fit it, add the consumer to the list in that `//!`, then add the file here
-with the reason.
+with the reason. `ci/check-ledger-ratchet.py` fails a PR that grows this list, so a new entry is the
+owner's call.
 
     ci/check-dump-consumers.py           # the gate (make check runs it)
     ci/check-dump-consumers.py --list    # every file that names the switch, and the names

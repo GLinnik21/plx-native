@@ -198,7 +198,9 @@ impl Shelf {
     /// halves and the hold after it) nothing on screen can show the ease, and stepping it would hold
     /// the image past its dissolve (a page that is covered freezes its shelves mid-ease and resumes
     /// them under the BACK dip's image), so the springs and the caption band jump to rest on the
-    /// first tick, as [`Grid::dormant`](super::Grid::dormant) does. The scroll is kept either way.
+    /// first tick, as a [`Grid`](super::Grid) put to sleep by [`Grid::dormant`](super::Grid::dormant)
+    /// does (a grid that RETURNS is not put to sleep; a shelf has no such rule). The scroll is kept
+    /// either way.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }

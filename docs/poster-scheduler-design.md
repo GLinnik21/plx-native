@@ -17,7 +17,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 | Source location(s) | Calls / labels | Shape and disposition |
 |---|---|---|
 | `app/adapters/poster.rs:992` | normal `poster`, called twice | Two interchangeable long-lived workers competing for images. **This proposal's scheduling domain.** |
-| `browse/mod.rs:3644` | small `sources` | One-shot source discovery, adapter mailboxes and caller-owned epochs/latches. Leave alone. |
+| `app/adapters/stores.rs` (`launch_browse_discovery`) | small `sources` | One-shot source discovery, started by the app's runner for `StoreJob::BrowseDiscovery` (no longer in `browse/mod.rs`). Adapter mailbox behind a `Fetch` claim, caller-owned epochs. Leave alone. |
 | `app/adapters/stores.rs` (`launch_browse_directory`, `launch_browse_page`) | small `directory`, `page` | The Library's value-list and listing-page reads, started by the app's runner for `StoreJob::BrowseDirectory` / `BrowsePage` (no longer in `browse/mod.rs`). One-shot results behind each read's own claim and mailbox. Leave alone. `directory` serves genres and letters. |
 | `app/adapters/stores.rs` (`launch_browse_hubs`) | small `libhubs` | The section hubs' list/row read, started by the app's runner for `StoreJob::BrowseHubs` (no longer in `browse/section_hubs.rs`). One-shot result with section/table/client validity checks. Leave alone. |
 | `metadata.rs:2753,3188,3582` | small `detail`, `altsrc`, `season` | Distinct request/landing protocols; season failure is separate from an empty answer. Leave alone. |
@@ -41,7 +41,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 
 Excluded fixtures: `browse/mod.rs:2992` (`browse-owner-test`) and `app/run.rs:3038` (`lifecycle-fixture`). Calls inside `task.rs`'s own tests are unqualified helper calls, not production launch sites.
 
-Two further corrections matter. [metadata.rs](../rust-modules/data/src/metadata.rs)'s `fetch_full` uses `Builder::spawn_scoped` for `detail-extras` around line 2565, and [player/ffi_host.rs](../rust-modules/media/src/player/ffi_host.rs)'s `Clock::start_ticker` uses `Builder::spawn` for the host clock sink around line 328. Both inspect the `Result`; neither is a `task::spawn*` call. Thus “every spawn site uses task.rs” is too broad for this snapshot. This proposal introduces no further exception and does not repair those unrelated sites.
+Two further corrections matter. [metadata.rs](../rust-modules/data/src/metadata.rs)'s `fetch_full` asks for its sibling requests through `task::beside` (scoped threads joined before the function returns, which is not a detached `task::spawn*` worker), and [player/ffi_host.rs](../rust-modules/media/src/player/ffi_host.rs)'s `Clock::start_ticker` uses `Builder::spawn` for the host clock sink around line 328, inspecting the `Result`; neither is a `task::spawn*` call. Thus “every spawn site uses task.rs” is too broad for this snapshot. This proposal introduces no further exception and does not repair those unrelated sites.
 
 Also, [storage_worker.rs](../rust-modules/base/src/storage_worker.rs) already calls its serial persistence wrapper `Executor` and its boxed closure `Job`. That is existing blocking FIFO infrastructure, not permission to introduce an async executor here. Posters remain the surveyed **multi-worker interchangeable pool**; they are not the only background queue. A single abstraction covering all these shapes would discard important semantics.
 

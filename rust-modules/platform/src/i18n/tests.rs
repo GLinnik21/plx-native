@@ -622,3 +622,162 @@ fn render_in_english_is_scoped_and_nests() {
     assert_eq!(inside, "3.5");
     assert_eq!(current().language(), Language::Be);
 }
+
+#[test]
+fn polish_month_day_captions_use_genitive_and_abbreviations() {
+    let cx = LocaleContext::resolve(Preference::System, Some("pl-PL"), None, None, None);
+    let expected = [
+        ("12 sty", "12 stycznia"), ("12 lut", "12 lutego"), ("12 mar", "12 marca"),
+        ("12 kwi", "12 kwietnia"), ("12 maj", "12 maja"), ("12 cze", "12 czerwca"),
+        ("12 lip", "12 lipca"), ("12 sie", "12 sierpnia"), ("12 wrz", "12 września"),
+        ("12 paź", "12 października"), ("12 lis", "12 listopada"), ("12 gru", "12 grudnia"),
+    ];
+    for (i, (medium, long)) in expected.iter().enumerate() {
+        let month = (i + 1) as u8;
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Medium).as_deref(), Some(*medium));
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Long).as_deref(), Some(*long));
+    }
+    assert_eq!(cx.month_day(2, 29, MonthWidth::Long).as_deref(), Some("29 lutego"));
+    assert!(cx.month_day(2, 30, MonthWidth::Long).is_none());
+}
+
+#[test]
+fn polish_catalog_counts_follow_polish_plurals_even_with_english_formatting() {
+    let pl = LocaleContext::resolve(Preference::Pl, None, Some("en-US"), None, None);
+    for (count, expected, category) in [
+        (0, "0 odcinków", PluralCategory::Many),
+        (1, "1 odcinek", PluralCategory::One),
+        (2, "2 odcinki", PluralCategory::Few),
+        (5, "5 odcinków", PluralCategory::Many),
+        (11, "11 odcinków", PluralCategory::Many),
+        (12, "12 odcinków", PluralCategory::Many),
+        (14, "14 odcinków", PluralCategory::Many),
+        (21, "21 odcinków", PluralCategory::Many),
+        (22, "22 odcinki", PluralCategory::Few),
+        (25, "25 odcinków", PluralCategory::Many),
+        (101, "101 odcinków", PluralCategory::Many),
+        (112, "112 odcinków", PluralCategory::Many),
+        (122, "122 odcinki", PluralCategory::Few),
+    ] {
+        assert_eq!(pl.plural(count), category);
+        assert_eq!(msg::browse_detail_episodes_in(&pl, count), expected);
+    }
+    let mut fraction = Decimal::from(15);
+    fraction.multiply_pow10(-1);
+    assert_eq!(pl.plural.category_for(&fraction), PluralCategory::Other);
+}
+
+#[test]
+fn polish_system_locale_resolves_with_regional_formatting_and_latin_script() {
+    for tag in ["pl", "pl-PL", "pl_PL.UTF-8"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::Pl, "{tag}");
+        assert_eq!(cx.preference(), Preference::System);
+    }
+    let pl = LocaleContext::resolve(Preference::Pl, None, None, None, None);
+    assert_eq!(pl.format_locale(), "pl-PL");
+    assert_eq!(pl.decimal(45, 1), "4,5");
+    assert_eq!(pl.date(2026, 10, 25).as_deref(), Some("25.10.2026"));
+    assert_eq!(LocaleContext::resolve(Preference::System, Some("pl-Cyrl"), None, None, None).language(), Language::En);
+}
+
+#[test]
+fn sort_timestamp_calendar_conversion_rejects_unknown_and_unrepresentable_values() {
+    assert_eq!(super::local_calendar_date(0), None);
+    assert_eq!(super::local_calendar_date(-1), None);
+    assert_eq!(super::local_calendar_date(i64::MAX), None);
+    let [year, month, day] = super::local_calendar_date(1700000000).unwrap();
+    assert_eq!((year, month), (2023, 11));
+    assert!((14..=15).contains(&day), "calendar date follows the local timezone");
+}
+#[test]
+fn named_month_dates_keep_regional_order_and_validate_calendar_days() {
+    let ru = LocaleContext::resolve(Preference::Ru, None, None, None, None);
+    let en = LocaleContext::resolve(Preference::En, None, None, None, None);
+    let gb = LocaleContext::resolve(Preference::En, None, Some("en-GB"), None, None);
+    let russian = ru.date_medium(2026, 6, 25).unwrap();
+    assert!(russian.starts_with("25 июн.") && russian.contains("2026"), "{russian}");
+    assert_eq!(en.date_medium(2026, 6, 25).as_deref(), Some("Jun 25, 2026"));
+    assert_eq!(gb.date_medium(2026, 6, 25).as_deref(), Some("25 Jun 2026"));
+    assert!(ru.date_medium(2026, 2, 29).is_none());
+    assert!(ru.date_medium(2024, 2, 29).is_some());
+}
+
+#[test]
+fn named_month_dates_follow_interface_language_when_tv_format_language_differs() {
+    for format in ["en-GB", "en-US"] {
+        for preference in [Preference::Ru, Preference::System] {
+            let cx = LocaleContext::resolve(preference, Some("ru-RU"), Some(format), None, None);
+            assert_eq!(cx.format_locale(), format, "numeric formats retain the TV preference");
+            let date = cx.date_medium(2026, 6, 25).unwrap();
+            assert!(date.starts_with("25 июн.") && !date.contains("Jun"), "{format}: {date}");
+        }
+    }
+    let english = LocaleContext::resolve(Preference::En, Some("ru-RU"), Some("ru-RU"), None, None);
+    assert_eq!(english.date_medium(2026, 6, 25).as_deref(), Some("Jun 25, 2026"));
+}
+
+#[test]
+fn named_month_dates_match_icu_for_shipped_languages_and_regional_variants() {
+    // Compare all months against ICU's full data, including region-specific abbreviations and
+    // fallback regions. Only the test binary links the full Gregorian month-name database.
+    for preference in SHIPPED {
+        let regions = (b'A'..=b'Z')
+            .flat_map(|a| (b'A'..=b'Z').map(move |b| format!("{}{}", a as char, b as char)))
+            .chain(["", "001", "150", "419"].map(str::to_owned));
+        for region in regions {
+            let locale = if region.is_empty() {
+                preference.tag().to_owned()
+            } else {
+                format!("{}-{region}", preference.tag())
+            };
+            let cx = LocaleContext::resolve(preference, None, Some(&locale), None, None);
+            let oracle = icu_datetime::FixedCalendarDateTimeFormatter::try_new(
+                locale.parse::<icu_locale::Locale>().unwrap().into(),
+                icu_datetime::fieldsets::YMD::medium()
+                    .with_year_style(icu_datetime::options::YearStyle::Full),
+            )
+            .unwrap();
+            for month in 1..=12 {
+                let date = icu_calendar::Date::try_new_gregorian(2026, month, 9).unwrap();
+                assert_eq!(
+                    cx.date_medium(2026, month, 9).unwrap(),
+                    oracle.format(&date).to_string(),
+                    "{locale}, month {month}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn numeric_dates_match_icu_without_month_name_data() {
+    // Short date patterns must stay numeric, even when the TV format language differs from the UI.
+    let languages = (b'a'..=b'z')
+        .flat_map(|a| (b'a'..=b'z').map(move |b| format!("{}{}", a as char, b as char)))
+        .chain((b'a'..=b'z').flat_map(|a| {
+            (b'a'..=b'z').flat_map(move |b| {
+                (b'a'..=b'z').map(move |c| format!("{}{}{}", a as char, b as char, c as char))
+            })
+        }));
+    for locale in languages {
+        let Some(locale) = normalize(&locale) else {
+            continue;
+        };
+        let cx = LocaleContext::resolve(Preference::En, None, Some(&locale), None, None);
+        let oracle = icu_datetime::FixedCalendarDateTimeFormatter::try_new(
+            locale.parse::<icu_locale::Locale>().unwrap().into(),
+            icu_datetime::fieldsets::YMD::short()
+                .with_year_style(icu_datetime::options::YearStyle::Full),
+        )
+        .unwrap();
+        for (month, day) in [(1, 9), (6, 25), (9, 1), (12, 31)] {
+            let date = icu_calendar::Date::try_new_gregorian(2026, month, day).unwrap();
+            assert_eq!(
+                cx.date(2026, month, day).unwrap(),
+                oracle.format(&date).to_string(),
+                "{locale}"
+            );
+        }
+    }
+}

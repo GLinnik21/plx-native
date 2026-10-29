@@ -592,6 +592,10 @@ pub struct RecoveryLanding {
     /// The recovery position the flight was dispatched for, in nanoseconds.
     pub offset_ns: i64,
     pub verdict: RecoveryVerdict,
+    /// The lane verdicts of the `/decision` that built the replacement route, for a landing that
+    /// came from a retranscode (the facet rung's proof); `None` for any other (a refusal, a rollback,
+    /// the HLS contingency's rebuild, a resume), which can therefore never prove.
+    pub lanes: Option<crate::player::recovery::Lanes>,
 }
 
 /// Whether a recovery flight is outstanding — landed or not — so the pump's failure branches wait
@@ -642,7 +646,11 @@ pub fn take_ready_recovery_flight(ps: &mut PlaybackSession) -> Option<RecoveryLa
     let FlightOwner::Recovery(ticket) = owner else {
         unreachable!("take_claim_landing_for(true) only takes a recovery's landing");
     };
-    Some(RecoveryLanding { offset_ns: user_target, verdict: install_recovery_landing(ps, ticket, resume, result) })
+    let lanes = match &result {
+        RetranscodeClaimResult::Retranscode(applied) => Some(applied.lanes),
+        _ => None,
+    };
+    Some(RecoveryLanding { offset_ns: user_target, verdict: install_recovery_landing(ps, ticket, resume, result), lanes })
 }
 
 /// A recovery's landing, applied. Every way out leaves the reducer out of `Preparing(serial)`:
@@ -695,6 +703,9 @@ fn install_recovery_landing(
             // Nothing is playing, so the Original it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             installed.retire_replaced();
+            // The HLS attempt lacks the video raster the refusal named: the Original candidate the
+            // climb would return to is graded against it again.
+            regrade_original(ps);
             if !prepare_route_start(ticket) {
                 crate::player::log("recovery: prepared PMS route lost its start transaction");
                 return RecoveryVerdict::Refused;
@@ -702,7 +713,7 @@ fn install_recovery_landing(
             RecoveryVerdict::Install
         }
         RetranscodeClaimResult::Retranscode(applied) => {
-            // The refused audio's conversion ([`dispatch_native_audio_conversion`]). The same
+            // The refused stream's conversion ([`dispatch_refusal_conversion`]). The same
             // re-check an accepted claim makes: a route change between the worker's commit and
             // this drain leaves nothing this install may point at.
             if !is_worker_ticket_current(&applied.ticket) {
@@ -711,6 +722,10 @@ fn install_recovery_landing(
                 return RecoveryVerdict::Refused;
             }
             install_retranscode_outcome(ps, &applied);
+            // The attempt now lacks the facet the pipeline refused: the Original candidate the ABR
+            // climb would return to is graded against it again, so the climb does not propose the
+            // refused audio's direct play or the refused video raster.
+            regrade_original(ps);
             // Nothing is playing, so the encoder it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             stop_encoder_session(applied.client, applied.superseded);
@@ -721,10 +736,8 @@ fn install_recovery_landing(
             // The reload that follows is the app's own reopen after a failed open, like the other
             // recovery flights': the ledger must say so, or a failure of the converted route
             // reads as the first fresh open.
-            crate::player::report::note_attempt_for(
-                playback_trace_generation(),
-                crate::player::report::AttemptOrigin::Recovery,
-            );
+            // The delivery note carries the origin and notes the attempt itself.
+            crate::player::report::note_refusal_recovery_delivery(ps);
             RecoveryVerdict::Install
         }
         // A refused rebuild (the worker answered `Rejected`), a panicked worker, or a kind a

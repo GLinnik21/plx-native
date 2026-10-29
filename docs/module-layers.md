@@ -109,7 +109,7 @@ base
 | base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
-| gfx | `gfx egl text img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
+| gfx | `gfx egl text rtl img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
 | net | `net stream` | 6k | 74% |
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
@@ -212,15 +212,18 @@ integration test and belongs to the layer that owns all of its parts (step L13).
    `ci/module-layers.ini` and this document in the same diff and say why. If the change
    re-layers a module, or declares a port, that other code already names, record those
    references as a new step's entries in the same diff, raise the pin, and add the step to the
-   migration table. L15 was added this way.
+   migration table. L15 was added this way. `ci/check-ledger-ratchet.py` then fails the PR against
+   its base branch, so a design change that re-layers is merged by the owner past that check.
 
 Adding a line to `ci/allow/layers.txt` is not a fix. Lines are added only by a design change under
 item 5, and moved when a file that already has entries is **renamed or split**: entries are keyed by
 path, so the gate reports the old key as stale and the new path as unlisted. Move the entry to the
 new path in the same diff, and do not run `--prune` first (it would delete the old key and leave the
 new one failing). A split that keeps the upward name on both sides needs one line per new file, and
-raises the pin in `tests/test_harness.py` by the same number. Since L15 the list is empty (the pin
-is 0), so a new upward reference is always a fix, and there are no entries to carry.
+raises the pin in `tests/test_harness.py` by the same number; `ci/check-ledger-ratchet.py` then
+fails the PR against its base branch, so the owner merges that split past the check. Since L15 the
+list is empty (the pin is 0), so a new upward reference is always a fix, and there are no entries
+to carry.
 
 ## The migration
 
@@ -281,6 +284,7 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 | secure store | `tv::secure::{seal, open, remove, Sealed, Backend}` | `plex::session` |
 | storage backend | `storage::client::install_activator`, which the port calls with `webos::activate_storage_helper` | `port::plex_run` |
 | locale | `tv::system_locale` and `tv::LocaleReply`; `i18n` still owns the parse and the log lines | `i18n` |
+| sound output | `tv::sound::{output, parse_output, Reply}`, filled by `Port.sound_output` (`webos::sound_output`); a blocking read, so never on the frame thread, and asked only on a stack whose lead follows the output (`liblxa` and 2018's `audiosink_new`; `devcaps::audio_stack`; the `lgaudiosink` stack's lead does not depend on the output, and the others have none, so they never ask) | `player::threads` (through `player::engine`, which owns the lead table) |
 | window, surface, video plane, bus pump and frame probe | `tv::window` | `app::boot`, `app::run`, `app/mod.rs` |
 | home key | `tv::home::{go_home, poll, take_root_press, release_root_press}` | `app::input`, `app::run`, `app::adapters::session`, `app::lifecycle`'s tests |
 | system toast | `tv::toast::{toast, send, Identity, Outcome, Sent}` | `app::clock_notice`, `dev::scenarios::toast_probe` |
@@ -1538,7 +1542,8 @@ root), and one intra-doc link to `screens` unbracketed. The module-cycle baselin
 modules on the cycle (`app dev textinput`), 10 outside". What it taught:
 
 - **FFI and the final link: proven in the artifact, not assumed.** The crate holds every
-  `dynlib!` table of FFmpeg (`ff.rs`, four), libass (`player/ass.rs`) and the second libcurl table
+  `dynlib!` table of FFmpeg (`ff.rs`, four), libass's subtitle surface (`player/ass.rs`; the UI text
+  surface's table is `plx_gfx::rtl`) and the second libcurl table
   (`curlio.rs`), `player::ffi`'s `extern "C"` block (the Starfish/ACB verbs, 29 undefined
   symbols the Makefile's link resolves), and the two `#[no_mangle] extern "C"` callbacks
   `src/starfish.c` calls, `sf_on_event` and `acb_on_event`. All of it moved byte for byte apart from
@@ -1656,7 +1661,7 @@ doc links that named `screens`, `app`, `lab` and `focusprobe` unbracketed. What 
 
 - **One orphan-rule hit, found by the compiler.** `impl Default for SubtitleBitmaps` sat in
   `screens/player/mod.rs`, a screen's impl of `std`'s trait for a type of the layer below; across a
-  crate boundary that is E0117. It lives beside the type in `player_hud.rs` now. The `Focusable`
+  crate boundary that is E0117. It lives beside the type in `player_hud/mod.rs` now. The `Focusable`
   and `Screen` impls of the application's own types are not affected (the traits are `plx_ui`'s and
   the types the application's). `appkit` defines no `#[macro_export]` macro and the crate has no
   `env!`, `option_env!`, `include_*!` or `CARGO_MANIFEST_DIR`.

@@ -248,7 +248,7 @@ mod view_edit_notice_tests {
             })],
         }]);
         let _ = store.take_notice();
-        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
         let apply = |store: &mut SearchStore, rk: &str| {
             store.run(SearchCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit: facts })
         };

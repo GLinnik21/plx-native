@@ -1600,8 +1600,10 @@ print("== shipped fonts ==")
 # Landed 2026-08-01: Inter (SIL OFL 1.1). This is now a REAL gate, not an XFAIL — its job is to
 # stop Monotype Arial coming back through a stale local copy, which is exactly how it would
 # return (the files are named appfont*.ttf, so nothing about the filename reveals the swap).
-ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR", "Noto Emoji"}
-for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf", "pkg/appfont-emoji.ttf"):
+ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR", "Noto Emoji",
+           "Noto Kufi Arabic", "Noto Sans Hebrew"}
+for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf", "pkg/appfont-emoji.ttf",
+          "pkg/appfont-arabic.ttf", "pkg/appfont-arabic-bold.ttf", "pkg/appfont-hebrew.ttf", "pkg/appfont-hebrew-bold.ttf"):
     fam = font_family(ROOT / f)
     check(fam in ALLOWED, f"{f} family={fam!r} is redistributable (allowed: {sorted(ALLOWED)})")
 # The fallback face, checked for PRESENCE separately: the payload assertion below only runs when
@@ -1725,6 +1727,9 @@ expected = {
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
     # appfont-emoji.ttf is the emoji face: without it an emoji in a library name is a box.
     "appfont-emoji.ttf",
+    # The Arabic and Hebrew faces (Noto Kufi Arabic, Noto Sans Hebrew), shaped by libass-plx's UI
+    # text surface: without them every Arabic, Persian, Urdu and Hebrew title is a row of boxes.
+    "appfont-arabic.ttf", "appfont-arabic-bold.ttf", "appfont-hebrew.ttf", "appfont-hebrew-bold.ttf",
     # le-roots.pem is the roots-mode fallback bundle (`net::keypin::Mode::Roots`): without it a
     # `*.plex.direct` server whose certificate chains to a 2025 Let's Encrypt root is unreachable on
     # a 2020 firmware, silently — the fallback just never engages.

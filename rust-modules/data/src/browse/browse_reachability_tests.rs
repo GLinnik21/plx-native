@@ -196,9 +196,9 @@ fn the_source_group_projection_answers_reachability_the_same_way() {
     assert!(!g[1].reachable(), "the dim the Sources list draws");
     assert_eq!(g[1].tier, None);
 }
-/// A REFUSED discovery spawn must back off, not retry at 60 Hz.
+/// A REFUSED discovery must back off, not retry at 60 Hz.
 ///
-/// `maybe_discover` runs once a frame, so releasing the single flight alone re-picks the same
+/// The discovery step runs once a frame, so releasing the single flight alone re-picks the same
 /// source on the very next frame — and `task::spawn` logs every refusal, so the app would write
 /// ~60 `task: spawn 'sources' REFUSED` lines a second into the one file on-device triage reads,
 /// exactly when the machine is under enough thread pressure to be worth reading about.
@@ -206,11 +206,12 @@ fn the_source_group_projection_answers_reachability_the_same_way() {
 /// The other half is what it must NOT do: nothing was asked of the server, so the source stays
 /// reachable and its discovery stays un-done. A refusal is ours, not theirs.
 ///
-/// Drives `discovery_spawn_refused` rather than `maybe_discover`, because there is no way to
-/// make the OS refuse a thread on demand — and then runs a real second of frames through
-/// `maybe_discover` to show the backoff actually holds the picker off. That call is safe here
-/// precisely BECAUSE the backoff is armed: every source is un-ready, so it decrements the
-/// counters and returns without dialling anything.
+/// The refusal arrives the way the runner's does: through the job's own port, which hands the claim
+/// back in that call, and the store settles it at its next step. There is no way to make the OS
+/// refuse a thread on demand, so the port is called directly; then a real second of steps runs
+/// through `maybe_discover_owned` to show the backoff actually holds the picker off. That call is
+/// safe here precisely BECAUSE the backoff is armed: every source is un-ready, so it decrements the
+/// counters and returns without asking for anything.
 #[test]
 fn a_refused_discovery_spawn_backs_off_instead_of_flooding_the_log() {
     let _g = plx_base::testlock::serial();
@@ -224,17 +225,24 @@ fn a_refused_discovery_spawn_backs_off_instead_of_flooding_the_log() {
         s.sections_done = false; // both still want discovery
         s.counts_done = true;
     }
-    browse.adapter.src_fetching.store(true, Ordering::SeqCst); // as `maybe_discover` armed it before spawning
+    // as the step raised it when it emitted the job for source 1
+    browse.adapter.src_fetching.claim(7);
+    browse.state.src_flight = Some(SrcFlight { id: 7, epoch: browse.state.table_epoch(), source: 1 });
 
-    browse.state.discovery_spawn_refused_owned(&browse.adapter, 1);
+    plx_machine::job::Port::refused(&discovery_job::BrowseDiscoveryPort::of(&browse.adapter),
+        listing_jobs::listing_addr(7));
 
     assert!(
-        !browse.adapter.src_fetching.load(Ordering::SeqCst),
-        "the single flight must be released"
+        !browse.adapter.src_fetching.busy(),
+        "the single flight must be released in the refusing call"
     );
+    // the step after the refusal settles it, then counts down as the step after a refusing
+    // launcher did
+    browse.state.source_mut(0).unwrap().retry_cd = SRC_RETRY_CD; // so nothing in this table is dialable
+    browse.maybe_discover();
     assert_eq!(
         browse.state.sources()[1].retry_cd,
-        SRC_RETRY_CD,
+        SRC_RETRY_CD - 1,
         "…and the next attempt is ~10s out, not 1 frame"
     );
     assert!(
@@ -245,15 +253,14 @@ fn a_refused_discovery_spawn_backs_off_instead_of_flooding_the_log() {
         !browse.state.sources()[1].sections_done,
         "…and it is still a source waiting to be discovered"
     );
-    assert_eq!(browse.state.sources()[0].retry_cd, 0, "the other source is untouched");
 
     // one second of frames: the picker must not come back to it
-    browse.state.source_mut(0).unwrap().retry_cd = SRC_RETRY_CD; // so nothing in this table is dialable
     for _ in 0..60 {
-        browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
+        browse.maybe_discover();
     }
+    assert!(browse.jobs.is_empty(), "no attempt was made in a whole second");
     assert!(
-        !browse.adapter.src_fetching.load(Ordering::SeqCst),
+        !browse.adapter.src_fetching.busy(),
         "no attempt was made in a whole second"
     );
     assert!(

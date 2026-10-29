@@ -1010,6 +1010,104 @@ fn a_vanished_credit_falls_to_the_same_place_in_the_shelf() {
     );
 }
 
+/// A focused episode that vanishes from the landed list (a re-read, another season's page) lands on
+/// the same place in the strip, not on the hero: the hero fallback scrolls the page to the top
+/// (the jump seen on the television after RIGHT on the season strip, then DOWN).
+#[test]
+fn a_vanished_episode_falls_to_the_same_place_in_the_strip() {
+    let sid = ServerId::UNSET;
+    let names = ["a", "b", "c", "d", "e"];
+    let season = |names: &[&str]| {
+        let mut d = detail(sid, "show");
+        d.episodes = names.iter().enumerate().map(|(i, rk)| episode(rk, i as i64 + 1)).collect::<Vec<_>>().into();
+        d
+    };
+    let _guard = install(season(&names));
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let at = |screen: &DetailScreen, i: usize, row| episode_key(screen, i, row).unwrap();
+    for row in [episodes::Row::Still, episodes::Row::Text] {
+        let want = FocusKey { entry: EntryId(7), elem: at(&screen, 3, row) };
+        let publish = |screen: &mut DetailScreen, d: Detail| {
+            plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+            screen.sync_keys(test_store().view());
+        };
+        let recovered = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, None)).elem;
+        publish(&mut screen, season(&["d", "a"]));
+        assert_eq!(recovered(&screen), want.elem, "an episode still in the list keeps focus when its index moves");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&["a", "b", "c"]));
+        assert_eq!(recovered(&screen), at(&screen, 2, row), "the same row of the last episode");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&["a", "b", "c", "x", "e"]));
+        assert_eq!(recovered(&screen), at(&screen, 3, row), "the same index, whoever now stands there");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&[]));
+        assert_eq!(recovered(&screen), hero::ELEM_PLAY, "an emptied season falls to the hero");
+        publish(&mut screen, season(&names));
+    }
+    clear();
+}
+
+/// Back from a cast member's page: the covered body is live and still scrolled to the Cast row.
+/// `restore_memory` must not send it to the top while the re-read is owed (`reveal_focus` skips a
+/// waiting return, so the page would run to 0 and back once the refetch lands).
+#[test]
+fn a_restore_memory_keeps_the_scroll_of_a_live_body_while_the_re_read_is_owed() {
+    let sid = ServerId::UNSET;
+    let guard = install(detail(sid, "show"));
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    screen.scroll_target = 839.0;
+    screen.scroll.pos = 839.0;
+    screen.refresh = DetailRefreshPhase::Deferred;
+    let memory = crate::registry::DetailMemory {
+        spot: plx_data::metadata::Spot { section: 4, col: 0, ..Default::default() },
+        keys: screen.keys.clone(),
+        next_elem: screen.next_elem,
+    };
+    screen.restore_memory(&memory, test_store().view());
+    assert!(screen.return_pending && screen.restore_intent.is_some(), "the return still waits for its card");
+    assert_eq!(screen.scroll_target, 839.0, "the live body stays where it was");
+    clear();
+}
+
+/// The same return, but the store holds one detail at a time and closing a film opened from the
+/// cast member's list emptied it: the body comes back with no detail, keeps its scroll while the
+/// re-read is owed, and the re-read then FAILS. Nothing moves the scroll after that (`reveal_focus`
+/// returns early without a detail) and the hero, the only thing drawn without one, is faded out past
+/// `HERO_FADE`, so the page must go back to the top where the hero is.
+#[test]
+fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
+    let guard = plx_base::testlock::serial();
+    let sid = ServerId::UNSET;
+    test_store().run(MetadataCmd::Clear);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    screen.scroll_target = 839.0;
+    screen.scroll.pos = 839.0;
+    screen.refresh = DetailRefreshPhase::Requested;
+    let memory = crate::registry::DetailMemory {
+        spot: plx_data::metadata::Spot { section: 4, col: 0, ..Default::default() },
+        keys: screen.keys.clone(),
+        next_elem: screen.next_elem,
+    };
+    screen.restore_memory(&memory, test_store().view());
+    assert_eq!(screen.scroll_target, 839.0, "the return waits for its re-read where the body was left");
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+    {
+        let (state, adapter) = test_store().split_for_test();
+        assert!(!plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, None));
+    }
+    assert!(screen.detail(test_store().view()).is_none());
+    pump_restore(&mut screen);
+    assert!(screen.restore_intent.is_none() && !screen.return_pending, "the return gave up");
+    assert_eq!(screen.scroll_target, 0.0, "a page with no detail shows only the hero, so it goes back to it");
+    test_store().run(MetadataCmd::Clear);
+    clear();
+}
+
 /// Every section's element block is its own, wide, and below the engine keys: no two overlap, and
 /// no section's list can run into its neighbour's ids. A block is 2^24 ids; episodes take two ids
 /// each out of their 2^30 block.

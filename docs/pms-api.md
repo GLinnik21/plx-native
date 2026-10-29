@@ -118,7 +118,9 @@ spec's "Media Queries" section documents the full query language.
   `addedAt>>=-3w`; OR via comma; parens via `push=1`/`pop=1`/`or=1`. Episode scoping
   `type=4&show.id={rk}` works; scoped exact `show.title==` does NOT (use `show.id`).
 - **Unwatched:** movies `unwatched=1`; **shows use `unwatchedLeaves=1`** (`unwatched=1` on
-  type=2 has odd semantics — returned 1 of 10 live); episodes `unwatched=1` normal.
+  type=2 has odd semantics — returned 1 of 10 live; re-measured 2026-10-25, PMS 1.43.5: 30 of 33
+  shows against 24 for `unwatchedLeaves`); episodes `unwatched=1` normal. `firstCharacter` takes
+  the same keys (Letter index, below).
 - **Show granularity:** `?type=2|3|4` on `/all` lists shows/seasons/episodes flat (no
   children-walking). Type ids: movie=1, show=2, season=3, episode=4.
   Rechecked live 2026-09-26: `includeMeta=1` returns all three `Type` entries and marks the
@@ -131,6 +133,17 @@ spec's "Media Queries" section documents the full query language.
   **`?firstCharacter=X` on `/all` is silently IGNORED** — jump = prefix-summed
   `X-Plex-Container-Start` offset into the titleSort listing. (Spec's plural `/firstCharacters`
   404s.) `titleSort<=`/`>=` behave as a lexicographic range, not begins/ends-with.
+  **`firstCharacter` takes the same terms as `/all`** (`type`, `unwatched`, `unwatchedLeaves`,
+  `genre`, composed): its counts describe the filtered listing, so they sum to that listing's
+  `totalSize`, a letter with no title left is omitted, and a filter that matches nothing answers
+  an empty `Directory` (no error). The prefix-summed offsets still land on the first title of each
+  letter in `/all?sort=titleSort` with the same terms (and over the reversed letter list for
+  `sort=titleSort:desc`). Measured 2026-10-25 on PMS 1.43.5: movies (none, `unwatched`, `genre`, both,
+  and `unwatched` descending), shows (`type=2` with `unwatchedLeaves`, with `genre`, with both);
+  every letter's offset checked, none off. Seasons and episodes advertise no plain `titleSort`
+  sort, so the app offers the A-Z rail for movie and show listings (and collections) only. The app
+  sends `firstCharacter` the very terms of the grid's page request and shows the counts only while
+  they describe it (`data/src/browse/letters.rs`).
 - **Collections — two id spaces:** `/library/sections/{key}/collections` → `Metadata[]` with
   **ratingKey** (browse via `/library/collections/{rk}/children`); the `/collection` filter dir
   returns **tag ids** for `/all?collection={tag}`. Don't mix. A collection row's `index` is that

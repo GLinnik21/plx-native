@@ -1620,7 +1620,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     };
     let heat = || Item::Media(PmsMovie { title: "Heat".into(), year: 1995, genre: Some("Crime".into()), ..Default::default() });
     let at = |title, details, sources: &[ScopeSource]| {
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details, show_sort_info: false })));
         let label = lines(&label_of(Kind::Movie, heat(), sources));
         TEST_UNDER_POSTERS.with(|cell| cell.set(None));
         label
@@ -1632,7 +1632,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     assert_eq!(at(true, Details::None, &friend), [Some("Heat".into()), None], "Nothing credits no line");
     assert_eq!(at(false, Details::None, &friend), [None, None]);
 
-    TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::Genre })));
+    TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::Genre, show_sort_info: false })));
     let still = Item::Media(PmsMovie { kind: 3, title: "A Grand Day Out".into(), aired: "1989-11-04".into(), ..Default::default() });
     let episode = lines(&label_of(Kind::Episode, still, &friend));
     TEST_UNDER_POSTERS.with(|cell| cell.set(None));

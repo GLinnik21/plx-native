@@ -1,0 +1,43 @@
+{
+  "$schema": "https://plxnative.com/hud/schema/1.0.json",
+  "format": "1.0",
+  "id": "com.plxnative.examples.hero-center",
+  "version": "1.0.0",
+  "name": "Hero centre",
+  "author": "PlxNative",
+  "license": "CC0-1.0",
+  "layout": {
+    "anchor": "bottom",
+    "inset": "MD",
+    "x_inset": "LG",
+    "band": "controls",
+    "sections": "modal",
+    "block": [
+      { "id": "title", "cells": [
+        { "align": "start", "text": { "bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } }
+      ] },
+      { "id": "bar", "gap_before": "SM", "cells": [
+        { "align": "start", "playbar": { "w": "fill", "fill": "ACCENT", "track": "RAIL_TRACK", "thickness": 6, "clock_size": "CAPTION" } }
+      ] },
+      { "id": "row", "gap_before": "SM", "cells": [
+        { "align": "center", "segment": { "id": "hero", "items": [
+          { "id": "play", "command": "toggle_play", "widget": "disc", "size": 96, "rest": "solid", "focus": "ring",
+            "face": { "playing": "builtin:pause", "paused": "builtin:play" } }
+        ] } },
+        { "align": "end", "segment": { "id": "right", "items": [
+          { "id": "more", "command": "open_more", "widget": "disc", "size": 52, "rest": "bare", "focus": "accent", "face": "builtin:more" }
+        ] } }
+      ] }
+    ],
+    "up_next": {
+      "replaces": [ "hero", "right" ],
+      "band": "row",
+      "align": "center",
+      "still": false,
+      "caption": false,
+      "watch_credits": { "rest": "film", "focus": "accent" },
+      "play_next": { "rest": "solid", "focus": "ring" },
+      "countdown": "ring"
+    }
+  }
+}

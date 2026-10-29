@@ -17,6 +17,8 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   when a narrower section is enough.
 - Before playback work, read `rust-modules/media/src/player/CLAUDE.md`.
 - Before Plex data-layer work, read `rust-modules/plex/src/plex/CLAUDE.md` and `docs/pms-api.md`.
+- Before adding or changing a `data/` store, read `rust-modules/data/src/AGENTS.md` (the store, runner and
+  Bridge split, and the Sans-IO recipe for it).
 - Before UI work, read `rust-modules/ui/src/CLAUDE.md` and use the shared theme, layout, and widget
   systems instead of adding screen-local visual primitives. Before touching a screen, also read
   `rust-modules/screens/src/CLAUDE.md`; the restructure's design record is
@@ -62,13 +64,19 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   foreground lifecycle, a route planner) starts no worker, reads no process-global registry and has
   no `cfg(test)` fork: its work leaves as a typed effect the app's runners execute, and every result
   returns as one addressed event. `ci/check-deps.sh` freezes today's sites in the ledgers under
-  `ci/allow/{workers,globals,forks,fxlanes}/`, which only shrink: a new site fails `make check`, and
-  a migration lands by deleting lines (`docs/sans-io.md`).
-- **Re-basing a stacked PR after the one below it squashes:** on the upper branch, `git merge
-  <lower's final head>`, `git merge <squash>^`, `git merge -s ours <squash>`, then
-  `git merge origin/main`. `-s ours` on the squash alone drops whatever `main` gained before it.
-- `gh pr merge --auto --squash --match-head-commit <sha>` can fail just after a push with "expected
-  head oid does not match"; wait ~15 s and retry. It is a race, not a real mismatch.
+  `ci/allow/{workers,globals,forks,fxlanes}/`, which only shrink: a new site fails `make check`,
+  a migration lands by deleting lines (`docs/sans-io.md`), and CI also fails a PR whose ledger counts
+  rise above its base's (`ci/check-ledger-ratchet.py`), whatever its `# count:` headers and pins say.
+  Before writing or changing a machine's code (a store, a screen, the session owner, the player
+  lifecycle or a route planner), read `docs/sans-io-guide.md`: it says what counts as IO and how each
+  move is done. A ledger line is never the fix; if a step seems to need IO, stop and say why.
+- **Landing a PR, and re-basing a stacked one after the PR below it squashes, go through
+  `tools/pr-land.py`** (gate, wait, merge, restack; the `land-pr` skill has the commands, exit codes,
+  the four-merge restack and the head-oid race). It grants no merge authority: an owner's
+  authorization is still needed. In Claude sessions outbound-guard refuses a raw `gh pr merge`, a
+  write to `.../pulls/N/merge` and a GraphQL `mergePullRequest` written on the command line or in a
+  heredoc (not one read from a query file); the owner's own manual merge takes the
+  `PLX_MERGE_BYPASS=1` prefix.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,
@@ -211,6 +219,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - After behavior changes, use the `doc-claim-auditor` custom agent (`doc_claim_auditor` in
   Codex), or perform the same audit, to find prose that the change made false. It reports
   contradictions, not missing documentation.
+- Before opening or merging a PR, review its combined `base...head` diff once with the
+  `pr-reviewer` custom agent (`pr_reviewer` in Codex): it returns findings only and never edits,
+  comments or merges.
 
 ## Television and release safety
 

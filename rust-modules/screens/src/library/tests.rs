@@ -759,6 +759,10 @@ fn a_stale_listing_is_requeried_when_a_page_buries_it_never_while_visible() {
     let mut returned = buried();
     returned.extend([ScreenEvent::Uncover, ScreenEvent::Enter(Enter::Restored), notice()]);
     assert_eq!(requeries(true, returned), 1, "back on top, a notice no longer re-queries");
+    assert_eq!(requeries(true, vec![ScreenEvent::Mount]), 1,
+        "a page mounted over a listing the server changed meanwhile lists it again");
+    assert_eq!(requeries(false, vec![ScreenEvent::Mount]), 0, "a current listing is not listed again on mount");
+    assert_eq!(requeries(true, vec![ScreenEvent::Mount, notice()]), 1, "once mounted, a notice no longer re-queries");
 }
 
 /// A compact menu (Sort, Filter, the item menu) covers the page without burying it: the page stays

@@ -146,7 +146,7 @@ pub(super) fn request_play_intent(
             sid, rk, part, vcodec, acodec, title, context, version,
         } => {
             let ok = plx_media::route::request_play(
-                session, meta, *sid, rk, part, vcodec, acodec, title, context, *version,
+                session, meta, super::playback::start_caps(), *sid, rk, part, vcodec, acodec, title, context, *version,
             );
             if ok {
                 note_extra_now_playing(meta, *sid, rk, context);
@@ -154,7 +154,7 @@ pub(super) fn request_play_intent(
             ok
         }
         plx_screens::registry::PlayIntent::Movie { item, version } =>
-            plx_media::route::request_play_movie(session, meta, item, &super::playback::movie_ctx(item), *version),
+            plx_media::route::request_play_movie(session, meta, super::playback::start_caps(), item, &super::playback::movie_ctx(item), *version),
     }
 }
 
@@ -563,6 +563,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 let ok = plx_media::route::request_preview(
                     &mut app.player.session,
                     app.bridge.metadata_mut(),
+                    super::playback::start_caps(),
                     sid,
                     &rk,
                     &part,

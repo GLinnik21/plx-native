@@ -530,8 +530,9 @@ pub fn attach_user(body: &mut serde_json::Value, errors_id: Option<&str>) {
 /// One function rather than a copy per call site, so playback and any future handled event cannot
 /// drift into their own spelling of "which webOS is this" — the same reasoning `attach_user` states
 /// for the identity field. Field names match `telemetry/native.rs`'s `WEBOS_FIELDS`/
-/// `HARDWARE_FIELDS` allowlists exactly, so a handled event and a crash report read identically in
-/// Sentry's Contexts UI. Merges into whatever `contexts` object the caller already built (a
+/// `HARDWARE_FIELDS` allowlists, so a handled event and a crash report read alike in Sentry's
+/// Contexts UI. Two keys are on these events and not on a native crash (the SDK's scope, set in C,
+/// cannot carry them): the webOS `build` and the hardware `probe`. Merges into whatever `contexts` object the caller already built (a
 /// `playback` context sits beside these, not under them) rather than replacing it — and creates one
 /// if the body had none yet.
 pub fn attach_hardware_context(body: &mut serde_json::Value) {
@@ -546,6 +547,9 @@ pub fn attach_hardware_context(body: &mut serde_json::Value) {
         "type": "webos",
         "name": webos.name,
         "release": webos.release,
+        // The exact firmware build (nyx's `core_os_release`, e.g. `6.5.3-47`), which a patch within
+        // one release changes and `release` does not: what a refusal is learned against.
+        "build": webos.build,
         "codename": webos.codename,
         "api": webos.api,
     });
@@ -685,7 +689,7 @@ mod tests {
             .expect("webos context present");
         let mut webos_keys: Vec<&str> = webos.keys().map(String::as_str).collect();
         webos_keys.sort_unstable();
-        assert_eq!(webos_keys, ["api", "codename", "name", "release", "type"]);
+        assert_eq!(webos_keys, ["api", "build", "codename", "name", "release", "type"]);
         assert_eq!(webos["type"], "webos");
         let hardware = body["contexts"]["hardware"]
             .as_object()

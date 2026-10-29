@@ -24,17 +24,18 @@ pub use crate::browse::view::{
 };
 
 /// Owner-aware first-run gate shared by boot and login. The retained directory is the granted
-/// Browse publication for this Bridge.
+/// Browse publication for this Bridge. The session is handed by the caller (boot and login each
+/// read it where they ask), never read here.
 pub mod onboard {
-    pub fn asks(directory: super::DirectoryView<'_>) -> bool {
-        asks_for_sources(directory.sources().len())
+    pub fn asks(directory: super::DirectoryView<'_>, session: &plx_plex::plex::session::Session) -> bool {
+        asks_for_sources(directory.sources().len(), session)
     }
 
-    /// The gate for a roster of `sources`, judged for the profile that is watching NOW
+    /// The gate for a roster of `sources`, judged on `session` for the profile that is watching NOW
     /// (`plex::pins::asks`): everyone is asked once, so the profile matters only for its recorded
-    /// answer. Read off the same published profile key the record is filed under.
-    pub fn asks_for_sources(sources: usize) -> bool {
-        let session = plx_plex::plex::session::peek();
+    /// answer. The profile is the published profile key the record is filed under
+    /// (`current_profile_key`), which is not a session read.
+    pub fn asks_for_sources(sources: usize, session: &plx_plex::plex::session::Session) -> bool {
         let profile = plx_plex::plex::session::current_profile_key();
         plx_plex::plex::pins::asks(sources, session.pins_for(&profile))
     }
@@ -107,8 +108,9 @@ pub struct BrowseStore {
     /// Endpoint refreshes a pump had no room to emit in its step; the next pump sends them first.
     endpoint_carry: super::EndpointRefreshSet,
     /// The reads this store's steps have asked for and nobody has started yet: a section's hubs
-    /// ([`super::StoreJob::BrowseHubs`]), a value list ([`super::StoreJob::BrowseDirectory`]) and a
-    /// listing page ([`super::StoreJob::BrowsePage`]); taken by [`BrowseStore::take_jobs`].
+    /// ([`super::StoreJob::BrowseHubs`]), a value list ([`super::StoreJob::BrowseDirectory`]), a
+    /// listing page ([`super::StoreJob::BrowsePage`]) and a source's discovery
+    /// ([`super::StoreJob::BrowseDiscovery`]); taken by [`BrowseStore::take_jobs`].
     jobs: Vec<super::StoreJob>,
 }
 
@@ -146,8 +148,9 @@ impl BrowseStore {
 
     /// Take the reads this owner's steps have asked for since the last take, in the order they were
     /// asked ([`super::StoreJob::BrowseHubs`], [`super::StoreJob::BrowseDirectory`],
-    /// [`super::StoreJob::BrowsePage`]). The application's runner starts each, in the call that ran
-    /// the step (`Bridge::start_store_jobs_of`).
+    /// [`super::StoreJob::BrowsePage`], [`super::StoreJob::BrowseDiscovery`]). The application's
+    /// runner starts each, in the call that ran the step (`Bridge::start_store_jobs_of`; the
+    /// controlled Home arm admits the discovery through the run's ledger).
     #[must_use]
     pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
         std::mem::take(&mut self.jobs)
@@ -158,10 +161,30 @@ impl BrowseStore {
         !self.jobs.is_empty()
     }
 
+    /// Run one command for a caller that holds no session: the Stores fan-outs, which send only
+    /// `ApplyView`, `HubsInvalidateAll`, `HubsInvalidateServer` and `ListingsChanged`. A pin or
+    /// discovery command is refused here, because the session it must read was never handed:
+    /// those reach [`BrowseStore::run_with_session`].
+    pub fn run(&mut self, cmd: BrowseCmd, keys: &ClientKeys) -> bool {
+        if matches!(cmd, BrowseCmd::ApplyPins(_) | BrowseCmd::Discovery(_)) {
+            debug_assert!(false, "a pin or discovery command reached a step handed no session");
+            plx_base::eventlog::log(
+                "browse: a pin or discovery command reached a step handed no session — dropped");
+            return false;
+        }
+        self.run_with_session(cmd, keys, &plx_plex::plex::session::Session::default())
+    }
+
     /// Run one command; `keys` is the registry's answer as of this call (the Bridge fills it
     /// immediately before, `refill_client_keys`), which the section-hubs or directory reads it may emit
-    /// are decided from.
-    pub fn run(&mut self, cmd: BrowseCmd, keys: &ClientKeys) -> bool {
+    /// are decided from. `session` is the one the Bridge read after observing the pin write
+    /// (`Bridge::browse_session`), which the pin commands and a landing discovery read.
+    pub fn run_with_session(
+        &mut self,
+        cmd: BrowseCmd,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> bool {
         use crate::viewstate::ViewEdit;
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
             work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }
@@ -178,7 +201,7 @@ impl BrowseStore {
         if matches!(&cmd, BrowseCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let changed = self.state.run_owned(&self.adapter, cmd, keys, &mut self.jobs) || roster_changed;
+        let changed = self.state.run_owned(&self.adapter, cmd, keys, session, &mut self.jobs) || roster_changed;
         if !quiet && (!change_sensitive || changed) {
             self.bump();
         }
@@ -186,19 +209,33 @@ impl BrowseStore {
     }
 
     /// Run one command on a registry that holds no client (no section-hubs or directory read leaves): the
-    /// command of a test about something else.
+    /// command of a test about something else. It reads the session as of now, after observing its
+    /// pin write, as the Bridge does.
     #[cfg(any(test, feature = "test-support"))]
     pub fn run_for_test(&mut self, cmd: BrowseCmd) -> bool {
-        self.run(cmd, &ClientKeys::default())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.run_with_session(cmd, &ClientKeys::default(), &session)
     }
 
-    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> super::StoreOutcome {
+    /// Poll the pending pin write's receipt (`BrowseState::observe_pin_write`). The Bridge calls it
+    /// before it reads the session it hands a step.
+    pub fn observe_pin_write(&self) {
+        self.state.observe_pin_write();
+    }
+
+    pub fn pump_with_gate(
+        &mut self,
+        gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> super::StoreOutcome {
         if !self.state.pump_needs_work(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate, keys, &mut self.jobs);
+        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate, keys, session, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed {
             self.bump();
@@ -209,23 +246,36 @@ impl BrowseStore {
     /// section-hubs or page read leaves): the pump of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self) -> super::StoreOutcome {
-        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default(), &session)
     }
 
-    pub fn discover_pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> super::StoreOutcome {
+    /// One discovery pass: land the answer waiting, and ask for the next source's discovery if none
+    /// is out. The read leaves as a [`super::StoreJob::BrowseDiscovery`] on the outbox
+    /// ([`BrowseStore::take_jobs`]), decided from `keys`; the caller starts it in the same call
+    /// (`Bridge::browse_discover_pump`).
+    pub fn discover_pump_with_gate(
+        &mut self,
+        gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> super::StoreOutcome {
         if !self.state.discovery_needs_pump(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate);
+        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate, keys, session, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed { self.bump(); }
         outcome
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn discover_pump(&mut self) -> super::StoreOutcome {
-        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default(), &session)
     }
 
     /// The items the addressed Library page holds (see [`BrowseState::held_keys`]).
@@ -294,17 +344,27 @@ impl BrowseStore {
         crate::browse::directory_answered_for_test(&self.adapter)
     }
 
+    /// TEST ONLY: has a discovery worker answered, the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn discovery_answer_waiting_for_test(&self) -> bool {
+        crate::browse::discovery_answer_waiting_for_test(&self.adapter)
+    }
+
     pub fn take_discovery(&mut self) -> Option<crate::browse::record::Result> {
         crate::browse::record::take_from(&self.adapter)
     }
 
-    /// Does a discovery request this owner launched still owe its answer? The claim the landing
+    /// Does a discovery request this owner emitted still owe its answer? The claim the landing
     /// gate's dump mode waits on at the Bridge's controlled-Home discovery take.
     pub fn discovery_owed(&self) -> bool {
         crate::browse::discovery_owed(&self.adapter)
     }
 
+    /// Settles a refused discovery BEFORE the roster sync, so a source the sync re-arms in the same
+    /// step (a re-pointed or retokened client: `retry_cd = 0`) is asked again at once, as it was
+    /// when the launcher set the backoff in the launching call.
     fn sync_roster(&mut self) -> bool {
+        self.state.discovery_settle(&self.adapter);
         let sync = self.state.sync_roster_owned();
         if sync.retire_adapter {
             self.adapter = Arc::new(Default::default());
@@ -312,12 +372,12 @@ impl BrowseStore {
         sync.changed
     }
 
-    pub fn controlled_discover(
-        &mut self,
-        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
-    ) {
+    /// The controlled Home run's discovery step: the read leaves as a
+    /// [`super::StoreJob::BrowseDiscovery`] on the outbox, which the Bridge's controlled arm admits
+    /// through the run's ledger in the same call (`Bridge::admit_home_jobs`).
+    pub fn controlled_discover(&mut self, keys: &ClientKeys) {
         let changed = self.sync_roster();
-        self.state.controlled_discover_owned(&self.adapter, launch);
+        self.state.controlled_discover_owned(&self.adapter, keys, &mut self.jobs);
         if changed {
             self.bump();
         }
@@ -329,7 +389,7 @@ impl BrowseStore {
         preferences: &plx_plex::plex::session::Session,
     ) -> super::StoreOutcome {
         let outcome = crate::browse::record::apply_to(
-            &mut self.state, &self.adapter, result, Some(preferences));
+            &mut self.state, &self.adapter, result, preferences, "");
         if outcome.changed {
             self.bump();
         }
@@ -561,6 +621,12 @@ impl BrowseStore {
         self.state.discovery_policy_for_test(&self.adapter)
     }
 
+    /// TEST ONLY: how many sections the table holds, the discovery's landed sections among them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn section_count_for_test(&self) -> usize {
+        self.state.section_count_for_test()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn queue_discovery_for_test(
         &mut self,
@@ -678,18 +744,22 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
     type Ev = StoreEv<BrowseCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
-            // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`), and
-            // a machine step is handed no keys: this arm cannot decide a section-hubs or directory read. It is
+            // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`, and
+            // the session `Bridge::browse_session` reads), and a machine step is handed no keys and
+            // no session: this arm cannot decide a section-hubs or directory read, and `run` refuses
+            // a pin or discovery command it would have to read the session for. It is
             // not how the application drives Browse, which calls `Stores::browse_run` and
-            // `BrowseStore::pump_with_gate` with the keys it filled and starts the jobs they leave
-            // (`Bridge::browse_run`); no sender of `StoreEv::Pump` exists either.
+            // `BrowseStore::pump_with_gate` and `discover_pump_with_gate` with the keys it filled
+            // and starts the jobs they leave (`Bridge::browse_run`, `Bridge::browse_discover_pump`);
+            // no sender of `StoreEv::Pump` exists either, and its pump hands the step no keys and no
+            // session, so it emits no discovery job.
             StoreEv::Cmd(c) => {
                 self.run(c.clone(), &ClientKeys::default());
             }
             StoreEv::Pump { .. } => {
                 let mut due = std::mem::take(&mut self.endpoint_carry);
-                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default(), &ClientKeys::default())
-                    .endpoints);
+                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default(), &ClientKeys::default(),
+                    &plx_plex::plex::session::Session::default()).endpoints);
                 self.endpoint_carry = due.emit(fx);
             }
         }
@@ -1000,6 +1070,21 @@ mod contract_tests {
         plx_plex::plex::reset_servers_for_test();
     }
 
+    /// One controlled discovery step on `stores`, then the runner's work for what it left: every
+    /// discovery job refused through its own port, as the system refusing the thread does. Returns
+    /// how many jobs the step asked for.
+    fn refused_discovery_step(stores: &crate::stores::Stores) -> usize {
+        stores.browse_controlled_discover(&crate::pms::registry_keys_for_test());
+        let mut asked = 0;
+        for job in stores.browse.borrow_mut().take_jobs() {
+            if let crate::stores::StoreJob::BrowseDiscovery(job, port) = job {
+                asked += 1;
+                plx_machine::job::Port::refused(&port, job.addr);
+            }
+        }
+        asked
+    }
+
     #[test]
     fn controlled_roster_addition_is_one_published_change_even_when_spawn_is_refused() {
         let _guard = plx_base::testlock::serial();
@@ -1013,11 +1098,7 @@ mod contract_tests {
         let before_sources = stores.browse.borrow().source_list_gen_for_test();
         plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
-        let mut launches = 0;
-        stores.browse_controlled_discover(&mut |_| {
-            launches += 1;
-            false
-        });
+        let launches = refused_discovery_step(&stores);
         assert_eq!(launches, 1);
         let owned_sources = stores.browse.borrow().source_list_gen_for_test();
         assert_ne!(owned_sources, before_sources);
@@ -1028,11 +1109,7 @@ mod contract_tests {
 
         let settled_notice = stores.browse.borrow().gen();
         let settled_sources = stores.browse.borrow().source_list_gen_for_test();
-        let mut second_launches = 0;
-        stores.browse_controlled_discover(&mut |_| {
-            second_launches += 1;
-            false
-        });
+        let second_launches = refused_discovery_step(&stores);
         assert_eq!(second_launches, 0, "the refused source is still in retry backoff");
         assert_eq!(stores.browse.borrow().gen(), settled_notice);
         assert_eq!(stores.browse.borrow().source_list_gen_for_test(), settled_sources);
@@ -1040,6 +1117,40 @@ mod contract_tests {
         assert_eq!(plx_machine::idle::take_local_damage(), 0,
             "an empty-to-empty machine identity must not invalidate the settled frame");
 
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A source whose first discovery was refused AND whose client is retokened before the next
+    /// step is asked again at once: the step's roster sync re-arms a re-pointed source
+    /// (`retry_cd = 0`) after the refusal has set the backoff, as it did when the launcher set the
+    /// backoff in the launching call. A refusal settled AFTER the sync would leave the source
+    /// waiting out the full countdown.
+    #[test]
+    fn a_refused_discovery_is_asked_again_at_once_when_the_client_is_repointed() {
+        let _guard = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("refused-then-repointed");
+        plx_plex::plex::reset_servers_for_test();
+        let stores = crate::stores::Stores::default();
+        let sid = plx_plex::plex::register_for_test("", "127.0.0.1", 9, "synthetic", "fixture");
+        assert_eq!(refused_discovery_step(&stores), 1, "the first step asks and is refused");
+
+        plx_plex::plex::client_for(sid).expect("registered").set_token("retokened");
+
+        assert_eq!(refused_discovery_step(&stores), 1,
+            "the retoken re-armed the source: it is asked again in the next step, not after the backoff");
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The control: with the client unchanged, the refusal's backoff holds.
+    #[test]
+    fn a_refused_discovery_backs_off_when_the_client_is_unchanged() {
+        let _guard = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("refused-unchanged");
+        plx_plex::plex::reset_servers_for_test();
+        let stores = crate::stores::Stores::default();
+        plx_plex::plex::register_for_test("", "127.0.0.1", 9, "synthetic", "fixture");
+        assert_eq!(refused_discovery_step(&stores), 1);
+        assert_eq!(refused_discovery_step(&stores), 0, "no change to the client: the source backs off");
         plx_plex::plex::reset_servers_for_test();
     }
 
@@ -1054,11 +1165,7 @@ mod contract_tests {
         plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
 
-        let mut launches = 0;
-        selected.browse_controlled_discover(&mut |_| {
-            launches += 1;
-            false
-        });
+        let launches = refused_discovery_step(&selected);
 
         assert_eq!(launches, 1);
         assert_ne!(selected.browse.borrow().source_list_gen_for_test(), selected_before,

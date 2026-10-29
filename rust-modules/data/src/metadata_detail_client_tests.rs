@@ -71,6 +71,14 @@ fn route(path: &str) -> (u16, String) {
         ])),
         "/library/metadata/movie-2/extras" => (404, String::new()),
         "/library/metadata/trailer-2" => ok(playable_trailer("trailer-2")),
+        // an item the server has gone off: the page is empty whatever Related would say
+        "/library/metadata/gone-1" => (404, String::new()),
+        "/library/metadata/gone-1/related" => (404, String::new()),
+        // a movie whose Related is refused
+        "/library/metadata/movie-3" => ok(container(&[
+            r#"{"ratingKey":"movie-3","type":"movie","title":"Movie Three"}"#.to_string()
+        ])),
+        "/library/metadata/movie-3/related" => (404, String::new()),
         "/library/metadata/show-1" => ok(container(&[
             r#"{"ratingKey":"show-1","type":"show","title":"Show"}"#.to_string()
         ])),
@@ -119,6 +127,59 @@ fn serve() -> Pms {
     Pms { port, seen, stop, thread: Some(thread) }
 }
 
+/// [`serve`] with each connection on a thread of its own, and one hold: a request for `held` is not
+/// answered until a request for `until` has ARRIVED (at most [`GATE`]). The flag says whether it
+/// had when the held answer was released, i.e. whether the two requests were open at the same time.
+fn serve_gated(held: &'static str, until: &'static str) -> (Pms, Arc<AtomicBool>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let overlapped = Arc::new(AtomicBool::new(false));
+    let (record, halt, verdict) = (Arc::clone(&seen), Arc::clone(&stop), Arc::clone(&overlapped));
+    let thread = std::thread::spawn(move || {
+        let mut handlers = Vec::new();
+        while !halt.load(AtomicOrdering::SeqCst) {
+            let Ok((mut conn, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            };
+            conn.set_nonblocking(false).unwrap();
+            let (record, verdict) = (Arc::clone(&record), Arc::clone(&verdict));
+            handlers.push(std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let n = conn.read(&mut buf).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let target = request.split_whitespace().nth(1).unwrap_or("/");
+                let path = target.split('?').next().unwrap_or(target).to_string();
+                record.lock().unwrap_or_else(|e| e.into_inner()).push(path.clone());
+                if path == held {
+                    let until_at = std::time::Instant::now() + GATE;
+                    let arrived = || record.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|p| p == until);
+                    while !arrived() && std::time::Instant::now() < until_at {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    verdict.store(arrived(), AtomicOrdering::SeqCst);
+                }
+                let (status, body) = route(target);
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+            }));
+        }
+        for h in handlers {
+            let _ = h.join();
+        }
+    });
+    (Pms { port, seen, stop, thread: Some(thread) }, overlapped)
+}
+
+/// The longest a held answer waits for the request it is held for.
+const GATE: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl Drop for Pms {
     fn drop(&mut self) {
         self.stop.store(true, AtomicOrdering::SeqCst);
@@ -140,9 +201,14 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
+        Self::over(serve())
+    }
+
+    /// The rig with `a` as the first server.
+    fn over(a: Pms) -> Self {
         assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
         plx_plex::plex::reset_servers_for_test();
-        let (a, b) = (serve(), serve());
+        let b = serve();
         let sid = plx_plex::plex::register_for_test("detail-client", "127.0.0.1", a.port, "token-a", "detail-client-a");
         let client = plx_plex::plex::client_for(sid).expect("the slot just registered");
         client.set_link(plx_plex::plex::probe::Location::Local);
@@ -255,4 +321,59 @@ fn the_playing_item_is_read_through_the_callers_client() {
     assert_eq!(item.rk, "movie-1");
     assert_eq!(rig.a.paths(), paths(&["/library/metadata/movie-1"]));
     assert_eq!(rig.b.paths(), Vec::<String>::new());
+}
+
+/// Related needs only the key, so it is asked beside the item and not after it: the item's answer
+/// is held until `/related` has arrived, which a chain that asked Related after the item (or not
+/// until the item's answer returned) never gets to.
+#[test]
+fn related_is_asked_beside_the_item() {
+    let _serial = plx_base::testlock::serial();
+    let (pms, overlapped) = serve_gated("/library/metadata/movie-1", "/library/metadata/movie-1/related");
+    let rig = Rig::over(pms);
+    let d = fetch_full(rig.client, rig.sid, "movie-1", None).expect("the page answers");
+    assert_eq!(d.title, "Movie One");
+    assert!(overlapped.load(AtomicOrdering::SeqCst), "the item was answered before /related was asked: one after the other");
+}
+
+/// Extras start as soon as the item says it is a movie, while Related may still be open: Related's
+/// answer is held until `/extras` has arrived, so a chain that finished Related before it asked for
+/// extras (the movie page then costs item-or-related plus extras) never gets there.
+#[test]
+fn extras_are_asked_while_related_is_still_open() {
+    let _serial = plx_base::testlock::serial();
+    let (pms, overlapped) = serve_gated("/library/metadata/movie-1/related", "/library/metadata/movie-1/extras");
+    let rig = Rig::over(pms);
+    let d = fetch_full(rig.client, rig.sid, "movie-1", None).expect("the page answers");
+    assert_eq!(d.trailer_rk, "trailer-1");
+    assert!(overlapped.load(AtomicOrdering::SeqCst), "/related was answered before /extras was asked: one after the other");
+}
+
+/// An item the server refuses is an empty page, said once and as what it is. The Related request
+/// that was already on its way is not worded as a fact about an item that never loaded.
+#[test]
+fn a_refused_item_logs_no_related_line() {
+    let _serial = plx_base::testlock::serial();
+    let rig = Rig::new();
+    let (page, log) = plx_base::eventlog::with_private_log(|| {
+        let page = fetch_full(rig.client, rig.sid, "gone-1", None);
+        (page.is_none(), std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+    });
+    assert!(page, "no item, no page");
+    assert!(log.contains("rk=gone-1") && log.contains("no metadata"), "the empty page is said once: {log}");
+    assert!(!log.contains("/related did not answer"), "and Related is not blamed for it: {log}");
+}
+
+/// The other side of that: for an item that loaded, a refused Related is still named, because
+/// `related=0` cannot tell the refusal from an item with none.
+#[test]
+fn a_refused_related_is_named_when_the_item_loaded() {
+    let _serial = plx_base::testlock::serial();
+    let rig = Rig::new();
+    let (title, log) = plx_base::eventlog::with_private_log(|| {
+        let d = fetch_full(rig.client, rig.sid, "movie-3", None).expect("the item answers");
+        (d.title, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+    });
+    assert_eq!(title, "Movie Three");
+    assert!(log.contains("rk=movie-3 /related did not answer"), "{log}");
 }

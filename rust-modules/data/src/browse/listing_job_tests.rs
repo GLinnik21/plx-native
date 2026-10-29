@@ -13,6 +13,8 @@ fn a_grid_step_emits_a_job_and_starts_no_worker_of_its_own() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _sid, _client) = loopback_page_source();
     let _ = browse.pump();
+    // the pump's discovery step may have asked for its own read too: it is not this test's subject
+    browse.refuse_discovery_jobs();
     assert_eq!(browse.jobs.len(), 1, "the grid step left its first page as a job: {:?}", browse.jobs);
     assert!(adapter_fetching_for_test(&browse.adapter), "the step claimed the page fetch");
     plx_base::task::drain_workers_for_test();
