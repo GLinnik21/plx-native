@@ -1,4 +1,4 @@
-{"updated":"2026-10-29T20:59:40Z",
+{"updated":"2026-10-29T21:03:14Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4202,7 +4202,7 @@
 {"id":40349387210,"at":"2026-10-26T15:26:50Z","sha":"a741685fd","title":"Playback: a PCM Load never feeds a stream the app cannot decode raw (float and 8-bit LPCM are refused); CLAUDE.md says w","pr":1067,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":23,"ARM build + gates / build + verify":991,"publish nightly prerelease":22}},
 {"id":40902463041,"at":"2026-10-29T15:31:39Z","sha":"865aebe63","title":"Docs: Face::measure runs the same layout pass as render, so it does rasterize","pr":1007,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{}}
 ],
-"cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":9,"pull_request":3},"2026-10-25":{"push":10,"pull_request":0},"2026-10-26":{"push":8,"pull_request":17},"2026-10-27":{"push":1,"pull_request":0},"2026-10-28":{"push":0,"pull_request":1},"2026-10-29":{"push":7,"pull_request":4}},
+"cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":9,"pull_request":3},"2026-10-25":{"push":10,"pull_request":0},"2026-10-26":{"push":8,"pull_request":17},"2026-10-27":{"push":1,"pull_request":0},"2026-10-28":{"push":0,"pull_request":1},"2026-10-29":{"push":7,"pull_request":5}},
 "daily":[],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
