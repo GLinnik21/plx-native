@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-29T15:52:30Z",
+ "generated": "2026-10-29T15:56:14Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -103,18 +103,18 @@
   },
   {
    "change30_pct": -58.7,
-   "change7_pct": 5.1,
+   "change7_pct": 5.5,
    "d30": 900,
    "delta30": -528,
-   "delta7": 18,
+   "delta7": 19.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 217,
-   "n_prev": 177,
+   "n_prev": 176,
    "now": 372,
-   "prev7": 354,
+   "prev7": 352.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -59.8,
-   "change7_pct": 9.9,
+   "change30_pct": -60.0,
+   "change7_pct": 9.5,
    "d30": 908.0,
-   "delta30": -543.0,
-   "delta7": 33.0,
+   "delta30": -544.5,
+   "delta7": 31.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 88,
-   "now": 365,
+   "now": 363.5,
    "prev7": 332.0,
    "shown": true,
    "state": "flat",
@@ -366,18 +366,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 59.2,
-   "change7_pct": 2.7,
+   "change30_pct": 58.9,
+   "change7_pct": 2.5,
    "d30": 166.5,
-   "delta30": 98.5,
-   "delta7": 7.0,
+   "delta30": 98.0,
+   "delta7": 6.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 82,
-   "now": 265,
+   "now": 264.5,
    "prev7": 258.0,
    "shown": true,
    "state": "flat",
@@ -412,14 +412,14 @@
    "change7_pct": 2.5,
    "d30": 521.5,
    "delta30": -314.5,
-   "delta7": 5,
+   "delta7": 5.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 81,
-   "now": 207,
+   "now": 207.0,
    "prev7": 202,
    "shown": true,
    "state": "flat",
@@ -430,17 +430,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.1,
+   "change7_pct": 15.1,
    "d30": null,
    "delta30": null,
-   "delta7": 21.5,
+   "delta7": 23.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 82,
-   "now": 174,
+   "now": 175.5,
    "prev7": 152.5,
    "shown": true,
    "state": "flat",
@@ -545,9 +545,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 82,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 71.3,
    "commits": [
     {
-     "pr": 1120,
-     "sha": "959440fae",
-     "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
-    },
-    {
      "pr": 1121,
      "sha": "414419c75",
      "title": "Crash reports: modules are never dropped, the crashing thread and exit phase are recorded, firmware-library crashes grou"
@@ -715,6 +710,11 @@
      "pr": 1100,
      "sha": "5486598a9",
      "title": "Detail: a focused episode that left the landed list re-seats on its neighbour"
+    },
+    {
+     "pr": 1030,
+     "sha": "19eaaca6f",
+     "title": "Library: keep the A-Z rail under Unwatched and genre filters"
     }
    ],
    "from": 174,
@@ -728,11 +728,6 @@
    "change_pct": 28.6,
    "commits": [
     {
-     "pr": 1120,
-     "sha": "959440fae",
-     "title": "Exit: the app process never returns into libc exit(), so OpenSSL's atexit cleanup cannot free its locks under live curl "
-    },
-    {
      "pr": 1121,
      "sha": "414419c75",
      "title": "Crash reports: modules are never dropped, the crashing thread and exit phase are recorded, firmware-library crashes grou"
@@ -776,6 +771,11 @@
      "pr": 1100,
      "sha": "5486598a9",
      "title": "Detail: a focused episode that left the landed list re-seats on its neighbour"
+    },
+    {
+     "pr": 1030,
+     "sha": "19eaaca6f",
+     "title": "Library: keep the A-Z rail under Unwatched and genre filters"
     }
    ],
    "from": 120.3,
