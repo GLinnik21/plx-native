@@ -15,6 +15,13 @@ player HUD are all *compositions of the same tokens + components*. When you add 
 with hard-coded colors and hand-tuned text offsets. That is exactly the drift this system exists to
 kill. Full design + migration status: `docs/ui-system-migration.md`.
 
+## Sans-IO
+
+`ui/` is scanned as machine code: nothing here starts a worker, reads a process-global registry or
+forks on `cfg(test)`. A component takes values as arguments, and its time is the `dt` it is handed.
+
+@../../../docs/sans-io-guide.md
+
 ## The four rules
 
 1. **Never write a raw color literal.** Every color comes from `theme.rs` as a named token
