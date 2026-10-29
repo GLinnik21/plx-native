@@ -56,6 +56,14 @@ pub struct PlayerAdapter {
     /// once the Load actually launches (`None`: no preview start is queued). Admission is taken
     /// when the queued start runs, never when it is merely queued.
     preview_admission: Option<bool>,
+    /// The URI-mode probe's session (issue #1064, dev trigger `plxnative-uriprobe`): the probe plays
+    /// through `com.webos.media` instead of an [`Engine`], so it lives BESIDE the engine slot and
+    /// never in it. [`is_live`](Self::is_live) stays Engine-only: the Engine paths (`pump`, the
+    /// HUD, the stop ritual's `take`) must never see a probe. Owned here, not by a static, for the
+    /// same reason the Engine is: ending it calls the window verbs of the sink, which only the
+    /// main thread may. Absent from a release build.
+    #[cfg(feature = "devtriggers")]
+    uri: Option<super::uriprobe_drive::UriSession>,
 }
 
 /// The foreground restore's view of its own queued start.
@@ -93,6 +101,8 @@ impl PlayerAdapter {
             release: super::release::NativeRelease::new(),
             queued_watch: QueuedWatch::Unwatched,
             preview_admission: None,
+            #[cfg(feature = "devtriggers")]
+            uri: None,
         }
     }
 
@@ -258,6 +268,46 @@ impl PlayerAdapter {
     #[inline]
     pub fn take(&mut self) -> Option<Engine> {
         self.engine.take()
+    }
+
+    /// Is a URI-mode probe session running? `start_bufferfeed`'s double-start guard asks this beside
+    /// [`is_live`](Self::is_live): a probe holds the route-start attempt and the exported window, so
+    /// a second Play cannot begin under it.
+    #[cfg(feature = "devtriggers")]
+    #[inline]
+    pub fn uri_live(&self) -> bool {
+        self.uri.is_some()
+    }
+
+    /// The service says the probe's video plays (`observe_video_plane`'s term for a session which
+    /// has no Engine to read the ACB play state from).
+    #[cfg(feature = "devtriggers")]
+    #[inline]
+    pub fn uri_plane_open(&self) -> bool {
+        self.uri.as_ref().is_some_and(|session| session.plane_open())
+    }
+
+    /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
+    /// first: overwriting a live slot would drop a session without ending it.
+    #[cfg(feature = "devtriggers")]
+    pub(super) fn install_uri(&mut self, session: super::uriprobe_drive::UriSession) {
+        debug_assert!(self.uri.is_none(), "a second URI-mode session cannot start under a live one");
+        self.uri = Some(session);
+    }
+
+    /// Take the probe's session out of the slot; the caller ends it (`uriprobe_drive::stop`).
+    #[cfg(feature = "devtriggers")]
+    #[inline]
+    pub(super) fn take_uri(&mut self) -> Option<super::uriprobe_drive::UriSession> {
+        self.uri.take()
+    }
+
+    /// The probe's session AND the token at once, borrowed from disjoint fields (the same split
+    /// [`split`](Self::split) makes for the Engine).
+    #[cfg(feature = "devtriggers")]
+    #[inline]
+    pub(super) fn uri_split(&mut self) -> (Option<&mut super::uriprobe_drive::UriSession>, &MainThread) {
+        (self.uri.as_mut(), &self.mt)
     }
 
     /// Park a still-in-flight Load for a later main-thread release. At most one can exist: the
