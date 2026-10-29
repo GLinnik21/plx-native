@@ -112,6 +112,15 @@ struct RetryContext {
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
 
+/// Why the last native start was refused with no Engine built ([`PlaybackSession::native_start_refused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartRefusal {
+    /// A timed-out Load is still inside `sf_load` (an `AbandonedLoad` owns the one native object).
+    LoadTimeout,
+    /// The previous object's off-frame `Unload` outlived `player::release::RELEASE_DEADLINE`.
+    ReleaseTimeout,
+}
+
 pub struct PlaybackSession {
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
@@ -123,13 +132,24 @@ pub struct PlaybackSession {
     /// else would publish the failure and the player sat Idle with no read-out. `player::state`
     /// derives `Error` (cause `load_timeout`) from it. Cleared by the next start attempt and,
     /// like [`jail_load_blocked`](Self::jail_load_blocked), with the playback verdict.
-    pub native_start_refused: bool,
+    ///
+    /// The cause rides with the refusal ([`StartRefusal`]): the previous object's off-frame `Unload`
+    /// being overdue (`player::release`) is a refusal like the parked Load, with its own cause
+    /// (`release_timeout`). A start QUEUED behind a still-running `Unload` is not stored here: the
+    /// release machine owns that fact and `player::state` reads what the adapter publishes of it.
+    pub native_start_refused: Option<StartRefusal>,
     /// The cause an Engine ended with when it failed for good and was released while the
     /// read-out stands (`player::release_failed_engine`). The Engine, its pipeline and the video
     /// plane are gone, so the worker signals the read-out used to be derived from are gone with
     /// them; this keeps the cause. `player::state` derives `Error` from it, like the refusals
     /// above. Cleared with them, and by the next playback request.
     engine_failure: Option<crate::player::RuntimeFailure>,
+    /// The viewer left this item for the next one from its credits (Up Next, or Skip on a `final`
+    /// credits marker). A stop BELOW the server's own watched threshold (PMS's is about 90 %,
+    /// `docs/pms-api.md` §6; [`plx_data::viewstate::past_watched_threshold`]) then marks it watched
+    /// explicitly, since long credits start before that; a stop past it is the server's to count,
+    /// and a scrobble on top would be a second view. Read and cleared by [`scrobble_stop`].
+    pub finished: bool,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
     pub repair_status: plx_platform::tv::sandbox::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
@@ -529,8 +549,9 @@ impl PlaybackSession {
     pub const IDLE: PlaybackSession = PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
-        native_start_refused: false,
+        native_start_refused: None,
         engine_failure: None,
+        finished: false,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
         requested_resume_ns: 0,
@@ -619,6 +640,7 @@ impl PlaybackSession {
             jail_load_blocked,
             native_start_refused,
             engine_failure,
+            finished,
             repair_status,
             request,
             requested_resume_ns,
@@ -689,6 +711,7 @@ impl PlaybackSession {
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
             engine_failure: *engine_failure,
+            finished: *finished,
             repair_status: *repair_status,
             request: request.clone(),
             requested_resume_ns: *requested_resume_ns,
@@ -1013,6 +1036,14 @@ impl std::fmt::Debug for ClaimSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RouteStartTransaction {
     pub(super) serial: u64,
+}
+
+impl RouteStartTransaction {
+    /// A transaction identity for a pure machine's unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn fixture(serial: u64) -> Self {
+        Self { serial }
+    }
 }
 
 /// Synchronous result of the native half of a prepared route transition.
@@ -5408,6 +5439,11 @@ pub fn is_transcoding(ps: &PlaybackSession) -> bool {
 pub fn play_refused(ps: &PlaybackSession) -> bool {
     ps.play_verdict.is_some()
 }
+/// Did the resolve refuse this as a PREVIEW that was not a direct play
+/// ([`PlayVerdict::PreviewNeedsDirectPlay`])? Our own refusal, not the server's.
+pub(crate) fn play_refused_as_preview(ps: &PlaybackSession) -> bool {
+    matches!(ps.play_verdict, Some(PlayVerdict::PreviewNeedsDirectPlay))
+}
 /// The app/worker failed to produce a playable plan, as distinct from a PMS `/decision` refusal.
 /// There is no Engine whose pump could publish Error, so `player::state()` derives it beside the
 /// refusal case.
@@ -5449,6 +5485,16 @@ pub fn server_refusal_codes(ps: &PlaybackSession) -> Option<DecisionCodes> {
         _ => None,
     }
 }
+/// Force Direct Play's read-out after the TV refused the audio the Load was fed (LG error 601 names
+/// no codec): the same verdict the planner's up-front refusal installs
+/// ([`ForcedFailure::Audio`], the codec by [`plx_data::metadata::friendly_codec`]), so both ways of
+/// "not played" name the codec alike (scheme of discussion #695, row 10). `codec` is the track's raw
+/// spelling. MAIN THREAD.
+pub fn name_refused_forced_audio(ps: &mut PlaybackSession, codec: &str) {
+    let friendly = plx_data::metadata::friendly_codec(codec);
+    crate::player::log(&format!("playback_policy: Force Direct Play refused audio codec {codec} ({friendly})"));
+    ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::Audio { codec: friendly }));
+}
 /// Retire the refusal — "this playback request is withdrawn", the one thing besides a fresh
 /// resolve that ends a verdict's life. [`request_play`] clears it because a NEW item is being
 /// resolved; this is the other half, for leaving the player entirely.
@@ -5460,7 +5506,7 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
         s.jail_load_blocked = false;
-        s.native_start_refused = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
@@ -6317,6 +6363,9 @@ struct ScrobbleWork {
     subtitle_stream_id: i64,
     transcode_session: String,
     timeline_stop: Option<TimelineStopCompletion>,
+    /// Mark the item watched once the `stopped` report is in, if it landed below the server's own
+    /// watched threshold (`PlaybackSession::finished`).
+    mark_watched: bool,
     /// The record the app learns this stop from; posted just before `timeline_stop` completes.
     stop_mail: Option<PendingStop>,
 }
@@ -6434,6 +6483,17 @@ impl ScrobbleWork {
                 ok as i32,
             ));
             posted = ok;
+            // Only a stop BELOW the server's own threshold needs the scrobble: past it the report
+            // just posted already counted the view, and `/:/scrobble` would count a second one.
+            if self.mark_watched && d_ms > 0 && !plx_data::viewstate::past_watched_threshold(t_ms, d_ms) {
+                let marked = self.client.is_some_and(|c| c.scrobble(&rk));
+                plx_base::eventlog::log(&format!("marked watched at the credits ok={}", marked as i32));
+                if marked {
+                    if let Some(rec) = self.stop_mail.as_mut().and_then(|m| m.rec.as_mut()) {
+                        rec.pos_ms = rec.dur_ms; // our word until the read-back says the server's
+                    }
+                }
+            }
         }
         // BEFORE the fence completes, so a completed fence implies the record is in the mailbox.
         if let Some(mut mail) = self.stop_mail.take() {
@@ -6476,6 +6536,7 @@ pub fn scrobble_stop(
         return;
     }
     let (logical_session, pq, pqi) = (sess(ps), pq_id(ps), pq_item_id(ps));
+    let mark_watched = std::mem::take(&mut ps.finished);
     let (aud, sub) = (cur_audio_sid(ps), cur_sub_sid(ps)); // the selection this playback reported under
     let tsession = take_active_encoder();
     let session = if tsession.is_empty() {
@@ -6531,6 +6592,7 @@ pub fn scrobble_stop(
         subtitle_stream_id: sub,
         transcode_session: tsession,
         timeline_stop,
+        mark_watched,
         stop_mail,
     })));
     let worker = work.clone();
@@ -8521,6 +8583,7 @@ fn request_play_with_queue(
     origin: crate::player::report::AttemptOrigin,
     queue: Option<super::queue_navigation::QueueContinuation>,
 ) -> bool {
+    ps.finished = false; // a flag the previous stop never took must not mark THIS item
     let sid = request.sid;
     let rk = &request.rk;
     let part = &request.part;
@@ -8587,7 +8650,7 @@ fn request_play_with_queue(
         // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
         s.play_verdict = None;
         s.jail_load_blocked = false;
-        s.native_start_refused = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
         // A film request retires the previous trailer's mark: `resolved_as_preview` is otherwise
@@ -9101,8 +9164,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         *s = PlaybackSession {
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
-            native_start_refused: false,
+            native_start_refused: None,
             engine_failure: None,
+            finished: false,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,
             requested_resume_ns,
@@ -11570,6 +11634,41 @@ pub fn report_timeline(
 #[path = "decision_test_support.rs"]
 mod test_support;
 
+/// Test-only: leave `ps` as a REAL hero-preview resolve leaves it when the route is not a direct
+/// play. The resolve runs against a loopback PMS through `build_stream` with the preview env and
+/// an item with no Part, which `preview::accepts_direct_play` rejects, and the plan it returns is
+/// installed by `apply_plan`. Nothing here sets a flag the production path would not. The caller
+/// holds `plx_base::testlock::serial()`.
+#[cfg(test)]
+pub(crate) fn resolve_refused_preview_for_test(ps: &mut PlaybackSession) {
+    assert!(plx_net::net::global_init() && crate::curlio::available());
+    let (port, done, server) = test_support::enhancement_pms(
+        test_support::MDE_DIRECTPLAY, test_support::EnhMode::Honor("ac3"), 0);
+    let sid = plx_plex::plex::register_for_test("preview-pms", "127.0.0.1", port, "token", "preview-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    let mut env = ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "trailer");
+    env.quality = Quality::Original;
+    env.set_preview(true);
+    env.cached_item = Some(test_support::fourk_item(sid, vec![plx_data::metadata::Stream::default()]));
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "trailer", "", "h264", "aac", &env);
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    ps.request = Some(PlaybackRequest {
+        sid,
+        rk: "trailer".into(),
+        part: String::new(),
+        vcodec: "h264".into(),
+        acodec: "aac".into(),
+        title: "Trailer".into(),
+        ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
+        preview: true,
+        version: None,
+    });
+    test_support::apply_plan(ps, plan, "trailer");
+    crate::route::resolve_as_preview_for_test(ps);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 #[path = "decision_flight_rig.rs"]
 pub(crate) mod flight_rig;
@@ -11645,6 +11744,10 @@ mod prefs_door_tests;
 #[cfg(test)]
 #[path = "decision_memory_tests.rs"]
 mod memory_tests;
+
+#[cfg(test)]
+#[path = "decision_queue_beside_tests.rs"]
+mod queue_beside_tests;
 
 #[cfg(test)]
 #[path = "decision_track_memory_tests.rs"]

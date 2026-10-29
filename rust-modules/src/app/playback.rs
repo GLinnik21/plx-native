@@ -966,6 +966,7 @@ pub(crate) fn activate_ctrl_row(
                 }
                 // a `final` credits segment: skipping it IS finishing the item
                 SkipAction::Finish => {
+                    player.session.finished = true;
                     let _ = finish_playback(player, pa, repause_at, refresh_hubs, pages, bridge);
                     true
                 }
@@ -982,9 +983,11 @@ pub(crate) fn activate_ctrl_row(
 /// paths reach here (EOS, Skip Credits on a `final` marker, and OK on the HUD tile while
 /// the credits are still rolling) and in all three an Engine is live — `start_bufferfeed`
 /// no-ops while one is, so skipping the stop would silently fail to advance. The stop is
-/// also what posts the `state=stopped` timeline that commits the watched state, and it
-/// must happen BEFORE requesting the replacement through `queue_transport`:  teardown reads the outgoing item's session
-/// ids and clears the URL, both of which the new plan is about to overwrite.
+/// also what posts the `state=stopped` timeline, which the server commits the watched state from
+/// only when the stop lands past its own threshold; below it the stop also scrobbles the item
+/// (`PlaybackSession::finished`, armed here). It must happen BEFORE requesting the replacement
+/// through `queue_transport`: teardown reads the outgoing item's session ids and clears the URL,
+/// both of which the new plan is about to overwrite.
 pub(crate) fn play_up_next(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
@@ -1001,6 +1004,10 @@ pub(crate) fn play_up_next(
     // category this app's Data Safety declaration answers "Not collected" to. `eventlog::scrub` is a
     // backstop for shapes like this; not writing it is the mechanism.
     log(&format!("up next: S{}E{} rk={}", u.season, u.index, u.rk));
+    // Leaving for the next episode is finishing this one: a stop below the server's watched
+    // threshold scrobbles it, one past the threshold is the server's to count. `queue_transport::play`'s
+    // stop takes the flag (`route::scrobble_stop`).
+    ps.finished = true;
     if let Some(row) = plx_media::route::queue_neighbor(ps, plx_media::route::QueueStep::Next)
         .filter(|row| row.rk == u.rk) {
         return queue_transport::play(ps, pa, row, hud_ms, pages, bridge);

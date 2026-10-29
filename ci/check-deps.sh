@@ -1197,11 +1197,13 @@ LG_LEDGERS=ci/allow/blocking.txt LG_COUNT_FILE=ci/allow/blocking.txt \
 # process-global registry and has no test/production fork; its work leaves as a typed effect the
 # app's runners execute. Today's sites are frozen here, each rule a ledger that only shrinks (the
 # layout and the exactness rules are the ledger machinery's, above); a migration PR deletes the
-# lines of the machine it made pure. MACHINES is the scope of workers and globals; forks reads the
-# whole of the four crates that own the data, the Plex client, the player and the session:
+# lines of the machine it made pure. MACHINES is the scope of workers and globals; FORK_SCOPE is the
+# scope of forks: the whole of every crate that holds a machine (a fork anywhere in them is a test that
+# does not run the product's code), which is each crate MACHINES names a directory or file of, plus all
+# of the Plex client and the player:
 MACHINES=("$SRC_DATA" "$SRC_SESSION" rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"
-  "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
-FORK_SCOPE=("$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_SESSION")
+  "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/player/release.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
+FORK_SCOPE=("$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_SESSION" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
 
 # scope_re <path>...: an ERE over repo-relative file paths that matches those paths (a `.rs` file
 # exactly, anything else as a directory prefix)
@@ -1220,9 +1222,9 @@ fork_scope_re=$(scope_re "${FORK_SCOPE[@]}")
 # a long alternation over these crates, and each rule used to take its own; one awk pass over the same
 # files costs ~0.5 s for all of them). It prints `<W|G|F><TAB><file>` for every file of a rule's scope that
 # has a line that could hold a site of that rule, and ci/ledger.awk then decides what is really one; a
-# file the pattern misses cannot hold one. W and G read the machines, F the four fork crates.
+# file the pattern misses cannot hold one. W and G read the machines, F the fork scope.
 workers_pat='spawn_small|spawn_off_frame|submit_retained|submit_ticket|task::(spawn|\{|\*)|storage_worker::(submit|\{|\*)|(task|storage_worker)[[:space:]]+as[[:space:]]'
-globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|\{|\*)|grant::(offers|\{|\*)|(^|[^A-Za-z0-9_])transport::(paused|viewer_paused|\{|\*)|(^|[^A-Za-z0-9_])preview::(paused|\{|\*)|player::TX|devcaps::(caps|\{|\*)|is_dp_audio|(session|keypin|grant|player|transport|preview|devcaps|caps|is_dp_audio|is_dp_audio_track|peek|revision|blocked_for|offers|paused|viewer_paused|TX)[[:space:]]+as[[:space:]]'
+globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|current_gen|\{|\*)|grant::(offers|\{|\*)|(^|[^A-Za-z0-9_])transport::(paused|viewer_paused|\{|\*)|(^|[^A-Za-z0-9_])preview::(paused|\{|\*)|player::TX|devcaps::(caps|\{|\*)|is_dp_audio|(^|[^A-Za-z0-9_])tape::(active|\{|\*)|server_ids|server_roster_gen|server_facts_gen|server_probe_result|peek_settled|(session|keypin|grant|player|transport|preview|devcaps|tape|caps|is_dp_audio|is_dp_audio_track|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|TX|server_ids|server_roster_gen|server_facts_gen|server_probe_result)[[:space:]]+as[[:space:]]'
 # a cfg line: one with `test` on it, or an attribute / `cfg!` that opens on one line and closes on a later
 # one, where `test` may sit on the second. A line that is a test-only attribute outright — `#[cfg(test)]`,
 # `#[cfg(any(test, feature = "test-support"))]`, or an `all(<either>, <flat atoms>)` of them — is no
@@ -1283,18 +1285,29 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 # (each is `TX.paused` read behind a function; the lifecycle PR B move put them in player/transport.rs and
 # widened this rule to them, seeding the machines' existing reads as a coverage expansion), and `player::TX`
 # in the player's lifecycle (the machine, at zero: it takes the pause as a value on its event, and the
-# spelling stays pinned there as a guard; the HUD's direct reads are not machines). The device's
+# spelling stays pinned there as a guard; the HUD's direct reads are not machines). The server registry's roster
+# readers (`server_ids(`, `server_roster_gen(`, `server_facts_gen(`, `server_probe_result(`: the `plex/src/plex/mod.rs`
+# re-exports of `servers::ids`, `roster_gen`, `facts_gen`, `probe_result`), the session cache's two readers
+# (`session::peek_settled(`, `session::current_gen(`) and the controlled-run switch `tape::active(` (a thread-local
+# the tape arms) read process-wide state behind a free function too, and the widening that closed the rule's list is a
+# coverage expansion that recorded the reads already there. The settings getters (`route::*`) and `i18n::current` are
+# deliberately NOT spellings: the owner's architecture board kept settings getters out of this gate, and
+# `i18n::current` is a display read. The device's
 # capability answer is read behind a function too: `devcaps::caps(`, and the zero-argument audio gates
 # `is_dp_audio(` / `is_dp_audio_track(` that used to read it (the `_with` forms take the value and do not
 # match). The attempt-caps PR widened the rule to them as a coverage expansion, not a shrink: the route's
 # planner took its `&Caps` as an argument and reads none, so they seeded no line. A bare
 # `peek(` / `revision(` / `blocked_for(` / `offers(` / `paused(` / `viewer_paused(` / `caps(` /
-# `is_dp_audio(` / `is_dp_audio_track(` is a site in a file that
+# `is_dp_audio(` / `is_dp_audio_track(` / `current_gen(` / `active(` is a site in a file that
 # imports it from `session` / `keypin` / `grant` / `transport` / `preview` / `devcaps` /
-# `plex` / `transcoder` (alone, last in a braced group, or
-# by glob; `transport`, `preview` and `devcaps` count only as a whole path segment, because `scrub_preview::*` and
-# `hud_transport::*` are common module names that import neither) and, for `peek`, in
-# plex/src/plex/session.rs, the module that defines it. A getter named without
+# `plex` / `transcoder` / `tape` (alone, last in a braced group, or
+# by glob; `transport`, `preview`, `devcaps` and `tape` count only as a whole path segment, because `scrub_preview::*` and
+# `hud_transport::*` are common module names that import neither) and, for `peek` and `current_gen(`, in
+# plex/src/plex/session.rs, the module that defines them (`data/src/stores/tape.rs` defines `active()` but is the
+# registry the stores call through, not a machine, so its own bare calls are no sites). `current_gen` and `active` are
+# generic names (a field, a method, another module's `active()`), so their bare form counts only as a call and only
+# where that import or module says it is the registry's; `peek_settled` and the four `server_*` names are as
+# distinctive as `client_for` and count bare anywhere (a method call, `x.server_ids()`, never does). A getter named without
 # a call (`.and_then(client_for)`) reads the registry as surely as a call does, so it is a site too; only a
 # rename (`use ... as`) is refused, because the renamed calls are invisible. Each getter's own definition is
 # not a site.
@@ -1302,11 +1315,11 @@ globals_sites=$(
   { ledger_candidates G
     printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
     | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
-      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|grant::offers|transport::paused|transport::viewer_paused|preview::paused|devcaps::caps|is_dp_audio_track|is_dp_audio)([^A-Za-z0-9_]|$)' \
-      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track)[[:space:]]*[(<]' \
-      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|TX|session|keypin|grant|player|transport|preview|devcaps)[[:space:]]+as[[:space:]]' \
-      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])devcaps::(caps([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?caps([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])caps[[:space:]]*\(;;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio_track([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio_track([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio_track([^A-Za-z0-9_]|$)' \
-      LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
+      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|session::peek_settled|session::current_gen|grant::offers|transport::paused|transport::viewer_paused|preview::paused|devcaps::caps|is_dp_audio_track|is_dp_audio|tape::active|server_ids|server_roster_gen|server_facts_gen|server_probe_result|peek_settled)([^A-Za-z0-9_]|$)' \
+      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|active|server_ids|server_roster_gen|server_facts_gen|server_probe_result)[[:space:]]*[(<]' \
+      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|peek_settled|current_gen|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|server_ids|server_roster_gen|server_facts_gen|server_probe_result|tape::active|TX|session|keypin|grant|player|transport|preview|devcaps|tape)[[:space:]]+as[[:space:]]|(^|[^A-Za-z0-9_])tape::\{([^}]*[^A-Za-z0-9_])?active[[:space:]]+as[[:space:]]' \
+      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])devcaps::(caps([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?caps([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])caps[[:space:]]*\(;;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio_track([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio_track([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio_track([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])session::(current_gen([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?current_gen([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;(^|[^A-Za-z0-9_])tape::(active([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?active([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])active[[:space:]]*\(' \
+      LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])current_gen[[:space:]]*\(;;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
       ledger_scan | sort
 )
 LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
@@ -1317,7 +1330,8 @@ LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
   LG_TAIL='a machine reads no registry: the value arrives in an event or an argument (docs/sans-io.md); the ledgers only shrink' \
   ledger_check globals "$globals_sites"
 
-# forks: a production test/production fork across all of data/, plex/, media/ and session/ — a `#[cfg(..)]`
+# forks: a production test/production fork across every machine crate (FORK_SCOPE: all of data/, plex/, media/,
+# session/, screens/, ui/, appkit/ and machine/) — a `#[cfg(..)]`
 # attribute that production CAN satisfy (`not(test)`, `not(any(test, feature = "test-support"))`,
 # `not(feature = "test-support")`, `all(target_os = .., not(test))`), or an inline `cfg!(..)` of any value,
 # whose predicate reads `test` or `feature = "test-support"`: code that is one thing in a test and another in
@@ -1325,7 +1339,8 @@ LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
 # `any(test, ..)`) is no fork, but `cfg!(test)` is: `if cfg!(test) {..} else {..}` compiles an arm production runs.
 # Keyed `<path>::<item name>` for an attribute on an item (a fn, a const, a mod, an impl, or a macro
 # invocation at module level, named for its macro: `latched_flag!`), or
-# `<path>::<enclosing fn>` for a statement, a field, or an inline `cfg!` — never a line number. A file can
+# `<path>::<enclosing fn>` for a statement or an inline `cfg!`, or `<path>::<struct>` for a field (it has no fn around
+# it) — never a line number. A file can
 # hold a fork only if it has a cfg line that is not a plain test-only attribute (an item under one is
 # skipped whole), which is what the candidates are.
 forks_sites=$(

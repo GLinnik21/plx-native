@@ -1165,7 +1165,7 @@ mod tests {
             (false, Details::YearLength, [None, Some("Example Show")]),
             (true, Details::None, [Some("The Answer"), None]),
         ] {
-            TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+            TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details, show_sort_info: false })));
             let caption = member_caption(&episode);
             TEST_UNDER_POSTERS.with(|cell| cell.set(None));
             assert_eq!([text(&caption.title), text(&caption.caption)], want.map(|line| line.map(str::to_owned)), "title {title}, {details:?}");

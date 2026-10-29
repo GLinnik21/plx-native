@@ -40,6 +40,8 @@ written and the report chain never starts). Per crash it emits:
 ```
 *** SIGNAL 11 (SIGSEGV) addr=0x6bcf pc=0xf5a4dd08 lr=0x0
 time: 1750000000                                       -- wall-clock unix second of the crash (newer builds only)
+thread: tid=4242 main=0 name=tokio-rt.worker           -- which thread faulted; main=1 is the main thread (newer builds only)
+phase: running uptime=57                               -- running | shutdown | exiting (libc atexit/destructors), seconds since install
 reg: sp=0x… fp=0x… ip=0x… cpsr=0x… r0=0x… r1=0x… … r10=0x…
 at:  <the /proc/self/maps line containing pc or lr>    -- which library faulted
 bin: <the maps line for our own executable>            -- our load base, for addr2line

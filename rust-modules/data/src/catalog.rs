@@ -86,26 +86,16 @@ pub enum Load {
 
 /// Everything the store asks of the outside world. Production is [`LiveCatalogIo`].
 pub trait CatalogIo: Send + Sync {
-    /// MAIN THREAD: the identity to read as (`None` when the profile has no account credential).
-    fn capture_auth(&self) -> Option<WatchlistAuth>;
-    /// MAIN THREAD: is `auth` still the seated profile?
-    fn is_current(&self, auth: &WatchlistAuth) -> bool;
     /// WORKER THREAD: `GET discover /library/metadata/<hex>`.
     fn fetch(&self, auth: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError>;
     /// Today as `YYYY-MM-DD` (UTC): what a release date is compared against.
     fn today(&self) -> Option<String>;
 }
 
-/// The production seam: libcurl through `plex::watchlist`, the identity from the session.
+/// The production seam: libcurl through `plex::watchlist`, as the identity the job carries.
 pub struct LiveCatalogIo;
 
 impl CatalogIo for LiveCatalogIo {
-    fn capture_auth(&self) -> Option<WatchlistAuth> {
-        WatchlistAuth::capture()
-    }
-    fn is_current(&self, auth: &WatchlistAuth) -> bool {
-        auth.is_current()
-    }
     fn fetch(&self, auth: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError> {
         let client = AccountClient::new(&auth.client_id, Some(&auth.credential));
         let mut transport = client.watchlist_transport();

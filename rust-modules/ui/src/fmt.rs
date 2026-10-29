@@ -493,6 +493,15 @@ mod tests {
 /// pass 0 when there is none, and an unparseable date yields the empty string rather than a
 /// half-formatted one — every caller draws a date line only when it is non-empty.
 pub fn pretty_date(iso: &str, year: i64) -> String {
+    pretty_date_with(iso, year, false)
+}
+
+/// A calendar date with the locale's abbreviated month, retaining [`pretty_date`]'s validation.
+pub fn pretty_date_medium(iso: &str, year: i64) -> String {
+    pretty_date_with(iso, year, true)
+}
+
+fn pretty_date_with(iso: &str, year: i64, named_month: bool) -> String {
     let parts: Vec<&str> = iso.split('-').collect();
     if parts.len() == 3 {
         if let (Ok(y), Ok(mo), Ok(da)) = (
@@ -501,7 +510,8 @@ pub fn pretty_date(iso: &str, year: i64) -> String {
             parts[2].parse::<i64>(),
         ) {
             if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
-                if let Some(date) = plx_platform::i18n::current().date(y, m, d) { return date; }
+                let cx = plx_platform::i18n::current();
+                if let Some(date) = if named_month { cx.date_medium(y, m, d) } else { cx.date(y, m, d) } { return date; }
             }
         }
     }

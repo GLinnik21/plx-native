@@ -10,7 +10,7 @@ use crate::screen::{At, By, Dir, DrawFrame, Placed, ScreenEvent, Step};
 use crate::widgets::Art;
 use crate::{Painter, Rect, Spring};
 use plx_machine::machine::{
-    Canon, Cx, Effects, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Tick,
+    Canon, Cx, Effects, Enter, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Tick,
 };
 use plx_machine::present::Present;
 
@@ -65,6 +65,7 @@ struct Cards {
     first: usize,
     /// Every card carries a two-line caption (the Under posters setting's title over its details).
     captioned: bool,
+    sort_caption: bool,
     /// ...with the title alone (the 80 px Under posters band, no details line).
     title_only: bool,
     /// ...with the details line alone (the stored default: title off, Year · Length).
@@ -79,7 +80,7 @@ const TILE_PAINTED: u64 = 9999;
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, title_only: false, details_only: false, elem_calls: Default::default() }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, sort_caption: false, title_only: false, details_only: false, elem_calls: Default::default() }
     }
 }
 
@@ -101,14 +102,16 @@ impl CardSource<FixtureHost> for Cards {
         Art::Poster(None)
     }
     fn label(&self, i: usize) -> TileLabel {
-        if self.captioned {
+        let mut label = if self.captioned {
             TileLabel::from_lines([
                 (!self.details_only).then(|| format!("Title {}", self.elems[i])),
                 (!self.title_only).then(|| "2005 \u{b7} 1h 40m".into()),
             ])
         } else {
             TileLabel::default()
-        }
+        };
+        if self.sort_caption { label.sort_info = std::ffi::CString::new("100%").ok(); }
+        label
     }
     fn more(&self) -> bool {
         self.more
@@ -1740,6 +1743,206 @@ fn a_grid_restore_after_dormant_ticks_arrives_popped_and_a_deliberate_move_still
     assert!(first > 1.0 && first < full - 0.02, "a deliberate arrival grows from rest: {first}");
 }
 
+/// A captioned grid of four rows, card 100 (the first) focused and settled lifted, the way a page
+/// is left when a Detail is opened from it.
+fn left_lifted() -> Rig<Grid> {
+    let mut r = Rig::<Grid>::new(4 * poster_grid::COLS);
+    r.src.captioned = true;
+    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
+        title: true,
+        details: crate::caption_policy::DetailsKind::YearLength,
+    }));
+    r.run(2);
+    r.land_focus(100, By::Dir);
+    r.run(200);
+    assert!(r.scale(100).unwrap() > 1.05, "premise: the card is left lifted");
+    r
+}
+
+/// The caption alpha of card 100 on the frame the grid last drew.
+fn caption_of_100(r: &Rig<Grid>) -> f32 {
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::root());
+    r.sect.caption_probe(&f, f.painter, &r.src).iter().filter(|(i, _)| *i == 0).map(|(_, a)| *a).sum()
+}
+
+/// **A page that returns is not put to sleep.** BACK from a Detail runs under the dip's image, which
+/// the owner reports as dormant; a seat put at rest there and grown again moves the row under its
+/// caption band by the band's height and back. A grid fed `Enter(Restored)` draws the seat the
+/// engine restored lifted with its caption open from the first frame, through every dormant tick,
+/// and keeps it when the owner wakes it. Both a grid that slept while covered and a fresh one (the
+/// stack let the page go and rebuilt it) come back that way.
+#[test]
+fn a_grid_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_caption_open() {
+    let full = RowStyle::HOME.focus_scale;
+    for covered in [true, false] {
+        let mut r = if covered {
+            // the page slept under the image of the push that covered it, then went unticked
+            let mut r = left_lifted();
+            r.sect.dormant(true);
+            r.run(3);
+            assert_eq!(r.scale(100), Some(1.0), "premise: it slept");
+            r.focus = None;
+            r
+        } else {
+            Rig::<Grid>::new(4 * poster_grid::COLS)
+        };
+        if !covered {
+            r.src.captioned = true;
+            r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
+                title: true,
+                details: crate::caption_policy::DetailsKind::YearLength,
+            }));
+        }
+        r.sect.dormant(true);
+        r.feed(ScreenEvent::Enter(Enter::Restored));
+        r.land_focus(100, By::Restore);
+        assert_eq!(r.scale(100), Some(full), "covered={covered}: whole on the first frame, before any tick");
+        for frame in 0..30 {
+            r.run(1);
+            assert_eq!(r.scale(100), Some(full), "covered={covered}: lifted under the image, frame {frame}");
+        }
+        assert!((caption_of_100(&r) - 1.0).abs() < 0.01, "covered={covered}: its caption is open under the image: {}", caption_of_100(&r));
+        r.sect.dormant(false);
+        for frame in 0..30 {
+            r.run(1);
+            assert_eq!(r.scale(100), Some(full), "covered={covered}: still lifted once awake, frame {frame}");
+            assert!((caption_of_100(&r) - 1.0).abs() < 0.01, "covered={covered}: caption kept once awake, frame {frame}");
+        }
+    }
+}
+
+/// **A return leaves no mark.** `Enter(Restored)` reaches a live page too (a modal's dismissal), with
+/// no image after it: the first tick that reports awake ends the return, so a later dissolve puts
+/// the seat to rest and the lift grows on the awake tick, as on a page that never returned.
+#[test]
+fn a_grid_that_returned_with_no_image_sleeps_through_the_next_dissolve() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = left_lifted();
+    r.focus = None;
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    r.run(2);
+    assert!((r.scale(100).unwrap() - full).abs() < 1e-4, "premise: it came back lifted");
+    r.sect.dormant(true);
+    r.run(3);
+    assert_eq!(r.scale(100), Some(1.0), "a later dissolve puts the seat to rest");
+    assert_eq!(lifted(&r), 0);
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(100).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "and the lift grows from rest once the page is in: {first}");
+}
+
+/// **The reader moving ends the return.** A key pressed while the image of the way back is still up
+/// is slept through like an entry's: nothing is lifted or opened under the image (the move would
+/// hold it), and the new seat grows from rest once the owner wakes the grid.
+#[test]
+fn a_deliberate_move_ends_a_grids_return_and_is_slept_through() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = left_lifted();
+    r.focus = None;
+    r.sect.dormant(true);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    r.run(3);
+    assert!((r.scale(100).unwrap() - full).abs() < 1e-4, "premise: it came back lifted");
+    r.land_focus(101, By::Dir);
+    for frame in 0..10 {
+        r.run(1);
+        assert_eq!(r.scale(100), Some(1.0), "the seat it left is at rest, frame {frame}");
+        assert_eq!(r.scale(101), Some(1.0), "the seat it moved to is at rest, frame {frame}");
+    }
+    assert!(!r.run(1), "nothing moves under the image");
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(101).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "the new seat grows from rest once the page is in: {first}");
+}
+
+/// A grid that returned lifted under a held image, then had focus leave its cards: Up from the
+/// first row onto a header control (a deliberate move that names no card of the grid), or the
+/// BACK that walks there (a seat the page makes for itself, announced as a restore). Elem 7 is on
+/// the page and not a card of the grid.
+fn returned_then_focus_leaves(by: By) -> Rig<Grid> {
+    let mut r = left_lifted();
+    r.focus = None;
+    r.sect.dormant(true);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    r.run(3);
+    assert!((r.scale(100).unwrap() - RowStyle::HOME.focus_scale).abs() < 1e-4, "premise: it came back lifted");
+    assert!((caption_of_100(&r) - 1.0).abs() < 0.01, "premise: its caption is open");
+    r.land_focus(7, by);
+    r
+}
+
+/// **Leaving the grid under the image of the way back waits for nothing.** The seat the page kept
+/// lifted lets go and its caption band shuts at once, like an entry's: a band left closing on its
+/// spring (and a pop letting go on its own) is layout motion, and the image waits for it.
+#[test]
+fn a_grid_that_returned_sleeps_through_focus_leaving_it() {
+    for by in [By::Dir, By::Pointer, By::Restore] {
+        let mut r = returned_then_focus_leaves(by);
+        for frame in 0..8 {
+            assert!(!r.run(1), "{by:?}: something moves under the image, frame {frame}");
+            assert_eq!(r.scale(100), Some(1.0), "{by:?}: the seat it left is at rest, frame {frame}");
+            assert_eq!(caption_of_100(&r), 0.0, "{by:?}: a caption is left closing under the image, frame {frame}");
+        }
+        assert_eq!(lifted(&r), 0, "{by:?}");
+    }
+}
+
+/// **A landing is adopted whole under the image, a returning grid included.** A card that left or
+/// arrived while the page was covered (the item watched, a refetch) must not play its ghost and its
+/// slides under the image that hides them: the animation would hold the image to its bound and
+/// then be cut.
+#[test]
+fn a_grid_that_returned_adopts_a_landing_whole_under_the_image() {
+    let mut r = animated_grid(40, 100, GRID);
+    r.focus = None;
+    r.sect.dormant(true);
+    r.run(2);
+    r.src.elems.remove(11);
+    r.src.elems.insert(13, 900);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    for frame in 0..4 {
+        r.run(1);
+        assert!(r.sect.ghost_probe().0.is_empty(), "a ghost plays under the image, frame {frame}");
+    }
+    r.sect.dormant(false);
+    r.run(2);
+    let n = r.src.elems.len();
+    assert_eq!(r.sect.landing_probe(n, 13), ((0.0, 0.0), 1.0));
+    assert_eq!(r.sect.landing_probe(n, 10), ((0.0, 0.0), 1.0));
+    assert!(r.sect.ghost_probe().0.is_empty());
+}
+
+/// **A layout built before the first tick sizes the document from the returning seat's band.**
+/// `settle_band` is the owner's way to adopt a restored focus row's caption band at once (the
+/// Library's `relayout`, which runs on `Enter(Restored)` while the grid still reads the dormant
+/// flag of the dip that covered the page): a returning grid takes it, a sleeping one does not.
+#[test]
+fn settle_band_opens_a_returning_grids_band_but_not_a_sleeping_ones() {
+    let open = |r: &Rig<Grid>| r.sect.band_geometry().iter().any(|band| band.expansion > 0.99);
+    let mut sleeping = left_lifted();
+    sleeping.focus = None;
+    sleeping.sect.dormant(true);
+    sleeping.run(3);
+    sleeping.sect.settle_band(Some(0));
+    assert!(!open(&sleeping), "a sleeping grid's band stays shut");
+
+    let mut returning = left_lifted();
+    returning.focus = None;
+    returning.sect.dormant(true);
+    returning.run(3);
+    assert!(!open(&returning), "premise: the covered grid's band is shut");
+    returning.feed(ScreenEvent::Enter(Enter::Restored));
+    returning.sect.settle_band(Some(0));
+    assert!(open(&returning), "a returning grid's band opens before any tick");
+}
+
 /// A lifted grid card that goes dormant lets go and the grid keeps no lift while it sleeps.
 #[test]
 fn a_grid_that_goes_dormant_lets_its_lifted_card_go() {
@@ -1864,8 +2067,9 @@ impl Drop for ImageHeld {
 
 /// **Nothing steps under an image that hides it.** A shelf that is dormant while the page is a held
 /// image (a route dip's Out and In halves, the hold after it) parks at exact rest on its FIRST
-/// tick, as a grid does: the card that was lifted, the caption band and the heading's lift are all
-/// closed at once, with no spring left moving to hold the image past the dissolve.
+/// tick, as a grid put to sleep does (a grid that RETURNS is not put to sleep): the card that was
+/// lifted, the caption band and the heading's lift are all closed at once, with no spring left
+/// moving to hold the image past the dissolve.
 #[test]
 fn a_dormant_shelf_under_a_held_page_image_parks_on_its_first_tick() {
     let mut r = settled::<Shelf>(8);
@@ -4937,4 +5141,97 @@ fn the_rows_in_view_and_their_hold_reach_fit_the_rows_the_store_keeps() {
     // and the premise of ROWS_IN_VIEW_MAX: the fixed pitch of a row, whole rows that fit, plus two cut
     let pitch = crate::card_row::ROW_PITCH_FIXED;
     assert!(ROWS_IN_VIEW_MAX as f32 * pitch >= crate::consts::SCR_H + pitch, "{ROWS_IN_VIEW_MAX} rows of {pitch}px");
+}
+
+#[test]
+fn persistent_grid_captions_draw_every_visible_card_and_keep_focus_and_next_row_clear() {
+    let _guard = plx_base::testlock::serial();
+    let mut r = Rig::<Grid>::new(30);
+    r.src.captioned = true; r.src.sort_caption = true;
+    r.sect.set_persistent_captions(true);
+    r.land_focus(100, By::Dir); r.run(120);
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    let lines = r.sect.caption_lines_probe(&f, f.painter, &r.src);
+    for i in 0..6 {
+        assert_eq!(lines.iter().filter(|(index, ..)| *index == i).count(), 3,
+            "each poster is captioned, not just the focused one: {i}");
+    }
+    let runs = crate::draw_census::capture_runs(|| {
+        let mut frame = DrawFrame::new(&cx, Painter::recording());
+        let p = frame.painter;
+        r.sect.draw(&mut frame, p, &r.src);
+    });
+    assert!(runs.iter().any(|run| run.text == "100%"), "a fitting sort value has no ellipsis");
+    assert!(runs.iter().any(|run| run.text == "Title 101"), "an unfocused fitting title has no ellipsis");
+    let c0 = r.sect.place(&cx, &r.src, &100, At::SpringTarget).unwrap();
+    let c6 = r.sect.place(&cx, &r.src, &106, At::SpringTarget).unwrap();
+    let last = lines.iter().filter(|(i, ..)| *i == 0).map(|(_, _, bottom, _)| *bottom).fold(0.0, f32::max);
+    let next_lifted_top = c6.rest_rect.y;
+    assert!(last < next_lifted_top, "last caption stays above even a popped next row");
+    assert!((c0.rest_rect.w / GRID.style.focus_scale - GRID.style.w).abs() < 0.01);
+    assert!((c0.rest_rect.h / GRID.style.focus_scale - GRID.style.h).abs() < 0.01);
+    let first_top = c0.rest_rect.y;
+    r.land_focus(101, By::Dir); r.run(120);
+    assert_eq!(r.focus, Some(r.key(101)));
+    assert_eq!(r.sect.place(&r.cx(), &r.src, &100, At::SpringTarget).unwrap().rest_rect.y, first_top,
+        "moving horizontally cannot change the permanent row pitch");
+    r.sect.set_persistent_captions(false);
+    r.run(120);
+    let cx = r.cx(); let f = DrawFrame::new(&cx, Painter::recording());
+    assert!(r.sect.caption_probe(&f, f.painter, &r.src).iter().all(|(index, _)| *index == 1),
+        "turning the mode off restores focused-only captions");
+}
+
+#[test]
+fn plain_sort_caption_uses_the_regular_details_face() {
+    let _guard = plx_base::testlock::serial();
+    for (value, bold) in [("25 июн. 2026", false), ("2 ч 14 мин", false), ("64%", true)] {
+        let label = TileLabel { sort_info: Some(std::ffi::CString::new(value).unwrap()),
+            sort_bold: bold,
+            ..TileLabel::from_lines([Some("Film".into()), Some("2026".into())]) };
+        let runs = crate::draw_census::capture_runs(|| crate::card_row::draw_label(
+            Painter::recording(), Rect::new(100.0, 100.0, GRID.style.w, GRID.style.h),
+            1.0, &GRID.style, &label, &FixtureMeasure));
+        let value_run = runs.iter().find(|run| run.text == value).unwrap();
+        assert_eq!(value_run.bold, bold, "only ratings have emphasis");
+        assert_eq!(value_run.size, if bold { crate::theme::size::LABEL } else { crate::theme::size::CAPTION });
+    }
+}
+
+#[test]
+fn review_persistent_grid_borrows_labels_only_after_culling() {
+    struct CachedCards {
+        cards: Cards,
+        label: TileLabel,
+        reads: std::cell::RefCell<Vec<usize>>,
+    }
+    impl CardSource<FixtureHost> for CachedCards {
+        fn len(&self) -> usize { self.cards.len() }
+        fn elem(&self, i: usize) -> u32 { self.cards.elem(i) }
+        fn index_of(&self, e: &u32) -> Option<usize> { self.cards.index_of(e) }
+        fn art(&self, _: usize) -> Art<'_> { Art::Poster(None) }
+        fn label(&self, _: usize) -> TileLabel { panic!("persistent painting must borrow the cached label") }
+        fn with_label<R>(&self, i: usize, read: impl FnOnce(&TileLabel) -> R) -> R {
+            self.reads.borrow_mut().push(i);
+            read(&self.label)
+        }
+    }
+    let _guard = plx_base::testlock::serial();
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    let _discovery = crate::frame::backdrop::discover(sources);
+    let view = FixtureView::default();
+    let cx = cx9(&view, 0, 1.0, None);
+    let painter = Painter::root();
+    let frame = DrawFrame::new(&cx, painter);
+    let mut grid = Grid::new(ENTRY, GRID.columns(GRID.cols, GRID.style, 5000.0));
+    grid.set_persistent_captions(true);
+    let src = CachedCards { cards: Cards::new((100..130).collect(), false),
+        label: TileLabel::titled("Cached", "1997"), reads: Default::default() };
+    assert!(grid.caption_probe(&frame, painter, &src).is_empty());
+    assert!(src.reads.borrow().is_empty(), "culled tiles must not ask for words");
+    grid.set_columns(GRID.cols, GRID.style, crate::consts::MARGIN_X);
+    assert!(!grid.caption_probe(&frame, painter, &src).is_empty());
+    assert!(!src.reads.borrow().is_empty(), "visible captions use the borrowed path");
 }

@@ -2112,7 +2112,7 @@ mod tests {
 
     impl Sink {
         fn new() -> Self {
-            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            use std::sync::atomic::{AtomicUsize, Ordering};
             use std::sync::Arc;
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
             listener.set_nonblocking(true).expect("nonblocking");
@@ -2371,25 +2371,18 @@ mod tests {
 
     const HEX: [u8; 12] = [7; 12];
 
-    /// A scripted plex.tv: every read answers with a title, and the seated profile can move on.
+    /// A scripted plex.tv: every read answers with a title.
     struct Scripted {
         reads: AtomicUsize,
-        current: AtomicBool,
     }
 
     impl Scripted {
         fn new() -> Arc<Self> {
-            Arc::new(Self { reads: AtomicUsize::new(0), current: AtomicBool::new(true) })
+            Arc::new(Self { reads: AtomicUsize::new(0) })
         }
     }
 
     impl CatalogIo for Scripted {
-        fn capture_auth(&self) -> Option<WatchlistAuth> {
-            Some(WatchlistAuth { client_id: "c".into(), credential: "t".into(), user: Default::default(), generation: 1 })
-        }
-        fn is_current(&self, _: &WatchlistAuth) -> bool {
-            self.current.load(Ordering::SeqCst)
-        }
         fn fetch(&self, _: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             Ok(CatalogItem {
@@ -2406,7 +2399,7 @@ mod tests {
 
     fn catalog_request(io: &Arc<Scripted>) -> (CatalogStore, StoreJob) {
         let mut store = CatalogStore::with_io(io.clone());
-        store.open(HEX);
+        store.open(HEX, &plx_data::watchlist::WatchlistInput::for_test(1));
         let mut jobs = store.take_jobs();
         assert_eq!(jobs.len(), 1, "an open emits one job");
         (store, jobs.remove(0))
@@ -2428,9 +2421,9 @@ mod tests {
         assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
         tape::reset_for_test();
         assert_eq!(io.reads.load(Ordering::SeqCst), 1, "one read");
-        assert!(store.pump(), "the answer landed");
+        assert!(store.pump(&plx_data::watchlist::WatchlistInput::profile_for_test(1)), "the answer landed");
         assert!(matches!(store.load, plx_data::catalog::Load::Loaded(_)));
-        assert!(!store.pump(), "...once");
+        assert!(!store.pump(&plx_data::watchlist::WatchlistInput::profile_for_test(1)), "...once");
         assert!(!store.has_jobs());
     }
 
@@ -2444,10 +2437,10 @@ mod tests {
         let mut runner = StoreRunner::held();
 
         runner.start(job);
-        assert!(!store.pump(), "parked: nothing has run");
+        assert!(!store.pump(&plx_data::watchlist::WatchlistInput::profile_for_test(1)), "parked: nothing has run");
         assert_eq!(io.reads.load(Ordering::SeqCst), 0);
         assert_eq!(runner.run_held(), 1);
-        assert!(store.pump());
+        assert!(store.pump(&plx_data::watchlist::WatchlistInput::profile_for_test(1)));
         assert_eq!(runner.run_held(), 0, "nothing left parked");
         assert_eq!(io.reads.load(Ordering::SeqCst), 1);
     }
@@ -2465,7 +2458,7 @@ mod tests {
         runner.start(job);
         runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
         assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Catalog), 1, "the catalog read was kept");
-        assert!(store.pump());
+        assert!(store.pump(&plx_data::watchlist::WatchlistInput::profile_for_test(1)));
         assert_eq!(runner.run_held(), 1, "the detail job parked after it is still there for its own test");
     }
 
@@ -2477,15 +2470,17 @@ mod tests {
         let io = Scripted::new();
         let mut bridge = Bridge::for_test(|| 0);
         *bridge.catalog_for_test() = CatalogStore::with_io(io.clone());
+        bridge.seat_watchlist_account_for_test(true);
 
         bridge.catalog_open(HEX);
         bridge.assert_no_store_jobs_left_for_test();
         assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the open's read was parked by the runner");
-        io.current.store(false, Ordering::SeqCst);
+        // The app seats another profile: the pass drops the old profile's landing and owes the title a
+        // read, which the same call opens under the identity read now.
+        bridge.seat_watchlist_account_for_test(true);
         assert!(bridge.catalog_pump(), "the landing is for a profile that is gone: the page asks again");
         bridge.assert_no_store_jobs_left_for_test();
         assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the pump's re-open was started in the pump's own call");
-        io.current.store(true, Ordering::SeqCst);
         assert!(bridge.catalog_pump());
         assert!(matches!(bridge.catalog_for_test().load, plx_data::catalog::Load::Loaded(_)));
         bridge.assert_no_store_jobs_left_for_test();

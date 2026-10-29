@@ -3500,19 +3500,11 @@ fn project_extras(
     d.trailer_rk = winner.rk;
 }
 
-fn fetch_related(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
-    let mc = match client.related(rk) {
-        Some(m) => m,
-        None => {
-            // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
-            // an item with no related hub and a refused GET both reach `fetch_full`'s `related=0`.
-            plx_base::eventlog::log(&format!(
-                "detail: rk={rk} /related did not answer — the related= below is that refusal"
-            ));
-            return RelatedRows::default();
-        }
-    };
-    related_rows(&mc, sid, rk)
+/// `None` when the GET did not answer: the caller words that refusal ([`fetch_full`]), because it
+/// runs beside the item's own GET and only the caller knows whether the item exists.
+fn fetch_related(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> Option<RelatedRows> {
+    let mc = client.related(rk)?;
+    Some(related_rows(&mc, sid, rk))
 }
 
 /// `/related`'s response for item `rk` → the page's collection shelf and Related row. **PURE**,
@@ -3672,7 +3664,10 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// The full detail fetch for `rk` (movie or show): item metadata + cast + streams, plus — for
 /// shows — seasons, the opening season's episodes ([`initial_season`]) and a stream backfill, plus
 /// the related hub.
-/// 2 PMS round-trips for a movie, 5 for a show.
+/// Round trips one after another: 2 for a movie (the item, with Related beside it; then extras,
+/// beside what is left of Related); for a show the item, then its seasons, then the opening
+/// season's episodes, with Related, the on-deck episode and extras beside them (a show nobody has
+/// started reads its first episode after those).
 ///
 /// Every GET goes through `client`, the one the runner resolved for the job
 /// ([`finish_detail_fetch`]), the opening season's episodes included.
@@ -3700,21 +3695,48 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
     // Worded as "no metadata" rather than "the GET failed": `fetch_detail` is `client.metadata(rk)?`,
     // and `metadata` answers `None` for a transport failure, a non-2xx and an unparseable body alike.
     // One line for all of them is right — the page is equally empty — but it must not assert which.
-    let Some((mut d, primary_extra_key)) = fetch_detail(client, sid, rk) else {
-        plx_base::eventlog::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (the server refused or did not answer)"));
-        return None;
-    };
-    if d.is_show {
-        load_show_seasons(client, rk, &mut d, prefer);
+    //
+    // Everything that needs nothing from the rest is asked beside it, on sibling threads of ONE
+    // scope (`plx_base::task::beside`), so the page waits for the slowest chain, not their sum:
+    // Related needs only the key, so it goes beside the item; extras and a show's on-deck episode
+    // need the item (its kind, its on-deck key) and go beside the seasons. The scope joins every
+    // sibling on every exit, the item-refused one included.
+    let (mut d, primary_extra_key, related, extras) = std::thread::scope(|s| {
+        let related = plx_base::task::beside(s, "detail-related", move || fetch_related(client, sid, rk));
+        let Some((mut d, primary_extra_key)) = fetch_detail(client, sid, rk) else {
+            plx_base::eventlog::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (the server refused or did not answer)"));
+            // The Related request was asked before this was known; its answer is dropped unread —
+            // and so is its `/related did not answer` line (`fetch_related` returns the refusal
+            // instead of logging it), which would read as a fact about an item that never loaded.
+            return None;
+        };
+        // Movie/show: the extras GET. Episode/season pages never show the Trailer control, so
+        // they must not pay extras I/O.
+        let extras = extras_wanted(&d.kind)
+            .then(|| plx_base::task::beside(s, "detail-extras", move || fetch_extras_rows(client, rk)));
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
         // its first). Everything downstream reads this as "the show's" media, so borrowing from
         // a different episode than the button plays would have the chips, the About footer and
-        // "how this plays" describing a file the user is not about to watch.
-        let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
-        let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
-        if let Some(ep_rk) = ep {
-            fetch_item_streams(client, &ep_rk, &mut d);
+        // "how this plays" describing a file the user is not about to watch. The on-deck episode is
+        // known from the item, so it is read beside the seasons; the first episode is known only
+        // once they land.
+        let on_deck = d.is_show.then(|| d.on_deck.as_ref().map(|e| e.rk.clone())).flatten()
+            .map(|ep| plx_base::task::beside(s, "detail-hero", move || client.metadata(&ep)));
+        if d.is_show {
+            load_show_seasons(client, rk, &mut d, prefer);
+            match on_deck {
+                Some(on_deck) => {
+                    if let Some(it) = on_deck.finish() {
+                        parse_streams(&it, &mut d);
+                    }
+                }
+                None => {
+                    if let Some(ep_rk) = d.episodes.first().map(|e| e.rk.clone()) {
+                        fetch_item_streams(client, &ep_rk, &mut d);
+                    }
+                }
+            }
             // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
             // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
             // play trigger reads it as "this is a show, take the episode's resume point instead",
@@ -3723,26 +3745,19 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
             // (`ui::detail::draw_play_mode`), which is also the only place that knows which
             // episode the button would start.
         }
-    }
-    // Movie/show: extras GET overlaps `/related` on a sibling thread so serial depth stays 2 / 5.
-    // Episode/season pages never show the Trailer control, so they must not pay extras I/O.
-    // Spawn failure omits the trailer rather than adding a serial extras hop behind related.
+        Some((d, primary_extra_key, related.finish(), extras.map(|e| e.finish())))
+    })?;
+    // Same shape as `fetch_seasons`: the degrade is deliberate, the silence is not — an item with
+    // no related hub and a refused GET both reach `related=0` below.
+    let related = related.unwrap_or_else(|| {
+        plx_base::eventlog::log(&format!("detail: rk={rk} /related did not answer — the related= below is that refusal"));
+        RelatedRows::default()
+    });
+    d.related = related.related;
+    d.related_tail = related.tail;
+    d.collection = related.collection;
     let extras_src: &'static str;
-    if extras_wanted(&d.kind) {
-        let (related, extras) = std::thread::scope(|s| {
-            let extras_h = std::thread::Builder::new()
-                .name("detail-extras".into())
-                .spawn_scoped(s, || fetch_extras_rows(client, rk));
-            let related = fetch_related(client, sid, rk);
-            let extras = match extras_h {
-                Ok(h) => h.join().ok().flatten(),
-                Err(_) => None,
-            };
-            (related, extras)
-        });
-        d.related = related.related;
-        d.related_tail = related.tail;
-        d.collection = related.collection;
+    if let Some(extras) = extras {
         match extras {
             Some(rows) => {
                 extras_src = "extras";
@@ -3764,10 +3779,6 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
         }
     } else {
         extras_src = "skip";
-        let related = fetch_related(client, sid, rk);
-        d.related = related.related;
-        d.related_tail = related.tail;
-        d.collection = related.collection;
     }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
     // on every line in every build, but nothing in a line distinguishes a programme title from

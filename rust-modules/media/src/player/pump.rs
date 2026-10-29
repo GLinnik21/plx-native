@@ -530,7 +530,11 @@ pub fn land_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mut
     RollbackLanding::Landed(match landing.verdict {
         crate::route::RecoveryVerdict::Install => match super::engine::reload_transcode_tracked(ps, pa, landing.offset_ns) {
             super::engine::BufferfeedStartOutcome::Launched(attempt) => ForegroundOriginalRecovery::Tracking(attempt),
-            super::engine::BufferfeedStartOutcome::Failed => ForegroundOriginalRecovery::RetryPrepared,
+            // A reload's teardown released synchronously, so nothing defers it; if one ever did, the
+            // queued transaction is the same one the retry names.
+            super::engine::BufferfeedStartOutcome::Failed | super::engine::BufferfeedStartOutcome::Deferred => {
+                ForegroundOriginalRecovery::RetryPrepared
+            }
             super::engine::BufferfeedStartOutcome::AlreadyRunning => {
                 set_state(super::shared::PlaybackState::Error);
                 ForegroundOriginalRecovery::Terminal
@@ -737,6 +741,10 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         super::log(&format!("open recovery: decoding {codec} in the app (stereo) after {refusal}"));
                     }
                     run = OpenRecoveryRun::DecodeInApp { offset_ns: SHARED.playpos_ns.load(Relaxed) };
+                    continue;
+                }
+                RecoveryEffect::NameRefusedAudio { codec } => {
+                    crate::route::name_refused_forced_audio(ps, &codec);
                     continue;
                 }
                 RecoveryEffect::ShowError { refusal } => {

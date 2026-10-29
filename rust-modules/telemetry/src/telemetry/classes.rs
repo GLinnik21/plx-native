@@ -1112,6 +1112,14 @@ pub enum FailureClass {
     JailMissingRtkmem,
     /// The native `Load` budget fired: the call never returned, or `loadCompleted` never arrived.
     LoadTimeout,
+    /// A start waited on the previous native object's `Unload`, which did not return inside its
+    /// deadline: the object stays parked until it does.
+    ReleaseTimeout,
+    /// The resolve produced no playable plan and no verdict: no Engine ever ran (a resolve with no
+    /// client, or whose worker never spawned).
+    ResolveFailed,
+    /// A hero/trailer preview refused because its route was not a direct play.
+    PreviewNotDirect,
     /// Everything else. Honest rather than tidy.
     Unspecified,
 }
@@ -1120,7 +1128,7 @@ impl FailureClass {
     /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
     /// built from.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 14] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
         Self::NoVideoTranscodeTarget,
@@ -1131,6 +1139,9 @@ impl FailureClass {
         Self::OriginalRollback,
         Self::JailMissingRtkmem,
         Self::LoadTimeout,
+        Self::ReleaseTimeout,
+        Self::ResolveFailed,
+        Self::PreviewNotDirect,
         Self::Unspecified,
     ];
 
@@ -1148,6 +1159,9 @@ impl FailureClass {
             Self::OriginalRollback => "original_rollback",
             Self::JailMissingRtkmem => "jail_missing_rtkmem",
             Self::LoadTimeout => "load_timeout",
+            Self::ReleaseTimeout => "release_timeout",
+            Self::ResolveFailed => "resolve_failed",
+            Self::PreviewNotDirect => "preview_not_direct",
             Self::Unspecified => "unspecified",
         }
     }
@@ -1248,6 +1262,42 @@ impl ChannelBucket {
             Self::UpToStereo => "1-2",
             Self::Surround => "3-6",
             Self::Immersive => "7+",
+        }
+    }
+}
+
+/// The firmware's `type=18` error number as a closed class for the usage event: the numbers this
+/// project has measured (`100`, `200` Audio Codec Not Supported, `601` Resource Allocation Error),
+/// `0` for none recorded, and `other` for any number it has not. Sentry keeps the exact integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineErrorClass {
+    None,
+    E100,
+    E200,
+    E601,
+    Other,
+}
+
+impl PipelineErrorClass {
+    pub const ALL: [Self; 5] = [Self::None, Self::E100, Self::E200, Self::E601, Self::Other];
+
+    pub const fn from_number(n: i32) -> Self {
+        match n {
+            0 => Self::None,
+            100 => Self::E100,
+            200 => Self::E200,
+            601 => Self::E601,
+            _ => Self::Other,
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "0",
+            Self::E100 => "100",
+            Self::E200 => "200",
+            Self::E601 => "601",
+            Self::Other => "other",
         }
     }
 }

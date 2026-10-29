@@ -2915,3 +2915,5 @@ mod compaction_tests {
         assert_eq!(table, vec![1, 2, 3]);
     }
 }
+
+pub(crate) mod sort_info;

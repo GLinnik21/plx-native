@@ -370,10 +370,10 @@ fn facts_that_change_no_row_are_not_a_hit_but_facts_that_differ_are() {
     };
     let leaf = ViewAt::leaf(sid(0), "7");
     let eight = b.shelves[0].items[1].clone();
-    let equal = ViewEdit::Facts { watched: eight.watched, unwatched: eight.unwatched, resume_ms: eight.resume_ms };
+    let equal = ViewEdit::Facts { watched: eight.watched, unwatched: eight.unwatched, resume_ms: eight.resume_ms, sort: None };
     assert!(!apply_edit(&mut b, &ViewAt::leaf(sid(0), "8"), equal), "facts equal to the row: no hit");
     // "7" is a started card on the deck and a plain card on the shelf: facts that differ from either edit it
-    let watched = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+    let watched = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
     assert!(apply_edit(&mut b, &leaf, watched), "facts that differ from the row edit it");
     assert!(b.cw[0].m.watched && b.shelves[0].items[0].watched);
     assert_eq!(b.cw[0].m.resume_ms, 0);

@@ -109,7 +109,7 @@ base
 | base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
-| gfx | `gfx egl text img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
+| gfx | `gfx egl text rtl img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
 | net | `net stream` | 6k | 74% |
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
@@ -212,15 +212,18 @@ integration test and belongs to the layer that owns all of its parts (step L13).
    `ci/module-layers.ini` and this document in the same diff and say why. If the change
    re-layers a module, or declares a port, that other code already names, record those
    references as a new step's entries in the same diff, raise the pin, and add the step to the
-   migration table. L15 was added this way.
+   migration table. L15 was added this way. `ci/check-ledger-ratchet.py` then fails the PR against
+   its base branch, so a design change that re-layers is merged by the owner past that check.
 
 Adding a line to `ci/allow/layers.txt` is not a fix. Lines are added only by a design change under
 item 5, and moved when a file that already has entries is **renamed or split**: entries are keyed by
 path, so the gate reports the old key as stale and the new path as unlisted. Move the entry to the
 new path in the same diff, and do not run `--prune` first (it would delete the old key and leave the
 new one failing). A split that keeps the upward name on both sides needs one line per new file, and
-raises the pin in `tests/test_harness.py` by the same number. Since L15 the list is empty (the pin
-is 0), so a new upward reference is always a fix, and there are no entries to carry.
+raises the pin in `tests/test_harness.py` by the same number; `ci/check-ledger-ratchet.py` then
+fails the PR against its base branch, so the owner merges that split past the check. Since L15 the
+list is empty (the pin is 0), so a new upward reference is always a fix, and there are no entries
+to carry.
 
 ## The migration
 
@@ -1539,7 +1542,8 @@ root), and one intra-doc link to `screens` unbracketed. The module-cycle baselin
 modules on the cycle (`app dev textinput`), 10 outside". What it taught:
 
 - **FFI and the final link: proven in the artifact, not assumed.** The crate holds every
-  `dynlib!` table of FFmpeg (`ff.rs`, four), libass (`player/ass.rs`) and the second libcurl table
+  `dynlib!` table of FFmpeg (`ff.rs`, four), libass's subtitle surface (`player/ass.rs`; the UI text
+  surface's table is `plx_gfx::rtl`) and the second libcurl table
   (`curlio.rs`), `player::ffi`'s `extern "C"` block (the Starfish/ACB verbs, 29 undefined
   symbols the Makefile's link resolves), and the two `#[no_mangle] extern "C"` callbacks
   `src/starfish.c` calls, `sf_on_event` and `acb_on_event`. All of it moved byte for byte apart from

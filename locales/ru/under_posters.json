@@ -15,5 +15,8 @@
   "under_posters.reset": "Сбросить настройки",
   "under_posters.reset_detail": "Год и длительность, без названия.",
   "under_posters.sample_title": "Фильм",
-  "under_posters.sample_genre": "Драма"
+  "under_posters.sample_genre": "Драма",
+  "under_posters.show_sort_info": "Показывать информацию о сортировке",
+  "under_posters.sort_info_detail": "Название, год и сортировка в библиотеке фильмов.",
+  "under_posters.default_version": "Основная"
 }

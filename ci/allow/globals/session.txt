@@ -1,4 +1,4 @@
-# count: 3
+# count: 4
 # Process-global reads inside machines (docs/sans-io.md), area `session`: one line per production read of a registry in a machine —
 # (the spellings are ci/check-deps.sh's `globals` rule) — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -6,3 +6,4 @@
 rust-modules/session/src/auth.rs::apply_candidate_activation::client_for
 rust-modules/session/src/auth.rs::install_captured_registry::session::peek
 rust-modules/session/src/auth.rs::publish_settled_probe::client_for
+rust-modules/session/src/auth.rs::publish_settled_probe::server_ids

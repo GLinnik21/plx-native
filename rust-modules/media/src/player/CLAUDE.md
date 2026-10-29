@@ -7,6 +7,14 @@ binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross
 bind-order gotchas for that seam live in THIS file**, below. `docs/agent-reference.md` carries only the
 one-paragraph playback summary.
 
+## Sans-IO
+
+`lifecycle.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
+`plan_memory.rs` are machines: a step starts no worker, reads no registry and has no `cfg(test)`
+fork. The engine, the pump and the drivers beside them execute their effects.
+
+@../../../../docs/sans-io-guide.md
+
 ## Pipeline
 
 In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process
@@ -41,13 +49,22 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   `Releasing`, hands the Unload to an `sf-unload` worker with an `UnloadTicket`, and parks the
   worker on the adapter. The rest of the release — callback gate, epoch retire, ACB
   `setState(UNLOADED)`, D1 or quarantine, `destroy_window` — stays on the main thread and runs in
-  `settle_release`: on the first frame after the Unload returns (`run.rs` → `poll_release`), or
-  at once, blocking, from `start_bufferfeed_inner`, `pa.mt()`, `pa.split()` and `shutdown`, so
-  nothing reaches the seam or builds a new object while the old one is still inside Unload. While
+  `engine::poll_release` (a pure machine, `release.rs`, decides): on the first frame after the Unload
+  returns (`run.rs` → `poll_release_frame`). Nothing blocks on the worker: a start over a running
+  Unload returns `BufferfeedStartOutcome::Deferred` (the player reads Connecting) and runs the frame
+  the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while `player::sink()` answers
+  `RefusingSink` (`player::FENCE`: every verb refused, the memoized queries real) for the `Releasing` phase; `shutdown` waits via
+  `exit_native`, bounded by `RELEASE_DEADLINE` (10 s), and skips `SDL_Quit` when a worker is still in
+  firmware. Past the deadline a start is refused with `FailureKind::ReleaseTimeout` (Try Again), and the
+  object is leaked, never destroyed under the worker, until the Unload returns. The foreground restore
+  follows a deferred start too (`ForegroundLoadStart::Deferred`: parked like a rollback flight, started the
+  frame the tail has run via `poll_release`, failed typed at the deadline); nothing on the UI thread waits.
+  When the exit finds a worker in firmware, `exit_native` leaks the parked release and any abandoned Load
+  (`mem::forget`), so dropping the `App` cannot free memory the worker still reads. While
   `Releasing`, only that epoch's `UnloadCompleted` callback is admitted (it is D1's evidence) and no
   native session can begin. Reloads, suspend and the decoder-release park (`for_reload == true`)
   keep the synchronous release. The log reads `native lifecycle: off-frame Unload epoch=N released
-  X ms after the stop`, with `(a caller waited for it)` when a blocking caller had to wait.
+  X ms after the stop`.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
 - `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
@@ -173,8 +190,8 @@ something.
   refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
   main thread once Load returns; a Load that never returns leaks its object. A refusal says why:
   a reload refused for the parked Load (`pump::settle_reload`) republishes `load_timed_out`, and a
-  refused FRESH start sets `ps.native_start_refused`, which `player::state` derives `Error` from
-  (cause `load_timeout`, Try Again offered) because no Engine exists to publish it; the first start that is not refused (`start_bufferfeed_for`, which every reload shares) clears it. A Load that has not
+  refused FRESH start sets `ps.native_start_refused` (`Option<StartRefusal>`), which `player::state` derives `Error` from,
+  because no Engine exists to publish it: cause `load_timeout` when a timed-out Load is still parked, `release_timeout` when the previous object's off-frame Unload outlived `RELEASE_DEADLINE`. Both offer Try Again; the first start that is not refused (`start_bufferfeed_for`, which every reload shares) clears it. A Load that has not
   timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
   ordering; the C Starfish gate does not wrap ACB calls.
@@ -344,7 +361,8 @@ something.
   ladder read it: under Force Direct Play (D1(b)) a surround track the set has no native path for is NOT decoded
   in the app (`app_decodes_lossy_track` is false for it, in either arm, the codec being in force or not), so the
   Forced pick refuses it like any unplayable track (`ForcedFailure::Audio`, naming the codec; before S4 the same)
-  and a pipeline refusal of it reads out; a track of one or two channels is no downmix and keeps the app decode. Under
+  and a pipeline refusal of it reads out (`RecoveryEffect::NameRefusedAudio`: LG's 601 names no codec and is also a video/resource refusal, so the read-out names the
+  track the Load was fed only when the refusal is attributable to it (`OpenRecovery::refusal_attributable_to_audio`: an Engine with no picture, a codec the attempt's `Caps::native_audio_track(.., forced)` says the set does not play, not the app's PCM decode, and no video above `VIDEO_REFUSAL_FLOOR` that the facet rungs would suspect; Opus, DTS on a set with a DTS row and FLAC/ALAC/LPCM keep the generic read-out), then the same `ForcedFailure::Audio` sentence as the planner's up-front refusal; scheme of discussion #695 row 10); a track of one or two channels is no downmix and keeps the app decode. Under
   Auto (D2) the surround downmix is only the very last rung of the ladder (below), after every server option was
   refused, and stays labelled; Auto's default for a 5.1 track the set cannot take is the server conversion that keeps its channels.
   **One exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,
