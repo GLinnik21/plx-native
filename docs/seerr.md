@@ -16,7 +16,7 @@ it is reached at exactly that address.
 | client | `plex::seerr` (`SeerrClient`, `live_transport`) | sign-in, search, discover rows, a title's detail (with TMDB's facts, its downloads and its requests), the request list, the Radarr / Sonarr servers and one server's profiles and folders, `POST /api/v1/request`, approving and declining; injectable transport; the dev-build write failsafe |
 | address | `Preferences::seerr_address` (`session::set_seerr_address`) | install-wide, kept across sign-out, no credential |
 | sign-in way | `Preferences::seerr_sign_ins` (`session::SeerrSignIn`, `session::set_seerr_sign_in`) | per profile: a Seerr account's email and kept session; no entry is the Plex account; account-bound, cleared at sign-out |
-| job body | `data::seerr` (`SeerrOp`, `SeerrLogin`, `run_op`, `SeerrIo`) | signs in when it holds no session, once more after a 401 |
+| job body | `data::seerr` (`SeerrOp`, `SeerrLogin`, `run_op`, `SeerrIo`) | signs in when it holds no session, once more when the server forgot the session (a 401, or a 403 that `GET /api/v1/auth/me` confirms) |
 | store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands; a `SeerrCmd::Refresh` keeps a slot's shown answer while it is read again, and when that read fails |
 | app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, `Bridge::seerr_sign_in`, the runner's `seerr-call` | hands the store the stored address and the profile's sign-in way, saves a Seerr account's changed session, signs a seated profile in once |
 | Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`, typed in the Address row itself, above the raised keyboard, `text_field::SYSTEM_KEYBOARD_TOP`), Sign in with (Plex or a Seerr account), a Seerr account's Email and Password (typed in their rows), Connect or Sign in with the live connection line, Remove |
@@ -37,8 +37,10 @@ Each profile signs in one of two ways, chosen in Settings > Services > Seerr's "
 
 - **Plex** (the default): `POST /api/v1/auth/plex {"authToken": <the seated profile's plex.tv
   token>}` signs that Plex account in. The session is never stored: it lives in the store, goes with
-  the profile it was signed in for, and is signed in again after a 401 (a server restart forgets
-  sessions). A 403 at sign-in is a Plex account the server does not let in (not imported, or Seerr's
+  the profile it was signed in for, and is signed in again when the server forgot it (a server
+  restart forgets sessions). Seerr answers a forgotten session with 403, the same answer as a
+  missing permission, so a 403 is followed by `GET /api/v1/auth/me`: refused too, the session is
+  gone and the call is made again after a fresh sign-in; answered, the 403 stands. A 403 at sign-in is a Plex account the server does not let in (not imported, or Seerr's
   "new Plex sign-in" off); Settings says so.
 - **Seerr account**: one of the server's own accounts. The Email row is stored; the Password row is
   typed, drawn as `*`s, and goes with Sign in (`PreferenceCmd::SeerrSignIn`) to the store's one

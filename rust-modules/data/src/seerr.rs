@@ -138,8 +138,10 @@ pub struct SeerrOutcome {
 }
 
 /// The job body. [`SeerrOp::Connect`] always signs in afresh; any other op signs in only when it
-/// was handed no session. A held session the server answers 401 to (it expired, or the server
-/// restarted) is signed in once more and the call made again; a second 401 is the answer. A write
+/// was handed no session. A held session the server answers 401 to, or 403 when `GET /auth/me`
+/// then refuses it too (it expired, or the server restarted: Seerr says 403 for both a forgotten
+/// session and a missing permission), is signed in once more and the call made again; a second
+/// refusal is the answer. A write
 /// that met a 401 never reached the server, so asking again cannot request twice. With no `login`
 /// (a Seerr account with no kept session) a sign-in is a 401 at once, and nothing is sent.
 pub fn run_op(io: &dyn SeerrIo, address: &str, login: Option<&SeerrLogin>, held: Option<&(SeerrSession, SeerrUser)>,
@@ -165,8 +167,17 @@ pub fn run_op(io: &dyn SeerrIo, address: &str, login: Option<&SeerrLogin>, held:
         return SeerrOutcome { session: change(fresh), result: Ok(SeerrData::Connected) };
     }
     let (session, user) = fresh.as_ref().or(held).expect("signed in above when nothing was held");
-    match io.run(address, session, user, op) {
-        Err(SeerrError::Unauthorized) if fresh.is_none() => match sign_in() {
+    let first = io.run(address, session, user, op);
+    // Seerr's auth middleware answers 403 both to a session it no longer knows and to a user without
+    // the permission, with the same body: the session check (`GET /auth/me`) tells them apart.
+    let forgotten = fresh.is_none() && match &first {
+        Err(SeerrError::Unauthorized) => true,
+        Err(SeerrError::Forbidden) => matches!(io.sign_in(address, &SeerrLogin::Kept(session.clone())),
+            Err(SeerrError::Unauthorized | SeerrError::Forbidden)),
+        _ => false,
+    };
+    match first {
+        Err(_) if forgotten => match sign_in() {
             Ok(again) => {
                 let result = io.run(address, &again.0, &again.1, op);
                 SeerrOutcome { session: change(Some(again)), result }
@@ -253,10 +264,22 @@ mod tests {
 
     #[test]
     fn a_failing_call_with_a_good_session_keeps_it() {
-        let io = script(vec![], vec![Err(SeerrError::Forbidden)]);
+        // Seerr answers 403 both to a session it forgot and to a user without the permission; the
+        // session check (`GET /auth/me`, a `Kept` sign-in) says which: here the session is good.
+        let io = script(vec![Ok((s("old"), user()))], vec![Err(SeerrError::Forbidden)]);
         let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
         assert_eq!(out, SeerrOutcome { session: SessionChange::Kept, result: Err(SeerrError::Forbidden) },
             "a request this user may not make is not a lost connection");
+        assert_eq!(*io.seen.lock().unwrap(), ["run as old", "sign_in kept"]);
+    }
+
+    #[test]
+    fn a_403_from_a_session_the_server_forgot_signs_in_once_more_and_asks_again() {
+        let io = script(vec![Err(SeerrError::Forbidden), Ok((s("new"), user()))],
+            vec![Err(SeerrError::Forbidden), Ok(SeerrData::Requested)]);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
+        assert_eq!(out, SeerrOutcome { session: fresh(), result: Ok(SeerrData::Requested) });
+        assert_eq!(*io.seen.lock().unwrap(), ["run as old", "sign_in kept", "sign_in tok", "run as new"]);
     }
 
     #[test]
