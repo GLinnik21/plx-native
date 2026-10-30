@@ -363,11 +363,15 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     fr.underlay_moving = press_moving;
 }
 
-/// **Bring the compiled HUD up to date with the language the viewer is set to**, outside the draw: the
-/// app's layer is where the current locale is read (`plx_platform::i18n::current()`), and the compile gets
-/// it as an argument. A language change recompiles (a label's width is a pill's width); otherwise this is
-/// one comparison of two `Copy` enums. Every compile is also handed to the mounter ([`adopt_hud`]), so the
-/// next player instance is constructed with the current one. `builtin:classic` always loads, so after this
+/// **Make sure the player has a compiled HUD**, on each player frame in `prepare_window` (inside the frame
+/// iteration, before the draw): the app's layer is where the current locale is read
+/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The compile runs once per
+/// process: [`boot_hud`] does it at boot, and this does it on the first player frame when boot did not (a
+/// controlled replay or record run) and for the `plxnative-hud=<path>` package, which is read and compiled
+/// on that frame too, so THAT frame pays the compile. A language change does not recompile: the language is
+/// fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a changed setting is the "confirmed next-launch"
+/// one) and takes effect at the next launch. Every compile is handed to the mounter ([`adopt_hud`]), so the next
+/// player instance is constructed with the current one. `builtin:classic` always loads, so after this
 /// `app.hud` is `Some`.
 fn refresh_hud(app: &mut App) {
     use plx_appkit::player_hud::loaded::{DevHud, DevStep};
@@ -397,7 +401,7 @@ fn refresh_hud(app: &mut App) {
             return;
         }
     }
-    if app.hud.as_ref().is_none_or(|h| h.language != cx.language()) {
+    if app.hud.is_none() {
         let hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, app.bridge.measure());
         adopt_hud(&mut app.bridge, &mut app.hud, hud);
     }
@@ -421,7 +425,7 @@ pub(super) fn boot_hud(bridge: &mut super::bridge::Bridge, controlled: bool) -> 
 
 /// **The one place the app takes a compile into use**: keeps it as the app's current HUD and hands it to the
 /// mounter (`Bridge::seed_player_compiled`), so the next player page is constructed with it. Boot and
-/// [`refresh_hud`] both come through here.
+/// [`refresh_hud`] (a controlled run's first player frame, the dev package) both come through here.
 pub(super) fn adopt_hud(
     bridge: &mut super::bridge::Bridge,
     slot: &mut Option<plx_appkit::player_hud::loaded::LoadedHud>,

@@ -259,7 +259,7 @@ Other subsystems the plan touches
 - D2. **One renderer.** The built-in HUD becomes the package `builtin:classic`, JSON embedded in the
   binary. When its captures are pixel-identical to today's, `draw_hud`'s hard-coded ARRANGEMENT is
   deleted; the widgets it arranges stay as the shared primitives the renderer composes (`draw_scrim`,
-  `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw`). The trailer
+  `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw_at`). The trailer
   keeps drawing through those primitives at classic geometry (F35); a user HUD does not restyle trailers.
 - D3. **The contract has two halves, versioned together**: `HudModel`, a per-frame read-only snapshot of
   exactly the values presentation reads (every F3 global becomes a field `src/app/run.rs` fills once a frame and
@@ -375,10 +375,11 @@ Other subsystems the plan touches
 ```
 app (src/)               runners: HudStore effects -> net fetch / storage worker / dir scan (app/adapters/huds.rs);
                          one command performer shared by placed controls and folded More rows
-screens/player           Focusable and pointer stops read HudGeometry; draw calls HudRenderer::draw(model)
+screens/player           Focusable and pointer stops read HudGeometry; the page draws through player_hud::render::draw(&Compiled, &Frame, ..)
 appkit/player_hud/       state.rs (F4 logic, unchanged), model.rs (HudModel), motion.rs (HudMotion),
                          render.rs (compiled draw list -> shared widgets), geometry.rs (HudGeometry),
-                         command.rs (HudCommand, enabled predicates), builtin/classic.json (include_str)
+                         command.rs (HudCommand, enabled predicates); builtin:classic is hud_format/fixtures/classic.plxhud.json,
+                         embedded as hud_format::BUILTIN_CLASSIC
 appkit/hud_format        schema descriptor table, strict parser, validator, SVG-subset checker, layout compiler
 data/hudpacks            HudStore machine (new [data] member): installed set, selection (the index cache joins in PR13); pure; never parses
 media/player/text_style  HudBand value type replaces the two constants as the caption ceiling input
@@ -394,8 +395,8 @@ ui/popover               the shared anchored placer (D9), used by the player men
   `NewerFormat`, `OlderFormat` or `AppRange`). The supported format range stays with the runner, which owns the
   validator: the store is handed no range.
 - Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing, allocation or
-  hashing; all text goes through `measure` (`draw_tabs`' doc: "measures none" when not drawn,
-  `player_hud.rs:2160-2162`).
+  hashing; all text goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each
+  text draw.
 - Package icons are rasterized through the same `plx_gfx::svg::rasterize` (F36); their textures belong to
   the `CompiledHud` instance `App` hands the player screen and are released when the HUD changes. The
   icon draw API takes `IconRef { Builtin(Icon), Pack(PackIcon) }`; no second cache, no new global.
@@ -572,22 +573,22 @@ Up Next (`layout.up_next`): `replaces` (segment ids), `band`, `align`, `still` (
 `widgets::progress_bar` (`ui/src/widgets.rs:1478`), `numeric` through the new i18n key
 `player.up_next.seconds_left` with a `fit_report`). While `slot.kind` is UpNext or Skip in the compact
 state, the named segments leave the frame and the focus map; the others stay. The block's INSIDE is app-owned and
-drawn by `up_next::draw` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
+drawn by `up_next::draw_over` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
 `TEXT_PRIMARY`, in a 460 box, elided; `up_next.rs:290-298`, `:320-330`), the still a 16:9 `draw_card` at the primary's
 width, radius 10, the caption `CAP_GAP` 8 above the still's foot and `BTN_GAP` 24 above the buttons, the pills `PILL_GAP`
 apart (`up_next.rs:194-200`, `:226-258`), the primary floored at the floor width (below), Watch Credits at its own
 label's width (`:259-266`). The column overhangs its band upward from the replaced segment and adds nothing to the band's
 height; I4 refuses an overhang over any drawn interactive rect, and under `band: "block"` it counts as the compact
 block's decor (Captions). `align` places it: `end` at the replaced segments' end edge (classic, `CTRL_RIGHT`), `center` on their centre,
-`start` on their start edge, and the caption's text alignment follows (right, centre, left): `layout_of` gains that
-`Align` in place. A package chooses whether the still and the caption draw, never their inside. The FLOOR exists where it
+`start` on their start edge, and the caption's text alignment follows (right, centre, left): the compile applies
+`align` (`standin` in `hud_format/compile.rs`) over `up_next::layout_at`. A package chooses whether the still and the caption draw, never their inside. The FLOOR exists where it
 means what it does today, "never narrower than the pair it replaces, so the row does not visibly shrink"
 (`up_next.rs:252-259`): when `replaces` names ONE start- or end-aligned segment, the floor is that segment's width with
 every item that CAN be absent collapsed (a Previous/Next member, an item with `when`), whatever the current item holds;
 for classic that is `disc_row()` over `disc_items(false)`, the three always-present discs, `ctrl_row_w` = 3 x 64 + 2 x 20 =
 232 (`player_hud.rs:672-683`, `:717-719`). A centred or multi-segment replace has no floor: the primary takes its own
-label's width (`ctrl_slot`'s measure without the `.max`). The Skip pill is `ctrl_slot` of ITS OWN label
-(`skip_pill.rs:75-77`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
+label's width (`classic::stand_in_w` with no floor). The Skip pill is `classic::stand_in_w` of ITS OWN label
+(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
 timing and cancel rules (`up_next.rs:105-125`, production sites `src/app/run.rs:2001`, `:2026-2045`,
 `src/app/playback.rs:939`), what the buttons do.
 
@@ -866,8 +867,8 @@ image's proportions rounded to tokens and are approximate.
     "list": "<svg viewBox='0 0 24 24'><path d='M4 6h16v2H4zM4 11h16v2H4zM4 16h16v2H4z'/></svg>",
     "gear": "<svg viewBox='0 0 24 24'><path d='M10 2h4l1 3 3-1 2 3-2 2v2l2 2-2 3-3-1-1 3h-4l-1-3-3 1-2-3 2-2v-2L4 7l2-3 3 1z'/></svg>",
     "eq": "<svg viewBox='0 0 24 24'><path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/></svg>",
-    "back10": "<svg viewBox='0 0 24 24'><path d='M12 3v3a7 7 0 1 1-7 7H3a9 9 0 1 0 9-9V1L8 5zM9 9h1.5v8h-1.5v-6.5l-1.5 1.5v-1.5zM13.5 9h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 11v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
-    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM8 9h2l1 1v6l-1 1h-2l-1-1v-0.5h2.5v-2h-2v-1.5h2v-1.5h-2.5v-0.5zM13.5 9h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 11v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>"
+    "back10": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7v3l-4-4zM9 8h1.5v8h-1.5v-6.5l-1.5 1.5v-1.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
+    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM8 8h2l1 1v6l-1 1h-2l-1-1v-0.5h2.5v-2h-2v-1.5h2v-1.5h-2.5v-0.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>"
   },
   "layout": {
     "anchor": "bottom",

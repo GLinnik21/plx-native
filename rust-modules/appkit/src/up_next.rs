@@ -13,7 +13,7 @@
 //! timer are one object rather than a button beside a rail.
 //!
 //! **Two buttons, and they are deliberately not equals** (the design's own note): *Next Episode*
-//! takes the [`ctrl_slot`](crate::player_hud::classic::ctrl_slot) width — the floor that keeps the row
+//! takes the row's floor width (`hud_format/compile.rs`, through `classic::stand_in_w`) — the floor that keeps the row
 //! from visibly shrinking when it appears — while *Watch Credits* takes only its own label's, since
 //! a second full-width capsule would read as a pair of equals when one continues watching and the
 //! other does nothing at all. They are laid out in that spatial order, so LEFT reaches Watch
@@ -432,7 +432,7 @@ mod tests {
     /// the host suite cannot link SDL2_ttf at all.
     #[test]
     fn the_column_is_right_anchored_on_one_edge() {
-        // the real orders of magnitude: `ctrl_slot`'s floor is 232, and "Watch Credits" measures a
+        // the real orders of magnitude: the row's floor is 232, and "Watch Credits" measures a
         // little under it — which is the asymmetry the design is making a point of
         let l = layout_at(crate::player_hud::classic::ROW_ANCHOR, 243.0, 226.0);
         let (n, c, t, cap) = (l.next, l.credits, l.still, l.caption);

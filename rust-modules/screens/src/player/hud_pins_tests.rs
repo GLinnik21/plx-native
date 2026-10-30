@@ -606,6 +606,36 @@ fn the_hit_census_of_every_occupant() {
     }
 }
 
+/// **The caption band is the package's one value in every state a page can be in.** The draw used to take it
+/// from the frame's state report (`geometry_for(chapters).band()`); it now reads `Compiled::band` itself. For
+/// classic, in every occupant of the row, with and without chapters, paused and playing, the two answer alike,
+/// and both are `HudBand::CLASSIC`.
+#[test]
+fn the_caption_band_is_classics_in_every_state_the_pins_cover() {
+    let _g = plx_base::testlock::serial();
+    let occupants = [
+        Occupant::Plain,
+        Occupant::Episode,
+        Occupant::NextOnly,
+        Occupant::PreviousOnly,
+        Occupant::SkipIntro,
+        Occupant::SkipCredits,
+        Occupant::UpNext,
+    ];
+    for occupant in occupants {
+        for (chapters, paused) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut screen = census_screen(occupant, false);
+            screen.model.paused = paused;
+            assert_eq!(
+                screen.caption_band(),
+                screen.geometry_for(chapters).band(),
+                "{occupant:?}, chapters {chapters}, paused {paused}: the band is not the state report's"
+            );
+            assert_eq!(screen.caption_band(), plx_media::player::text_style::HudBand::CLASSIC, "{occupant:?}");
+        }
+    }
+}
+
 #[test]
 fn the_overscan_audits_rects() {
     let _g = plx_base::testlock::serial();

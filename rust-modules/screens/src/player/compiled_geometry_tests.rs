@@ -108,8 +108,8 @@ fn the_caption_band_and_the_scrub_mapping_are_the_compiled_packages() {
     let compiled = moved();
     let want = state_geometry(&compiled);
     let page = page_with(compiled);
-    assert_eq!(page.caption_band(false), want.band, "the band the captions lift to");
-    assert_ne!(page.caption_band(false), page_with(classic()).caption_band(false));
+    assert_eq!(page.caption_band(), want.band, "the band the captions lift to");
+    assert_ne!(page.caption_band(), page_with(classic()).caption_band());
     // a quarter of the way along the PACKAGE's bar is a quarter of the way through the item (the inset
     // is symmetric, so the middle would not tell the two bars apart)
     let quarter = want.playbar.x + want.playbar.w * 0.25;
@@ -129,7 +129,7 @@ fn a_page_on_builtin_classic_places_at_classic() {
     let want = player_hud::audit_geometry();
     let scrub = Focusable::<TestHost>::place(&page, &player_hud::ELEM_SCRUB, &cx(), At::Drawn).expect("the scrubber places");
     assert_eq!(scrub.rect, want.grab);
-    assert_eq!(page.caption_band(false), want.band);
+    assert_eq!(page.caption_band(), want.band);
 }
 
 /// **A package with no state for the frame answers ONE thing for the draw and for the geometry**: nothing is
@@ -142,7 +142,7 @@ fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
     let mut page = page_with(Arc::clone(&none));
     let empty = player_hud::geometry::HudGeometry::empty(none.band());
     assert_eq!(page.geometry_for(false), empty);
-    assert_eq!(page.caption_band(false), none.band());
+    assert_eq!(page.caption_band(), none.band());
     assert_eq!(page.row_len(false), 0, "a stop with no rect cannot be placed");
     assert_eq!(row_spec(&page).extent, Rect::default(), "…and the row group has no extent");
     assert_eq!(page.menu_anchor(overlay::OverlayKind::Tracks { tab: 0 }, false), None);

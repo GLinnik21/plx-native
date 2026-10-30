@@ -21,6 +21,18 @@
 //! title's declared `ink` and `bold` are not carried: classic's rule (an episode's kicker is primary and
 //! bold, a context line secondary and regular) draws, and only the declared sizes are honoured.
 //!
+//! **What PR10b owes before a package can be installed** (only `builtin:classic` ships and the dev trigger is
+//! the one way in, so no shipped HUD reaches any of these; each is a way a package draws or behaves wrongly
+//! without a finding):
+//! - a package with `title.main` and no `title.kicker` still draws the kicker, at classic's y
+//!   (`draw_title`, from `TitleLook::default()`);
+//! - a `button`, or a `pill` with no `section`, gets a focus stop and draws nothing (`draw_control`);
+//! - the scrub preview is hard-wired to `SB_X` / `SB_Y` / `sb_w` (`classic::draw_scrub_preview`), so a package
+//!   that places the bar elsewhere gets the preview card on classic's track;
+//! - `ClockWarm` prewarms the clocks at CAPTION (and the scrub's grown size) only (`motion.rs`), so a package
+//!   whose clocks use another rung is not prewarmed;
+//! - `Compiled::glyph` re-hashes the asset's source for every disc on every frame.
+//!
 //! **The kicker is the one place it overrides the compile.** The compile folds `title.is_episode` into
 //! the state ([`StateKey::episode`] is the ROW's pair boolean, because that is what classic's golden
 //! equates it with), so a real episode with no queue neighbours compiles in the movie state. The kicker's

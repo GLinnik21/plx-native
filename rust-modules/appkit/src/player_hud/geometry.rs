@@ -149,7 +149,7 @@ pub fn frame_state(compiled: &Compiled, slot: ControlSlot, chapters: bool, pause
 /// **The whole geometry report for one frame**: the grab band, the bar, the row at its floor width and its
 /// anchor, item `i` of whatever occupies the row at the rect it is DRAWN at, each tab's pill, the title and
 /// tab-row origins and the caption band. It copies what the compile placed (the compile measured, once,
-/// outside the frame), so it needs no measurer and is safe anywhere: a pointer event, the caption draw, the
+/// outside the draw), so it needs no measurer and is safe anywhere: a pointer event, the caption draw, the
 /// stand-ins. [`HudGeometry::empty`] where the package has no state for the frame.
 pub fn geometry(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: bool) -> HudGeometry {
     match frame_state(compiled, slot, chapters, paused) {

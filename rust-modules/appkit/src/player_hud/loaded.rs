@@ -1,9 +1,11 @@
-//! **The compiled HUD the player draws from**: a package's bytes parsed and compiled ONCE, outside any
-//! frame, and handed to the screen as a value ([`LoadedHud`]).
+//! **The compiled HUD the player draws from**: a package's bytes parsed and compiled ONCE, never in the draw,
+//! and handed to the screen as a value ([`LoadedHud`]).
 //!
-//! The owner (the application) builds one at boot and again when the language changes (a label's width
-//! sets a pill's width, so the language is part of the plan's cache key, [`CompileKey`]), and pushes the
-//! [`Arc<Compiled>`] into the player page the way it pushes the frame's [`HudModel`](super::model::HudModel).
+//! The owner (the application) builds one at boot (a label's width sets a pill's width, so the language is
+//! part of the plan's cache key, [`CompileKey`]; the process's language is fixed, so that is the only
+//! compile, but for a controlled run's and a dev package's, which come on the first player frame), and
+//! pushes the [`Arc<Compiled>`] into the player page the way it pushes the frame's
+//! [`HudModel`](super::model::HudModel).
 //! Nothing here reads a registry on its own account: the language arrives as a [`LocaleContext`] (the
 //! OWNER passes `plx_platform::i18n::current()`), the strings are built from it ([`AppLabels::in_language`]) and the
 //! measurer is passed in. The draw ([`super::render`])
@@ -33,8 +35,8 @@ pub enum LoadError {
 pub struct LoadedHud {
     /// the plan's cache key: the bytes' digest, the app release and the language
     pub key: CompileKey,
-    /// the language the labels were taken in: comparing a `Copy` enum per frame is how the owner sees
-    /// a language change without building the key
+    /// the language the labels were taken in: a `Copy` enum, so [`DevPackage::refresh`] can ask "compiled for
+    /// this language?" without building the key
     pub language: Language,
     pub compiled: Arc<Compiled>,
 }
@@ -111,7 +113,9 @@ impl DevPackage {
         self.loaded.as_ref()
     }
 
-    /// Compile for `cx` when the language changed (or never compiled), remembering a refusal.
+    /// Compile for `cx` when it has not been compiled for that language, remembering a refusal. The
+    /// process's language is fixed, so in the app this compiles once; the language key keeps a test that
+    /// changes its thread's locale honest.
     pub fn refresh(&mut self, app_version: &str, cx: &LocaleContext, measure: &dyn Measure) -> DevStep {
         let language = cx.language();
         let bytes = match &self.bytes {

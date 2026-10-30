@@ -411,7 +411,7 @@ fn classic_compact_cost_is_pinned() {
         (11, 6, 81_920, 953_088),
         "classic's compact cost: the scrim, the two title lines, five discs, the bar and two tabs"
     );
-    let top: Vec<(&str, u64)> = c.top.iter().map(|t| (kind_of(&state.ops[t.op]), t.blended_px)).collect();
+    let top: Vec<(&str, u64)> = state.top_contributors().iter().map(|t| (kind_of(&state.ops[t.op]), t.blended_px)).collect();
     assert_eq!(top, [("scrim", 902_400), ("playbar", 13_824), ("control", 9_984)], "the three largest contributors");
     // the report is a sum of its parts, and deterministic
     assert_eq!(c.draw_ops, state.ops.len(), "no strip or Up Next offer in the compact Discs state");
@@ -1045,6 +1045,55 @@ fn the_playbars_clocks_stand_where_the_playbar_draws_them_as_wide_as_the_widest_
             }
         }
     }
+}
+
+/// **The bands are placed in `z` order, equal `z` in declared order.** `z_order` replaced a stable sort by key;
+/// every sequence of up to five bands over three `z` values (duplicates included) comes out the same.
+#[test]
+fn bands_fill_in_z_order_and_equal_z_keep_their_declared_order() {
+    let mut seen = 0;
+    for n in 0..=5usize {
+        for code in 0..3usize.pow(n as u32) {
+            let z: Vec<i64> = (0..n).map(|i| (code / 3usize.pow(i as u32) % 3) as i64 - 1).collect();
+            let mut want: Vec<usize> = (0..n).collect();
+            want.sort_by_key(|&i| z[i]);
+            assert_eq!(z_order(n, |i| z[i]), want, "z {z:?}");
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 1 + 3 + 9 + 27 + 81 + 243);
+}
+
+/// **A Skip state carries a credits layout exactly when its two pill rects differ.** The kind reaches the layout
+/// only through the pill's rect, so equal rects mean one layout, and the compile does not work the second out.
+#[test]
+fn a_skip_state_carries_a_credits_layout_exactly_when_its_pill_rects_differ() {
+    let mut alt = 0;
+    for text in [CLASSIC, REFERENCE] {
+        let compiled = build(text, &FM);
+        for state in compiled.states().iter().filter(|s| s.key.slot == Slot::Skip) {
+            let [intro, credits] = state.standin.skip.expect("a Skip state places the pill");
+            assert_eq!(state.skip_alt.is_some(), intro != credits, "{:?}", state.key);
+            alt += usize::from(state.skip_alt.is_some());
+        }
+    }
+    assert!(alt > 0, "no Skip state differs between the two labels: the test saw nothing");
+}
+
+/// **The clocks' reserved line is a whole number of pixels at every rung.** `CLOCK_LINE` is a ratio, and 1.25 of
+/// LABEL (26) is 32.5 and of MICRO (22) is 27.5: a half pixel under the bar that moves every band beneath it
+/// onto a half-pixel edge. The reserve rounds up to whole pixels, never below the ratio, and CAPTION (24), the
+/// rung classic's clocks are drawn at, stays at its 30.
+#[test]
+fn the_clocks_reserved_line_is_a_whole_number_of_pixels_at_every_rung() {
+    for rung in super::schema::SIZE_RUNGS.iter().map(|&(_, px)| px) {
+        let line = classic::clock_line_h(rung);
+        assert_eq!(line, line.ceil(), "the reserved line at {rung} px is {line}, a fraction of a pixel");
+        assert!(line >= rung as f32 * classic::CLOCK_LINE, "the reserved line at {rung} px is {line}, under the ratio");
+    }
+    assert_eq!(classic::clock_line_h(theme::size::CAPTION), 30.0, "classic's clock line moved");
+    assert_eq!(classic::clock_line_h(theme::size::LABEL), 33.0);
+    assert_eq!(classic::clock_line_h(theme::size::MICRO), 28.0);
 }
 
 /// **The bar's cell holds the clocks' line, so no band under it starts on it.** Every control of every state of

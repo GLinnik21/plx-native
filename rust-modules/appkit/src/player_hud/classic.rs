@@ -1,7 +1,8 @@
 //! **The classic transport's primitives and constants**: the numbers `builtin:classic` is written
-//! against (`SB_*`, `BTN_*`, `CTRL_*`, [`ROW_ANCHOR`]), the draws the renderer ([`super::render`]) and the
-//! trailer (`screens/src/detail/trailer.rs`) call (scrim, title, playbar, clocks, the bottom tab pills, the
-//! scrub preview) and the failure read-out.
+//! against (`SB_*`, `BTN_*`, `CTRL_*`, [`ROW_ANCHOR`]), the draws the renderer ([`super::render`]) calls
+//! (scrim, title, playbar, clocks, the scrub preview), the three the trailer (`screens/src/detail/trailer.rs`)
+//! calls (`draw_scrim`, `draw_title`, `draw_playbar`) and the failure read-out. The bottom tab pills are the
+//! renderer's; this file keeps their label list ([`tab_labels`]) and state ([`hud_tab_state`]).
 //!
 //! The ARRANGEMENT is not here: which control stands where, and each rect, is what the compiled package
 //! says (`hud_format::compile`, reported through [`super::geometry`]); `builtin:classic` is the embedded
@@ -9,10 +10,10 @@
 //! the width [`stand_in_w`] gives it, the row stands on [`ROW_ANCHOR`], and the trailer's three calls
 //! keep their output.
 //!
-//! Every draw takes `&`[`HudModel`](super::model::HudModel) for the values that used to be read from
-//! process globals in the middle of drawing, and a [`GroupId`] for the focus, so this file names no
-//! player global. The logic it draws ([`super::state`]) and the animation state it reads
-//! ([`super::motion`]) are separate modules.
+//! A draw takes what it paints and the values it reads as arguments, never a process global (the scrub
+//! preview, the one that needs the frame's playhead and picks, takes the per-frame
+//! [`HudModel`](super::model::HudModel) snapshot), so this file names no player global. The logic it draws
+//! ([`super::state`]) and the animation state it reads ([`super::motion`]) are separate modules.
 use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 use super::geometry::{RowAnchor, GROUP_SCRUB, GROUP_TABS, HUD_TABS};
 use super::model::HudModel;
@@ -71,9 +72,11 @@ pub const CLOCK_TOP: f32 = 30.0;
 /// It is a ratio and not the `Measure`'s line height on purpose: the reserved room moves every band above the
 /// bar, and classic's rows must not move with the font the host measures with.
 pub const CLOCK_LINE: f32 = 1.25;
-/// The height the playbar reserves for its clocks' line at rung `size`: [`CLOCK_LINE`] of it.
+/// The height the playbar reserves for its clocks' line at rung `size`: [`CLOCK_LINE`] of it, rounded up to
+/// whole pixels so no band above the bar lands on a half pixel (LABEL's 32.5 reserves 33, MICRO's 27.5 reserves
+/// 28; CAPTION's 30 is whole already).
 pub fn clock_line_h(size: i32) -> f32 {
-    size as f32 * CLOCK_LINE
+    (size as f32 * CLOCK_LINE).ceil()
 }
 pub(super) const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
 pub(super) const BTN_Y: f32 = HudBand::CLASSIC.controls_top_y;
@@ -371,8 +374,8 @@ pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char
 }
 
 /// Where the player title's two lines stand: `x` the left edge both start at, and the y each line is
-/// drawn from. `Default` is classic's (`SB_X`, `SCR_H - 312`, `SCR_H - 278`), so
-/// [`draw_player_title`] is [`draw_player_title_at`] over it and every existing caller keeps its frame.
+/// drawn from. `Default` is classic's (`SB_X`, `SCR_H - 312`, `SCR_H - 278`); the renderer builds one from the
+/// compiled title cell and takes classic's values for a line the package does not place.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TitleLook {
     pub x: f32,
@@ -612,15 +615,7 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
             white,
             0.0,
         );
-    } else if bar.knob == Knob::Held {
-        p.rect(
-            Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0),
-            9.0,
-            white,
-            white,
-            0.0,
-        );
-    } else if look.knob == KnobMode::Always {
+    } else if bar.knob == Knob::Held || look.knob == KnobMode::Always {
         p.rect(Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0), 9.0, white, white, 0.0);
     } else {
         p.rect(

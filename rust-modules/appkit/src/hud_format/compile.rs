@@ -111,7 +111,7 @@ impl AppLabels {
     /// **The app's own strings in the language `cx` names**: the one constructor of [`AppLabels`], over the
     /// generated `msg::*_in(cx)` accessors. The language is an ARGUMENT, so nothing here reads the
     /// process-wide current locale: the app layer passes `plx_platform::i18n::current()` when it compiles
-    /// (outside the frame, `player_hud::loaded`), the lint passes each shipped language's context.
+    /// (outside the draw, `player_hud::loaded`), the lint passes each shipped language's context.
     pub fn in_language(cx: &LocaleContext) -> AppLabels {
         AppLabels {
             tab_info: msg::widgets_player_info_in(cx).to_owned(),
@@ -456,14 +456,15 @@ pub struct Contributor {
 /// - `blended_px`: the area, rounded per rect, of every translucent fill: the scrim, a ground or rule
 ///   whose ink is translucent, the playbar's track, a control's plate unless its rest face is `solid` or
 ///   `bare`. A rounded corner is not subtracted: it is an upper bound.
-/// - `top`: the three ops that contribute most, by blended area, then texture bytes, then glyph runs.
+///
+/// The four sums are what a state stores. The ops that contribute most are NOT stored: nothing on the television
+/// reads them, so [`CompiledState::top_contributors`] weighs and sorts the ops when a report asks.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Cost {
     pub draw_ops: usize,
     pub glyph_runs: usize,
     pub texture_bytes: u64,
     pub blended_px: u64,
-    pub top: Vec<Contributor>,
 }
 
 /// The ops of one band (`ops[ops.clone()]` of its state) and how the band draws while a scrub is live.
@@ -521,10 +522,26 @@ pub struct CompiledState {
 }
 
 impl CompiledState {
+    /// **The three ops that contribute most to [`CompiledState::cost`]**, by blended area, then texture bytes,
+    /// then glyph runs, then draw order. Worked out on the call (a report's, a test's), never at compile time:
+    /// the television reads only the sums.
+    pub fn top_contributors(&self) -> Vec<Contributor> {
+        let mut parts: Vec<Contributor> = self.ops.iter().enumerate().map(|(i, op)| Contributor { op: i, ..weigh(op) }).collect();
+        parts.sort_by(|a, b| {
+            b.blended_px
+                .cmp(&a.blended_px)
+                .then(b.texture_bytes.cmp(&a.texture_bytes))
+                .then(b.glyph_runs.cmp(&a.glyph_runs))
+                .then(a.op.cmp(&b.op))
+        });
+        parts.truncate(3);
+        parts
+    }
+
     /// The state as it draws under `skip`: the Skip pill's two labels have two widths, and a start-aligned
     /// fill in the pill's band (a title) stops short of the one actually shown. `self` is the
-    /// [`SkipKind::Intro`] layout and every non-Skip state's; a Skip state whose credits layout differs
-    /// carries it in [`CompiledState::skip_alt`].
+    /// [`SkipKind::Intro`] layout and every non-Skip state's; a Skip state whose two pill rects differ (the
+    /// kind's only way into the layout) carries the credits layout in [`CompiledState::skip_alt`].
     pub fn skip_variant(&self, skip: SkipKind) -> &CompiledState {
         match (skip, &self.skip_alt) {
             (SkipKind::Credits, Some(alt)) => alt,
@@ -1914,9 +1931,7 @@ impl<'e, 'p> Env<'e, 'p> {
     /// One pass over the present bands, in `z` order, each in its box.
     fn fill_bands(&self, bands: &[Band<'p>], boxes: &[Rect], mode: &Mode<'_>) -> Out {
         let mut out = Out::default();
-        let mut order: Vec<usize> = (0..bands.len()).collect();
-        order.sort_by_key(|&i| bands[i].z);
-        for i in order {
+        for i in z_order(bands.len(), |i| bands[i].z) {
             out.band = bands[i].id.to_owned();
             let band_mode = Mode {
                 replaces: mode.replaces,
@@ -1936,11 +1951,11 @@ impl<'e, 'p> Env<'e, 'p> {
     /// changes anything (see [`CompiledState::skip_variant`]).
     fn compile_state(&self) -> CompiledState {
         let mut state = self.compile_for(SkipKind::Intro);
-        if self.state.slot == Slot::Skip {
-            let credits = self.compile_for(SkipKind::Credits);
-            if credits != state {
-                state.skip_alt = Some(Box::new(credits));
-            }
+        // The kind reaches the layout through ONE input: the pill's own rect, whose left edge a start-aligned
+        // fill stops at (`compile_for`). The state carries both rects, so equal rects mean the two layouts are
+        // the same and the credits one is not worked out.
+        if self.state.slot == Slot::Skip && state.standin.skip.is_some_and(|[intro, credits]| intro != credits) {
+            state.skip_alt = Some(Box::new(self.compile_for(SkipKind::Credits)));
         }
         state
     }
@@ -2175,6 +2190,17 @@ fn cstring(label: &str) -> CString {
     CString::new(label).unwrap_or_default()
 }
 
+/// The indices `0..n` in ascending `z`, equal `z` in index order (a stable sort without a sort routine): each
+/// index goes in after every one whose `z` is not greater.
+pub(super) fn z_order(n: usize, z: impl Fn(usize) -> i64) -> Vec<usize> {
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    for i in 0..n {
+        let at = order.partition_point(|&j| z(j) <= z(i));
+        order.insert(at, i);
+    }
+    order
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Cost
 // ---------------------------------------------------------------------------------------------------
@@ -2255,21 +2281,10 @@ fn weigh(op: &DrawOp) -> Contributor {
 }
 
 fn cost_of(ops: &[DrawOp]) -> Cost {
-    let mut parts: Vec<Contributor> = ops.iter().enumerate().map(|(i, op)| Contributor { op: i, ..weigh(op) }).collect();
-    let mut cost = Cost {
-        draw_ops: parts.iter().map(|p| p.draw_ops).sum(),
-        glyph_runs: parts.iter().map(|p| p.glyph_runs).sum(),
-        texture_bytes: parts.iter().map(|p| p.texture_bytes).sum(),
-        blended_px: parts.iter().map(|p| p.blended_px).sum(),
-        top: Vec::new(),
-    };
-    parts.sort_by(|a, b| {
-        b.blended_px
-            .cmp(&a.blended_px)
-            .then(b.texture_bytes.cmp(&a.texture_bytes))
-            .then(b.glyph_runs.cmp(&a.glyph_runs))
-            .then(a.op.cmp(&b.op))
-    });
-    cost.top = parts.into_iter().take(3).collect();
-    cost
+    ops.iter().map(weigh).fold(Cost::default(), |cost, part| Cost {
+        draw_ops: cost.draw_ops + part.draw_ops,
+        glyph_runs: cost.glyph_runs + part.glyph_runs,
+        texture_bytes: cost.texture_bytes + part.texture_bytes,
+        blended_px: cost.blended_px + part.blended_px,
+    })
 }

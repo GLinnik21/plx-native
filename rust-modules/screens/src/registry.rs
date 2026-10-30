@@ -2099,9 +2099,9 @@ pub struct AppMounter {
     /// KIND, so a rect of floats cannot ride on it. `None` mounts the menu at its own default.
     pub player_menu_anchor: Option<plx_ui::Rect>,
     /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument):
-    /// compiled by the app at boot, outside any frame, and again when the language changes, and handed to the
-    /// mount the way the seeds above are. Cloned, not consumed: every player instance draws from the app's
-    /// current compile. The mount never compiles, reads no registry and holds no fallback of its own; a
+    /// compiled by the app once per process (at boot, outside any frame; a controlled run or a dev package
+    /// compiles on its first player frame instead), and handed to the mount the way the seeds above are.
+    /// Cloned, not consumed: every player instance draws from the app's current compile. The mount never compiles, reads no registry and holds no fallback of its own; a
     /// mounter nothing seeded (a controlled run, which compiles nothing outside a frame and never reaches the
     /// player) hands the page `Compiled::default()`, which has no state for any frame.
     pub player_compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,

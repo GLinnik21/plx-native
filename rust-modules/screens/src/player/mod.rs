@@ -167,12 +167,14 @@ pub struct PlayerScreen {
     clock_warm: plx_appkit::player_hud::motion::ClockWarm,
     /// **This frame's snapshot of everything the HUD's presentation reads from the player's
     /// globals** (`TX.paused`, the scrub target, the playhead, the duration, the subtitle picks).
-    /// The app assigns it ONCE a frame, before `prepare` and `draw`; only those two read it.
-    /// Key handling, the scrub arithmetic and the Tick keep sampling what they always did.
+    /// The app assigns it ONCE a frame, before `prepare` and `draw`, and those two read it. So do the
+    /// stops a key press resolves against (`row_enabled`, `row_command`, `geometry_for`: the row's enabled
+    /// predicates and the paused state pick the compiled state). The scrub arithmetic and the Tick keep
+    /// sampling what they always did.
     pub model: HudModel,
     /// **The compiled HUD this page draws and places from**, handed in by the application the way
-    /// [`Self::model`] is: parsed and compiled once outside any frame, and recompiled when the language
-    /// changes (`player_hud::loaded`). A page always has one (it is a constructor argument): the mount
+    /// [`Self::model`] is: parsed and compiled once per process, never in the draw (`player_hud::loaded`;
+    /// the process's language is fixed, so a language change waits for the next launch). A page always has one (it is a constructor argument): the mount
     /// never compiles, and there is no state in which the page draws or places from anything else.
     pub compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,
 }
@@ -1558,10 +1560,12 @@ impl PlayerScreen {
         player_hud::geometry::row_len(&self.compiled, self.slot, chapters, self.model.paused)
     }
 
-    /// **The caption band the layout occupies** this frame, from the same report as the stops: a value of
-    /// the package, so the caption draws and the libass lift move with the HUD that is up.
-    fn caption_band(&self, chapters: bool) -> plx_media::player::text_style::HudBand {
-        self.geometry_for(chapters).band()
+    /// **The caption band the layout occupies**: ONE value of the package (`Compiled::band`), the same one
+    /// every state's report carries, so the caption draws and the libass lift move with the HUD that is up
+    /// and not with the frame's state. It is read on every drawn frame, so it asks the compile for the value
+    /// itself and builds no report.
+    fn caption_band(&self) -> plx_media::player::text_style::HudBand {
+        self.compiled.band()
     }
 
     /// Which of the HUD's three transport groups holds `elem` — the failure row and the repair
@@ -1827,7 +1831,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
         let subs_lift = self.subs_lift(ps, now);
         // The band the layout occupies, a value from its geometry this frame, not a constant.
-        let band = self.caption_band(plx_appkit::chapters_panel::has_chapters(H::metadata(f.cx)));
+        let band = self.caption_band();
         self.render.ass.draw(subs_lift, band, &self.model);
         if let Some(message) = self.render.ass.error() {
             plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, f.cx.measure);
