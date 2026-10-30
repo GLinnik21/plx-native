@@ -293,8 +293,8 @@ fn previewed_values<S: Screen<InnerHost>>(page: &mut S) -> Vec<(String, bool)> {
     let mut f = DrawFrame::new(&c, plx_ui::Painter::recording());
     let runs = plx_ui::draw_census::capture_runs(|| page.draw(&mut f));
     let wanted: Vec<String> = captioned_posters().iter()
-        .map(|m| crate::registry::sort_info::label(m, "duration", None).value.unwrap().text).collect();
-    runs.into_iter().filter(|run| wanted.contains(&run.text) && run.size == plx_ui::theme::size::CAPTION && run.ink[3] > 0.5)
+        .map(|m| crate::registry::sort_info::label(m, PREVIEW_SORT, None).value.unwrap().text).collect();
+    runs.into_iter().filter(|run| wanted.contains(&run.text) && run.size == plx_ui::theme::size::CAPTION && run.ink[3] > 0.2)
         .map(|run| (run.text, run.bold)).collect()
 }
 
@@ -312,8 +312,8 @@ fn the_pages_preview_shows_the_value_line_only_while_the_sort_value_row_has_focu
     }
     page.state.sel = UpId::SortValue.key();
     let values = previewed_values(&mut page);
-    assert!(values.contains(&("2h\u{a0}14m".to_owned(), true)), "the lifted poster wears its value bold: {values:?}");
-    assert!(values.contains(&("1h\u{a0}38m".to_owned(), false)) && values.contains(&("2h\u{a0}1m".to_owned(), false)),
+    assert!(values.contains(&("2004".to_owned(), true)), "the lifted poster wears its year bold: {values:?}");
+    assert!(values.contains(&("1999".to_owned(), false)) && values.contains(&("2011".to_owned(), false)),
         "the others wear theirs regular: {values:?}");
     let lines = previewed_lines(&mut page);
     assert!(!lines.iter().any(|l| l == "Western"), "the Sort value row focused: not the Title/Details caption: {lines:?}");
@@ -443,7 +443,7 @@ fn the_root_row_reads_the_setting_and_names_the_poster_it_governs() {
     let read = |title, details| root_row_text(&RootInputs { under_posters: UnderPosters { title, details, sort_value: false }, ..text_fit_inputs() });
     let (value, sub) = read(false, UnderPostersDetails::YearLength);
     assert_eq!(value.as_deref(), Some("Year \u{b7} Length"), "the default reads its details line");
-    assert_eq!(sub, "What shows under the poster you are on.");
+    assert_eq!(sub, "Under posters, for movies and TV shows.");
     assert_eq!(read(true, UnderPostersDetails::YearLength).0.as_deref(), Some("Year \u{b7} Length"), "the title is the page's own row");
     assert_eq!(read(true, UnderPostersDetails::Genre).0.as_deref(), Some("Genre"));
     assert_eq!(read(false, UnderPostersDetails::Video).0.as_deref(), Some("Video"));
@@ -505,7 +505,9 @@ fn every_under_posters_string_fits_in_every_language() {
                 .max_lines(12)
                 .with_measure(&ShippedMeasure)
                 .measure_h(layout.narrative.w);
-            if frame.y + copy_h + theme::space::MD > preview_frame().y {
+            // The board's own clearance is 20 px (a five-line copy from 280 under a frame at 470), so the
+            // air the copy must leave is the tight rung, not the default one.
+            if frame.y + copy_h + theme::space::SM > preview_frame().y {
                 out.push(format!("{tag}: the copy under {title:?} ends at {:.0}, under the preview at {:.0}", frame.y + copy_h, preview_frame().y));
             }
         }
@@ -518,20 +520,23 @@ fn poster(title: &str, year: i32, genre: &str) -> PmsMovie {
 }
 
 #[test]
-fn the_preview_is_a_row_of_three_tiles_inside_the_frame_with_the_caption_band_clear_under_it() {
+fn the_preview_is_the_boards_frame_with_three_library_cards_the_outer_two_cut_by_it() {
     let narrative = RouteLayout::screen().narrative;
     let frame = preview_frame();
+    assert_eq!((frame.w, frame.h), (660.0, 556.0), "the board's frame");
     assert!(frame.x >= narrative.x && frame.x + frame.w <= narrative.x + narrative.w);
     assert!((frame.y + frame.h - (narrative.y + narrative.h)).abs() < 0.01, "it rests on the column's floor");
     let row = preview_row();
-    for i in 0..PREVIEW_TILES {
-        let lifted = SampleRow::lifted(&PREVIEW_STYLE, PREVIEW_TILES, i, row);
-        assert!(lifted.x >= frame.x && lifted.x + lifted.w <= frame.x + frame.w, "tile {i} stays in the frame: {lifted:?}");
-        assert!(lifted.y >= frame.y, "tile {i} clears the frame's top edge");
+    assert_eq!((row.y - frame.y, row.h), (40.0, 375.0), "tiles 40 px under the frame's top, a Library card tall");
+    let xs: Vec<f32> = (0..PREVIEW_TILES).map(|i| SampleRow::tile(&PREVIEW_STYLE, PREVIEW_TILES, i, row).x - frame.x).collect();
+    for (got, want) in xs.iter().zip([-80.0, 205.0, 490.0]) {
+        assert!((got - want).abs() < 1e-3, "tile x in the frame: {xs:?}");
     }
-    assert!(row.y + row.h + PREVIEW_UNDER <= frame.y + frame.h, "the tallest caption stays inside the frame");
-    // the Library's proportions, not a private set
-    assert!((PREVIEW_TILE_W / PREVIEW_TILE_H - plx_ui::consts::CARD_W / plx_ui::consts::CARD_H).abs() < 1e-3);
+    assert_eq!(PREVIEW_STYLE.w, plx_ui::consts::CARD_W, "the Library's own card, not a private size");
+    let lifted = SampleRow::lifted(&PREVIEW_STYLE, PREVIEW_TILES, PREVIEW_LIFTED, row);
+    assert!(lifted.x >= frame.x && lifted.x + lifted.w <= frame.x + frame.w, "the lifted tile is whole: {lifted:?}");
+    assert!(lifted.y >= frame.y && lifted.y + lifted.h <= frame.y + frame.h);
+    assert_eq!(PREVIEW_REST_ALPHA, 0.35, "the others show at the board's 35%");
 }
 
 #[test]
@@ -541,7 +546,7 @@ fn the_preview_captions_only_the_lifted_tile_from_its_own_poster() {
     let (a, b, c) = (poster("Alpha", 1999, "Noir"), poster("Bravo", 2004, "Western"), poster("Charlie", 2011, "Comedy"));
     let runs = plx_ui::draw_census::capture_runs(|| {
         draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false },
-            &[&a, &b, &c], &ShippedMeasure);
+            &[&a, &b, &c], None, &ShippedMeasure);
     });
     let words: Vec<&str> = runs.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect();
     assert_eq!(words, vec!["Bravo", "Western"], "only the middle tile is captioned, with its own facts");
@@ -550,7 +555,7 @@ fn the_preview_captions_only_the_lifted_tile_from_its_own_poster() {
     assert!(caption.at.y > lifted.y + lifted.h - 1.0, "the caption stands under the tile: {:?}", caption.at);
     // fewer posters than tiles: the lifted tile is the last real one, the rest are blank faces
     let two = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::None, sort_value: false }, &[&a], &ShippedMeasure);
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::None, sort_value: false }, &[&a], None, &ShippedMeasure);
     });
     assert_eq!(two.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["Alpha"]);
     assert_eq!(lifted_tile(0), PREVIEW_LIFTED, "no posters: the middle tile");
@@ -573,12 +578,12 @@ fn a_blank_face_carries_no_word() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let runs = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false }, &[], &ShippedMeasure);
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false }, &[], None, &ShippedMeasure);
     });
     let words: Vec<&str> = runs.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect();
     assert_eq!(words.iter().filter(|w| **w == "Movie").count(), 1, "the title is the caption alone, never also a word on a blank face: {words:?}");
     let off = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false }, &[], &ShippedMeasure);
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false }, &[], None, &ShippedMeasure);
     });
     assert!(off.iter().all(|r| r.ink[3] <= 0.5), "with no caption chosen the preview is faces only: {:?}", off.iter().map(|r| &r.text).collect::<Vec<_>>());
 }
@@ -627,4 +632,103 @@ fn the_sort_value_switch_uses_the_existing_confirmed_profile_write_and_reset() {
     page.poll();
     let (reset, _) = write_request(activate(&mut page, UpId::Reset)).unwrap();
     assert_eq!(reset, UnderPosters::DEFAULT);
+}
+
+/// What one draw of a page puts on screen as `(text, ink alpha)`, for every run whose text is in `words`.
+fn drawn_alphas<S: Screen<InnerHost>>(page: &mut S, words: &[&str]) -> Vec<(String, f32)> {
+    let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new()).with_sample(captioned_posters());
+    let c = cx_with(None, snapshot.view());
+    let mut f = DrawFrame::new(&c, plx_ui::Painter::recording());
+    plx_ui::draw_census::capture_runs(|| page.draw(&mut f)).into_iter()
+        .filter(|run| words.contains(&run.text.as_str())).map(|run| (run.text, run.ink[3])).collect()
+}
+
+fn alpha_of(runs: &[(String, f32)], text: &str) -> f32 {
+    runs.iter().filter(|(t, _)| t == text).map(|(_, a)| *a).fold(0.0, f32::max)
+}
+
+/// **The Sort value state illustrates a library sorted by Year** and says so under the posters: the
+/// values are the sample posters' own years (the one value formatter), the middle one whole and the
+/// outer two dimmed with their tiles; Off has the Title/Details caption and no "Sorted by" line.
+#[test]
+fn the_sort_value_preview_shows_each_posters_year_dimmed_beside_the_lifted_one_and_says_sorted_by_year() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: true });
+    let mut page = UnderPostersPage::new(EntryId(0));
+    page.state.sel = UpId::SortValue.key();
+    let runs = drawn_alphas(&mut page, &["1999", "2004", "2011", "Sorted by Year"]);
+    assert!(alpha_of(&runs, "2004") > 0.9, "the lifted poster's year is whole: {runs:?}");
+    for outer in ["1999", "2011"] {
+        let a = alpha_of(&runs, outer);
+        assert!(a > 0.0 && a <= PREVIEW_REST_ALPHA + 1e-3, "{outer} dims with its tile: {a}");
+    }
+    assert!(alpha_of(&runs, "Sorted by Year") > 0.9, "the caption under the frame reads whole: {runs:?}");
+    page.state.value = UnderPosters { sort_value: false, ..page.state.value };
+    let off = drawn_alphas(&mut page, &["1999", "2004", "2011", "Sorted by Year"]);
+    assert!(off.is_empty(), "Off: no years and no 'Sorted by' caption: {off:?}");
+}
+
+#[test]
+fn a_poster_with_no_year_wears_the_dash_in_the_sort_value_preview() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let nameless = PmsMovie { year: 0, ..poster("Nameless", 0, "Noir") };
+    let runs = plx_ui::draw_census::capture_runs(|| {
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: true },
+            &[&nameless, &nameless, &nameless], None, &ShippedMeasure);
+    });
+    assert!(runs.iter().any(|r| r.text == "\u{2013}"), "a missing year is the en dash: {:?}", runs.iter().map(|r| &r.text).collect::<Vec<_>>());
+}
+
+/// **The picker's preview says where its posters come from**: the focused tile's own sample line and the
+/// "The library you last opened" caption under the frame.
+#[test]
+fn the_pickers_preview_says_it_uses_the_library_last_opened() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let _live = Live::set(UnderPosters { title: false, details: UnderPostersDetails::Genre, sort_value: true });
+    let mut page = DetailsPage::new(EntryId(0));
+    let runs = drawn_alphas(&mut page, &["The library you last opened", "Sorted by Year"]);
+    assert!(alpha_of(&runs, "The library you last opened") > 0.9, "{runs:?}");
+    assert!(alpha_of(&runs, "Sorted by Year") == 0.0, "never the Sort value state's caption: {runs:?}");
+}
+
+/// **The Video choice says what a TV show does instead**; no other choice carries a detail line.
+#[test]
+fn only_the_video_choice_carries_a_detail_line() {
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let mut form = FormTable::<DetailsId, UnderPostersDetails, SettingsPage>::new(crate::registry::BAND);
+    form.table.compact = false;
+    form.set(details_form(UnderPostersDetails::YearLength, &sample_facts()), None);
+    let rows: Vec<(String, String)> = form.table.sections.iter().flat_map(|s| s.rows.iter())
+        .map(|r| (r.label.clone(), r.detail.clone())).collect();
+    assert_eq!(rows.len(), 5, "{rows:?}");
+    for (label, detail) in &rows {
+        if label == "Video" {
+            assert_eq!(detail, "A TV show has no single video quality; it shows its year.");
+        } else {
+            assert!(detail.is_empty(), "{label}: {detail:?}");
+        }
+    }
+}
+
+/// **Both captions under the frame fit it, in every shipped language**: one line, uncut, inside the
+/// frame less its sides.
+#[test]
+fn the_frames_captions_fit_in_every_language() {
+    use plx_machine::machine::Measure;
+    let _guard = plx_base::testlock::serial();
+    let mut out = Vec::new();
+    for language in SHIPPED {
+        let _lang = language_on_this_thread_for_test(language);
+        for text in [plx_platform::i18n::msg::under_posters_sorted_by(), plx_platform::i18n::msg::under_posters_last_opened()] {
+            let width = ShippedMeasure.width_str(text, theme::size::MICRO, false);
+            if width > preview_frame().w - 2.0 * theme::space::MD {
+                out.push(format!("{}: {text:?} is {width:.0}px under a {:.0}px frame", language.tag(), preview_frame().w));
+            }
+        }
+    }
+    assert!(out.is_empty(), "{out:#?}");
 }
