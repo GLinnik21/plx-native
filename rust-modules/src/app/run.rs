@@ -3003,9 +3003,11 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // be the post-pump value.
                         //
                         // `transport` is the other per-frame fact the instance cannot resolve for
-                        // itself: whether a surface is over the bare picture. (An open Info card or Chapters
-                        // strip is a SECTION, the page's own state; `PlayerScreen::middle_up` withholds the
-                        // middle for it, so the `bare_middle` below is true on the shipped path.)
+                        // itself: whether a surface is over the bare picture. An open Info card or Chapters
+                        // strip is a SECTION, the page's own state, and `PlayerScreen::middle_up` withholds the
+                        // middle for it. The `bare_middle` below is false only while the RETAINED Info/Chapters
+                        // overlay is presented, which no live path does: it is always true on the shipped path
+                        // until stage 2b removes that overlay.
                         let busy = plx_appkit::player_hud::busy(&app.player.session);
                         let bare_middle = !matches!(
                             super::bridge::player_overlay_kind(&app.pages),

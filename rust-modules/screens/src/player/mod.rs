@@ -33,7 +33,7 @@ mod compiled_geometry_tests;
 
 use std::borrow::Cow;
 
-use crate::registry::{AppFx, AppLike, AppMsg, PlayerLike, PlayerReq};
+use crate::registry::{AppFx, AppLike, AppMsg, PlayerLike, PlayerReq, RepeatGate, PANEL_REPEAT_MS};
 use plx_ui::consts;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -126,18 +126,19 @@ pub struct PlayerScreen {
     seek_burst: player_hud::seek_jump::SeekBurst,
     /// A dedicated FF/REW press that has not yet repeated or been released.
     transport_tap: bool,
+    /// **The cadence a HELD Left/Right walks the open Chapters strip at.** The remote streams `Edge::Repeat` at
+    /// roughly 50 ms and a list walked at that rate reads as a blur, so the strip admits one repeat per
+    /// [`PANEL_REPEAT_MS`], the same `RepeatGate` the overlay's panels pace a held direction with. The press
+    /// restarts it from itself. The bare transport's directions run the continuous scrub instead, which is a
+    /// ramp rather than a discrete move, and are never gated.
+    repeat: RepeatGate,
     // (`held: HeldKey` stood here — "the client-side hold-repeat for the bare transport's
     // directions". Nothing armed it after phase 9 put the panels' input on the dispatcher, so it
     // wrote two constant zeros into this screen's canonical state; the type is deleted with the
     // loop's timer in phase 10 and this field with it.
     //
-    // `repeat: RepeatGate` is NOT here either, and spec §9's target shape lists it: the paced
-    // 110 ms admission is the OVERLAY's — `PlayerOverlayScreen` is what has a list to walk under
-    // a held key. The bare transport's own directions run the continuous scrub instead, which is
-    // a ramp rather than a discrete move and was never gated. The one list this page now walks itself, the open
-    // Chapters strip, is therefore NOT paced: a held Left/Right reaches the engine at the remote's repeat rate,
-    // where the overlay's strip admitted a step per `PANEL_REPEAT_MS`. A gate needs a field in this screen's
-    // canonical state, which the replay fixtures pin; left to the stage that re-records them.)
+    // (The cadence is not in the canonical state. Like the HUD's other timing fields (the row's springs, the
+    // countdown, the section set) it is derived from the clock and read by no replay shape.)
     /// The control row's focus springs, its label-width memo and the resume clock
     /// (`player_hud`'s `ROW_POP`/`MEMO`/`PLAY_AT`/`PAUSE_SEEN`).
     pub row: HudMotion,
@@ -153,7 +154,8 @@ pub struct PlayerScreen {
     pub busy: plx_appkit::player_hud::Busy,
     /// The container's per-frame fact: is the transport's picture bare (no surface over it)? It says nothing about
     /// sections: an open section is the page's own state, and [`PlayerScreen::middle_up`] withholds the middle
-    /// for a MODAL one only.
+    /// for a MODAL one only. It is false only while the retained Info/Chapters OVERLAY is presented, which no live
+    /// path does, so it is always true on the shipped path until stage 2b removes that overlay.
     pub transport: bool,
     /// What the surfaces over this page do to the transport this frame — see [`HudPolicy`].
     /// Pushed once per frame by `app/run.rs` through [`Self::set_hud_policy`].
@@ -194,6 +196,7 @@ impl PlayerScreen {
             scrub: Scrub::IDLE,
             seek_burst: player_hud::seek_jump::SeekBurst::IDLE,
             transport_tap: false,
+            repeat: RepeatGate::IDLE,
             row: HudMotion::new(),
             up_next: Countdown::default(),
             slot: ControlSlot::Discs(player_hud::Controls::NONE),
@@ -1091,6 +1094,15 @@ impl PlayerScreen {
         }
         if self.hud.visible_at_press && matches!(self.hud.nav.focus, GROUP_ROW | GROUP_STRIP)
             && matches!(key, Key::Left { alt: false } | Key::Right { alt: false }) {
+            // The strip is a list walked a card at a time, so a held direction is paced; the control row's own
+            // steps are not (its focus lands on the next disc at the remote's rate, as it always did).
+            if self.hud.nav.focus == GROUP_STRIP {
+                match edge {
+                    Edge::Down => self.repeat.rearm(now),
+                    Edge::Repeat if !self.repeat.ready_every(now, PANEL_REPEAT_MS) => return Handled::Yes,
+                    _ => {}
+                }
+            }
             self.hud.extend(now, input::HUD_LINGER_MS);
             return if edge == Edge::Up { Handled::Yes } else { Handled::No };
         }

@@ -344,6 +344,29 @@ impl Run {
         self.now += 600;
     }
 
+    /// A key HELD: the press, an `Edge::Repeat` at each of `repeat_at` ms after it (the remote streams them at
+    /// roughly 50 ms), then the release.
+    fn press_held(&mut self, k: Key, repeat_at: &[u32]) {
+        let now = self.now;
+        let ps = plx_media::route::idle_session_for_test();
+        self.screen().hud.note_fresh_press(ps, now, false);
+        let with = |edge: plx_machine::machine::Edge, at: u32| {
+            let mut e = key(k, tick(at));
+            if let plx_machine::machine::InputKind::Key { edge: ed, .. } = &mut e.kind {
+                *ed = edge;
+            }
+            e
+        };
+        self.frame(now, vec![with(plx_machine::machine::Edge::Down, now)]);
+        for &dt in repeat_at {
+            self.frame(now + dt, vec![with(plx_machine::machine::Edge::Repeat, now + dt)]);
+        }
+        let end = repeat_at.last().copied().unwrap_or(0) + 16;
+        self.frame(now + end, vec![with(plx_machine::machine::Edge::Up, now + end)]);
+        self.settle(now);
+        self.now += 600;
+    }
+
     /// The app pushes plain discs into the screen, as its per-frame slot push does when a
     /// stand-in or an episode neighbour goes away.
     fn push_plain_discs(&mut self) {
@@ -415,6 +438,11 @@ impl Run {
 struct Chaptered;
 impl Chaptered {
     fn install() -> Chaptered {
+        Self::install_n(2)
+    }
+
+    /// `count` chapters, a minute apart, starting at one minute.
+    fn install_n(count: i64) -> Chaptered {
         let chapter = |index: i64| plx_data::metadata::Chapter {
             index,
             start_ms: index * 60_000,
@@ -435,7 +463,7 @@ impl Chaptered {
                 bitrate: 0,
                 dovi: Default::default(),
                 markers: Vec::new(),
-                chapters: vec![chapter(1), chapter(2)],
+                chapters: (1..=count).map(chapter).collect(),
                 hdr: false,
             }
         ))));
@@ -1729,6 +1757,28 @@ mod sections {
                 "{section:?} {key_wcode}: the page stays open with the ring where it was",
             );
         }
+    }
+
+    /// **A held Right walks the strip at the panel cadence, not at the remote's repeat rate.** The overlay's strip
+    /// admitted one step per `PANEL_REPEAT_MS` (110 ms); the remote streams `Edge::Repeat` at roughly 50 ms, and a
+    /// list walked at that rate reads as a blur. Four repeats inside 110 ms of the press move nothing past the
+    /// press's own step; one beyond it moves one more.
+    #[test]
+    fn a_held_right_walks_the_strip_at_the_panel_cadence() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install_n(8);
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE));
+        run.press_held(Key::Right, &[30, 60, 90, 105]);
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE + 1), "the press steps once; repeats inside the cadence do not");
+        run.press_held(Key::Right, &[50, 100, 150, 200]);
+        assert_eq!(
+            run.held(),
+            Some(ELEM_CHAPTER_BASE + 3),
+            "the press steps, then one repeat per 110 ms: the 150 ms and 200 ms ones",
+        );
     }
 
     /// OK on a card seeks to where the chapter starts and puts the strip away, focus back on its tab.
