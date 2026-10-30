@@ -17,8 +17,13 @@
 //! **Motion stays here.** The focus springs, the title marquee, the scrub preview and the knob's spring
 //! are the renderer's, read from the [`HudMotion`] the page owns.
 //!
-//! **What it does not draw yet** (each is a decision, not an omission): a section's selected face (the
-//! `toggle_section` disc while its panel is open: section time, PR8), `rest: custom` (it takes the film),
+//! **A section is drawn from its state.** The state's own bits say which sections are open, so a
+//! `toggle_section` control reads selected (a pill: `TabPill`'s selected face; a disc: its `solid` rest face)
+//! while its section is open, and an open section's `actions` buttons pop on `GROUP_SECTION` ([`HudMotion::section_scale`]).
+//! A text group of a section (`CompiledState::groups`) is stacked HERE from the wrapped heights, as the Info card
+//! stacks its own ([`sections::group`]).
+//!
+//! **What it does not draw yet** (each is a decision, not an omission): `rest: custom` (it takes the film),
 //! and a `strip` (the chapters strip is a `cards::Shelf`, which paints through a `DrawFrame` this walk does
 //! not carry: PR8 stage 2). [`draw`] draws nothing for them, so a package that needs them shows less
 //! rather than something wrong. A title's declared `ink` and `bold` are not carried: classic's rule (an
@@ -331,6 +336,14 @@ fn glyph_of<'a>(compiled: &'a Compiled, c: &crate::hud_format::compile::ControlR
     }
 }
 
+/// Whether `c` is a `toggle_section` control of a section this state has open (`StateKey::open`): the state the
+/// walk is in says which sections are open, whatever the policy (a modal section hides the row, an inline one
+/// leaves it live), so a section's tab reads selected and its disc wears its `solid` face from the state alone
+/// (`docs/hud-plugins.md`, `toggle_section`).
+fn section_open(state: &CompiledState, c: &crate::hud_format::compile::ControlRect) -> bool {
+    matches!(c.act, Some(HudCommand::ToggleSection(s)) if state.key.open & s.open_bit() != 0)
+}
+
 /// One control, at the rect the compile placed it.
 fn draw_control(
     compiled: &Compiled,
@@ -358,6 +371,8 @@ fn draw_control(
                 .ground(ControlGround::Unkeyed)
                 .scale(row.scale(i))
                 .rest_face(match c.rest {
+                    // an open section's own control wears the `solid` face, whatever it rests in
+                    _ if section_open(state, c) => TransportRest::Solid,
                     // `custom` (allowed inks) is not drawn yet: it takes the film
                     Rest::Film | Rest::Custom => TransportRest::Film,
                     Rest::Bare => TransportRest::Bare,
@@ -382,8 +397,7 @@ fn draw_control(
             let (focused, selected) = hud_tab_state(f.transport, f.focus, f.tab, i);
             // the state the walk is in says which sections are open: their tabs read selected, whatever the
             // policy (a modal section hides the row, an inline one leaves it live)
-            let open = matches!(c.act, Some(HudCommand::ToggleSection(s)) if state.key.open & s.open_bit() != 0);
-            let selected = selected || open;
+            let selected = selected || section_open(state, c);
             TabPill::new(label.as_ptr(), theme::size::BODY, c.rect)
                 .focused(focused)
                 .selected(selected)
@@ -680,7 +694,7 @@ mod tests {
 
         /// **The text block sits exactly where the card puts it.** The card centres [title, synopsis, tags] in
         /// CAP-TOP coordinates from the REAL wrapped heights and drops what is absent; the renderer places the
-        /// compiled `vstack` at draw time the same way (`sections::stack`), so every run of the block, its y
+        /// compiled `vstack` at draw time the same way (`sections::group`), so every run of the block, its y
         /// included, is the card's. `want` names the runs the case must contain (a case whose census lacks them
         /// would be comparing nothing).
         fn same_block(detail: Detail, want: &[&str], absent: &[&str]) {
@@ -732,6 +746,47 @@ mod tests {
             same_block(Detail { genres: vec![], ..playing() }, &["The Long Title", "A summary of the film", "2001"], &["Drama"]);
         }
 
+        /// **A group never leaves the rect the compiler promised** (lint, Cost and the census read the worst
+        /// case): whatever is absent, the block's texts stand inside the group's compiled rect. The group stacks
+        /// in CAP-TOP coordinates, so a text's cap top (its box top, a run's `at.y`, plus the face's cap offset) is
+        /// what is compared; the full block fills the rect exactly.
+        #[test]
+        fn a_group_stays_inside_its_worst_case_rect() {
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("an info state");
+            assert_eq!(state.groups.len(), 1, "classic's info text block is one group");
+            let rect = state.groups[0].rect;
+            let bare = Detail { genres: vec![], year: 0, dur_ms: 0, rating: String::new(), ..playing() };
+            for detail in [
+                playing(),
+                Detail { summary: "A short one.".into(), ..playing() },
+                Detail { summary: String::new(), ..playing() },
+                bare.clone(),
+                Detail { summary: String::new(), ..bare },
+            ] {
+                let (new, _) = both(detail);
+                let mut seen = 0;
+                for r in new.1.iter().filter(|r| r.text == "The Long Title" || r.text.starts_with("A s")) {
+                    let cap = r.at.y + plx_gfx::text::text_cap_band(r.size, i32::from(r.text == "The Long Title")).0;
+                    assert!(cap >= rect.y - 0.5 && cap <= rect.y + rect.h, "`{}` at cap top {cap} leaves the group {rect:?}", r.text);
+                    seen += 1;
+                }
+                assert!(seen > 0, "the case draws the title: {:?}", new.1);
+            }
+        }
+
+        /// A `vstack` that holds the title pair is not a group: the reference's open Info state stacks its
+        /// title and summary at the compiler's rects, its summary last and top-anchored, so there is nothing to collapse.
+        #[test]
+        fn a_package_vstack_with_the_title_pair_stays_static() {
+            let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+                .expect("the reference loads")
+                .compiled;
+            let state = compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("the reference has an info state");
+            assert!(state.groups.is_empty(), "the reference's info vstack is static: {:?}", state.groups.iter().map(|g| g.rect).collect::<Vec<_>>());
+        }
+
         #[test]
         fn an_open_chapters_state_has_no_info_arms_and_the_gate_only_hides_the_compact_state() {
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
@@ -772,6 +827,24 @@ mod tests {
             let modal = info_frame_census(false, 0, GROUP_SCRUB, 0, &mut row);
             let inline = info_frame_census(true, 1, GROUP_SCRUB, 0, &mut row);
             assert_eq!(census_hash(&modal), census_hash(&inline), "the Info tab is drawn selected in both");
+        }
+
+        /// The `toggle_section` face is the STATE's: a section's control is selected while its bit is open, a
+        /// sibling's is not, and the compact state (no bit) selects none. The reference's two are discs, so
+        /// this is also the disc's `solid` face (`draw_control` reads the same answer).
+        #[test]
+        fn a_toggle_section_control_reads_selected_while_its_section_is_open() {
+            let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+                .expect("the reference loads")
+                .compiled;
+            let open = |bits: u8| {
+                let state = compiled.lookup(bits, Slot::Discs, true, true, false).expect("a state");
+                let on = |id: &str| state.controls.iter().find(|c| c.id == id).map(|c| section_open(state, c));
+                (on("info"), on("chapters"))
+            };
+            assert_eq!(open(0), (Some(false), Some(false)), "the compact state selects none");
+            assert_eq!(open(OPEN_INFO), (Some(true), Some(false)), "Info open selects the Info control alone");
         }
 
         #[test]

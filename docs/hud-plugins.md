@@ -448,7 +448,13 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `badges` (ordered subset of `content_rating audio_format cc sdh ad`), `size`}: content rating appears
   in `order` OR `badges`, never both; all of it is fitted by `ChipRow` (moved out of `info_panel.rs` into a
   shared appkit module), which drops whole chips tail first;
-- `vstack` {`gap`, `w`, `cells`}; `spacer` {`w`};
+- `vstack` {`gap`, `w`, `cells`}; `spacer` {`w`}. The compiler places a `vstack`'s children at their WORST case
+  (a `text` at `max_lines` x `leading`, a `facts` row at the badge height `BADGE_H` or its line, whichever is taller), which
+  is what lint, Cost and the census read. A `vstack` of text, `facts` and static children in an open section is also
+  a GROUP (`CompiledState::groups`): the renderer restacks it at draw time through the shared `VStack`, in cap-top
+  coordinates, from the heights it really wraps, so a block with no text (`max_lines` above 1, empty) and a `facts`
+  row that keeps no chip take no room and no gap, as the Info card's own stack does, and the group never leaves
+  its worst-case rect. A `vstack` that holds the title pair, a control or a nested cell stays static;
 - `playbar` {`w`, `fill`, `track`, `thickness`, `knob` (`tick` classic, `always`), `clocks` (`follow_head`
   classic, `ends`), `clock_size`, `mark` (`after_elapsed`, `busy_only`: the paused glyph may go when a
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
