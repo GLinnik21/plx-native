@@ -222,9 +222,16 @@ pub struct Layout {
 /// in [`layout`]: `text_width` is `TTF_SizeUTF8`, which the host suite cannot even link against.
 pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
     // Where the row hangs, as the layout reports it: the stand-in lands on exactly these.
+    layout_at(crate::player_hud::classic::frame_geometry().row_anchor, next_w, credits_w)
+}
+
+/// [`layout_of`] over any row anchor: the column from the two pill widths, right-anchored at
+/// `anchor.right` on the row `anchor.top` / `anchor.h` describe. PURE. The layout compiler
+/// (`hud_format::compile`) calls it with the anchor of the segments its package's Up Next replaces,
+/// so a package's offer and the classic one are the one arrangement.
+pub fn layout_at(anchor: crate::player_hud::geometry::RowAnchor, next_w: f32, credits_w: f32) -> Layout {
     use crate::player_hud::geometry::RowAnchor;
-    let RowAnchor { right: ctrl_right, top: ctrl_y, h: ctrl_h } =
-        crate::player_hud::classic::frame_geometry().row_anchor;
+    let RowAnchor { right: ctrl_right, top: ctrl_y, h: ctrl_h } = anchor;
     // The two pills are one run, right-anchored at the control row's edge, `PILL_GAP` apart.
     let pills = [Item::new(credits_w), Item::new(next_w)];
     let row = HStack::new(&pills, PILL_GAP, Align::Trailing(ctrl_right));

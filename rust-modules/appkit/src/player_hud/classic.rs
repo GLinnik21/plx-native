@@ -116,8 +116,18 @@ pub fn ctrl_slot_w(row: &HudMotion, label: &str, measure: &dyn plx_machine::mach
 }
 
 pub(super) fn ctrl_slot_measure(label: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
-    const PAD_X: f32 = 34.0;
-    (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(ctrl_row_w())
+    stand_in_w(measure.width_str(label, theme::size::BODY, true), ctrl_row_w())
+}
+
+/// A stand-in pill's side padding: the air between its label and its edge, each side.
+const STAND_IN_PAD_X: f32 = 34.0;
+
+/// **The width of a stand-in pill** (Skip, Next Episode): its label's bold advance and the padding
+/// each side, never narrower than `floor`. Pure, so [`ctrl_slot_measure`] (the draw and the hit
+/// test) and the HUD layout compiler (`hud_format::compile`, which supplies the floor its package's
+/// replaced segment gives) size the pill with the one formula.
+pub fn stand_in_w(advance: f32, floor: f32) -> f32 {
+    (advance + 2.0 * STAND_IN_PAD_X).max(floor)
 }
 
 /// The five possible discs, in one right-anchored layout. Absent episode controls contribute
@@ -505,7 +515,7 @@ pub(super) fn draw_player_title(
 /// Reserve the same geometry used by focus placement, plus focus pop and a reading gap.
 /// Use at least the settled focus scale so moving focus does not make the title breathe; a
 /// spring overshoot still reserves its actual drawn extent. Stand-ins are measured, not guessed.
-pub(super) fn title_right(slot: ControlSlot, row: &HudMotion, measure: &dyn Measure) -> f32 {
+pub(crate) fn title_right(slot: ControlSlot, row: &HudMotion, measure: &dyn Measure) -> f32 {
     let mut left = CTRL_RIGHT;
     for i in 0..slot.items() {
         if let Some(rect) = slot.item_rect(row, i, measure) {

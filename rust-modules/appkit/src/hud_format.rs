@@ -1,12 +1,14 @@
 //! **The HUD package format, 1.0** (`docs/hud-plugins.md`): the descriptor table ([`schema`]), the strict
 //! parser ([`parse`]), the SVG subset checker ([`svg_subset`]), the reachability check and the package-level
-//! invariants ([`reach`], [`validate`], entered through [`check`]), and the finding every one of them reports.
+//! invariants ([`reach`], [`validate`], entered through [`check`]), the layout compiler ([`compile`]: the
+//! rects and the draw list of every state `reach` enumerates), and the finding every one of them reports.
 //!
 //! A HUD package is declarative DATA, never code (D1): one UTF-8 JSON file, assets inline. This module is
 //! PURE: no IO, no globals, no clock, no `cfg(test)` fork. Bytes go in; a typed [`parse::Package`] and a
-//! list of [`Finding`]s come out. Wave B builds the draw-list compiler and `lint` on top of these types and
-//! reuses [`Finding`] as it is. [`schema_emit`] serializes the descriptor table to the published JSON
-//! Schema, and [`report`] prints findings as the lint JSON and as text.
+//! list of [`Finding`]s come out, and [`compile::compile`] lays a package out given a text measurer and the
+//! app's labels. The geometric invariants and `lint` build on these types and reuse [`Finding`] as it is.
+//! [`schema_emit`] serializes the descriptor table to the published JSON Schema, and [`report`] prints
+//! findings as the lint JSON and as text.
 //!
 //! ## The finding
 //!
@@ -24,6 +26,7 @@
 //! * the version gate: `/format`;
 //! * an SVG asset: the asset string's pointer, `/assets/<id>`.
 
+pub mod compile; // `compile`: a parsed package laid out in every reachable state: the rects the player reads and the draw list (docs/hud-plugins.md, "Architecture")
 pub mod parse;
 pub mod reach; // `check`: reachability R1-R4 and the folds over the HUD's state graph, then `validate`'s invariants
 pub mod report;
@@ -32,10 +35,12 @@ pub mod schema_emit;
 pub mod svg_subset;
 pub mod validate; // the package-level invariants no geometry is needed for (I3, I9, I11)
 
-pub use reach::{check, Checked, Fold};
+pub use reach::{check, Checked, Fold, Slot};
 
 #[cfg(test)]
 mod tests; // the corpus of valid and invalid packages, the seeded mutation tests and the table-vs-parser drift test
+#[cfg(test)]
+mod compile_tests; // the golden: classic compiled equals classic's hand-written layout; every fixture compiles in every state
 #[cfg(test)]
 mod reach_tests; // `check`: one invalid package per rule, the folds of classic and the reference, the state counts
 #[cfg(test)]

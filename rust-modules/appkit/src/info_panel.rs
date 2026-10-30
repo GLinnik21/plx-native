@@ -578,7 +578,7 @@ fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
 /// constant (`SCR_W`/`SCR_H` alone). Shared by [`InfoPanelState::draw`] (the still/title/synopsis
 /// layout) and [`button_rect`] (the action column), so the two formulas can never drift apart —
 /// they used to be two copies of the same five numbers, seven lines apart.
-fn card_geometry() -> (Rect, f32) {
+pub(crate) fn card_geometry() -> (Rect, f32) {
     let cx = 80.0f32;
     let cw = SCR_W - 160.0;
     let ch = 236.0f32;
@@ -589,7 +589,7 @@ fn card_geometry() -> (Rect, f32) {
 /// The `i`-th action button's rect, widened for the longest translated action label. The same
 /// measured formula [`InfoPanelPart::place`] answers the focus engine with, so a stop built from it lands
 /// on the pixel the button was drawn at.
-fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
+pub(crate) fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let (card, pad) = card_geometry();
     let labels = [
         plx_platform::i18n::msg::widgets_info_from_beginning_c(),

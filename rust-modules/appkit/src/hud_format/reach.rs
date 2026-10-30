@@ -114,8 +114,9 @@ pub fn check(package: &Package) -> Checked {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Slot {
+/// What occupies the control row: the package's controls, the Up Next offer or the Skip pill.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Slot {
     Discs,
     UpNext,
     Skip,
@@ -124,10 +125,10 @@ enum Slot {
 const SLOTS: [Slot; 3] = [Slot::Discs, Slot::UpNext, Slot::Skip];
 
 /// The open sections (a bitmask of [`SECTIONS`]) and the control slot.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct State {
-    open: u8,
-    slot: Slot,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct State {
+    pub(super) open: u8,
+    pub(super) slot: Slot,
 }
 
 impl State {
@@ -140,10 +141,10 @@ impl State {
 }
 
 /// A valuation of the content conditions the package names; one it does not name holds.
-#[derive(Clone, Copy)]
-struct Valuation {
-    chapters: bool,
-    episode: bool,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct Valuation {
+    pub(super) chapters: bool,
+    pub(super) episode: bool,
 }
 
 /// A `when` on the way to a control, with the pointer of the `when` key.
@@ -174,19 +175,19 @@ fn carries(control: &Control<'_>, fold: &Fold) -> bool {
 
 /// What the checks read of `layout`: the controls with their gates, the bands and segments, the sections
 /// the package lays out, whether sections are modal, which segments the stand-ins replace.
-struct Layout<'a> {
+pub(super) struct Layout<'a> {
     controls: Vec<Control<'a>>,
     band_ids: BTreeSet<&'a str>,
     segment_ids: BTreeSet<&'a str>,
     laid: u8,
     modal: bool,
     replaces: BTreeSet<&'a str>,
-    named_chapters: bool,
-    named_episode: bool,
+    pub(super) named_chapters: bool,
+    pub(super) named_episode: bool,
 }
 
 impl<'a> Layout<'a> {
-    fn read(layout: &'a Object) -> Layout<'a> {
+    pub(super) fn read(layout: &'a Object) -> Layout<'a> {
         let mut this = Layout {
             controls: Vec::new(),
             band_ids: BTreeSet::new(),
@@ -274,7 +275,7 @@ impl<'a> Layout<'a> {
 
     /// Both values of every content condition the package names, `false` first; a single `true` for one
     /// it does not name.
-    fn valuations(&self) -> Vec<Valuation> {
+    pub(super) fn valuations(&self) -> Vec<Valuation> {
         let dim = |named: bool| if named { vec![false, true] } else { vec![true] };
         let mut out = Vec::new();
         for chapters in dim(self.named_chapters) {
@@ -285,7 +286,7 @@ impl<'a> Layout<'a> {
         out
     }
 
-    fn holds(&self, cond: &Cond, state: State, v: Valuation, paused: bool) -> bool {
+    pub(super) fn holds(&self, cond: &Cond, state: State, v: Valuation, paused: bool) -> bool {
         cond.terms.iter().all(|term| {
             let truth = match term.name.as_str() {
                 "panel.chapters" => state.open & 1 != 0,
@@ -354,7 +355,7 @@ impl<'a> Layout<'a> {
     }
 
     /// The states reachable from the root under `v`, breadth first.
-    fn explore(&self, v: Valuation) -> Vec<State> {
+    pub(super) fn explore(&self, v: Valuation) -> Vec<State> {
         let mut seen = [false; 4 * SLOTS.len()];
         let mut order = vec![State::ROOT];
         seen[State::ROOT.index()] = true;

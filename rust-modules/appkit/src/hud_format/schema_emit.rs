@@ -1,6 +1,6 @@
 //! **The JSON Schema of HUD package format 1.0, emitted from the descriptor table** ([`super::schema`]).
 //!
-//! `plxnative-sim --hud-schema` (PR5c) prints [`emit_text`]; the committed copy is
+//! `plxnative-sim --hud-schema` (PR5d) prints [`emit_text`]; the committed copy is
 //! `site/hud/schema/1.0.json`, served at `https://plxnative.com/hud/schema/1.0.json` (`docs/hud-plugins.md`,
 //! "LLM authoring"). Nothing is listed here that the table does not list: every key, type, range, closed
 //! vocabulary, pattern, default and description is read from it, and [`Ty`] is matched in full, so a new

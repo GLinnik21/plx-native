@@ -1,6 +1,6 @@
 //! **The lint report: findings as the JSON the plan's "Lint" item names, and as plain text.**
 //!
-//! `plxnative-sim --hud-lint <file> [--format text|json]` (PR5c) prints through [`json_text`] and
+//! `plxnative-sim --hud-lint <file> [--format text|json]` (PR5d) prints through [`json_text`] and
 //! [`text`]; the registry's CI reads the JSON. The shape is exactly the plan's, and nothing more:
 //!
 //! ```text
@@ -15,8 +15,9 @@
 //! `nearest` is always an array, empty unless the finding is an unknown name. Object keys come out in
 //! `serde_json`'s sorted order, which is deterministic.
 //!
-//! The context a compile finding adds (`state`, `slot`, `lang`, `rects`) belongs to PR5c, which has the
-//! compiler; a parse finding has none, so this module carries no place for it and invents no value.
+//! The context a compile finding adds (`state`, `slot`, `lang`, `rects`) belongs to PR5d, which runs the
+//! compiler ([`super::compile`]); a parse finding has none, so this module carries no place for it and
+//! invents no value.
 //!
 //! This module is PURE: findings in, text out.
 

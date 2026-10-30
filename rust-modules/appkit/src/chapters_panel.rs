@@ -193,7 +193,7 @@ impl ChaptersState {
 /// Card, name, timestamp: one column every card shares; returns the name's and the timestamp's y.
 /// The name and the stamp are origins, not boxes: each is a zero-height item standing its drop
 /// (`CH_NAME_DROP`, `CH_TIME_DROP`) under the one before it.
-fn label_ys() -> (f32, f32) {
+pub(crate) fn label_ys() -> (f32, f32) {
     let column = [
         Item::new(CH_H),
         Item::new(0.0).before(CH_NAME_DROP),
@@ -237,7 +237,7 @@ fn scroll_target(sel: c_int) -> f32 {
 /// A card's on-screen rect at `scroll` — the same formula [`ChaptersState::draw`] paints at
 /// (`MARGIN_X + i*(CH_W+CH_GAP)`, translated by `-scroll`, exactly as the draw's own painter
 /// cascade does), so a stop registered from it lands on the pixel the card was drawn at.
-fn card_rect(i: usize, scroll: f32) -> Rect {
+pub(crate) fn card_rect(i: usize, scroll: f32) -> Rect {
     Rect::new(MARGIN_X + i as f32 * (CH_W + CH_GAP) - scroll, CH_TOP, CH_W, CH_H)
 }
 
