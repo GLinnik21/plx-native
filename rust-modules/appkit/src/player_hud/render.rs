@@ -34,13 +34,12 @@ use super::classic::{
     draw_player_title_at, draw_playbar_look, draw_scrim_at, draw_scrub_preview, hud_env, hud_tab_state, tab_labels,
     tab_of_section, Kicker, Playbar, PlaybarLook, TitleLook,
 };
-use super::geometry::GROUP_ROW;
+use super::geometry::{frame_state, GROUP_ROW};
 use super::model::HudModel;
 use super::motion::HudMotion;
 use super::state::{readout_owns_frame, Busy, ControlSlot};
 use plx_machine::machine::GroupId;
-use crate::hud_format::compile::{Chrome, Compiled, CompiledState, DrawOp, SkipKind, Span, Widget};
-use crate::hud_format::reach::Slot;
+use crate::hud_format::compile::{Chrome, Compiled, CompiledState, DrawOp, Span, Widget};
 use crate::skip_pill;
 use crate::up_next::{self, Countdown, Decor, Layout};
 
@@ -62,20 +61,11 @@ pub struct Frame<'a> {
     pub meta: plx_data::metadata::MetadataView<'a>,
 }
 
-/// The compiled state this frame draws, or `None` when the package has no state for it.
+/// The compiled state this frame draws, or `None` when the package has no state for it
+/// ([`frame_state`], the lookup every geometry consumer takes too).
 fn state_for<'c>(compiled: &'c Compiled, f: &Frame<'_>) -> Option<&'c CompiledState> {
-    let (kind, skip) = match f.slot {
-        ControlSlot::Discs(_) => (Slot::Discs, SkipKind::Intro),
-        ControlSlot::UpNext(_) => (Slot::UpNext, SkipKind::Intro),
-        ControlSlot::Skip(pr) => (
-            Slot::Skip,
-            if pr.kind == plx_data::metadata::MarkerKind::Credits { SkipKind::Credits } else { SkipKind::Intro },
-        ),
-    };
-    // The ROW's pair boolean (`Controls::pair`), not the kicker's predicate: see the module doc.
-    let episode = matches!(f.slot, ControlSlot::Discs(c) if c.pair());
     let chapters = crate::chapters_panel::has_chapters(f.meta);
-    compiled.lookup(0, kind, chapters, episode, f.model.paused).map(|s| s.skip_variant(skip))
+    frame_state(compiled, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
 }
 
 /// Draw the transport from `compiled` into `p`. Returns false, having drawn nothing, when the package

@@ -2668,12 +2668,12 @@ fn table_form(
 
 /// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`], the shared cap — either tab may hug
 /// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — placed by the
-/// same placer as the live panel, beside classic's anchor, with the height of the whole room (the
+/// same placer as the live panel, beside the anchor of the compiled classic (`player_hud::audit_geometry`), with the height of the whole room (the
 /// measured height comes from a `TableView` no host test can measure).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let pw = plx_ui::table::MENU_MAX_W;
-    let placed = place_panel(crate::player_hud::classic::frame_geometry().row, (pw, plx_ui::consts::SCR_H));
+    let placed = place_panel(crate::player_hud::audit_geometry().row, (pw, plx_ui::consts::SCR_H));
     out.push(("track menu panel (widest)", placed.rect));
 }
 

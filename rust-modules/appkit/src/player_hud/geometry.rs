@@ -2,19 +2,30 @@
 //! audit and the control-row STAND-INS (Skip, Up Next) need to know about where the HUD is, as values
 //! rather than as the classic layout's constants.
 //!
-//! The classic layout (`classic.rs`) is the one that fills it today: `classic::frame_geometry()` for the
-//! facts that do not depend on what occupies the row, `classic::geometry(..)` for the whole of it. A
-//! consumer reads the report and so is indifferent to which layout produced it: the player's
-//! `Focusable` (group extents and row length), the pointer stops, `overscan_rects` and the stand-ins
-//! (`up_next`, `skip_pill`) never name `CTRL_Y`, `CTRL_H`, `CTRL_RIGHT` or `scrub_hit_rect` themselves.
+//! **The compiled package fills it** (`CompiledState::geometry`): [`frame_geometry`] for the facts that do
+//! not depend on what occupies the row, [`geometry`] for the whole of it, [`row_len`] for how many stops
+//! the row group holds. These three are the ONE place a consumer asks where the HUD is, and the only
+//! place that names `classic::frame_geometry` / `classic::geometry`: while a screen holds no package, or
+//! the package has no state for the frame (the draw then falls back to `classic::draw_hud`, so the
+//! geometry takes the same exit), they answer with the hand-written layout's report. A consumer reads the
+//! report and so is indifferent to which layout produced it: the player's `Focusable` (group extents and
+//! row length), the pointer stops, the caption band and the stand-ins (`up_next`, `skip_pill`) never name
+//! `CTRL_Y`, `CTRL_H`, `CTRL_RIGHT` or `scrub_hit_rect` themselves. Stage 3 deletes the classic arm with
+//! `draw_hud`.
 //!
 //! This module also names the HUD's focus GROUPS. They are the shared `FocusEngine` groups the
 //! player's `Focusable` declares, and the one set of numbers the HUD's motion and drawing compare a
 //! focus against, so the screen's `nav.focus` is a [`GroupId`] and not a bare integer.
 
-use plx_machine::machine::GroupId;
+use plx_machine::machine::{GroupId, Measure};
 use plx_media::player::text_style::HudBand;
 use plx_ui::Rect;
+
+use super::classic;
+use super::motion::HudMotion;
+use super::state::ControlSlot;
+use crate::hud_format::compile::{Compiled, CompiledState, SkipKind};
+use crate::hud_format::reach::Slot;
 
 /// The scrubber's group: a free-form region, extent [`HudGeometry::grab`].
 pub const GROUP_SCRUB: GroupId = GroupId(0);
@@ -92,5 +103,65 @@ impl HudGeometry {
     /// `PlayerScreen::handle_drag` never re-tests the hit once a click has seated the gesture.
     pub fn scrub_frac(&self, x: f32) -> f32 {
         ((x - self.playbar.x) / self.playbar.w).clamp(0.0, 1.0)
+    }
+}
+
+/// **The compiled state the transport is in this frame**, with the Skip pill's kind: the compile's
+/// [`Compiled::lookup`] over the frame's slot and content (`open == 0`; the sections draw themselves in
+/// this release). The state returned is the BASE state; [`CompiledState::skip_variant`] picks the credits
+/// layout of a Skip state, and [`CompiledState::geometry`] does so itself from the kind.
+///
+/// `episode` is the ROW's pair boolean (`Controls::pair`), not the kicker's predicate: PR5c's golden
+/// equates `Discs(PAIR)` with `episode = true`. The renderer and every geometry consumer take their state
+/// from here, so what is drawn and what is hit cannot be two states.
+pub fn frame_state(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: bool) -> Option<(&CompiledState, SkipKind)> {
+    let (kind, skip) = match slot {
+        ControlSlot::Discs(_) => (Slot::Discs, SkipKind::Intro),
+        ControlSlot::UpNext(_) => (Slot::UpNext, SkipKind::Intro),
+        ControlSlot::Skip(pr) => (
+            Slot::Skip,
+            if pr.kind == plx_data::metadata::MarkerKind::Credits { SkipKind::Credits } else { SkipKind::Intro },
+        ),
+    };
+    let episode = matches!(slot, ControlSlot::Discs(c) if c.pair());
+    compiled.lookup(0, kind, chapters, episode, paused).map(|s| (s, skip))
+}
+
+/// **The geometry facts that do not depend on what occupies the row**, for the frame: the grab band, the
+/// bar, the row at its floor width and its anchor, the title and tab-row origins, the caption band. From
+/// the compiled package's state for the frame when it has one, else classic's. It measures nothing, so it
+/// is safe where there is no measurer (a pointer event, the caption draw).
+pub fn frame_geometry(compiled: Option<&Compiled>, slot: ControlSlot, chapters: bool, paused: bool) -> HudGeometry {
+    match compiled.and_then(|c| frame_state(c, slot, chapters, paused)) {
+        Some((state, skip)) => state.geometry(skip),
+        None => classic::frame_geometry(),
+    }
+}
+
+/// **The whole geometry report for one frame**: [`frame_geometry`] plus item `i` of whatever occupies the
+/// row at the rect it is DRAWN at and each tab's pill. The compiled package's report copies what the
+/// compile placed; classic's measures (the Skip pill, the Up Next pair and the pills are as wide as their
+/// labels), like the draw it describes.
+pub fn geometry(
+    compiled: Option<&Compiled>,
+    slot: ControlSlot,
+    motion: &HudMotion,
+    chapters: bool,
+    paused: bool,
+    measure: &dyn Measure,
+) -> HudGeometry {
+    match compiled.and_then(|c| frame_state(c, slot, chapters, paused)) {
+        Some((state, skip)) => state.geometry(skip),
+        None => classic::geometry(slot, motion, if chapters { 2 } else { 1 }, measure),
+    }
+}
+
+/// **How many stops the row group holds** for the frame: the replaced row's declared controls for a
+/// package's discs (a row wider than classic's five has a stop for each), `[credits, next]` for Up Next,
+/// `[pill]` for Skip, and [`ControlSlot::items`] where the package has no state for the frame.
+pub fn row_len(compiled: Option<&Compiled>, slot: ControlSlot, chapters: bool, paused: bool) -> usize {
+    match (slot, compiled.and_then(|c| frame_state(c, slot, chapters, paused))) {
+        (ControlSlot::Discs(_), Some((state, _))) => state.row_ids.len(),
+        _ => slot.items().max(0) as usize,
     }
 }

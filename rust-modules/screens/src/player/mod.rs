@@ -28,6 +28,8 @@ pub mod input;
 pub mod overlay;
 #[cfg(test)]
 mod overlay_tests;
+#[cfg(test)]
+mod compiled_geometry_tests;
 
 use std::borrow::Cow;
 
@@ -722,14 +724,14 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     }
                     InputKind::Click { hit, x, .. } => {
                         self.end_jump_gesture();
-                        self.handle_click(ps, *hit, *x, input.at.ms, fx)
+                        self.handle_click(ps, *hit, *x, plx_appkit::chapters_panel::has_chapters(H::metadata(cx)), input.at.ms, fx)
                     }
                     // §7.5: a drag drives its CONTROL. Only the scrubber has one here, and only
                     // once a click has seated the gesture on it — a drag that began anywhere else
                     // must not capture the bar the moment it passes over it.
                     InputKind::Drag { x, .. } => {
                         self.end_jump_gesture();
-                        self.handle_drag(*x, input.at.ms)
+                        self.handle_drag(*x, plx_appkit::chapters_panel::has_chapters(H::metadata(cx)), input.at.ms)
                     },
                     // Pointer MOTION over the bare transport raises it and clears a hand
                     // dismissal, which is how a Magic Remote user finds the HUD over full-screen
@@ -837,6 +839,7 @@ impl PlayerScreen {
         ps: &plx_media::route::PlaybackSession,
         hit: Option<u32>,
         x: f32,
+        chapters: bool,
         now: u32,
         fx: &mut Effects<'_, H>,
     ) -> Handled {
@@ -877,7 +880,7 @@ impl PlayerScreen {
                 if dur > 0 {
                     self.hud.nav.focus = GROUP_SCRUB;
                     self.seat_elem(fx, ELEM_SCRUB);
-                    self.scrub.ns = self.pointed_ns(x, dur);
+                    self.scrub.ns = self.pointed_ns(x, chapters, dur);
                     self.scrub.drag = true; // the release commits; nothing else does
                     self.hud.extend(now, input::HUD_LINGER_MS);
                     self.publish();
@@ -915,8 +918,8 @@ impl PlayerScreen {
     /// Where on the timeline a pointer at `x` is pointing, bounded by [`Scrub::clamp_target`].
     /// `HudGeometry::scrub_frac` is x-only on purpose: an engaged drag tracks the pointer even when it
     /// wanders off the band vertically, which is why the drag arm below never re-tests the hit.
-    fn pointed_ns(&self, x: f32, duration_ns: i64) -> i64 {
-        let frac = player_hud::classic::frame_geometry().scrub_frac(x) as f64;
+    fn pointed_ns(&self, x: f32, chapters: bool, duration_ns: i64) -> i64 {
+        let frac = self.frame_geometry(chapters).scrub_frac(x) as f64;
         Scrub::clamp_target((frac * duration_ns as f64) as i64, duration_ns)
     }
 
@@ -924,13 +927,13 @@ impl PlayerScreen {
     /// bar (`Scrub::drag`): a drag that began on some other control, or on nothing, must not
     /// capture the scrubber the moment it passes over it. Nothing is committed — that is the
     /// release's job.
-    fn handle_drag(&mut self, x: f32, now: u32) -> Handled {
+    fn handle_drag(&mut self, x: f32, chapters: bool, now: u32) -> Handled {
         if !self.scrub.drag {
             return Handled::No;
         }
         let dur = plx_media::player::duration_ns();
         if dur > 0 {
-            self.scrub.ns = self.pointed_ns(x, dur);
+            self.scrub.ns = self.pointed_ns(x, chapters, dur);
         }
         self.hud.dismissed = false;
         self.hud.extend(now, input::HUD_LINGER_MS);
@@ -1504,14 +1507,32 @@ impl PlayerScreen {
 }
 
 impl PlayerScreen {
-    /// **Where the layout puts the HUD this frame**, as the `HudGeometry` the classic layout
-    /// reports for the row's occupant and the tab count (Info alone, or Info and Chapters). It
-    /// measures, like the draw it describes, so the callers that need several facts of one frame
-    /// ([`Self::record_stops`]) ask once and read it through [`Self::groups_in`] and
+    /// **Where the layout puts the HUD this frame**, as the `HudGeometry` the compiled package reports for
+    /// the row's occupant and the content (`player_hud::geometry::geometry`; classic's while the page holds
+    /// no package). It measures, like the draw it describes, so the callers that need several facts of one
+    /// frame ([`Self::record_stops`]) ask once and read it through [`Self::groups_in`] and
     /// [`Self::place_in`]; the `Focusable` methods ask for their own.
     fn hud_geometry<H: PlayerLike + crate::registry::MetadataLike>(&self, cx: &Cx<'_, H>) -> HudGeometry {
-        let tabs = if plx_appkit::chapters_panel::has_chapters(H::metadata(cx)) { 2 } else { 1 };
-        player_hud::classic::geometry(self.slot, &self.row, tabs, cx.measure)
+        let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+        player_hud::geometry::geometry(self.compiled.as_deref(), self.slot, &self.row, chapters, self.model.paused, cx.measure)
+    }
+
+    /// The facts of the report that do not depend on the row's occupant and need no measurer
+    /// (`player_hud::geometry::frame_geometry`): what a pointer event and the caption draw ask.
+    fn frame_geometry(&self, chapters: bool) -> HudGeometry {
+        player_hud::geometry::frame_geometry(self.compiled.as_deref(), self.slot, chapters, self.model.paused)
+    }
+
+    /// How many stops the row group holds this frame (`player_hud::geometry::row_len`): the package's
+    /// declared row for the discs, the stand-ins' own counts otherwise.
+    fn row_len(&self, chapters: bool) -> usize {
+        player_hud::geometry::row_len(self.compiled.as_deref(), self.slot, chapters, self.model.paused)
+    }
+
+    /// **The caption band the layout occupies** this frame, from the same report as the stops: a value of
+    /// the package, so the caption draws and the libass lift move with the HUD that is up.
+    fn caption_band(&self, chapters: bool) -> plx_media::player::text_style::HudBand {
+        self.frame_geometry(chapters).band()
     }
 
     /// Which of the HUD's three transport groups holds `elem` — the failure row and the repair
@@ -1550,7 +1571,7 @@ impl PlayerScreen {
         });
         // Every item of whatever occupies the row — the Up Next PAIR included, which is two
         // controls the D-pad walks and so two stops (`ControlSlot::item_rect`).
-        let row_len = self.slot.items().max(1) as usize;
+        let row_len = self.row_len(plx_appkit::chapters_panel::has_chapters(H::metadata(cx))).max(1);
         out.push(GroupSpec {
             id: GROUP_ROW,
             kind: GroupKind::Row { wrap: false },
@@ -1648,7 +1669,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(key).then_some(GROUP_FAILURE)
         })
     }
-    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         if self.repair_alert.is_open() {
             let two = self.repair_alert.answers() == plx_ui::decision_alert::Answers::Two;
             let elem = match (key.elem, dir) {
@@ -1660,7 +1681,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         }
         if let Some(index) = player_hud::row_index(key.elem) {
             let forward = match dir { Dir::Left => false, Dir::Right => true, _ => return Step::Edge };
-            if let Some(next) = plx_ui::focus::next_enabled_index(index as usize, self.slot.items() as usize, forward,
+            let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+            if let Some(next) = plx_ui::focus::next_enabled_index(index as usize, self.row_len(chapters), forward,
                 |i| self.slot.enabled(i as i32)) {
                 return Step::Move(FocusKey { entry: self.entry, elem: player_hud::control_elem(next as i32) });
             }
@@ -1776,7 +1798,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
         let subs_lift = self.subs_lift(ps, now);
         // The band the layout occupies, a value from its geometry this frame, not a constant.
-        let band = player_hud::classic::frame_geometry().band();
+        let band = self.caption_band(plx_appkit::chapters_panel::has_chapters(H::metadata(f.cx)));
         self.render.ass.draw(subs_lift, band, &self.model);
         if let Some(message) = self.render.ass.error() {
             plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, f.cx.measure);

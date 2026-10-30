@@ -401,6 +401,17 @@ impl SubtitleBitmaps {
     }
 }
 
+/// **The geometry the audits grade**: the embedded `builtin:classic`, compiled, in its compact Discs state
+/// (the same report the player page places from). The audit has no measurer of its own and none of these
+/// facts needs one, so the compile runs on the shipped advances; it is the same package and the same
+/// numbers the hand-written layout reports (`compiled_classic_matches_the_hand_written_layout`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn audit_geometry() -> geometry::HudGeometry {
+    let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure)
+        .expect("the embedded classic loads");
+    geometry::frame_geometry(Some(&hud.compiled), ControlSlot::Discs(Controls::NONE), false, false)
+}
+
 /// **The transport's outermost drawn chrome, for the overscan audit**
 /// ([`plx_ui::consts::SAFE`]). Private geometry, so the rects are built where they are drawn
 /// rather than restated in the module that grades them.
@@ -412,7 +423,7 @@ impl SubtitleBitmaps {
 /// the audit is about here is the row's left edge and its BOTTOM, and both are font-independent.
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let g = classic::frame_geometry();
+    let g = audit_geometry();
     out.push(("player scrubber", g.playbar));
     out.push(("player control row", g.row));
     out.push(("player bottom tab row", g.tab_row));

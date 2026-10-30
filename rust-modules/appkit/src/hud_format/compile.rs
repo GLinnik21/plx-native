@@ -470,6 +470,8 @@ pub struct CompiledState {
     control_origins: Vec<String>,
     /// `(pointer, rect)` of each `vstack` this state places ([`CompiledState::vstack_rect`])
     vstacks: Vec<(String, Rect)>,
+    /// `(pointer, align)` of each `segment` this state packs in a row ([`CompiledState::segment_align`])
+    segment_aligns: Vec<(String, SegmentAlign)>,
     /// the pointer of the `up_next` object, which owns both stand-ins (the offer and the pill); `""` where the
     /// package places none ([`CompiledState::band_extents`])
     standin_origin: String,
@@ -507,6 +509,34 @@ impl CompiledState {
     /// `vstack` this state places (a `when` removed it, or it lies in a strip card's template).
     pub fn vstack_rect(&self, pointer: &str) -> Option<Rect> {
         self.vstacks.iter().find(|(p, _)| p == pointer).map(|&(_, r)| r)
+    }
+
+    /// **The rect a menu opened from `controls[control]` hangs from** (`docs/hud-plugins.md`, "Menus and other
+    /// HUD popovers"): the opener's REST rect (`ControlRect::rect`, never its popped one, so a focus pop
+    /// never moves a panel), widened across to its SEGMENT's outer edge when the segment's cell is start- or
+    /// end-aligned (`align` defaults to `start`). An end-aligned segment's anchor runs from the opener's
+    /// left edge to the right edge of the segment's last control, a start-aligned one's from the left edge
+    /// of the segment's first control to the opener's right edge, a centred one's is the rest rect itself.
+    /// So the openers that sit together share an edge, and classic, whose one end-aligned segment ends at
+    /// `CTRL_RIGHT`, places both menus at `CTRL_RIGHT - pw` and bottom 764. The ONE derivation: the lint
+    /// (`lint_menus`) and the player screen (which hands it to the menu it mounts) both call it.
+    /// `None` for an index out of range.
+    pub fn menu_anchor(&self, control: usize) -> Option<Rect> {
+        let rest = self.controls.get(control)?.rect;
+        let segment = segment_of(self.control_pointer(control));
+        let extent = self
+            .controls
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| segment_of(self.control_pointer(*i)) == segment)
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (_, c)| (lo.min(c.rect.x), hi.max(c.rect.x + c.rect.w)));
+        Some(widen(rest, self.segment_align(segment), extent))
+    }
+
+    /// The align of the cell holding the segment at `segment` (an RFC 6901 pointer, [`segment_of`]); `Start`
+    /// for a segment a row did not pack (one a `vstack` cell holds), which is the cell default.
+    pub fn segment_align(&self, segment: &str) -> SegmentAlign {
+        self.segment_aligns.iter().find(|(p, _)| p == segment).map_or(SegmentAlign::Start, |&(_, a)| a)
     }
 
     /// The control called `id`.
@@ -840,13 +870,34 @@ const CELL_KINDS: [&str; 12] = [
     "text", "image", "icon", "rule", "rect", "facts", "vstack", "spacer", "playbar", "segment", "strip", "actions",
 ];
 
+/// The pointer of the segment holding the control item at `pointer` (`<segment>/items/<n>`).
+pub fn segment_of(pointer: &str) -> &str {
+    pointer.rsplit_once("/items/").map_or(pointer, |(segment, _)| segment)
+}
+
+/// The anchor of an opener drawn at `rest` in a segment whose controls span `extent` (their left and right
+/// edges): widened toward the segment's OUTER edge only ([`CompiledState::menu_anchor`]).
+pub fn widen(rest: Rect, align: SegmentAlign, extent: (f32, f32)) -> Rect {
+    match align {
+        SegmentAlign::End => Rect::new(rest.x, rest.y, extent.1.max(rest.x + rest.w) - rest.x, rest.h),
+        SegmentAlign::Start => {
+            let left = extent.0.min(rest.x);
+            Rect::new(left, rest.y, rest.x + rest.w - left, rest.h)
+        }
+        SegmentAlign::Center => rest,
+    }
+}
+
 /// The cell's one content key and its object.
 fn content(cell: &Object) -> Option<(&'static str, &Object)> {
     CELL_KINDS.iter().find_map(|&k| cell.get(k).and_then(Val::as_object).map(|o| (k, o)))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Grp {
+/// **Which edge of its band a cell packs against** (`cell.align`, `start` unless the package says
+/// otherwise). A segment's controls pack with their cell, so this is also the edge a menu opened from one
+/// of them is anchored to ([`CompiledState::menu_anchor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentAlign {
     Start,
     Center,
     End,
@@ -883,7 +934,7 @@ impl Size {
 struct CellIn<'p> {
     kind: &'static str,
     o: &'p Object,
-    grp: Grp,
+    grp: SegmentAlign,
     valign: VAlign,
     size: Size,
     before: Option<f32>,
@@ -940,6 +991,8 @@ struct Out {
     control_origins: Vec<String>,
     /// `(pointer, rect)` of each `vstack` placed
     vstacks: Vec<(String, Rect)>,
+    /// `(pointer, align)` of each `segment` a row packs
+    segment_aligns: Vec<(String, SegmentAlign)>,
     /// the rects of the replaced segments
     replaced: Vec<Rect>,
     title: Option<Rect>,
@@ -1378,9 +1431,9 @@ impl<'e, 'p> Env<'e, 'p> {
             kind,
             o,
             grp: match cell.get("align").and_then(Val::as_str) {
-                Some("center") => Grp::Center,
-                Some("end") => Grp::End,
-                _ => Grp::Start,
+                Some("center") => SegmentAlign::Center,
+                Some("end") => SegmentAlign::End,
+                _ => SegmentAlign::Start,
             },
             valign: match cell.get("valign").and_then(Val::as_str) {
                 Some("top") => VAlign::Top,
@@ -1400,9 +1453,9 @@ impl<'e, 'p> Env<'e, 'p> {
     fn pack(&self, row: &[CellIn<'p>], widths: &[f32], gap: f32, boxr: Rect) -> Vec<(f32, f32)> {
         let mut out = vec![(0.0, 0.0); row.len()];
         for (grp, align) in [
-            (Grp::Start, Align::Leading(boxr.x)),
-            (Grp::Center, Align::Centre(boxr.x + boxr.w * 0.5)),
-            (Grp::End, Align::Trailing(boxr.x + boxr.w)),
+            (SegmentAlign::Start, Align::Leading(boxr.x)),
+            (SegmentAlign::Center, Align::Centre(boxr.x + boxr.w * 0.5)),
+            (SegmentAlign::End, Align::Trailing(boxr.x + boxr.w)),
         ] {
             let idx: Vec<usize> = (0..row.len()).filter(|&i| row[i].grp == grp).collect();
             let items: Vec<Item> = idx
@@ -1447,7 +1500,7 @@ impl<'e, 'p> Env<'e, 'p> {
         }
         let mut widths: Vec<f32> = row.iter().map(|c| if let Dim::Px(w) = c.size.w { w } else { 0.0 }).collect();
         let fills = |grp_start: bool| -> Vec<usize> {
-            (0..row.len()).filter(|&i| row[i].size.w == Dim::Fill && (row[i].grp == Grp::Start) == grp_start).collect()
+            (0..row.len()).filter(|&i| row[i].size.w == Dim::Fill && (row[i].grp == SegmentAlign::Start) == grp_start).collect()
         };
 
         // a fill in the centre or the end takes the row's free room, shared equally
@@ -1455,7 +1508,7 @@ impl<'e, 'p> Env<'e, 'p> {
         if !loose.is_empty() {
             let mut packed = 0.0;
             let mut groups = 0;
-            for grp in [Grp::Start, Grp::Center, Grp::End] {
+            for grp in [SegmentAlign::Start, SegmentAlign::Center, SegmentAlign::End] {
                 let items: Vec<Item> = (0..row.len())
                     .filter(|&i| row[i].grp == grp)
                     .map(|i| {
@@ -1481,11 +1534,11 @@ impl<'e, 'p> Env<'e, 'p> {
             let at = self.pack(&row, &widths, gap, boxr);
             let (x, _) = at[f];
             let group_end = (0..row.len())
-                .filter(|&i| row[i].grp == Grp::Start)
+                .filter(|&i| row[i].grp == SegmentAlign::Start)
                 .map(|i| at[i].0 + at[i].1)
                 .fold(x, f32::max);
             let later = (0..row.len())
-                .filter(|&i| row[i].grp != Grp::Start && !(mode.hide && row[i].replaced))
+                .filter(|&i| row[i].grp != SegmentAlign::Start && !(mode.hide && row[i].replaced))
                 .flat_map(|i| self.left_edges(&row[i], at[i].0, at[i].1))
                 .chain(mode.standin_left)
                 .reduce(f32::min);
@@ -1508,6 +1561,9 @@ impl<'e, 'p> Env<'e, 'p> {
                 if mode.hide {
                     continue;
                 }
+            }
+            if cell.kind == "segment" {
+                out.segment_aligns.push((cell.o.pointer.clone(), cell.grp));
             }
             let mark = out.gate.len();
             out.gate.extend(cell.gate.iter().cloned());
@@ -1886,6 +1942,7 @@ impl<'e, 'p> Env<'e, 'p> {
             origins,
             control_origins: out.control_origins,
             vstacks: out.vstacks,
+            segment_aligns: out.segment_aligns,
             standin_origin: up.map_or_else(String::new, |u| u.pointer.clone()),
         }
     }

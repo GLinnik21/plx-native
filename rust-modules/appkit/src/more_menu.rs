@@ -897,13 +897,13 @@ fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
 }
 
 /// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`]) and TALLEST, for the overscan audit
-/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside classic's anchor:
+/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside the anchor of the compiled classic (`player_hud::audit_geometry`):
 /// asked for the whole screen's height it gets the whole room, which is what a list longer than
 /// the room fills (the track menu's audit asks the same).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let placed = place_panel(
-        crate::player_hud::classic::frame_geometry().row,
+        crate::player_hud::audit_geometry().row,
         (plx_ui::table::MENU_MAX_W, plx_ui::consts::SCR_H),
     );
     out.push(("… overflow menu panel", placed.rect));
