@@ -344,6 +344,15 @@ fn only_the_volatile_candidate_gives_until_restart() {
     r.install(&bytes, Source::Address, 1);
     assert!(!r.entry("org.example.hud").until_restart);
 
+    // A later candidate is not volatile for being later: the second persistent directory holds it for good.
+    let mut r = Rig::new();
+    r.refuse.extend([root(0)]);
+    r.refresh();
+    r.install(&bytes, Source::Address, 1);
+    assert!(matches!(r.notices.last(), Some(Notice::Installed { until_restart: false, .. })));
+    assert!(r.files.contains_key(&pack_path(1, Sha::of(&bytes))));
+    assert!(!r.entry("org.example.hud").until_restart);
+
     let mut r = Rig::new();
     r.refuse.extend([root(0), root(1)]);
     r.refresh();
