@@ -174,7 +174,7 @@ impl LocaleContext {
     }
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
-    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Polish, Belarusian and Russian the genitive
+    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, "12 mrt" / "12 maart" in Dutch, and in Polish, Belarusian and Russian the genitive
     /// after the day ("12 marca", "12 сакавіка", "12 марта") with the abbreviated form for medium. Hand-written tables, not
     /// ICU month data, so no name data is compiled in for the shipped languages. The year is
     /// unknown, so 29 February is a valid day; a day the calendar lacks returns `None`.
@@ -196,7 +196,7 @@ impl LocaleContext {
 }
 
 /// Month data shared by yearless captions and full sort dates. Keep the ICU pattern/number
-/// formatter, but do not link its all-locale Gregorian month-name database for these ten tables.
+/// formatter, but do not link its all-locale Gregorian month-name database for these eleven tables.
 fn month_names(language: Language, width: MonthWidth) -> (&'static [&'static str; 12], &'static str) {
     match (language, width) {
         (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),
@@ -219,6 +219,8 @@ fn month_names(language: Language, width: MonthWidth) -> (&'static [&'static str
         (Language::De, MonthWidth::Long) => (&DE_LONG, ". "),
         (Language::Hu, MonthWidth::Medium) => (&HU_MEDIUM, " "),
         (Language::Hu, MonthWidth::Long) => (&HU_LONG, " "),
+        (Language::Nl, MonthWidth::Medium) => (&NL_MEDIUM, " "),
+        (Language::Nl, MonthWidth::Long) => (&NL_LONG, " "),
     }
 }
 
@@ -407,6 +409,13 @@ const DE_MEDIUM: [&str; 12] =
 const DE_LONG: [&str; 12] = [
     "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
     "November", "Dezember",
+];
+/// CLDR `nl` format months: lower case, abbreviated without dots.
+const NL_MEDIUM: [&str; 12] =
+    ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
+const NL_LONG: [&str; 12] = [
+    "januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september",
+    "oktober", "november", "december",
 ];
 /// Reject control bytes and invalid tags before they can become HTTP headers. POSIX suffixes
 /// are only used at this input boundary; callers retain canonical BCP-47 tags.

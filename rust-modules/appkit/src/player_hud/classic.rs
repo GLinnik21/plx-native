@@ -1,13 +1,21 @@
-//! **The classic layout**: its constants (`SB_*`, `BTN_*`, `CTRL_*`), the hit rects, the geometry it
-//! reports ([`frame_geometry`], [`geometry`]) and every draw of the transport: scrim, title, playbar,
-//! control row, bottom tabs, scrub preview and the failure read-out.
+//! **The classic transport's primitives and constants**: the numbers `builtin:classic` is written
+//! against (`SB_*`, `BTN_*`, `CTRL_*`, [`ROW_ANCHOR`]), the draws the renderer ([`super::render`]) calls
+//! (scrim, title, playbar, clocks, the scrub preview), the three the trailer (`screens/src/detail/trailer.rs`)
+//! calls (`draw_scrim`, `draw_title`, `draw_playbar`) and the failure read-out. The bottom tab pills are the
+//! renderer's; this file keeps their label list ([`tab_labels`]) and state ([`hud_tab_state`]).
 //!
-//! Every draw takes `&`[`HudModel`](super::model::HudModel) for the values that used to be read from
-//! process globals in the middle of drawing, and a [`GroupId`] for the focus, so this file names no
-//! player global. The logic it draws ([`super::state`]) and the animation state it reads
-//! ([`super::motion`]) are separate modules; a layout other than this one has to answer the same
-//! [`HudGeometry`](super::geometry::HudGeometry).
-use super::geometry::{HudGeometry, RowAnchor, GROUP_ROW, GROUP_SCRUB, GROUP_TABS, HUD_TABS};
+//! The ARRANGEMENT is not here: which control stands where, and each rect, is what the compiled package
+//! says (`hud_format::compile`, reported through [`super::geometry`]); `builtin:classic` is the embedded
+//! package `fixtures/classic.plxhud.json`. This file holds the primitives it draws with, so a pill is
+//! the width [`stand_in_w`] gives it, the row stands on [`ROW_ANCHOR`], and the trailer's three calls
+//! keep their output.
+//!
+//! A draw takes what it paints and the values it reads as arguments, never a process global (the scrub
+//! preview, the one that needs the frame's playhead and picks, takes the per-frame
+//! [`HudModel`](super::model::HudModel) snapshot), so this file names no player global. The logic it draws
+//! ([`super::state`]) and the animation state it reads ([`super::motion`]) are separate modules.
+use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
+use super::geometry::{RowAnchor, GROUP_SCRUB, GROUP_TABS, HUD_TABS};
 use super::model::HudModel;
 use super::motion::*;
 use super::state::*;
@@ -16,12 +24,9 @@ use plx_machine::machine::{GroupId, Measure};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::theme;
-use plx_ui::widgets::{
-    ControlGround, Spinner, StatusKind, StatusOverlay, TabPill, TransportButton,
-};
+use plx_ui::widgets::{Spinner, StatusKind, StatusOverlay};
 use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
-use std::os::raw::c_int;
 
 /// The HUD widgets draw purely from their own fields and ignore their Env.
 pub(super) fn hud_env() -> Env {
@@ -36,7 +41,7 @@ pub(super) fn hud_env() -> Env {
 pub(crate) const HUD_TITLE_SZ: i32 = 54;
 
 /// the shared playback clock ([`plx_ui::fmt::clock`]) with the HUD's leading '-' for remaining
-pub(super) fn fmt_time(ns: i64, neg: bool) -> String {
+pub(crate) fn fmt_time(ns: i64, neg: bool) -> String {
     let c = plx_ui::fmt::clock(ns / 1_000_000);
     if neg {
         format!("-{c}")
@@ -45,7 +50,7 @@ pub(super) fn fmt_time(ns: i64, neg: bool) -> String {
     }
 }
 
-// ---- HUD geometry (shared by draw_hud + the pointer hit-tests in app.rs) ----
+// ---- the numbers classic's package is written against ----
 // scrubber (and title, and the bottom tab pills) left margin — the app's own, not a second copy of
 // it: this was a literal 90 and so stayed put when `MARGIN_X` moved to the overscan-safe 96
 pub(super) const SB_X: f32 = plx_ui::consts::MARGIN_X;
@@ -57,6 +62,22 @@ pub(super) const SB_H: f32 = 8.0;
 /// The radius of the largest thing the bar draws around the playhead, the focused knob's glow (a 34 px
 /// disc centred on the track). The caption band counts it as part of the bar: `hud_format::compile`.
 pub const KNOB_GLOW_R: f32 = 17.0;
+/// Where the clocks' line stands: its top is this far below the TRACK's top edge. [`draw_playbar_look`] draws
+/// both clocks there, and `hud_format::compile` reserves the line under the bar from it (`clock_line_h`), so
+/// the two cannot drift: a band under the bar starts below the clocks, not on them.
+pub const CLOCK_TOP: f32 = 30.0;
+/// A clock line's height as a multiple of its rung's size: the room the compiler reserves for it. Inter's
+/// ascender plus descender is 1.21 em (`ShippedMeasure::line_h`), and SDL_ttf rounds each to whole pixels, which
+/// is 30 px at the clocks' CAPTION rung (24 px; a pinned test holds the ratio above every measure's line).
+/// It is a ratio and not the `Measure`'s line height on purpose: the reserved room moves every band above the
+/// bar, and classic's rows must not move with the font the host measures with.
+pub const CLOCK_LINE: f32 = 1.25;
+/// The height the playbar reserves for its clocks' line at rung `size`: [`CLOCK_LINE`] of it, rounded up to
+/// whole pixels so no band above the bar lands on a half pixel (LABEL's 32.5 reserves 33, MICRO's 27.5 reserves
+/// 28; CAPTION's 30 is whole already).
+pub fn clock_line_h(size: i32) -> f32 {
+    (size as f32 * CLOCK_LINE).ceil()
+}
 pub(super) const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
 pub(super) const BTN_Y: f32 = HudBand::CLASSIC.controls_top_y;
 
@@ -73,14 +94,19 @@ pub const CTRL_Y: f32 = BTN_Y;
 /// track and `…` panels were aligned to the same 80 (`track_menu`/`more_menu`). All three moved onto
 /// `MARGIN_X` together on 2026-08-23 — they are one right edge by design, so they take one number.
 pub const CTRL_RIGHT: f32 = SCR_W - plx_ui::consts::MARGIN_X;
+/// **Where classic's control row hangs**: [`CTRL_RIGHT`], [`CTRL_Y`] and [`CTRL_H`] as the one value a stand-in
+/// (Skip, Up Next) and a player menu's default anchor land on. The compiled package reports the same
+/// numbers for itself (`HudGeometry::row_anchor`); this is the named source for a reader that holds no
+/// package (a menu mounted without an opener, a pin that grades the menus against the row).
+pub const ROW_ANCHOR: RowAnchor = RowAnchor { right: CTRL_RIGHT, top: CTRL_Y, h: CTRL_H };
 /// width the disc row occupies, the floor for anything replacing it
 pub fn ctrl_row_w() -> f32 {
     disc_row().width()
 }
 
 /// **The baseline disc row as ONE run**: absent Previous/Next followed by the three always-present
-/// discs of [`BTN_S`], `CONTROL_GAP` apart, anchored on [`CTRL_RIGHT`]. [`btn_x`], the row's width
-/// ([`ctrl_row_w`]) and the hit rects all read this one stack.
+/// discs of [`BTN_S`], `CONTROL_GAP` apart, anchored on [`CTRL_RIGHT`]. The row's width ([`ctrl_row_w`])
+/// and its band ([`ctrl_row_hit_rect`]) read this one stack.
 fn disc_row() -> HStack<'static> {
     const DISCS: [Item; BTN_N as usize] = disc_items(false);
     disc_stack(&DISCS)
@@ -91,45 +117,12 @@ fn disc_stack(items: &[Item]) -> HStack<'_> {
     HStack::new(items, plx_ui::widgets::CONTROL_GAP, Align::Trailing(CTRL_RIGHT))
 }
 
-/// The shared control-row slot for anything that STANDS IN for the disc pair: right-aligned to the
-/// discs' own edge, and never narrower than the pair it replaces so the row does not visibly shrink
-/// when it appears. ONE geometry for both stand-ins and for the pointer hit-test.
-///
-/// The measured width is memoised per label, avoiding repeated capability calls and string
-/// preparation for fixed labels in addition to the native font-metric cache.
-pub fn ctrl_slot(row: &mut HudMotion, label: &str, measure: &dyn plx_machine::machine::Measure) -> Rect {
-    let memo = &mut row.widths;
-    let w = match memo.iter().find(|(l, _)| l == label) {
-        Some((_, w)) => *w,
-        None => {
-            let measured = ctrl_slot_measure(label, measure);
-            // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
-            if measured > ctrl_row_w() {
-                memo.push((label.to_string(), measured));
-            }
-            measured
-        }
-    };
-    Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
-}
-
-/// [`ctrl_slot`]'s width without writing the memo — the cached width when the draw has measured
-/// `label`, else the same measurement it would cache.
-pub fn ctrl_slot_w(row: &HudMotion, label: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
-    row.widths.iter().find(|(l, _)| l == label).map_or_else(|| ctrl_slot_measure(label, measure), |(_, w)| *w)
-}
-
-pub(super) fn ctrl_slot_measure(label: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
-    stand_in_w(measure.width_str(label, theme::size::BODY, true), ctrl_row_w())
-}
-
 /// A stand-in pill's side padding: the air between its label and its edge, each side.
 const STAND_IN_PAD_X: f32 = 34.0;
 
 /// **The width of a stand-in pill** (Skip, Next Episode): its label's bold advance and the padding
-/// each side, never narrower than `floor`. Pure, so [`ctrl_slot_measure`] (the draw and the hit
-/// test) and the HUD layout compiler (`hud_format::compile`, which supplies the floor its package's
-/// replaced segment gives) size the pill with the one formula.
+/// each side, never narrower than `floor`. Pure: the HUD layout compiler (`hud_format::compile`, which
+/// supplies the floor its package's replaced segment gives) sizes the pill with this one formula.
 pub fn stand_in_w(advance: f32, floor: f32) -> f32 {
     (advance + 2.0 * STAND_IN_PAD_X).max(floor)
 }
@@ -140,40 +133,6 @@ const fn disc_items(pair: bool) -> [Item; BTN_N as usize] {
     [if pair { Item::new(BTN_S) } else { Item::absent() },
      if pair { Item::new(BTN_S).after(2.0 * plx_ui::widgets::CONTROL_GAP) } else { Item::absent() },
      Item::new(BTN_S), Item::new(BTN_S), Item::new(BTN_S)]
-}
-
-impl Controls {
-    pub fn rect(self, i: i32) -> Option<Rect> {
-        let items = disc_items(self.pair());
-        let (x, w) = disc_stack(&items).span(usize::try_from(i).ok()?)?;
-        Some(Rect::new(x, BTN_Y, w, BTN_S))
-    }
-}
-
-impl ControlSlot {
-    /// **Item `idx` of whatever occupies the row, at the rect it is DRAWN at** — the one
-    /// geometry `PlayerScreen`'s `Focusable::place` answers with, and therefore the rect its stop
-    /// is registered at, for all three occupants and every item of each (`0..items()`). `None`
-    /// past the occupant's last item or at an absent disc. Disabled visible discs still have rects.
-    ///
-    /// Read-only over `row`'s label-width memo ([`ctrl_slot_w`]): `place` is `&self`, and a width
-    /// the draw has not cached yet is measured the same way the draw measures it.
-    pub fn item_rect(self, row: &HudMotion, idx: c_int, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
-        if idx < 0 || idx >= self.items() {
-            return None;
-        }
-        Some(match self {
-            ControlSlot::Discs(controls) => controls.rect(idx)?,
-            ControlSlot::Skip(pr) => {
-                let w = ctrl_slot_w(row, pr.label(), measure);
-                Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
-            }
-            ControlSlot::UpNext(_) => {
-                let l = crate::up_next::layout_peek(row, measure);
-                if idx == crate::up_next::BTN_NEXT { l.next } else { l.credits }
-            }
-        })
-    }
 }
 
 /// The bottom scrim's height — the transport's dark ground, transparent at its top edge and
@@ -198,7 +157,7 @@ pub(super) fn readout_frame() -> Rect {
 /// The load / seek / failure read-out. Drawn EVERY player frame, independent of the transport's
 /// auto-hide, because its visibility is the PLAYBACK STATE and not the HUD timer.
 ///
-/// It used to live inside [`draw_hud`], and two things came of that. Historically: `PlaybackState`
+/// It used to live inside the transport's draw, and two things came of that. Historically: `PlaybackState`
 /// was published every frame and NOTHING read it, so the initial load drew a live-looking transport
 /// at 0:00 / -0:00 and a dead producer drew a fully black screen with no message and no hint that
 /// BACK is the way out. Then, once it did read it: in `Error` — which is deliberately not
@@ -267,61 +226,35 @@ impl FailureReadout {
     }
 }
 
-/// The scrubber's GRAB band — deliberately much taller than the bar itself, because it is a
-/// pointer grab zone. Placed by `PlayerScreen::place` and registered from it as the LOWEST stop, so
-/// every control over the band outranks it (issue #162); it was `scrub_hit`'s own rectangle until phase 12 made
-/// the hit map the one thing that tests it.
-pub(super) fn scrub_hit_rect() -> Rect {
-    Rect::new(SB_X, SCR_H - 270.0, sb_w(), 160.0)
-}
-
 /// **The control row's band at its floor width** ([`ctrl_row_w`]) — the row GROUP's extent only.
 ///
 /// It is not any item's hit region: every item of whatever occupies the row — a disc, the Skip
-/// pill, either Up Next button — is placed and registered at its own drawn rect by
-/// [`ControlSlot::item_rect`]. This one region used to BE the stand-ins' registered stop, which
-/// left *Watch Credits* (drawn left of it) unclickable and made a click on *Next Episode* land on
-/// item 0, *Watch Credits* (issue #162's audit).
-pub(super) fn ctrl_row_hit_rect() -> Rect {
+/// pill, either Up Next button — is placed and registered at its own drawn rect, which the compiled
+/// package reports. This one region used to BE the stand-ins' registered stop, which left *Watch
+/// Credits* (drawn left of it) unclickable and made a click on *Next Episode* land on item 0,
+/// *Watch Credits* (issue #162's audit). It is where a player menu with no opener hangs from.
+pub fn ctrl_row_hit_rect() -> Rect {
     let w = ctrl_row_w();
     Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
 }
 
-/// One bottom tab's rect, matching the left-to-right layout [`draw_hud`] lays the pills out with.
-pub fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
-    let tabs = tab_labels(has_chapters);
-    let items = tab_items(tabs, measure);
-    let (px, pw) = tab_row(&items).span(usize::try_from(idx).ok()?)?;
-    Some(Rect::new(px, tab_y(), pw, BTN_S))
-}
-
 /// The bottom tab pills' labels: Info always, Chapters only when the item has any; `None` is a
 /// tab the row does not carry.
-fn tab_labels(has_chapters: bool) -> [Option<&'static str>; HUD_TABS] {
+pub(super) fn tab_labels(has_chapters: bool) -> [Option<&'static str>; HUD_TABS] {
     [
         Some(plx_platform::i18n::msg::widgets_player_info()),
         has_chapters.then(plx_platform::i18n::msg::widgets_player_chapters),
     ]
 }
 
-/// The tabs' top: BTN_S tall, centred between the play bar (scrubber, at `SB_Y`) and the bottom edge.
-fn tab_y() -> f32 {
-    (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5
-}
-
-/// One item per label, as wide as its pill ([`TabPill::width_measured`]); a tab the row does not
-/// carry is ABSENT. Both the draw and [`tab_hit_rect`] build the row from these, so a pill is drawn
-/// where it is hit.
-fn tab_items(tabs: [Option<&str>; HUD_TABS], measure: &dyn plx_machine::machine::Measure) -> [Item; HUD_TABS] {
-    tabs.map(|l| match l {
-        Some(l) => Item::new(TabPill::width_measured(l, theme::size::BODY, measure)),
-        None => Item::absent(),
-    })
-}
-
-/// The tab pills as ONE run from the scrubber's left edge, `space::SM` apart.
-fn tab_row(items: &[Item; HUD_TABS]) -> HStack<'_> {
-    HStack::new(items, theme::space::SM, Align::Leading(SB_X))
+/// The tab a `toggle_section`'s section is: the index into [`tab_labels`], the tab cursor and the tab
+/// elements. `None` for a section the HUD has no tab for.
+pub(super) fn tab_of_section(section: &str) -> Option<i32> {
+    match section {
+        "info" => Some(0),
+        "chapters" => Some(1),
+        _ => None,
+    }
 }
 
 fn draw_failed_readout(
@@ -340,38 +273,12 @@ fn draw_failed_readout(
     FailureReadout::now(ps).draw(p, focus, measure);
 }
 
-/// x of control button `idx`, left to right: 0 = Subtitles, 1 = Audio, 2 = More.
-///
-/// The row is RIGHT-anchored — the LAST disc's edge is `CTRL_RIGHT` — so adding a button pushes
-/// the existing ones left instead of moving the row's right margin, which is what keeps the discs
-/// and every stand-in (`ctrl_slot`) sharing one edge.
-#[cfg(test)]
-pub(super) fn btn_x(idx: i32) -> f32 {
-    disc_row().span(idx as usize).map_or(CTRL_RIGHT, |(x, _)| x)
-}
-
-/// Which enabled control disc a pointer at (cx,cy) is over, by its stable row index.
-/// Returns stable row indices, skipping disabled controls; geometry is shared with draw_hud.
-///
-/// `slot` is passed in rather than re-derived: while a stand-in owns the row the discs are not on
-/// screen, and a click in that band must not open a track menu the user cannot see.
-pub fn icon_hit(slot: ControlSlot, cx: f32, cy: f32) -> Option<i32> {
-    let ControlSlot::Discs(controls) = slot else { return None };
-    if cy < BTN_Y || cy > BTN_Y + BTN_S {
-        return None;
-    }
-    (0..slot.items()).find(|&idx| {
-        controls.enabled(idx) && controls.rect(idx).is_some_and(|r| cx >= r.x && cx <= r.x + r.w)
-    })
-}
-
-// (`scrub_hit` stood here — the scrub band's own `(cx,cy) -> Option<frac>` predicate, `icon_hit`'s
-// twin for the bar. Restructure phase 12 (PX-PLAYER) retired it: the band is a registered `Stop`
-// now ([`scrub_hit_rect`], the SAME rectangle it tested), so the shared hit map answers "is the
-// pointer on the bar" and the screen asks only "where along it" — `HudGeometry::scrub_frac`, the
-// half that was always x-only. Deleting it is also what makes `ci/check-deps.sh`'s `hittest`
-// gate meaningful rather than merely satisfied: there is no raw hit-tester left for `app/` to
-// call.)
+// (`scrub_hit` stood here, and then `icon_hit` and `tab_hit_rect` beside it: the raw `(cx,cy) -> Option`
+// hit-testers. The bar, the discs and the pills are registered `Stop`s now, at the rects the compiled
+// package reports, so the shared hit map answers "is the pointer on it" and the screen asks only "where
+// along it" — `HudGeometry::scrub_frac`, the half that was always x-only. Having none left is also what
+// makes `ci/check-deps.sh`'s `hittest` gate meaningful rather than merely satisfied: there is no raw
+// hit-tester left for `app/` to call.)
 
 // ---- the rail carries NO marks ------------------------------------------------------------
 // Nothing is drawn on the scrubber but the track, the watched fill and the playhead. Two kinds of
@@ -429,8 +336,14 @@ pub(super) fn hud_tab_state(transport: bool, focus: GroupId, tab: i32, index: i3
 /// The transport's dark ground: transparent at its top edge, `theme::scrim_black(0.86)` at the
 /// panel bottom, [`SCRIM_H`] tall. Drawn under every transport, the player's and the trailer's.
 pub fn draw_scrim(p: Painter) {
+    draw_scrim_at(p, Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H));
+}
+
+/// [`draw_scrim`] over any rect: the compiled package's scrim (`CompiledState::scrim`) is classic's
+/// rect for `builtin:classic`, and a package's own for another.
+pub fn draw_scrim_at(p: Painter, rect: Rect) {
     p.rect(
-        Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H),
+        rect,
         0.0,
         theme::scrim_black(0.0),
         theme::scrim_black(0.86),
@@ -460,10 +373,38 @@ pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char
     p.text(title, SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
 }
 
-/// The player's title is always contained before the control row. While playing it is
-/// ellipsised; while paused the full line glides once to reveal its end, then rests.
-pub(super) fn draw_player_title(
+/// Where the player title's two lines stand: `x` the left edge both start at, and the y each line is
+/// drawn from. `Default` is classic's (`SB_X`, `SCR_H - 312`, `SCR_H - 278`); the renderer builds one from the
+/// compiled title cell and takes classic's values for a line the package does not place.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TitleLook {
+    pub x: f32,
+    pub kicker_y: f32,
+    pub title_y: f32,
+    /// the kicker's size (`text.size` of `title.kicker`); classic's is the caption rung
+    pub kicker_size: i32,
+    /// the title's size (`text.size` of `title.main`); classic's is [`HUD_TITLE_SZ`]
+    pub title_size: i32,
+}
+
+impl Default for TitleLook {
+    fn default() -> Self {
+        Self {
+            x: SB_X,
+            kicker_y: SCR_H - 312.0,
+            title_y: SCR_H - 278.0,
+            kicker_size: theme::size::CAPTION,
+            title_size: HUD_TITLE_SZ,
+        }
+    }
+}
+
+/// **The player's title in the cell a [`TitleLook`] names** (the compiled package's title cell, its text ops' rects). It is always
+/// contained before `right`: while playing it is ellipsised; while paused the full line glides once to reveal its
+/// end, then rests.
+pub(super) fn draw_player_title_at(
     p: Painter,
+    look: TitleLook,
     kicker: Kicker,
     title: *const std::os::raw::c_char,
     right: f32,
@@ -471,16 +412,17 @@ pub(super) fn draw_player_title(
     paused: bool,
     clock: &plx_ui::marquee::Clock,
 ) {
-    let width = (right - SB_X).max(0.0);
-    let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(SB_X, 0.0, width, SCR_H));
+    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size } = look;
+    let width = (right - left).max(0.0);
+    let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(left, 0.0, width, SCR_H));
     let (text, ink, bold) = match kicker {
         Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, true),
         Kicker::Context(text) => (text, theme::TEXT_SECONDARY, false),
     };
     if !text.is_null() {
         let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-        let fitted = measure.fit_line(&label, width, theme::size::CAPTION, bold);
-        p.text(fitted.as_ptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, i32::from(bold));
+        let fitted = measure.fit_line(&label, width, kicker_size, bold);
+        p.text(fitted.as_ptr(), left, kicker_y, kicker_size, ink, 0, i32::from(bold));
     }
     if title.is_null() {
         clock.release();
@@ -488,7 +430,7 @@ pub(super) fn draw_player_title(
     }
     let full = unsafe { std::ffi::CStr::from_ptr(title) };
     let label = full.to_string_lossy();
-    let full_width = measure.width(full, HUD_TITLE_SZ, true);
+    let full_width = measure.width(full, title_size, true);
     if paused && full_width > width {
         // A show's display title can stay the same across episodes; the kicker is
         // part of the visible identity and must restart the reveal when it changes.
@@ -507,31 +449,14 @@ pub(super) fn draw_player_title(
             // an Arabic or Hebrew title's end is on its left: it moves right instead
             let rtl = plx_gfx::text::is_rtl_paragraph(&label);
             let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
-            p.text(title, SB_X + x, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+            p.text(title, left + x, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
             return;
         }
     } else {
         clock.release();
     }
-    let fitted = measure.fit_line(&label, width, HUD_TITLE_SZ, true);
-    p.text(fitted.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
-}
-
-/// Reserve the same geometry used by focus placement, plus focus pop and a reading gap.
-/// Use at least the settled focus scale so moving focus does not make the title breathe; a
-/// spring overshoot still reserves its actual drawn extent. Stand-ins are measured, not guessed.
-pub(crate) fn title_right(slot: ControlSlot, row: &HudMotion, measure: &dyn Measure) -> f32 {
-    let mut left = CTRL_RIGHT;
-    for i in 0..slot.items() {
-        if let Some(rect) = slot.item_rect(row, i, measure) {
-            left = left.min(rect.scaled(row.scale(i).max(plx_ui::widgets::CTRL_FOCUS_SCALE)).x);
-        }
-    }
-    if matches!(slot, ControlSlot::UpNext(_)) {
-        let layout = crate::up_next::layout_peek(row, measure);
-        left = left.min(layout.still.x).min(layout.caption.x);
-    }
-    (left - theme::space::MD).max(SB_X)
+    let fitted = measure.fit_line(&label, width, title_size, true);
+    p.text(fitted.as_ptr(), left, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
 }
 
 /// How the playhead is drawn — see [`draw_playbar`].
@@ -570,7 +495,7 @@ pub struct Playbar {
 impl Playbar {
     /// The player route's bar: the live scrub preview and seek target over the published
     /// playhead, the knob from the HUD's own focus ring, and the four-state read-out.
-    fn live(
+    pub(super) fn live(
         model: &HudModel,
         busy: Busy,
         focus: GroupId,
@@ -607,17 +532,54 @@ impl Playbar {
     }
 }
 
+/// What a playbar looks like where a package places it: the track's rect, the fill and track inks, the
+/// clocks' size, and the knob, clock and mark options. `Default` is classic's (`SB_*`, `TEXT_PRIMARY`, `RAIL_TRACK`, `CAPTION`), so
+/// [`draw_playbar`] is [`draw_playbar_look`] over it and the trailer's frame cannot move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaybarLook {
+    pub track: Rect,
+    pub fill: [f32; 4],
+    pub track_ink: [f32; 4],
+    pub clock_size: i32,
+    /// `tick`: a thin tick at rest. `always`: the held knob at rest too.
+    pub knob: KnobMode,
+    /// `follow_head`: the elapsed clock under the playhead. `ends`: at the bar's start, with the
+    /// remaining clock at its end.
+    pub clocks: ClockMode,
+    /// `after_elapsed`: the state glyph beside the elapsed clock. `busy_only`: the spinner alone.
+    pub mark: MarkMode,
+}
+
+impl Default for PlaybarLook {
+    fn default() -> Self {
+        Self {
+            track: Rect::new(SB_X, SB_Y, sb_w(), SB_H),
+            fill: theme::TEXT_PRIMARY,
+            track_ink: theme::RAIL_TRACK,
+            clock_size: theme::size::CAPTION,
+            knob: KnobMode::Tick,
+            clocks: ClockMode::FollowHead,
+            mark: MarkMode::AfterElapsed,
+        }
+    }
+}
+
 /// The playbar: scrubber, playhead knob, elapsed/remaining clocks and the state read-out. The
 /// player HUD and the detail page's full-trailer transport both draw it, so the two cannot drift.
 pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine::Measure) {
+    draw_playbar_look(p, bar, PlaybarLook::default(), measure);
+}
+
+/// [`draw_playbar`] over a [`PlaybarLook`]: the compiled package's bar (`DrawOp::Playbar`).
+pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &dyn plx_machine::machine::Measure) {
     let e = hud_env();
-    let white = theme::TEXT_PRIMARY;
+    let white = look.fill;
     let dim = theme::TEXT_SECONDARY;
-    let track = theme::RAIL_TRACK;
-    let sx = SB_X;
-    let sw = sb_w();
-    let sy = SB_Y;
-    let sh = SB_H;
+    let track = look.track_ink;
+    let sx = look.track.x;
+    let sw = look.track.w;
+    let sy = look.track.y;
+    let sh = look.track.h;
     let dispos = bar.pos_ns;
     let dur = bar.dur_ns;
     let now = bar.now;
@@ -653,14 +615,8 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
             white,
             0.0,
         );
-    } else if bar.knob == Knob::Held {
-        p.rect(
-            Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0),
-            9.0,
-            white,
-            white,
-            0.0,
-        );
+    } else if bar.knob == Knob::Held || look.knob == KnobMode::Always {
+        p.rect(Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0), 9.0, white, white, 0.0);
     } else {
         p.rect(
             Rect::new(hx - 1.5, sy - 4.0, 3.0, sh + 8.0),
@@ -673,16 +629,19 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
 
     // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
     // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
-    let ty = sy + 30.0;
+    let ty = sy + CLOCK_TOP;
     // A grown knob clock keeps its BASELINE, so it grows upward and never into the remaining clock's
     // line. It is a CROSSFADE of two ladder rungs (the resting CAPTION and the one above it), each
     // laid out at its own size, never a tweened size or a scaled texture; the extents the rest of
     // the line clears are the union of the faces drawn.
     let elapsed = fmt_time(dispos, false);
+    // `ends` seats the elapsed clock at the bar's start: centring it on the bar's left edge lets the
+    // clamp inside `draw_clock` put its left edge there.
+    let clock_x = if look.clocks == ClockMode::Ends { sx } else { hx };
     let (mut el_l, mut el_r) = (f32::INFINITY, f32::NEG_INFINITY);
-    for (sz, face_a) in crate::scrub_preview::clock_faces(theme::size::CAPTION, bar.clock_grow).into_iter().flatten() {
-        let ety = plx_gfx::text::baseline_y(sz, 1, theme::size::CAPTION, 1, ty);
-        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, hx, ety, sz, white, sx, sx + sw, measure);
+    for (sz, face_a) in crate::scrub_preview::clock_faces(look.clock_size, bar.clock_grow).into_iter().flatten() {
+        let ety = plx_gfx::text::baseline_y(sz, 1, look.clock_size, 1, ty);
+        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, clock_x, ety, sz, white, sx, sx + sw, measure);
         el_l = el_l.min(l);
         el_r = el_r.max(r);
     }
@@ -700,12 +659,12 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
         .chars()
         .map(|c| if c.is_ascii_digit() { '0' } else { c })
         .collect();
-    let rem_w = measure.width_str(&rem_tmpl, theme::size::CAPTION, true);
+    let rem_w = measure.width_str(&rem_tmpl, look.clock_size, true);
     let rem_l = sx + sw - rem_w;
     let rem_shown = el_r + 20.0 < rem_l;
     if rem_shown {
         if let Ok(cs) = CString::new(rem.as_str()) {
-            p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
+            p.text(cs.as_ptr(), sx + sw, ty, look.clock_size, dim, 2, 0);
         }
     }
     // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by
@@ -716,7 +675,10 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
     // centred read-out was already showing, for the whole of every load AND every seek. Centered on
     // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
     // label / screen edge.
-    let mark = bar.mark;
+    let mark = match look.mark {
+        MarkMode::BusyOnly if bar.mark != TransportMark::Working => TransportMark::None,
+        _ => bar.mark,
+    };
     if mark != TransportMark::None {
         // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
         // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two
@@ -744,7 +706,7 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
             TransportMark::Working | TransportMark::None => None,
         };
         let ink = glyph.map_or((0.0, 1.0), plx_ui::icons::ink_x);
-        let icy = ty + plx_gfx::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
+        let icy = ty + plx_gfx::text::text_height(look.clock_size, 1) * 0.5; // vertical center of the clock line
                                                                                 // scaled so every member of the family lands the SAME height of ink in this one box
         let bs = glyph.map_or(isz, |g| {
             isz * plx_ui::icons::band(plx_ui::icons::Icon::Pause)
@@ -777,172 +739,6 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
     }
 }
 
-/// The transport HUD, composed from retui widgets through a root `Painter`.
-/// `model`: the frame's snapshot of every global the draw reads ([`HudModel`]); `ps` is read only for the
-/// route's strings and the scrub preview's part. `focus`: [`GROUP_SCRUB`], [`GROUP_ROW`] (the right control row) or
-/// [`GROUP_TABS`] (bottom tabs). `btn` (0..1) / `tab` (0..1) are the
-/// focused item within their row (only meaningful when `focus` selects that row). `now` drives the
-/// loading spinner's rotation. `transport`: draw the scrubber/title/buttons/clocks; pass false for
-/// Info mode, where only the scrim + bottom tabs render and the Info card fills the middle.
-/// `busy`: the caller's single resolve of who owns the working signal — see [`busy_surface`]; the
-/// transport draws its inline spinner only when it is [`Busy::Transport`], and the centred read-out
-/// is [`draw_readout`]'s, drawn by the caller AFTER this.
-pub fn draw_hud(
-    ps: &plx_media::route::PlaybackSession,
-    model: &HudModel,
-    row: &mut HudMotion,
-    up: &crate::up_next::Countdown,
-    slot: ControlSlot,
-    busy: Busy,
-    focus: GroupId,
-    btn: i32,
-    tab: i32,
-    now: u32,
-    transport: bool,
-    measure: &dyn plx_machine::machine::Measure,
-    meta: plx_data::metadata::MetadataView<'_>,
-) {
-    // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,
-    // which cannot coexist with one but must not be the arm that decides so. `Player Screen.dc.html`
-    // sets `hudDisplay:none` AND `tabsDisplay:none` on the failed variant, and its read-out block
-    // says why in one line: "the transport is not drawn: with no picture and no position a
-    // live-looking scrubber at 0:00 is the historical bug this read-out exists to end."
-    //
-    // Without this the bug was only half-fixed. `Error` is not `is_busy()`, so it never pins the
-    // HUD — but it does not HIDE it either, so for the ~4.5 s of `app.rs`'s linger after entry the
-    // scrubber, clocks and tabs drew live at 0:00 UNDER the read-out, and only then went away. The
-    // read-out itself already outlives the linger (`draw_readout` is not transport chrome), so this
-    // is the missing half of that same rule rather than a new one.
-    //
-    // Gated on the resolved `busy` and not on `player::state()`: [`busy_surface`] is the ONE place
-    // the surfaces are divided, and re-reading the state here is exactly the second derivation its
-    // doc exists to forbid. Deliberately NOT gated on `transport` — the Info card / Chapters strip
-    // pass false and would otherwise put the bottom scrim + tabs back under a failure.
-    if readout_owns_frame(busy) {
-        row.reset_title();
-        return;
-    }
-    let p = Painter::root();
-    let e = hud_env();
-
-    draw_scrim(p);
-
-    // While a scrub is live the title block, the control row and the tabs fade away so the card has
-    // the room (and nothing hovers under it); the bar, the knob and both clocks stay. The same
-    // alpha restores them after the scrub — see `scrub_preview::Motion`.
-    let chrome_a = row.preview.motion.chrome_alpha(now);
-    let chrome = chrome_a > 0.004;
-    let pc = p.alpha(chrome_a);
-    if !transport || !chrome {
-        row.reset_title();
-    }
-
-    if transport {
-        // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
-        // SHOW title; for a movie (or any extra, trailers included), the route ctxline over the movie
-        // title. (Apple-TV layout.) Gated on `is_real_episode`, not `is_episode` — a show's trailer
-        // has `is_episode == true` (it still labels "Go to Show" elsewhere) but no real S#/E# address,
-        // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
-        // instead of a fabricated `S0 · E0` kicker.
-        if chrome {
-            let right = title_right(slot, row, measure);
-            let paused = model.paused;
-            if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
-                // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
-                // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
-                // caption already read it, and the whole point is that all three say the same thing).
-                let kicker = CString::new(plx_ui::fmt::episode_kicker(
-                    n.season,
-                    n.index,
-                    &n.ep_title,
-                ))
-                .unwrap_or_default();
-                // `if let Ok`, not `.unwrap_or_default()`: before this function was factored out, an
-                // interior-NUL title (the one CString::new can fail on) simply drew nothing — the
-                // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
-                // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
-                if let Ok(title) = CString::new(n.title.clone()) {
-                    draw_player_title(pc, Kicker::Episode(kicker.as_ptr()), title.as_ptr(),
-                        right, measure, paused, &row.title_clock);
-                }
-            } else {
-                draw_player_title(
-                    pc,
-                    Kicker::Context(plx_media::route::ctxline_cptr(ps)),
-                    plx_media::route::title_cptr(ps),
-                    right, measure, paused, &row.title_clock,
-                );
-            }
-
-            // The right control row, from the slot the CALLER resolved — so what is drawn and what a
-            // keypress activates are the same value, not two derivations of it.
-            match slot {
-                ControlSlot::UpNext(_) => {
-                    crate::up_next::draw(ps, row, up, pc, focus == GROUP_ROW, btn, now, measure);
-                }
-                ControlSlot::Skip(pr) => {
-                    crate::skip_pill::draw(row, pc, pr, focus == GROUP_ROW, measure);
-                }
-                ControlSlot::Discs(controls) => {
-                    for i in 0..BTN_N {
-                        let Some(rect) = controls.rect(i) else { continue };
-                        TransportButton::new(i, rect)
-                            .icon(controls.icon(i))
-                            .enabled(controls.enabled(i))
-                            .focused(focus == GROUP_ROW && btn == i)
-                            .ground(ControlGround::Unkeyed)
-                            .scale(row.scale(i))
-                            .draw(&e, pc);
-                    }
-                }
-            }
-        }
-
-        let mut bar = Playbar::live(model, busy, focus, row.since_play_ms(now), now);
-        bar.clock_grow = row.preview.motion.clock_grow(now);
-        // a cancelled scrub's knob returns to the playhead rather than jumping to it
-        bar.pos_ns = row.spring.apply(bar.pos_ns, now);
-        draw_playbar(p, bar, measure);
-        // last, so the still floats over the title block and the control row as well
-        draw_scrub_preview(p, ps, model, row, bar);
-    } // end `if transport`
-
-    // bottom tabs as pills — Chapters only appears when the item actually has chapters
-    draw_tabs(&e, pc, crate::chapters_panel::has_chapters(meta), chrome, |i| hud_tab_state(transport, focus, tab, i), measure);
-}
-
-/// The bottom tab pills: ONE run from the scrubber's left edge ([`tab_row`]), the same one
-/// [`tab_hit_rect`] answers from. `state(i)` is tab `i`'s `(focused, selected)`; `chrome` false
-/// draws none (and measures none: a replay answers only the keys it recorded).
-pub(super) fn draw_tabs(
-    e: &Env,
-    pc: Painter,
-    has_chapters: bool,
-    chrome: bool,
-    state: impl Fn(i32) -> (bool, bool),
-    measure: &dyn plx_machine::machine::Measure,
-) {
-    let tabs = tab_labels(has_chapters);
-    // tabs match the transport control buttons' height (BTN_S), centred vertically between the
-    // play bar (scrubber, at SB_Y) and the bottom edge of the screen
-    let ph = BTN_S; // = 64, same as the Subtitles/Audio buttons
-    let py = tab_y();
-    let items = if chrome { tab_items(tabs, measure) } else { [Item::absent(); HUD_TABS] };
-    for placed in tab_row(&items).placed() {
-        let (px, pw, i) = (placed.x, placed.w, placed.i);
-        let (focused, selected) = state(i as i32);
-        if let Some(Ok(cs)) = tabs[i].map(CString::new) {
-            TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph))
-                .focused(focused)
-                .selected(selected)
-                // Same row band, same ramp, same ground as the transport discs — everything the
-                // HUD draws stands on the video plane (`ControlGround`).
-                .ground(ControlGround::Unkeyed)
-                .draw(e, pc);
-        }
-    }
-}
-
 /// The bar's x for a position `pos_ns` of `dur_ns`, clamped to the bar's ends.
 fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
     SB_X + (sb_w() as f64 * (pos_ns as f64 / dur_ns.max(1) as f64).clamp(0.0, 1.0)) as f32
@@ -951,7 +747,7 @@ fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
 /// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
 /// at the knob's position, floated above the knob; after it, the same still fading out. Draws
 /// nothing for a part with no BIF index, and nothing until the first still lands.
-fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
+pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
     use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, still_path, Look, REQ_H, REQ_W};
     let part = plx_media::route::cur_part_id(ps);
     let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw();
@@ -991,44 +787,4 @@ fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model:
     let rest = card_rect(sh.knob_x, SB_X, sb_w(), SB_Y, w);
     let r = scaled_about(rest, sh.knob_x, SB_Y + SB_H * 0.5, sh.scale);
     draw(p.alpha(sh.alpha), r, tex, tw, th, prev);
-}
-
-/// **The classic layout's slot-independent geometry**: the rects `scrub_hit_rect`, the playbar, the
-/// control row, its anchor and the tab / title origins, from the constants this file draws with. It
-/// measures nothing, so it is safe anywhere (`overscan_rects`, the stand-ins' layout). `items` and
-/// `tabs` are left `None`; [`geometry`] fills them.
-pub fn frame_geometry() -> HudGeometry {
-    let row_anchor = RowAnchor { right: CTRL_RIGHT, top: CTRL_Y, h: CTRL_H };
-    HudGeometry {
-        grab: scrub_hit_rect(),
-        playbar: Rect::new(SB_X, SB_Y, sb_w(), SB_H),
-        row: ctrl_row_hit_rect(),
-        row_anchor,
-        items: [None; BTN_N as usize],
-        tab_row: Rect::new(SB_X, tab_y(), 0.0, BTN_S),
-        title: Rect::new(SB_X, SCR_H - 312.0, 0.0, 0.0),
-        tabs: [None; HUD_TABS],
-        // the compact row's top: the highest interactive extent, whichever slot occupies the row,
-        // because the Skip and Up Next stand-ins land on `row_anchor` exactly
-        band: HudBand::from_controls_top(row_anchor.top),
-    }
-}
-
-/// **The whole of the classic geometry for one frame**: [`frame_geometry`] plus item `i` of whatever
-/// occupies the row at the rect it is DRAWN at ([`ControlSlot::item_rect`]) and each of the `tabs`
-/// bottom pills ([`tab_hit_rect`]; two tabs means the item has chapters). It MEASURES, like the
-/// draw it describes (the Skip pill, the Up Next pair and the pills are as wide as their labels), so
-/// it is called where the screen already measures for the same frame: `Focusable::place` and
-/// the pointer stops.
-pub fn geometry(slot: ControlSlot, motion: &HudMotion, tabs: usize, measure: &dyn Measure) -> HudGeometry {
-    let mut g = frame_geometry();
-    for i in 0..slot.items() {
-        if let Some(cell) = g.items.get_mut(i as usize) {
-            *cell = slot.item_rect(motion, i, measure);
-        }
-    }
-    for i in 0..tabs.min(HUD_TABS) {
-        g.tabs[i] = tab_hit_rect(i as i32, tabs > 1, measure);
-    }
-    g
 }

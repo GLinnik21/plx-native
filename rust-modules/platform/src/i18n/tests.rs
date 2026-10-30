@@ -92,7 +92,7 @@ fn locale_resolution_separates_language_from_formatting() {
     let hu = LocaleContext::resolve(Preference::Hu, None, None, None, None);
     assert_eq!(hu.format_locale(), "hu-HU");
     assert_eq!(hu.decimal(45, 1), "4,5");
-    for tag in ["nl-NL", "be-Latn", "fr-Cyrl", "it-Cyrl", "de-Cyrl", "hu-Cyrl", "garbage\r\nheader", "C"] {
+    for tag in ["sv-SE", "be-Latn", "fr-Cyrl", "it-Cyrl", "de-Cyrl", "hu-Cyrl", "garbage\r\nheader", "C"] {
         assert_eq!(
             LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
             Language::En
@@ -780,4 +780,49 @@ fn numeric_dates_match_icu_without_month_name_data() {
             );
         }
     }
+}
+
+#[test]
+fn dutch_month_day_captions_cover_every_month_at_both_widths() {
+    const MEDIUM: [&str; 12] =
+        ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
+    const LONG: [&str; 12] = [
+        "januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september",
+        "oktober", "november", "december",
+    ];
+    let captions = month_captions(Preference::Nl);
+    for (i, (medium, long)) in captions.iter().enumerate() {
+        assert_eq!(medium, &format!("12 {}", MEDIUM[i]));
+        assert_eq!(long, &format!("12 {}", LONG[i]));
+    }
+    assert_eq!(captions[2], ("12 mrt".to_string(), "12 maart".to_string()));
+    let cx = LocaleContext::resolve(Preference::Nl, None, None, None, None);
+    assert_eq!(cx.month_day(2, 29, MonthWidth::Long).as_deref(), Some("29 februari"));
+    assert!(cx.month_day(2, 30, MonthWidth::Long).is_none());
+}
+
+#[test]
+fn dutch_catalog_counts_follow_dutch_plurals() {
+    let nl = LocaleContext::resolve(Preference::Nl, None, None, None, None);
+    for (count, expected, category) in [
+        (0, "0 afleveringen", PluralCategory::Other),
+        (1, "1 aflevering", PluralCategory::One),
+        (2, "2 afleveringen", PluralCategory::Other),
+        (21, "21 afleveringen", PluralCategory::Other),
+    ] {
+        assert_eq!(nl.plural(count), category);
+        assert_eq!(msg::browse_detail_episodes_in(&nl, count), expected);
+    }
+}
+
+#[test]
+fn dutch_system_locale_resolves_with_regional_formatting() {
+    for tag in ["nl", "nl-NL", "nl_NL.UTF-8", "nl-BE"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::Nl, "{tag}");
+        assert_eq!(cx.preference(), Preference::System);
+    }
+    let nl = LocaleContext::resolve(Preference::Nl, None, None, None, None);
+    assert_eq!(nl.format_locale(), "nl-NL");
+    assert_eq!(nl.decimal(45, 1), "4,5");
 }

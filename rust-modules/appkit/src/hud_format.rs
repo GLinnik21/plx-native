@@ -29,6 +29,7 @@
 //! * the version gate: `/format`;
 //! * an SVG asset: the asset string's pointer, `/assets/<id>`.
 
+pub mod clocks; // the playbar's two clocks as app text: their widest strings and the rects the layout and the lint see
 pub mod compile; // `compile`: a parsed package laid out in every reachable state: the rects the player reads and the draw list (docs/hud-plugins.md, "Architecture")
 pub mod lint; // `lint`: the whole pipeline over a package's text, per language: parse, reach, compile, then the geometric checks below
 mod lint_band; // I6: the caption band respects the player's minimum controls top
@@ -46,6 +47,11 @@ pub mod svg_subset;
 pub mod validate; // the package-level invariants no geometry is needed for (I3, I9, I11)
 
 pub use reach::{check, Checked, Fold, Slot};
+
+/// **`builtin:classic`, as the bytes the app ships**: the one place the package is embedded
+/// (`include_str!`). The player compiles exactly these bytes ([`crate::player_hud::loaded`]), the
+/// tests parse exactly these bytes, and `--hud-export builtin:classic` prints exactly these bytes.
+pub const CLASSIC_PACKAGE: &str = include_str!("hud_format/fixtures/classic.plxhud.json");
 
 #[cfg(test)]
 mod tests; // the corpus of valid and invalid packages, the seeded mutation tests and the table-vs-parser drift test

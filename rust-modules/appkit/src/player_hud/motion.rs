@@ -104,7 +104,16 @@ impl ClockWarm {
 /// — it is drawn entirely from the caller's arguments — so this and the resume clock beside it are
 /// the whole of the route's retained motion state, and phase 9 gave them the one owner the rest of
 /// the route already has.
-pub type RowPop = plx_ui::widgets::CtlPop<{ BTN_N as usize }>;
+pub type RowPop = plx_ui::widgets::CtlPop<{ super::geometry::MAX_ROW_ITEMS }>;
+
+/// How many items of the row can pop for `slot`: the discs of a package are as many as the format lets one
+/// row hold, a stand-in has its own count. (A stale cursor left by a wider occupant pops nothing.)
+fn row_pops(slot: ControlSlot) -> usize {
+    match slot {
+        ControlSlot::Discs(_) => super::geometry::MAX_ROW_ITEMS,
+        other => other.items().max(0) as usize,
+    }
+}
 
 /// **Everything the transport row remembers between frames**: the control row's per-item focus pop
 /// and the paused→playing edge the state read-out's `Play` mark is timed from.
@@ -117,14 +126,6 @@ pub struct HudMotion {
     pub(super) pop: RowPop,
     /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
     pub(super) title_clock: plx_ui::marquee::Clock,
-    /// **The measured width of every control-row stand-in label seen so far** — a RENDER memo, the
-    /// one half of this struct that is not logical state.
-    ///
-    /// Native font metrics share a cache; this local memo also avoids repeated capability calls
-    /// and string preparation for the fixed control labels. It rides here rather than in a struct of its own
-    /// because `ctrl_slot` is reached from the same three places the springs are — `draw_hud`,
-    /// `up_next` and `skip_pill` — and one borrow through those paths is one borrow.
-    pub(super) widths: Vec<(String, f32)>,
     /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
     /// [`TransportMark::Play`]. `None` until this session has been resumed at least once.
     pub(super) play_at: Option<u32>,
@@ -133,8 +134,8 @@ pub struct HudMotion {
     /// without this a session that ended paused would hand the next one a spurious resume edge on
     /// its first frame and flash `Play` over a start nobody pressed play for.
     pub(super) pause_seen: Option<bool>,
-    /// **The scrub preview's memo** — a RENDER memo like `widths`: which BIF still the draw can
-    /// show and which one is in flight. Stepped where that art is probed, in [`draw_hud`]; see
+    /// **The scrub preview's memo** — a RENDER memo: which BIF still the draw can
+    /// show and which one is in flight. Stepped where that art is probed, in the draw ([`super::render::draw`]); see
     /// [`crate::scrub_preview`].
     pub(super) preview: crate::scrub_preview::ScrubPreview,
     /// The knob's return to the playhead when a scrub is cancelled ([`crate::knob_spring`]).
@@ -152,7 +153,6 @@ impl HudMotion {
         Self {
             pop: RowPop::new(),
             title_clock: plx_ui::marquee::Clock::new(),
-            widths: Vec::new(),
             play_at: None,
             pause_seen: None,
             preview: crate::scrub_preview::ScrubPreview::new(),
@@ -163,7 +163,7 @@ impl HudMotion {
     /// Step the control row's focus pop AND the resume clock — once per FRAME, from the player
     /// instance's `Tick`.
     ///
-    /// **Not from [`draw_hud`]**, though that is where every other number this row draws comes
+    /// **Not from [`super::render::draw`]**, though that is where every other number this row draws comes
     /// from: a spring advanced inside a draw advances once per DRAW, and this row is not drawn on
     /// every frame of the route (a failure read-out owns the frame, the Info card and the Chapters
     /// strip take the transport away). The pop would then run at a rate that depended on which
@@ -187,7 +187,7 @@ impl HudMotion {
         let f = (focus == GROUP_ROW)
             .then(|| usize::try_from(btn).ok())
             .flatten()
-            .filter(|&i| i < slot.items().max(0) as usize);
+            .filter(|&i| i < row_pops(slot));
         self.pop.step(f, dt);
     }
 
