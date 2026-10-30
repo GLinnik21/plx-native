@@ -290,6 +290,15 @@ fn details(value: &Value, keys: &[&str]) -> String {
     parts.join(" ")
 }
 
+/// The position of a `currentTime` event, in either shape a firmware may send: a bare number
+/// (`{"currentTime":123}`, what uMediaClient reads) or the nested object umediaserver documents
+/// (`{"currentTime":{"currentTime":123,"mediaId":"_m1"}}`). Only the number is read; nothing else
+/// of the object is.
+fn current_time_of(value: &Value) -> Option<i64> {
+    let number = |v: &Value| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64));
+    number(value).or_else(|| value.as_object().and_then(|inner| inner.get("currentTime")).and_then(number))
+}
+
 /// The keys of a message that are not events: how a reply is told from an unknown event.
 const PLAIN_KEYS: [&str; 6] = ["returnValue", "mediaId", "subscribed", "subscribe", "errorCode", "errorText"];
 
@@ -308,7 +317,7 @@ pub fn parse_event(payload: &str) -> Message {
         .and_then(Value::as_str)
         .or_else(|| object.get("error").and_then(Value::as_str))
         .map(scrub_text);
-    message.current_time = object.get("currentTime").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)));
+    message.current_time = object.get("currentTime").and_then(current_time_of);
     for (key, ev) in EVENT_KEYS {
         let Some(value) = object.get(key) else { continue };
         if matches!(value, Value::Null | Value::Bool(false)) {
@@ -569,6 +578,8 @@ pub struct UriProbe {
     settled: Option<Settle>,
     last_time: Option<i64>,
     time_logged_ms: Option<u64>,
+    /// When a `currentTime` the probe could not read was first logged; it is logged once.
+    time_unparsed_ms: Option<u64>,
     placed: Option<(u32, u32)>,
     facts: Facts,
 }
@@ -594,6 +605,7 @@ impl UriProbe {
             settled: None,
             last_time: None,
             time_logged_ms: None,
+            time_unparsed_ms: None,
             placed: None,
             facts: Facts::default(),
         }
@@ -856,7 +868,15 @@ impl UriProbe {
     }
 
     fn current_time(&mut self, value: Option<i64>, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        let Some(value) = value else { return };
+        let Some(value) = value else {
+            // Reported, but in neither known shape: say so once, with no payload. It is no report
+            // of a position, so it moves nothing and arms no timeout.
+            if self.time_unparsed_ms.is_none() {
+                self.time_unparsed_ms = Some(now_ms);
+                fx.push(self.line(now_ms, "ev=currentTime (unparsed)"));
+            }
+            return;
+        };
         let moved = self.last_time.is_some_and(|last| last != value);
         self.last_time = Some(value);
         if moved {
@@ -1200,6 +1220,44 @@ mod tests {
         assert!(summary_of(&rig.feed(UriEvent::Back)).contains("currentTime_advanced=yes"));
     }
 
+    /// umediaserver documents the event as `{"currentTime":{"currentTime":n,"mediaId":s}}`; its
+    /// client reads a bare number. The probe reads either.
+    #[test]
+    fn a_nested_current_time_is_read_like_the_bare_number() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.playing();
+        let time = |rig: &mut Rig, ms: u64, value: i64| {
+            let payload = format!(r#"{{"currentTime":{{"currentTime":{value},"mediaId":"_m1"}}}}"#);
+            rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload, ok: true }))
+        };
+        assert!(has_log(&time(&mut rig, 10, 40), "ev=currentTime value=40 (first report)"));
+        let fx = time(&mut rig, 600, 1040);
+        assert!(has_log(&fx, "ev=currentTime value=1040") && !has_log(&fx, "(unparsed)"));
+        assert!(summary_of(&rig.feed(UriEvent::Back)).contains("currentTime_advanced=yes"));
+    }
+
+    /// A `currentTime` the probe cannot read in either shape says so once, so a log can tell
+    /// "never reported" from "reported in a shape we do not know"; it moves nothing and arms no
+    /// timeout.
+    #[test]
+    fn a_current_time_in_no_known_shape_logs_one_line_and_arms_nothing() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.playing();
+        let odd = |rig: &mut Rig, ms: u64, payload: &str| rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload: payload.to_owned(), ok: true }));
+        let fx = odd(&mut rig, 10, r#"{"currentTime":{"mediaId":"_m1"}}"#);
+        assert_eq!(logs(&fx).len(), 1);
+        assert!(has_log(&fx, "ev=currentTime (unparsed)"));
+        assert!(!has_log(&fx, "_m1"), "no payload in the line");
+        assert!(odd(&mut rig, 10, r#"{"currentTime":"soon"}"#).is_empty(), "a second one logs nothing");
+        assert!(odd(&mut rig, 10, r#"{"currentTime":{"currentTime":{"currentTime":5}}}"#).is_empty());
+        assert!(rig.tick(10 * FROZEN_TIME_MS).is_empty(), "it does not arm the frozen timeout");
+        assert!(!rig.probe.is_done());
+        // a readable report afterwards is still announced and still counts
+        assert!(has_log(&odd(&mut rig, 10, r#"{"currentTime":0}"#), "(first report)"));
+        assert!(has_log(&odd(&mut rig, 10, r#"{"currentTime":50}"#), "ev=currentTime value=50"));
+        assert!(summary_of(&rig.feed(UriEvent::Back)).contains("currentTime_advanced=yes"));
+    }
+
     // ------------------------------------------------------------------ the register ladder
 
     #[test]
@@ -1311,6 +1369,22 @@ mod tests {
         rig.playing();
         assert!(rig.tick(10 * FROZEN_TIME_MS).is_empty());
         assert!(!rig.probe.is_done());
+    }
+
+    #[test]
+    fn a_frozen_nested_current_time_ends_the_session_like_a_bare_one() {
+        let time = |rig: &mut Rig, ms: u64, value: i64| {
+            let payload = format!(r#"{{"currentTime":{{"currentTime":{value},"mediaId":"_m1"}}}}"#);
+            rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload, ok: true }))
+        };
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.playing();
+        time(&mut rig, 10, 0);
+        time(&mut rig, 10, 50);
+        assert!(rig.tick(FROZEN_TIME_MS - 1).is_empty());
+        let fx = rig.tick(1);
+        assert!(summary_of(&fx).contains("currentTime_advanced=yes") && summary_of(&fx).contains("end=timeout:currentTime"));
+        assert_eq!((settles(&fx, Settle::StartFailed), unloads(&fx), closes(&fx)), (0, 1, 1));
     }
 
     // ------------------------------------------------------------------ Back, errors, exactly once
@@ -1501,6 +1575,24 @@ mod tests {
         let video = message.seen.iter().find(|s| s.ev == Ev::VideoInfo).unwrap();
         assert_eq!(video.detail, "width=1920 height=1080", "a URL, an address and a host are refused, not trimmed");
         assert_eq!(message.dims, Some((1920, 1080)));
+    }
+
+    #[test]
+    fn parse_event_reads_current_time_bare_or_nested_and_nothing_else_of_the_object() {
+        let time = |payload: &str| parse_event(payload).current_time;
+        assert_eq!(time(r#"{"currentTime":40}"#), Some(40));
+        assert_eq!(time(r#"{"currentTime":40.9}"#), Some(40));
+        assert_eq!(time(r#"{"currentTime":{"currentTime":40,"mediaId":"_m1"}}"#), Some(40));
+        assert_eq!(time(r#"{"currentTime":{"currentTime":40.9}}"#), Some(40));
+        for unreadable in [r#"{"currentTime":{"mediaId":"_m1"}}"#, r#"{"currentTime":{"currentTime":{"currentTime":5}}}"#, r#"{"currentTime":"40"}"#] {
+            let message = parse_event(unreadable);
+            assert_eq!(message.current_time, None, "{unreadable}");
+            assert!(message.seen.iter().any(|seen| seen.ev == Ev::CurrentTime), "still an event: {unreadable}");
+        }
+        // the object's other members are not read: its `mediaId` is not the message's
+        let message = parse_event(r#"{"currentTime":{"currentTime":40,"mediaId":"_m9"}}"#);
+        assert_eq!(message.media_id, None);
+        assert_clean("Message", &format!("{message:?}"));
     }
 
     #[test]
