@@ -1,6 +1,6 @@
 use super::*;
 use std::ffi::CStr;
-use crate::widgets::focus_pill;
+use crate::widgets::{focus_pill, PILL_FOCUS_OUTSET};
 
 struct Fixed;
 impl Measure for Fixed {
@@ -93,11 +93,13 @@ fn the_focus_pill_stands_a_constant_outset_past_its_plate_whatever_the_label_is(
     assert!(cap.x >= TEXT_X0 - OVERHANG - PILL_FOCUS_OUTSET - 0.05, "no pill reaches past the first plate's outset: {}", cap.x);
 }
 
-/// **S9.** Neighbouring text runs stand `GAP` apart, and `GAP` is the focused pill's extent plus
-/// [`theme::space::SM`] of air before the neighbour's plate, for any widths.
+/// **The row's one gap.** Neighbouring text runs stand `GAP` apart: 48, the Design System's
+/// `PageHeader` (items 8 px apart, 20 px of padding each side), which is the XS token between two
+/// plates.
 #[test]
-fn neighbouring_text_runs_stand_a_gap_apart_that_leaves_sm_of_air_past_the_focused_pill() {
-    assert_eq!(GAP, 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM, "plate, outset, air, plate");
+fn neighbouring_text_runs_stand_the_design_systems_48_apart() {
+    assert_eq!(GAP, 2.0 * OVERHANG + theme::space::XS, "plate, XS between the plates, plate");
+    assert_eq!(GAP, 48.0);
     let l = header("Title").layout(1920.0, &Fixed);
     let (a, b) = (l.items[0].text, l.items[1].text);
     assert_eq!(b.x - (a.x + a.w), GAP);
@@ -108,9 +110,11 @@ fn real(label: &str, selected: bool) -> HeaderItem {
 }
 
 /// The air between item `a`'s focused pill and the plate of the item `b` after it, in px, and the
-/// reverse (`b`'s pill and `a`'s plate): both are `SM`, whatever the names are.
+/// reverse (`b`'s pill and `a`'s plate): both are the plates' `XS` less the pill's outset (6 px),
+/// whatever the names are, so a focused pill never touches its neighbour's plate (the 2 px the pill
+/// stands past its plate is what the gap's XS must leave room for).
 #[test]
-fn a_focused_pill_leaves_sm_of_air_before_its_neighbours_plate() {
+fn a_focused_pill_never_touches_its_neighbours_plate() {
     use plx_base::fontcov::advances::ShippedMeasure;
     let m = ShippedMeasure;
     let spec = PageHeaderSpec {
@@ -128,7 +132,7 @@ fn a_focused_pill_leaves_sm_of_air_before_its_neighbours_plate() {
         let (a, b) = (focus_pill(pair[0].plate), focus_pill(pair[1].plate));
         let air = |pill: Rect, plate: Rect| (plate.x - (pill.x + pill.w)).max(pill.x - (plate.x + plate.w));
         for (air, who) in [(air(a, pair[1].plate), "after"), (air(b, pair[0].plate), "before")] {
-            assert!((air - theme::space::SM).abs() < 0.01,
+            assert!(air > 0.0 && (air - (theme::space::XS - PILL_FOCUS_OUTSET)).abs() < 0.01,
                 "{:?} and {:?}: {air} px of air {who} the focused pill", pair[0].slot, pair[1].slot);
         }
     }
@@ -1016,15 +1020,27 @@ fn right_text(layout: &HeaderLayout, i: usize) -> Rect {
 /// divider 1557, icon 1594..1613, "Duration" 1630..1737, the same down chevron. Read as boxes
 /// (bearings added back): the sort control is 220 / 180 wide and ends at the text edge 1771, the
 /// divider ends 32 px (12 of margin and the 20 px plate overhang) before the icon box, the divider
-/// stands the row's gap less 8 after the last place (40 on the board, whose names stand 48 apart),
-/// and the whole cluster slides by the criterion's width difference (40) with the sort's right
-/// edge fixed.
+/// stands the row's gap less 8 after the last place (40 on the board, whose names stand 48 apart,
+/// the row's [`GAP`]), and the whole cluster slides by the criterion's width difference (40) with
+/// the sort's right edge fixed. **Every item's x is the board's**, within 2 px of the box the
+/// native render gives (Collections 971, Recommended 1251, divider 1517, sort icon 1551; on
+/// Duration 1011, 1291, 1557, 1591).
 #[test]
 fn the_board_cluster_stands_where_the_native_renders_have_it() {
     let (page, date) = board_row("Date added");
     let (_, duration) = board_row("Duration");
     let (collections, recommended, divider, sort) = (right_text(&date, 0), right_text(&date, 1), right_text(&date, 2), right_text(&date, 3));
     let near = |got: f32, want: f32, what: &str| assert!((got - want).abs() <= 3.0, "{what}: {got} vs the board's {want}");
+    let at_the_boards = |layout: &HeaderLayout, boxes: [f32; 4], tolerance: f32, which: &str| {
+        for (i, (name, want)) in ["Collections", "Recommended", "the divider", "the sort icon"].into_iter().zip(boxes).enumerate() {
+            let got = right_text(layout, i).x;
+            assert!((got - want).abs() <= tolerance, "{which}: {name} stands at x {got}, the board's box starts at {want}");
+        }
+    };
+    at_the_boards(&date, [971.0, 1251.0, 1517.0, 1551.0], 2.0, "Date added");
+    // "Duration" is ~3 px wider in the device's font than in the board's render, which moves the
+    // whole cluster's left end by as much (the sort control is right-anchored): 4 px, not 2.
+    at_the_boards(&duration, [1011.0, 1291.0, 1557.0, 1591.0], 4.0, "Duration");
     // The sort control: icon + 12 + criterion + 12 + chevron, ending at the text edge.
     assert!((sort.x + sort.w - 1771.0).abs() < 0.01, "{sort:?}");
     near(sort.w, 220.0, "the sort control's width on Date added");
@@ -1033,12 +1049,11 @@ fn the_board_cluster_stands_where_the_native_renders_have_it() {
     assert_eq!(divider.w, DIVIDER_W);
     assert_eq!(divider.x + divider.w + DIVIDER_LEAD, sort.x);
     near(sort.x - divider.x, 1551.0 - 1517.0, "the divider's distance to the icon");
-    // The row's one gap: Collections to Recommended is `GAP` (the board's names stand 48 apart, ours
-    // 58 since the S9 review: a different constant, the same rule); the divider stands the gap less
-    // 8 after the last place, which is the board's 40 at the board's 48.
+    // The row's one gap: Collections to Recommended is `GAP`, the board's 48; the divider stands the
+    // gap less 8 after the last place, the board's 40.
     assert_eq!(recommended.x - (collections.x + collections.w), GAP);
     assert_eq!(divider.x - (recommended.x + recommended.w), DIVIDER_TRAIL);
-    near(DIVIDER_TRAIL - (GAP - 48.0), 1517.0 - 1477.0, "the gap before the divider at the board's own gap");
+    assert_eq!(DIVIDER_TRAIL, 1517.0 - 1477.0, "the gap before the divider is the board's");
     // The widths of the places: text + 8 + the 20 px chevron (board boxes 971..1205 and 1251..1477).
     near(collections.w, 1205.0 - 971.0, "Collections");
     near(recommended.w, 1477.0 - 1251.0, "Recommended");

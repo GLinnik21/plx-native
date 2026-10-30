@@ -12,7 +12,7 @@
 //!
 //! Geometry (spec): the text edges are x 96 and x 1771; a selected plate overhangs the text by
 //! [`OVERHANG`] (20), so the container is left 76, right 129, and a focus pill stands a constant
-//! [`PILL_FOCUS_OUTSET`] (2) past its plate, whatever its label (never a scale of the label's width). The row is
+//! [`PILL_FOCUS_OUTSET`](super::widgets::PILL_FOCUS_OUTSET) (2) past its plate, whatever its label (never a scale of the label's width). The row is
 //! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster's BUDGET is sized ONCE from its widest
 //! case (`widest`), so the room the left group may use never changes when a value changes; the
 //! items inside the cluster are placed by what they DRAW, one [`GAP`] apart (the filter
@@ -47,7 +47,7 @@ use super::breadcrumb::{self, Crumb};
 use super::hstack::{Align, Flow, HStack, Item};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
-use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip, PILL_FOCUS_OUTSET};
+use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip};
 use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect, Spring};
 
@@ -55,7 +55,8 @@ use super::{icons::{self, Icon}, theme, Painter, Rect, Spring};
 pub const TEXT_X0: f32 = 96.0;
 /// Right text edge of the last right-cluster item.
 pub const TEXT_X1: f32 = 1771.0;
-/// How far a plate stands out past its text on each side (a focus pill: that and [`PILL_FOCUS_OUTSET`]).
+/// How far a plate stands out past its text on each side (a focus pill: that and
+/// [`PILL_FOCUS_OUTSET`](super::widgets::PILL_FOCUS_OUTSET)).
 pub const OVERHANG: f32 = 20.0;
 /// Top of the header row, and its height.
 pub const TOP: f32 = 148.0;
@@ -68,14 +69,16 @@ pub const BLOCK_H: f32 = 96.0;
 /// well clear of the scroll capsule (`scroll_capsule::Y + H`, 118).
 pub const GRID_TOP: f32 = TOP + BLOCK_H;
 /// **The text-edge gap between two adjacent items**, whatever their names: the first one's plate
-/// overhang, the focused pill's [`PILL_FOCUS_OUTSET`] past that plate, [`theme::space::SM`] of air,
-/// then the next item's plate and its overhang. The air is measured from the FOCUSED pill's extent
-/// ([`focus_pill`](super::widgets::focus_pill)) because that is the edge the eye reads against the neighbour (design review S9: the
-/// old `XS` of air was spent before the pill grew, and a 1.07 scale grew by more the wider the name
-/// was, so "Classics" read ~10 px from the "Movies" plate). The outset is a constant (S4), so the gap
-/// is one number, and every placement and every packing uses it. The breadcrumb's chevron takes the
-/// same air on each side ([`breadcrumb::AIR`]).
-pub const GAP: f32 = 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM;
+/// overhang, [`theme::space::XS`] between the two plates, then the next item's plate and its
+/// overhang, 48 px text to text. The Design System's `PageHeader` is the same sum (`.row{gap:8px}`
+/// over items padded 20 px each side), and the owner-approved boards stand at it (the Library's
+/// names 30 px past the plate, its places 52 px ink to ink). The focused pill stands
+/// [`PILL_FOCUS_OUTSET`](super::widgets::PILL_FOCUS_OUTSET) (2) past its plate, so it still leaves `XS - 2` = 6 px before the
+/// neighbour's plate (a pill and a neighbour never touch, for any widths: the S9 review's air was
+/// measured from the FOCUSED pill's extent, [`focus_pill`](super::widgets::focus_pill), and a test
+/// holds that edge). The outset is a constant (S4), so the gap is one number, and every placement
+/// and every packing uses it.
+pub const GAP: f32 = 2.0 * OVERHANG + theme::space::XS;
 /// Clear space kept between the left group and the right cluster.
 pub const CLUSTER_GAP: f32 = 64.0;
 

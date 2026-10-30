@@ -28,10 +28,10 @@ use super::widgets::focus_pill;
 use super::{theme, Rect};
 
 /// The air each side of the glyph's box: between the root's FOCUSED pill (its plate plus the focus
-/// outset) and the glyph, and between the glyph and the page name's plate. The same air
-/// [`page_header::GAP`] leaves between two neighbours, so the chevron reads as a separator with room
-/// either side and not as part of the pill it follows (design review S9: it stood 4 px past the
-/// plate, ~8 px from the glyph's ink, and a focused pill covered most of that).
+/// outset) and the glyph, and between the glyph and the page name's plate. The chevron reads as a
+/// separator with room either side and not as part of the pill it follows (design review S9: it stood
+/// 4 px past the plate, ~8 px from the glyph's ink, and a focused pill covered most of that). The
+/// crumb's own air, not the row's [`page_header::GAP`] between two items.
 pub const AIR: f32 = theme::space::SM;
 /// The chevron's box.
 pub const GLYPH_SIZE: f32 = 22.0;
