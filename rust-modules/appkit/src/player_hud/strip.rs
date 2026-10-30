@@ -25,7 +25,9 @@ use plx_ui::widgets::{Art, CARD_FOCUS_SCALE};
 use plx_ui::{Painter, Rect};
 
 use crate::chapters_panel::CH_FOCUS_RING_W;
-use crate::hud_format::compile::DrawOp;
+use crate::hud_format::compile::{CompiledState, DrawOp};
+use super::model::HudModel;
+use super::state::ELEM_CHAPTER_BASE;
 use plx_data::metadata::Chapter;
 
 /// The art resolution a chapter still is asked for at: the episode picker's, and the strip's since it drew.
@@ -83,6 +85,37 @@ impl Geometry {
     }
 }
 
+/// **The strip a state places**: its strip op's [`Geometry`], `None` for a state with no strip. The ONE read of
+/// the op the renderer (which paints with it) and the screen (which steps the Shelf, places its stops and
+/// travels by it) share, so they cannot describe two strips.
+pub fn strip_of(state: &CompiledState) -> Option<Geometry> {
+    state.ops.iter().find_map(Geometry::of)
+}
+
+/// **The cards a strip shows**: the playing item's chapters at `geo`, `None` for an item with none. Built the one
+/// way the draw and the screen both build it.
+pub fn cards_for<'a, E>(
+    geo: Geometry,
+    meta: plx_data::metadata::MetadataView<'a>,
+    ps: &plx_media::route::PlaybackSession,
+) -> Option<Cards<'a, E>> {
+    let chapters = crate::chapters_panel::chapters(meta);
+    if chapters.is_empty() {
+        return None;
+    }
+    Some(Cards::new(chapters, plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(), geo))
+}
+
+/// **The chapter that holds the position the HUD shows** (D6: opening Chapters seats focus there): the last
+/// chapter that has started at the model's displayed playhead (the scrub preview, a loading seek's target, else
+/// the playhead), the first when none has. From the frame's `HudModel`, not the global, so what the seat reads
+/// is what the playbar draws.
+pub fn chapter_at_shown(chapters: &[Chapter], model: &HudModel) -> usize {
+    let shown = super::state::display_pos_ns(model.loading, model.seek_display_ns, model.scrub_ns, model.playpos_ns);
+    let ms = shown / 1_000_000;
+    chapters.iter().rposition(|c| c.start_ms <= ms).unwrap_or(0)
+}
+
 /// The playing item's chapters as the Shelf's cards. Generic over the host's element, which only has to be
 /// an index (a chapter is its position).
 pub struct Cards<'a, E> {
@@ -117,10 +150,10 @@ where
         self.chapters.len()
     }
     fn elem(&self, i: usize) -> H::Elem {
-        H::Elem::of_index(i as u32)
+        H::Elem::of_index(ELEM_CHAPTER_BASE + i as u32)
     }
     fn index_of(&self, e: &H::Elem) -> Option<usize> {
-        e.index().map(|i| i as usize).filter(|&i| i < self.chapters.len())
+        e.index().and_then(|i| i.checked_sub(ELEM_CHAPTER_BASE)).map(|i| i as usize).filter(|&i| i < self.chapters.len())
     }
     fn art(&self, i: usize) -> Art<'_> {
         Art::Thumb { sid: self.sid, key: &self.chapters[i].thumb, res: STILL_RES }

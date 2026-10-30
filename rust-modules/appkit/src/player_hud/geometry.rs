@@ -23,10 +23,10 @@ use plx_machine::machine::GroupId;
 use plx_media::player::text_style::HudBand;
 use plx_ui::Rect;
 
-use super::command::HudCommand;
+use super::command::{HudCommand, Section};
 use super::model::HudModel;
-use super::state::{ControlSlot, Controls};
-use crate::hud_format::compile::{Compiled, CompiledState, SkipKind};
+use super::state::{control_elem, ControlSlot, Controls, ELEM_SECTION_BASE, ELEM_TAB_BASE};
+use crate::hud_format::compile::{Compiled, CompiledState, ControlRect, SkipKind, Widget};
 use crate::hud_format::reach::Slot;
 
 /// The scrubber's group: a free-form region, extent [`HudGeometry::grab`].
@@ -40,6 +40,9 @@ pub const GROUP_FAILURE: GroupId = GroupId(3);
 /// An open section's own controls (Info's two buttons). The renderer reads focus on it
 /// ([`super::render::draw_state`]); the screen registers the group when the sections go live.
 pub const GROUP_SECTION: GroupId = GroupId(4);
+/// An open Chapters section's strip: the cards of the `cards::Shelf` the renderer paints (`strip`), addressed
+/// `ELEM_CHAPTER_BASE + index`. Registered by the screen while that section is open.
+pub const GROUP_STRIP: GroupId = GroupId(5);
 
 /// **The most controls a layout can place in the control row**: the format's bound on one segment
 /// ([`crate::hud_format::schema::MAX_SEGMENT_ITEMS`]), so a row a package can write is a row the report
@@ -129,15 +132,22 @@ impl HudGeometry {
 }
 
 /// **The compiled state the transport is in this frame**, with the Skip pill's kind: the compile's
-/// [`Compiled::lookup`] over the frame's slot and content (`open == 0`; the sections draw themselves in
-/// this release). The state returned is the BASE state; [`CompiledState::skip_variant`] picks the credits
-/// layout of a Skip state, and [`CompiledState::geometry`] does so itself from the kind.
+/// [`Compiled::lookup`] over the frame's open sections, slot and content. `open` is the bits of the sections
+/// that are open (`StateKey::open`; `0` is the compact state). The state returned is the BASE state;
+/// [`CompiledState::skip_variant`] picks the credits layout of a Skip state, and [`CompiledState::geometry`]
+/// does so itself from the kind.
+///
+/// **A stand-in waits behind an open section** (D7): the compile has no Skip or Up Next state with a section
+/// open (`reach`: the slot is `Discs` while any section is), so `open != 0` looks the discs' state up whatever
+/// the slot is. The screen hands every consumer the discs' slot in that case ([`ControlSlot::Discs`] over the
+/// model's `Controls`), so a draw, a stop and a press read the same row.
 ///
 /// `episode` is the ROW's pair boolean (`Controls::pair`), not the kicker's predicate: PR5c's golden
 /// equates `Discs(PAIR)` with `episode = true`. The renderer and every geometry consumer take their state
 /// from here, so what is drawn and what is hit cannot be two states.
-pub fn frame_state(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: bool) -> Option<(&CompiledState, SkipKind)> {
+pub fn frame_state(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> Option<(&CompiledState, SkipKind)> {
     let (kind, skip) = match slot {
+        _ if open != 0 => (Slot::Discs, SkipKind::Intro),
         ControlSlot::Discs(_) => (Slot::Discs, SkipKind::Intro),
         ControlSlot::UpNext(_) => (Slot::UpNext, SkipKind::Intro),
         ControlSlot::Skip(pr) => (
@@ -146,7 +156,7 @@ pub fn frame_state(compiled: &Compiled, slot: ControlSlot, chapters: bool, pause
         ),
     };
     let episode = matches!(slot, ControlSlot::Discs(c) if c.pair());
-    compiled.lookup(0, kind, chapters, episode, paused).map(|s| (s, skip))
+    compiled.lookup(open, kind, chapters, episode, paused).map(|s| (s, skip))
 }
 
 /// **The whole geometry report for one frame**: the grab band, the bar, the row at its floor width and its
@@ -154,8 +164,8 @@ pub fn frame_state(compiled: &Compiled, slot: ControlSlot, chapters: bool, pause
 /// tab-row origins and the caption band. It copies what the compile placed (the compile measured, once,
 /// outside the draw), so it needs no measurer and is safe anywhere: a pointer event, the caption draw, the
 /// stand-ins. [`HudGeometry::empty`] where the package has no state for the frame.
-pub fn geometry(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: bool) -> HudGeometry {
-    match frame_state(compiled, slot, chapters, paused) {
+pub fn geometry(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> HudGeometry {
+    match frame_state(compiled, open, slot, chapters, paused) {
         Some((state, skip)) => state.geometry(skip),
         None => HudGeometry::empty(compiled.band()),
     }
@@ -165,8 +175,8 @@ pub fn geometry(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: 
 /// package's discs (a row wider than classic's five has a stop for each), `[credits, next]` for Up Next,
 /// `[pill]` for Skip, and none where the package has no state for the frame (a stop with no rect cannot be
 /// placed).
-pub fn row_len(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: bool) -> usize {
-    match (slot, frame_state(compiled, slot, chapters, paused)) {
+pub fn row_len(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> usize {
+    match (slot, frame_state(compiled, open, slot, chapters, paused)) {
         (_, None) => 0,
         (ControlSlot::Discs(_), Some((state, _))) => state.row_ids.len(),
         _ => slot.items().max(0) as usize,
@@ -175,9 +185,9 @@ pub fn row_len(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: b
 
 /// The compiled state of the discs for the frame and the `Controls` the slot sampled, when the occupant is
 /// the discs and the package has a state for the frame.
-fn package_row<'c>(compiled: &'c Compiled, slot: ControlSlot, model: &HudModel) -> Option<(&'c CompiledState, Controls)> {
+fn package_row<'c>(compiled: &'c Compiled, open: u8, slot: ControlSlot, model: &HudModel) -> Option<(&'c CompiledState, Controls)> {
     let ControlSlot::Discs(controls) = slot else { return None };
-    let (state, _) = frame_state(compiled, slot, model.chapters, model.paused)?;
+    let (state, _) = frame_state(compiled, open, slot, model.chapters, model.paused)?;
     Some((state, controls))
 }
 
@@ -188,10 +198,10 @@ fn package_row<'c>(compiled: &'c Compiled, slot: ControlSlot, model: &HudModel) 
 /// and the model cannot disagree); none where the package has no state for the frame. A stand-in's row
 /// (Skip, Up Next) is the slot's own table. For `builtin:classic` the discs' answer is classic's table (the
 /// test next to this fn pins it).
-pub fn row_command(compiled: &Compiled, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
+pub fn row_command(compiled: &Compiled, open: u8, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
     match slot {
         ControlSlot::Discs(controls) => {
-            let (state, _) = frame_state(compiled, slot, model.chapters, model.paused)?;
+            let (state, _) = frame_state(compiled, open, slot, model.chapters, model.paused)?;
             let id = state.row_ids.get(usize::try_from(i).ok()?)?.as_deref()?;
             let act = state.control(id)?.act?;
             act.enabled(&HudModel { controls, ..*model }).then_some(act)
@@ -202,9 +212,9 @@ pub fn row_command(compiled: &Compiled, slot: ControlSlot, model: &HudModel, i: 
 
 /// Does item `i` of the row have a focus stop and a pointer target? [`row_command`] for the discs,
 /// [`ControlSlot::enabled`] for a stand-in.
-pub fn row_enabled(compiled: &Compiled, slot: ControlSlot, model: &HudModel, i: i32) -> bool {
+pub fn row_enabled(compiled: &Compiled, open: u8, slot: ControlSlot, model: &HudModel, i: i32) -> bool {
     match slot {
-        ControlSlot::Discs(_) => row_command(compiled, slot, model, i).is_some(),
+        ControlSlot::Discs(_) => row_command(compiled, open, slot, model, i).is_some(),
         _ => slot.enabled(i),
     }
 }
@@ -213,13 +223,45 @@ pub fn row_enabled(compiled: &Compiled, slot: ControlSlot, model: &HudModel, i: 
 /// enabled Previous, else an enabled Play/Pause, else the first enabled control (classic has no Play/Pause
 /// control, so for it that is `Controls::primary`: Next, Previous, then Subtitles). A stand-in's is the
 /// slot's own.
-pub fn row_primary(compiled: &Compiled, slot: ControlSlot, model: &HudModel) -> i32 {
-    let Some((state, _)) = package_row(compiled, slot, model) else { return slot.primary_btn() };
+pub fn row_primary(compiled: &Compiled, open: u8, slot: ControlSlot, model: &HudModel) -> i32 {
+    let Some((state, _)) = package_row(compiled, open, slot, model) else { return slot.primary_btn() };
     let len = i32::try_from(state.row_ids.len()).unwrap_or(0);
-    let at = |want: Option<HudCommand>| (0..len).find(|&i| row_command(compiled, slot, model, i).is_some_and(|c| want.is_none_or(|w| c == w)));
+    let at = |want: Option<HudCommand>| (0..len).find(|&i| row_command(compiled, open, slot, model, i).is_some_and(|c| want.is_none_or(|w| c == w)));
     at(Some(HudCommand::Next))
         .or_else(|| at(Some(HudCommand::Previous)))
         .or_else(|| at(Some(HudCommand::TogglePlay)))
         .or_else(|| at(None))
         .unwrap_or_else(|| slot.primary_btn())
+}
+
+/// **An open section's own buttons** (`actions`), in the order the state places them: the controls the
+/// section group addresses (`ELEM_SECTION_BASE + i`) and the renderer's `Widget::Button` arm counts.
+pub fn section_buttons(state: &CompiledState) -> impl Iterator<Item = &ControlRect> {
+    state.controls.iter().filter(|c| c.widget == Widget::Button)
+}
+
+/// What a press of an open section's button `i` performs, `None` past the last button.
+pub fn section_command(state: &CompiledState, i: usize) -> Option<HudCommand> {
+    section_buttons(state).nth(i)?.act
+}
+
+/// The element a section's button `i` is addressed by.
+pub const fn section_elem(i: u32) -> u32 {
+    ELEM_SECTION_BASE + i
+}
+
+/// **The element that opens `section` in this state**: its tab (`ELEM_TAB_BASE + tab`) when the package opens
+/// it with a pill, else its disc in the replaced row (`control_elem` of the row ordinal); `None` when the
+/// state places no opener (a package with a section it opens by no control). It is where focus goes back to
+/// when the section closes, so the viewer lands on the control that opened it, whichever package drew it.
+pub fn opener_elem(state: &CompiledState, section: Section) -> Option<u32> {
+    let c = state.controls.iter().find(|c| c.act == Some(HudCommand::ToggleSection(section)))?;
+    match c.widget {
+        Widget::Pill => Some(ELEM_TAB_BASE + section.tab() as u32),
+        Widget::Disc => {
+            let ordinal = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str()))?;
+            Some(control_elem(i32::try_from(ordinal).ok()?))
+        }
+        Widget::Button => None,
+    }
 }

@@ -98,6 +98,24 @@ impl Section {
             Section::Info => crate::hud_format::compile::OPEN_INFO,
         }
     }
+
+    /// The tab that opens this section in the tab row: its index into the tab strip, the tab cursor
+    /// (`HudNav::tab`) and the tab elements (`ELEM_TAB_BASE + tab`).
+    pub fn tab(self) -> i32 {
+        match self {
+            Section::Info => 0,
+            Section::Chapters => 1,
+        }
+    }
+
+    /// The section the tab with this index opens, `None` past the tab row.
+    pub fn of_tab(tab: i32) -> Option<Section> {
+        match tab {
+            0 => Some(Section::Info),
+            1 => Some(Section::Chapters),
+            _ => None,
+        }
+    }
 }
 
 /// One thing the HUD can ask the app to do. Exactly the vocabulary of the design's "Commands"

@@ -88,8 +88,11 @@ pub struct Frame<'a> {
     pub focus: GroupId,
     pub btn: i32,
     pub tab: i32,
+    /// The sections that are open (`StateKey::open`, `0` when none is): which state the frame walks. The screen
+    /// hands the discs' `slot` while any is open (D7), so a stand-in waits behind it.
+    pub open: u8,
     pub now: u32,
-    /// false while an Info card or Chapters strip has taken the middle
+    /// false while a section has taken the middle (the transport's bar and row are not on screen)
     pub transport: bool,
     pub measure: &'a dyn plx_machine::machine::Measure,
     pub meta: plx_data::metadata::MetadataView<'a>,
@@ -99,7 +102,7 @@ pub struct Frame<'a> {
 /// ([`frame_state`], the lookup every geometry consumer takes too).
 fn state_for<'c>(compiled: &'c Compiled, f: &Frame<'_>) -> Option<&'c CompiledState> {
     let chapters = crate::chapters_panel::has_chapters(f.meta);
-    frame_state(compiled, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
+    frame_state(compiled, f.open, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
 }
 
 /// Draw the transport from `compiled` into `p`. Returns false, having drawn nothing, when the package
@@ -536,6 +539,7 @@ mod tests {
             focus: c.focus,
             btn: c.btn,
             tab: c.tab,
+            open: 0,
             now: 1_000,
             transport: c.transport,
             measure: &FM,
@@ -642,6 +646,7 @@ mod tests {
             focus: GROUP_SCRUB,
             btn: 0,
             tab: 0,
+            open: 0,
             now: 0,
             transport: true,
             measure: &FM,
@@ -704,9 +709,9 @@ mod tests {
             let mut row = HudMotion::new();
             let frame = Frame {
                 entry: ENTRY, ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
-                focus: GROUP_SCRUB, btn: 0, tab: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+                focus: GROUP_SCRUB, btn: 0, tab: 0, open: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
-            let key = FocusKey { entry: ENTRY, elem: sel };
+            let key = FocusKey { entry: ENTRY, elem: crate::player_hud::state::ELEM_CHAPTER_BASE + sel };
             let focus = FocusRead { current: Some(key), ..FocusRead::default() };
             // the screen's tick: the engine said focus arrived on `sel`, then frames pass until the Shelf rests
             with_df_focus(focus.clone(), |df| {
@@ -828,7 +833,7 @@ mod tests {
             let mut row = HudMotion::new();
             let frame = Frame {
                 entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
-                focus: GROUP_SCRUB, btn: 0, tab: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+                focus: GROUP_SCRUB, btn: 0, tab: 0, open: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
             let new = census(|| with_df(|df| draw_state(&hud.compiled, state, &frame, df, &mut row, Painter::root())));
             let old = census(|| InfoPanelState::new().draw(&ps, 1.0, &FM, store.view()));
@@ -998,7 +1003,7 @@ mod tests {
             let up = Countdown::default();
             let frame = Frame {
                 entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
-                focus, btn, tab, now: 1_000, transport, measure: &FM, meta: store.view(),
+                focus, btn, tab, open: 0, now: 1_000, transport, measure: &FM, meta: store.view(),
             };
             census(|| with_df(|df| draw_state(&hud.compiled, state, &frame, df, row, Painter::root())))
         }
@@ -1089,7 +1094,7 @@ mod tests {
             let mut row = HudMotion::new();
             let frame = Frame {
                 entry: EntryId(0), ps: &ps, model: &model, up: &up, slot, busy: Busy::None, focus, btn,
-                tab: 0, now: 1_000, transport: true, measure: &FM, meta: store.view(),
+                tab: 0, open: 0, now: 1_000, transport: true, measure: &FM, meta: store.view(),
             };
             census(|| assert!(with_df(|df| draw(compiled, &frame, df, &mut row, Painter::root())), "the reference has a compact state"))
         }

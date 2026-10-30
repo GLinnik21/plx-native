@@ -797,6 +797,10 @@ pub struct Compiled {
     /// interactive ones alone? Read once, here, by [`Compiled::compact_band_extents`] for the compiler and
     /// the lint alike
     block: bool,
+    /// the package's section policy (`layout.sections`, D6): `modal` (the default) opens one section at a time,
+    /// `inline` lets any set be open. Read once here for the player's `HudState::sections`, as `reach` reads it
+    /// for the state graph, so the two cannot disagree
+    modal: bool,
     findings: Vec<CompileFinding>,
     /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
     assets: Vec<(String, String)>,
@@ -821,6 +825,7 @@ impl Default for Compiled {
             named: Named { chapters: false, episode: false, paused: false },
             band: HudBand::CLASSIC,
             block: false,
+            modal: true,
             findings: Vec::new(),
             assets: Vec::new(),
         }
@@ -861,6 +866,13 @@ impl Compiled {
             episode: episode || !self.named.episode,
             paused: paused && self.named.paused,
         })
+    }
+
+    /// **Are the package's sections modal?** (`layout.sections`, D6): one section at a time, the row hidden
+    /// while it is open, and focus leaving the section's groups by a direction closes it. `false` is `inline`:
+    /// any set may be open and focus travels freely. The player's `HudState::sections` obeys it.
+    pub fn sections_modal(&self) -> bool {
+        self.modal
     }
 
     /// What the compiler could not carry as written (see [`CompileFinding`]); empty for a package that
@@ -936,6 +948,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
         named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
+        modal: package.layout.get("sections").and_then(Val::as_str) != Some("inline"),
         findings,
         assets: package.assets.clone(),
     };

@@ -597,10 +597,15 @@ pub const ELEM_SCRUB: u32 = 0;
 /// can grow without meeting one of them. `hud.nav.btn` holds the ordinal; [`control_elem`] and
 /// [`row_index`] are the two directions of the mapping.
 pub const ELEM_CONTROL_BASE: u32 = 0x1_0000;
-/// The first element of the chapter strip's own range, at the top of `u32` (the strip's cards
-/// are addressed `ELEM_CHAPTER_BASE + index`, a later change of this plan). Reserved here so the
-/// open-ended control range ends before it and the two can never collide.
+/// The first element of the chapter strip's own range, at the top of `u32`: the strip's cards are addressed
+/// `ELEM_CHAPTER_BASE + index` (`strip::Cards`), so the Shelf's `neighbour`, `seat` and `place` all speak this
+/// range. The open-ended control range ends before it and the two can never collide.
 pub const ELEM_CHAPTER_BASE: u32 = 0xFFFF_0000;
+/// `+ 0..` an open section's own buttons (`actions`: the Info card's two), in the order the state places them.
+/// The range is open-ended up to [`ELEM_SECTION_END`], below the control range and the repair card.
+pub const ELEM_SECTION_BASE: u32 = 100;
+/// One past the last element a section's buttons can take.
+pub const ELEM_SECTION_END: u32 = 0x1000;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub const ELEM_TAB_BASE: u32 = 20;
 /// The element of the control with this ordinal.

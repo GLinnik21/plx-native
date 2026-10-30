@@ -31,7 +31,7 @@ use super::classic::tab_labels;
 use super::command::HudCommand;
 use super::motion::HudMotion;
 use super::render::Frame;
-use super::strip::{Cards, Geometry};
+use super::strip::{cards_for, Geometry};
 use plx_machine::machine::Host;
 use plx_ui::cards::SectionFrame;
 use plx_ui::geom::IndexElem;
@@ -312,10 +312,6 @@ where
     H::Elem: IndexElem,
 {
     let Some(geo) = Geometry::of(op) else { return };
-    let chapters = crate::chapters_panel::chapters(f.meta);
-    if chapters.is_empty() {
-        return;
-    }
-    let src = Cards::<H::Elem>::new(chapters, plx_media::route::item_sid(plx_media::route::cur_sid(f.ps)).raw(), geo);
+    let Some(src) = cards_for::<H::Elem>(geo, f.meta, f.ps) else { return };
     row.strip(f.entry, &geo).paint(df, q, &src, SectionFrame::new(geo.card.y, geo.rect));
 }
