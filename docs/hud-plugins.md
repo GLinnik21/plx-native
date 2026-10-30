@@ -709,7 +709,7 @@ The gap: an app release can lengthen a translation or add a language, so a packa
   repo, every PR's CI lints `site/hud/examples/` (PR6) and `builtin:classic` (`builtin_classic_passes_every_invariant`,
   PR5) in all eleven languages, so a string change that breaks a shipped package fails before any release.
 - (b) The fallback is per language. A failure is a property of (package, app release, language); failing the package
-  everywhere would punish nine languages for one translation, and keeping the selection lets a later fix (a new app
+  everywhere would punish ten languages for one translation, and keeping the selection lets a later fix (a new app
   release, a package update, a language switch) restore it with no step from the viewer.
 - (c) Headroom. No margin for future translation edits: their size has no distribution to derive one from (catalog
   strings change one by one, by hand), so any figure would be arbitrary, and it would reject designs that fit every
