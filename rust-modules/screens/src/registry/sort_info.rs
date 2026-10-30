@@ -4,7 +4,7 @@
 //! The facts come from the listing the grid already holds (`PmsMovie` and its `SortInfo`, which a show
 //! row carries as a movie row does); no request is added. A sort the table does not know shows no value
 //! ([`shows_value`]), so the grid keeps the Title/Details captions rather than inventing a fact; an item
-//! with no value for a known sort shows an en dash, and a fact is never guessed (a missing year-less
+//! with no value for a known sort shows an en dash (data the server did not send), and a fact is never guessed (a missing year-less
 //! release date is a dash, not the year).
 //!
 //! **TV shows.** A show's own facts feed the sorts a show library declares: Release date, the two scores,
@@ -18,7 +18,8 @@
 //! the `episode.` scope instead of stripping it down to the show's own `addedAt`).
 //!
 //! The formats: ratings as a percentage beside the provider's mark (`captions::rating_mark`, the one
-//! table), `2h 14m`, `4K` (+1 for a second version), `62 Mbps`, plays as a number, `TV-MA`, `2019`; and
+//! table), `2h 14m`, `4K` (+1 for a second version), `62 Mbps`, plays with their noun (`14 plays`, `1 play`),
+//! `TV-MA`, `2019`; an item nobody played reads **Never** under Date viewed and Plays; and
 //! dates as **Today**, **Yesterday**, `27 Oct` (this year) or `Oct 2024` (any other year), in the
 //! interface language's own month names, never numeric. Every space is a no-break space, so a number
 //! never parts from its unit. "Today" is an INPUT: a screen reads no clock, the application hands the
