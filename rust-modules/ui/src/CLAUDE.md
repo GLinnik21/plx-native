@@ -594,8 +594,10 @@ tried first. None of it is reconstructable from the code without repeating the m
   the arriving one start), so no frame has both. Home keeps its nav and chip shown and owns no
   `Handoff`; a heading that rides under them fades by where it stands through the same spatial rule
   (`scroll_chrome::clearance_under_shown_chrome`). The chip and the
-  tab track (`GLASS_TRACK_MAX`, `BAND_AIR`) and the hold hint and the band (`hold_hint.rs`) keep
-  apart the same way. Any new live glass that can stand within a band's blur reach of another
+  tab track (the chip's name budget `chip_name_budget`, which keeps `BAND_AIR` between the unfurled
+  capsule and the track at ANY strip width: the bar's width never takes its glass away, a strip past
+  `TAB_VIEW_MAX` scrolls inside a track that stays glass) and the hold hint and the band
+  (`hold_hint.rs`) keep apart the same way. Any new live glass that can stand within a band's blur reach of another
   (68 px past the visible members) must be sequenced with it, or it prices ~1.4M a frame.
 
 - **A MENU is glass on the frozen ground (DS6); nothing else is glass.** The scope is

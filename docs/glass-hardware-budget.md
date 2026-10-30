@@ -33,7 +33,9 @@ Four consequences you can act on immediately:
   pixels on every side (68 for a glass that never rises), and unioned across every glass surface in the frame.** Not the surface. Keep
   that rectangle **under about 300,000 pixels and you stay at 60 fps**; past it you drop to 45, and
   it steps down from there. **The shipped Account panel sits just inside that line and is free**
-  (measured, §3.4).
+  (measured, §3.4). *(2026-10-30: that line was measured on the capture path, and §11 shows the
+  direct path prices the region at 7/16. The top bar's track is no longer held to it: its width
+  never decides its material, `widgets::tab_glass_on`.)*
 * **Glass steps your frame rate rather than sliding it: 60 → 45 → 36 → 30.** The blur refreshes on
   one frame in three, and that frame either fits in one 16.7 ms slot or takes two, or three. You are
   buying whole slots, so there is no partial credit — see §3.2, where the model reproduces every
@@ -873,6 +875,16 @@ reverse of §3.1's order and of §8's rule 1, both of which were written when th
 and no surface bigger than 87,000 px had been tried. This is arithmetic over the shipped chain plus
 §8's own composite row, not a fresh measurement; what is measured is the 58 fps and the distribution
 below, and they are consistent with it.
+
+> **2026-10-30, the consequence for the top bar.** The bar's track used to be held to a width
+> (`GLASS_TRACK_MAX`, 672 px at the end), solved from the 300,000 px² budget of §3.1 and the chip's
+> reach, and a strip past it drew the flat capsule. That budget is the capture-path figure this
+> section corrects; the bar's real grab is `blur_region_for(false, ..)` (68 px past the members, not
+> 88); and the owner's Belarusian strip (679 px once the Watchlist mark joined the bar) lost the
+> glass for 7 px. The cap is gone: the bar is glass at any width, a strip past `TAB_VIEW_MAX`
+> scrolls inside a track that stays glass, and the unfurled chip is kept off the track by its NAME
+> budget instead (`widgets::chip_name_budget`). The widest bar's cost was priced by this
+> section's rule and not re-measured on the television.
 
 ### What it actually costs
 

@@ -4589,8 +4589,12 @@ pub const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
 /// 16.7 ms slots; a STILL host, which modality guarantees for a panel, is free.
 /// Measured, not chosen: `docs/glass-hardware-budget.md` derives it from the `fps = 60 x 3 / (2 + N)`
 /// region law. It exists so a surface can be held to it by a TEST rather than by a comment — see
-/// `ui::widgets`' glass-track width test — which is also why it is `cfg(test)`: nothing at runtime
-/// decides anything from it, and a number the shipping build never reads should not pretend to.
+/// the hold hint's and the library scroll capsule's region tests (`ui::hold_hint`,
+/// `ui::scroll_capsule`) — which is also why it is `cfg(test)`: nothing at runtime decides anything
+/// from it, and a number the shipping build never reads should not pretend to. (The top bar's
+/// track used to be held to it too, as a width cap, until 2026-10-30: the budget was measured on the
+/// capture path, the bar's width must never decide its material, and
+/// `docs/glass-hardware-budget.md` §11 is why the direct path prices differently.)
 #[cfg(any(test, feature = "test-support"))]
 pub const GLASS_REGION_BUDGET: f32 = 300_000.0;
 
@@ -4600,12 +4604,12 @@ pub const GLASS_REGION_BUDGET: f32 = 300_000.0;
 /// already gives the only answer available, so a panel against the frame simply gets a shorter
 /// margin on that side.
 ///
-/// `pub` for ONE reader outside this module, and for the reason the whole file keeps
-/// repeating: `ui::widgets`' glass-band budget test grades a region against
-/// [`GLASS_REGION_BUDGET`], and while it modelled that region with its own copy of this arithmetic
-/// the copy was WRONG — it omitted this clamp and so priced the tab track at 281k px^2 where the
-/// real region is 223k, a 26% over-estimate that sat under a passing test for as long as the limit
-/// existed. The graded expression is now this one.
+/// `pub` for the readers outside this module, and for the reason the whole file keeps
+/// repeating: the hold hint's and the scroll capsule's budget tests grade a region against
+/// [`GLASS_REGION_BUDGET`], and while the top bar's width test modelled that region with its own
+/// copy of this arithmetic the copy was WRONG — it omitted this clamp and so priced the tab track
+/// at 281k px^2 where the real region is 223k, a 26% over-estimate that sat under a passing test
+/// for as long as the limit existed. The graded expression is this one.
 #[inline]
 pub fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
     blur_region_for(true, x, y, w, h)
@@ -4637,8 +4641,8 @@ pub fn blur_region_for(rises: bool, x: f32, y: f32, w: f32, h: f32) -> [f32; 4] 
 /// reset carries; the union with it is the other side unchanged rather than a box anchored at the
 /// origin.
 ///
-/// `pub` alongside [`blur_region`], and for the same reader: a BAND of glass surfaces is
-/// priced as the union it actually converges on, not as either surface alone.
+/// `pub` alongside [`blur_region`]: a BAND of glass surfaces is priced as the union it actually
+/// converges on, not as either surface alone.
 #[inline]
 pub fn blur_region_union(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     if a[2] <= 0.0 || a[3] <= 0.0 {
