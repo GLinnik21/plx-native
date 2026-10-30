@@ -5542,9 +5542,18 @@ fn a_value_line_drops_its_plus_then_its_mark_and_never_elides() {
     let tight = crate::card_row::RowStyle { w: 100.0, ..GRID.style };
     let runs = drawn(&tight, &value, false);
     assert!(runs.iter().any(|run| run.text == "4K") && !runs.iter().any(|run| run.text.contains("+1")), "+1 goes first");
+    // The glyphs the same call hands the painter: a dropped mark is the absence of its icon, which the words alone cannot show.
+    let marks = |style: &crate::card_row::RowStyle, value: &crate::card_row::SortValue| {
+        crate::draw_census::capture_icons(|| crate::card_row::draw_sort_value(
+            Painter::recording(), rect, 1.0, style, value, &FixtureMeasure, false))
+    };
+    assert_eq!(marks(&wide, &value).len(), mark.len(), "with room for everything the mark is drawn");
+    assert_eq!(marks(&tight, &value).len(), mark.len(), "the mark outlasts the +1 (24 px of words and 52 of mark hang fit 100)");
     let bare = crate::card_row::RowStyle { w: 60.0, ..GRID.style };
-    let runs = drawn(&bare, &crate::card_row::SortValue { text: "4K".into(), mark, ..Default::default() }, false);
-    assert!(runs.iter().any(|run| run.text == "4K"), "the mark goes before the words are cut");
+    let marked = crate::card_row::SortValue { text: "4K".into(), mark, ..Default::default() };
+    let runs = drawn(&bare, &marked, false);
+    assert!(runs.iter().any(|run| run.text == "4K"), "the words are drawn whole at 60 px");
+    assert!(marks(&bare, &marked).is_empty(), "the mark goes before the words are cut: no icon is painted at 60 px (24 + 52 > 60)");
     let long = crate::card_row::SortValue { text: "Yesterday".into(), ..Default::default() };
     let runs = drawn(&wide, &long, false);
     assert!(runs.iter().all(|run| !run.text.contains('\u{2026}')) && runs.iter().any(|run| run.text == "Yesterday"));
