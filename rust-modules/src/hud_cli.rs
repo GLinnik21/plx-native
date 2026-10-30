@@ -251,6 +251,7 @@ mod tests {
 
     const SCHEMA_GOLDEN: &str = include_str!("../../site/hud/schema/1.0.json");
     const CLASSIC_FIXTURE: &str = include_str!("../appkit/src/hud_format/fixtures/classic.plxhud.json");
+    const REFERENCE_FIXTURE: &str = include_str!("../appkit/src/hud_format/fixtures/reference.plxhud.json");
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|a| (*a).to_owned()).collect()
@@ -335,11 +336,56 @@ mod tests {
     }
 
     #[test]
-    fn hud_lint_exits_1_for_a_package_that_parses_but_fails_a_rule() {
-        // A well-formed document that is not a package: parse and validate findings, no crash.
+    fn hud_lint_exits_1_for_a_json_document_that_is_not_a_package() {
+        // Well-formed JSON that is no package: it fails to PARSE (the required keys are missing), so the
+        // report is parse findings and no crash. The converse, a package that parses and compiles and
+        // fails a geometric check, is the next test.
         let (code, out, _) = go(&["--hud-lint", "empty.plxhud.json"], &serve("{}"), &shipped);
         assert_eq!(code, 1, "{out}");
         assert!(!out.is_empty());
+    }
+
+    /// **Exit 1 from a stage-3 finding, with the JSON `context`.** The reference with its info disc drawn at
+    /// 20 px (`lint_size`'s own `HUD-E0603` case): the package parses, validates, is reachable and compiles,
+    /// and then fails the minimum-control-size check in one language. The unedited reference is clean, so
+    /// the one finding is the edit's; its JSON carries the `context` object (language, slot, state, rects)
+    /// that a parse finding does not have.
+    #[test]
+    fn hud_lint_exits_1_for_a_package_that_compiles_and_fails_a_geometric_check() {
+        const BEFORE: &str = r#""section": "info", "widget": "disc", "size": 52,"#;
+        const AFTER: &str = r#""section": "info", "widget": "disc", "size": 20,"#;
+        assert_eq!(REFERENCE_FIXTURE.matches(BEFORE).count(), 1, "the edit must find its text exactly once");
+        let edited = REFERENCE_FIXTURE.replacen(BEFORE, AFTER, 1);
+        let en = [LintLang::for_tag("en").expect("en is shipped")];
+        let reads = |text: String| move |_: &str| -> Result<String, String> { Ok(text.clone()) };
+
+        // the base is clean through `run`, so the exit 1 below is the edit's
+        let (code, out, err) = go(
+            &["--hud-lint", "ref.plxhud.json", "--lang", "en"],
+            &reads(REFERENCE_FIXTURE.to_owned()),
+            &shipped,
+        );
+        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+
+        let expected = lint(&edited, &ShippedMeasure, &en);
+        assert_eq!(expected.len(), 1, "{}", report::text("small-disc.plxhud.json", &expected));
+        assert_eq!(expected[0].code, "HUD-E0603");
+        let (code, out, err) = go(
+            &["--hud-lint", "small-disc.plxhud.json", "--format", "json", "--lang", "en"],
+            &reads(edited.clone()),
+            &shipped,
+        );
+        assert_eq!((code, err.as_str()), (1, ""));
+        assert_eq!(out, report::json_text("small-disc.plxhud.json", &expected));
+        assert!(out.contains("\"context\""), "a geometric finding carries its context: {out}");
+        assert!(out.contains("\"code\": \"HUD-E0603\""), "{out}");
+        assert!(out.contains("\"lint\": 1"), "{out}");
+
+        let (code, text, err) =
+            go(&["--hud-lint", "small-disc.plxhud.json", "--lang", "en"], &reads(edited), &shipped);
+        assert_eq!((code, err.as_str()), (1, ""));
+        assert_eq!(text, report::text("small-disc.plxhud.json", &expected));
+        assert!(text.contains(" error HUD-E0603"), "{text}");
     }
 
     #[test]
@@ -477,6 +523,46 @@ mod tests {
             assert_eq!(code, 0, "{list:?}");
         }
         assert_eq!((built.get(), read.get()), (0, 0));
+    }
+
+    /// **The real measurer, run: the shipped faces opened with no window and no GL context.** Every other
+    /// test here injects `ShippedMeasure`, so nothing else runs [`ttf_measure`], `init_fonts_headless` or
+    /// the glyph-band branch of `TtfMeasure::cap_h`/`line_h`. That branch is the one that matters: a
+    /// `line_h`/`cap_h` that went through `text_tex` would upload a GL texture with no context and take
+    /// the whole binary down with a SIGSEGV, which CI would not see and `--hud-lint` would.
+    ///
+    /// **In a child process, and only under `hostsim`.** The font switch (`TEXT_OK`), the resolved
+    /// application directory and the face paths are each set once per process and never taken back, so a
+    /// test that shares a process with any other width or path test would grade that test's state (and
+    /// leave this one's behind). `PLXNATIVE_APP_DIR` is honoured only by a `hostsim` build
+    /// (`paths::ENV_STEERABLE`), and the child must START with it: the directory is resolved on first
+    /// use. A crash in the child is the parent's assertion failure, not a dead test binary.
+    #[cfg(feature = "hostsim")]
+    #[test]
+    fn the_headless_fonts_measure_and_lint_the_classic_without_a_gl_context() {
+        const NAME: &str = "the_headless_fonts_measure_and_lint_the_classic_without_a_gl_context";
+        let pkg = concat!(env!("CARGO_MANIFEST_DIR"), "/../pkg");
+        if !plx_base::testlock::fresh_process_with_env(module_path!(), NAME, &[("PLXNATIVE_APP_DIR", pkg)]) {
+            return;
+        }
+        // Only ever reached in the child: nothing here has opened a font, and no GL context exists.
+        let measure = ttf_measure().expect("the shipped faces open with no window");
+        // With no font open the line height is the bare size (28), which this bound refuses: the numbers
+        // are the shipped face's, at the `ShippedMeasure` ratios (1.21 and 0.73 of the size) to within
+        // a pixel and a half. The cap height has no such discrimination (its fallback, 21, is inside the
+        // bound); what it adds is that the call returns at all with no GL context.
+        let (line, cap) = (measure.line_h(28), measure.cap_h(28));
+        assert!((line - 28.0 * 1.21).abs() <= 1.5, "line height at 28 px: {line}");
+        assert!((cap - 28.0 * 0.73).abs() <= 1.5, "cap height at 28 px: {cap}");
+        assert!(measure.line_h(56) > 1.8 * line, "the line height follows the size");
+        let c = std::ffi::CString::new("Resume playback").expect("no NUL");
+        let (regular, bold) = (measure.width(&c, 28, false), measure.width(&c, 28, true));
+        assert!(regular > 0.0 && bold > regular, "real widths, bold wider: {regular}, {bold}");
+        // and the whole tool over it: one language of the classic, from the file, exit 0, nothing printed
+        let classic = concat!(env!("CARGO_MANIFEST_DIR"), "/appkit/src/hud_format/fixtures/classic.plxhud.json");
+        let (mut out, mut err) = (String::new(), String::new());
+        let code = run(&args(&["--hud-lint", classic, "--lang", "de"]), &read_package, &ttf_measure, &mut out, &mut err);
+        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
     }
 
     #[test]
