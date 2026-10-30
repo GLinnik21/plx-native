@@ -174,13 +174,16 @@ impl LocaleContext {
     }
     /// Month and year, the yMMM skeleton in the interface language with its abbreviated month and
     /// never a numeric one: "Oct 2024", "out. de 2024", "2024. okt.", "окт. 2024 г." (the unit
-    /// "г." after a no-break space). Hand-written over the same month tables as
-    /// [`month_day`](Self::month_day): ICU's compiled yMMM data answers numerically ("10/2024")
-    /// for the shipped German, Portuguese and Belarusian once the month names are ours.
+    /// "г." after a no-break space). Hand-written over the same abbreviated month tables as
+    /// [`month_day`](Self::month_day) (ICU's compiled yMMM data answers numerically, "10/2024",
+    /// for the shipped German, Portuguese and Belarusian once the month names are ours), except
+    /// where CLDR spells the skeleton with the STAND-ALONE month (`LLL`) and that differs from the
+    /// form after a day: Russian and Belarusian write "май 2024 г." where a day makes it "9 мая"
+    /// ([`standalone_abbreviated`]). Every other shipped language's yMMM is `MMM y`, or `LLL y`
+    /// over stand-alone names identical to its format ones (Polish).
     pub fn month_year(&self, year: i32, month: u8) -> Option<String> {
         icu_calendar::Date::try_new_gregorian(year, month, 1).ok()?;
-        let (names, _) = month_names(self.language, MonthWidth::Medium);
-        let name = names[usize::from(month - 1)];
+        let name = standalone_abbreviated(self.language)[usize::from(month - 1)];
         Some(match self.language {
             Language::Hu => format!("{year}. {name}"),
             Language::Pt => format!("{name} de {year}"),
@@ -208,6 +211,19 @@ impl LocaleContext {
         }
         let (names, joiner) = month_names(self.language, width);
         Some(format!("{day}{joiner}{}", names[i]))
+    }
+}
+
+/// The abbreviated month a language writes with NO day before it (CLDR's stand-alone `LLL`, what
+/// its yMMM skeleton spells), which is [`month_names`]' `Medium` table, the format form that
+/// follows a day, wherever the two agree. Russian and Belarusian are the languages in which they
+/// do not: the format form of May is the genitive "мая" ("9 мая") and the stand-alone one the
+/// nominative "май" ("май 2024 г."), and Russian also writes "март", "июнь" and "июль" in full.
+fn standalone_abbreviated(language: Language) -> &'static [&'static str; 12] {
+    match language {
+        Language::Ru => &RU_STANDALONE,
+        Language::Be => &BE_STANDALONE,
+        other => month_names(other, MonthWidth::Medium).0,
     }
 }
 
@@ -373,6 +389,11 @@ const RU_GENITIVE: [&str; 12] = [
     "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
     "ноября", "декабря",
 ];
+/// CLDR 47 `ru` stand-alone abbreviated months (the `LLL` of yMMM, `LLL y 'г'.`): it inherits the
+/// format form except "март", "май", "июнь" and "июль", which it spells out.
+const RU_STANDALONE: [&str; 12] = [
+    "янв.", "февр.", "март", "апр.", "май", "июнь", "июль", "авг.", "сент.", "окт.", "нояб.", "дек.",
+];
 
 /// CLDR `hu` abbreviated format months, with their dots.
 const HU_MEDIUM: [&str; 12] =
@@ -396,6 +417,10 @@ const ES_LONG: [&str; 12] = [
 /// CLDR `be` abbreviated format months: three letters, no dot, and "мая" (the genitive) for May.
 const BE_MEDIUM: [&str; 12] =
     ["сту", "лют", "сак", "кра", "мая", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
+/// CLDR 47 `be` stand-alone abbreviated months (yMMM is `LLL y`): the format form except May, the
+/// nominative "май" (skarnik.by: "май, род. мая"; verbum.by: nominative "май", genitive "мая").
+const BE_STANDALONE: [&str; 12] =
+    ["сту", "лют", "сак", "кра", "май", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
 /// Genitive, because a day number governs the month in Belarusian ("12 сакавіка").
 const BE_GENITIVE: [&str; 12] = [
     "студзеня", "лютага", "сакавіка", "красавіка", "траўня", "чэрвеня", "ліпеня", "жніўня",

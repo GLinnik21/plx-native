@@ -802,6 +802,40 @@ fn month_year_is_the_ymmm_skeleton_in_every_shipped_language_and_never_numeric()
     }
 }
 
+/// CLDR 47 (the data `icu_datetime` 2.1 is built from) `ru` stand-alone abbreviated months, what its
+/// yMMM skeleton (`LLL y 'г'.`) spells: "март", "май", "июнь" and "июль" differ from the format
+/// forms "мар.", "мая", "июн." and "июл." that follow a day.
+const MONTHS_RU_STANDALONE: [&str; 12] =
+    ["янв.", "февр.", "март", "апр.", "май", "июнь", "июль", "авг.", "сент.", "окт.", "нояб.", "дек."];
+/// CLDR 47 `be` stand-alone abbreviated months (yMMM is `LLL y`): only May differs from the format
+/// form ("май", where "мая" follows a day). "май" is the nominative of skarnik.by and verbum.by.
+const MONTHS_BE_STANDALONE: [&str; 12] =
+    ["сту", "лют", "сак", "кра", "май", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
+
+#[test]
+fn month_year_names_the_month_stand_alone_where_the_language_declines_it() {
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        let standalone = match cx.language() {
+            Language::Ru => &MONTHS_RU_STANDALONE,
+            Language::Be => &MONTHS_BE_STANDALONE,
+            // Every other shipped language writes the same abbreviated month after a day and before a
+            // year (CLDR yMMM is `MMM y` or `LLL y` over identical format and stand-alone names).
+            _ => continue,
+        };
+        let tag = cx.language().tag();
+        for (i, name) in standalone.iter().enumerate() {
+            let month = u8::try_from(i + 1).unwrap();
+            let expected = format!("{name} 2024\u{a0}г.");
+            assert_eq!(cx.month_year(2024, month).as_deref(), Some(expected.as_str()), "{tag} {month}");
+        }
+        // May is the month whose two forms differ in both languages: the nominative before a year,
+        // the genitive "мая" after a day, and the caption after a day is not touched.
+        assert_eq!(cx.month_year(2024, 5).as_deref(), Some("май 2024\u{a0}г."), "{tag}");
+        assert_eq!(cx.month_day(5, 9, MonthWidth::Medium).as_deref(), Some("9 мая"), "{tag}");
+    }
+}
+
 #[test]
 fn today_is_a_calendar_date_from_the_wall_clock() {
     let [year, month, day] = local_calendar_today().expect("a representable date");
