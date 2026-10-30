@@ -159,6 +159,14 @@ pub enum Icon {
     /// handle also starts just outside the ring, so the round caps close the joint without the two
     /// strokes overlapping at all.
     Search,
+    /// Three lines, each shorter than the one above — the sort control's mark in a page header
+    /// (the Library's "sort icon + criterion ⌄"), so the control reads as "order" without the words
+    /// "Sort & Filter", which become its spoken name and its menu's title. Stroked at the inline 2.2
+    /// weight `search` wears, ONE `<path>` of three subpaths that never touch, so there is no join
+    /// to crease. Its [`ink_x`] / [`band`] entries are the stroked bounds of that path
+    /// (`the_sort_mark_ink_matches_its_asset`). The design system's `assets/icons/sort.svg` is the
+    /// same drawing.
+    Sort,
     // ---- review-score marks (the detail hero's ratings row) ----
     //
     // These are OUR OWN drawings, not reproductions. Rotten Tomatoes' marks — the fruit, the
@@ -273,6 +281,8 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
         Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
         Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
+        // Path x 4..20 plus the 2.2 stroke's round caps, 1.1 each side.
+        Icon::Sort => (2.9 / 24.0, 21.1 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -291,6 +301,8 @@ pub const fn band(id: Icon) -> f32 {
         Icon::Bookmark | Icon::BookmarkFill => 19.5 / 24.0,
         Icon::Clock | Icon::CircleSlash => 20.2 / 24.0,
         Icon::ServerSlash => 21.0 / 24.0,
+        // Path y 7..17 plus the stroke, 1.1 each side.
+        Icon::Sort => 12.2 / 24.0,
         _ => 1.0,
     }
 }
@@ -327,6 +339,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
         Icon::More => include_str!("../../../assets/icons/more.svg"),
         Icon::Search => include_str!("../../../assets/icons/search.svg"),
+        Icon::Sort => include_str!("../../../assets/icons/sort.svg"),
         Icon::Tomato => include_str!("../../../assets/icons/tomato.svg"),
         Icon::TomatoCalyx => include_str!("../../../assets/icons/tomato-calyx.svg"),
         Icon::TomatoHollow => include_str!("../../../assets/icons/tomato-hollow.svg"),
@@ -592,6 +605,7 @@ mod ink_tests {
             Icon::ChevronDown,
             Icon::ChevronUp,
             Icon::Check,
+            Icon::Sort,
         ] {
             let (l, r) = ink_x(id);
             assert!(
@@ -735,6 +749,37 @@ mod ink_tests {
             .collect();
         assert_eq!(nums.len() % 2, 0, "path is not coordinate pairs");
         nums.chunks(2).map(|p| (p[0], p[1])).collect()
+    }
+
+    /// The sort mark's [`ink_x`] and [`band`] are its own path's bounds grown by half the stroke
+    /// (the round caps), measured from the asset rather than transcribed, and it rasterizes clean at
+    /// the header's mark size and at 4x: full opacity reached, no ink on the border.
+    #[test]
+    fn the_sort_mark_ink_matches_its_asset() {
+        let svg = src(Icon::Sort);
+        assert!(svg.contains(r#"stroke-width="2.2""#), "the sort mark is drawn at the inline weight");
+        let half = 1.1;
+        let pts = path_points(svg);
+        let xs = pts.iter().map(|p| p.0);
+        let ys = pts.iter().map(|p| p.1);
+        let (min_x, max_x) = (xs.clone().fold(f32::MAX, f32::min), xs.fold(f32::MIN, f32::max));
+        let (min_y, max_y) = (ys.clone().fold(f32::MAX, f32::min), ys.fold(f32::MIN, f32::max));
+        let (l, r) = ink_x(Icon::Sort);
+        assert!((l - (min_x - half) / 24.0).abs() < 1e-6 && (r - (max_x + half) / 24.0).abs() < 1e-6, "ink_x {l}..{r}");
+        assert!((band(Icon::Sort) - (max_y - min_y + 2.0 * half) / 24.0).abs() < 1e-6, "band {}", band(Icon::Sort));
+        for px in [26, 104] {
+            let px = icon_raster_px(px);
+            let rgba = plx_gfx::svg::rasterize(svg, px, px)
+                .unwrap_or_else(|| panic!("sort failed to rasterize at {px}px"));
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            let max_alpha = (0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max().unwrap();
+            assert_eq!(max_alpha, 255, "sort never reaches full opacity at {px}px");
+            for i in 0..px {
+                for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "sort has ink on the border at {px}px ({x},{y})");
+                }
+            }
+        }
     }
 
     /// The five Watchlist marks rasterize at the two sizes the Watchlist draws them at (the 28px
