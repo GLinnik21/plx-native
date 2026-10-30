@@ -1,8 +1,14 @@
 //! **PageHeader** — the one row of plain-text controls a library page wears under the top bar:
 //! the library names on the left (with a "+N" for the ones that do not fit) or a breadcrumb
 //! ("Films › Collections"), and the page's own controls on the right ("Collections · 12",
-//! "Recommended", "Sort & Filter · Title ▾"). The Library, its Collections and Recommended pages
-//! and the Watchlist all wear THIS row: one layout, one draw, one focus group ([`HeaderFocus`]).
+//! "Recommended", "Sort & Filter · Title ▾"; the Library's own cluster is the board's: "Collections
+//! · 24 ›  Recommended ›  |  ≡ Date added ⌄", places with a chevron ([`HeaderItem::place`]), a
+//! [`HeaderItem::divider`] and a sort control that is a leading [`HeaderItem::glyph`], its criterion
+//! alone ([`HeaderItem::value_only`]: the name "Sort & Filter" is carried, never drawn) and a quiet
+//! down chevron ([`HeaderItem::fold_quiet`]); the criterion has NO slot, so the control ends at
+//! [`TEXT_X1`] and the places slide as its width changes). The Library, its Collections and
+//! Recommended pages and the Watchlist all wear THIS row: one layout, one draw, one focus group
+//! ([`HeaderFocus`]); every new item field defaults to the look the other pages have.
 //!
 //! Geometry (spec): the text edges are x 96 and x 1771; a selected plate overhangs the text by
 //! [`OVERHANG`] (20), so the container is left 76, right 129, and a focus pill stands a constant

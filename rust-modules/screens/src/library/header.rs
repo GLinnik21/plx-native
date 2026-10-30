@@ -1,5 +1,8 @@
 //! The library page header (redesign spec, "Header"): the library names, the "+N" overflow and the
-//! page's three controls (on the Collections page, the crumb and its Sort) on the ui
+//! page's controls (Collections › and Recommended › as places, a divider, then the sort control:
+//! icon, the chosen criterion, a down chevron, with "Sort & Filter" as its unshown name
+//! ([`sort_control`], which the Collections page's Sort wears too); on the Collections page, the
+//! crumb and its Sort) on the ui
 //! [`PageHeader`], one focus row at y 148.
 //!
 //! This file DECLARES the row: which names, which controls, which element each focusable item is.
