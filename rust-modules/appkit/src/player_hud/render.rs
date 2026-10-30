@@ -23,9 +23,12 @@
 //! A text group of a section (`CompiledState::groups`) is stacked HERE from the wrapped heights, as the Info card
 //! stacks its own ([`sections::group`]).
 //!
-//! **What it does not draw yet** (each is a decision, not an omission): `rest: custom` (it takes the film),
-//! and a `strip` (the chapters strip is a `cards::Shelf`, which paints through a `DrawFrame` this walk does
-//! not carry: PR8 stage 2). [`draw`] draws nothing for them, so a package that needs them shows less
+//! **The chapters strip** is a `cards::Shelf` held in the [`HudMotion`] ([`super::strip`]); the walk hands it the
+//! `DrawFrame` the screen draws under and the Shelf paints, its springs stepped by the screen's tick. It draws
+//! the strip's geometry and classic's inks: a package's declared card inks are not read (PR8 stage 3).
+//!
+//! **What it does not draw yet** (each is a decision, not an omission): `rest: custom` (it takes the film).
+//! [`draw`] draws nothing for it, so a package that needs it shows less
 //! rather than something wrong. A title's declared `ink` and `bold` are not carried: classic's rule (an
 //! episode's kicker is primary and bold, a context line secondary and regular) draws, and only the
 //! declared sizes are honoured.
