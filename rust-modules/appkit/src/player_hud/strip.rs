@@ -131,6 +131,17 @@ impl<'a, E> Cards<'a, E> {
         Cards { chapters, sid, geo, elem: PhantomData }
     }
 
+    /// The position chapter `i` starts at, in ns (what a press on its card seeks to).
+    pub fn start_ns(&self, i: usize) -> Option<i64> {
+        self.chapters.get(i).map(|c| c.start_ms.saturating_mul(1_000_000))
+    }
+
+    /// The card focus lands on when the strip opens: the chapter that holds the position the HUD shows
+    /// ([`chapter_at_shown`]).
+    pub fn seat_at(&self, model: &HudModel) -> usize {
+        chapter_at_shown(self.chapters, model)
+    }
+
     /// The name a chapter shows: its title, or "Chapter N" when the server sent none.
     fn name(&self, i: usize) -> String {
         let ch = &self.chapters[i];

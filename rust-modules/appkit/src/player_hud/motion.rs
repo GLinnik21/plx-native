@@ -187,6 +187,18 @@ impl HudMotion {
         self.strip.as_mut().expect("the strip's shelf was just built")
     }
 
+    /// The strip's Shelf as it is, for a read that must not build one (the screen's `Focusable` and its stops).
+    /// `None` until [`strip`](Self::strip) has built it, which the screen does when the Chapters section opens.
+    pub fn strip_shelf(&self) -> Option<&Shelf> {
+        self.strip.as_ref()
+    }
+
+    /// Forget the strip's Shelf: the Chapters section closed, so the next opening builds one at rest rather than
+    /// resuming the last opening's scroll.
+    pub fn drop_strip(&mut self) {
+        self.strip = None;
+    }
+
     /// Step the control row's focus pop AND the resume clock — once per FRAME, from the player
     /// instance's `Tick`.
     ///

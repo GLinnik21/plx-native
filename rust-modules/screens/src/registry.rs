@@ -1386,6 +1386,11 @@ pub enum AppMsg {
     /// The *Play Version* surface committed a row: play that version of the page's item, as its
     /// Play pill would (resuming). The surface names the version and the page plays it.
     PlayVersion(plx_plex::plex::MediaId),
+    /// **A `toggle_section` command was performed** (`app::playback::perform_hud_command`, from a tab's
+    /// OK or click or from a package's disc): the player page opens that section if it is closed and closes it
+    /// if it is open, under the package's policy. The page owns the sections ([`crate::player::input::Sections`]),
+    /// so the app asks for the change as an addressed event and never writes them.
+    HudSection(plx_appkit::player_hud::command::Section),
 }
 
 /// What the consent machine is told (§2.3): a person's answer to both questions at once.

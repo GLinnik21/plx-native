@@ -4789,20 +4789,19 @@ mod lifecycle_regression_tests {
         assert_eq!(globals.seek_to(), 60_000_000_000, "the second press accumulates");
     }
 
-    /// **Section commands toggle**: `toggle_section` opens its panel and dismisses it when the same
-    /// panel is already up, the way the Info card's own tab does.
+    /// **Section commands toggle**: `toggle_section` opens the section on the player PAGE (its own state,
+    /// `hud.sections`) and a second one closes it. Nothing reaches the overlay stack for it: no panel is pushed.
     #[test]
-    fn toggle_section_opens_its_panel_and_a_second_press_closes_it() {
+    fn toggle_section_opens_the_page_section_and_a_second_press_closes_it() {
         use plx_appkit::player_hud::command::{HudCommand, Section};
-        use plx_screens::player::overlay::OverlayKind;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         let mut now = 100;
-        for want in [Some(OverlayKind::Chapters), None] {
+        for want in [true, false] {
             super::playback::perform_hud_command(
-                HudCommand::ToggleSection(Section::Chapters),
+                HudCommand::ToggleSection(Section::Info),
                 &mut app.player,
                 &mut app.adapters.player,
                 &mut app.repause_at,
@@ -4815,9 +4814,38 @@ mod lifecycle_regression_tests {
                 now += 16;
                 frame(&mut app, now);
             }
-            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), want);
+            let open = super::super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.contains(Section::Info));
+            assert_eq!(open, want, "Info {}", if want { "opens" } else { "closes" });
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None, "no overlay is pushed for a section");
             now += 100;
         }
+    }
+
+    /// Chapters opens only for an item that has chapters: with none playing, `toggle_section` is a no-op.
+    #[test]
+    fn toggle_section_chapters_does_nothing_for_an_item_without_chapters() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::playback::perform_hud_command(
+            HudCommand::ToggleSection(Section::Chapters),
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            100,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        let mut now = 100;
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(super::super::bridge::player(&app.pages).is_some_and(|p| !p.hud.sections.any()));
+        assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None);
     }
 
     /// **The app ladder's player OK arm is unreachable.** A mounted player page owns the keys

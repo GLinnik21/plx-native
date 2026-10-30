@@ -2861,8 +2861,19 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         };
         let infolast = matches!(surface.map(|s| s.panel()), Some(Panel::Info(p)) if p.at_last());
         let menu = is(|k| matches!(k, OverlayKind::Tracks { .. }));
-        let info = is(|k| matches!(k, OverlayKind::Info));
-        let chap = is(|k| matches!(k, OverlayKind::Chapters));
+        // Info and Chapters are the page's own sections now (`hud.sections`); the spellings stay so a recording
+        // taken before and one taken after remain comparable.
+        let sections = player.map(|p| p.hud.sections).unwrap_or(plx_screens::player::input::Sections::NONE);
+        let info = is(|k| matches!(k, OverlayKind::Info)) || sections.contains(plx_appkit::player_hud::command::Section::Info);
+        let chap = is(|k| matches!(k, OverlayKind::Chapters)) || sections.contains(plx_appkit::player_hud::command::Section::Chapters);
+        // the section's own cursor: Info's button, or the chapter card the engine holds
+        let section_sel = if sections.contains(plx_appkit::player_hud::command::Section::Chapters) {
+            d.input.engine.current(InputOwner::Entry(page.id))
+                .and_then(|k| k.elem.checked_sub(plx_appkit::player_hud::ELEM_CHAPTER_BASE)).unwrap_or(0) as usize
+        } else {
+            player.map_or(0, |p| p.hud.nav.btn.max(0) as usize)
+        };
+        let sel = if sections.any() { section_sel as i32 } else { sel };
         let more = is(|k| matches!(k, OverlayKind::More { .. }));
         let _ = write!(
             out,
@@ -3976,6 +3987,19 @@ pub(crate) fn player_mut(
         .screen
         .as_any_mut()?
         .downcast_mut::<plx_screens::player::PlayerScreen>()
+}
+
+/// **Ask the player page to toggle a section** (Chapters, Info): the `toggle_section` command's performer
+/// (`app::playback::perform_hud_command`) addresses the page with `AppMsg::HudSection`. The page owns the
+/// sections, so it opens or closes under the package's policy and seats its own focus; the app writes nothing of
+/// it. A no-op when no player page is mounted.
+pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_appkit::player_hud::command::Section) {
+    let Some(instance) = d.top_page() else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(
+        page,
+        Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section)))),
+    );
 }
 
 /// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half

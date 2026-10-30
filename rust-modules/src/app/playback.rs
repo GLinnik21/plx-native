@@ -1237,7 +1237,7 @@ pub(crate) fn perform_hud_command(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
-    use plx_appkit::player_hud::command::{HudCommand, Section};
+    use plx_appkit::player_hud::command::HudCommand;
     use plx_media::route::QueueStep;
     use plx_screens::player::overlay::OverlayKind;
     use plx_screens::registry::PlayerReq;
@@ -1275,17 +1275,9 @@ pub(crate) fn perform_hud_command(
             seed_menu_anchor(pages, bridge, kind);
             super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
         }
-        HudCommand::ToggleSection(section) => {
-            let kind = match section {
-                Section::Chapters => OverlayKind::Chapters,
-                Section::Info => OverlayKind::Info,
-            };
-            if super::bridge::player_overlay_kind(pages).is_some_and(|up| up.slot() == kind.slot()) {
-                super::bridge::dismiss_player_overlays(pages);
-            } else {
-                super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
-            }
-        }
+        // A section is the player page's own state: the performer addresses the page with the toggle, and the
+        // page opens or closes it under the package's policy and seats its own focus.
+        HudCommand::ToggleSection(section) => super::bridge::toggle_player_section(pages, section),
         HudCommand::FromBeginning => from_beginning(pa),
         HudCommand::GoToDetail => {
             if let Some(rk) = plx_appkit::info_panel::detail_rk(bridge.metadata_view()).map(str::to_owned) {

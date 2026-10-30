@@ -54,22 +54,26 @@
 //! Rects are compared to a thousandth of a pixel so an equivalent re-derivation of the same
 //! constants cannot trip them.
 //!
-//! It names no appkit item but `slot_for`, `ControlSlot`, `Controls`, `Busy` and `overscan_rects`,
-//! and no private method of the screen, so it compiles against both sides of the split.
+//! The pin tables and the census above name no appkit item but `slot_for`, `ControlSlot`, `Controls`,
+//! `Busy` and `overscan_rects`, and no private method of the screen, so they compile against both sides of the
+//! split. **The `sections` module at the end is the one exception**: PR8's Chapters and Info pages are the
+//! screen's own state, so its tests name `Section`, `HudCommand` and the screen's `hud.sections`, and run the same
+//! dispatcher with the rig performing a `toggle_section` the way the app's performer does.
 
 use super::{test_store, TestHost, ENTRY};
 use crate::player::PlayerScreen;
 use crate::registry::{AppFx, AppMsg, PageMemory, PlayerReq};
+use plx_appkit::player_hud::command::{HudCommand, Section};
 use plx_appkit::player_hud::{overscan_rects, slot_for, Busy, ControlSlot, Controls};
 use plx_machine::machine::{
-    Cx, Effects, EntryId, GroupId, Handled, InputEvent, InputOwner, InstanceId, Key, MachineId,
+    Cx, Delivery, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputOwner, InstanceId, Key, MachineId,
     NavOp, TimerId,
 };
 use plx_machine::present::Present;
 use plx_ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use plx_ui::fixture::{key, key_up, tick, FixtureArg, FixtureMeasure};
 use plx_ui::frame::Budget;
-use plx_ui::screen::{At, Focusable, GroupSpec, Mounter, ReturnState, Screen};
+use plx_ui::screen::{At, Focusable, GroupSpec, Mounter, ReturnState, Screen, ScreenEvent};
 
 /// The longest key string any pin replays. Past it the clock this harness runs (600 ms a press)
 /// would reach the transport's own timeout and the Up Next countdown, and a pin would start to
@@ -158,8 +162,10 @@ fn assert_idle_playhead() {
     );
 }
 
-/// Mounts the player screen for the one page the dispatcher opens.
-struct PinMounter;
+/// Mounts the player screen for the one page the dispatcher opens, drawn from `package`.
+struct PinMounter {
+    package: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,
+}
 impl Mounter<TestHost> for PinMounter {
     fn mount(
         &mut self,
@@ -170,15 +176,18 @@ impl Mounter<TestHost> for PinMounter {
         _fx: &mut Effects<'_, TestHost>,
     ) -> Box<dyn Screen<TestHost>> {
         let InputOwner::Entry(entry) = cx.owner else { panic!("the page owns its own input") };
-        Box::new(PlayerScreen::new(entry, plx_appkit::player_hud::loaded::classic_for_test()))
+        Box::new(PlayerScreen::new(entry, self.package.clone()))
     }
 }
 
-/// The application's side of the frame, reduced to recording what the player asked for.
+/// The application's side of the frame, reduced to recording what the player asked for. With `perform` set it
+/// also does the one thing the app's performer does for a section: it answers a `toggle_section` with the
+/// addressed event the page opens or closes the section on (`app::bridge::toggle_player_section`).
 struct PinRig {
     mounter: PinMounter,
     measure: FixtureMeasure,
     reqs: Vec<PlayerReq>,
+    perform: bool,
 }
 impl Rig<TestHost> for PinRig {
     fn split(&mut self) -> Split<'_, TestHost> {
@@ -188,8 +197,11 @@ impl Rig<TestHost> for PinRig {
         Handled::No
     }
     fn timer(&mut self, _: MachineId, _: TimerId, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {}
-    fn app_fx(&mut self, _: MachineId, effect: AppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {
+    fn app_fx(&mut self, from: MachineId, effect: AppFx, _: &CxParts<u32>, fx: &mut Effects<'_, TestHost>) {
         if let AppFx::Player(req) = effect {
+            if let (true, PlayerReq::Command(HudCommand::ToggleSection(section))) = (self.perform, &req) {
+                fx.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(*section)))));
+            }
             self.reqs.push(req);
         }
     }
@@ -262,8 +274,18 @@ struct Run {
 
 impl Run {
     fn boot(occupant: Occupant) -> Run {
+        Run::boot_in(occupant, plx_appkit::player_hud::loaded::classic_for_test(), false)
+    }
+
+    /// [`boot`](Self::boot) with the package the page draws from, and whether the rig performs a
+    /// `toggle_section` the way the app does (the pin tables below record the request and stop there).
+    fn boot_in(
+        occupant: Occupant,
+        package: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,
+        perform: bool,
+    ) -> Run {
         let mut d: Dispatcher<TestHost> = Dispatcher::new();
-        let mut rig = PinRig { mounter: PinMounter, measure: FixtureMeasure, reqs: Vec::new() };
+        let mut rig = PinRig { mounter: PinMounter { package }, measure: FixtureMeasure, reqs: Vec::new(), perform };
         d.request(MachineId::Nav, NavOp::Root(FixtureArg::VideoPlane));
         d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
         let id = d.nav.top_page().expect("the player page mounted").id;
@@ -330,6 +352,7 @@ impl Run {
             'L' => self.press(Key::Left),
             'R' => self.press(Key::Right),
             'K' => self.press(Key::Ok),
+            'B' => self.press(Key::Back),
             '!' => self.push_plain_discs(),
             other => panic!("no such step {other:?}"),
         }
@@ -677,7 +700,7 @@ const PLAIN: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 0, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 2, 0, "r", ""),
     p("UUUD", 0, 2, 0, "r", ""),
     p("UUUL", 0, 2, 0, "r", ""),
@@ -697,7 +720,7 @@ const PLAIN: &[Pin] = &[
     p("UUDDD", 2, 2, 0, "vr", ""),
     p("UUDDL", 2, 2, 0, "vr", ""),
     p("UUDDR", 2, 2, 0, "vr", ""),
-    p("UUDDK", 2, 2, 0, "vr", "OpenOverlay(Info)"),
+    p("UUDDK", 2, 2, 0, "vr", "Command(ToggleSection(Info))"),
     p("UURUU", 0, 3, 0, "r", ""),
     p("UURUD", 0, 3, 0, "r", ""),
     p("UURUL", 0, 3, 0, "r", ""),
@@ -756,7 +779,7 @@ const PLAIN_CHAPTERS: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 1, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 2, 0, "r", ""),
     p("UUUD", 0, 2, 0, "r", ""),
     p("UUUL", 0, 2, 0, "r", ""),
@@ -776,12 +799,12 @@ const PLAIN_CHAPTERS: &[Pin] = &[
     p("UDRD", 2, 0, 1, "vr", ""),
     p("UDRL", 2, 0, 0, "vr", ""),
     p("UDRR", 2, 0, 1, "vr", ""),
-    p("UDRK", 2, 0, 1, "vr", "OpenOverlay(Chapters)"),
+    p("UDRK", 2, 0, 1, "vr", "Command(ToggleSection(Chapters))"),
     p("UUDDU", 0, 2, 0, "vr", ""),
     p("UUDDD", 2, 2, 0, "vr", ""),
     p("UUDDL", 2, 2, 0, "vr", ""),
     p("UUDDR", 2, 2, 1, "vr", ""),
-    p("UUDDK", 2, 2, 0, "vr", "OpenOverlay(Info)"),
+    p("UUDDK", 2, 2, 0, "vr", "Command(ToggleSection(Info))"),
     p("UURUU", 0, 3, 0, "r", ""),
     p("UURUD", 0, 3, 0, "r", ""),
     p("UURUL", 0, 3, 0, "r", ""),
@@ -813,11 +836,11 @@ const PLAIN_CHAPTERS: &[Pin] = &[
     p("DDRR", 2, 0, 1, "vr", ""),
     p("DDRRL", 2, 0, 0, "vr", ""),
     p("DDRRLL", 2, 0, 0, "vr", ""),
-    p("DDRRK", 2, 0, 1, "vr", "OpenOverlay(Chapters)"),
+    p("DDRRK", 2, 0, 1, "vr", "Command(ToggleSection(Chapters))"),
     p("DDL", 2, 0, 0, "vr", ""),
     p("DDLR", 2, 0, 1, "vr", ""),
-    p("DDRK", 2, 0, 1, "vr", "OpenOverlay(Chapters)"),
-    p("DDRKK", 2, 0, 1, "vr", "OpenOverlay(Chapters)"),
+    p("DDRK", 2, 0, 1, "vr", "Command(ToggleSection(Chapters))"),
+    p("DDRKK", 2, 0, 1, "vr", "Command(ToggleSection(Chapters))"),
     p("UDRUUU", 0, 2, 1, "vd", ""),
     p("UDRUUD", 0, 2, 1, "vr", ""),
     p("UDRUUL", 1, 2, 1, "vr", ""),
@@ -860,7 +883,7 @@ const EPISODE: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 0, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 1, 0, "r", ""),
     p("UUUD", 0, 1, 0, "r", ""),
     p("UUUL", 0, 1, 0, "r", ""),
@@ -885,7 +908,7 @@ const EPISODE: &[Pin] = &[
     p("UUDDD", 2, 1, 0, "vr", ""),
     p("UUDDL", 2, 1, 0, "vr", ""),
     p("UUDDR", 2, 1, 0, "vr", ""),
-    p("UUDDK", 2, 1, 0, "vr", "OpenOverlay(Info)"),
+    p("UUDDK", 2, 1, 0, "vr", "Command(ToggleSection(Info))"),
     p("UULUU", 0, 0, 0, "r", ""),
     p("UULUD", 0, 0, 0, "r", ""),
     p("UULUL", 0, 0, 0, "r", ""),
@@ -952,7 +975,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 0, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 1, 0, "r", ""),
     p("UUUD", 0, 1, 0, "r", ""),
     p("UUUL", 0, 1, 0, "r", ""),
@@ -972,7 +995,7 @@ const NEXT_ONLY: &[Pin] = &[
     p("UUDDD", 2, 1, 0, "vr", ""),
     p("UUDDL", 2, 1, 0, "vr", ""),
     p("UUDDR", 2, 1, 0, "vr", ""),
-    p("UUDDK", 2, 1, 0, "vr", "OpenOverlay(Info)"),
+    p("UUDDK", 2, 1, 0, "vr", "Command(ToggleSection(Info))"),
     p("UURUU", 0, 2, 0, "r", ""),
     p("UURUD", 0, 2, 0, "r", ""),
     p("UURUL", 0, 2, 0, "r", ""),
@@ -1034,7 +1057,7 @@ const PREVIOUS_ONLY: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 0, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 0, 0, "r", ""),
     p("UUUD", 0, 0, 0, "r", ""),
     p("UUUL", 0, 0, 0, "r", ""),
@@ -1106,7 +1129,7 @@ const SKIP_INTRO: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 0, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 0, 0, "r", ""),
     p("UUUD", 0, 0, 0, "r", ""),
     p("UUUL", 0, 0, 0, "r", ""),
@@ -1149,7 +1172,7 @@ const SKIP_CREDITS: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 0, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 0, 0, "r", ""),
     p("UUUD", 0, 0, 0, "r", ""),
     p("UUUL", 0, 0, 0, "r", ""),
@@ -1187,7 +1210,7 @@ const UP_NEXT: &[Pin] = &[
     p("UDD", 2, 0, 0, "vr", ""),
     p("UDL", 2, 0, 0, "vr", ""),
     p("UDR", 2, 0, 0, "vr", ""),
-    p("UDK", 2, 0, 0, "vr", "OpenOverlay(Info)"),
+    p("UDK", 2, 0, 0, "vr", "Command(ToggleSection(Info))"),
     p("UUUU", 0, 1, 0, "r", ""),
     p("UUUD", 0, 1, 0, "r", ""),
     p("UUUL", 0, 1, 0, "r", ""),
@@ -1207,7 +1230,7 @@ const UP_NEXT: &[Pin] = &[
     p("UUDDD", 2, 1, 0, "vr", ""),
     p("UUDDL", 2, 1, 0, "vr", ""),
     p("UUDDR", 2, 1, 0, "vr", ""),
-    p("UUDDK", 2, 1, 0, "vr", "OpenOverlay(Info)"),
+    p("UUDDK", 2, 1, 0, "vr", "Command(ToggleSection(Info))"),
     p("UULUU", 0, 0, 0, "r", ""),
     p("UULUD", 0, 0, 0, "r", ""),
     p("UULUL", 0, 0, 0, "r", ""),
@@ -1557,3 +1580,366 @@ const OVERSCAN: &[(&str, Ext)] = &[
     ("player bottom tab row", (96.0, 949.0, 0.0, 64.0)),
     ("player title / elapsed clock", (96.0, 768.0, 0.0, 0.0)),
 ];
+
+// ---- the sections (PR8 stage 2a) -----------------------------------------------------------------
+//
+// Chapters and Info are the page's own sections now: opened by `toggle_section` (a tab's OK, a package's disc),
+// travelled by the engine's groups, pressed by its `PressCommit`, closed by the screen. These walk the real
+// dispatcher with the rig performing the toggle as the app does, on the classic package (modal: the page takes
+// the middle of the transport, Down off its bottom puts it away, BACK closes it) and on the reference
+// (inline: the page opens below the row, Up/Down travel between them).
+
+mod sections {
+    use super::*;
+    use crate::player::input::Sections;
+    use plx_appkit::player_hud::{ELEM_CHAPTER_BASE, ELEM_SECTION_BASE, ELEM_TAB_BASE};
+    use plx_appkit::player_hud::geometry::{GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP, GROUP_TABS};
+
+    impl Run {
+        fn open_sections(&mut self) -> Vec<Section> {
+            self.screen().hud.sections.iter().collect()
+        }
+        /// The group the page says focus is in, as a number.
+        fn group(&mut self) -> u32 {
+            self.screen().hud.nav.focus.region()
+        }
+        /// The element the engine itself holds.
+        fn held(&self) -> Option<u32> {
+            self.d.input.engine.current(InputOwner::Entry(self.id)).map(|k| k.elem)
+        }
+        /// The requests the LAST key raised (the rig clears them at the start of a step).
+        fn asked(&mut self) -> Vec<PlayerReq> {
+            std::mem::take(&mut self.rig.reqs)
+        }
+        /// The app's performer answering a `toggle_section`: the addressed event, delivered on the next frame
+        /// (`app::bridge::toggle_player_section`).
+        fn toggle(&mut self, section: Section) {
+            let page = MachineId::Instance(self.d.top_page().expect("the player page is mounted"));
+            self.d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section)))));
+            let now = self.now;
+            self.frame(now, vec![]);
+        }
+        /// Walk the keys with the tabs row reached by `DD` first (the transport is hidden at boot: the first
+        /// press raises it), then press the tab at `tab`.
+        fn open_from_tab(&mut self, tab: usize) {
+            self.walk("DD");
+            for _ in 0..tab {
+                self.step('R');
+            }
+            self.step('K');
+        }
+    }
+
+    fn classic_run(occupant: Occupant) -> Run {
+        Run::boot_in(occupant, plx_appkit::player_hud::loaded::classic_for_test(), true)
+    }
+
+    // -- classic: Chapters, modal ---------------------------------------------------------------
+
+    /// OK on the Chapters tab asks `toggle_section`; the app's performer answers; the page opens the strip and
+    /// seats focus on the card that holds the position the bar shows (the first, with the playhead at 0).
+    #[test]
+    fn ok_on_the_chapters_tab_opens_the_strip_and_seats_its_first_card() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        assert_eq!(run.asked(), vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Chapters))]);
+        assert_eq!(run.open_sections(), vec![Section::Chapters]);
+        assert_eq!(run.group(), GROUP_STRIP.0, "the page's cursor follows the engine into the strip");
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE), "the engine holds the first card");
+    }
+
+    /// Left and Right walk the strip's cards (the Shelf's own neighbours) and stop at its ends.
+    #[test]
+    fn left_and_right_walk_the_strip_and_stop_at_its_ends() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.step('R');
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE + 1));
+        run.step('R');
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE + 1), "the last card is the strip's end");
+        run.step('L');
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE));
+        run.step('L');
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE), "the first card is the strip's start");
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "walking never closes it");
+        assert_eq!(run.group(), GROUP_STRIP.0);
+        assert!(run.asked().is_empty(), "walking asks the app for nothing");
+    }
+
+    /// OK on a card seeks to where the chapter starts and puts the strip away, focus back on its tab.
+    #[test]
+    fn ok_on_a_chapter_seeks_to_its_start_and_closes_the_strip() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.step('R');
+        run.step('K');
+        // the second chapter of the fixture starts at 120 s
+        assert_eq!(run.asked(), vec![PlayerReq::SeekTo(120_000_000_000)]);
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!((run.group(), run.screen().hud.nav.tab), (GROUP_TABS.0, 1), "the Chapters tab has the ring again");
+        assert_eq!(run.held(), Some(ELEM_TAB_BASE + 1));
+    }
+
+    /// **Modal Down-to-tabs**: Down off the strip's bottom edge puts the page away and lands on the tab that
+    /// opened it. Nothing is asked of the app and the transport is not left.
+    #[test]
+    fn down_off_the_strip_puts_it_away_and_seats_its_tab() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.asked();
+        run.step('D');
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "Down at the bottom edge closes a modal page");
+        assert_eq!((run.group(), run.screen().hud.nav.tab), (GROUP_TABS.0, 1));
+        assert_eq!(run.held(), Some(ELEM_TAB_BASE + 1));
+        assert!(run.asked().is_empty());
+    }
+
+    /// Up inside the strip has nowhere to go: the page is the top of its own travel.
+    #[test]
+    fn up_inside_the_strip_stays_in_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.step('U');
+        assert_eq!(run.open_sections(), vec![Section::Chapters]);
+        assert_eq!((run.group(), run.held()), (GROUP_STRIP.0, Some(ELEM_CHAPTER_BASE)));
+    }
+
+    /// **BACK closes the latest section** and hands focus to its tab; it does not leave the film (no `Exit`)
+    /// and does not hide the transport from under the page.
+    #[test]
+    fn back_closes_the_strip_and_seats_its_tab_without_leaving() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.asked();
+        run.step('B');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!((run.group(), run.screen().hud.nav.tab), (GROUP_TABS.0, 1));
+        assert_eq!(run.held(), Some(ELEM_TAB_BASE + 1));
+        assert!(run.asked().is_empty(), "BACK over a section asks for nothing: no Exit, no Transport");
+        assert!(!run.screen().hud.dismissed, "…and does not hide the transport");
+    }
+
+    /// `toggle_section` is a toggle: the performer's second answer for a section that is open closes it, and focus
+    /// goes back to the control that opened it.
+    #[test]
+    fn toggling_an_open_section_closes_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.toggle(Section::Chapters);
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!(run.held(), Some(ELEM_TAB_BASE + 1));
+    }
+
+    // -- classic: Info, modal --------------------------------------------------------------------
+
+    /// OK on the Info tab opens the page and seats its first button; Down walks the buttons; OK on one performs
+    /// its command and closes the page.
+    #[test]
+    fn ok_on_the_info_tab_opens_the_page_and_a_button_performs_and_closes() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(0);
+        assert_eq!(run.asked(), vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Info))]);
+        assert_eq!(run.open_sections(), vec![Section::Info]);
+        assert_eq!((run.group(), run.held()), (GROUP_SECTION.0, Some(ELEM_SECTION_BASE)));
+        run.step('K');
+        let asked = run.asked();
+        assert!(
+            matches!(asked.as_slice(), [PlayerReq::Command(c)] if !matches!(c, HudCommand::ToggleSection(_))),
+            "OK on Info's first button performs its own command, got {asked:?}"
+        );
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "performing it puts the page away");
+        assert_eq!((run.group(), run.screen().hud.nav.tab), (GROUP_TABS.0, 0));
+    }
+
+    /// Down off Info's last button is the modal bottom edge: the page goes away and the Info tab has the ring.
+    #[test]
+    fn down_through_the_info_buttons_leaves_by_the_bottom_edge() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(0);
+        run.step('D');
+        assert_eq!(run.held(), Some(ELEM_SECTION_BASE + 1), "Info's second button");
+        assert_eq!(run.open_sections(), vec![Section::Info]);
+        run.step('D');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!((run.group(), run.held()), (GROUP_TABS.0, Some(ELEM_TAB_BASE)));
+    }
+
+    /// BACK over Info is the same as over Chapters.
+    #[test]
+    fn back_closes_the_info_page_and_seats_its_tab() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(0);
+        run.asked();
+        run.step('B');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!(run.held(), Some(ELEM_TAB_BASE));
+        assert!(run.asked().is_empty());
+    }
+
+    // -- the stand-ins and a failure ---------------------------------------------------------------
+
+    /// D7: a Skip pill or the Up Next pair draws only with no section open. While one is open the page reads the
+    /// discs the model sampled; closing it gives the stand-in back, unchanged.
+    #[test]
+    fn a_stand_in_waits_behind_an_open_section() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        for occupant in [Occupant::SkipIntro, Occupant::UpNext] {
+            let mut run = classic_run(occupant);
+            let stand_in = slot_of(occupant);
+            assert!(run.screen().eff_slot() == stand_in, "{occupant:?}: drawn with no section open");
+            run.screen().hud.sections = Sections::NONE.toggled(Section::Info, true);
+            assert!(
+                matches!(run.screen().eff_slot(), ControlSlot::Discs(_)),
+                "{occupant:?}: the discs while a section is open"
+            );
+            assert!(run.screen().slot == stand_in, "{occupant:?}: the stand-in itself is untouched");
+            run.screen().hud.sections = Sections::NONE;
+            assert!(run.screen().eff_slot() == stand_in, "{occupant:?}: back when the section closes");
+        }
+    }
+
+    /// A failure owns the frame outright: a section opened over the picture goes with it.
+    #[test]
+    fn a_failure_closes_the_open_sections() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        assert_eq!(run.open_sections(), vec![Section::Chapters]);
+        run.screen().busy = Busy::Readout(
+            plx_ui::widgets::StatusKind::Failed,
+            core::ffi::CStr::from_bytes_with_nul(b"failed\0").unwrap(),
+        );
+        let now = run.now;
+        run.frame(now + 16, vec![]);
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!(run.group(), GROUP_SCRUB.0);
+    }
+
+    /// Chapters opens only for an item that has chapters.
+    #[test]
+    fn chapters_do_not_open_for_an_item_without_them() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Chapters);
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+    }
+
+    // -- the reference: inline ---------------------------------------------------------------------
+
+    fn reference_run() -> Run {
+        let mut run = Run::boot_in(Occupant::Plain, plx_appkit::player_hud::loaded::reference_for_test(), true);
+        // the app's snapshot of the item: the Chapters disc is enabled only for an item that has chapters
+        run.screen().model.chapters = true;
+        run
+    }
+
+    /// The row item (a disc) the package opens `section` with.
+    fn opener_item(run: &mut Run, section: Section) -> i32 {
+        let want = Some(HudCommand::ToggleSection(section));
+        (0..8).find(|&i| run.screen().row_command(i) == want).expect("the reference opens the section with a disc in its row")
+    }
+
+    /// Walk the row's cursor to item `i` with Left and Right.
+    fn along_row_to(run: &mut Run, i: i32) {
+        for _ in 0..8 {
+            let at = run.screen().hud.nav.btn;
+            if at == i {
+                return;
+            }
+            run.step(if at < i { 'R' } else { 'L' });
+        }
+        panic!("never reached row item {i}: on {}", run.screen().hud.nav.btn);
+    }
+
+    /// Walk to item `i` from a hidden transport: Up raises it and a second Up enters the row.
+    fn go_to_item(run: &mut Run, i: i32) {
+        run.walk("UU");
+        along_row_to(run, i);
+    }
+
+    /// The reference opens Chapters from a disc in its row. The page opens below the row and the row stays: Up
+    /// from the strip is the row, Down from the row is the strip, and BACK lands on the disc that opened it.
+    #[test]
+    fn the_reference_opens_chapters_inline_and_travels_between_it_and_the_row() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = reference_run();
+        let disc = opener_item(&mut run, Section::Chapters);
+        go_to_item(&mut run, disc);
+        run.step('K');
+        assert_eq!(run.asked(), vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Chapters))]);
+        assert_eq!(run.open_sections(), vec![Section::Chapters]);
+        assert_eq!((run.group(), run.held()), (GROUP_STRIP.0, Some(ELEM_CHAPTER_BASE)));
+        run.step('U');
+        assert_eq!(run.group(), GROUP_ROW.0, "Up from an inline page is the row beside it");
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "the page stays up");
+        run.step('D');
+        assert_eq!(run.group(), GROUP_STRIP.0, "Down from the row enters the open page");
+        run.step('D');
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "an inline page has nothing below it to leave by");
+        assert_eq!(run.group(), GROUP_STRIP.0);
+        run.asked();
+        run.step('B');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!((run.group(), run.screen().hud.nav.btn), (GROUP_ROW.0, disc), "BACK lands on the disc that opened it");
+        assert!(run.asked().is_empty());
+    }
+
+    /// Two inline sections stack: BACK closes the latest and focus returns to ITS disc, then the other's.
+    #[test]
+    fn the_reference_stacks_info_over_chapters_and_back_unwinds_them_in_order() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = reference_run();
+        let chapters = opener_item(&mut run, Section::Chapters);
+        let info = opener_item(&mut run, Section::Info);
+        go_to_item(&mut run, chapters);
+        run.step('K');
+        run.step('U');
+        along_row_to(&mut run, info);
+        run.step('K');
+        assert_eq!(run.open_sections(), vec![Section::Info, Section::Chapters], "Info opened beside Chapters, as the latest");
+        assert_eq!(run.group(), GROUP_SECTION.0);
+        run.step('B');
+        assert_eq!(run.open_sections(), vec![Section::Chapters]);
+        assert_eq!((run.group(), run.screen().hud.nav.btn), (GROUP_ROW.0, info), "BACK lands on Info's disc");
+        run.step('B');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!((run.group(), run.screen().hud.nav.btn), (GROUP_ROW.0, chapters));
+    }
+}
