@@ -447,17 +447,36 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
             ("HUD-E1102", "/layout/up_next"),
         ],
     },
+    // the placer measures its gap from the opener's REST rect, and the opener pops (`CTRL_FOCUS_SCALE`) by
+    // width x 0.07 / 2 a side: past 800 px the pop outgrows PLAYER_MENU_GAP (28 px). A 960-wide opener (the
+    // `actions` cell admits `min_w` up to 1920) in the Info card's button column, lifted to y 644 by a tall
+    // card (neither Above nor Below holds the menus' 600), takes the Start side: the panel stands at x 174..824
+    // beside the opener at x 852..1812, and the opener's popped rect (33.6 px a side) reaches x 818.4, into it.
+    // The REST rect does not overlap the panel, so only the popped one does, and nothing else in the package
+    // is wrong
+    InvalidCase {
+        name: "a 960-wide opener pops across the gap to its menu",
+        code: "HUD-E1301",
+        pointer: "/layout/block/3/cells/0/rect/cells/2/actions/items/1",
+        base: Base::Classic,
+        edits: &[
+            (r#""min_w": 352,"#, r#""min_w": 960,"#),
+            (r#""bleed": 16, "h": 236,"#, r#""bleed": 16, "h": 536,"#),
+            (
+                r#"{ "id": "go_to_detail", "command": "go_to_detail", "widget": "button", "size": 70 }"#,
+                r#"{ "id": "go_to_detail", "command": "open_more", "page": "quality", "widget": "button", "size": 70 }"#,
+            ),
+        ],
+        langs: &[],
+        skew: 0.0,
+        also: &[],
+    },
 ];
 
 /// `(code, reason)` for a code of this module that no parseable package can reach, covered by a synthetic
-/// unit test instead of an invalid case.
+/// unit test instead of an invalid case. None: M1 is reached by a 960-wide opener (see the last `INVALID` case).
 #[cfg(test)]
-pub(super) const UNIT_ONLY: &[(&str, &str)] = &[(
-    "HUD-E1301",
-    "PLAYER_MENU_GAP (28 px) exceeds the pop of any disc or button the schema allows (512 px at CTRL_FOCUS_SCALE grows 17.9 px a \
-     side) and the placer never puts a panel over its anchor (ClampToRoom), so only a pill more than 800 px wide could pop past the \
-     gap; covered by `a_panel_over_its_opener_is_e1301` and the M1 predicate tests",
-)];
+pub(super) const UNIT_ONLY: &[(&str, &str)] = &[];
 
 #[cfg(test)]
 mod tests {
@@ -689,8 +708,9 @@ mod tests {
         })
     }
 
-    /// **E1301 has no parseable package** (see `UNIT_ONLY`), so its finding is built here from a placement the
-    /// placer would not make.
+    /// **E1301 from a hand-made placement**: the finding's context (both rects, the opener's name) and its
+    /// absence where the placer's own answer is clear of the opener. The parseable package that reaches it
+    /// (a 960-wide opener whose pop outgrows the gap) is the last `INVALID` case.
     #[test]
     fn a_panel_over_its_opener_is_e1301() {
         let over = Rect::new(1700.0, 700.0, 200.0, 300.0);

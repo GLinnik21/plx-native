@@ -570,9 +570,9 @@ fn every_new_code_has_an_invalid_case() {
             "{code} has an invalid case, so its UNIT_ONLY entry is stale"
         );
     }
-    // The one code no parseable package reaches: the player menu's panel over its own opener (M1), which
-    // PLAYER_MENU_GAP and the placer rule out for every disc and button the schema admits (lint_menus).
-    assert_eq!(unit_only.into_iter().collect::<Vec<_>>(), ["HUD-E1301"], "UNIT_ONLY is the exception, not the rule");
+    // No code is out of a parseable package's reach: the menu's panel over its own opener (M1) is reached by an
+    // opener wider than 800 px, whose pop outgrows PLAYER_MENU_GAP (lint_menus, the last INVALID case)
+    assert!(unit_only.is_empty(), "every lint code has an invalid case; UNIT_ONLY is for the exception: {unit_only:?}");
 }
 
 #[test]
