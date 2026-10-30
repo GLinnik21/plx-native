@@ -8,9 +8,13 @@
 //! own strings looked up in THAT language's catalog (`LocaleContext::resolve` and the generated
 //! `msg::*_in`), so nothing here reads `i18n::current()` or any other process-wide registry.
 //!
-//! **The stages**, in this order, each stopping the run if it found an error:
-//! 1. the parse and validate findings ([`parse::parse`]);
-//! 2. reachability and the package-level invariants ([`check`]);
+//! **The stages**, in this order. The run reports EVERY finding ("LLM authoring" item 2: one round fixes
+//! many), so the only stop is a package that does not exist: [`parse::parse`] returns `Some(package)` exactly
+//! when it found no error, and [`compile`] is total over a package that parsed, so a reachability or
+//! package-level error (stage 2) does not skip stage 3.
+//! 1. the parse and validate findings ([`parse::parse`]); an error here leaves no package to go on with and
+//!    ends the run;
+//! 2. reachability and the package-level invariants ([`check`]); its findings are kept and the run goes on;
 //! 3. [`compile`] once per language, then the six geometric checks over that language's [`Compiled`]
 //!    (`lint_zorder` I4, `lint_safe` I5, `lint_band` I6, `lint_menus` I7, `lint_text` I10 and
 //!    `lint_size` for `MIN_CONTROL_SIZE` and the compile's own item-keyed finding). Each check module
@@ -41,7 +45,7 @@ use super::compile::{
 use super::parse::{self, Package};
 use super::reach::{check, Slot};
 use super::report::sorted_owned;
-use super::{has_error, lint_band, lint_menus, lint_safe, lint_size, lint_text, lint_zorder};
+use super::{lint_band, lint_menus, lint_safe, lint_size, lint_text, lint_zorder};
 use super::{Context, Finding, NamedRect};
 
 /// One language to lint in: its tag (`de`) and the app's own strings in it (tab labels, the Up Next and
@@ -117,10 +121,9 @@ pub fn lint_with(
     let Some(package) = package else {
         return sorted_owned(&findings);
     };
+    // No `has_error` stop here: the package parsed, so it compiles, and the geometric findings of this
+    // round are reported with the reach and validate ones (see the module doc).
     findings.extend(check(&package).findings);
-    if has_error(&findings) {
-        return sorted_owned(&findings);
-    }
     let mut per_lang = Vec::with_capacity(langs.len());
     for lang in langs {
         let compiled = compile(&package, measure, CompileCtx { labels: lang.labels.clone() });

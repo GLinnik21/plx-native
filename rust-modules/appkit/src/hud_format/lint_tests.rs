@@ -654,14 +654,116 @@ fn lint_runs_to_the_end_and_reports_every_finding() {
 
 #[test]
 fn a_fault_in_a_package_that_does_not_parse_is_the_only_thing_reported() {
-    // The converse, pinned so the run's end is where the lint says it is: the driver stops at a parse,
-    // validate or reachability error, since a package that fails them has nothing to compile. Classic with
-    // an unknown command (a parse finding) AND a decor image under a button (a lint finding).
+    // The converse, pinned so the run's end is where the lint says it is: the driver stops only when there
+    // is no package to compile, which is a parse or validate-table error (`parse` returns `Some` exactly
+    // when it found no error). Classic with an unknown command (a parse finding) AND a decor image under a
+    // button (a lint finding).
     let mut edits = SUPPORT_CASE.edits.to_vec();
     edits.extend_from_slice(case_for("HUD-E1003").edits);
     let found = lint_with(&apply(Base::Classic, &edits), &ShippedMeasure, &LintLang::shipped(), &LintOptions::default());
     let got: BTreeSet<(&str, &str)> = found.iter().map(|f| (f.code, f.pointer.as_str())).collect();
     assert_eq!(got, BTreeSet::from([(SUPPORT_CASE.code, SUPPORT_CASE.pointer)]), "{}", describe("broken", &found));
+}
+
+/// The reference's More cell gated on `title.is_episode` (R1: More is not placed in a movie's root state,
+/// `HUD-E0801`) and its `info` disc drawn at 20 px (`HUD-E0603`, a geometric finding of stage 3).
+const MORE_GATED_AND_INFO_SMALL: [(&str, &str); 2] = [
+    (
+        r#""command": "open_more", "widget": "disc", "size": 52,"#,
+        r#""command": "open_more", "when": "title.is_episode", "widget": "disc", "size": 52,"#,
+    ),
+    (r#""section": "info", "widget": "disc", "size": 52,"#, r#""section": "info", "widget": "disc", "size": 20,"#),
+];
+
+#[test]
+fn a_reachability_error_does_not_hide_the_geometric_findings() {
+    // The spec ("LLM authoring" item 2) has the lint run to the end and report EVERY finding, so one round
+    // fixes many. The package parses (nothing to compile is missing), so a reach error (R1 here) is reported
+    // together with what stage 3 finds in the same package, not in the round after the author fixed it.
+    let got = lint_set(Base::Reference, &MORE_GATED_AND_INFO_SMALL, &["en"], 0.0);
+    let want: BTreeSet<(String, String)> = [
+        ("HUD-E0801", "/layout/block/2/cells/1/segment/items/2/when"),
+        ("HUD-E0603", "/layout/block/2/cells/1/segment/items/1"),
+    ]
+    .into_iter()
+    .map(|(code, pointer)| (code.to_owned(), pointer.to_owned()))
+    .collect();
+    assert_eq!(got, want);
+}
+
+/// The classic control row's More item, and the pointer of the row it sits in (`reach_tests` has the same two).
+const CLASSIC_MORE: &str = r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 64, "rest": "film", "focus": "accent" }"#;
+const CLASSIC_ROW: &str = "/layout/block/0/cells/1/segment/items";
+
+#[test]
+fn every_kind_of_reach_error_is_linted_on_to_stage_three_in_every_language() {
+    // Continuing past the reach and validate findings is only sound while `compile` and the six checks are
+    // total over a package that parsed (`pr5c-handoff.md`). This runs one package for each rule of `check`
+    // (R1, R3, R4, I3, I9) through all of stage 3 in the ten languages: a panic in the compile or in a check
+    // fails it, the way an index into a part the broken package lacks would. Each must still report its own
+    // reach code at its pointer.
+    let more_absent = format!(",\n          {CLASSIC_MORE}");
+    let more_gated = CLASSIC_MORE.replace(" }", r#", "when": "title.is_episode" }"#);
+    let cases: [(&str, Vec<(&str, &str)>, &str, String); 9] = [
+        ("more gated on the episode", vec![(CLASSIC_MORE, &more_gated)], "HUD-E0801", format!("{CLASSIC_ROW}/4/when")),
+        ("more absent", vec![(&more_absent, "")], "HUD-E0801", "/layout/block".to_owned()),
+        (
+            "more opens a page",
+            vec![(r#""command": "open_more", "widget""#, r#""command": "open_more", "page": "quality", "widget""#)],
+            "HUD-E0801",
+            format!("{CLASSIC_ROW}/4"),
+        ),
+        (
+            "more in a band shown only in a section",
+            vec![(r#"{ "id": "top", "when": "!sections","#, r#"{ "id": "top", "when": "panel.info","#)],
+            "HUD-E0801",
+            "/layout/block/0/when".to_owned(),
+        ),
+        (
+            "an opener with no band to open",
+            vec![(
+                r#"{ "id": "info", "when": "panel.info", "cells""#,
+                r#"{ "id": "info", "when": "!sections", "cells""#,
+            )],
+            "HUD-E0802",
+            "/layout/block/4/cells/0/segment/items/0/section".to_owned(),
+        ),
+        (
+            "up next replaces nothing",
+            vec![(r#""replaces": [ "row" ]"#, r#""replaces": [ ]"#)],
+            "HUD-E0803",
+            "/layout/up_next/replaces".to_owned(),
+        ),
+        (
+            "up next names a band that is not there",
+            vec![(r#""band": "top""#, r#""band": "nope""#)],
+            "HUD-E0803",
+            "/layout/up_next/band".to_owned(),
+        ),
+        (
+            "two controls with one id",
+            vec![(r#""id": "audio", "command""#, r#""id": "subs", "command""#)],
+            "HUD-E0901",
+            format!("{CLASSIC_ROW}/3/id"),
+        ),
+        (
+            "a palette in the built-in",
+            vec![
+                (r#""license": "GPL-3.0-or-later","#, r##""license": "GPL-3.0-or-later", "palette": { "gold": "#f2b535" },"##),
+                (r#""track": "RAIL_TRACK""#, r#""track": "gold""#),
+            ],
+            "HUD-E0902",
+            "/palette".to_owned(),
+        ),
+    ];
+    for (name, edits, code, pointer) in &cases {
+        let found = lint(&apply(Base::Classic, edits), &ShippedMeasure, &LintLang::shipped());
+        assert!(
+            found.iter().any(|f| f.code == *code && f.pointer == *pointer),
+            "{name}: {code} at {pointer} expected\n{}",
+            describe(name, &found)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------
