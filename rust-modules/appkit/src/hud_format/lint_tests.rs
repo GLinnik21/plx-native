@@ -109,7 +109,7 @@ fn lint_in_all_languages(text: &str) -> Vec<Finding> {
 }
 
 /// What a failing golden prints: every finding, as the text report and as the JSON report (which carries
-/// the language, state, slot, rects and measured text the text report leaves out).
+/// the rects and measured text the text report leaves out).
 fn describe(name: &str, found: &[Finding]) -> String {
     format!("{} finding(s)\n{}\n{}", found.len(), report::text(name, found), report::json_text(name, found))
 }

@@ -1197,7 +1197,11 @@ mod tests {
         // the vstack rect runs from the button's x to the vstack's end: its width is the room
         assert_eq!(f.ctx.rects[1].w, fact.room);
         assert_eq!(f.ctx.rects[0].w, fact.measured);
-        assert!(f.message.contains("button `fb2`") && f.message.contains(&lang.labels.from_beginning), "{}", f.message);
+        assert!(
+            f.message.contains("button `fb2`") && f.message.contains(&lang.labels.from_beginning),
+            "{}",
+            f.message
+        );
     }
 
     /// The label is the language's: each of the ten languages names its own, and a language whose button fits
@@ -1207,17 +1211,32 @@ mod tests {
         let text = apply(Base::Classic, BUTTON_IN_NARROW_VSTACK);
         let found = text_findings(&text, 0.0);
         let tags: BTreeSet<&str> = found.iter().filter_map(|f| f.ctx.lang.as_deref()).collect();
-        assert_eq!(tags.len(), 10, "the button outgrows 200 px in every shipped language: {tags:?}");
-        assert!(found.iter().all(|f| f.pointer == BUTTON), "{:?}", pointers(&found));
+        assert_eq!(
+            tags.len(),
+            10,
+            "the button outgrows 200 px in every shipped language: {tags:?}"
+        );
+        assert!(
+            found.iter().all(|f| f.pointer == BUTTON),
+            "{:?}",
+            pointers(&found)
+        );
     }
 
     /// A button inside its vstack is silent, and the check looked: widen the vstack and only a skew nothing
     /// clears finds it, as the margin warning.
     #[test]
     fn a_button_inside_its_vstack_is_silent_until_a_skew_it_cannot_clear() {
-        let wide = apply(Base::Classic, BUTTON_IN_NARROW_VSTACK).replace("\"w\": 200,", "\"w\": 1000,");
-        assert!(in_en(&wide, 0.0).is_empty(), "a 1000 px vstack holds the button");
-        let margin: Vec<Finding> = in_en(&wide, 1e9).into_iter().filter(|f| f.pointer == BUTTON).collect();
+        let wide =
+            apply(Base::Classic, BUTTON_IN_NARROW_VSTACK).replace("\"w\": 200,", "\"w\": 1000,");
+        assert!(
+            in_en(&wide, 0.0).is_empty(),
+            "a 1000 px vstack holds the button"
+        );
+        let margin: Vec<Finding> = in_en(&wide, 1e9)
+            .into_iter()
+            .filter(|f| f.pointer == BUTTON)
+            .collect();
         assert_eq!(margin.len(), 1, "{margin:#?}");
         assert_eq!(margin[0].code, "HUD-W0602");
     }
@@ -1226,7 +1245,10 @@ mod tests {
     #[test]
     fn a_disc_is_not_a_label_sized_control() {
         let text = apply(Base::Classic, BUTTON_IN_NARROW_VSTACK)
-            .replace("\"widget\": \"button\", \"size\": 50 } ] } },", "\"widget\": \"disc\", \"size\": 50 } ] } },")
+            .replace(
+                "\"widget\": \"button\", \"size\": 50 } ] } },",
+                "\"widget\": \"disc\", \"size\": 50 } ] } },",
+            )
             .replace("\"w\": 200,", "\"w\": 20,");
         assert!(text.contains("\"widget\": \"disc\", \"size\": 50") && text.contains("\"w\": 20,"));
         let found = in_en(&text, 0.0);

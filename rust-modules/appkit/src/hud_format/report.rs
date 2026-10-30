@@ -23,7 +23,10 @@
 //! (`Map` is a `BTreeMap`; there is no insertion-order feature in this build), which is deterministic: so
 //! `context` sits between `code` and `hint`, and its own keys read `lang, rects, slot, state, text`.
 //!
-//! The text format prints no context: a lint message names what it needs (`lang`, the string) itself.
+//! The text format prints the context that tells findings apart, `lang`, `state` and `slot`, in brackets after
+//! the message (` [de, compact, discs]`, the keys that are set): with `--lang all` a finding whose rects differ
+//! between languages prints one line per language, and the lines must differ. The rects and the measured text
+//! are the JSON's; a lint message names the string itself.
 //!
 //! This module is PURE: findings in, text out.
 
@@ -188,6 +191,15 @@ fn line(file: &str, f: &Finding) -> String {
         f.rule,
         f.message
     );
+    // the lint's language, state and slot, so the lines of one finding in several languages differ
+    let context: Vec<&str> = [&f.ctx.lang, &f.ctx.state, &f.ctx.slot]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    if !context.is_empty() {
+        out.push_str(&format!(" [{}]", context.join(", ")));
+    }
     if !f.hint.is_empty() {
         out.push_str(" | hint: ");
         out.push_str(&f.hint);
@@ -341,6 +353,45 @@ mod tests {
             lines[1],
             "p.plxhud.json#/layout/blok: error HUD-E0102 key-known: unknown key blok | hint: write it right | nearest: block"
         );
+    }
+
+    /// With `--lang all` a finding whose rects differ between languages prints once per language: the text
+    /// lines must tell them apart, so each carries its language, state and slot.
+    #[test]
+    fn two_findings_that_differ_only_in_language_print_two_different_lines() {
+        let found = [
+            in_lang(
+                &codes::E1001,
+                "/layout/block/0",
+                Some("de"),
+                "compact",
+                "a and b overlap",
+            ),
+            in_lang(
+                &codes::E1001,
+                "/layout/block/0",
+                Some("fr"),
+                "compact",
+                "a and b overlap",
+            ),
+        ];
+        let out = text("p.plxhud.json", &found);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "{out:?}");
+        assert_ne!(lines[0], lines[1]);
+        assert_eq!(
+            lines[0],
+            "p.plxhud.json#/layout/block/0: error HUD-E1001 z-overlap: a and b overlap [de, compact, discs] | hint: h"
+        );
+        assert!(lines[1].contains("[fr, compact, discs]"), "{}", lines[1]);
+        // a finding that is the same in every language has no language to print, and one with no context
+        // prints no brackets at all
+        let free = Finding::new(&codes::E1001, "/x", "m", "h").with(Context {
+            state: Some("info".to_owned()),
+            ..Context::default()
+        });
+        assert_eq!(text("f", &[free]), "f#/x: error HUD-E1001 z-overlap: m [info] | hint: h\n");
+        assert!(!text("f", &[finding(&codes::E0104, "/a", "m")]).contains('['));
     }
 
     #[test]
