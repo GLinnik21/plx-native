@@ -55,6 +55,29 @@ fn sign_in_posts_the_plex_token_and_keeps_the_cookies_as_the_session() {
 }
 
 #[test]
+fn a_local_sign_in_posts_the_email_and_password_and_keeps_the_cookies() {
+    let reply = Ok(SeerrResponse { status: 200, body: br#"{"id":9,"displayName":"sdef67890"}"#.to_vec(),
+        cookies: vec!["connect.sid=s%3Alocal".into()] });
+    let (got, seen) = run(vec![reply], |c, t| c.sign_in_local("viewer@example.invalid", "synthetic-password", t));
+    let (session, user) = got.expect("signed in");
+    assert_eq!((user.id, session.cookie()), (9, "connect.sid=s%3Alocal"));
+    let r = &seen[0];
+    assert_eq!((r.method, r.url.as_str(), r.cookie.as_deref()), ("POST", "http://127.0.0.1:5055/api/v1/auth/local", None));
+    assert_eq!(body_json(r), json!({ "email": "viewer@example.invalid", "password": "synthetic-password" }));
+    assert!(!format!("{r:?}").contains("synthetic-password"), "a request's Debug never shows the password");
+    let (got, _) = run(vec![status(403)], |c, t| c.sign_in_local("e", "wrong", t));
+    assert_eq!(got.unwrap_err(), SeerrError::Forbidden, "an email and password the server refuses");
+}
+
+#[test]
+fn a_kept_session_round_trips_through_its_cookie() {
+    let kept = SeerrSession::from_cookie("connect.sid=s%3Akept");
+    assert_eq!(kept.cookie(), "connect.sid=s%3Akept");
+    let (_, seen) = run(vec![ok(r#"{"id":7}"#)], |c, t| c.me(&kept, t));
+    assert_eq!(seen[0].cookie.as_deref(), Some("connect.sid=s%3Akept"));
+}
+
+#[test]
 fn a_sign_in_without_a_cookie_or_a_refused_one_is_not_a_session() {
     let (got, _) = run(vec![ok(r#"{"id":7}"#)], |c, t| c.sign_in("t", t));
     assert_eq!(got.unwrap_err(), SeerrError::Unreadable, "no cookie, no session");

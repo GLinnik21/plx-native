@@ -55,6 +55,21 @@ fn written(out: &[Stamped<InnerHost>]) -> Option<String> {
     })
 }
 
+fn method(out: &[Stamped<InnerHost>]) -> Option<Option<String>> {
+    out.iter().find_map(|s| match &s.fx {
+        Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::SeerrMethod { email, .. })) => Some(email.clone()),
+        _ => None,
+    })
+}
+
+fn signs_in(out: &[Stamped<InnerHost>]) -> Option<(String, String)> {
+    out.iter().find_map(|s| match &s.fx {
+        Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::SeerrSignIn { email, password })) =>
+            Some((email.clone(), password.clone())),
+        _ => None,
+    })
+}
+
 fn connects(out: &[Stamped<InnerHost>]) -> bool {
     out.iter().any(|s| matches!(&s.fx, Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::SeerrConnect))))
 }
@@ -180,32 +195,88 @@ fn the_rows_follow_the_stored_address_and_the_connection() {
 }
 
 #[test]
-fn the_address_field_stands_above_the_raised_keyboard() {
-    let keyboard = plx_ui::text_field::SYSTEM_KEYBOARD_TOP;
-    assert!(panel().y + panel().h <= keyboard, "the panel ends at {} and the keyboard starts at {keyboard}",
-        panel().y + panel().h);
-    assert!(field_rect().y + field_rect().h <= keyboard, "the field is typed into while the keyboard is up");
+fn the_address_is_typed_in_its_own_row_above_the_raised_keyboard() {
+    for address in ["", "http://192.168.1.20:5055"] {
+        let store = store(address);
+        let page = SeerrPage::new(EntryId(0), &cx(&store));
+        let field = field_rect(&page.form, &SeerrId::Address).expect("the Address row is on screen");
+        let i = page.form.index_of(&SeerrId::Address).unwrap() as i32;
+        let row = page.form.table.row_rect(RouteLayout::screen().sectioned_table(), i).unwrap();
+        assert!(field.y >= row.y && field.y + field.h <= row.y + row.h, "the field is drawn in the row");
+        let keyboard = plx_ui::text_field::SYSTEM_KEYBOARD_TOP;
+        assert!(field.y + field.h <= keyboard, "the field ends at {} and the keyboard starts at {keyboard}",
+            field.y + field.h);
+        assert!(field.h >= theme::size::TITLE as f32, "the row is tall enough for the field's run");
+    }
+}
+
+fn with_account(address: &str, email: &str) -> SeerrStore {
+    let mut store = store(address);
+    store.set_account(SeerrAccount::Account { email: email.into(), kept: None });
+    store
+}
+
+fn type_into(page: &mut SeerrPage, store: &SeerrStore, id: SeerrId, text: &str) -> Vec<Stamped<InnerHost>> {
+    step(page, store, ScreenEvent::Activate(id.key().0));
+    step(page, store, input(InputKind::Text(TextEdit::Clear)));
+    for c in text.chars() {
+        step(page, store, input(InputKind::Text(TextEdit::Commit(c.to_string().into()))));
+    }
+    step(page, store, key(Key::Ok))
 }
 
 #[test]
-fn the_copy_ends_above_the_address_panel_in_every_language() {
-    use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_ui::text_view::TextView;
-    let _g = plx_base::testlock::serial();
-    let layout = RouteLayout::screen();
-    let mut out = Vec::new();
-    for language in plx_platform::i18n::SHIPPED {
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(language);
-        let tag = language.tag();
-        let frame = layout.narrative_copy_frame(true, msg::settings_seerr_title(), layout.action.y, &ShippedMeasure);
-        let copy_h = TextView::new(msg::settings_seerr_copy(), theme::size::LABEL, theme::TEXT_READING)
-            .leading(theme::size::LABEL as f32 + theme::space::XS)
-            .max_lines(12)
-            .with_measure(&ShippedMeasure)
-            .measure_h(layout.narrative.w);
-        if frame.y + copy_h + theme::space::MD > panel().y {
-            out.push(format!("{tag}: the copy ends at {:.0}, under the address panel at {:.0}", frame.y + copy_h, panel().y));
-        }
+fn sign_in_with_switches_between_plex_and_a_seerr_account() {
+    let s = store("http://192.0.2.10:5055");
+    let mut page = SeerrPage::new(EntryId(0), &cx(&s));
+    assert_eq!(row_value(&page, SeerrId::Method).as_deref(), Some(msg::settings_seerr_method_plex()));
+    assert!(page.form.index_of_key(SeerrId::Email.key()).is_none(), "Plex asks for no email");
+    let out = step(&mut page, &s, ScreenEvent::Activate(SeerrId::Method.key().0));
+    assert_eq!(method(&out), Some(Some(String::new())), "a Seerr account, its email not yet typed");
+    assert_eq!(row_value(&page, SeerrId::Method).as_deref(), Some(msg::settings_seerr_method_account()), "shown at once");
+    assert!(page.form.index_of_key(SeerrId::Email.key()).is_some() && page.form.index_of_key(SeerrId::Password.key()).is_some());
+    let out = step(&mut page, &s, ScreenEvent::Activate(SeerrId::Method.key().0));
+    assert_eq!(method(&out), Some(None), "back to Plex");
+}
+
+#[test]
+fn the_email_is_written_and_the_password_only_goes_with_sign_in() {
+    let s = with_account("http://192.0.2.10:5055", "");
+    let mut page = SeerrPage::new(EntryId(0), &cx(&s));
+    let out = type_into(&mut page, &s, SeerrId::Email, "viewer@example.invalid");
+    assert_eq!(method(&out), Some(Some("viewer@example.invalid".into())));
+    assert!(signs_in(&step(&mut page, &s, ScreenEvent::Activate(SeerrId::Connect.key().0))).is_none(),
+        "no password typed: Sign in does nothing");
+    let out = type_into(&mut page, &s, SeerrId::Password, "pass word");
+    assert_eq!((method(&out), written(&out)), (None, None), "a typed password is written nowhere");
+    assert_eq!(row_value(&page, SeerrId::Password).as_deref(), Some(msg::settings_seerr_password_set()));
+    let out = step(&mut page, &s, ScreenEvent::Activate(SeerrId::Connect.key().0));
+    assert_eq!(signs_in(&out), Some(("viewer@example.invalid".into(), "pass word".into())), "kept as typed");
+    assert!(page.password.is_none(), "Sign in carries the password away");
+    assert_eq!(row_value(&page, SeerrId::Password).as_deref(), Some(msg::settings_seerr_password_unset()));
+}
+
+#[test]
+fn the_password_is_drawn_masked_and_dropped_when_the_page_goes() {
+    let s = with_account("http://192.0.2.10:5055", "viewer@example.invalid");
+    let mut page = SeerrPage::new(EntryId(0), &cx(&s));
+    step(&mut page, &s, ScreenEvent::Activate(SeerrId::Password.key().0));
+    step(&mut page, &s, input(InputKind::Text(TextEdit::Commit("pw".into()))));
+    let mut budget = Budget::default();
+    page.prepare(&mut budget, &cx(&s));
+    assert_eq!(page.field.text(), "**");
+    step(&mut page, &s, key(Key::Ok));
+    assert!(page.password.is_some());
+    step(&mut page, &s, ScreenEvent::WillLeave(plx_machine::machine::Leave::ForGood));
+    assert!(page.password.is_none());
+}
+
+#[test]
+fn every_typed_row_is_typed_in_above_the_raised_keyboard() {
+    let s = with_account("http://192.0.2.10:5055", "viewer@example.invalid");
+    let page = SeerrPage::new(EntryId(0), &cx(&s));
+    for id in [SeerrId::Address, SeerrId::Email, SeerrId::Password] {
+        let field = field_rect(&page.form, &id).expect("on screen");
+        assert!(field.y + field.h <= plx_ui::text_field::SYSTEM_KEYBOARD_TOP, "{id:?} ends at {}", field.y + field.h);
     }
-    assert!(out.is_empty(), "{out:#?}");
 }

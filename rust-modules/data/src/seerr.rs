@@ -5,10 +5,12 @@
 //!   in when it holds no session and signs in once more when the server forgot the one it held.
 //! * `stores::seerr` owns the state those jobs land into.
 //!
-//! The identity is the seated profile's plex.tv credential, taken from the [`WatchlistInput`] the
-//! Bridge reads (the same input the two plex.tv stores take): Seerr signs that Plex account in and
-//! answers with a session cookie. Nothing here names the credential, the cookie, the address or a
-//! title in a log line or a `Debug` form.
+//! The identity is a [`SeerrLogin`]: the seated profile's plex.tv credential, taken from the
+//! [`WatchlistInput`] the Bridge reads (the same input the two plex.tv stores take); a Seerr
+//! account's email and password, carried by the one sign-in Settings asks for and by nothing else;
+//! or the session such a sign-in was handed, kept for that profile and checked again with
+//! `GET /api/v1/auth/me`. Seerr answers each with a session cookie. Nothing here names the
+//! credential, the password, the cookie, the address or a title in a log line or a `Debug` form.
 //!
 //! [`WatchlistInput`]: crate::watchlist::WatchlistInput
 use plx_plex::plex::seerr::{live_transport, SeerrClient};
@@ -17,6 +19,28 @@ pub use plx_plex::plex::seerr::{
     MediaKind, MediaRequest, Page, Progress, QualityProfile, RequestOptions, RequestStatus, RootFolder, Season,
     SeerrError, SeerrSession, SeerrUser, Title, TitleDetail, TitleFacts,
 };
+
+/// How a job signs in when it must (docs/seerr.md, "Sign-in and the session").
+#[derive(Clone, PartialEq, Eq)]
+pub enum SeerrLogin {
+    /// As the seated profile's Plex account: its plex.tv token.
+    Plex(String),
+    /// As a Seerr account, by its email and password: only the sign-in Settings asks for carries one.
+    Account { email: String, password: String },
+    /// A Seerr account's kept session, checked with `GET /api/v1/auth/me`. It cannot be renewed: a
+    /// session the server forgot needs the password again.
+    Kept(SeerrSession),
+}
+
+impl std::fmt::Debug for SeerrLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SeerrLogin::Plex(_) => "SeerrLogin::Plex(<token>)",
+            SeerrLogin::Account { .. } => "SeerrLogin::Account(<password>)",
+            SeerrLogin::Kept(_) => "SeerrLogin::Kept(<cookie>)",
+        })
+    }
+}
 
 /// What one job asks of the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,8 +78,8 @@ pub enum SeerrData {
 
 /// Everything a job asks of the outside world. Production is [`LiveSeerrIo`]; tests script it.
 pub trait SeerrIo: Send + Sync {
-    /// WORKER THREAD: sign the Plex account in at the owner's `address`.
-    fn sign_in(&self, address: &str, plex_token: &str) -> Result<(SeerrSession, SeerrUser), SeerrError>;
+    /// WORKER THREAD: sign in at the owner's `address` as `login` says.
+    fn sign_in(&self, address: &str, login: &SeerrLogin) -> Result<(SeerrSession, SeerrUser), SeerrError>;
     /// WORKER THREAD: one call as `session`. Never asked to run [`SeerrOp::Connect`].
     fn run(&self, address: &str, session: &SeerrSession, user: &SeerrUser, op: &SeerrOp) -> Result<SeerrData, SeerrError>;
 }
@@ -64,10 +88,14 @@ pub trait SeerrIo: Send + Sync {
 pub struct LiveSeerrIo;
 
 impl SeerrIo for LiveSeerrIo {
-    fn sign_in(&self, address: &str, plex_token: &str) -> Result<(SeerrSession, SeerrUser), SeerrError> {
+    fn sign_in(&self, address: &str, login: &SeerrLogin) -> Result<(SeerrSession, SeerrUser), SeerrError> {
         let client = SeerrClient::for_address(address).ok_or(SeerrError::BadAddress)?;
         let mut transport = live_transport();
-        let answer = client.sign_in(plex_token, &mut transport);
+        let answer = match login {
+            SeerrLogin::Plex(token) => client.sign_in(token, &mut transport),
+            SeerrLogin::Account { email, password } => client.sign_in_local(email, password, &mut transport),
+            SeerrLogin::Kept(session) => client.me(session, &mut transport).map(|user| (session.clone(), user)),
+        };
         answer
     }
 
@@ -110,13 +138,19 @@ pub struct SeerrOutcome {
 }
 
 /// The job body. [`SeerrOp::Connect`] always signs in afresh; any other op signs in only when it
-/// was handed no session. A held session the server answers 401 to (it expired, or the server
-/// restarted) is signed in once more and the call made again; a second 401 is the answer. A write
-/// that met a 401 never reached the server, so asking again cannot request twice.
-pub fn run_op(io: &dyn SeerrIo, address: &str, plex_token: &str, held: Option<&(SeerrSession, SeerrUser)>, op: &SeerrOp)
-    -> SeerrOutcome
+/// was handed no session. A held session the server answers 401 to, or 403 when `GET /auth/me`
+/// then refuses it too (it expired, or the server restarted: Seerr says 403 for both a forgotten
+/// session and a missing permission), is signed in once more and the call made again; a second
+/// refusal is the answer. A write
+/// that met a 401 never reached the server, so asking again cannot request twice. With no `login`
+/// (a Seerr account with no kept session) a sign-in is a 401 at once, and nothing is sent.
+pub fn run_op(io: &dyn SeerrIo, address: &str, login: Option<&SeerrLogin>, held: Option<&(SeerrSession, SeerrUser)>,
+    op: &SeerrOp) -> SeerrOutcome
 {
-    let sign_in = || io.sign_in(address, plex_token);
+    let sign_in = || match login {
+        Some(login) => io.sign_in(address, login),
+        None => Err(SeerrError::Unauthorized),
+    };
     let lost = |e| SeerrOutcome { session: SessionChange::Lost, result: Err(e) };
     let fresh = match (op, held) {
         (SeerrOp::Connect, _) | (_, None) => match sign_in() {
@@ -133,8 +167,17 @@ pub fn run_op(io: &dyn SeerrIo, address: &str, plex_token: &str, held: Option<&(
         return SeerrOutcome { session: change(fresh), result: Ok(SeerrData::Connected) };
     }
     let (session, user) = fresh.as_ref().or(held).expect("signed in above when nothing was held");
-    match io.run(address, session, user, op) {
-        Err(SeerrError::Unauthorized) if fresh.is_none() => match sign_in() {
+    let first = io.run(address, session, user, op);
+    // Seerr's auth middleware answers 403 both to a session it no longer knows and to a user without
+    // the permission, with the same body: the session check (`GET /auth/me`) tells them apart.
+    let forgotten = fresh.is_none() && match &first {
+        Err(SeerrError::Unauthorized) => true,
+        Err(SeerrError::Forbidden) => matches!(io.sign_in(address, &SeerrLogin::Kept(session.clone())),
+            Err(SeerrError::Unauthorized | SeerrError::Forbidden)),
+        _ => false,
+    };
+    match first {
+        Err(_) if forgotten => match sign_in() {
             Ok(again) => {
                 let result = io.run(address, &again.0, &again.1, op);
                 SeerrOutcome { session: change(Some(again)), result }
@@ -160,7 +203,12 @@ mod tests {
     }
 
     impl SeerrIo for Script {
-        fn sign_in(&self, _: &str, token: &str) -> Result<(SeerrSession, SeerrUser), SeerrError> {
+        fn sign_in(&self, _: &str, login: &SeerrLogin) -> Result<(SeerrSession, SeerrUser), SeerrError> {
+            let token = match login {
+                SeerrLogin::Plex(token) => token.as_str(),
+                SeerrLogin::Account { email, .. } => email.as_str(),
+                SeerrLogin::Kept(_) => "kept",
+            };
             self.seen.lock().unwrap().push(format!("sign_in {token}"));
             self.sign_ins.lock().unwrap().remove(0)
         }
@@ -185,6 +233,10 @@ mod tests {
 
     const OP: SeerrOp = SeerrOp::Requests { page: 1 };
 
+    fn tok() -> SeerrLogin {
+        SeerrLogin::Plex("tok".into())
+    }
+
     fn fresh() -> SessionChange {
         SessionChange::Fresh(s("new"), user())
     }
@@ -192,7 +244,7 @@ mod tests {
     #[test]
     fn connect_always_signs_in_afresh_and_makes_no_other_call() {
         let io = script(vec![Ok((s("new"), user()))], vec![]);
-        let out = run_op(&io, "a", "tok", Some(&(s("old"), user())), &SeerrOp::Connect);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &SeerrOp::Connect);
         assert_eq!(out, SeerrOutcome { session: fresh(), result: Ok(SeerrData::Connected) });
         assert_eq!(*io.seen.lock().unwrap(), ["sign_in tok"]);
     }
@@ -200,28 +252,40 @@ mod tests {
     #[test]
     fn a_call_with_no_session_signs_in_first_and_one_with_a_session_does_not() {
         let io = script(vec![Ok((s("new"), user()))], vec![Ok(SeerrData::Requested)]);
-        let out = run_op(&io, "a", "tok", None, &OP);
+        let out = run_op(&io, "a", Some(&tok()), None, &OP);
         assert_eq!(out.session, fresh());
         assert_eq!(*io.seen.lock().unwrap(), ["sign_in tok", "run as new"]);
 
         let io = script(vec![], vec![Ok(SeerrData::Requested)]);
-        let out = run_op(&io, "a", "tok", Some(&(s("old"), user())), &OP);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
         assert_eq!(out, SeerrOutcome { session: SessionChange::Kept, result: Ok(SeerrData::Requested) });
         assert_eq!(*io.seen.lock().unwrap(), ["run as old"]);
     }
 
     #[test]
     fn a_failing_call_with_a_good_session_keeps_it() {
-        let io = script(vec![], vec![Err(SeerrError::Forbidden)]);
-        let out = run_op(&io, "a", "tok", Some(&(s("old"), user())), &OP);
+        // Seerr answers 403 both to a session it forgot and to a user without the permission; the
+        // session check (`GET /auth/me`, a `Kept` sign-in) says which: here the session is good.
+        let io = script(vec![Ok((s("old"), user()))], vec![Err(SeerrError::Forbidden)]);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
         assert_eq!(out, SeerrOutcome { session: SessionChange::Kept, result: Err(SeerrError::Forbidden) },
             "a request this user may not make is not a lost connection");
+        assert_eq!(*io.seen.lock().unwrap(), ["run as old", "sign_in kept"]);
+    }
+
+    #[test]
+    fn a_403_from_a_session_the_server_forgot_signs_in_once_more_and_asks_again() {
+        let io = script(vec![Err(SeerrError::Forbidden), Ok((s("new"), user()))],
+            vec![Err(SeerrError::Forbidden), Ok(SeerrData::Requested)]);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
+        assert_eq!(out, SeerrOutcome { session: fresh(), result: Ok(SeerrData::Requested) });
+        assert_eq!(*io.seen.lock().unwrap(), ["run as old", "sign_in kept", "sign_in tok", "run as new"]);
     }
 
     #[test]
     fn a_forgotten_session_is_signed_in_once_more_and_asked_again() {
         let io = script(vec![Ok((s("new"), user()))], vec![Err(SeerrError::Unauthorized), Ok(SeerrData::Requested)]);
-        let out = run_op(&io, "a", "tok", Some(&(s("old"), user())), &OP);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
         assert_eq!(out, SeerrOutcome { session: fresh(), result: Ok(SeerrData::Requested) });
         assert_eq!(*io.seen.lock().unwrap(), ["run as old", "sign_in tok", "run as new"]);
     }
@@ -229,27 +293,46 @@ mod tests {
     #[test]
     fn a_re_sign_in_the_server_refuses_loses_the_session() {
         let io = script(vec![Err(SeerrError::Forbidden)], vec![Err(SeerrError::Unauthorized)]);
-        let out = run_op(&io, "a", "tok", Some(&(s("old"), user())), &OP);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
         assert_eq!(out, SeerrOutcome { session: SessionChange::Lost, result: Err(SeerrError::Forbidden) });
     }
 
     #[test]
     fn a_second_refusal_is_the_answer_and_a_fresh_session_is_never_retried() {
         let io = script(vec![Ok((s("new"), user()))], vec![Err(SeerrError::Unauthorized), Err(SeerrError::Unauthorized)]);
-        let out = run_op(&io, "a", "tok", Some(&(s("old"), user())), &OP);
+        let out = run_op(&io, "a", Some(&tok()), Some(&(s("old"), user())), &OP);
         assert_eq!(out.result, Err(SeerrError::Unauthorized));
         assert_eq!(io.seen.lock().unwrap().len(), 3, "one re-sign-in, no loop");
 
         let io = script(vec![Ok((s("new"), user()))], vec![Err(SeerrError::Unauthorized)]);
-        let out = run_op(&io, "a", "tok", None, &OP);
+        let out = run_op(&io, "a", Some(&tok()), None, &OP);
         assert_eq!(out.result, Err(SeerrError::Unauthorized));
         assert_eq!(*io.seen.lock().unwrap(), ["sign_in tok", "run as new"], "a session minted for this call is not retried");
     }
 
     #[test]
+    fn with_nothing_to_sign_in_with_a_call_is_refused_and_nothing_is_sent() {
+        let io = script(vec![], vec![]);
+        let out = run_op(&io, "a", None, None, &OP);
+        assert_eq!(out, SeerrOutcome { session: SessionChange::Lost, result: Err(SeerrError::Unauthorized) });
+        assert!(io.seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_login_s_debug_names_no_secret() {
+        let all = [SeerrLogin::Plex("tok-secret".into()),
+            SeerrLogin::Account { email: "e@example.invalid".into(), password: "pw-secret".into() },
+            SeerrLogin::Kept(s("cookie-secret"))];
+        for login in all {
+            let shown = format!("{login:?}");
+            assert!(!shown.contains("secret") && !shown.contains("example"), "{shown}");
+        }
+    }
+
+    #[test]
     fn a_refused_sign_in_is_the_answer() {
         let io = script(vec![Err(SeerrError::Forbidden)], vec![]);
-        let out = run_op(&io, "a", "tok", None, &OP);
+        let out = run_op(&io, "a", Some(&tok()), None, &OP);
         assert_eq!(out, SeerrOutcome { session: SessionChange::Lost, result: Err(SeerrError::Forbidden) });
     }
 }

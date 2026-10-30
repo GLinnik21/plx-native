@@ -10,7 +10,7 @@
 //! descriptors are declared.
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, SeerrAddressPref, Setting, SettingsWrite, DESCRIPTORS};
 use super::prefs::{InstantDpadSeekingPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
-    LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
+    LastLibraryRow, LibraryViewsRow, SeerrSignInsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref};
 use super::{
@@ -120,14 +120,14 @@ fn every_marker_names_its_own_field() {
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
     check_row::<UiResolutionPref>(UiResolution::Hd720);
     check_row::<HoldHintTaughtPref>(HoldHintTaught { card: true, pill: false });
-    // The table lists exactly these seventeen `Setting` rows, the five list rows below, the two
+    // The table lists exactly these seventeen `Setting` rows, the six list rows below, the two
     // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`) and the one
     // string row (`SeerrAddressPref`, `the_seerr_address_row_names_its_own_field`): a row needs its
     // line in one of the five places.
-    assert_eq!(DESCRIPTORS.len(), 17 + 5 + 2 + 1 + 1);
+    assert_eq!(DESCRIPTORS.len(), 17 + 6 + 2 + 1 + 1);
 }
 
 /// The one string row: unset writes no key, a value writes its own key and no other, reads back,
@@ -184,6 +184,8 @@ fn every_list_marker_names_its_own_field() {
         json!({"user":"u1","libs":[{"machine_id":"m","key":1,"sort":"plays"}]})).unwrap());
     // `library_views` is stored as `library_sorts`: the row's key is the wire key.
     assert_eq!(LibraryViewsRow::KEY, "library_sorts");
+    check_list_row::<SeerrSignInsRow>(serde_json::from_value::<crate::plex::session::SeerrSignIn>(
+        json!({"user":"u1","address":"http://192.0.2.10:5055","email":"e@example.invalid","cookie":"c"})).unwrap());
 }
 
 /// Quality is the one row whose stored and spoken types differ: absent reads as Original, and an
@@ -367,6 +369,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("native_audio_refused", not_a_list()),
         ("last_library", not_a_list()),
         ("library_sorts", not_a_list()),
+        ("seerr_sign_ins", not_a_list()),
         ("track_memory", not_a_list()),
         ("subtitle_offsets", not_a_list()),
         ("profile_prefs", not_a_list()),
@@ -394,6 +397,7 @@ fn good_element(key: &str) -> Value {
         "track_memory" => json!({"user":"u1","account":"a","items":[{"machine_id":"m","show_rk":"42",
             "audio":{"lang":"eng","tag":"","commentary":false,"ad":false,"codec":"eac3","channels":6,"title":""}}]}),
         "profile_prefs" => json!({"user":"u1","account":"a","prefs":{"subtitle_size":"large"}}),
+        "seerr_sign_ins" => json!({"user":"u1","address":"http://192.0.2.10:5055","email":"e@example.invalid","cookie":"connect.sid=x"}),
         other => panic!("{other}: a SoftVec row needs a valid element in `good_element`"),
     }
 }

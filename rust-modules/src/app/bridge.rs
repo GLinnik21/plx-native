@@ -1350,8 +1350,12 @@ impl Bridge {
     pub(crate) fn seerr_pump(&mut self) {
         let address = plx_plex::plex::session::peek().prefs.seerr_address.clone();
         self.stores.seerr.set_address(&address);
+        self.stores.seerr.set_account(Self::seerr_account(&address));
         let profile = Self::seated_profile();
         let mut changed = self.stores.seerr.pump(&profile);
+        if let Some(session) = self.stores.seerr.take_session_to_keep() {
+            super::preferences::keep_seerr_session(session);
+        }
         if self.stores.seerr.needs_connect(&profile) {
             self.stores.seerr.connect(&Self::watchlist_input());
             changed = true;
@@ -1375,6 +1379,29 @@ impl Bridge {
         if changed {
             plx_machine::idle::invalidate();
         }
+    }
+
+    /// How the seated profile signs in to Seerr at `address`, from its stored record: a Seerr account
+    /// (with its kept session when that was signed in at this address), else its Plex account.
+    fn seerr_account(address: &str) -> plx_data::stores::seerr::SeerrAccount {
+        use plx_data::stores::seerr::SeerrAccount;
+        let user = plx_plex::plex::session::current_profile_key();
+        let current = plx_plex::plex::session::peek();
+        match current.prefs.seerr_sign_ins.iter().find(|s| s.user == user) {
+            Some(mine) => SeerrAccount::Account {
+                email: mine.email.clone(),
+                kept: (!mine.cookie.is_empty() && mine.address == address)
+                    .then(|| plx_plex::plex::seerr::SeerrSession::from_cookie(&mine.cookie)),
+            },
+            None => SeerrAccount::Plex,
+        }
+    }
+
+    /// Settings > Services > Seerr's Sign in for a Seerr account: the password goes to the store's
+    /// one sign-in job, started in this call.
+    pub(crate) fn seerr_sign_in(&mut self, email: &str, password: &str) {
+        self.stores.seerr.sign_in_account(email.trim(), password, &Self::watchlist_input());
+        self.start_store_jobs_of(StoreId::Seerr);
     }
 
     /// A screen's ask of the Seerr store (`StoreCmd::Seerr`), as the seated profile; the call it
@@ -2395,6 +2422,7 @@ impl Bridge {
             // preference is the executor's.
             AppFx::Preferences(command) => match command {
                 plx_screens::registry::PreferenceCmd::SeerrConnect => self.seerr_connect(),
+                plx_screens::registry::PreferenceCmd::SeerrSignIn { email, password } => self.seerr_sign_in(&email, &password),
                 command => super::preferences::execute(command),
             },
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),

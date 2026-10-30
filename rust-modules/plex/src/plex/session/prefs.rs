@@ -361,11 +361,22 @@ pub struct Preferences {
     /// **The address of the household's Seerr server** (Overseerr / Jellyseerr, docs/seerr.md), as
     /// the owner typed it in Settings > Services > Seerr; `plex::seerr::normalize_address` reads it. Empty
     /// means no Seerr: every request surface stays hidden. Install-wide and kept across sign-out:
-    /// it names the household's server, it is no credential (the Seerr session is never stored, it
-    /// is signed in again for whoever is seated). Skipped while empty so a session that never set it
+    /// it names the household's server, it is no credential (a Plex sign-in's Seerr session is never
+    /// stored, it is signed in again for whoever is seated; a Seerr account's is, in
+    /// [`Preferences::seerr_sign_ins`]). Skipped while empty so a session that never set it
     /// serializes exactly as before; soft-parsed, so anything but a string reads as unset.
     #[serde(default, deserialize_with = "de_soft_string", skip_serializing_if = "String::is_empty")]
     pub seerr_address: String,
+    /// **The profiles that sign in to Seerr with one of its own accounts** (docs/seerr.md, "Sign-in
+    /// and the session"): one [`SeerrSignIn`](super::SeerrSignIn) per such profile, naming the
+    /// account's email and the session its last sign-in was handed. A profile with no entry signs
+    /// in as its Plex account. The password is never here: it is typed, sent once and dropped.
+    ///
+    /// Keyed by profile like [`Preferences::last_library`], and cleared with the credentials at
+    /// sign-out (`storage::state::ACCOUNT_BOUND_PREFERENCES`): the session cookie is a credential to
+    /// that Seerr account. Skipped while empty, soft-parsed per entry.
+    #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub seerr_sign_ins: Vec<super::SeerrSignIn>,
 }
 
 /// How long a setting's value lives, and who owns the write. `auto_sign_in`, `ui_resolution`,
@@ -594,6 +605,8 @@ list_row!(NativeAudioRefusedRow: NativeAudioRefusal = native_audio_refused, "nat
 // could not be activated) leaves them to the next account, as it always has.
 list_row!(LastLibraryRow: LastLibrary = last_library, "last_library", Profile, account true);
 list_row!(LibraryViewsRow: LibraryViews = library_views, "library_sorts", Profile, account true);
+// Which profiles sign in to Seerr with a Seerr account, and their kept sessions.
+list_row!(SeerrSignInsRow: super::SeerrSignIn = seerr_sign_ins, "seerr_sign_ins", Profile, account true);
 
 /// The `seerr_address` row: one string, so neither a [`Setting`] (`Copy`) nor a [`ListRow`]. An
 /// install fact kept across sign-out; written through `session::set_seerr_address` only.
@@ -666,6 +679,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<SubtitleOffsetsPref>(),
     // The household's request service.
     Descriptor::of::<SeerrAddressPref>(),
+    Descriptor::of::<SeerrSignInsRow>(),
 ];
 
 impl Session {

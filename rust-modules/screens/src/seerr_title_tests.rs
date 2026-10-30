@@ -121,7 +121,7 @@ struct Script {
     decide: Result<SeerrData, SeerrError>,
 }
 impl SeerrIo for Script {
-    fn sign_in(&self, _: &str, _: &str) -> Result<(SeerrSession, SeerrUser), SeerrError> {
+    fn sign_in(&self, _: &str, _: &plx_data::seerr::SeerrLogin) -> Result<(SeerrSession, SeerrUser), SeerrError> {
         Ok((SeerrSession::for_test("connect.sid=x"), SeerrUser { id: 1, name: "s00000001".into(), permissions: self.permissions }))
     }
     fn run(&self, _: &str, _: &SeerrSession, _: &SeerrUser, op: &SeerrOp) -> Result<SeerrData, SeerrError> {

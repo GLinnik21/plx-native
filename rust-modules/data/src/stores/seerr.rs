@@ -17,12 +17,16 @@
 //! ceiling) comes back as `NotStarted` and its slot is asked again after [`RETRY_FRAMES`]. A job
 //! that panics lands as [`SeerrError::Transport`], so no slot waits for ever.
 //!
-//! The session is the store's alone: a job is handed the one held and says what became of it
-//! ([`SessionChange`]). It is never persisted, and it goes with the profile it was signed in for.
+//! The session is the store's: a job is handed the one held and says what became of it
+//! ([`SessionChange`]), and it goes with the profile it was signed in for. A Plex sign-in's session is
+//! never persisted. A profile that signs in with a Seerr account ([`SeerrAccount::Account`]) keeps
+//! its session across launches: the Bridge hands the kept one in ([`SeerrStore::set_account`]) and
+//! saves what [`SeerrStore::take_session_to_keep`] says changed. The password reaches only the one
+//! job [`SeerrStore::sign_in_account`] emits.
 
 use super::{StoreId, StoreJob};
 use crate::seerr::{run_op, ArrOptions, ArrServer, Availability, DiscoverRow, LiveSeerrIo, MediaKind, SeerrData, SeerrError,
-    SeerrIo, SeerrOp, SeerrOutcome, SeerrSession, SeerrUser, SessionChange, TitleDetail};
+    SeerrIo, SeerrLogin, SeerrOp, SeerrOutcome, SeerrSession, SeerrUser, SessionChange, TitleDetail};
 use crate::watchlist::{WatchlistAuth, WatchlistInput};
 use plx_machine::job::{Job, Port};
 use plx_machine::machine::{Addr, MachineId, RequestId};
@@ -78,6 +82,10 @@ pub enum Connection {
     Off,
     /// An address, and nothing asked of it yet, or nobody seated with a plex.tv account.
     Idle,
+    /// The profile signs in with a Seerr account and holds no session: its password is owed.
+    SignedOut,
+    /// The server refused the Seerr account's email and password.
+    BadCredentials,
     Connecting,
     /// Signed in. The name is Seerr's for the user, shown in Settings only.
     Connected { name: String },
@@ -98,6 +106,16 @@ impl Connection {
             _ => Connection::Unreachable,
         }
     }
+}
+
+/// How the seated profile signs in (`session::SeerrSignIn`, read by the Bridge every frame).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum SeerrAccount {
+    /// As its Plex account.
+    #[default]
+    Plex,
+    /// As a Seerr account: its email, and the session its last sign-in was handed, if it still has one.
+    Account { email: String, kept: Option<SeerrSession> },
 }
 
 /// A slot's state.
@@ -165,22 +183,13 @@ impl Mailbox {
     }
 }
 
-/// What a [`StoreJob::Seerr`] carries: where, as whom, with which session, and what to ask.
-#[derive(Clone)]
+/// What a [`StoreJob::Seerr`] carries: where, how to sign in, with which session, and what to ask.
+#[derive(Clone, PartialEq)]
 pub struct SeerrReq {
     address: String,
-    auth: WatchlistAuth,
+    login: Option<SeerrLogin>,
     held: Option<(SeerrSession, SeerrUser)>,
     op: SeerrOp,
-}
-
-impl PartialEq for SeerrReq {
-    /// [`WatchlistAuth`] has no `PartialEq` of its own: equal when they ask the same of the same
-    /// server as the same identity with the same session.
-    fn eq(&self, other: &Self) -> bool {
-        self.address == other.address && self.op == other.op && self.held == other.held
-            && self.auth.credential == other.auth.credential && self.auth.generation == other.auth.generation
-    }
 }
 
 impl std::fmt::Debug for SeerrReq {
@@ -231,9 +240,9 @@ fn seerr_addr(req: u32) -> Addr {
 /// The job's IO body: run the op through the port's seam and post the one answer. A body that
 /// unwinds lands as [`SeerrError::Transport`] with the session kept.
 pub fn finish_seerr_job(port: &SeerrPort, addr: Addr, req: SeerrReq) {
-    let SeerrReq { address, auth, held, op } = req;
+    let SeerrReq { address, login, held, op } = req;
     let io = &port.io;
-    let outcome = catch_unwind(AssertUnwindSafe(|| run_op(io.as_ref(), &address, &auth.credential, held.as_ref(), &op)))
+    let outcome = catch_unwind(AssertUnwindSafe(|| run_op(io.as_ref(), &address, login.as_ref(), held.as_ref(), &op)))
         .unwrap_or_else(|_| {
             plx_base::eventlog::log("seerr: a call panicked; it lands as no answer");
             SeerrOutcome { session: SessionChange::Kept, result: Err(SeerrError::Transport) }
@@ -245,6 +254,15 @@ pub struct SeerrStore {
     /// The owner's address, as stored (`Preferences::seerr_address`); empty is off.
     address: String,
     auth: Option<WatchlistAuth>,
+    /// How the seated profile signs in, and a Seerr account's kept session.
+    account: SeerrAccount,
+    /// A change to the kept session the Bridge owes the stored record: `Some(None)` forgets it.
+    to_keep: Option<Option<SeerrSession>>,
+    /// A kept session the server refused: the stored record may still name it until the Bridge's
+    /// write lands, and it is not taken back meanwhile.
+    dropped: Option<SeerrSession>,
+    /// The asks in flight that sign in with a password.
+    by_password: HashSet<u32>,
     session: Option<(SeerrSession, SeerrUser)>,
     connection: Connection,
     answers: HashMap<Slot, Answer>,
@@ -283,6 +301,10 @@ impl SeerrStore {
         Self {
             address: String::new(),
             auth: None,
+            account: SeerrAccount::Plex,
+            to_keep: None,
+            dropped: None,
+            by_password: HashSet::new(),
             session: None,
             connection: Connection::Off,
             answers: HashMap::new(),
@@ -326,6 +348,11 @@ impl SeerrStore {
 
     pub fn address(&self) -> &str {
         &self.address
+    }
+
+    /// How the seated profile signs in, as the store last read it.
+    pub fn account(&self) -> &SeerrAccount {
+        &self.account
     }
 
     pub fn answer(&self, slot: &Slot) -> Option<&Answer> {
@@ -425,6 +452,7 @@ impl SeerrStore {
         self.owed.clear();
         self.asked.clear();
         self.refreshes.clear();
+        self.by_password.clear();
         self.wanted = None;
         self.mailbox = Arc::new(Mailbox::default());
         self.jobs.clear();
@@ -439,8 +467,74 @@ impl SeerrStore {
         self.address = address.to_string();
         self.forget();
         self.tried = None;
-        self.connection = if self.address.is_empty() { Connection::Off } else { Connection::Idle };
+        self.connection = self.resting();
         self.bump();
+    }
+
+    /// The connection before anything is asked: off with no address, owed a password for a Seerr
+    /// account with no kept session, else idle.
+    fn resting(&self) -> Connection {
+        match &self.account {
+            _ if !self.configured() => Connection::Off,
+            SeerrAccount::Account { kept: None, .. } => Connection::SignedOut,
+            _ => Connection::Idle,
+        }
+    }
+
+    /// How the seated profile signs in, as stored, read by the Bridge every frame. Another method or
+    /// another email forgets the session and everything it answered. A kept session is taken from
+    /// the record only while the store holds none: the store's own new one is ahead of the record
+    /// until the Bridge's write lands, and one the server refused is never taken back.
+    pub fn set_account(&mut self, account: SeerrAccount) {
+        match (&mut self.account, account) {
+            (SeerrAccount::Plex, SeerrAccount::Plex) => {}
+            (SeerrAccount::Account { email, kept }, SeerrAccount::Account { email: stored, kept: stored_kept })
+                if *email == stored =>
+            {
+                if kept.is_none() && self.session.is_none() && self.to_keep.is_none()
+                    && stored_kept.is_some() && stored_kept != self.dropped
+                {
+                    *kept = stored_kept;
+                    self.tried = None;
+                    self.connection = self.resting();
+                    self.bump();
+                }
+            }
+            (_, account) => {
+                self.account = account;
+                self.forget();
+                self.to_keep = None;
+                self.dropped = None;
+                self.tried = None;
+                self.connection = self.resting();
+                self.bump();
+            }
+        }
+    }
+
+    /// The kept session's change the Bridge owes the stored record, once: `Some(Some(s))` keeps
+    /// `s`, `Some(None)` forgets the one stored.
+    pub fn take_session_to_keep(&mut self) -> Option<Option<SeerrSession>> {
+        self.to_keep.take()
+    }
+
+    /// Settings' Sign in for a Seerr account: sign in afresh with `email` and `password`. The
+    /// password goes with that one job and is held nowhere else.
+    pub fn sign_in_account(&mut self, email: &str, password: &str, input: &WatchlistInput) {
+        if !matches!(&self.account, SeerrAccount::Account { email: e, .. } if e == email) {
+            self.set_account(SeerrAccount::Account { email: email.to_string(), kept: None });
+        }
+        self.tried = Some(input.profile().generation);
+        let login = SeerrLogin::Account { email: email.to_string(), password: password.to_string() };
+        self.ask_with(Slot::Connect, SeerrOp::Connect, input, false, Some(login));
+    }
+
+    /// How a job signs in when it must: the Plex token, or a Seerr account's kept session.
+    fn login(&self) -> Option<SeerrLogin> {
+        match &self.account {
+            SeerrAccount::Plex => self.auth.as_ref().map(|a| SeerrLogin::Plex(a.credential.clone())),
+            SeerrAccount::Account { kept, .. } => kept.clone().map(SeerrLogin::Kept),
+        }
     }
 
     /// Sign in afresh as the seated profile (Settings' Connect, a boot with an address set).
@@ -478,16 +572,20 @@ impl SeerrStore {
     }
 
     fn ask_keeping(&mut self, slot: Slot, op: SeerrOp, input: &WatchlistInput, keep: bool) {
+        self.ask_with(slot, op, input, keep, None);
+    }
+
+    /// The one ask: `password` is a Seerr account's sign-in, else the job signs in by [`Self::login`].
+    fn ask_with(&mut self, slot: Slot, op: SeerrOp, input: &WatchlistInput, keep: bool, password: Option<SeerrLogin>) {
         if self.auth.as_ref().is_none_or(|a| !a.is_current(input.profile())) {
             if self.auth.take().is_some() {
                 self.forget();
-                if self.configured() {
-                    self.connection = Connection::Idle;
-                }
+                self.connection = self.resting();
             }
             self.auth = input.auth().cloned();
         }
-        if !self.configured() || self.auth.is_none() {
+        let owed = password.is_none() && self.session.is_none() && self.login().is_none();
+        if !self.configured() || self.auth.is_none() || owed {
             let why = if self.configured() { SeerrError::Unauthorized } else { SeerrError::BadAddress };
             self.answers.insert(slot, Answer::Failed(why));
             self.bump();
@@ -501,7 +599,7 @@ impl SeerrStore {
         if !keep {
             self.answers.insert(slot.clone(), Answer::Loading);
         }
-        self.start(slot, op);
+        self.start(slot, op, password);
         if keep {
             self.refreshes.insert(self.req);
         } else {
@@ -510,18 +608,25 @@ impl SeerrStore {
         self.bump();
     }
 
-    fn start(&mut self, slot: Slot, op: SeerrOp) {
-        let Some(auth) = self.auth.clone() else { return };
+    fn start(&mut self, slot: Slot, op: SeerrOp, password: Option<SeerrLogin>) {
+        if self.auth.is_none() {
+            return;
+        }
         self.req = self.req.wrapping_add(1);
         if let Some(old) = self.asks.insert(slot.clone(), self.req) {
             self.flights.remove(&old);
             self.owed.remove(&old);
+            self.by_password.remove(&old);
             if self.refreshes.remove(&old) {
                 self.refreshes.insert(self.req);
             }
         }
         self.flights.insert(self.req, (slot, op.clone()));
-        let req = SeerrReq { address: self.address.clone(), auth, held: self.session.clone(), op };
+        if password.is_some() {
+            self.by_password.insert(self.req);
+        }
+        let login = password.or_else(|| self.login());
+        let req = SeerrReq { address: self.address.clone(), login, held: self.session.clone(), op };
         self.jobs.push(StoreJob::Seerr(Job { addr: seerr_addr(self.req), req }, self.seerr_port()));
     }
 
@@ -550,8 +655,10 @@ impl SeerrStore {
             .collect();
         for req in due {
             self.owed.remove(&req);
+            // A refused password sign-in is asked again without the password: the store keeps none.
+            self.by_password.remove(&req);
             if let Some((slot, op)) = self.flights.remove(&req) {
-                self.start(slot, op);
+                self.start(slot, op, None);
             }
         }
         let mut changed = false;
@@ -567,13 +674,14 @@ impl SeerrStore {
             if self.auth.as_ref().is_some_and(|a| !a.is_current(profile)) {
                 self.forget();
                 self.auth = None;
-                self.connection = if self.configured() { Connection::Idle } else { Connection::Off };
+                self.connection = self.resting();
                 self.bump();
                 return true;
             }
             self.flights.remove(&landing.req);
             let refresh = self.refreshes.remove(&landing.req);
-            self.land(slot, outcome, refresh);
+            let by_password = self.by_password.remove(&landing.req);
+            self.land(slot, outcome, refresh, by_password);
             changed = true;
         }
         if changed {
@@ -582,16 +690,35 @@ impl SeerrStore {
         changed
     }
 
-    fn land(&mut self, slot: Slot, outcome: SeerrOutcome, refresh: bool) {
+    fn land(&mut self, slot: Slot, outcome: SeerrOutcome, refresh: bool, by_password: bool) {
         match outcome.session {
             SessionChange::Fresh(session, user) => {
                 self.connection = Connection::Connected { name: user.name.clone() };
+                if let SeerrAccount::Account { kept, .. } = &mut self.account {
+                    if kept.as_ref() != Some(&session) {
+                        *kept = Some(session.clone());
+                        self.to_keep = Some(Some(session.clone()));
+                        self.dropped = None;
+                    }
+                }
                 self.session = Some((session, user));
             }
             SessionChange::Lost => {
                 self.session = None;
                 if let Err(e) = &outcome.result {
-                    self.connection = Connection::of_sign_in_error(e);
+                    let refused = matches!(e, SeerrError::Unauthorized | SeerrError::Forbidden);
+                    self.connection = match &mut self.account {
+                        SeerrAccount::Account { .. } if by_password && refused => Connection::BadCredentials,
+                        // A kept session the server forgot (or never had): the password is owed.
+                        SeerrAccount::Account { kept, .. } if refused => {
+                            if let Some(gone) = kept.take() {
+                                self.dropped = Some(gone);
+                                self.to_keep = Some(None);
+                            }
+                            Connection::SignedOut
+                        }
+                        _ => Connection::of_sign_in_error(e),
+                    };
                 }
             }
             SessionChange::Kept => {}

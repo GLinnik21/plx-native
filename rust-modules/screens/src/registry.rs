@@ -109,6 +109,13 @@ pub enum PreferenceCmd {
     SeerrAddress { address: String, reply: std::sync::mpsc::Sender<bool> },
     /// Settings > Services > Seerr's Connect: sign the seated profile in at the stored address again.
     SeerrConnect,
+    /// Settings > Services > Seerr's "Sign in with": `Some(email)` signs the seated profile in with
+    /// that Seerr account from now on (a new email signs it out), `None` with its Plex account. The
+    /// app writes it through the session; `reply` learns whether the write was durable.
+    SeerrMethod { email: Option<String>, reply: std::sync::mpsc::Sender<bool> },
+    /// Settings > Services > Seerr's Sign in for a Seerr account. The password goes to the Seerr
+    /// store's one sign-in job and is held nowhere else; the Bridge answers this itself.
+    SeerrSignIn { email: String, password: String },
 }
 
 /// Whether an item has a context menu to open (`item_menu::has_actions`): the one predicate the
@@ -2722,7 +2729,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // rows); the previous pin was 0x5234_18a3_2b35_8218.
 // Approve and decline on the Seerr title page (docs/seerr.md): `SeerrTitleScreen::SHAPE` gains
 // `deciding:opt<i64>` and `decided:bool`; the previous pin was 0xdb97_2b53_a03a_e324.
-const SCREEN_SHAPES_PIN: u64 = 0xa2c7_ae3a_69f0_4fce;
+// Merging main's HUD commands (PR3): `PlayerOverlay::More` names the page it opens on,
+// `More(page:u8)` (0 the root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`; main's own
+// pin for that was 0xb633_b65b_ed93_ca93 and this branch's was 0xa2c7_ae3a_69f0_4fce.
+const SCREEN_SHAPES_PIN: u64 = 0xbcfa_7fdf_498b_7520;
 
 #[cfg(test)]
 mod arg_tests {

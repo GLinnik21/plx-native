@@ -1,7 +1,8 @@
 //! A Seerr server (Overseerr / Jellyseerr / Seerr: one `/api/v1`), the household's own request
 //! service (docs/seerr.md). Nothing here is plex.tv or a PMS: the base URL is the one the owner typed
 //! in Settings, and the identity is a Seerr SESSION the server hands out for the seated profile's
-//! plex.tv token (`POST /api/v1/auth/plex`), sent back as its cookie on every later call.
+//! plex.tv token (`POST /api/v1/auth/plex`) or for a Seerr account's email and password
+//! (`POST /api/v1/auth/local`), sent back as its cookie on every later call.
 //!
 //! The shape follows the Watchlist client (`watchlist.rs`): every call is blocking (run it on a
 //! worker), takes an injectable transport closure (tests pass a canned one, production
@@ -366,14 +367,24 @@ impl std::fmt::Debug for SeerrUser {
     }
 }
 
-/// A signed-in session: the cookies `auth/plex` set, joined as one `Cookie:` value. A credential:
-/// its `Debug` says only whether it is there.
+/// A signed-in session: the cookies `auth/plex` or `auth/local` set, joined as one `Cookie:` value. A
+/// credential: its `Debug` says only whether it is there.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SeerrSession {
     cookie: String,
 }
 
 impl SeerrSession {
+    /// A session kept from an earlier sign-in (a Seerr account's, `session::SeerrSignIn::cookie`).
+    pub fn from_cookie(cookie: &str) -> Self {
+        Self { cookie: cookie.to_string() }
+    }
+
+    /// The `Cookie:` value, for keeping a Seerr account's session across launches.
+    pub fn cookie(&self) -> &str {
+        &self.cookie
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(cookie: &str) -> Self {
         Self { cookie: cookie.to_string() }
@@ -500,8 +511,9 @@ pub enum SeerrError {
     Other(u16),
 }
 
-/// A request as the transport sees it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A request as the transport sees it. Its `Debug` names the method only: the URL is a household
+/// address, the cookie a credential and a sign-in's body a password.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SeerrRequest {
     /// `"GET"` or `"POST"`.
     pub method: &'static str,
@@ -511,6 +523,12 @@ pub struct SeerrRequest {
     pub cookie: Option<String>,
     /// A JSON body (`POST` only).
     pub body: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for SeerrRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeerrRequest").field("method", &self.method).finish_non_exhaustive()
+    }
 }
 
 /// A transport answer: status, raw body and the cookies it set (`net::Resp::cookies`).
@@ -990,7 +1008,21 @@ impl SeerrClient {
     /// `POST /api/v1/auth/plex {"authToken"}`: sign in as the Plex account the token speaks for.
     /// A 403 is a Plex user this server does not let in; a 200 that set no cookie is unreadable.
     pub fn sign_in(&self, plex_token: &str, req: SeerrTransport) -> Result<(SeerrSession, SeerrUser), SeerrError> {
-        let response = call(req, "POST", self.url("/api/v1/auth/plex"), None, Some(json!({ "authToken": plex_token })))?;
+        self.session_of(call(req, "POST", self.url("/api/v1/auth/plex"), None, Some(json!({ "authToken": plex_token }))))
+    }
+
+    /// `POST /api/v1/auth/local {"email", "password"}`: sign in as one of the server's own accounts.
+    /// A 401 or 403 is an email and password the server does not accept (or local sign-in is off).
+    pub fn sign_in_local(&self, email: &str, password: &str, req: SeerrTransport)
+        -> Result<(SeerrSession, SeerrUser), SeerrError>
+    {
+        let body = json!({ "email": email, "password": password });
+        self.session_of(call(req, "POST", self.url("/api/v1/auth/local"), None, Some(body)))
+    }
+
+    /// A sign-in's answer as a session: its cookies and the user it names.
+    fn session_of(&self, response: Result<SeerrResponse, SeerrError>) -> Result<(SeerrSession, SeerrUser), SeerrError> {
+        let response = response?;
         if response.cookies.is_empty() {
             return Err(SeerrError::Unreadable);
         }

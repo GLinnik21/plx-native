@@ -103,13 +103,19 @@ fn every_settings_row_fits_its_column_in_every_language() {
         use plx_data::stores::seerr::Connection;
         let connections = [None, Some(Connection::Idle), Some(Connection::Connecting),
             Some(Connection::Connected { name: "s00000004".into() }), Some(Connection::NotAllowed),
-            Some(Connection::Unreachable), Some(Connection::BadAddress)];
+            Some(Connection::Unreachable), Some(Connection::BadAddress), Some(Connection::SignedOut),
+            Some(Connection::BadCredentials)];
+        // Signing in with Plex, and with a Seerr account (no email yet, and one), password typed or not.
+        let ways = [(None, false), (Some(""), false), (Some("viewer@example.invalid"), true)];
         for address in ["", "http://192.0.2.10:5055"] {
             for connection in &connections {
-                let mut table = FormTable::new(super::super::registry::BAND);
-                table.table.compact = false;
-                table.set(seerr::seerr_form(address, &seerr::status_text(address, connection.as_ref())), None);
-                overflowing(&format!("{tag} seerr address={address:?} {connection:?}"), &table.table, &mut out);
+                for (account, password) in ways {
+                    let mut table = FormTable::new(super::super::registry::BAND);
+                    table.table.compact = false;
+                    let status = seerr::status_text(address, connection.as_ref());
+                    table.set(seerr::seerr_form(address, &status, account, password), None);
+                    overflowing(&format!("{tag} seerr address={address:?} {connection:?} {account:?}"), &table.table, &mut out);
+                }
             }
         }
     }

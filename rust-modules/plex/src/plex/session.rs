@@ -1979,6 +1979,31 @@ fn is_key_pin(pin: &str) -> bool {
     })
 }
 
+/// One profile that signs in to Seerr with a Seerr account. See [`Preferences::seerr_sign_ins`].
+/// A credential: its `Debug` names neither the email nor the session.
+#[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct SeerrSignIn {
+    /// The Plex Home user's `uuid`, or **empty for the account owner** ([`LastLibrary`]'s convention).
+    pub user: String,
+    /// The Seerr address the session was signed in at: a session for another address is none.
+    pub address: String,
+    /// The Seerr account's email, as typed. Shown in Settings.
+    pub email: String,
+    /// The session the last sign-in was handed (its `Cookie:` value); empty when signed out, or when
+    /// the server forgot it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cookie: String,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub extensions: OpaqueExtensions,
+}
+
+impl std::fmt::Debug for SeerrSignIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeerrSignIn").field("signed_in", &!self.cookie.is_empty()).finish_non_exhaustive()
+    }
+}
+
 /// One profile's last-browsed library per content type. See [`Preferences::last_library`].
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
@@ -4306,6 +4331,25 @@ pub fn set_seerr_address(address: &str) -> bool {
     already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
 }
 
+/// Settings > Services > Seerr: `user`'s way of signing in to Seerr. `Some` keeps that profile's
+/// Seerr account (its email, and its session when it holds one); `None` signs it in as its Plex
+/// account again. Blocking, for the persistence worker, like [`set_seerr_address`]: `true` when the
+/// record holds it afterwards.
+pub fn set_seerr_sign_in(user: &str, sign_in: Option<SeerrSignIn>) -> bool {
+    let mut already = false;
+    let write = update_with_outcome(|current| {
+        let mine = current.prefs.seerr_sign_ins.iter().find(|s| s.user == user);
+        already = mine == sign_in.as_ref();
+        (!already).then(|| {
+            let mut next = current.clone();
+            next.prefs.seerr_sign_ins.retain(|s| s.user != user);
+            next.prefs.seerr_sign_ins.extend(sign_in.clone().map(|s| SeerrSignIn { user: user.to_string(), ..s }));
+            next
+        })
+    });
+    already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
+}
+
 /// [`update`], but reporting what the durable write actually did.
 ///
 /// The persistence worker uses this blocking operation; the frame thread polls its receipt.
@@ -4402,6 +4446,7 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
     if !cur.account_token.is_empty() && !same_owner(&cur.home_users, &next.home_users) {
         next.prefs.last_library.clear();
         next.prefs.library_views.clear();
+        next.prefs.seerr_sign_ins.clear();
         next.home_pins.clear();
         next.recent_searches.clear();
     }

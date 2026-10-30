@@ -172,11 +172,7 @@
   "probe": "controlled=home version=1"
  },
  "schema": 3,
-<<<<<<< HEAD
- "state_fp": 15705732926726142689,
-=======
- "state_fp": 12149748892022442062,
->>>>>>> origin/main
+ "state_fp": 5761968157407301149,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",
