@@ -9236,7 +9236,7 @@ mod tests {
         }
         let was = set_page_frozen(false);
         for _ in 0..4 {
-            assert_eq!(sample_ground([622.0, 36.0, 676.0, 76.0], true), last);
+            assert_eq!(sample_ground([620.5, 36.0, 679.0, 76.0], true), last);
         }
         set_page_frozen(was);
         unsafe {
@@ -9247,7 +9247,7 @@ mod tests {
             GROUND_RGB = None;
             (*std::ptr::addr_of_mut!(GROUND_PROBE)).invalidate();
         }
-        assert!(backdrop::member_image(Rect::new(622.0, 36.0, 676.0, 76.0)).is_none(), "no walk, no band");
+        assert!(backdrop::member_image(Rect::new(620.5, 36.0, 679.0, 76.0)).is_none(), "no walk, no band");
     }
 
     /// The region and image size the chain produces for a band holding `track`, at a 1920x1080
@@ -9261,11 +9261,11 @@ mod tests {
 
     /// The tap geometry, against an independent statement of it: a texel is `dims / region` per
     /// authored px, counted from the region's origin, and from its bottom edge when the image is
-    /// stored bottom-up. Both parities, at the two widths the bar takes (676 px at Home's narrower
+    /// stored bottom-up. Both parities, at the two widths the bar takes (679 px at Home's narrower
     /// tab sets, 1544 px at the widest).
     #[test]
     fn the_taps_land_in_the_band_image_at_its_own_scale() {
-        for (x, w) in [(622.0f32, 676.0f32), (188.0, 1544.0)] {
+        for (x, w) in [(620.5f32, 679.0f32), (188.0, 1544.0)] {
             let track = [x, 36.0, w, 76.0];
             let (reg, dims) = band_image(track);
             let points = ground_tap_points::<GROUND_TAPS>(track);
@@ -9288,7 +9288,7 @@ mod tests {
                 for i in 1..GROUND_TAPS {
                     assert!(((o[i].0 - o[i - 1].0) - pitch).abs() <= 1, "w {w}: pitch {pitch}, got {:?}", o);
                 }
-                // 676 px is a texel pitch of ~135 / 2: the boxes (13 texels) never overlap
+                // 679 px is a texel pitch of ~136 / 2: the boxes (13 texels) never overlap
                 assert!(pitch > GROUND_TAP_PX, "w {w}: boxes overlap at pitch {pitch}");
             }
         }
@@ -9298,7 +9298,7 @@ mod tests {
     /// of a top-down image is `r` rows from the bottom of a bottom-up one.
     #[test]
     fn the_storage_order_mirrors_the_rows_and_only_the_rows() {
-        let track = [622.0f32, 36.0, 676.0, 76.0];
+        let track = [620.5f32, 36.0, 679.0, 76.0];
         let (reg, dims) = band_image(track);
         let points = ground_tap_points::<GROUND_TAPS>(track);
         let top = image_tap_origins(&points, reg, dims, false, GROUND_TAP_PX).unwrap();
