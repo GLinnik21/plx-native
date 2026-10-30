@@ -369,7 +369,32 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 /// one comparison of two `Copy` enums. A package that does not load leaves `app.hud` `None`, and the page
 /// on the hand-written classic layout.
 fn refresh_hud(app: &mut App) {
+    use plx_appkit::player_hud::loaded::{DevHud, DevStep};
     let cx = plx_platform::i18n::current();
+    // `plxnative-hud=<path>`: a package from a file replaces classic while it loads. Read once; a file that
+    // does not load reports one line and leaves classic to draw.
+    if matches!(app.dev_hud, DevHud::Unread) {
+        app.dev_hud = crate::dev::scenarios::hud_trigger();
+    }
+    if let DevHud::Package(dev) = &mut app.dev_hud {
+        match dev.refresh(plx_plex::plex::identity::version(), cx, app.bridge.measure()) {
+            DevStep::Report(_line) => {
+                #[cfg(feature = "devtriggers")]
+                plx_base::eventlog::log(&format!("plxnative-hud: {_line}"));
+            }
+            DevStep::Compiled => {
+                #[cfg(feature = "devtriggers")]
+                plx_base::eventlog::log(&format!("plxnative-hud: compiled for {}", cx.language().tag()));
+            }
+            DevStep::Ready | DevStep::Quiet => {}
+        }
+        if let Some(hud) = dev.hud() {
+            if app.hud.as_ref().is_none_or(|h| !std::sync::Arc::ptr_eq(&h.compiled, &hud.compiled)) {
+                app.hud = Some(hud.clone());
+            }
+            return;
+        }
+    }
     if app.hud.as_ref().is_none_or(|h| h.language != cx.language()) {
         app.hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, app.bridge.measure()).ok();
     }
@@ -3708,6 +3733,7 @@ mod lifecycle_regression_tests {
             fps_shown: Default::default(),
             play_prev: None,
             hud: None,
+            dev_hud: Default::default(),
             running: Default::default(),
             window_activity: crate::app::window_activity::WindowActivity::new(),
             #[cfg(feature = "devtools")]

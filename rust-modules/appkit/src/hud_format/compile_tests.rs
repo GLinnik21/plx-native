@@ -861,3 +861,65 @@ fn the_geometry_reports_every_item_of_the_references_row() {
     }
     assert!(state.row_ids.len() <= crate::player_hud::geometry::MAX_ROW_ITEMS);
 }
+
+// ---------------------------------------------------------------------------------------------------
+// PR7 stage 1d: a control carries its face and the command it performs
+// ---------------------------------------------------------------------------------------------------
+
+fn ctl<'a>(state: &'a CompiledState, id: &str) -> &'a ControlRect {
+    state.control(id).unwrap_or_else(|| panic!("no control `{id}`"))
+}
+
+/// **A control's command comes out typed, with its parameters**, ready for the app's one performer: a
+/// literal `seek by` keeps its sign, `open_tracks` its tab, `toggle_section` its section.
+#[test]
+fn a_control_carries_the_command_with_its_parameters() {
+    use crate::player_hud::command::{HudCommand, MorePage, SeekBy, Section, TrackTab};
+    use std::num::NonZeroI32;
+    let c = build(REFERENCE, &FM);
+    let state = c.lookup(0, Slot::Discs, true, true, false).unwrap();
+    let secs = |n| HudCommand::Seek(SeekBy::Secs(NonZeroI32::new(n).unwrap()));
+    assert_eq!(ctl(state, "play").act, Some(HudCommand::TogglePlay));
+    assert_eq!(ctl(state, "back").act, Some(secs(-10)));
+    assert_eq!(ctl(state, "fwd").act, Some(secs(30)));
+    assert_eq!(ctl(state, "prev").act, Some(HudCommand::Previous));
+    assert_eq!(ctl(state, "next").act, Some(HudCommand::Next));
+    assert_eq!(ctl(state, "subs").act, Some(HudCommand::OpenTracks(TrackTab::Subtitles)));
+    assert_eq!(ctl(state, "more").act, Some(HudCommand::OpenMore(MorePage::Root)));
+    assert_eq!(ctl(state, "chapters").act, Some(HudCommand::ToggleSection(Section::Chapters)));
+    assert_eq!(ctl(state, "info").act, Some(HudCommand::ToggleSection(Section::Info)));
+}
+
+/// **A control carries its face**: a declared asset, a built-in icon, or the per-state map, and classic's
+/// controls (which write none) carry none.
+#[test]
+fn a_control_carries_its_face() {
+    use plx_ui::icons::Icon;
+    let c = build(REFERENCE, &FM);
+    let state = c.lookup(0, Slot::Discs, true, true, false).unwrap();
+    let subs = &ctl(state, "subs").face;
+    assert_eq!(subs.pick("any"), Some(&FaceRef::Asset("subs-bubble".to_owned())));
+    assert!(c.asset("subs-bubble").is_some_and(|svg| svg.starts_with("<svg")), "the asset's source travels with the compile");
+    assert_eq!(c.asset("nope"), None);
+    assert_eq!(ctl(state, "next").face.pick("any"), Some(&FaceRef::Builtin(Icon::Next)));
+    let play = &ctl(state, "play").face;
+    assert_eq!(play.pick("playing"), Some(&FaceRef::Builtin(Icon::Pause)));
+    assert_eq!(play.pick("paused"), Some(&FaceRef::Builtin(Icon::Play)));
+    let prev = &ctl(state, "prev").face;
+    assert_eq!(prev.pick("default"), Some(&FaceRef::Builtin(Icon::Previous)));
+    assert_eq!(prev.pick("restart"), Some(&FaceRef::Builtin(Icon::Restart)));
+    let classic = build(CLASSIC, &FM);
+    let state = classic.lookup(0, Slot::Discs, true, true, false).unwrap();
+    assert!(state.controls.iter().filter(|c| c.widget == Widget::Disc).all(|c| c.face == Face::default()), "classic writes no face");
+}
+
+/// A `seek by: setting` face picks the viewer's rung of its ladder, else its `default`.
+#[test]
+fn a_ladder_face_picks_the_viewers_interval_then_its_default() {
+    let mut face = Face::default();
+    face.states.push(("default".to_owned(), FaceRef::Asset("d".to_owned())));
+    face.ladder.push((10, FaceRef::Asset("ten".to_owned())));
+    assert_eq!(face.pick_interval(10), Some(&FaceRef::Asset("ten".to_owned())));
+    assert_eq!(face.pick_interval(30), Some(&FaceRef::Asset("d".to_owned())));
+    assert_eq!(Face::default().pick_interval(10), None);
+}

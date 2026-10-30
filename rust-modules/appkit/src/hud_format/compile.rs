@@ -279,11 +279,50 @@ impl<T: Copy> Live<T> {
     }
 }
 
+/// One glyph of a control's face: a built-in icon, or an asset the package declares (looked up through
+/// [`Compiled::asset`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FaceRef {
+    Builtin(plx_ui::icons::Icon),
+    Asset(String),
+}
+
+/// A control's `face` as the package wrote it: absent (the command's classic glyph), one glyph, or one per
+/// state of the command (`playing`/`paused`, `default`/`restart`, `on`/`off`, and a `seek by: setting`'s
+/// `default` plus its ladder keyed by seconds).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Face {
+    pub single: Option<FaceRef>,
+    pub states: Vec<(String, FaceRef)>,
+    /// `by_interval`: `(seconds, glyph)` rungs
+    pub ladder: Vec<(u32, FaceRef)>,
+}
+
+impl Face {
+    /// The glyph for `state` (one of the command's state keys): the single face, else that state's, else
+    /// `default`'s. `None` when the package wrote no face, and for a state the map lacks with no default.
+    pub fn pick(&self, state: &str) -> Option<&FaceRef> {
+        self.single.as_ref().or_else(|| {
+            let find = |key: &str| self.states.iter().find(|(k, _)| k == key).map(|(_, f)| f);
+            find(state).or_else(|| find("default"))
+        })
+    }
+
+    /// A `seek by: setting` control's glyph for the viewer's Skip interval: its rung, else the face's own pick.
+    pub fn pick_interval(&self, seconds: u32) -> Option<&FaceRef> {
+        self.ladder.iter().find(|(s, _)| *s == seconds).map(|(_, f)| f).or_else(|| self.pick("default"))
+    }
+}
+
 /// One control, placed: its id, its command, the widget it is and the rect it is DRAWN at.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlRect {
     pub id: String,
     pub command: String,
+    /// the command with its parameters, ready for the app's one performer; `None` where the package named
+    /// something outside the vocabulary
+    pub act: Option<crate::player_hud::command::HudCommand>,
+    pub face: Face,
     pub widget: Widget,
     pub rest: Rest,
     pub focus: Focus,
@@ -699,6 +738,8 @@ pub struct Compiled {
     /// the lint alike
     block: bool,
     findings: Vec<CompileFinding>,
+    /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
+    assets: Vec<(String, String)>,
 }
 
 /// Which dimensions of a compile the package names.
@@ -747,6 +788,11 @@ impl Compiled {
 
     /// What the compiler could not carry as written (see [`CompileFinding`]); empty for a package that
     /// keys no number or gap on a strip card's `item.*` term.
+    /// The SVG source of the asset `id` the package declares.
+    pub fn asset(&self, id: &str) -> Option<&str> {
+        self.assets.iter().find(|(name, _)| name == id).map(|(_, svg)| svg.as_str())
+    }
+
     pub fn findings(&self) -> &[CompileFinding] {
         &self.findings
     }
@@ -809,6 +855,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
         findings,
+        assets: package.assets.clone(),
     };
     let band = compiled
         .compact_band_extents()
@@ -1185,6 +1232,45 @@ impl<'e, 'p> Env<'e, 'p> {
             Some("button") => Widget::Button,
             _ => Widget::Disc,
         }
+    }
+
+    /// The item's command with its parameters: its sibling keys (`by`, `dir`, `tab`, `page`, `section`).
+    fn act(item: &Object, command: &str) -> Option<crate::player_hud::command::HudCommand> {
+        use crate::player_hud::command::{ByParam, HudCommand, Params};
+        let by = match item.get("by") {
+            Some(Val::Int(n)) => Some(ByParam::Secs(*n)),
+            Some(v) => v.as_str().map(ByParam::Name),
+            None => None,
+        };
+        let name = |key: &str| item.get(key).and_then(Val::as_str);
+        HudCommand::from_item(command, &Params { by, dir: name("dir"), tab: name("tab"), page: name("page"), section: name("section") })
+    }
+
+    /// The item's `face`: one glyph, or the map of them.
+    fn face(item: &Object) -> Face {
+        let glyph = |v: &Val| {
+            let id = v.as_str()?;
+            Some(match id.strip_prefix(schema::BUILTIN_FACE_PREFIX) {
+                Some(icon) => FaceRef::Builtin(schema::builtin_icon(icon)?),
+                None => FaceRef::Asset(id.to_owned()),
+            })
+        };
+        let mut face = Face::default();
+        match item.get("face") {
+            Some(Val::Object(map)) => {
+                for (key, v) in &map.fields {
+                    match v {
+                        Val::Object(rungs) if key == "by_interval" => {
+                            face.ladder.extend(rungs.fields.iter().filter_map(|(s, v)| Some((s.parse().ok()?, glyph(v)?))));
+                        }
+                        v => face.states.extend(glyph(v).map(|g| (key.clone(), g))),
+                    }
+                }
+            }
+            Some(v) => face.single = glyph(v),
+            None => {}
+        }
+        face
     }
 
     fn rest(o: &Object) -> Rest {
@@ -1659,6 +1745,8 @@ impl<'e, 'p> Env<'e, 'p> {
         let c = ControlRect {
             id: ctl.id.to_owned(),
             command: ctl.command.to_owned(),
+            act: Self::act(ctl.o, ctl.command),
+            face: Self::face(ctl.o),
             widget: ctl.widget,
             rest: ctl.rest,
             focus: ctl.focus,

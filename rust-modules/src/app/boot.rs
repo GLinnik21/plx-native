@@ -2467,6 +2467,7 @@ pub(crate) unsafe fn construct(
         fps_shown,
         play_prev,
         hud: None,
+        dev_hud: Default::default(),
         running,
         window_activity: super::window_activity::WindowActivity::new(),
         #[cfg(feature = "devtools")]

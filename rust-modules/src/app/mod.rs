@@ -244,6 +244,8 @@ pub(crate) struct App {
     /// a pill's width). `None` until the first player frame, or when the package did not load, which
     /// leaves the page on the hand-written classic layout.
     hud: Option<plx_appkit::player_hud::loaded::LoadedHud>,
+    /// the `plxnative-hud=<path>` package, read once on the first player frame (`run::refresh_hud`)
+    dev_hud: plx_appkit::player_hud::loaded::DevHud,
     running: bool,
     window_activity: window_activity::WindowActivity,
     #[cfg(feature = "devtools")]
