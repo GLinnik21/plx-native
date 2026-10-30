@@ -674,8 +674,6 @@ fn the_capsule_with_the_longest_criterion_in_every_language_ends_before_the_righ
 }
 
 /// **A two-library page declares no live glass while its chrome is still on screen, either way.**
-
-/// **A two-library page declares no live glass while its chrome is still on screen, either way.**
 /// The chrome band (the nav pill's live glass) and the capsule are two live glasses whose blur
 /// footprints meet; sharing a frame makes the band capture inline in the visible pass, +1.4M GPU
 /// cycles per frame and a quarter of the ramp's frames late on the television. So the page's

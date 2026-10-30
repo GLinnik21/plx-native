@@ -131,8 +131,9 @@ pub struct HeaderItem {
     pub fold_quiet: bool,
     /// A hairline between two controls ([`DIVIDER_W`] x [`DIVIDER_H`], [`theme::HEADER_DIVIDER_INK`]):
     /// no stop, no label. It stands in the gap before the next item, [`DIVIDER_MARGIN`] clear of that
-    /// item's plate; the row keeps its one [`GAP`] between the divider's two neighbours and the
-    /// divider adds its own width and both margins to it.
+    /// item's plate and [`OVERHANG`] clear of the plate before it ([`DIVIDER_TRAIL`] from that
+    /// item's text); the row keeps its one [`GAP`] between the divider's two neighbours and the
+    /// divider adds its own width and two [`DIVIDER_MARGIN`]s to it.
     pub divider: bool,
 }
 
@@ -273,11 +274,12 @@ pub const GLYPH_GAP: f32 = 12.0;
 /// A place's chevron, and its air after the text.
 pub const PLACE_SIZE: f32 = 20.0;
 pub const PLACE_GAP: f32 = 8.0;
-/// The divider between the places and the sort control: 2 x 32, [`DIVIDER_MARGIN`] clear of the
-/// plate on each side. The next item's plate stands [`OVERHANG`] before its text, so the divider
-/// stands [`DIVIDER_LEAD`] before that text; the row's one [`GAP`] plus the divider and both its
-/// margins is what separates the divider's two neighbours, so the part of it before the divider is
-/// [`DIVIDER_TRAIL`].
+/// The divider between the places and the sort control: 2 x 32, standing [`DIVIDER_MARGIN`] (12)
+/// clear of the sort control's plate AFTER it and [`OVERHANG`] (20) clear of Recommended's plate
+/// BEFORE it (the board's 40 px from Recommended's text, [`DIVIDER_TRAIL`], and 32 px to the sort
+/// control's text, [`DIVIDER_LEAD`]: the plate's overhang plus the margin). The row's one [`GAP`]
+/// plus the divider's width and two margins is what separates the divider's two neighbours' text,
+/// 74 px; the part of it before the divider is [`DIVIDER_TRAIL`], the part after it [`DIVIDER_LEAD`].
 pub const DIVIDER_W: f32 = 2.0;
 pub const DIVIDER_H: f32 = 32.0;
 pub const DIVIDER_MARGIN: f32 = 12.0;
