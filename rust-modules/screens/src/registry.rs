@@ -2098,6 +2098,13 @@ pub struct AppMounter {
     /// a seed like `player_hud_ms` and for the same reason: the canonical `PlayerOverlayArg` is the panel's
     /// KIND, so a rect of floats cannot ride on it. `None` mounts the menu at its own default.
     pub player_menu_anchor: Option<plx_ui::Rect>,
+    /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument):
+    /// compiled by the app at boot, outside any frame, and again when the language changes, and handed to the
+    /// mount the way the seeds above are. Cloned, not consumed: every player instance draws from the app's
+    /// current compile. The mount never compiles, reads no registry and holds no fallback of its own; a
+    /// mounter nothing seeded (a controlled run, which compiles nothing outside a frame and never reaches the
+    /// player) hands the page `Compiled::default()`, which has no state for any frame.
+    pub player_compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,
 }
 
 /// **The one `mount` match** (spec §2.1) — the whole of what "add a screen" costs, in the module
@@ -2255,7 +2262,7 @@ where
             // instant it mounts (`AppMounter::player_hud_ms`), never from the keypress that asked
             // for the playback.
             AppArg::Player => {
-                let mut page = crate::player::PlayerScreen::new(entry);
+                let mut page = crate::player::PlayerScreen::new(entry, std::sync::Arc::clone(&self.player_compiled));
                 // **Where BACK, Stop and EOS land** (§5.1). Captured at the MOUNT, from the page
                 // that was on top when the push was asked for — never read live, because an
                 // overlay opening on this page's own stack changes the input owner and must not

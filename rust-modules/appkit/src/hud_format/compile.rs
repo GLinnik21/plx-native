@@ -753,6 +753,23 @@ struct Named {
     paused: bool,
 }
 
+/// **A compile with no state at all**: every frame is one the package has no state for, so nothing is drawn
+/// from it and its geometry is the empty report ([`HudGeometry::empty`]) at classic's caption band. It is
+/// what a mounter that was never seeded hands a page (a controlled replay or record run compiles nothing
+/// outside a frame and never reaches the player) and what the tests grade the no-state arm with.
+impl Default for Compiled {
+    fn default() -> Self {
+        Self {
+            states: Vec::new(),
+            named: Named { chapters: false, episode: false, paused: false },
+            band: HudBand::CLASSIC,
+            block: false,
+            findings: Vec::new(),
+            assets: Vec::new(),
+        }
+    }
+}
+
 /// A value the compiler could not carry as the package wrote it. Not a registered finding code: PR5d
 /// gives it one (the `06xx` family beside the text-fit codes) and prints it with the other lint findings.
 #[derive(Clone, Debug, PartialEq, Eq)]

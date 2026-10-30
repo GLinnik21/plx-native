@@ -8,8 +8,9 @@
 //! package's numbers. They were watched RED first with the consumers still on `classic::*` (the same
 //! page, `compiled` set, answered classic's rects), then green once they read the compile.
 //!
-//! The existing pins of the page that build `PlayerScreen::new(ENTRY)` leave `compiled` at `None`, which is
-//! the stage bridge: those keep grading classic's own constants (stage 3 retires them with `draw_hud`).
+//! The other pins of the page build it on `builtin:classic` (`PlayerScreen::new(ENTRY, classic_for_test())`):
+//! a page always holds a compile, and the frame a package has no state for has one answer, the empty report
+//! (`a_package_with_no_state_for_the_frame_answers_the_empty_report`).
 
 use std::sync::Arc;
 
@@ -54,10 +55,8 @@ fn state_geometry(compiled: &Compiled) -> plx_appkit::player_hud::geometry::HudG
     compiled.lookup(0, Slot::Discs, false, false, false).expect("the compact state").geometry(SkipKind::Intro)
 }
 
-fn page_with(compiled: Option<Arc<Compiled>>) -> PlayerScreen {
-    let mut page = PlayerScreen::new(ENTRY);
-    page.compiled = compiled;
-    page
+fn page_with(compiled: Arc<Compiled>) -> PlayerScreen {
+    PlayerScreen::new(ENTRY, compiled)
 }
 
 fn row_spec(page: &PlayerScreen) -> GroupSpec {
@@ -70,7 +69,7 @@ fn row_spec(page: &PlayerScreen) -> GroupSpec {
 #[test]
 fn the_edited_package_differs_from_classic_where_the_consumers_read() {
     let want = state_geometry(&moved());
-    let classic = player_hud::classic::frame_geometry();
+    let classic = state_geometry(&classic());
     assert_ne!(want.grab, classic.grab, "the bar moved");
     assert_ne!(want.playbar.x, classic.playbar.x, "the bar moved in");
     assert_ne!(want.band, classic.band, "the band moved with the bar");
@@ -83,7 +82,7 @@ fn the_pointer_stops_and_the_focus_rects_are_the_compiled_packages() {
     let _g = plx_base::testlock::serial();
     let compiled = moved();
     let want = state_geometry(&compiled);
-    let page = page_with(Some(compiled));
+    let page = page_with(compiled);
     let scrub = Focusable::<TestHost>::place(&page, &player_hud::ELEM_SCRUB, &cx(), At::Drawn).expect("the scrubber places");
     assert_eq!(scrub.rect, want.grab, "the grab band is the package's");
     let tab = Focusable::<TestHost>::place(&page, &player_hud::ELEM_TAB_BASE, &cx(), At::Drawn);
@@ -98,8 +97,8 @@ fn the_row_group_is_as_long_as_the_packages_row() {
     let compiled = moved();
     let declared = compiled.lookup(0, Slot::Discs, false, false, false).expect("the compact state").row_ids.len();
     assert_eq!(declared, 6, "the sixth control is in the row");
-    assert_eq!(row_spec(&page_with(Some(compiled))).len, 6);
-    assert_eq!(row_spec(&page_with(None)).len, 5, "classic's row, with no package");
+    assert_eq!(row_spec(&page_with(compiled)).len, 6);
+    assert_eq!(row_spec(&page_with(classic())).len, 5, "classic's row");
 }
 
 /// The caption band and the pointer's mapping onto the bar take the package's numbers.
@@ -108,28 +107,58 @@ fn the_caption_band_and_the_scrub_mapping_are_the_compiled_packages() {
     let _g = plx_base::testlock::serial();
     let compiled = moved();
     let want = state_geometry(&compiled);
-    let page = page_with(Some(compiled));
+    let page = page_with(compiled);
     assert_eq!(page.caption_band(false), want.band, "the band the captions lift to");
-    assert_ne!(page.caption_band(false), page_with(None).caption_band(false));
+    assert_ne!(page.caption_band(false), page_with(classic()).caption_band(false));
     // a quarter of the way along the PACKAGE's bar is a quarter of the way through the item (the inset
     // is symmetric, so the middle would not tell the two bars apart)
     let quarter = want.playbar.x + want.playbar.w * 0.25;
     let dur = 1_000_000_000i64;
     let at = page.pointed_ns(quarter, false, dur);
     assert!((at - dur / 4).abs() < dur / 100, "a pointer a quarter along the package's bar is a quarter in: {at}");
-    let classic_at = page_with(None).pointed_ns(quarter, false, dur);
+    let classic_at = page_with(classic()).pointed_ns(quarter, false, dur);
     assert!((classic_at - dur / 4).abs() > dur / 100, "classic's bar is somewhere else: {classic_at}");
 }
 
-/// No package, or one with no state for the frame, answers classic's report: the draw takes that exit too.
+/// `builtin:classic` places at classic's own rects: the scrubber's grab band and the caption band are the
+/// ones the audit grades (`player_hud::audit_geometry`).
 #[test]
-fn a_page_with_no_package_places_at_classic() {
+fn a_page_on_builtin_classic_places_at_classic() {
     let _g = plx_base::testlock::serial();
-    let page = page_with(None);
-    let classic = player_hud::classic::frame_geometry();
+    let page = page_with(classic());
+    let want = player_hud::audit_geometry();
     let scrub = Focusable::<TestHost>::place(&page, &player_hud::ELEM_SCRUB, &cx(), At::Drawn).expect("the scrubber places");
-    assert_eq!(scrub.rect, classic.grab);
-    assert_eq!(page.caption_band(false), classic.band);
+    assert_eq!(scrub.rect, want.grab);
+    assert_eq!(page.caption_band(false), want.band);
+}
+
+/// **A package with no state for the frame answers ONE thing for the draw and for the geometry**: nothing is
+/// drawn (and the page says so once, not every frame), the stops have no rect and the row no stop, no menu has
+/// an anchor, and the caption band is the package's own. `Compiled::default()` has no state for any frame.
+#[test]
+fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
+    let _g = plx_base::testlock::serial();
+    let none = Arc::new(Compiled::default());
+    let mut page = page_with(Arc::clone(&none));
+    let empty = player_hud::geometry::HudGeometry::empty(none.band());
+    assert_eq!(page.geometry_for(false), empty);
+    assert_eq!(page.caption_band(false), none.band());
+    assert_eq!(page.row_len(false), 0, "a stop with no rect cannot be placed");
+    assert_eq!(row_spec(&page).extent, Rect::default(), "…and the row group has no extent");
+    assert_eq!(page.menu_anchor(overlay::OverlayKind::Tracks { tab: 0 }, false), None);
+    assert!(!page.row_enabled(0));
+    assert_eq!(page.row_command(0), None);
+    let scrub = Focusable::<TestHost>::place(&page, &player_hud::ELEM_SCRUB, &cx(), At::Drawn);
+    assert!(scrub.is_none_or(|p| p.rect == Rect::default()), "the scrubber has no rect to grab");
+    // the draw takes the same exit: nothing painted, one log line however many frames
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let store = plx_data::stores::metadata::MetadataStore::default();
+    assert!(!page.render.no_state_logged);
+    for _ in 0..3 {
+        let drawn = plx_ui::draw_census::capture(|| page.draw_hud(&ps, 0, &FixtureMeasure, store.view()));
+        assert!(drawn.is_empty(), "nothing is drawn for a frame the package has no state for: {drawn:?}");
+    }
+    assert!(page.render.no_state_logged, "…and it was reported");
 }
 
 /// `builtin:classic`, the package the app hands the page today.
@@ -143,7 +172,7 @@ fn classic() -> Arc<Compiled> {
 #[test]
 fn classic_menus_hang_from_the_row_ending_at_the_segment_edge() {
     let _g = plx_base::testlock::serial();
-    let page = page_with(Some(classic()));
+    let page = page_with(classic());
     for kind in [
         overlay::OverlayKind::Tracks { tab: 0 },
         overlay::OverlayKind::Tracks { tab: 1 },
@@ -156,16 +185,15 @@ fn classic_menus_hang_from_the_row_ending_at_the_segment_edge() {
     }
 }
 
-/// A panel that is not a menu has no anchor to be handed, and neither has a page with no package: the
-/// mount then keeps the menu's own default (classic's row).
+/// A panel that is not a menu has no anchor to be handed: the mount then keeps the menu's own default
+/// (classic's row).
 #[test]
 fn only_menus_under_a_package_have_an_anchor() {
     let _g = plx_base::testlock::serial();
-    let page = page_with(Some(classic()));
+    let page = page_with(classic());
     for kind in [overlay::OverlayKind::Info, overlay::OverlayKind::Chapters, overlay::OverlayKind::Timing] {
         assert_eq!(page.menu_anchor(kind, false), None, "{kind:?}");
     }
-    assert_eq!(page_with(None).menu_anchor(overlay::OverlayKind::Tracks { tab: 0 }, false), None);
 }
 
 /// The anchor is the COMPILE's: the opener the engine holds when its command opens the menu, else the first
@@ -181,7 +209,7 @@ fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
     let (more_anchor, extra_anchor) = (state.menu_anchor(more).unwrap(), state.menu_anchor(extra).unwrap());
     assert_ne!(more_anchor, extra_anchor, "the two openers are at different rest rects");
 
-    let mut page = page_with(Some(Arc::clone(&compiled)));
+    let mut page = page_with(Arc::clone(&compiled));
     let kind = overlay::OverlayKind::More { page: None };
     assert_eq!(page.menu_anchor(kind, false), Some(more_anchor), "nothing held: the first opener of the command");
     page.hud.nav.focus = GROUP_ROW;
@@ -218,7 +246,7 @@ fn a_press_asks_for_the_command_of_the_control_the_package_placed() {
     let _g = plx_base::testlock::serial();
     let compiled = reference();
     let secs = |n| HudCommand::Seek(SeekBy::Secs(NonZeroI32::new(n).unwrap()));
-    let mut page = page_with(Some(Arc::clone(&compiled)));
+    let mut page = page_with(Arc::clone(&compiled));
     page.model.duration_ns = 3_600_000_000_000;
     page.hud.visible_at_press = true;
     page.hud.nav.focus = GROUP_ROW;
@@ -244,7 +272,7 @@ fn a_press_asks_for_the_command_of_the_control_the_package_placed() {
 fn a_package_controls_stop_is_its_commands_enabled_predicate() {
     let _g = plx_base::testlock::serial();
     let compiled = reference();
-    let mut page = page_with(Some(Arc::clone(&compiled)));
+    let mut page = page_with(Arc::clone(&compiled));
     let (back, play, prev) = (ordinal(&compiled, "back"), ordinal(&compiled, "play"), 2);
     assert!(page.row_enabled(play));
     assert!(!page.row_enabled(back), "no duration, no jump");
@@ -260,11 +288,11 @@ fn a_package_controls_stop_is_its_commands_enabled_predicate() {
 fn the_row_parks_on_the_primary_control_of_the_package() {
     let _g = plx_base::testlock::serial();
     let compiled = reference();
-    let mut page = page_with(Some(Arc::clone(&compiled)));
+    let mut page = page_with(Arc::clone(&compiled));
     assert_eq!(page.row_primary(), ordinal(&compiled, "play"), "a movie: no pair, so Play");
     page.slot = ControlSlot::Discs(plx_appkit::player_hud::Controls::for_item(true, true, true, false));
     let episode = compiled.lookup(0, Slot::Discs, false, true, false).expect("the episode form");
     let next = episode.row_ids.iter().position(|r| r.as_deref() == Some("next")).unwrap() as i32;
     assert_eq!(page.row_primary(), next, "an episode with a Next: Next");
-    assert_eq!(page_with(None).row_primary(), page_with(None).slot.primary_btn(), "no package: classic's rule");
+    assert_eq!(page_with(classic()).row_primary(), page_with(classic()).slot.primary_btn(), "classic's rule over its own table");
 }

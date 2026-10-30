@@ -170,7 +170,7 @@ impl Mounter<TestHost> for PinMounter {
         _fx: &mut Effects<'_, TestHost>,
     ) -> Box<dyn Screen<TestHost>> {
         let InputOwner::Entry(entry) = cx.owner else { panic!("the page owns its own input") };
-        Box::new(PlayerScreen::new(entry))
+        Box::new(PlayerScreen::new(entry, plx_appkit::player_hud::loaded::classic_for_test()))
     }
 }
 
@@ -492,7 +492,7 @@ struct Census {
 }
 
 fn census_screen(occupant: Occupant, failed: bool) -> PlayerScreen {
-    let mut screen = PlayerScreen::new(ENTRY);
+    let mut screen = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
     screen.slot = slot_of(occupant);
     if failed {
         screen.busy = Busy::Readout(
