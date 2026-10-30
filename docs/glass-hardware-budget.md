@@ -604,10 +604,14 @@ hierarchy is made of. Brightening the idle label instead was the alternative and
 step (tertiary → secondary) buys 11 points of transparency and costs **36% of the idle:selected
 separation**, two steps buys 17 and costs half of it.
 
-The ground has to be the PIXELS. Five taps under the bar, every thirtieth drawn frame, from
-framebuffer 0 before the bar draws — a readback stalls a tiler, which is exactly why the rate is
-low: a hero holds for eight seconds and a scrim density has no business changing faster than the
-picture does. Measured on the panel with `homeosc` running, the frame rate is unchanged.
+The ground has to be the PIXELS. Five taps under the bar, every thirtieth drawn frame — a readback
+stalls a tiler, which is exactly why the rate is low: a hero holds for eight seconds and a scrim
+density has no business changing faster than the picture does. Measured on the panel with `homeosc`
+running, the frame rate was unchanged when the taps were copied from framebuffer 0 before the bar
+drew. They are now copied from the retained backdrop image of the bar's own band (the blurred
+prefix below it, which the frame builds before the page draws) at the frame boundary after the
+swap, so the copy adds no render pass to framebuffer 0 (`gfx::sample_ground`); that change is not
+measured here.
 
 **The cheap sources are the wrong colour, and this cost an iteration.** Plex's `UltraBlurColors` are
 a derived muted palette for an ambient wash: for the hero whose top edge measures (0.00, 0.68, 0.91)

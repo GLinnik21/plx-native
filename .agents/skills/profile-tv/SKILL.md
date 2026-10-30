@@ -203,7 +203,9 @@ kill $(cat $PIDF); rm -f $PIDF
   idle. That is the GPU queue, not the UI thread.
 - (c) `plxnative-drawmask=glass` also skips the glass source pass, an early post-swap FBO
   submission. A `-glass` leg is therefore not a clean measurement of glass cost.
-- (d) The Home p95 is bimodal: the ground probe's 1-in-30 kick frame adds 1.7-1.9M cycles.
+- (d) The Home p95 is bimodal: the ground probe's 1-in-30 kick frame adds 1.7-1.9M cycles. (Measured
+  while the top bar's probe copied framebuffer 0 mid-page; the bar's copy now happens at the frame
+  boundary from its band image, so the bar no longer owes that frame. Repeat before relying on it.)
 
 **Home pong census** (release build, 2026-10-24; `GPU_ACTIVE` saved per frame by removing one draw
 class with `plxnative-drawmask`):

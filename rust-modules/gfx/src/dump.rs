@@ -31,7 +31,9 @@
 //!   iterations, held repeats included, so the virtual frame a probe re-reads on was the number of
 //!   boot holds modulo 30 and the Resume pill's ground differed by 1/255 between runs. In dump mode
 //!   it is SYNCHRONOUS and PER CALL (`gfx::probe_mode`): copy the tap boxes, `glReadPixels`, return;
-//!   no cadence, no fence. The refusal paths (`may_read == false`, a blur-source pass, a frozen
+//!   no cadence, no fence. The copy reads the SAME source as the product (the bar's band image,
+//!   the Hero row's framebuffer), now, instead of at the next frame boundary, so the answer is a
+//!   function of the frame being drawn: the band's image is final before the visible page draws. The refusal paths (`may_read == false`, a blur-source pass, a frozen
 //!   page) still answer with the last latched value.
 //! * **Held repeats** ([`held_repeat`]). A page image's capture step and a page dip's
 //!   floor frame advance once per virtual frame, not once per held iteration.
