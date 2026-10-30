@@ -927,6 +927,12 @@ impl Bridge {
         self.mounter.player_hud_ms = Some(ms);
     }
 
+    /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
+    /// so an open that has no anchor (or retargets a panel already up) never leaves one for a later mount.
+    pub(crate) fn seed_player_menu_anchor(&mut self, anchor: Option<plx_ui::Rect>) {
+        self.mounter.player_menu_anchor = anchor;
+    }
+
     fn home_focus(d: &Dispatcher<AppHost>) -> Option<FocusKey<u32>> {
         let entry = d.nav.top_page()?.id;
         d.input.engine.current(InputOwner::Entry(entry))

@@ -2093,6 +2093,11 @@ pub struct AppMounter {
     /// taken before a blocking resolve, so a load longer than the 4.5 s linger expired the HUD
     /// before it was ever drawn and the user got a blank screen instead of a transport.
     pub player_hud_ms: Option<u32>,
+    /// **The rect the NEXT player menu hangs from**: the compiled package's anchor for the opener that asked
+    /// (`PlayerScreen::menu_anchor`), stamped by the app at the press and consumed by the overlay's mount,
+    /// a seed like `player_hud_ms` and for the same reason: the canonical `PlayerOverlayArg` is the panel's
+    /// KIND, so a rect of floats cannot ride on it. `None` mounts the menu at its own default.
+    pub player_menu_anchor: Option<plx_ui::Rect>,
 }
 
 /// **The one `mount` match** (spec §2.1) — the whole of what "add a screen" costs, in the module
@@ -2125,10 +2130,15 @@ where
             AppArg::ItemMenu(arg) => Box::new(
                 crate::item_menu::ItemMenuScreen::new(entry, arg.clone()).with_watchlist(arg.watchlist)),
             AppArg::WatchlistMenu(arg) => Box::new(crate::watchlist::menu::WatchlistMenuScreen::new(entry, *arg)),
-            AppArg::PlayerOverlay(arg) => Box::new(
-                crate::player::overlay::PlayerOverlayScreen::new_with(
-                    H::session(cx), H::metadata(cx), entry, arg.kind, H::subtitle_search(cx).is_some()),
-            ),
+            AppArg::PlayerOverlay(arg) => {
+                let offer_search = H::subtitle_search(cx).is_some();
+                Box::new(match self.player_menu_anchor.take() {
+                    Some(anchor) => crate::player::overlay::PlayerOverlayScreen::new_anchored(
+                        H::session(cx), H::metadata(cx), entry, arg.kind, offer_search, anchor),
+                    None => crate::player::overlay::PlayerOverlayScreen::new_with(
+                        H::session(cx), H::metadata(cx), entry, arg.kind, offer_search),
+                })
+            }
             AppArg::AltSources(arg) => Box::new(
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),

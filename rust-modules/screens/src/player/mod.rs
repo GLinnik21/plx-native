@@ -1523,6 +1523,32 @@ impl PlayerScreen {
         player_hud::geometry::frame_geometry(self.compiled.as_deref(), self.slot, chapters, self.model.paused)
     }
 
+    /// **The rect a menu opened for `kind` hangs from**, handed to it when it is mounted (the app seeds the
+    /// mounter with it, `AppMounter::player_menu_anchor`): the compiled package's anchor for the control the
+    /// engine holds when that control opens this menu (`CompiledState::menu_anchor`: its REST rect widened to
+    /// its segment's outer edge), else the first control of the state that does, else the replaced row's
+    /// region (the failure read-out's quality entry has no disc). `None` while the page holds no package or
+    /// the package has no state for the frame, and for a panel that is not a menu: the mount then uses the
+    /// menu's own default.
+    pub fn menu_anchor(&self, kind: overlay::OverlayKind, chapters: bool) -> Option<Rect> {
+        let command = match kind {
+            overlay::OverlayKind::Tracks { .. } => "open_tracks",
+            overlay::OverlayKind::More { .. } => "open_more",
+            _ => return None,
+        };
+        let (state, skip) = player_hud::geometry::frame_state(self.compiled.as_deref()?, self.slot, chapters, self.model.paused)?;
+        let state = state.skip_variant(skip);
+        let index_of = |id: &str| state.controls.iter().position(|c| c.id == id);
+        let held = (self.hud.nav.focus == GROUP_ROW)
+            .then(|| usize::try_from(self.hud.nav.btn).ok().and_then(|b| state.row_ids.get(b)))
+            .flatten()
+            .and_then(|id| id.as_deref())
+            .and_then(index_of)
+            .filter(|&i| state.controls[i].command == command);
+        let opener = held.or_else(|| state.controls.iter().position(|c| c.command == command));
+        Some(opener.and_then(|i| state.menu_anchor(i)).unwrap_or(state.standin.row))
+    }
+
     /// How many stops the row group holds this frame (`player_hud::geometry::row_len`): the package's
     /// declared row for the discs, the stand-ins' own counts otherwise.
     fn row_len(&self, chapters: bool) -> usize {

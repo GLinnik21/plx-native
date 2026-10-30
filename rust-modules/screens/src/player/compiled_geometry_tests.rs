@@ -131,3 +131,64 @@ fn a_page_with_no_package_places_at_classic() {
     assert_eq!(scrub.rect, classic.grab);
     assert_eq!(page.caption_band(false), classic.band);
 }
+
+/// `builtin:classic`, the package the app hands the page today.
+fn classic() -> Arc<Compiled> {
+    load(CLASSIC_PACKAGE.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("classic loads").compiled
+}
+
+/// The three openers (the Subtitles, Audio and `…` discs) and the failure read-out's quality entry, which
+/// has no disc, each get an anchor that puts the panel where the constants put it: the segment's outer edge
+/// is `CTRL_RIGHT` and the band is the disc row's, so `anchor_panel` settles the panel at `CTRL_RIGHT - pw`.
+#[test]
+fn classic_menus_hang_from_the_row_ending_at_the_segment_edge() {
+    let _g = plx_base::testlock::serial();
+    let page = page_with(Some(classic()));
+    for kind in [
+        overlay::OverlayKind::Tracks { tab: 0 },
+        overlay::OverlayKind::Tracks { tab: 1 },
+        overlay::OverlayKind::More { page: None },
+        overlay::OverlayKind::More { page: Some(plx_appkit::more_menu::MorePage::Quality) },
+    ] {
+        let anchor = page.menu_anchor(kind, false).expect("a menu has an anchor under a package");
+        assert_eq!(anchor.x + anchor.w, player_hud::classic::CTRL_RIGHT, "{kind:?}: the segment's outer edge");
+        assert_eq!((anchor.y, anchor.h), (player_hud::classic::CTRL_Y, player_hud::classic::CTRL_H), "{kind:?}: the row's band");
+    }
+}
+
+/// A panel that is not a menu has no anchor to be handed, and neither has a page with no package: the
+/// mount then keeps the menu's own default (classic's row).
+#[test]
+fn only_menus_under_a_package_have_an_anchor() {
+    let _g = plx_base::testlock::serial();
+    let page = page_with(Some(classic()));
+    for kind in [overlay::OverlayKind::Info, overlay::OverlayKind::Chapters, overlay::OverlayKind::Timing] {
+        assert_eq!(page.menu_anchor(kind, false), None, "{kind:?}");
+    }
+    assert_eq!(page_with(None).menu_anchor(overlay::OverlayKind::Tracks { tab: 0 }, false), None);
+}
+
+/// The anchor is the COMPILE's: the opener the engine holds when its command opens the menu, else the first
+/// control of the state that does. Here the package has a second `open_more` after the first, so the two
+/// answers differ, and each is `CompiledState::menu_anchor` of its control.
+#[test]
+fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
+    let _g = plx_base::testlock::serial();
+    let compiled = moved();
+    let state = compiled.lookup(0, Slot::Discs, false, false, false).expect("the compact state");
+    let index_of = |id: &str| state.controls.iter().position(|c| c.id == id).expect(id);
+    let (more, extra) = (index_of("more"), index_of("extra"));
+    let (more_anchor, extra_anchor) = (state.menu_anchor(more).unwrap(), state.menu_anchor(extra).unwrap());
+    assert_ne!(more_anchor, extra_anchor, "the two openers are at different rest rects");
+
+    let mut page = page_with(Some(Arc::clone(&compiled)));
+    let kind = overlay::OverlayKind::More { page: None };
+    assert_eq!(page.menu_anchor(kind, false), Some(more_anchor), "nothing held: the first opener of the command");
+    page.hud.nav.focus = GROUP_ROW;
+    page.hud.nav.btn = i32::try_from(state.row_ids.iter().position(|id| id.as_deref() == Some("extra")).expect("in the row")).unwrap();
+    assert_eq!(page.menu_anchor(kind, false), Some(extra_anchor), "the held control opens it");
+    // the held control opens a DIFFERENT command: the first opener of the asked one is used
+    let tracks = overlay::OverlayKind::Tracks { tab: 0 };
+    let first_tracks = state.controls.iter().position(|c| c.command == "open_tracks").expect("an opener");
+    assert_eq!(page.menu_anchor(tracks, false), state.menu_anchor(first_tracks));
+}
