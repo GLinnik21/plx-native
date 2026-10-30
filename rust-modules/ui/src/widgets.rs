@@ -7354,10 +7354,10 @@ pub const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
 ///
 /// **This replaced a cap on the TRACK.** The track used to be held to a width (`GLASS_TRACK_MAX`,
 /// 672 px at the end) so that the widest capsule could not reach it, and a strip past it drew the
-/// flat capsule: the owner's Belarusian strip (679 px once the Watchlist mark joined the bar) lost
-/// the glass for 7 px. The bar gains entries and its labels vary by language, so its width must
+/// flat capsule: the owner's Belarusian strip (676 px once the Watchlist mark joined the bar) lost
+/// the glass for 4 px. The bar gains entries and its labels vary by language, so its width must
 /// never decide its material, and the clearance moved to the one party whose width is user data
-/// anyway. A 679 px track leaves 394 px of room, so the shipped bar keeps the whole 320; the
+/// anyway. A 676 px track leaves 396 px of room, so the shipped bar keeps the whole 320; the
 /// budget only bites on a strip near its [`TAB_VIEW_MAX`], where it falls to nothing.
 ///
 /// The owner of the chip's text re-asks when either input changes (`app::chrome::ChromeSnapshot`:
@@ -7381,7 +7381,7 @@ pub fn chip_name_budget(track_w: f32) -> f32 {
 /// outgrows [`TAB_VIEW_MAX`] scrolls inside a track that stays that wide ([`tab_view_w`]). It was
 /// once held to a measured width (the retired `GLASS_TRACK_MAX`, from a 300k px^2 region budget
 /// priced on the capture path), which dropped the owner's Belarusian strip to the flat capsule by
-/// 7 px; `docs/glass-hardware-budget.md` §11 is why that price was the wrong instrument (the shipped
+/// 4 px; `docs/glass-hardware-budget.md` §11 is why that price was the wrong instrument (the shipped
 /// direct path charges the region at 7/16 and the composite area dominates), and the band's real
 /// grab is `blur_region_for(false, ..)`, 68 px past the members and not 88. What keeps the unfurled
 /// chip off the track is [`chip_name_budget`], not a cap on the track.

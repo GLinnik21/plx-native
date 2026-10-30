@@ -15,7 +15,7 @@ use super::test_support::*;
 ///
 /// The track is centred and its width is the strip's, which is data (libraries, languages), so the
 /// clearance cannot be bought by capping the track, as it was until 2026-10-30 (the retired
-/// `GLASS_TRACK_MAX` dropped the owner's 679 px Belarusian strip to the flat capsule). It is the
+/// `GLASS_TRACK_MAX` dropped the owner's 676 px Belarusian strip to the flat capsule). It is the
 /// chip's to keep: [`chip_name_budget`] is the name width the bar leaves room for, the owner elides
 /// to it (`profile_chip_text`), and the capsule drawn is [`chip_cap`] of the elided name. So this
 /// sweeps the TRACK from a lone pill to the widest the strip draws and asks the three questions
@@ -91,13 +91,14 @@ fn the_unfurled_chip_never_reaches_the_glass_track_at_any_strip_width() {
     assert!(named > 0, "some strips must leave the chip a name");
 }
 
-/// The ceiling is the shipped bar's budget: the Belarusian strip (679 px, the widest the product
-/// draws today) and every narrower one keep the whole [`CHIP_NAME_MAX`], so the room arithmetic only
-/// ever bites on a strip far past anything shipped. Pinned so a change to the chip's gap, tail or
-/// frame that quietly shrinks every profile name on the TV is a test failure and not a surprise.
+/// The ceiling is the shipped bar's budget: the Belarusian strip (676 px, the widest of the shipped
+/// locales: Russian, the next, is 13 px narrower by the shipped font's advances) and every narrower
+/// one keep the whole [`CHIP_NAME_MAX`], so the room arithmetic only ever bites on a strip far past
+/// anything shipped. Pinned so a change to the chip's gap, tail or frame that quietly shrinks every
+/// profile name on the TV is a test failure and not a surprise.
 #[test]
 fn the_shipped_strips_leave_the_chip_its_whole_name_budget() {
-    let belarusian = [168.0, 144.0, 167.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W];
+    let belarusian = [168.0, 144.0, 164.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W];
     let english = [126.0, 146.0, 176.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W];
     for widths in [&belarusian[..], &english[..]] {
         assert_eq!(chip_name_budget(tab_track_w(widths)), CHIP_NAME_MAX);
@@ -181,13 +182,14 @@ fn the_profile_chip_has_a_round_surround_at_rest_and_only_widens_on_focus() {
 
 /// **The Belarusian strip keeps the material** (the regression this file exists for since
 /// 2026-10-30). "Галоўная", "Фільмы", "Серыялы" and the Watchlist and Search marks measure
-/// 132 / 108 / 131 px of bold BODY label, i.e. pills of 168 / 144 / 167 plus two 60 px marks: a
-/// 679 px track, 7 px past the 672 the retired `GLASS_TRACK_MAX` allowed, so the whole bar fell to
-/// the flat capsule on the owner's television the moment the Watchlist pill was added.
+/// 132 / 108 / 128 px of bold BODY label on the television, i.e. pills of 168 / 144 / 164 plus two
+/// 60 px marks: a 676 px track, 4 px past the 672 the retired `GLASS_TRACK_MAX` allowed, so the
+/// whole bar fell to the flat capsule on the owner's television the moment the Watchlist pill was
+/// added.
 #[test]
 fn the_belarusian_five_pill_strip_keeps_the_glass() {
-    let widths = [168.0, 144.0, 167.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W];
-    assert_eq!(tab_track_w(&widths), 679.0, "the strip the owner's television draws");
+    let widths = [168.0, 144.0, 164.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W];
+    assert_eq!(tab_track_w(&widths), 676.0, "the strip the owner's television draws");
     assert!(
         tab_glass_on(),
         "a {} px track dropped to the flat capsule",

@@ -880,8 +880,8 @@ below, and they are consistent with it.
 > (`GLASS_TRACK_MAX`, 672 px at the end), solved from the 300,000 px² budget of §3.1 and the chip's
 > reach, and a strip past it drew the flat capsule. That budget is the capture-path figure this
 > section corrects; the bar's real grab is `blur_region_for(false, ..)` (68 px past the members, not
-> 88); and the owner's Belarusian strip (679 px once the Watchlist mark joined the bar) lost the
-> glass for 7 px. The cap is gone: the bar is glass at any width, a strip past `TAB_VIEW_MAX`
+> 88); and the owner's Belarusian strip (676 px once the Watchlist mark joined the bar) lost the
+> glass for 4 px. The cap is gone: the bar is glass at any width, a strip past `TAB_VIEW_MAX`
 > scrolls inside a track that stays glass, and the unfurled chip is kept off the track by its NAME
 > budget instead (`widgets::chip_name_budget`). The widest bar's cost was priced by this
 > section's rule and not re-measured on the television.
