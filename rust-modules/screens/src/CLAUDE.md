@@ -207,7 +207,7 @@ Captures are the check — see the `ui-sim` and `which-tier` skills, and `../../
 ## Under posters settings page (library redesign)
 
 `SettingsPage::UnderPosters` (ScreenId 113, `settings_under_posters.rs`) is pushed from Settings >
-Libraries, which now has two rows (Favorite libraries, Under posters). The page has four rows (Title switch, Details › with the current line on the right, Sort value switch, Reset to default) and a framed preview (a still row of three posters from the library the Library last showed, `cards::SampleRow`, the middle one lifted and captioned, a blank face carrying no word); Details pushes `SettingsPage::UnderPostersDetails` (ScreenId 114, `DetailsPage` in the same file), the picker of the one details line (Nothing first, a sample on each row), which pops on a durable write. `settings::caption_policy_of`
+Libraries, which now has two rows (Favorite libraries, Under posters). The page has four rows (Title switch, Details › with the current line on the right, Sort value switch, Reset to default) and a framed preview (a still row of three posters from the library the Library last showed, `cards::SampleRow` in a `cards::SampleFrame`, the middle one lifted and captioned, the outer two clipped by the frame and dimmed, a blank face carrying no word); Details pushes `SettingsPage::UnderPostersDetails` (ScreenId 114, `DetailsPage` in the same file), the picker of the one details line (Nothing first, a sample on each row), which pops on a durable write. `settings::caption_policy_of`
 maps the stored `UnderPosters` to the ui `CaptionPolicy`. **EVERY poster tile reads that one policy through
 `registry::captions`** (`policy()` with the one `TEST_UNDER_POSTERS` test override, `label()` the one builder of a focused
 poster's `[title, details]`, `shelf_label()` for Home's and Recommended's shelves): the Library grid, the Collections page, the Watchlist,
@@ -254,4 +254,8 @@ Russian month names). Every space in a value is a no-break space, a missing valu
 input, not a read:** a screen reads no clock (the `wall` rule); the application's clock door
 (`app::clock::today`) reads the platform's calendar date once a minute and `LibraryLike::today` hands
 it in, and `CaptionCache` keys its labels on it so "Today" rebuilds at midnight. The settings preview
-illustrates the mode with each sample's duration while the Sort value row has focus. It never adds sort choices.
+illustrates the mode as a library sorted by Year while the Sort value row has focus: each sample's own year
+(through `registry::sort_info::label`) under its tile and a "Sorted by Year" caption at the frame's foot. The frame is the
+board's (`cards::SampleFrame`: 660 x 556, Library cards 35 px apart so the outer two are clipped by it and drawn at 35%, their
+value lines with them); the Details picker's frame says "The library you last opened" at its foot, and its Video choice
+carries the one detail line the table can hold without a focus-only mechanism. It never adds sort choices.
