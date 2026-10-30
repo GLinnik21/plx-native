@@ -2092,10 +2092,11 @@ mod tests {
 
     /// …and it opens in every ORDINARY episode row too, where the bookmark and Trailer are never
     /// present but Restart, the watch toggle, Play Version and the Also available pill can each be.
-    /// Measured with the real shipped font, because `disc_caps_with` refuses the whole row when
-    /// the widest verb does not fit — the exact state a synthetic measure would hide.
+    /// Measured in English with the real shipped font, because `disc_caps_with` refuses the whole
+    /// row when the widest verb does not fit — the exact state a synthetic measure would hide. The
+    /// all-language sweep above covers the languages where the row itself collapses to circles.
     #[test]
-    fn the_go_to_show_disc_opens_in_every_ordinary_episode_row() {
+    fn the_go_to_show_disc_opens_in_every_english_episode_row() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let english = SHIPPED
