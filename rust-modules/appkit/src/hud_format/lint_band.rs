@@ -26,7 +26,7 @@
 //! band is a plain value) the finding falls back to `/layout`, the layout root, so the violation is still
 //! reported.
 
-use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::consts::{EDGE_TOL, SCR_H, SCR_W};
 use plx_ui::Rect;
 
 use super::compile::BandExtent;
@@ -68,7 +68,7 @@ fn highest<'a>(cx: &LangCtx<'a>) -> Option<(BandExtent<'a>, StateCtx<'a>)> {
 /// (see [`highest`]). A scan that missed the band's top (`found` is `None`, or sits elsewhere) names the layout
 /// root in the first compact state instead.
 fn finding(cx: &LangCtx<'_>, band_top: f32, limit: f32, found: Option<(BandExtent<'_>, StateCtx<'_>)>) -> Finding {
-    let found = found.filter(|(extent, _)| (extent.top - band_top).abs() < 0.01);
+    let found = found.filter(|(extent, _)| (extent.top - band_top).abs() < EDGE_TOL);
     let state = found
         .as_ref()
         .map(|(_, s)| *s)
@@ -145,7 +145,7 @@ pub(super) const UNIT_ONLY: &[(&str, &str)] = &[];
 mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
 
-    use super::super::compile::{compile, CompileCtx};
+    use super::super::compile::{compile, CompileCtx, DrawOp};
     use super::super::lint::testing::{apply, assert_case};
     use super::super::lint::{lint, LangCtx, LintLang, LintOptions};
     use super::super::parse::{self, Val};
@@ -237,6 +237,28 @@ mod tests {
         }
     }
 
+    /// **A rule is named a rule**, not a ground: under `band: "block"` an E1201 set by a rule says so (the
+    /// reference draws rules, so the walk is not vacuous).
+    #[test]
+    fn a_rule_is_named_a_rule_and_not_a_ground() {
+        let mut rules = 0;
+        for (name, text) in FIXTURES {
+            with_cx(text, |cx| {
+                for state in cx.compiled.states() {
+                    let extents: Vec<_> = state.band_extents(true).collect();
+                    for (i, op) in state.ops.iter().enumerate() {
+                        let DrawOp::Rule { rect, .. } = op else { continue };
+                        rules += 1;
+                        let whats: Vec<&str> =
+                            extents.iter().filter(|e| e.rect == *rect && e.pointer == state.origin(i)).map(|e| e.what).collect();
+                        assert_eq!(whats, ["rule"], "{name}: the extent of the rule at {}", state.origin(i));
+                    }
+                }
+            });
+        }
+        assert!(rules > 0, "a fixture draws a rule");
+    }
+
     /// Up Next's buttons and the Skip pill are named by the stand-in's node (`/layout/up_next`), the scrub bar by
     /// its own cell, a control by its item.
     #[test]
@@ -304,7 +326,7 @@ mod tests {
         with_cx(REFERENCE, |cx| {
             assert_eq!(cx.package.layout.get("band").and_then(Val::as_str), Some("block"));
             let (extent, _) = highest(cx).expect("an extent");
-            assert!(extent.what == "text" || extent.what == "image" || extent.what == "ground" || extent.what == "control", "{extent:?}");
+            assert!(["text", "image", "ground", "rule", "control"].contains(&extent.what), "{extent:?}");
             assert!(extent.top <= 792.0 + 400.0);
         });
     }

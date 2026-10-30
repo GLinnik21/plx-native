@@ -527,7 +527,8 @@ impl CompiledState {
                         }
                         continue;
                     }
-                    DrawOp::Ground { rect, .. } | DrawOp::Rule { rect, .. } => ("ground", *rect),
+                    DrawOp::Ground { rect, .. } => ("ground", *rect),
+                    DrawOp::Rule { rect, .. } => ("rule", *rect),
                     DrawOp::Text { rect, .. } | DrawOp::Facts { rect, .. } => ("text", *rect),
                     DrawOp::Image { rect, .. } => ("image", *rect),
                     DrawOp::Icon { rect, .. } => ("icon", *rect),
