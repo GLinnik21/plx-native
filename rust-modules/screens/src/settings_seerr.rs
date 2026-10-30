@@ -2,7 +2,7 @@
 //! Jellyseerr), which the request surfaces ask on behalf of whoever is watching.
 //!
 //! Three rows: the server address (OK opens the television's keyboard on the address field drawn in
-//! the page's panel), Connect (its sub-line is the live connection: connecting, connected as whom,
+//! the page's panel, which stands above the raised keyboard), Connect (its sub-line is the live connection: connecting, connected as whom,
 //! refused, unreachable) and Remove server. The page reads the stored address and the connection
 //! from the Seerr store's view (`cx.views.seerr`), never from the session: the store is handed the
 //! stored address every frame (`Bridge::seerr_pump`) and signs the seated profile in there.
@@ -125,14 +125,17 @@ impl LogicalState for SeerrState {
 
 /// The caret's blink period, Search's.
 const BLINK_US: u32 = 530_000;
-/// The panel the address field stands in, on the narrative column's floor, as Under posters'
-/// preview stands there.
+/// The panel the address field stands in, in the narrative column under the copy, its foot a
+/// [`theme::space::LG`] above the television's raised keyboard (`text_field::SYSTEM_KEYBOARD_TOP`):
+/// the field is typed into while the keyboard is up, and the keyboard cannot be moved. It stands
+/// there whether or not the keyboard is up, so nothing jumps when it rises.
 const PANEL_H: f32 = 136.0;
 const PANEL_PAD: f32 = 32.0;
 
 fn panel() -> Rect {
     let narrative = RouteLayout::screen().narrative;
-    Rect::new(narrative.x, narrative.y + narrative.h - PANEL_H, narrative.w, PANEL_H)
+    let bottom = plx_ui::text_field::SYSTEM_KEYBOARD_TOP - theme::space::LG;
+    Rect::new(narrative.x, bottom - PANEL_H, narrative.w, PANEL_H)
 }
 
 fn field_rect() -> Rect {

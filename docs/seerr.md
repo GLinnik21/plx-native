@@ -18,7 +18,7 @@ it is reached at exactly that address.
 | job body | `data::seerr` (`SeerrOp`, `run_op`, `SeerrIo`) | signs in when it holds no session, once more after a 401 |
 | store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands; a `SeerrCmd::Refresh` keeps a slot's shown answer while it is read again, and when that read fails |
 | app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, the runner's `seerr-call` | hands the store the stored address, signs a seated profile in once |
-| Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`), Connect with the live connection line, Remove |
+| Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`, in a panel above the raised keyboard, `text_field::SYSTEM_KEYBOARD_TOP`), Connect with the live connection line, Remove |
 | Seerr tab | `screens/src/seerr_tab/` (`AppArg::Seerr`, `TAB_KEY_SEERR`) | on the strip after the type pills and just before the Watchlist mark while an address is set (`chrome::StripSource::seerr`); a header row switches its two sections, Requests (the request list as `plx_ui::media_row` rows) and Discover (Trending, Popular and Upcoming shelves); see below |
 | Detail page | `screens/src/detail` (`HeroCtl::Request`, `RequestFace`, `request_face`) | a show's missing seasons: the last disc of the hero row (see below) |
 | request menu | `screens/src/seerr_request.rs` (`ContentPanel::SeerrRequest`, `AppArg::SeerrRequest`) | where a request goes: server, quality profile, root folder (see below) |

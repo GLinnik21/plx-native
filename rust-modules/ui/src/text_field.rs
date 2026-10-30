@@ -13,6 +13,15 @@ use crate::{Painter, Rect};
 use plx_machine::machine::{Host, Measure};
 use std::ffi::{CStr, CString};
 
+/// **The television's own keyboard covers the bottom `SYSTEM_KEYBOARD_H` px of the screen** while it
+/// is up: 324, measured off four device captures on 2026-08-15 (`docs/search.md`, "The layout is
+/// dictated by the keyboard"). The panel cannot be moved (`SDL_SetTextInputRect` is a no-op on the
+/// set, `src/textinput.rs`), so a page that edits a field keeps the field, and whatever the reader
+/// needs while typing, above [`SYSTEM_KEYBOARD_TOP`].
+pub const SYSTEM_KEYBOARD_H: f32 = 324.0;
+/// The keyboard's top edge on the 1080 frame.
+pub const SYSTEM_KEYBOARD_TOP: f32 = crate::consts::SCR_H - SYSTEM_KEYBOARD_H;
+
 /// The caret bar's width.
 pub const CARET_W: f32 = 5.0;
 /// The space between the run and the caret.
