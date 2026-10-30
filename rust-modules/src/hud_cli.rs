@@ -401,7 +401,7 @@ mod tests {
             (&["--hud-lint", "p.json", "--format", "xml"], "--format is text or json, not \"xml\""),
             (&["--hud-lint", "p.json", "--format", "json", "--format", "text"], "--format given twice"),
             (&["--hud-lint", "p.json", "--lang"], "--lang needs all or a language tag"),
-            (&["--hud-lint", "p.json", "--lang", "xx"], "--lang is all or one of en es be fr it pt de hu ru pl"),
+            (&["--hud-lint", "p.json", "--lang", "xx"], "--lang is all or one of en es be fr it pt de hu ru pl nl, not"),
             (&["--hud-lint", "p.json", "--lang", "system"], "not \"system\""),
             (&["--hud-lint", "p.json", "--lang", "de", "--lang", "fr"], "--lang given twice"),
             (&["--hud-export"], "--hud-export needs a package id"),

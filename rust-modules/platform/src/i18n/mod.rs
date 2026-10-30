@@ -196,7 +196,7 @@ impl LocaleContext {
 }
 
 /// Month data shared by yearless captions and full sort dates. Keep the ICU pattern/number
-/// formatter, but do not link its all-locale Gregorian month-name database for these ten tables.
+/// formatter, but do not link its all-locale Gregorian month-name database for these eleven tables.
 fn month_names(language: Language, width: MonthWidth) -> (&'static [&'static str; 12], &'static str) {
     match (language, width) {
         (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),

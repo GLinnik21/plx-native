@@ -476,8 +476,9 @@ mod tests {
     /// per (language, case): `lang TAB case index TAB case TAB hash`, the FNV-1a hash of the frame's whole
     /// census (the primitives, text runs, glyphs and fills with effective alpha, in order, as `{:?}`). Written
     /// from `classic::draw_hud` at 93fc5091d (the layout PR5c's golden matched at 70a7aa66a), before that
-    /// draw was deleted; the renderer must reproduce each hash. `FixtureMeasure` only, so the values do not
-    /// depend on a font.
+    /// draw was deleted; the renderer must reproduce each hash. The `nl` lines were written from the same
+    /// hand-written draw at edd3d0da6 with the Dutch catalog applied, after the language arrived.
+    /// `FixtureMeasure` only, so the values do not depend on a font.
     const FROZEN_CENSUS: &str = include_str!("census-classic.golden.tsv");
 
     /// FNV-1a, 64 bit: a hash whose algorithm is fixed here (`DefaultHasher`'s is not).
