@@ -181,6 +181,20 @@ fn compiled_classic_matches_the_hand_written_layout() {
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
 }
 
+/// **The hand-written title's right edge, frozen.** `fixtures/classic-title-right.golden.tsv` is what
+/// `classic::title_right(..)` reported for the cases the two tests below cover, written from the
+/// HAND-WRITTEN side on 0768cf4a1 (the layout PR5c's golden held at 70a7aa66a, unchanged since), before that function was deleted:
+/// one line per case, `key TAB right edge` (`f32` `{:?}`, which round-trips exactly). Keys are
+/// `{Slot:?}/episode={..}` (the compact slots, English, `FixtureMeasure`) and
+/// `{language:?}/{measure}/episode={..}/{SkipKind:?}` (the skip pill actually shown, 10 languages x 2
+/// measurers).
+const FROZEN_CLASSIC_TITLE_RIGHT: &str = include_str!("fixtures/classic-title-right.golden.tsv");
+
+fn frozen_title_right(key: &str) -> f32 {
+    let line = FROZEN_CLASSIC_TITLE_RIGHT.lines().find(|l| l.split('\t').next() == Some(key)).unwrap_or_else(|| panic!("no frozen title case {key}"));
+    line.split('\t').nth(1).expect("a value").parse().expect("a frozen number")
+}
+
 #[test]
 fn compiled_classic_title_stops_where_the_hand_written_title_does() {
     let compiled = build(CLASSIC, &FM);
@@ -196,10 +210,12 @@ fn compiled_classic_title_stops_where_the_hand_written_title_does() {
             (Slot::UpNext, ControlSlot::UpNext(marker(MarkerKind::Credits, true))),
         ] {
             let state = compiled.lookup(0, kind, true, episode, false).unwrap();
-            let want = classic::title_right(slot, &HudMotion::new(), &FM);
-            assert_eq!(title_right(state), Some(want), "{kind:?} episode={episode}");
+            let frozen = frozen_title_right(&format!("{kind:?}/episode={episode}"));
+            assert_eq!(classic::title_right(slot, &HudMotion::new(), &FM), frozen, "FROZEN value drifted from the hand-written title: {kind:?} episode={episode}");
+            assert_eq!(title_right(state), Some(frozen), "{kind:?} episode={episode}");
         }
     }
+    assert_eq!(FROZEN_CLASSIC_TITLE_RIGHT.lines().filter(|l| !l.contains("/Intro") && !l.contains("/Credits")).count(), 4, "the frozen file holds the four compact cases");
 }
 
 #[test]
@@ -212,24 +228,31 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
             _ => None,
         })
     };
+    let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
     let mut differing = 0;
+    let mut compared = 0;
     for language in SHIPPED {
         let _language = language_on_this_thread_for_test(language);
-        for measure in [&FM as &dyn Measure, &ShippedMeasure] {
+        for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
             for episode in [false, true] {
                 let state = compiled.lookup(0, Slot::Skip, true, episode, false).unwrap();
                 let mut rights = Vec::new();
                 for (skip, kind) in [(SkipKind::Intro, MarkerKind::Intro), (SkipKind::Credits, MarkerKind::Credits)] {
+                    let frozen = frozen_title_right(&format!("{language:?}/{measure_name}/episode={episode}/{skip:?}"));
                     let want = classic::title_right(ControlSlot::Skip(prompt_for(marker(kind, false))), &HudMotion::new(), measure);
+                    assert_eq!(want, frozen, "FROZEN value drifted from the hand-written title: {language:?} {measure_name} episode={episode} {skip:?}");
                     let got = title_right(state.skip_variant(skip));
-                    assert_eq!(got, Some(want), "{language:?} episode={episode} {skip:?}");
+                    assert_eq!(got, Some(frozen), "{language:?} {measure_name} episode={episode} {skip:?}");
                     rights.extend(got);
+                    compared += 1;
                 }
                 differing += usize::from(rights[0] != rights[1]);
             }
         }
     }
+    assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2, "the comparisons");
+    assert_eq!(FROZEN_CLASSIC_TITLE_RIGHT.lines().count(), compared + 4, "the frozen file holds one line per case");
     assert!(differing > 0, "the two pills must differ somewhere, or this test pins nothing");
 }
 
