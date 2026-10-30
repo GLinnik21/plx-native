@@ -235,6 +235,11 @@ impl Shelf {
         &self.style
     }
 
+    /// The entry whose focus this shelf reads.
+    pub fn entry(&self) -> EntryId {
+        self.entry
+    }
+
     /// The y the screen last laid the shelf out at (kept in the motion canon).
     pub fn base_y(&self) -> f32 {
         self.row.base_y

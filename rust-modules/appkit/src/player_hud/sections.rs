@@ -29,7 +29,13 @@ use plx_ui::{Painter, Rect, View};
 
 use super::classic::tab_labels;
 use super::command::HudCommand;
+use super::motion::HudMotion;
 use super::render::Frame;
+use super::strip::{Cards, Geometry};
+use plx_machine::machine::Host;
+use plx_ui::cards::SectionFrame;
+use plx_ui::geom::IndexElem;
+use plx_ui::screen::DrawFrame;
 use crate::chip_row::{draw_chip_row, ChipRow};
 use crate::hud_format::compile::{Compiled, CompiledState, ControlRect, DrawOp, Live, OpGroup};
 use crate::info_panel::{actions, info_chips, info_content, FactsShape};
@@ -297,4 +303,19 @@ pub(super) fn button(f: &Frame<'_>, q: Painter, e: &plx_ui::Env, c: &ControlRect
         .focused(focused)
         .scale(scale)
         .draw(e, q);
+}
+
+/// **The chapters strip** (`DrawOp::Strip`): the Shelf held in `row` paints the playing item's chapters at the
+/// op's geometry ([`super::strip`]). The Shelf's springs are stepped by the screen's tick, not here.
+pub(super) fn strip<H: Host>(f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, q: Painter, op: &DrawOp)
+where
+    H::Elem: IndexElem,
+{
+    let Some(geo) = Geometry::of(op) else { return };
+    let chapters = crate::chapters_panel::chapters(f.meta);
+    if chapters.is_empty() {
+        return;
+    }
+    let src = Cards::<H::Elem>::new(chapters, plx_media::route::item_sid(plx_media::route::cur_sid(f.ps)).raw(), geo);
+    row.strip(f.entry, &geo).paint(df, q, &src, SectionFrame::new(geo.card.y, geo.rect));
 }

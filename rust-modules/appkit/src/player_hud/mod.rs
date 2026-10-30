@@ -32,6 +32,7 @@ pub mod render;
 pub mod seek_jump;
 mod sections;
 pub mod state;
+pub mod strip;
 use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
 // The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,

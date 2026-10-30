@@ -64,7 +64,9 @@ use super::sections;
 use super::model::HudModel;
 use super::motion::HudMotion;
 use super::state::{readout_owns_frame, Busy, ControlSlot};
-use plx_machine::machine::GroupId;
+use plx_machine::machine::{GroupId, Host};
+use plx_ui::geom::IndexElem;
+use plx_ui::screen::DrawFrame;
 use super::command::{HudCommand, SeekBy, TrackTab};
 use crate::hud_format::compile::{Chrome, Compiled, CompiledState, DrawOp, FaceRef, Focus, Rest, Span, Widget};
 use crate::skip_pill;
@@ -73,6 +75,8 @@ use crate::up_next::{self, Countdown, Decor, Layout};
 /// Everything besides the compiled package, the motion and the painter that one frame of the
 /// transport draws from, bundled.
 pub struct Frame<'a> {
+    /// The entry the screen draws under: the key the chapters strip's Shelf reads focus from.
+    pub entry: plx_machine::machine::EntryId,
     pub ps: &'a plx_media::route::PlaybackSession,
     pub model: &'a HudModel,
     pub up: &'a Countdown,
@@ -97,14 +101,17 @@ fn state_for<'c>(compiled: &'c Compiled, f: &Frame<'_>) -> Option<&'c CompiledSt
 
 /// Draw the transport from `compiled` into `p`. Returns false, having drawn nothing, when the package
 /// has no state for this frame (the caller then draws what it drew before the renderer existed).
-pub fn draw(compiled: &Compiled, f: &Frame<'_>, row: &mut HudMotion, p: Painter) -> bool {
+pub fn draw<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter) -> bool
+where
+    H::Elem: IndexElem,
+{
     // A FAILURE owns the frame: the read-out is `draw_readout`'s, drawn by the caller AFTER this.
     if readout_owns_frame(f.busy) {
         row.reset_title();
         return true;
     }
     let Some(state) = state_for(compiled, f) else { return false };
-    draw_state(compiled, state, f, row, p);
+    draw_state(compiled, state, f, df, row, p);
     true
 }
 
@@ -112,7 +119,10 @@ pub fn draw(compiled: &Compiled, f: &Frame<'_>, row: &mut HudMotion, p: Painter)
 /// hands it an open-section state (`compiled.lookup(OPEN_INFO | OPEN_CHAPTERS, ..)`), which the screen does
 /// not reach until the sections go live. The failure read-out is [`draw`]'s: it owns the frame before any
 /// state is chosen.
-pub fn draw_state(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>, row: &mut HudMotion, p: Painter) {
+pub fn draw_state<H: Host>(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter)
+where
+    H::Elem: IndexElem,
+{
     let e = hud_env();
     // a panel owning the middle hides the compact state's transport; a section state IS the panel
     let hides_transport = state.key.open == 0 && !f.transport;
@@ -199,7 +209,7 @@ pub fn draw_state(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>, row
                     sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, bold, ink)
                 }
                 // not drawn by this renderer yet: see the module doc
-                DrawOp::Strip { .. } => {}
+                DrawOp::Strip { .. } => sections::strip(f, df, row, q, op),
             }
         }
         // right after the bar's band, so the still floats over the title block and the row above it
@@ -432,6 +442,37 @@ mod tests {
     use plx_ui::fixture::FixtureMeasure;
     use plx_ui::icons::Icon;
 
+    use plx_machine::machine::{EntryId, FocusRead, Host, InputOwner, PressRead, Tick};
+
+    /// A host with `u32` elements: the least a `DrawFrame` needs for the renderer to paint the strip's Shelf.
+    pub(super) struct HostFixture;
+    impl Host for HostFixture {
+        type Arg = plx_ui::fixture::FixtureArg;
+        type Fx = plx_ui::fixture::FixtureFx;
+        type Msg = plx_ui::fixture::FixtureMsg;
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = plx_ui::fixture::FixtureInit;
+        type Memory = ();
+    }
+
+    /// Run `f` over a frame whose focus reads `focus`.
+    pub(super) fn with_df_focus<R>(focus: FocusRead<u32>, f: impl FnOnce(&DrawFrame<'_, '_, HostFixture>) -> R) -> R {
+        let cx = plx_machine::machine::Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &FM,
+            focus,
+            press: PressRead::default(),
+            owner: InputOwner::Entry(EntryId(0)),
+        };
+        f(&DrawFrame::new(&cx, Painter::root()))
+    }
+
+    pub(super) fn with_df<R>(f: impl FnOnce(&DrawFrame<'_, '_, HostFixture>) -> R) -> R {
+        with_df_focus(FocusRead::default(), f)
+    }
+
     const FM: FixtureMeasure = FixtureMeasure;
     const PAIR: Controls = Controls { previous: true, next: true, restart: false };
     const RESTART: Controls = Controls { previous: true, next: false, restart: true };
@@ -484,7 +525,7 @@ mod tests {
         let up = Countdown::default();
         let mut row = HudMotion::new();
         let frame = Frame {
-            ps: &ps,
+            entry: EntryId(0), ps: &ps,
             model: &model,
             up: &up,
             slot: c.slot,
@@ -498,7 +539,7 @@ mod tests {
             meta: store.view(),
         };
         let mut drew = false;
-        let new = census(|| drew = draw(compiled, &frame, &mut row, Painter::root()));
+        let new = census(|| drew = with_df(|df| draw(compiled, &frame, df, &mut row, Painter::root())));
         (new, drew)
     }
 
@@ -590,7 +631,7 @@ mod tests {
         let up = Countdown::default();
         let mut row = HudMotion::new();
         let frame = Frame {
-            ps: &ps,
+            entry: EntryId(0), ps: &ps,
             model: &model,
             up: &up,
             slot: ControlSlot::Discs(Controls::NONE),
@@ -603,7 +644,7 @@ mod tests {
             measure: &FM,
             meta: store.view(),
         };
-        let drawn = census(|| assert!(draw(&hud.compiled, &frame, &mut row, Painter::root())));
+        let drawn = census(|| assert!(with_df(|df| draw(&hud.compiled, &frame, df, &mut row, Painter::root()))));
         assert!(drawn.0.is_empty(), "{:?}", drawn.0);
     }
 
@@ -643,10 +684,10 @@ mod tests {
             let up = Countdown::default();
             let mut row = HudMotion::new();
             let frame = Frame {
-                ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
                 focus: GROUP_SCRUB, btn: 0, tab: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
-            let new = census(|| draw_state(&hud.compiled, state, &frame, &mut row, Painter::root()));
+            let new = census(|| with_df(|df| draw_state(&hud.compiled, state, &frame, df, &mut row, Painter::root())));
             let old = census(|| InfoPanelState::new().draw(&ps, 1.0, &FM, store.view()));
             (new, old)
         }
@@ -813,10 +854,10 @@ mod tests {
             let model = HudModel::default();
             let up = Countdown::default();
             let frame = Frame {
-                ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
                 focus, btn, tab, now: 1_000, transport, measure: &FM, meta: store.view(),
             };
-            census(|| draw_state(&hud.compiled, state, &frame, row, Painter::root()))
+            census(|| with_df(|df| draw_state(&hud.compiled, state, &frame, df, row, Painter::root())))
         }
 
         /// The Info tab reads selected because the STATE has Info open, not because the transport is hidden: an
@@ -904,10 +945,10 @@ mod tests {
             let up = Countdown::default();
             let mut row = HudMotion::new();
             let frame = Frame {
-                ps: &ps, model: &model, up: &up, slot, busy: Busy::None, focus, btn,
+                entry: EntryId(0), ps: &ps, model: &model, up: &up, slot, busy: Busy::None, focus, btn,
                 tab: 0, now: 1_000, transport: true, measure: &FM, meta: store.view(),
             };
-            census(|| assert!(draw(compiled, &frame, &mut row, Painter::root()), "the reference has a compact state"))
+            census(|| assert!(with_df(|df| draw(compiled, &frame, df, &mut row, Painter::root())), "the reference has a compact state"))
         }
 
         fn model() -> HudModel {

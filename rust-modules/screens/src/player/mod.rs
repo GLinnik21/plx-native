@@ -38,8 +38,9 @@ use plx_ui::consts;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     By, Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
-    LogicalState, Machine,
+    LogicalState, Machine, Host,
 };
+use plx_ui::geom::IndexElem;
 use plx_appkit::player_hud::geometry::{HudGeometry, GROUP_FAILURE, GROUP_ROW, GROUP_SCRUB, GROUP_TABS};
 use plx_appkit::player_hud::model::HudModel;
 use plx_appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, motion::HudMotion};
@@ -273,14 +274,18 @@ impl PlayerScreen {
     /// frame `builtin:classic` is never in, `classic_answers_every_frame_the_player_can_be_in`), and says so
     /// ONCE in the event log rather than every frame; its geometry is the same empty report
     /// (`player_hud::geometry::geometry`), so what is drawn and what is hit stay one statement.
-    pub fn draw_hud(
+    pub fn draw_hud<H: Host>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         now: u32,
-        measure: &dyn plx_machine::machine::Measure,
+        df: &DrawFrame<'_, '_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
-    ) {
+    ) where
+        H::Elem: IndexElem,
+    {
+        let measure = df.measure;
         let frame = plx_appkit::player_hud::render::Frame {
+            entry: self.entry,
             ps,
             model: &self.model,
             up: &self.up_next,
@@ -294,7 +299,7 @@ impl PlayerScreen {
             measure,
             meta,
         };
-        let drew = plx_appkit::player_hud::render::draw(&self.compiled, &frame, &mut self.row, plx_ui::Painter::root());
+        let drew = plx_appkit::player_hud::render::draw(&self.compiled, &frame, df, &mut self.row, plx_ui::Painter::root());
         if !drew && !self.render.no_state_logged {
             self.render.no_state_logged = true;
             plx_base::eventlog::log("hud: the package has no state for this frame; nothing is drawn or placed for it");
@@ -1860,7 +1865,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // at all, and the tabs, which open a panel at once with no dip to wait for.
         let hud_drawn = self.hud_drawn(ps, now);
         if hud_drawn {
-            self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
+            self.draw_hud(ps, now, f, H::metadata(f.cx));
         } else {
             self.row.reset_title();
         }

@@ -13,7 +13,8 @@ use super::geometry::{GROUP_ROW, GROUP_SECTION, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
 use crate::knob_spring::KnobSpring;
-use plx_machine::machine::GroupId;
+use plx_machine::machine::{EntryId, GroupId};
+use plx_ui::cards::Shelf;
 use plx_ui::theme;
 use std::ffi::CString;
 use std::os::raw::{c_int};
@@ -144,6 +145,10 @@ pub struct HudMotion {
     pub(super) preview: crate::scrub_preview::ScrubPreview,
     /// The knob's return to the playhead when a scrub is cancelled ([`crate::knob_spring`]).
     pub(super) spring: KnobSpring,
+    /// **The chapters strip's Shelf** ([`super::strip`]): its pop, scroll and caption springs are LOGICAL state
+    /// the screen's tick steps (`Shelf::on`), so the shelf is held here with the rest of the HUD's motion and a
+    /// draw only paints it. Built by [`strip`](Self::strip) on first use.
+    strip: Option<Shelf>,
 }
 
 impl Default for HudMotion {
@@ -162,7 +167,24 @@ impl HudMotion {
             pause_seen: None,
             preview: crate::scrub_preview::ScrubPreview::new(),
             spring: KnobSpring::new(),
+            strip: None,
         }
+    }
+
+    /// The strip's Shelf for a strip of this `geo`, under `entry`: held across frames so its springs live, and
+    /// rebuilt when the strip it drew is not this one (another entry or another card geometry).
+    pub fn strip(&mut self, entry: EntryId, geo: &super::strip::Geometry) -> &mut Shelf {
+        let style = geo.style();
+        let same = |s: &Shelf| {
+            let old = s.style();
+            s.entry() == entry
+                && (old.w, old.h, old.gap, old.margin_x, old.radius) == (style.w, style.h, style.gap, style.margin_x, style.radius)
+                && old.label_drop == style.label_drop
+        };
+        if !self.strip.as_ref().is_some_and(same) {
+            self.strip = Some(Shelf::new(entry, style));
+        }
+        self.strip.as_mut().expect("the strip's shelf was just built")
     }
 
     /// Step the control row's focus pop AND the resume clock — once per FRAME, from the player
