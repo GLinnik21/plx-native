@@ -1008,6 +1008,7 @@ impl Painter {
     /// card's edge sheen; against a knockout that is wrong while the screen is STILL, it is the far
     /// better trade.
     pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
         if self.records() { draw_census::note_ring(self.place(r), rad); }
         if self.declare(r, 3, |data| {
             use frame::backdrop::Value;
