@@ -12,7 +12,9 @@
 //! and evaluates every `when` with its own `Layout::holds`: there is no second state walk and no second
 //! condition evaluator, so the state count is `reach`'s by construction. A state is
 //! (open sections, slot) under a valuation of `chapters.present` and `title.is_episode`; a condition
-//! the package does not name has the one value it holds.
+//! the package does not name has the one value it holds. A package that places `previous` or `next`
+//! names `title.is_episode` whether it writes the term or not (the command table makes the pair absent
+//! for a non-episode), so it is compiled as a movie as well as an episode.
 //!
 //! **`transport.paused`** is an axis of the compile ONLY when the package names it in a `when` or in a
 //! number or gap (a key that moves geometry): then every state is compiled twice, paused and playing
@@ -526,8 +528,9 @@ fn bar_top(track: Rect) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Compiled {
     states: Vec<CompiledState>,
-    /// which of `chapters.present`, `title.is_episode` and `transport.paused` the package names; one it
-    /// does not name has a single value (`true`, `true`, `false`)
+    /// which of `chapters.present`, `title.is_episode` and `transport.paused` the package names (placing
+    /// `previous` or `next` names `title.is_episode`); one it does not name has a single value (`true`,
+    /// `true`, `false`)
     named: Named,
     /// the one caption band, in every state
     band: HudBand,
@@ -566,7 +569,8 @@ impl Compiled {
     }
 
     /// The state for `open` and `slot` under the content the viewer has: a condition the package does
-    /// not name is ignored, so a query about `episode` finds the one valuation there is.
+    /// not name is ignored, so a query about `episode` finds the one valuation there is (a package that places
+    /// `previous` or `next` names `episode`, so for it the query picks the movie or the episode form).
     pub fn lookup(&self, open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> Option<&CompiledState> {
         self.state(StateKey {
             open,

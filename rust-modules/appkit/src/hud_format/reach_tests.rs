@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 use super::parse::{self, Package};
+use super::reach::Layout;
 use super::{check, codes, Code, Finding, Fold};
 
 const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
@@ -20,6 +21,13 @@ const ROW: &str = "/layout/block/0/cells/1/segment/items";
 const MORE: &str = r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 64, "rest": "film", "focus": "accent" }"#;
 /// The reference's centre segment, where the ladder rows add a control.
 const CENTER: &str = "/layout/block/2/cells/0/segment/items";
+/// The reference's `previous` and `next` items, each with the comma and the indentation that follow it.
+const REF_PREVIOUS: &str = r#"{ "id": "prev", "command": "previous", "widget": "disc", "size": 52, "rest": "bare", "focus": "accent",
+            "face": { "default": "builtin:previous", "restart": "builtin:restart" } },
+          "#;
+const REF_NEXT: &str = r#"{ "id": "next", "command": "next", "widget": "disc", "size": 52, "rest": "bare", "focus": "accent",
+            "face": "builtin:next" },
+          "#;
 
 fn edit(src: &str, from: &str, to: &str) -> String {
     let n = src.matches(from).count();
@@ -129,15 +137,99 @@ fn the_state_enumeration_is_bounded_and_deterministic() {
     // compact state under three slots, plus the info section; chapters present: plus the chapters section.
     // (3 + 1) x 2 + (3 + 2) x 2.
     assert_eq!(check(&package(CLASSIC)).states, 18);
-    // The reference names neither: one valuation. Inline sections over two laid-out sections: the
-    // compact state under three slots, plus the three non-empty subsets, which wait on Discs (D7).
-    assert_eq!(check(&package(REFERENCE)).states, 6);
+    // The reference names neither condition in a `when`, but it PLACES `previous` and `next`, and the
+    // spec's command table makes that pair absent for a non-episode whatever the package says: so it
+    // names `title.is_episode` too (see `a_placed_previous_or_next_names_title_is_episode`): two
+    // valuations (episode false, true) of one form each. Inline sections over two laid-out sections: the
+    // compact state under three slots, plus the three non-empty subsets, which wait on Discs (D7), is 6
+    // per valuation. 2 x 6 = 12 (it was 1 x 6 = 6 before the reach gap was closed).
+    assert_eq!(check(&package(REFERENCE)).states, 12);
     // The minimal package lays out no section: the compact state under its three slots.
     assert_eq!(check(&package(MINIMAL)).states, 3);
     for text in [CLASSIC, REFERENCE, MINIMAL] {
         let package = package(text);
         assert_eq!(check(&package), check(&package), "the same package, the same answer");
     }
+}
+
+/// Both values of `title.is_episode` that the walk takes for a package, `chapters.present` held.
+fn episode_forms(text: &str) -> Vec<bool> {
+    let package = package(text);
+    Layout::read(&package.layout)
+        .valuations()
+        .into_iter()
+        .filter(|v| v.chapters)
+        .map(|v| v.episode)
+        .collect()
+}
+
+#[test]
+fn a_placed_previous_or_next_names_title_is_episode() {
+    // The spec's command table: the previous / next pair is absent for a non-episode or with neither
+    // neighbour, whatever the package says. A package that places either therefore has two forms, the
+    // episode and the movie, although it never writes `title.is_episode` (the reference).
+    assert!(!REFERENCE.contains("title.is_episode"), "the reference does not name the condition itself");
+    assert_eq!(episode_forms(REFERENCE), [false, true], "the reference has the movie form and the episode form");
+    assert_eq!(episode_forms(CLASSIC), [false, true], "classic names it in a `when` as well");
+    // One placed command of the pair is enough: drop `next`, keep `previous`.
+    let only_previous = edit(REFERENCE, REF_NEXT, "");
+    assert_eq!(episode_forms(&only_previous), [false, true], "previous alone");
+    // And the other way round.
+    let only_next = edit(REFERENCE, REF_PREVIOUS, "");
+    assert_eq!(episode_forms(&only_next), [false, true], "next alone");
+    // A package that places neither has the one form it always had.
+    let neither = edit(&edit(REFERENCE, REF_PREVIOUS, ""), REF_NEXT, "");
+    assert_eq!(episode_forms(&neither), [true], "no previous or next, no movie form");
+    assert_eq!(check(&package(&neither)).states, 6, "1 x 6: one valuation of the reference's six states");
+    assert_eq!(episode_forms(MINIMAL), [true], "the minimal package places neither");
+}
+
+#[test]
+fn every_fixture_passes_r1_and_r2_with_the_states_its_valuations_make() {
+    // (fixture, valuations, states): the sum over the valuations of the reachable states. Only the
+    // reference moved when a placed previous / next began to name `title.is_episode`; the others either
+    // name the condition already (classic) or place neither command. The arithmetic:
+    //   classic     4 valuations: chapters absent (3 + 1) x 2 episode, present (3 + 2) x 2 = 8 + 10 = 18
+    //   reference   2 valuations (movie, episode) x (3 slots + 3 inline subsets) = 12
+    //   minimal     1 valuation, no section laid out: 3 slots
+    //   hero-center 1 valuation, modal sections but no opener: 3 slots
+    //   palette     1 valuation, modal sections but no opener: 3 slots
+    //   tabs        2 valuations (chapters.present only): absent 3 + {info} = 4, present 3 + 3 subsets = 6
+    let hero = include_str!("fixtures/hero-center.plxhud.json");
+    let palette = include_str!("fixtures/palette.plxhud.json");
+    let tabs = include_str!("fixtures/tabs.plxhud.json");
+    for (name, text, valuations, states) in [
+        ("classic", CLASSIC, 4, 18),
+        ("reference", REFERENCE, 2, 12),
+        ("minimal", MINIMAL, 1, 3),
+        ("hero-center", hero, 1, 3),
+        ("palette", palette, 1, 3),
+        ("tabs", tabs, 2, 10),
+    ] {
+        let package = package(text);
+        let checked = check(&package);
+        assert!(checked.findings.is_empty(), "{name}:\n{}", dump(&checked.findings));
+        assert!(
+            checked.folds.iter().all(|f| f.command != "open_more"),
+            "{name}: R1 holds, so open_more never folds: {:?}",
+            checked.folds
+        );
+        assert_eq!(Layout::read(&package.layout).valuations().len(), valuations, "{name}: valuations");
+        assert_eq!(checked.states, states, "{name}: states");
+    }
+}
+
+#[test]
+fn the_movie_form_of_the_reference_changes_no_finding_or_fold() {
+    // R1 (More is placed) and R2 (the folds) read the same package whether or not the movie form is walked:
+    // the pair is PLACED in both forms (a placed control is one a `when` does not hide), so nothing folds.
+    let checked = check(&package(REFERENCE));
+    assert!(checked.findings.is_empty(), "{}", dump(&checked.findings));
+    assert!(
+        checked.folds.iter().all(|f| f.command != "previous" && f.command != "next"),
+        "{:?}",
+        checked.folds
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------

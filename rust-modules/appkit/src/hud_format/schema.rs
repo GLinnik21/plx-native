@@ -117,6 +117,8 @@
 use plx_ui::icons::Icon;
 use plx_ui::theme;
 
+use crate::player_hud::classic::{HUD_TITLE_SZ, SCRIM_H};
+
 /// A format version: `(major, minor)`.
 pub type Since = (u8, u8);
 
@@ -617,14 +619,10 @@ pub static INK_TOKENS: &[(&str, [f32; 4])] = &[
     ),
 ];
 
-/// The pixel size of the `HUD_TITLE` rung: the existing carve-out of the now-playing title, 54 px. It
-/// mirrors `player_hud`'s private `HUD_TITLE_SZ`; wave B, which has `player_hud` in scope, makes that one
-/// const the source and a test pin the two together.
-pub const HUD_TITLE_PX: i32 = 54;
-
 /// The type-scale rungs a text cell may name: `theme::size` but for `DIAGNOSTIC` (the diagnostics
-/// instrument's own rung, below the couch floor), plus `HUD_TITLE`, the existing 54 px carve-out, legal
-/// only on a text cell bound to `title.main` (a [`Rule::NameOnlyWith`]).
+/// instrument's own rung, below the couch floor), plus `HUD_TITLE`, the existing 54 px carve-out (the
+/// now-playing title's own `classic::HUD_TITLE_SZ`, the one source), legal only on a text cell bound to
+/// `title.main` (a [`Rule::NameOnlyWith`]).
 pub static SIZE_RUNGS: &[(&str, i32)] = &[
     ("HERO", theme::size::HERO),
     ("DISPLAY", theme::size::DISPLAY),
@@ -634,7 +632,7 @@ pub static SIZE_RUNGS: &[(&str, i32)] = &[
     ("LABEL", theme::size::LABEL),
     ("CAPTION", theme::size::CAPTION),
     ("MICRO", theme::size::MICRO),
-    ("HUD_TITLE", HUD_TITLE_PX),
+    ("HUD_TITLE", HUD_TITLE_SZ),
 ];
 
 /// The spacing rungs (`theme::space`) a gap may name.
@@ -776,11 +774,6 @@ pub fn binding(name: &str) -> Option<&'static Binding> {
 // ---------------------------------------------------------------------------------------------------
 // Nodes: the package, `layout` and everything under it
 // ---------------------------------------------------------------------------------------------------
-
-/// The pixel height of classic's whole scrim over the screen bottom, which bounds a package scrim's
-/// `extra` and `height`. It mirrors `player_hud`'s private `SCRIM_H` (470); wave B, which has
-/// `player_hud` in scope, makes that one const the source and a test pin the two together.
-pub const SCRIM_H_PX: i64 = 470;
 
 /// A width on the 1920-wide canvas.
 const PX_W: Ty = Ty::Int { min: 1, max: 1920 };
@@ -956,13 +949,13 @@ pub static SCRIM: Node = Node {
         ),
         Field::opt(
             "extra",
-            Ty::Int { min: 0, max: SCRIM_H_PX },
+            Ty::Int { min: 0, max: SCRIM_H as i64 },
             "With `cover: \"block\"`: px of scrim above the block's top. At most classic's whole scrim height.",
         )
         .keyable(),
         Field::opt(
             "height",
-            Ty::Int { min: 0, max: SCRIM_H_PX },
+            Ty::Int { min: 0, max: SCRIM_H as i64 },
             "With `cover: \"fixed\"`: the scrim's height from the screen bottom. At most classic's whole scrim height.",
         )
         .keyable(),
@@ -2311,7 +2304,7 @@ mod tests {
             from_rungs.as_slice(),
             "BODY_SIZES is SIZE_RUNGS but for HUD_TITLE"
         );
-        assert!(size_rung("HUD_TITLE") == Some(HUD_TITLE_PX));
+        assert!(size_rung("HUD_TITLE") == Some(HUD_TITLE_SZ));
         // Every Ty::Size sits in a node whose rule restricts HUD_TITLE; every other size key excludes it.
         for n in all_nodes() {
             for f in n.fields {
@@ -2395,7 +2388,7 @@ mod tests {
             field(&SCRIM, "extra").unwrap().ty,
             Ty::Int {
                 min: 0,
-                max: SCRIM_H_PX
+                max: SCRIM_H as i64
             },
             "extra is at most classic's scrim"
         );

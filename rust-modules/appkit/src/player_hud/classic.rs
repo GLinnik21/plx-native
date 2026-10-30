@@ -32,7 +32,8 @@ pub(super) fn hud_env() -> Env {
 // `theme::size::TITLE`, so it sits OUTSIDE the shared type scale as a documented carve-out (like the
 // failure-message caption in `draw_subtitle_message`). Both are media chrome with their own legibility contract and
 // both are already well above the couch floor; they're named here rather than left as bare literals.
-pub(super) const HUD_TITLE_SZ: i32 = 54;
+// The HUD package format's `HUD_TITLE` type rung (`hud_format::schema::SIZE_RUNGS`) reads this very const.
+pub(crate) const HUD_TITLE_SZ: i32 = 54;
 
 /// the shared playback clock ([`plx_ui::fmt::clock`]) with the HUD's leading '-' for remaining
 pub(super) fn fmt_time(ns: i64, neg: bool) -> String {
@@ -177,8 +178,9 @@ impl ControlSlot {
 
 /// The bottom scrim's height — the transport's dark ground, transparent at its top edge and
 /// `theme::scrim_black(0.86)` at the panel bottom. Named because the read-out's placement is graded
-/// against it (see [`readout_frame`] and its test) rather than against a second hand-typed 470.
-pub(super) const SCRIM_H: f32 = 470.0;
+/// against it (see [`readout_frame`] and its test) rather than against a second hand-typed 470. The HUD
+/// package format bounds a scrim's `extra` and `height` by it (`hud_format::schema`), the same const.
+pub(crate) const SCRIM_H: f32 = 470.0;
 
 /// The read-out's frame: **the whole panel**, because the wait is about the whole picture.
 ///
