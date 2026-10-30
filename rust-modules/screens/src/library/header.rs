@@ -83,8 +83,9 @@ impl LibraryScreen {
         self.header_focus().is_some_and(|focus| focus.contains(elem))
     }
 
-    /// The Sort & Filter control's value: the sort in force, a queued edit included.
-    fn sort_value<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> String {
+    /// The Sort & Filter control's value: the sort in force, a queued edit included. The scroll
+    /// capsule carries the same string.
+    pub(super) fn sort_value<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> String {
         let listing = H::listing(cx);
         let queued = self.pending.grid().filter(|(target, _)| target.matches(listing)).map(|(_, action)| action);
         let sort = match queued {

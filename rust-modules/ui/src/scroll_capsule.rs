@@ -27,6 +27,13 @@
 //! **The whole name fits.** The capsule is as wide as the name and the count need, never shortened
 //! with an ellipsis.
 //!
+//! **It can carry the sort** ("Films 1,284 · Date viewed", the Library's board): an optional
+//! criterion piece after the count and a dot. The library and the criterion are in the primary ink,
+//! the count and the dot in the secondary; all four are BODY regular, [`PIECE_GAP`] (12) apart
+//! inside the same [`PAD_L`] / [`PAD_R`], so the capsule's width follows its content. A page that
+//! passes no criterion draws the plain capsule exactly as before (a bold name and a CAPTION count,
+//! [`NAME_COUNT_GAP`] apart).
+//!
 //! Pure geometry and colour live here and are tested without a frame; the choice of WHEN to show
 //! them (`scroll_chrome`) is owned by the Library (and its Collections page) and the Watchlist.
 use std::ffi::CStr;
@@ -46,8 +53,10 @@ pub const RADIUS: f32 = H * 0.5;
 /// Room the text keeps from the capsule's left end, and from its right end.
 pub const PAD_L: f32 = 28.0;
 pub const PAD_R: f32 = 28.0;
-/// Space between the name and the count.
+/// Space between the name and the count of a plain capsule.
 pub const NAME_COUNT_GAP: f32 = 10.0;
+/// Space between the pieces of a capsule that carries the sort: the board's 12.
+pub const PIECE_GAP: f32 = 12.0;
 /// Height of the fade at the page's top edge, painted in the ambient ground colour, never black.
 pub const FADE_H: f32 = 72.0;
 /// How far the fade reaches below the capsule's bottom edge while the capsule shows: the capsule's
@@ -56,20 +65,52 @@ pub const FADE_BELOW_CAPSULE: f32 = 12.0;
 /// Height of one strip of the fade: the knots the smoothstep is sampled at. 72 is twelve of them.
 pub const FADE_STEP: f32 = 6.0;
 
-fn run_w(s: &CStr, size: i32, bold: bool, measure: &dyn Measure) -> f32 {
-    measure.width(s, size, bold)
+/// The dot between the count and the criterion.
+const DOT: &CStr = c"\u{b7}";
+
+/// One text run of the capsule: what it says, its type and its ink.
+struct Run<'a> {
+    text: &'a CStr,
+    size: i32,
+    bold: bool,
+    ink: [f32; 4],
 }
 
-/// The capsule's width for `name` (BODY bold) and `count` (CAPTION regular): left padding, the two
-/// runs and the gap between them, right padding.
-pub fn width(name: &CStr, count: &CStr, measure: &dyn Measure) -> f32 {
-    PAD_L + HStack::widths(&text_widths(name, count, measure), NAME_COUNT_GAP, Align::Leading(0.0)).width() + PAD_R
+/// The capsule's runs left to right, and the gap between them. Without a criterion: the name (BODY
+/// bold) and the count (CAPTION regular, secondary). With one, the board's four pieces: the name,
+/// the count, the dot and the criterion, all BODY regular, the count and the dot secondary.
+fn runs<'a>(name: &'a CStr, count: &'a CStr, criterion: Option<&'a CStr>) -> (Vec<Run<'a>>, f32) {
+    let run = |text, ink| Run { text, size: theme::size::BODY, bold: false, ink };
+    match criterion {
+        None => (
+            vec![
+                Run { text: name, size: theme::size::BODY, bold: true, ink: theme::TEXT_PRIMARY },
+                Run { text: count, size: theme::size::CAPTION, bold: false, ink: theme::TEXT_SECONDARY },
+            ],
+            NAME_COUNT_GAP,
+        ),
+        Some(criterion) => (
+            vec![
+                run(name, theme::TEXT_PRIMARY),
+                run(count, theme::TEXT_SECONDARY),
+                run(DOT, theme::TEXT_SECONDARY),
+                run(criterion, theme::TEXT_PRIMARY),
+            ],
+            PIECE_GAP,
+        ),
+    }
 }
 
-/// The advances of the name (BODY bold) and the count (CAPTION regular): the two items of the
-/// capsule's one text run, which an [`HStack`] spaces [`NAME_COUNT_GAP`] apart.
-fn text_widths(name: &CStr, count: &CStr, measure: &dyn Measure) -> [f32; 2] {
-    [run_w(name, theme::size::BODY, true, measure), run_w(count, theme::size::CAPTION, false, measure)]
+/// The advances of `runs`: the capsule's one text run, which an [`HStack`] spaces `gap` apart.
+fn run_widths(runs: &[Run<'_>], measure: &dyn Measure) -> Vec<f32> {
+    runs.iter().map(|r| measure.width(r.text, r.size, r.bold)).collect()
+}
+
+/// The capsule's width for `name` and `count`, and the `criterion` when it carries the sort: left
+/// padding, the runs and the gaps between them, right padding.
+pub fn width(name: &CStr, count: &CStr, criterion: Option<&CStr>, measure: &dyn Measure) -> f32 {
+    let (runs, gap) = runs(name, count, criterion);
+    PAD_L + HStack::widths(&run_widths(&runs, measure), gap, Align::Leading(0.0)).width() + PAD_R
 }
 
 /// The ground's alpha `y` px down the page's top edge: `1 - smoothstep(y / depth)`, opaque at the
@@ -118,20 +159,20 @@ pub fn draw_top_fade(p: Painter, width: f32, ground: [f32; 3], alpha: f32, capsu
     }
 }
 
-/// The capsule's rectangle for `name` and `count`.
-pub fn rect(name: &CStr, count: &CStr, measure: &dyn Measure) -> Rect {
-    Rect::new(X, Y, width(name, count, measure), H)
+/// The capsule's rectangle for `name`, `count` and the `criterion` it carries, if any.
+pub fn rect(name: &CStr, count: &CStr, criterion: Option<&CStr>, measure: &dyn Measure) -> Rect {
+    Rect::new(X, Y, width(name, count, criterion, measure), H)
 }
 
-/// The capsule and its text at `alpha` (the tuck: 0 draws nothing): the name at BODY bold, then the
-/// count at CAPTION regular in the secondary ink, the capsule exactly as wide as that and its
-/// paddings, in the nav pill's live glass.
-pub fn draw(p: Painter, name: &CStr, count: &CStr, alpha: f32, measure: &dyn Measure) {
+/// The capsule and its text at `alpha` (the tuck: 0 draws nothing), in the nav pill's live glass,
+/// exactly as wide as its runs ([`runs`]) and its paddings: the name and the count, and the
+/// `criterion` after a dot when the page carries the sort.
+pub fn draw(p: Painter, name: &CStr, count: &CStr, criterion: Option<&CStr>, alpha: f32, measure: &dyn Measure) {
     if alpha <= 0.0 {
         return;
     }
     let p = p.alpha(alpha);
-    let r = rect(name, count, measure);
+    let r = rect(name, count, criterion, measure);
     let glass = widgets::Glass::DYNAMIC_BACKDROP.backdrop(
         p,
         r,
@@ -147,14 +188,14 @@ pub fn draw(p: Painter, name: &CStr, count: &CStr, alpha: f32, measure: &dyn Mea
         p.rect_rimmed(r, RADIUS, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT, theme::GLASS_RIM, boost);
     }
     let cy = r.y + r.h * 0.5;
-    let x = r.x + PAD_L;
-    let name_y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, cy);
-    let widths = text_widths(name, count, measure);
-    let run = HStack::widths(&widths, NAME_COUNT_GAP, Align::Leading(x));
-    let (name_x, count_x) = (run.span(0).map_or(x, |s| s.0), run.span(1).map_or(x, |s| s.0));
-    p.text(name.as_ptr(), name_x, name_y, theme::size::BODY, theme::TEXT_PRIMARY, 0, 1);
-    let count_y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 1, cy);
-    p.text(count.as_ptr(), count_x, count_y, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
+    let (runs, gap) = runs(name, count, criterion);
+    let widths = run_widths(&runs, measure);
+    let stack = HStack::widths(&widths, gap, Align::Leading(r.x + PAD_L));
+    for (i, run) in runs.iter().enumerate() {
+        let x = stack.span(i).map_or(r.x + PAD_L, |s| s.0);
+        let y = plx_gfx::text::text_vcenter_y(run.size, 1, cy);
+        p.text(run.text.as_ptr(), x, y, run.size, run.ink, 0, i32::from(run.bold));
+    }
 }
 
 #[cfg(test)]

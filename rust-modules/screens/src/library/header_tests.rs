@@ -574,6 +574,61 @@ fn a_scrolled_page_wears_the_capsule_only_when_its_header_names_libraries() {
     assert!(kinds.iter().all(|(k, _)| k != "glass_frozen"));
 }
 
+/// **The scrolled capsule carries the sort the header's control shows** ("Films 1,284 · Date
+/// viewed"): the library, the count, a dot, then the listing's CURRENT sort label, the one string
+/// the header's sort control wears (`sort_value`, a queued edit included), drawn once each; and the
+/// capsule's rect, which the top fade reaches through, is as wide as those four pieces.
+#[test]
+fn the_scrolled_capsule_carries_the_sort_the_header_shows() {
+    use plx_ui::screen::Screen;
+    let _guard = plx_base::testlock::serial();
+    let (fixture, mut page, engine) = grid_page(2);
+    let pitch = page.layout.grid_pitch();
+    page.scroll.jump(pitch);
+    page.scroll_target = pitch;
+    let worn = page.capsule_wanted();
+    page.handoff.step(0.0, pitch, pitch, pitch, worn);
+    let cx = fixture.cx(&engine);
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_ui::frame::backdrop::Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    let runs = {
+        let _walk = plx_ui::frame::backdrop::discover(sources.clone());
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        plx_ui::draw_census::capture_runs(|| page.draw(&mut frame))
+    };
+    let (top, bottom) = (plx_ui::scroll_capsule::Y, plx_ui::scroll_capsule::Y + plx_ui::scroll_capsule::H);
+    let capsule: Vec<&plx_ui::draw_census::Run> = runs.iter().filter(|r| r.at.y >= top && r.at.y + r.at.h <= bottom + 1.0).collect();
+    let texts: Vec<&str> = capsule.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(texts.len(), 4, "the library, the count, the dot and the criterion, each once: {texts:?}");
+    let sort = page.sort_value(&cx);
+    assert_eq!(texts[2], "\u{b7}");
+    assert_eq!(texts[3], sort, "the criterion is the listing's current sort label");
+    let control = page.header.row().and_then(|row| row.page.spec().right.last().and_then(|item| item.value.clone()));
+    assert_eq!(control.as_deref(), Some(sort.as_str()), "and the header's control shows the same string");
+    let last = capsule[3];
+    assert!(last.at.x + last.at.w + plx_ui::scroll_capsule::PAD_R <= SCR_W, "the capsule stays on the screen");
+}
+
+/// **Whatever a language calls its criterion, the capsule stays on the screen and clear of the
+/// page's right margin**: the longest label every shipped language has for a sort, beside a long
+/// library name and a five-figure count, measured the way the device sums advances. The criterion
+/// is app-owned text, so it is never cut; only a library name past about 60 characters could push
+/// the capsule off, and that name is the server's own text (it already grew the capsule unbounded).
+#[test]
+fn the_capsule_with_the_longest_criterion_in_every_language_ends_before_the_right_margin() {
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let _guard = plx_base::testlock::serial();
+    let measure = ShippedMeasure;
+    let criteria = ["Date viewed", "Последняя добавленная серия", "Zuletzt hinzugefügte Folge", "Aggiunti di recente al catalogo"];
+    for criterion in criteria {
+        let (name, count, k) = plx_ui::scroll_chrome::capsule_parts("Documentaries and Concerts", 12_345, Some(criterion));
+        let rect = plx_ui::scroll_capsule::rect(&name, &count, k.as_deref(), &measure);
+        assert!(rect.x + rect.w <= SCR_W - plx_ui::consts::MARGIN_X, "{criterion}: the capsule ends at {}", rect.x + rect.w);
+    }
+}
+
+/// **A two-library page declares no live glass while its chrome is still on screen, either way.**
+
 /// **A two-library page declares no live glass while its chrome is still on screen, either way.**
 /// The chrome band (the nav pill's live glass) and the capsule are two live glasses whose blur
 /// footprints meet; sharing a frame makes the band capture inline in the visible pass, +1.4M GPU

@@ -248,11 +248,16 @@ pub fn capsule_shown(selectable: usize) -> bool {
     selectable >= 2
 }
 
-/// The capsule's two runs: the library's whole name (never shortened: the capsule grows to hold
-/// it) and the count.
-pub fn capsule_parts(name: &str, total: i64) -> (CString, CString) {
+/// The capsule's runs: the library's whole name (never shortened: the capsule grows to hold it),
+/// the count, and the sort `criterion` the page carries ("Date viewed"; `None` for a page that
+/// carries none, which draws the plain capsule).
+pub fn capsule_parts(name: &str, total: i64, criterion: Option<&str>) -> (CString, CString, Option<CString>) {
     let count = plx_platform::i18n::current().number(total);
-    (CString::new(name).unwrap_or_default(), CString::new(count).unwrap_or_default())
+    (
+        CString::new(name).unwrap_or_default(),
+        CString::new(count).unwrap_or_default(),
+        criterion.map(|criterion| CString::new(criterion).unwrap_or_default()),
+    )
 }
 
 #[cfg(test)]
@@ -540,14 +545,17 @@ mod tests {
     }
 
     #[test]
-    fn the_capsule_runs_are_the_whole_name_then_the_count() {
-        let (name, count) = capsule_parts("Films", 1284);
+    fn the_capsule_runs_are_the_whole_name_then_the_count_then_the_criterion_it_carries() {
+        let (name, count, criterion) = capsule_parts("Films", 1284, None);
         assert_eq!(name.to_str().unwrap(), "Films");
         assert!(count.to_str().unwrap().contains("284"), "{count:?}");
+        assert!(criterion.is_none(), "a page that carries no sort has no third run");
         let long = "Documentaries and Concerts of the Century, Remastered In Full";
-        let (name, count) = capsule_parts(long, 1284);
+        let (name, count, _) = capsule_parts(long, 1284, None);
         assert_eq!(name.to_str().unwrap(), long, "never shortened, no ellipsis");
         assert!(count.to_str().unwrap().contains('1'));
+        let (_, _, criterion) = capsule_parts("Films", 1284, Some("Date viewed"));
+        assert_eq!(criterion.unwrap().to_str().unwrap(), "Date viewed", "the criterion as the header shows it");
     }
 
     /// One predicate for every page: a header that names no library (the Watchlist, a one-library
