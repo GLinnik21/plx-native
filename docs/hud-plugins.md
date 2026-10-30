@@ -1514,7 +1514,7 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 ## Unverified items
 
 - Rough caption and block arithmetic (Captions, the reference estimates); the 0.871 crop scale.
-- `MIN_CONTROL_SIZE`'s value (Package format).
+- `MIN_CONTROL_SIZE`'s value: 26 px, derived and not tried on the set: the narrowest seat the app's own screens place (a Library jump-rail letter at `RAIL_MIN_PITCH`, `screens/src/library/layout.rs:33`); the smallest control face is 56 (`ui/src/page_header.rs:56`), which would reject the reference's 52 (Package format).
 - Whether `p.text`'s y is the glyph top or a baseline (changes no offset; Package format, `leading`).
 - Whether the strict reader exposes an object's pairs in document order (state-keyed values).
 - Whether `card_row`'s tile paint can draw the over-video rim in place of the shader ring (D11).
