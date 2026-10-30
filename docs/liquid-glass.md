@@ -377,6 +377,7 @@ it never joins the top band's grab — and the 300k px² moving-host ceiling the
 - Never over video.
 - Whole surfaces, not scattered ornaments — area alone does not predict the five-pass cost.
 - In steady state, adjacent glass samples the page rather than refracting adjacent glass.
+- Neighbours in the shared band keep one source unless their drawn rects overlap: sitting inside each other's blur reach (68 px) does not split the band.
 - Keep 68 px clear of the screen edge, 60 px minimum short side.
 - Put it over something with colour in it, or it is an expensive way to draw the flat material.
 - Over still chrome it is free; moving glass targets every changed successful present.

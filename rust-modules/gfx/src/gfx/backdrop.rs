@@ -1345,12 +1345,15 @@ pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
         );
         let key = (w.layer, w.next);
         let z = if w.discovery {
-            let r = crate::gfx::blur_region_for(rises, rect.x, rect.y, rect.w, rect.h);
-            let footprint = Rect::new(r[0], r[1], r[2], r[3]);
+            // The DRAWN rect, not its sampling footprint, decides whether this glass leaves a
+            // shared band: neighbours that merely sit within each other's `BLUR_REACH` sample
+            // the page, never each other, so they keep one source and one page pass
+            // ("adjacent glass samples the page", docs/liquid-glass.md). Only a glass whose
+            // body overlaps an earlier one's has that glass underneath it and needs its own band.
             let overlaps = w.glasses.iter().any(|&old| {
                 intersects(
                     Rect::new(old.x - 4.0, old.y - 4.0, old.w + 8.0, old.h + 8.0),
-                    footprint,
+                    rect,
                 )
             });
             let z = if w.shared && !overlaps && w.current == w.layer {
