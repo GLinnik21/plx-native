@@ -12,9 +12,19 @@
 //! and evaluates every `when` with its own `Layout::holds`: there is no second state walk and no second
 //! condition evaluator, so the state count is `reach`'s by construction. A state is
 //! (open sections, slot) under a valuation of `chapters.present` and `title.is_episode`; a condition
-//! the package does not name holds. `transport.paused` is not a dimension: geometry is compiled once
-//! with `paused` false and an ink or bold keyed on it (or on `item.*`) is carried as [`Live`], both
-//! values, for the renderer to pick per frame.
+//! the package does not name has the one value it holds.
+//!
+//! **`transport.paused`** is an axis of the compile ONLY when the package names it in a `when` or in a
+//! number or gap (a key that moves geometry): then every state is compiled twice, paused and playing
+//! ([`StateKey::paused`]), and the renderer picks one per frame. It never enters `reach`'s valuations (R1
+//! counts it as holding either way), so a package that does not name it has `reach`'s state count exactly.
+//! An ink or bold keyed on it moves nothing and stays [`Live`].
+//!
+//! **`item.*`** (`item.focused`, `item.is_current`) is the strip CARD's, and a card is laid out once for
+//! every card. So a card's cell is always laid out and keeps its room, and whether a card DRAWS it is a
+//! [`Live`] over the cell's `item.*` terms ([`CardOp::present`]); an ink or bold keyed on one is a [`Live`]
+//! too. A number or gap keyed on one cannot be (it would be a different layout per card): the base value
+//! applies and the compile reports a [`CompileFinding`], never a silent default.
 //!
 //! **Layout.** Bands stack bottom-up in one `plx_ui::vstack::VStack` (a band's `gap_before` is the gap
 //! to the band above it, an absent band gives and takes none). A band's cells pack per alignment group
@@ -51,8 +61,10 @@ use plx_ui::{theme, Rect};
 use super::parse::{Cond, CondTerm, Object, Package, Val};
 use super::reach::{Layout, Slot, State, Valuation};
 use super::schema;
-use crate::player_hud::classic::stand_in_w;
+use super::{pointer_push, validate::each_object};
+use crate::player_hud::classic::{stand_in_w, KNOB_GLOW_R};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor};
+use crate::player_hud::BTN_N;
 use crate::up_next;
 
 /// `StateKey::open` bit for the chapters section.
@@ -145,6 +157,9 @@ pub struct StateKey {
     pub chapters: bool,
     /// `title.is_episode`; `true` for a package that does not name it
     pub episode: bool,
+    /// `transport.paused`: an axis of the compile only when a `when` or a number or gap of the package
+    /// names it (see the module doc); `false` for a package that does not
+    pub paused: bool,
 }
 
 /// Which Skip pill: the two labels have two widths.
@@ -182,6 +197,11 @@ pub struct Live<T> {
 impl<T: Copy> Live<T> {
     fn fixed(base: T) -> Self {
         Self { base, cases: Vec::new() }
+    }
+
+    /// Every value it can take: the base, then each case's.
+    pub fn each(&self) -> impl Iterator<Item = &T> {
+        std::iter::once(&self.base).chain(self.cases.iter().map(|(_, v)| v))
     }
 
     /// The value this frame: the first case whose term holds, else the base. `name_holds` answers
@@ -244,7 +264,7 @@ pub enum DrawOp {
     /// the dark ground behind the HUD
     Scrim { rect: Rect },
     /// a `rect` cell's filled panel
-    Ground { rect: Rect, ink: Rgba, radius: f32 },
+    Ground { rect: Rect, ink: Live<Rgba>, radius: f32 },
     Text {
         rect: Rect,
         bind: String,
@@ -256,8 +276,8 @@ pub enum DrawOp {
         leading: f32,
     },
     Image { rect: Rect, bind: String, radius: f32 },
-    Icon { rect: Rect, asset: String, ink: Rgba },
-    Rule { rect: Rect, ink: Rgba },
+    Icon { rect: Rect, asset: String, ink: Live<Rgba> },
+    Rule { rect: Rect, ink: Live<Rgba> },
     Facts {
         rect: Rect,
         size: i32,
@@ -271,8 +291,8 @@ pub enum DrawOp {
     Playbar {
         track: Rect,
         grab: Rect,
-        fill: Rgba,
-        track_ink: Rgba,
+        fill: Live<Rgba>,
+        track_ink: Live<Rgba>,
         clock_size: i32,
     },
     /// The chapters strip: `visible` cards at `pitch`, each laid out as `template` is at card 0.
@@ -282,13 +302,21 @@ pub enum DrawOp {
         pitch: f32,
         visible: usize,
         radius: f32,
-        template: Vec<DrawOp>,
+        template: Vec<CardOp>,
     },
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
     UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest },
     /// The Skip pill (slot Skip only), at both widths.
     SkipPill { rects: [Rect; 2] },
+}
+
+/// One op of a strip card's template and whether THIS card draws it: the card's `item.*` conditions
+/// are the frame's, so presence is a [`Live`] over them, evaluated per card per frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardOp {
+    pub op: DrawOp,
+    pub present: Live<bool>,
 }
 
 /// One op's share of the cost terms.
@@ -305,7 +333,8 @@ pub struct Contributor {
 /// A state's cost, REPORTED (the ceilings are calibrated on the television in PR7 and PR8).
 ///
 /// - `draw_ops`: one per op, except a strip (its cards' ops: `visible` x the template, plus the focus
-///   ring) and the Up Next offer (two pills, plus the still and the caption it draws).
+///   ring; an upper bound where a card's `item.*` condition would drop an op) and the Up Next offer (two
+///   pills, plus the still and the caption it draws).
 /// - `glyph_runs`: one per text; the playbar's two clocks; a facts row's chips; a pill's or button's
 ///   label; the Up Next offer's two labels and caption; the Skip pill's label.
 /// - `texture_bytes`: 4 bytes per pixel of every image (a strip's per visible card, Up Next's still) and
@@ -344,9 +373,25 @@ pub struct CompiledState {
     /// absent in this valuation: the stable item indices of [`HudGeometry::items`]
     pub row_ids: Vec<Option<String>>,
     pub cost: Cost,
+    /// The package's caption band ([`Compiled::band`]): the same in every state.
+    pub band: HudBand,
+    /// A Skip state only, and only when the credits pill changes anything: the whole state as laid out
+    /// when the pill is the CREDITS one (see [`CompiledState::skip_variant`]).
+    pub skip_alt: Option<Box<CompiledState>>,
 }
 
 impl CompiledState {
+    /// The state as it draws under `skip`: the Skip pill's two labels have two widths, and a start-aligned
+    /// fill in the pill's band (a title) stops short of the one actually shown. `self` is the
+    /// [`SkipKind::Intro`] layout and every non-Skip state's; a Skip state whose credits layout differs
+    /// carries it in [`CompiledState::skip_alt`].
+    pub fn skip_variant(&self, skip: SkipKind) -> &CompiledState {
+        match (skip, &self.skip_alt) {
+            (SkipKind::Credits, Some(alt)) => alt,
+            _ => self,
+        }
+    }
+
     /// The control called `id`.
     pub fn control(&self, id: &str) -> Option<&ControlRect> {
         self.controls.iter().find(|c| c.id == id)
@@ -363,15 +408,29 @@ impl CompiledState {
     /// order for the package's own controls, `[credits, next]` for Up Next, `[pill]` for Skip), the tab
     /// row's and the title's origins, and the two section tabs' pills.
     pub fn geometry(&self, skip: SkipKind) -> HudGeometry {
-        let mut g = HudGeometry::default();
+        let shown = self.skip_variant(skip);
+        let mut g = HudGeometry {
+            grab: Rect::default(),
+            playbar: Rect::default(),
+            row: self.standin.row,
+            row_anchor: self.standin.anchor,
+            items: [None; BTN_N as usize],
+            tab_row: self.tab_row,
+            title: shown.title,
+            tabs: [self.tab("info"), self.tab("chapters")],
+            band: self.band,
+        };
         if let Some(bar) = self.playbar {
             g.grab = bar.grab;
             g.playbar = bar.track;
         }
-        g.row = self.standin.row;
-        g.row_anchor = self.standin.anchor;
         match self.key.slot {
             Slot::Discs => {
+                // PR7 OBLIGATION: `HudGeometry::items` holds `BTN_N` = 5 stops (classic's row), so this zip
+                // drops every row item past the fifth. The reference has nine (forward, chapters, info and
+                // More among them) and R1 guarantees More: they stay in `controls` and in `row_ids`, whole,
+                // and widening `items` to the longest row a package can place is PR7's change to the
+                // report and its consumers (the focus group, the pointer stops), not this compiler's.
                 for (cell, id) in g.items.iter_mut().zip(&self.row_ids) {
                     *cell = id.as_deref().and_then(|id| self.control(id)).map(|c| c.rect);
                 }
@@ -384,9 +443,6 @@ impl CompiledState {
             }
             Slot::Skip => g.items[0] = self.standin.skip.map(|s| s[skip as usize]),
         }
-        g.tab_row = self.tab_row;
-        g.title = self.title;
-        g.tabs = [self.tab("info"), self.tab("chapters")];
         g
     }
 
@@ -395,20 +451,20 @@ impl CompiledState {
         self.controls.iter().find(|c| c.command == "toggle_section" && c.section.as_deref() == Some(section)).map(|c| c.rect)
     }
 
-    /// The top of the highest drawn extent: interactive only (a control, the bar, Up Next's two buttons,
-    /// the Skip pill at either width), or under `block` every drawn extent but the scrim, Up Next's
-    /// still and caption included.
+    /// The top of the highest drawn extent: interactive only (a control, the bar with its knob, Up Next's
+    /// two buttons, the Skip pill at either width), or under `block` every drawn extent but the scrim,
+    /// Up Next's still and caption included.
     fn top(&self, block: bool) -> Option<f32> {
-        let mut rects: Vec<Rect> = self.controls.iter().map(|c| c.rect).collect();
-        rects.extend(self.playbar.map(|p| p.track));
+        let mut ys: Vec<f32> = self.controls.iter().map(|c| c.rect.y).collect();
+        ys.extend(self.playbar.map(|p| bar_top(p.track)));
         if let Some(u) = self.standin.up_next {
-            rects.extend([u.credits, u.next]);
+            ys.extend([u.credits.y, u.next.y]);
             if block {
-                rects.extend(u.still);
-                rects.extend(u.caption);
+                ys.extend(u.still.map(|r| r.y));
+                ys.extend(u.caption.map(|r| r.y));
             }
         }
-        rects.extend(self.standin.skip.into_iter().flatten());
+        ys.extend(self.standin.skip.into_iter().flatten().map(|r| r.y));
         if block {
             for op in &self.ops {
                 match op {
@@ -419,24 +475,60 @@ impl CompiledState {
                     | DrawOp::Icon { rect, .. }
                     | DrawOp::Rule { rect, .. }
                     | DrawOp::Facts { rect, .. }
-                    | DrawOp::Strip { rect, .. } => rects.push(*rect),
-                    DrawOp::Playbar { track, .. } => rects.push(*track),
+                    | DrawOp::Strip { rect, .. } => ys.push(rect.y),
+                    DrawOp::Playbar { track, .. } => ys.push(bar_top(*track)),
                 }
             }
         }
-        rects.iter().map(|r| r.y).reduce(f32::min)
+        ys.into_iter().reduce(f32::min)
     }
+
+    /// Set the package's one caption band on this state (and on the credits layout it carries).
+    fn set_band(&mut self, band: HudBand) {
+        self.band = band;
+        if let Some(alt) = self.skip_alt.as_deref_mut() {
+            alt.band = band;
+        }
+    }
+}
+
+/// The top of the bar as the caption band counts it: the track, or the focused knob's glow around the
+/// playhead where that reaches higher ([`KNOB_GLOW_R`] above the track's middle), so the band does not
+/// move with focus ("Captions": the bar and its knob).
+fn bar_top(track: Rect) -> f32 {
+    track.y.min(track.y + track.h * 0.5 - KNOB_GLOW_R)
 }
 
 /// A package compiled in every state `reach` enumerates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Compiled {
     states: Vec<CompiledState>,
-    /// whether the package names `chapters.present` / `title.is_episode`; one it does not name has a
-    /// single valuation, `true`
-    named: (bool, bool),
-    /// `layout.band == "block"`
-    block_band: bool,
+    /// which of `chapters.present`, `title.is_episode` and `transport.paused` the package names; one it
+    /// does not name has a single value (`true`, `true`, `false`)
+    named: Named,
+    /// the one caption band, in every state
+    band: HudBand,
+    findings: Vec<CompileFinding>,
+}
+
+/// Which dimensions of a compile the package names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Named {
+    chapters: bool,
+    episode: bool,
+    paused: bool,
+}
+
+/// A value the compiler could not carry as the package wrote it. Not a registered finding code: PR5d
+/// gives it one (the `06xx` family beside the text-fit codes) and prints it with the other lint findings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompileFinding {
+    /// the keyed value's RFC 6901 pointer
+    pub pointer: String,
+    /// the `item.*` term that keys it
+    pub term: String,
+    /// what is wrong, in one sentence
+    pub message: String,
 }
 
 impl Compiled {
@@ -452,13 +544,20 @@ impl Compiled {
 
     /// The state for `open` and `slot` under the content the viewer has: a condition the package does
     /// not name is ignored, so a query about `episode` finds the one valuation there is.
-    pub fn lookup(&self, open: u8, slot: Slot, chapters: bool, episode: bool) -> Option<&CompiledState> {
+    pub fn lookup(&self, open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> Option<&CompiledState> {
         self.state(StateKey {
             open,
             slot,
-            chapters: chapters || !self.named.0,
-            episode: episode || !self.named.1,
+            chapters: chapters || !self.named.chapters,
+            episode: episode || !self.named.episode,
+            paused: paused && self.named.paused,
         })
+    }
+
+    /// What the compiler could not carry as written (see [`CompileFinding`]); empty for a package that
+    /// keys no number or gap on a strip card's `item.*` term.
+    pub fn findings(&self) -> &[CompileFinding] {
+        &self.findings
     }
 
     /// **The geometry report of one state** ([`CompiledState::geometry`]); `None` for a state the
@@ -470,14 +569,11 @@ impl Compiled {
 
     /// **The caption band this layout occupies** (`docs/hud-plugins.md`, "Captions"): the top of the
     /// highest drawn interactive extent (under `band: "block"`, of any drawn extent) of the compact
-    /// state, over its three slots and every valuation. Classic's is `HudBand::CLASSIC`.
+    /// state, over its three slots and every valuation, the bar counting with its focused knob so the
+    /// band never moves with focus. Classic's is `HudBand::CLASSIC`. It is also the `band` of every
+    /// [`HudGeometry`] this package reports: one value, not two.
     pub fn band(&self) -> HudBand {
-        self.states
-            .iter()
-            .filter(|s| s.key.open == 0)
-            .filter_map(|s| s.top(self.block_band))
-            .reduce(f32::min)
-            .map_or(HudBand::CLASSIC, HudBand::from_controls_top)
+        self.band
     }
 }
 
@@ -489,18 +585,76 @@ impl Compiled {
 /// optional and the package left out reads as its default (a gap 0, a one-line text, the centre).
 pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Compiled {
     let layout = Layout::read(&package.layout);
+    let frame = scan_frame(&package.layout);
     let mut states = Vec::new();
-    for v in layout.valuations() {
-        for state in layout.explore(v) {
-            let env = Env { package, layout: &layout, measure, labels: &ctx.labels, state, v };
-            states.push(env.compile_state());
+    let pauses: &[bool] = if frame.paused { &[false, true] } else { &[false] };
+    for &paused in pauses {
+        for v in layout.valuations() {
+            for state in layout.explore(v) {
+                let env = Env { package, layout: &layout, measure, labels: &ctx.labels, state, v, paused };
+                states.push(env.compile_state());
+            }
         }
+    }
+    let block = package.layout.get("band").and_then(Val::as_str) == Some("block");
+    let band = states
+        .iter()
+        .filter(|s| s.key.open == 0)
+        .filter_map(|s| s.top(block))
+        .reduce(f32::min)
+        .map_or(HudBand::CLASSIC, HudBand::from_controls_top);
+    for state in &mut states {
+        state.set_band(band);
     }
     Compiled {
         states,
-        named: (layout.named_chapters, layout.named_episode),
-        block_band: package.layout.get("band").and_then(Val::as_str) == Some("block"),
+        named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
+        band,
+        findings: frame.findings,
     }
+}
+
+/// What a package's conditions ask of the frame, read from the typed tree.
+struct Frame {
+    /// a `when`, or a number or gap, names `transport.paused`: it is an axis of the compile
+    paused: bool,
+    /// a number or gap keyed on an `item.*` term
+    findings: Vec<CompileFinding>,
+}
+
+/// Is a keyed value a paint (an ink, `bold`)? Those are carried [`Live`]; every other keyable key (a
+/// number, a gap, a width) moves geometry.
+fn is_paint(base: &Val) -> bool {
+    matches!(base, Val::Token(_) | Val::Ref(_) | Val::Bool(_))
+}
+
+fn scan_frame(root: &Object) -> Frame {
+    let mut frame = Frame { paused: false, findings: Vec::new() };
+    each_object(root, &mut |object| {
+        for (key, value) in &object.fields {
+            match value {
+                Val::Cond(cond) => frame.paused |= cond.terms.iter().any(|t| t.name == PAUSED),
+                Val::Keyed(keyed) if !is_paint(&keyed.base) => {
+                    for term in keyed.cases.iter().flat_map(|(cond, _)| &cond.terms) {
+                        if term.name == PAUSED {
+                            frame.paused = true;
+                        } else if is_item(&term.name) {
+                            frame.findings.push(CompileFinding {
+                                pointer: pointer_push(&object.pointer, key),
+                                term: term.name.clone(),
+                                message: format!(
+                                    "`{key}` is keyed on `{}`, but a strip card is laid out once for every card, so only its base value applies",
+                                    term.name
+                                ),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    frame
 }
 
 /// The twelve content kinds of a cell.
@@ -558,6 +712,8 @@ struct CellIn<'p> {
     after: Option<f32>,
     /// a segment the stand-in replaces
     replaced: bool,
+    /// the `item.*` terms of its `when`: the card draws it only when they hold
+    gate: Vec<CondTerm>,
 }
 
 /// A segment's or an `actions` cell's controls: index-stable, `None` where absent.
@@ -592,12 +748,24 @@ struct Mode<'m> {
 #[derive(Default)]
 struct Out {
     ops: Vec<DrawOp>,
+    /// `ops[i]`'s presence under the `item.*` terms in force when it was pushed (a strip card's)
+    present: Vec<Live<bool>>,
+    /// the `item.*` terms of the `when`s around what is being emitted
+    gate: Vec<CondTerm>,
     controls: Vec<ControlRect>,
     /// the rects of the replaced segments
     replaced: Vec<Rect>,
     title: Option<Rect>,
     playbar: Option<PlaybarRects>,
     band: String,
+}
+
+impl Out {
+    /// Append `op`, present when every `item.*` term in force holds.
+    fn push(&mut self, op: DrawOp) {
+        self.present.push(presence(&self.gate));
+        self.ops.push(op);
+    }
 }
 
 struct Band<'p> {
@@ -615,6 +783,8 @@ struct Env<'e, 'p> {
     labels: &'e AppLabels,
     state: State,
     v: Valuation,
+    /// `transport.paused` for this compile
+    paused: bool,
 }
 
 /// A default the table gives `key` of `node`, as its JSON text.
@@ -630,34 +800,66 @@ fn default_name(node: &str, key: &str) -> &'static str {
     default_text(node, key).map_or("", |t| t.trim_matches('"'))
 }
 
+/// The condition a package names to key something on the pause.
+const PAUSED: &str = "transport.paused";
+
+/// An `item.*` term: the strip card's, never the state's.
+fn is_item(name: &str) -> bool {
+    name.starts_with("item.")
+}
+
 fn is_live(name: &str) -> bool {
-    name == "transport.paused" || name.starts_with("item.")
+    name == PAUSED || is_item(name)
+}
+
+/// The `item.*` terms of `o`'s `when`.
+fn item_terms(o: &Object) -> Vec<CondTerm> {
+    match o.get("when") {
+        Some(Val::Cond(cond)) => cond.terms.iter().filter(|t| is_item(&t.name)).cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether a card draws what `terms` gate: present unless one fails, each failure the term's negation.
+fn presence(terms: &[CondTerm]) -> Live<bool> {
+    Live {
+        base: true,
+        cases: terms.iter().map(|t| (CondTerm { negated: !t.negated, name: t.name.clone() }, false)).collect(),
+    }
 }
 
 impl<'e, 'p> Env<'e, 'p> {
     // ---- reading the package ----
 
-    /// Does `cond` hold in this state? `item.*` is false: it is a frame's, not a state's.
+    /// Does `cond` hold in this state, under this compile's `transport.paused`? An `item.*` term is the
+    /// card's: callers strip those first ([`Self::when`], [`Self::resolve`]), as `reach` holds them false.
     fn holds(&self, cond: &Cond) -> bool {
-        self.layout.holds(cond, self.state, self.v, false)
+        self.layout.holds(cond, self.state, self.v, self.paused)
     }
 
-    /// Is the element `o` present? A strip card's `item.*` conditions are ignored: a card's cells are
-    /// laid out once for every card.
+    /// Is the element `o` laid out in this state? A strip card's `item.*` terms are not asked: a card's
+    /// cells are laid out once for every card and keep their room whichever cards draw them (whether
+    /// one does is [`item_terms`]', carried per card).
     fn when(&self, o: &Object) -> bool {
         match o.get("when") {
             Some(Val::Cond(cond)) => {
-                let kept = Cond { terms: cond.terms.iter().filter(|t| !t.name.starts_with("item.")).cloned().collect() };
+                let kept = Cond { terms: cond.terms.iter().filter(|t| !is_item(&t.name)).cloned().collect() };
                 self.holds(&kept)
             }
             _ => true,
         }
     }
 
-    /// A keyed value resolved in this state: the first case that holds, else the base.
+    /// A keyed value resolved in this state: the first case that holds, else the base. A case keyed on an
+    /// `item.*` term is skipped (a layout cannot depend on the card: `scan_frame` reports it).
     fn resolve<'v>(&self, val: &'v Val) -> &'v Val {
         match val {
-            Val::Keyed(k) => k.cases.iter().find(|(cond, _)| self.holds(cond)).map_or(k.base.as_ref(), |(_, v)| v),
+            Val::Keyed(k) => k
+                .cases
+                .iter()
+                .filter(|(cond, _)| !cond.terms.iter().any(|t| is_item(&t.name)))
+                .find(|(cond, _)| self.holds(cond))
+                .map_or(k.base.as_ref(), |(_, v)| v),
             v => v,
         }
     }
@@ -836,7 +1038,7 @@ impl<'e, 'p> Env<'e, 'p> {
     fn text_h(&self, o: &Object) -> f32 {
         let size = self.size_px(o, "size");
         let leading = self.num(o, "leading").unwrap_or_else(|| self.measure.line_h(size));
-        let lines = o.get("max_lines").and_then(Val::as_f64).unwrap_or(1.0) as f32;
+        let lines = self.num(o, "max_lines").unwrap_or(1.0);
         leading * lines
     }
 
@@ -992,6 +1194,7 @@ impl<'e, 'p> Env<'e, 'p> {
             before: self.gap(cell, "gap_before"),
             after: self.gap(cell, "gap_after"),
             replaced,
+            gate: item_terms(cell),
         })
     }
 
@@ -1109,7 +1312,10 @@ impl<'e, 'p> Env<'e, 'p> {
                     continue;
                 }
             }
+            let mark = out.gate.len();
+            out.gate.extend(cell.gate.iter().cloned());
             self.emit(cell.kind, cell.o, r, mode, out);
+            out.gate.truncate(mark);
         }
     }
 
@@ -1122,36 +1328,36 @@ impl<'e, 'p> Env<'e, 'p> {
                 if bind.starts_with("title.") && out.title.is_none() {
                     out.title = Some(Rect::new(r.x, r.y, 0.0, 0.0));
                 }
-                out.ops.push(DrawOp::Text {
+                out.push(DrawOp::Text {
                     rect: r,
                     bind,
                     size: self.size_px(o, "size"),
                     bold: self.live_bold(o),
                     ink: self.live_ink(o, "ink"),
                     alpha: self.num(o, "alpha").unwrap_or_else(|| default_num("text", "alpha")),
-                    max_lines: o.get("max_lines").and_then(Val::as_i64).map_or(1, |n| n.clamp(1, 255) as u8),
+                    max_lines: self.num(o, "max_lines").map_or(1, |n| n.clamp(1.0, 255.0) as u8),
                     leading: self.num(o, "leading").unwrap_or_else(|| self.measure.line_h(self.size_px(o, "size"))),
                 });
             }
-            "image" => out.ops.push(DrawOp::Image {
+            "image" => out.push(DrawOp::Image {
                 rect: r,
                 bind: o.get("bind").and_then(Val::as_str).unwrap_or("").to_owned(),
                 radius: self.num(o, "radius").unwrap_or(0.0),
             }),
-            "icon" => out.ops.push(DrawOp::Icon {
+            "icon" => out.push(DrawOp::Icon {
                 rect: r,
                 asset: o.get("asset").and_then(Val::as_str).unwrap_or("").to_owned(),
-                ink: o.get("ink").map_or([1.0; 4], |v| self.rgba(self.resolve(v))),
+                ink: self.live_ink(o, "ink"),
             }),
-            "rule" => out.ops.push(DrawOp::Rule { rect: r, ink: o.get("ink").map_or([1.0; 4], |v| self.rgba(self.resolve(v))) }),
-            "facts" => out.ops.push(DrawOp::Facts {
+            "rule" => out.push(DrawOp::Rule { rect: r, ink: self.live_ink(o, "ink") }),
+            "facts" => out.push(DrawOp::Facts {
                 rect: r,
                 size: self.size_px(o, "size"),
                 bold: self.live_bold(o),
                 ink: self.live_ink(o, "ink"),
                 order: names(self.list(o, "order")),
                 badges: names(self.list(o, "badges")),
-                genres_max: o.get("genres_max").and_then(Val::as_i64).map_or(0, |n| n.max(0) as u32),
+                genres_max: self.num(o, "genres_max").map_or(0, |n| n.max(0.0) as u32),
                 playback_fact: o.get("playback_fact").and_then(Val::as_bool).unwrap_or(false),
             }),
             "spacer" => {}
@@ -1162,11 +1368,11 @@ impl<'e, 'p> Env<'e, 'p> {
                 let below = self.num_or_default(o, "grab", "below");
                 let grab = Rect::new(r.x, r.y - above, r.w, above + r.h + below);
                 out.playbar = Some(PlaybarRects { track: r, grab });
-                out.ops.push(DrawOp::Playbar {
+                out.push(DrawOp::Playbar {
                     track: r,
                     grab,
-                    fill: o.get("fill").map_or([1.0; 4], |v| self.rgba(self.resolve(v))),
-                    track_ink: o.get("track").map_or([1.0; 4], |v| self.rgba(self.resolve(v))),
+                    fill: self.live_ink(o, "fill"),
+                    track_ink: self.live_ink(o, "track"),
                     clock_size: self.size_px(o, "clock_size"),
                 });
             }
@@ -1204,7 +1410,7 @@ impl<'e, 'p> Env<'e, 'p> {
             section: ctl.o.get("section").and_then(Val::as_str).map(str::to_owned),
         };
         out.controls.push(c.clone());
-        out.ops.push(DrawOp::Control(c));
+        out.push(DrawOp::Control(c));
     }
 
     fn emit_rect(&self, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
@@ -1212,11 +1418,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let left = (r.x - bleed).max(0.0);
         let right = (r.x + r.w + bleed).min(SCR_W);
         let ground = Rect::new(left, r.y, right - left, r.h);
-        out.ops.push(DrawOp::Ground {
-            rect: ground,
-            ink: o.get("ink").map_or([1.0; 4], |v| self.rgba(self.resolve(v))),
-            radius: self.num(o, "radius").unwrap_or(0.0),
-        });
+        out.push(DrawOp::Ground { rect: ground, ink: self.live_ink(o, "ink"), radius: self.num(o, "radius").unwrap_or(0.0) });
         let inner = Rect::new(ground.x + pad, ground.y + pad, ground.w - 2.0 * pad, ground.h - 2.0 * pad);
         let cells = self.objects(o, "cells");
         self.place_row(&cells, self.gap(o, "gap").unwrap_or(0.0), inner, mode, out);
@@ -1235,12 +1437,16 @@ impl<'e, 'p> Env<'e, 'p> {
         let stack = VStack::new(&items, gap, Anchor::Top(r.y));
         let cells: Vec<&Object> = self.objects(o, "cells").into_iter().filter(|c| self.when(c)).filter(|c| content(c).is_some()).collect();
         for span in stack.placed() {
-            let Some((kind, c)) = content(cells[span.i]) else { continue };
+            let cell = cells[span.i];
+            let Some((kind, c)) = content(cell) else { continue };
             let w = match self.size_of(kind, c).w {
                 Dim::Px(w) => w,
                 Dim::Fill => r.w,
             };
+            let mark = out.gate.len();
+            out.gate.extend(item_terms(cell));
             self.emit(kind, c, Rect::new(r.x, span.y, w, span.h), mode, out);
+            out.gate.truncate(mark);
         }
     }
 
@@ -1251,7 +1457,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let visible = if pitch > 0.0 { (r.w / pitch).floor() as usize + 1 } else { 0 };
         let art = Rect::new(r.x, r.y, card_w, card_h);
         let mut tmp = Out::default();
-        tmp.ops.push(DrawOp::Image {
+        tmp.push(DrawOp::Image {
             rect: art,
             bind: card.get("art").and_then(Val::as_object).and_then(|a| a.get("bind")).and_then(Val::as_str).unwrap_or("").to_owned(),
             radius: self.num(o, "radius").unwrap_or(0.0),
@@ -1259,16 +1465,20 @@ impl<'e, 'p> Env<'e, 'p> {
         let overlay = self.objects(card, "overlay");
         self.place_row(&overlay, 0.0, art, &Mode { replaces: &[], hide: false, standin_left: None, host: "" }, &mut tmp);
         let mut y = art.y + card_h + self.gap(card, "below_gap").unwrap_or(0.0);
-        for (_, text) in self.below_cells(card) {
+        for (cell, text) in self.below_cells(card) {
             let h = self.text_h(text);
             let w = match self.dim(text, "w") {
                 Some(Dim::Px(w)) => w,
                 _ => card_w,
             };
+            // the cell keeps its room on every card; a card draws it when its `item.*` terms hold
+            tmp.gate = item_terms(cell);
             self.emit("text", text, Rect::new(art.x, y, w, h), mode, &mut tmp);
+            tmp.gate.clear();
             y += h;
         }
-        out.ops.push(DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template: tmp.ops });
+        let template = tmp.ops.into_iter().zip(tmp.present).map(|(op, present)| CardOp { op, present }).collect();
+        out.push(DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
@@ -1324,7 +1534,21 @@ impl<'e, 'p> Env<'e, 'p> {
         out
     }
 
+    /// This state, and for a Skip state the credits layout beside it when the longer or shorter pill
+    /// changes anything (see [`CompiledState::skip_variant`]).
     fn compile_state(&self) -> CompiledState {
+        let mut state = self.compile_for(SkipKind::Intro);
+        if self.state.slot == Slot::Skip {
+            let credits = self.compile_for(SkipKind::Credits);
+            if credits != state {
+                state.skip_alt = Some(Box::new(credits));
+            }
+        }
+        state
+    }
+
+    /// The state as it draws when the Skip pill shown is `skip` (it matters in a Skip state only).
+    fn compile_for(&self, skip: SkipKind) -> CompiledState {
         let layout = &self.package.layout;
         let inset = self.gap(layout, "inset").unwrap_or(0.0);
         let x_inset = self.gap(layout, "x_inset").unwrap_or(0.0);
@@ -1352,7 +1576,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let discs = self.fill_bands(&bands, &boxes, &Mode { replaces: &replaces, hide: false, standin_left: None, host });
         let host_box = bands.iter().zip(&boxes).find(|(b, _)| b.id == host).map(|(_, r)| *r);
         let standin = match (up, host_box) {
-            (Some(u), Some(hb)) => self.standin(u, hb, &discs.replaced, &replaces),
+            (Some(u), Some(_)) => self.standin(u, &discs.replaced, &replaces),
             _ => Standin::default(),
         };
 
@@ -1368,7 +1592,8 @@ impl<'e, 'p> Env<'e, 'p> {
                         .flatten()
                         .fold(f32::MAX, f32::min)
                 }),
-                _ => standin.skip.map(|s| s.iter().map(|r| r.scaled(CTRL_FOCUS_SCALE).x).fold(f32::MAX, f32::min)),
+                // the pill actually shown: a start-aligned fill stops at ITS edge, as `classic::title_right` does
+                _ => standin.skip.map(|s| s[skip as usize].scaled(CTRL_FOCUS_SCALE).x),
             };
             self.fill_bands(&bands, &boxes, &Mode { replaces: &replaces, hide: true, standin_left: left, host })
         };
@@ -1378,12 +1603,12 @@ impl<'e, 'p> Env<'e, 'p> {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
                     let rest = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Rest::Film, Self::rest);
-                    out.ops.push(DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") });
+                    out.push(DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") });
                 }
             }
             Slot::Skip => {
                 if let Some(rects) = standin.skip {
-                    out.ops.push(DrawOp::SkipPill { rects });
+                    out.push(DrawOp::SkipPill { rects });
                 }
             }
             Slot::Discs => {}
@@ -1401,18 +1626,23 @@ impl<'e, 'p> Env<'e, 'p> {
 
         let row_ids = self.row_ids(host, &replaces);
         let cost = cost_of(&ops);
+        // bound first: a `title:` initialiser is a localization boundary (`ci/check-localization.py`),
+        // and the title here is a RECT, not text
+        let title = out.title.unwrap_or_default();
         CompiledState {
-            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.episode },
+            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.episode, paused: self.paused },
             controls: out.controls,
             ops,
             scrim,
             bands: bands.iter().zip(&boxes).map(|(b, r)| (b.id.to_owned(), *r)).collect(),
             playbar: out.playbar,
             standin,
-            title: out.title.unwrap_or_default(),
+            title,
             tab_row: boxes.last().map_or_else(Rect::default, |b| Rect::new(b.x, b.y, 0.0, b.h)),
             row_ids,
             cost,
+            band: HudBand::CLASSIC,
+            skip_alt: None,
         }
     }
 
@@ -1441,8 +1671,10 @@ impl<'e, 'p> Env<'e, 'p> {
 
     // ---- the stand-ins ----
 
-    /// Where the offer lands: the union of the replaced segments, at the edge `up_next.align` names.
-    fn standin(&self, up: &'p Object, host: Rect, replaced: &[Rect], replaces: &[String]) -> Standin {
+    /// Where the offer lands: the union of the replaced segments, at the edge of THAT union `up_next.align`
+    /// names (the end edge of the replaced segments, not the band's: another end-aligned segment may stand
+    /// between them).
+    fn standin(&self, up: &'p Object, replaced: &[Rect], replaces: &[String]) -> Standin {
         let Some(first) = replaced.first() else { return Standin::default() };
         let union = replaced.iter().fold(*first, |u, r| {
             let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
@@ -1460,29 +1692,28 @@ impl<'e, 'p> Env<'e, 'p> {
         let edge = |run: f32| match align {
             "start" => union.x + run,
             "center" => union.x + union.w * 0.5 + run * 0.5,
-            _ => host.x + host.w,
+            _ => union.x + union.w,
         };
         let anchor = RowAnchor { right: edge(run), top: union.y, h: union.h };
         let l = up_next::layout_at(anchor, w_next, w_credits);
-        let up_next = UpNextRects {
-            still: (up.get("still").and_then(Val::as_bool) == Some(true)).then_some(l.still),
-            caption: (up.get("caption").and_then(Val::as_bool) == Some(true)).then_some(l.caption),
-            credits: l.credits,
-            next: l.next,
-        };
+        // bound first: a `caption:` initialiser is a localization boundary (`ci/check-localization.py`),
+        // and this caption is a RECT, not text
+        let still = (up.get("still").and_then(Val::as_bool) == Some(true)).then_some(l.still);
+        let caption = (up.get("caption").and_then(Val::as_bool) == Some(true)).then_some(l.caption);
+        let up_next = UpNextRects { still, caption, credits: l.credits, next: l.next };
         let skip = [&self.labels.skip_intro, &self.labels.skip_credits].map(|label| {
             let w = stand_in_w(self.measure.width_str(label, theme::size::BODY, true), floor.unwrap_or(0.0));
             let x = match align {
                 "start" => union.x,
                 "center" => union.x + union.w * 0.5 - w * 0.5,
-                _ => host.x + host.w - w,
+                _ => union.x + union.w - w,
             };
             Rect::new(x, union.y, w, union.h)
         });
         let row = match (floor, align) {
             (Some(f), "start") => Rect::new(union.x, union.y, f, union.h),
             (Some(f), "center") => Rect::new(union.x + union.w * 0.5 - f * 0.5, union.y, f, union.h),
-            (Some(f), _) => Rect::new(host.x + host.w - f, union.y, f, union.h),
+            (Some(f), _) => Rect::new(union.x + union.w - f, union.y, f, union.h),
             (None, _) => union,
         };
         Standin { row, anchor, up_next: Some(up_next), skip: Some(skip) }
@@ -1527,8 +1758,9 @@ fn area(r: Rect) -> u64 {
     (r.w * r.h).max(0.0).round() as u64
 }
 
-fn translucent(ink: Rgba) -> bool {
-    ink[3] < 1.0
+/// Is the ink translucent in any value it can take? (The cost is an upper bound.)
+fn translucent(ink: &Live<Rgba>) -> bool {
+    ink.each().any(|c| c[3] < 1.0)
 }
 
 /// A control's plate is blended unless its rest face is opaque or there is none.
@@ -1553,18 +1785,18 @@ fn weigh(op: &DrawOp) -> Contributor {
     let mut c = Contributor { draw_ops: 1, ..Contributor::default() };
     match op {
         DrawOp::Scrim { rect } => c.blended_px = area(*rect),
-        DrawOp::Ground { rect, ink, .. } => c.blended_px = if translucent(*ink) { area(*rect) } else { 0 },
+        DrawOp::Ground { rect, ink, .. } => c.blended_px = if translucent(ink) { area(*rect) } else { 0 },
         DrawOp::Text { .. } => c.glyph_runs = 1,
         DrawOp::Image { rect, .. } => c.texture_bytes = 4 * area(*rect),
         DrawOp::Icon { rect, .. } => c.texture_bytes = 4 * area(*rect),
-        DrawOp::Rule { rect, ink } => c.blended_px = if translucent(*ink) { area(*rect) } else { 0 },
+        DrawOp::Rule { rect, ink } => c.blended_px = if translucent(ink) { area(*rect) } else { 0 },
         DrawOp::Facts { order, badges, .. } => c.glyph_runs = order.len() + badges.len(),
         DrawOp::Playbar { track, track_ink, .. } => {
             c.glyph_runs = 2;
-            c.blended_px = if translucent(*track_ink) { area(*track) } else { 0 };
+            c.blended_px = if translucent(track_ink) { area(*track) } else { 0 };
         }
         DrawOp::Strip { visible, template, .. } => {
-            let cards = template.iter().map(weigh).fold(Contributor::default(), |a, b| Contributor {
+            let cards = template.iter().map(|card| weigh(&card.op)).fold(Contributor::default(), |a, b| Contributor {
                 op: 0,
                 draw_ops: a.draw_ops + b.draw_ops,
                 glyph_runs: a.glyph_runs + b.glyph_runs,

@@ -44,7 +44,7 @@ pub struct RowAnchor {
 
 /// The rects a layout reports for one frame. Built by `classic::frame_geometry()` (the
 /// slot-independent fields, `items` and `tabs` left `None`) or by `classic::geometry(..)` (all of it).
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HudGeometry {
     /// The scrubber's GRAB band: deliberately much taller than the bar, because it is a pointer
     /// grab zone, and registered as the LOWEST stop so every control over it outranks it (#162).
@@ -66,15 +66,20 @@ pub struct HudGeometry {
     pub title: Rect,
     /// Tab `i`'s pill, `None` for a tab the row does not carry.
     pub tabs: [Option<Rect>; HUD_TABS],
+    /// **The caption band this layout occupies** (`docs/hud-plugins.md`, "Captions: the band a HUD
+    /// occupies"), the ONE value every caption reader takes: the same in every slot and every state, so
+    /// a caption does not move with the focus or the offer. Classic's is the compact row's top
+    /// ([`HudBand::from_controls_top`] of `row_anchor.top`, which is [`HudBand::CLASSIC`]); a compiled
+    /// package's is the top of its highest drawn extent (`hud_format::compile`).
+    pub band: HudBand,
 }
 
 impl HudGeometry {
-    /// **The caption band this layout occupies** (`docs/hud-plugins.md`, "Captions: the band a HUD
-    /// occupies"): the compact row's top, the highest interactive extent, whichever slot occupies
-    /// the row, because the Skip and Up Next stand-ins land on `row_anchor` exactly. A value from
-    /// the layout, so the caption draws and the libass lift take it rather than a constant.
+    /// **The caption band this layout occupies**: the [`HudGeometry::band`] field, whichever slot
+    /// occupies the row. A value from the layout, so the caption draws and the libass lift take it
+    /// rather than a constant.
     pub fn band(&self) -> HudBand {
-        HudBand::from_controls_top(self.row_anchor.top)
+        self.band
     }
 
     /// **Where along the bar a pointer at `x` is pointing**, `0..1`. X only, on purpose: an engaged

@@ -53,6 +53,9 @@ pub const fn sb_w() -> f32 {
 }
 pub(super) const SB_Y: f32 = SCR_H - 198.0;
 pub(super) const SB_H: f32 = 8.0;
+/// The radius of the largest thing the bar draws around the playhead, the focused knob's glow (a 34 px
+/// disc centred on the track). The caption band counts it as part of the bar: `hud_format::compile`.
+pub const KNOB_GLOW_R: f32 = 17.0;
 pub(super) const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
 pub(super) const BTN_Y: f32 = HudBand::CLASSIC.controls_top_y;
 
@@ -635,8 +638,8 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
     if bar.knob == Knob::Focused {
         let glow = [1.0f32, 1.0, 1.0, 0.22];
         p.rect(
-            Rect::new(hx - 17.0, cy - 17.0, 34.0, 34.0),
-            17.0,
+            Rect::new(hx - KNOB_GLOW_R, cy - KNOB_GLOW_R, 2.0 * KNOB_GLOW_R, 2.0 * KNOB_GLOW_R),
+            KNOB_GLOW_R,
             glow,
             glow,
             0.0,
@@ -993,15 +996,19 @@ fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model:
 /// measures nothing, so it is safe anywhere (`overscan_rects`, the stand-ins' layout). `items` and
 /// `tabs` are left `None`; [`geometry`] fills them.
 pub fn frame_geometry() -> HudGeometry {
+    let row_anchor = RowAnchor { right: CTRL_RIGHT, top: CTRL_Y, h: CTRL_H };
     HudGeometry {
         grab: scrub_hit_rect(),
         playbar: Rect::new(SB_X, SB_Y, sb_w(), SB_H),
         row: ctrl_row_hit_rect(),
-        row_anchor: RowAnchor { right: CTRL_RIGHT, top: CTRL_Y, h: CTRL_H },
+        row_anchor,
         items: [None; BTN_N as usize],
         tab_row: Rect::new(SB_X, tab_y(), 0.0, BTN_S),
         title: Rect::new(SB_X, SCR_H - 312.0, 0.0, 0.0),
         tabs: [None; HUD_TABS],
+        // the compact row's top: the highest interactive extent, whichever slot occupies the row,
+        // because the Skip and Up Next stand-ins land on `row_anchor` exactly
+        band: HudBand::from_controls_top(row_anchor.top),
     }
 }
 
