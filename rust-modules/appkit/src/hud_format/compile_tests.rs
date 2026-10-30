@@ -5,7 +5,8 @@
 //! to the exact `f32`, in every compact slot, for a movie and an episode, with and without chapters, in
 //! every shipped language and under both measurers (`FixtureMeasure`, whose advances are arithmetic, and
 //! `ShippedMeasure`, the real fonts' advances, which is headless here). A mismatch means the compiler or
-//! the fixture is wrong, never the hand-written layout. Then every fixture compiles in every state
+//! the fixture is wrong, never the hand-written layout. (That layout's numbers are frozen as literals:
+//! see `frozen_classic_geometry`.) Then every fixture compiles in every state
 //! `reach` enumerates, the cost of classic's compact state is pinned, and the section states are held
 //! against the panels' own constants.
 
@@ -21,7 +22,7 @@ use plx_ui::{theme, Rect};
 use super::compile::*;
 use super::parse::{self, Package};
 use super::{check, Slot};
-use crate::player_hud::geometry::HudGeometry;
+use crate::player_hud::geometry::{HudGeometry, RowAnchor};
 use crate::player_hud::motion::HudMotion;
 use crate::player_hud::{classic, ControlSlot, Controls};
 use crate::skip_pill::prompt_for;
@@ -91,6 +92,52 @@ fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
     out
 }
 
+/// **The hand-written classic layout's numbers, frozen.** `fixtures/classic-geometry.golden.tsv` is what
+/// `classic::geometry(..)` reported for every case the golden below covers (10 languages x 2 measurers x
+/// movie/episode x without/with chapters x Discs, Up Next, Skip at each label), written from the
+/// HAND-WRITTEN side at 70a7aa66a's layout and re-confirmed at 93fc5091d (the head the freeze commit sits
+/// on), before that layout was deleted: one line per case, `key TAB items TAB tabs`, an item or tab as
+/// `x,y,w,h` (`f32` `{:?}`, which round-trips exactly) or `-`. The facts that are the same in every case
+/// are literals in [`frozen_base`].
+const FROZEN_CLASSIC_GEOMETRY: &str = include_str!("fixtures/classic-geometry.golden.tsv");
+
+/// The slot-independent facts of the hand-written layout, the same in all 320 frozen cases.
+fn frozen_base() -> HudGeometry {
+    HudGeometry {
+        grab: Rect::new(96.0, 810.0, 1728.0, 160.0),
+        playbar: Rect::new(96.0, 882.0, 1728.0, 8.0),
+        row: Rect::new(1592.0, 792.0, 232.0, 64.0),
+        row_anchor: RowAnchor { right: 1824.0, top: 792.0, h: 64.0 },
+        items: [None; crate::player_hud::geometry::MAX_ROW_ITEMS],
+        tab_row: Rect::new(96.0, 949.0, 0.0, 64.0),
+        title: Rect::new(96.0, 768.0, 0.0, 0.0),
+        tabs: [None; 2],
+        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0 },
+    }
+}
+
+fn frozen_rect(s: &str) -> Option<Rect> {
+    if s == "-" {
+        return None;
+    }
+    let v: Vec<f32> = s.split(',').map(|n| n.parse().expect("a frozen number")).collect();
+    Some(Rect::new(v[0], v[1], v[2], v[3]))
+}
+
+/// The frozen hand-written geometry of the case `key` (`{language:?}/{measure}/episode=../chapters=../{slot:?}/{skip:?}`).
+fn frozen_classic_geometry(key: &str) -> HudGeometry {
+    let line = FROZEN_CLASSIC_GEOMETRY.lines().find(|l| l.split('\t').next() == Some(key)).unwrap_or_else(|| panic!("no frozen case {key}"));
+    let mut cols = line.split('\t').skip(1);
+    let mut g = frozen_base();
+    for (i, item) in cols.next().expect("items").split('|').enumerate() {
+        g.items[i] = frozen_rect(item);
+    }
+    for (i, tab) in cols.next().expect("tabs").split('|').enumerate() {
+        g.tabs[i] = frozen_rect(tab);
+    }
+    g
+}
+
 #[test]
 fn compiled_classic_matches_the_hand_written_layout() {
     let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
@@ -113,7 +160,11 @@ fn compiled_classic_matches_the_hand_written_layout() {
                         let key = StateKey { open: 0, slot: kind, chapters, episode, paused: false };
                         let got = compiled.geometry(key, skip).expect("the compact state exists");
                         compared += 1;
-                        for line in diff(&got, &want) {
+                        let frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode={episode}/chapters={chapters}/{kind:?}/{skip:?}"));
+                        for line in diff(&frozen, &want) {
+                            mismatches.push(format!("[{language:?} {measure_name} episode={episode} chapters={chapters} {kind:?}/{skip:?}] FROZEN value drifted from the hand-written layout: {line}"));
+                        }
+                        for line in diff(&got, &frozen) {
                             mismatches.push(format!(
                                 "[{language:?} {measure_name} episode={episode} chapters={chapters} {kind:?}/{skip:?}] {line}"
                             ));
@@ -126,6 +177,7 @@ fn compiled_classic_matches_the_hand_written_layout() {
     // 10 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
     // each label): a count, so a loop that quietly compares less cannot pass.
     assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
+    assert_eq!(FROZEN_CLASSIC_GEOMETRY.lines().count(), compared, "the frozen file holds one line per case");
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
 }
 

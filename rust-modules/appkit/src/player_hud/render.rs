@@ -464,6 +464,34 @@ mod tests {
         out
     }
 
+    /// **What the hand-written `classic::draw_hud` drew, frozen.** `census-classic.golden.tsv` has one line
+    /// per (language, case): `lang TAB case index TAB case TAB hash`, the FNV-1a hash of the frame's whole
+    /// census (the primitives, text runs, glyphs and fills with effective alpha, in order, as `{:?}`). Written
+    /// from `classic::draw_hud` at 93fc5091d (the layout PR5c's golden matched at 70a7aa66a), before that
+    /// draw was deleted; the renderer must reproduce each hash. `FixtureMeasure` only, so the values do not
+    /// depend on a font.
+    const FROZEN_CENSUS: &str = include_str!("census-classic.golden.tsv");
+
+    /// FNV-1a, 64 bit: a hash whose algorithm is fixed here (`DefaultHasher`'s is not).
+    fn fnv1a(text: &str) -> u64 {
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    fn census_hash(c: &Census) -> u64 {
+        fnv1a(&format!("{c:?}"))
+    }
+
+    fn frozen_hash(language: &str, index: usize) -> u64 {
+        let line = FROZEN_CENSUS
+            .lines()
+            .find(|l| {
+                let mut f = l.split('\t');
+                f.next() == Some(language) && f.next().and_then(|i| i.parse::<usize>().ok()) == Some(index)
+            })
+            .unwrap_or_else(|| panic!("no frozen census for {language} #{index}"));
+        u64::from_str_radix(line.split('\t').nth(3).expect("a hash"), 16).expect("a hex hash")
+    }
+
     /// **Classic through the renderer is classic through the hand-written draw**: every primitive,
     /// glyph, text run and fill the two hand the painter is the same list, in the same order, for every
     /// slot, focus, pause and panel state, in every shipped language. The state the host cannot reach is
@@ -476,10 +504,12 @@ mod tests {
             let _language = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM).expect("classic loads");
-            for c in cases() {
+            for (index, c) in cases().into_iter().enumerate() {
                 let (hand, new, drew) = both(&hud.compiled, c);
                 assert!(drew, "{c:?}: the renderer has a state for every classic frame");
                 assert!(!hand.0.is_empty(), "{c:?}: the hand-written draw draws something");
+                assert_eq!(census_hash(&hand), frozen_hash(language.tag(), index), "{} {c:?}: the frozen census drifted from the hand-written draw", language.tag());
+                assert_eq!(census_hash(&new), frozen_hash(language.tag(), index), "{} {c:?}: the renderer's frame is not the frozen census:\n{new:#?}", language.tag());
                 assert_eq!(hand.0, new.0, "{} {c:?}: the primitive census", language.tag());
                 assert_eq!(hand.1, new.1, "{} {c:?}: the text runs", language.tag());
                 assert_eq!(hand.2, new.2, "{} {c:?}: the glyphs", language.tag());
@@ -488,6 +518,7 @@ mod tests {
             }
         }
         assert_eq!(compared, SHIPPED.len() * cases().len(), "a count, so a loop that compares less cannot pass");
+        assert_eq!(FROZEN_CENSUS.lines().count(), compared, "the frozen file holds one line per case");
     }
 
     /// A failure owns the frame: nothing of the transport draws, and the title's marquee resets.
