@@ -158,6 +158,45 @@ fn h264_non_idr_is_not_a_keyframe_and_gets_no_parameter_set() {
     );
 }
 
+/// **An H.264 I-frame that is not an IDR is a keyframe when the container says so.** A Blu-ray
+/// remux (Brink of War, 2026-10-26) has one IDR, its first frame; every later random access
+/// point is a non-IDR I-slice behind a recovery point, which Matroska flags as a keyframe and its
+/// Cues index. With only IDR counted, every seek landed on one of them and the post-seek rebase
+/// waited for a keyframe that never came: the player sat on "Buffering…" at the target for good.
+#[test]
+fn h264_a_flagged_non_idr_i_frame_is_a_keyframe_and_gets_the_parameter_set() {
+    // slice header: first_mb_in_slice ue(0) = '1', slice_type ue(7) (I, all slices) = '0001000'
+    let i_slice: &[u8] = &[0x21, 0x88, 0xAA, 0xBB];
+    let buf = avcc(&[i_slice]);
+    let param = [0, 0, 0, 1, 0x67, 0x42];
+    let (key, out) = to_annexb_flagged(&buf, &param);
+    assert!(key, "a container keyframe whose slice is I is a random access point");
+    assert_eq!(&out[..param.len()], &param, "and carries the parameter sets like an IDR");
+    // slice_type ue(2) (I) = '011'
+    assert!(to_annexb_flagged(&avcc(&[&[0x21, 0xB0, 0x00]]), &[]).0, "slice_type 2 is I too");
+}
+
+/// The container's flag alone does not make a P- or B-slice a keyframe (a muxer that flags every
+/// block must not let a seek land on a frame that references pictures the decoder never saw),
+/// and an unflagged I-slice is not one either: only an IDR needs no flag.
+#[test]
+fn h264_a_flagged_p_slice_and_an_unflagged_i_slice_are_not_keyframes() {
+    // slice_type ue(0) (P) = '1' -> header byte '1' '1' ... = 0xC0
+    assert!(!to_annexb_flagged(&avcc(&[&[0x21, 0xC0, 0x00]]), &[]).0, "a flagged P-slice");
+    // slice_type ue(6) (B, all slices) = '00111' -> '1' '00111' '00' = 0x9C
+    assert!(!to_annexb_flagged(&avcc(&[&[0x01, 0x9C, 0x00]]), &[]).0, "a flagged B-slice");
+    assert!(!to_annexb(&avcc(&[&[0x21, 0x88, 0xAA]]), false, &[]).0, "an unflagged I-slice");
+}
+
+/// An unflagged I-slice IS a keyframe when its AU repeats the SPS ahead of it: that is how a
+/// Blu-ray stream marks a random access point, whatever its muxer flagged.
+#[test]
+fn h264_an_i_slice_behind_an_in_band_sps_is_a_keyframe() {
+    let (sps, pps): (&[u8], &[u8]) = (&[0x67, 0x4D, 0x40, 0x29], &[0x68, 0xEE, 0x3C]);
+    assert!(to_annexb(&avcc(&[sps, pps, &[0x21, 0x88, 0xAA]]), false, &[]).0, "SPS + PPS + I-slice");
+    assert!(!to_annexb(&avcc(&[sps, pps, &[0x21, 0xC0, 0x00]]), false, &[]).0, "SPS + PPS + P-slice");
+}
+
 #[test]
 fn hevc_irap_range_is_detected_as_a_keyframe() {
     // HEVC nal type is bits 1..6 of byte 0; IRAP is 16..=23.

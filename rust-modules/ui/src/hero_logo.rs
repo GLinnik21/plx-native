@@ -133,7 +133,7 @@ pub fn fit(rung: LogoRung, src_w: f32, src_h: f32, col_w: f32) -> (f32, f32) {
 /// the same optical line. Overflow is upward and is paint, never layout.
 pub fn place(band: Rect, w: f32, h: f32, align: HAlign) -> Rect {
     let x = match align {
-        HAlign::Left => band.x,
+        HAlign::Left | HAlign::Start => band.x,
         HAlign::Center => band.x + (band.w - w) * 0.5,
         HAlign::Right => band.x + band.w - w,
     };
@@ -184,6 +184,8 @@ impl<'a> HeroLogo<'a> {
         // its replay need the same measurement census even when the logo happened to be resident
         // in only one run; texture residency is paint state, not logical replay state.
         let (_, _, _, sz) = self.rung.bounds();
+        // `Start` is the title's own start edge, for the logo art and the text fallback alike.
+        let align = self.align.resolve(self.title);
         let line = plx_gfx::text::elide_by(self.title, band.w, false, |t| {
             measure.width_str(t, sz, true)
         });
@@ -194,7 +196,7 @@ impl<'a> HeroLogo<'a> {
             let (w, h) = fit(self.rung, sw, sh, band.w);
             // NOT pixel-snapped: a logo is SCALED content, and the crispness contract snaps
             // 1:1-texel content only (see the note above `theme.rs`'s size ladder).
-            p.tex(tex, place(band, w, h, self.align), 0.0, theme::TEXT_PRIMARY);
+            p.tex(tex, place(band, w, h, align), 0.0, theme::TEXT_PRIMARY);
             return;
         }
         // `cs` must outlive the draw — `Label` holds a non-owning pointer (ui/CLAUDE.md's first gotcha)
@@ -222,7 +224,7 @@ impl<'a> HeroLogo<'a> {
         };
         Label::new(cs.as_ptr(), sz, ink)
             .bold()
-            .h(self.align)
+            .h(align)
             .v(VAlign::Baseline)
             .draw(p, band);
     }

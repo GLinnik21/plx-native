@@ -743,6 +743,10 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     run = OpenRecoveryRun::DecodeInApp { offset_ns: SHARED.playpos_ns.load(Relaxed) };
                     continue;
                 }
+                RecoveryEffect::NameRefusedAudio { codec } => {
+                    crate::route::name_refused_forced_audio(ps, &codec);
+                    continue;
+                }
                 RecoveryEffect::ShowError { refusal } => {
                     super::log(&format!("open recovery: no rung left for {refusal}; failing the Engine"));
                     fail_engine_for_good();

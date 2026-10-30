@@ -1,5 +1,6 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), for EVERY poster tile: the Library grid, the Collections
+//! (Settings > Libraries > Under posters), except movie grids with Show sort information on
+//! (those use persistent title/year/sort captions): the Library grid, the Collections
 //! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
@@ -34,7 +35,17 @@
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::cards::TileLabel;
 
-/// The Under posters setting as the caption policy the screens listed in the module doc follow.
+/// Whether movie-library grids show sort information, with the same test override as policy().
+pub fn show_sort_info() -> bool {
+    #[cfg(test)]
+    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
+        return setting.show_sort_info;
+    }
+    plx_media::route::under_posters().show_sort_info
+}
+
+/// The standard focused-poster policy; movie grids with sort information enabled use their
+/// persistent title/year/sort block instead.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
@@ -236,4 +247,45 @@ mod tests {
         assert_eq!(at(true), [Some("The Office".into()), None]);
         assert_eq!(at(false), [None, None]);
     }
+}
+
+pub fn rating_mark(art: plx_data::metadata::RatingArt) -> &'static [plx_ui::widgets::MarkLayer] {
+    use plx_data::metadata::RatingArt as A;
+    use plx_ui::icons::Icon;
+    use plx_ui::widgets::MarkLayer;
+    static FRESH: &[MarkLayer] = &[
+        (Icon::Tomato, plx_ui::theme::RATING_FRESH),
+        (Icon::TomatoCalyx, plx_ui::theme::RATING_LEAF),
+    ];
+    static CERTIFIED: &[MarkLayer] = &[
+        (Icon::Tomato, plx_ui::theme::RATING_CERTIFIED),
+        (Icon::TomatoCalyx, plx_ui::theme::RATING_LEAF),
+    ];
+    static ROTTEN: &[MarkLayer] = &[
+        (Icon::TomatoHollow, plx_ui::theme::RATING_MUTED),
+        (Icon::TomatoCalyx, plx_ui::theme::RATING_MUTED),
+    ];
+    static POPCORN_UP: &[MarkLayer] = &[(Icon::Crowd, plx_ui::theme::RATING_AUDIENCE)];
+    static POPCORN_DOWN: &[MarkLayer] = &[(Icon::Crowd, plx_ui::theme::RATING_MUTED)];
+    match art {
+        A::TomatoFresh => FRESH,
+        A::TomatoCertified => CERTIFIED,
+        A::TomatoRotten => ROTTEN,
+        A::PopcornUpright => POPCORN_UP,
+        A::PopcornSpilled => POPCORN_DOWN,
+        A::Imdb | A::Tmdb => &[],
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn sort_information_reads_the_same_thread_override_as_policy() {
+    use plx_plex::plex::session::UnderPosters;
+    for enabled in [false, true] {
+        let setting = UnderPosters { show_sort_info: enabled, ..UnderPosters::DEFAULT };
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+        assert_eq!(show_sort_info(), enabled);
+        assert_eq!(policy(), crate::registry::caption_policy_of(setting));
+    }
+    TEST_UNDER_POSTERS.with(|cell| cell.set(None));
 }

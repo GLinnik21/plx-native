@@ -194,8 +194,9 @@ pub mod layout {
     /// its note into a column too narrow to read; this floor keeps it a panel. A FLOOR only: wider
     /// content still grows the panel up to `ui::table::MENU_MAX_W`.
     pub const PLAYER_MENU_MIN_W: f32 = 440.0;
-    /// Bottom edge of an in-player popover: ~28px above the transport buttons, at 1080p.
-    pub const PLAYER_MENU_BOTTOM: f32 = crate::consts::SCR_H - 316.0;
+    /// Air between the control that opened an in-player popover (Tracks, More) and the panel, at
+    /// 1080p. Classic's opener row stands at y 792, so this puts the panel's bottom edge at 764.
+    pub const PLAYER_MENU_GAP: f32 = 28.0;
 }
 
 /// The **logo presence ladder** — how big a clearLogo is DRAWN. The third size axis of the design
@@ -809,7 +810,7 @@ pub const RAIL_FILL: [f32; 4] = with_a(WHITE, 0.95);
 /// "this bit is special", and the rail sits straight over moving video.
 // (RAIL_MARKER, white @ 0.42, was the intro/credits band on the scrubber. Removed 2026-08-04 with
 // the band itself — at twice the track's opacity it read as a rendering artifact rather than as
-// information. See the "the rail carries NO marks" note in appkit/player_hud.rs.)
+// information. See the "the rail carries NO marks" note in appkit/player_hud/classic.rs.)
 /// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
 /// keying it (the person page's header state, `Person Screen.dc.html`'s
 /// `rgba(233,230,224,.10)`). The palette's one warm stop, and the only survivor of the warm "Snow"
@@ -1218,7 +1219,7 @@ pub const TINT_WHITE: [f32; 4] = WHITE;
 // ── Review-score marks (detail hero ratings row) ─────────────────────────────
 // These used to be the ONE place the palette borrowed someone else's colour, justified by the
 // badge being a BRAND MARK. That justification is gone with the marks: Rotten Tomatoes' fruit,
-// seal and popcorn tub were removed 2026-08-02 (no licensing route exists, and a redraw is the
+// seal and popcorn tub were removed 2026-08-02 (no public licence, none held, and a redraw is the
 // infringement pattern, not a defence), and every provider is NAMED in text instead. So these are
 // now our own semantic colours for a VERDICT, and only two still sit near a brand's hue because a
 // ripe tomato that isn't red has stopped being a tomato.

@@ -1446,3 +1446,37 @@ fn assert_back_glides(fixture: &Fixture, deep_index: usize) {
     assert!(frames > 4, "reaching the top takes frames (took {frames}), it is not a cut");
     assert!(page.scroll.pos <= 0.5, "and it arrives");
 }
+
+/// **A hover moves focus, never the grid; a click brings the grid to its card.** The reported
+/// bug: a Magic Remote hover seated the row it touched at the top of the screen, like a key does,
+/// so every hover moved the page up to a screenful and a hover after an edge glide threw the glide
+/// away. A key still seats its row at rest.
+#[test]
+fn a_hover_moves_no_grid_and_a_click_brings_it_to_its_card() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let elems: Vec<u32> = [12, 18, 24].iter().map(|&i| deep(&mut page, &fixture, i)).collect();
+    let keys: Vec<_> = elems.iter().map(|&e| page.key(e)).collect();
+    let (row2, row3, row4) = (keys[0], keys[1], keys[2]);
+    page.relayout(Some(row2));
+    let rest2 = page.target_layout.row_reveal(2);
+    page.scroll_target = rest2;
+    page.scroll.jump(rest2);
+    engine.set(OWNER, row2, Some(page.pair.groups_config().detail), By::Restore);
+    let point = |page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, to, by| {
+        let from = engine.current(OWNER);
+        engine.set(OWNER, to, Some(page.pair.groups_config().detail), by);
+        deliver(page, engine, &fixture, ScreenEvent::FocusMoved { from, to, by });
+    };
+    point(&mut page, &mut engine, row3, By::Pointer);
+    assert_eq!(page.scroll_target, rest2, "a hover moves focus, not the page");
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::Input(plx_machine::machine::InputEvent {
+        at: Tick::default(), source: plx_machine::machine::Source::Script,
+        kind: InputKind::Click { x: 0.0, y: 0.0, hit: Some(row3.elem) } }));
+    assert_eq!(page.scroll_target, page.target_layout.row_reveal(3), "a click brings the page to its card");
+    point(&mut page, &mut engine, row4, By::Dir);
+    assert_eq!(page.scroll_target, page.target_layout.row_reveal(4), "a key seats its row at rest");
+}

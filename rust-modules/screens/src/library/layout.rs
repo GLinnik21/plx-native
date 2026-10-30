@@ -54,13 +54,14 @@ pub(super) struct Layout {
     /// The focused grid row's band height under the Under posters setting (0 / 80 / 112; the
     /// legacy 114 until [`with_band_h`](Self::with_band_h)). A pref input, not motion: not in the canon.
     band_h: f32,
+    sort_info: bool,
 }
 
 impl Layout {
     pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,rows:u32,status:bool,episodes:bool,grid_bands:[(row:u32,expansion:f32)]}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { libraries, rows, status, episodes, grid_bands, band_h: _ } = self;
+        let Self { libraries, rows, status, episodes, grid_bands, band_h: _, sort_info: _ } = self;
         c.bool(*libraries).u32(*rows as u32).bool(*status).bool(*episodes);
         c.seq(grid_bands.iter().filter(|band| band.row != usize::MAX).count());
         for band in grid_bands.iter().filter(|band| band.row != usize::MAX) {
@@ -76,6 +77,7 @@ impl Layout {
             episodes: false,
             grid_bands: [GridBand::CLOSED; MAX_GRID_BANDS],
             band_h: plx_ui::cards::LEGACY_BAND_H,
+            sort_info: false,
         }
     }
 
@@ -84,6 +86,10 @@ impl Layout {
     }
 
     pub(super) fn with_episodes(self, episodes: bool) -> Self { Self { episodes, ..self } }
+
+    pub(super) fn with_sort_info(self, on: bool) -> Self { Self { sort_info: on, ..self } }
+
+    pub(super) fn persistent_captions(&self) -> bool { self.sort_info }
 
     pub(super) fn with_band_h(self, band_h: f32) -> Self { Self { band_h, ..self } }
 
@@ -104,7 +110,7 @@ impl Layout {
     }
 
     fn band_growth_before(&self, row: usize) -> f32 {
-        plx_ui::cards::grid_growth_before_for(self.band_h, row.min(self.rows), &self.grid_bands)
+        if self.sort_info { 0.0 } else { plx_ui::cards::grid_growth_before_for(self.band_h, row.min(self.rows), &self.grid_bands) }
     }
 
     fn row_top(&self, row: usize) -> f32 {
@@ -133,7 +139,8 @@ impl Layout {
     pub(super) fn card_h(&self) -> f32 { self.style().h }
 
     pub(super) fn grid_pitch(&self) -> f32 {
-        self.card_h() + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR
+        self.card_h() + if self.sort_info { plx_ui::cards::TileLabel::SORT_BAND_H }
+            else { plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR }
     }
 
     pub(super) fn cell_x(&self, col: usize) -> f32 {
@@ -426,5 +433,19 @@ mod tests {
         let lay = Layout::new(true, 20);
         assert_eq!(lay.seat_for_scroll(0.0, 12), Some(Block::LibraryRow));
         assert_eq!(lay.seat_for_scroll(lay.row_reveal(12), 12), Some(Block::Grid(12)));
+    }
+}
+
+#[cfg(test)]
+mod sort_information_layout_tests {
+    use super::*;
+    #[test]
+    fn fixed_caption_pitch_keeps_all_rows_and_last_partial_row_inside_the_document() {
+        let layout = Layout::new(true, 17).with_sort_info(true).with_grid_focus(Some(3));
+        let plain = Layout::new(true, 17).with_sort_info(true);
+        for row in 0..17 { assert_eq!(layout.row_y(row, 0.0), plain.row_y(row, 0.0)); }
+        assert_eq!(layout.card_h(), plain.card_h());
+        assert!(layout.row_y(16, layout.max_scroll()) + layout.card_h()
+            + plx_ui::cards::TileLabel::SORT_BAND_H <= SCR_H - MARGIN_Y + 0.01);
     }
 }

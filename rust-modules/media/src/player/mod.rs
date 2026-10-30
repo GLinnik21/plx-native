@@ -660,7 +660,7 @@ pub fn observe_video_plane(
     pl.set_video_plane_bound(bound)
 }
 
-// ---- transport accessors app.rs / player_hud.rs call ----
+// ---- transport accessors the app's per-frame loop and `HudMotion`'s tick call ----
 pub fn is_started() -> bool {
     TX.started.load(Relaxed)
 }
@@ -1774,8 +1774,9 @@ pub fn seek_display_ns() -> i64 {
 /// heartbeat's `pos=`, which `tests/run.py` grades real playback progress from — feeding it an
 /// intended position would let a seek that never lands read as playback that climbed.
 ///
-/// `appkit/player_hud.rs` deliberately does NOT call this: it needs the same outer two rungs with the
-/// live scrub preview between them, so its expression is a superset rather than a caller.
+/// `appkit/player_hud/state.rs::display_pos_ns` deliberately does NOT call this: it needs the same
+/// outer two rungs with the live scrub preview between them, so its expression is a superset
+/// rather than a caller.
 pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
     let t = seek_display_ns();
     if loading(ps) && t >= 0 {
@@ -2958,6 +2959,26 @@ mod tests {
             error_shape(false, true, Sub::No, Some("PMS cannot convert this item"), RuntimeFailure::Unknown), false);
         assert_eq!(server.kind, FailureKind::DecisionRefused);
         assert!(server.readout.contains("server"));
+    }
+
+    /// Scheme #695, row 10 and "Force: anything else is not played": a Force play the TV refuses after
+    /// Load (error 601, which names no codec) reads out the same policy refusal as the planner's
+    /// up-front one, naming the codec the Load was fed.
+    #[test]
+    fn forced_tv_refusal_after_load_names_the_codec_like_the_up_front_one() {
+        use plx_plex::plex::serverinfo::Subscription as Sub;
+        let mut ps = crate::route::PlaybackSession::default();
+        crate::route::name_refused_forced_audio(&mut ps, "dca");
+        let verdict = crate::route::play_verdict(&ps).expect("a verdict").to_owned();
+        let up_front = crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Audio {
+            codec: plx_data::metadata::friendly_codec("dca"),
+        });
+        assert_eq!(verdict, up_front.text());
+        assert!(verdict.contains("DTS"), "{verdict}");
+        let shape = with_forced_playback_context(
+            error_shape(false, false, Sub::No, Some(&verdict), RuntimeFailure::TvPipeline), true);
+        assert_eq!(shape.kind, FailureKind::PlaybackPolicy);
+        assert_eq!(shape.detail, verdict);
     }
 
     /// **Each cause converts to its own telemetry class, under the code it always had.** The class

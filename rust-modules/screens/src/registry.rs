@@ -224,18 +224,28 @@ pub enum PlayerReq {
     CommitTrack(plx_appkit::track_menu::TrackCommit),
     /// **Present one of the player's overlays directly** (restructure phase 12) — the tabs row's OK
     /// (`OverlayKind::Info`/`::Chapters`, the old `key_ok`'s `focus == 2` arm) and the failure
-    /// read-out's own recovery escape (`OverlayKind::More { quality: true }`, the old
+    /// read-out's own recovery escape (`OverlayKind::More` on its Quality page, the old
     /// `key_player_failed`'s `ChooseQuality` arm). Both used to reach
     /// `super::bridge::open_player_overlay` straight from the loop's key ladder; `PlayerScreen`
     /// may not name that function itself (§2.2), so it asks instead.
     OpenOverlay(crate::player::overlay::OverlayKind),
-    /// **OK landed on the transport's own control row** — whichever disc, the Skip pill or the Up
-    /// Next tile currently occupies it (restructure phase 12, the old `key_ok`'s `focus == 1`
-    /// arm). Arms the same tvOS press dip [`ArmInfoPress`](PlayerReq::ArmInfoPress) does; the
-    /// loop's existing commit-frame dispatch (`app/run.rs`'s `Route::Player =>
-    /// activate_player_row(...)`) is unchanged and performs whatever the row decides once the
-    /// spring-back has played.
+    /// **A pointer click landed on the transport's own control row** — whichever disc, the Skip
+    /// pill or the Up Next tile currently occupies it. Arms the same tvOS press dip
+    /// [`ArmInfoPress`](PlayerReq::ArmInfoPress) does; the loop's commit-frame dispatch
+    /// (`app/run.rs`'s `Route::Player => activate_player_row(...)`) performs whatever the row
+    /// decides once the spring-back has played, through the same performer OK reaches by
+    /// [`Command`](PlayerReq::Command) and [`StandIn`](PlayerReq::StandIn). OK on the row does not
+    /// ask this: the focus engine presses the control itself.
     ArmControlRow,
+    /// **A press on a control of the discs committed**, after the engine's tvOS dip has played
+    /// (`PressCommit`, [`PlayerScreen`](crate::player::PlayerScreen)): perform this command. The screen resolves the command of the control the
+    /// engine holds, so the app's performer (`app::playback::perform_hud_command`) never reads a
+    /// cursor. OK on the row is this; a pointer click on the row is still [`ArmControlRow`](PlayerReq::ArmControlRow).
+    Command(plx_appkit::player_hud::command::HudCommand),
+    /// **A press on a stand-in committed** — the Skip pill, or one of the Up Next pair — after the
+    /// same dip. A stand-in's meaning depends on the segment it offers, which the app resolves on
+    /// the committing frame (`app::playback::activate_ctrl_row`), so it carries no command.
+    StandIn,
     /// **Leave the player** — the one ritual the STOP key, a BACK with nothing else open, and the
     /// failure read-out's own BACK escape all perform (`exit_player`; restructure phase 12,
     /// replacing `app/run.rs`'s direct calls to it from the player's own key arms).
@@ -1940,7 +1950,7 @@ impl AppArg {
 }
 
 pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Seerr,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str},SeerrTitle{tv:bool,tmdb:u64}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
-     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
+     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(page:u8)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
@@ -3014,3 +3024,5 @@ mod compaction_tests {
         assert_eq!(table, vec![1, 2, 3]);
     }
 }
+
+pub(crate) mod sort_info;

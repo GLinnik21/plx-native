@@ -175,6 +175,16 @@ const FRESH_PROCESS_ENV: &str = "PLX_TEST_FRESH_PROCESS";
 /// The technique is `eventlog`'s umask test and `storage::diagnostics`' publication test, which
 /// each carry their own copy for the same reason.
 pub fn fresh_process(module_path: &str, test: &str) -> bool {
+    fresh_process_with_env(module_path, test, &[])
+}
+
+/// [`fresh_process`] for a test whose child must also START with environment variables set: a global
+/// resolved once per process from the environment (`plx_base::paths::app_dir` and `PLXNATIVE_APP_DIR`)
+/// is read before the test body runs, and the parent cannot set it for the child without
+/// `set_var`, which races every other test thread's `getenv`. `envs` is added to the child's
+/// environment (the child's own `FRESH_PROCESS_ENV` is set after it, and wins); nothing is set in the
+/// parent.
+pub fn fresh_process_with_env(module_path: &str, test: &str, envs: &[(&str, &str)]) -> bool {
     if std::env::var(FRESH_PROCESS_ENV).as_deref() == Ok(test) {
         return true;
     }
@@ -183,6 +193,7 @@ pub fn fresh_process(module_path: &str, test: &str) -> bool {
     let name = format!("{path}::{test}");
     let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
         .args(["--exact", &name, "--test-threads=1"])
+        .envs(envs.iter().copied())
         .env(FRESH_PROCESS_ENV, test)
         .output()
         .expect("start the child test process");
