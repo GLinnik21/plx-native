@@ -1,4 +1,4 @@
-{"updated":"2026-10-30T00:14:30Z",
+{"updated":"2026-10-30T00:26:46Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4063,7 +4063,8 @@
 {"id":40973621764,"at":"2026-10-29T23:30:38Z","sha":"98ac444a8","title":"Replay: re-record the three fixtures for the More page address","pr":1150,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":306,"macOS simulator build + launch":197,"Windows launcher syntax":22,"macOS tests against bundled FFmpeg and ASS":167}},
 {"id":40974757034,"at":"2026-10-29T23:40:43Z","sha":"c8c0e00db","title":"HUD PR3 review: pin the seek burst guard and the performer's arms","pr":1150,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":203,"macOS simulator build + launch":227,"Windows launcher syntax":23,"Linux simulator build + launch":217}},
 {"id":40975618388,"at":"2026-10-29T23:48:37Z","sha":"58876a0f5","title":"HUD plugins: control identity and the command vocabulary; one shared command performer; OK on the engine","pr":1150,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":219,"macOS simulator build + launch":167,"Windows launcher syntax":16,"macOS tests against bundled FFmpeg and ASS":173}},
-{"id":40977465929,"at":"2026-10-30T00:05:45Z","sha":"9c1c600c1","title":"CI: Bump Swatinem/rust-cache in the actions group","pr":1146,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":224,"macOS tests against bundled FFmpeg and ASS":137,"Linux simulator build + launch":291}}
+{"id":40977465929,"at":"2026-10-30T00:05:45Z","sha":"9c1c600c1","title":"CI: Bump Swatinem/rust-cache in the actions group","pr":1146,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":224,"macOS tests against bundled FFmpeg and ASS":137,"Linux simulator build + launch":291}},
+{"id":40979268487,"at":"2026-10-30T00:22:23Z","sha":"5f0101dff","title":"HUD format: the golden asserts how many comparisons it made","pr":1151,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS simulator build + launch":194,"macOS tests against bundled FFmpeg and ASS":196,"Linux simulator build + launch":251}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
