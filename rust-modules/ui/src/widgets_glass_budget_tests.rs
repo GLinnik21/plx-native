@@ -106,9 +106,8 @@ fn the_shipped_strips_leave_the_chip_its_whole_name_budget() {
     assert_eq!(chip_name_budget(0.0), CHIP_NAME_MAX, "no strip at all constrains nothing");
 }
 
-/// A nameless chip has nothing to unfurl for, so every unfurl is the closed circle — in the drawn
-/// capsule, in the rect the pointer hit-tests (`Bridge::bar_member_rect` reads `chip_cap` with the
-/// captured name's width) and in the account menu's opener — and a named chip still grows rightward.
+/// A nameless chip has nothing to unfurl for, so every unfurl of [`chip_cap`] is the closed circle,
+/// and a named chip still grows rightward.
 #[test]
 fn a_chip_with_no_name_stays_the_closed_circle_and_a_named_one_unfurls() {
     let circle = chip_cap(0.0, 0.0);
@@ -180,31 +179,22 @@ fn the_profile_chip_has_a_round_surround_at_rest_and_only_widens_on_focus() {
     );
 }
 
-/// **The Belarusian strip keeps the material** (the regression this file exists for since
-/// 2026-10-30). "Галоўная", "Фільмы", "Серыялы" and the Watchlist and Search marks measure
-/// 132 / 108 / 128 px of bold BODY label on the television, i.e. pills of 168 / 144 / 164 plus two
-/// 60 px marks: a 676 px track, 4 px past the 672 the retired `GLASS_TRACK_MAX` allowed, so the
-/// whole bar fell to the flat capsule on the owner's television the moment the Watchlist pill was
-/// added.
-#[test]
-fn the_belarusian_five_pill_strip_keeps_the_glass() {
-    let widths = [168.0, 144.0, 164.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W];
-    assert_eq!(tab_track_w(&widths), 676.0, "the strip the owner's television draws");
-    assert!(
-        tab_glass_on(),
-        "a {} px track dropped to the flat capsule",
-        tab_track_w(&widths),
-    );
+/// What [`drawn_strip`] read off one draw of the shared strip.
+struct DrawnStrip {
+    /// the band published the glass material (the flat capsule publishes none)
+    glass: bool,
+    /// the pills plus the air between them
+    content: f32,
+    /// the track the draw stood on ([`tab_track_w`])
+    track: f32,
 }
 
-/// **No strip width takes the material away** — a section table can add libraries and a language
-/// can lengthen every label, and the bar must still be glass. This DRAWS the bar (a recording
-/// painter, the ground read answered from a frozen page) for the shipped strip and for one far past
-/// [`TAB_VIEW_MAX`], which scrolls inside a track that stops growing ([`tab_view_w`]), and asks the
-/// band what material the draw published: glass for both. The only refusal left is the `flattabs`
-/// experiment.
-#[test]
-fn any_strip_keeps_the_material_including_one_that_scrolls() {
+/// **DRAW the shared strip for `faces`** (a recording painter, the ground read answered from a
+/// frozen page) and report the material the draw published on the band, with the widths it stood
+/// on. [`tab_glass_on`] takes no width, so asking it says nothing about any strip: the band's
+/// published material is what the chip, the account menu's lift and the planner read, and it is
+/// the answer that changes if the draw ever decides the material by width again.
+fn drawn_strip(generation: u32, faces: &[TabFace]) -> DrawnStrip {
     let _g = serial_for_motion();
     // the draw queues a framebuffer read of the ground under the track, which needs GL; a frozen
     // page answers from the last reading (as `the_top_bar_draws_every_label_at_full_ink…` does)
@@ -215,6 +205,49 @@ fn any_strip_keeps_the_material_including_one_that_scrolls() {
         }
     }
     let _frozen = Frozen(plx_gfx::gfx::set_page_frozen(true));
+    let labels = TabLabels { generation, faces };
+    let mut strip = StripRender::new();
+    let mut band = TabBand::new();
+    strip.update(labels, 0, TopFocus::Away, DT);
+    strip.draw(labels, Painter::recording(), &mut band);
+    let (content, track) = with_tab_metrics_for(labels, |_, _, w| (tab_content_w(w), tab_track_w(w)));
+    DrawnStrip { glass: band.face().is_some(), content, track }
+}
+
+/// **The Belarusian strip keeps the material** (the regression this file exists for since
+/// 2026-10-30). "Галоўная", "Фільмы", "Серыялы" and the Watchlist and Search marks measure
+/// 132 / 108 / 128 px of bold BODY label on the television, i.e. pills of 168 / 144 / 164 plus two
+/// 60 px marks: a 676 px track, 4 px past the 672 the retired `GLASS_TRACK_MAX` allowed, so the
+/// whole bar fell to the flat capsule on the owner's television the moment the Watchlist pill was
+/// added.
+///
+/// The test DRAWS a strip that wide ([`drawn_strip`]). The host has no font and measures half an
+/// em a byte, so those television widths cannot be reproduced word for word: the strip drawn is the
+/// five pills that land on the SAME 676 px track here, four seven-byte labels (134 px pills) and
+/// the Search mark, and the test asserts both tracks.
+#[test]
+fn the_belarusian_five_pill_strip_keeps_the_glass() {
+    let widths = [168.0, 144.0, 164.0, TAB_ICON_PILL_W, TAB_ICON_PILL_W];
+    assert_eq!(tab_track_w(&widths), 676.0, "the strip the owner's television draws");
+    let faces = [
+        TabFace::Label("Library".into()),
+        TabFace::Label("Cartoon".into()),
+        TabFace::Label("Concert".into()),
+        TabFace::Label("Podcast".into()),
+        TabFace::Icon(crate::icons::Icon::Search),
+    ];
+    let drawn = drawn_strip(3, &faces);
+    assert_eq!(drawn.track, 676.0, "the strip drawn must stand on the track the television draws");
+    assert!(drawn.glass, "a {} px track dropped to the flat capsule", drawn.track);
+}
+
+/// **No strip width takes the material away** — a section table can add libraries and a language
+/// can lengthen every label, and the bar must still be glass. This DRAWS the bar ([`drawn_strip`])
+/// for the shipped strip and for one far past [`TAB_VIEW_MAX`], which scrolls inside a track that
+/// stops growing ([`tab_view_w`]), and asks the band what material the draw published: glass for
+/// both. The only refusal left is the `flattabs` experiment.
+#[test]
+fn any_strip_keeps_the_material_including_one_that_scrolls() {
     let normal = vec![
         TabFace::Label("Home".into()),
         TabFace::Label("Movies".into()),
@@ -229,16 +262,12 @@ fn any_strip_keeps_the_material_including_one_that_scrolls() {
         .collect();
     let mut widest = 0.0f32;
     for (generation, faces) in [(1, normal), (2, many)] {
-        let labels = TabLabels { generation, faces: &faces };
-        let mut strip = StripRender::new();
-        let mut band = TabBand::new();
-        strip.update(labels, 0, TopFocus::Away, DT);
-        strip.draw(labels, Painter::recording(), &mut band);
-        let (content, track) = with_tab_metrics_for(labels, |_, _, w| (tab_content_w(w), tab_track_w(w)));
-        widest = widest.max(content);
+        let drawn = drawn_strip(generation, &faces);
+        widest = widest.max(drawn.content);
         assert!(
-            band.face().is_some(),
-            "a {track} px track (content {content}) lost the material"
+            drawn.glass,
+            "a {} px track (content {}) lost the material",
+            drawn.track, drawn.content
         );
     }
     assert!(
