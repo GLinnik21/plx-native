@@ -763,6 +763,9 @@ struct Carried {
     item: HeaderItem,
     x: f32,
     w: f32,
+    /// A read-out that rides the slide ([`HeaderSwap::glides_between`]): its move is the glide's, not
+    /// a difference to dissolve.
+    glides: bool,
 }
 
 impl Carried {
@@ -776,9 +779,11 @@ impl Carried {
     /// Does `item`, standing at `x`, read differently from this carried one? A slotted control by
     /// its value; a read-out by its text or by where it stands (it is unpinned, so it moves with
     /// the cluster: Collections arriving, a count's digit count, the Sort value), because it has
-    /// no value to cross-fade and a move is a dissolve at each x, not a cut.
+    /// no value to cross-fade and a move is a dissolve at each x, not a cut. **Unless the move is
+    /// the cluster's slide** (`glides`: the criterion changed and the read-out, whose text did not,
+    /// travels with its neighbours on the slide's spring): that is no difference to dissolve.
     fn differs(&self, item: &HeaderItem, x: f32) -> bool {
-        if self.item.readout { self.item.label != item.label || (self.x - x).abs() >= SAME_X } else { self.item.value != item.value }
+        if self.item.readout { self.item.label != item.label || (!self.glides && (self.x - x).abs() >= SAME_X) } else { self.item.value != item.value }
     }
 }
 
@@ -795,7 +800,9 @@ fn carried(item: &HeaderItem) -> bool { item.value_slot.is_some() || item.readou
 /// ([`Self::begin`]). The filter read-out rides the same swap: it is unpinned (one gap before the
 /// next item), so it stands at another x when Collections arrives or leaves, its count changes digit
 /// count or the Sort value changes, and it says another thing as the filter narrows; each is that
-/// leave-and-arrive, never a cut. A switch to another library's row ([`Self::begin_switch`]) shows only what the
+/// leave-and-arrive, never a cut, except that a Sort value change which moves a read-out whose text
+/// is the same moves it by what it moves Collections, and it GLIDES with them on the slide (below),
+/// not on a second clock beside it. A switch to another library's row ([`Self::begin_switch`]) shows only what the
 /// new library has: a control the old one had is not drawn on it, even fading. All on [`Xfade`], the one
 /// content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`] smoothstepped), so no page keeps
 /// a timer of its own. A dissolving label is never drawn between its two places. **Items that a
@@ -871,10 +878,12 @@ impl Criterion {
     fn arriving(self, s: f32) -> f32 { self.in0 + (1.0 - self.in0) * s }
 }
 
-/// Is `a` the same control as `b`? A read-out is the read-out, a divider the divider, any other item
-/// by its label (the sort control's is its NAME, which its criterion does not change).
+/// Is `a` the same control as `b`? A read-out is the read-out (whatever it says), a divider the
+/// divider, any other item by its label (the sort control's is its NAME, which its criterion does
+/// not change).
 fn same_item(a: &HeaderItem, b: &HeaderItem) -> bool {
-    !a.readout && !b.readout && a.divider == b.divider && a.label == b.label
+    if a.readout || b.readout { return a.readout && b.readout; }
+    a.divider == b.divider && a.label == b.label
 }
 
 /// What a [`HeaderSwap`] does with a control that only one of the two rows has.
@@ -938,10 +947,11 @@ impl HeaderSwap {
         let s = self.slide_progress();
         let (before, after) = (&old.page.spec().right, &new.page.spec().right);
         let mut changed_now = false;
-        let glides = after.iter().enumerate().filter(|(_, item)| !item.readout).filter_map(|(i, item)| {
+        let mut glides: Vec<Glide> = after.iter().enumerate().filter_map(|(i, item)| {
             let (j, was) = before.iter().enumerate().find(|(_, was)| same_item(was, item))?;
             let (rest, to) = (spot(old, j)?, spot(new, i)?);
-            let changed = was.value != item.value;
+            // A read-out says another thing by its text; every other item by its value.
+            let changed = if item.readout { was.label != item.label } else { was.value != item.value };
             // A slotted control whose value changed is the dissolve's (it leaves and arrives).
             if carried(item) && changed { return None; }
             // Where it is drawn now: a slide still running is picked up there, so a second change never jumps.
@@ -958,6 +968,11 @@ impl HeaderSwap {
             changed_now |= glides && changed;
             glides.then(|| Glide { item: HeaderItem { value, ..was.clone() }, from, to, criterion })
         }).collect();
+        // The read-out is the cluster's leading item, so a criterion change moves it by what it moves
+        // Collections, and it travels with them. Moved by anything else (Collections arriving, a
+        // count's digit count) there is no slide for it to ride, and it dissolves at each x.
+        let slides = glides.iter().chain(&self.glides).any(|g| g.criterion.is_some());
+        if !slides { glides.retain(|g| !g.item.readout); }
         (glides, changed_now)
     }
 
@@ -1009,14 +1024,15 @@ impl HeaderSwap {
         let carry = |row: &HeaderRow| -> Vec<Carried> {
             row.page.spec().right.iter().enumerate().filter(|(_, item)| carried(item)).filter_map(|(i, item)| {
                 let at = row.layout.items.iter().find(|r| r.slot == Slot::Right(i))?;
-                Some(Carried { item: item.clone(), x: at.text.x, w: at.text.w })
+                Some(Carried { item: item.clone(), x: at.text.x, w: at.text.w, glides: false })
             }).collect()
         };
         // A switch shows nothing of the row left, so nothing slides from it; a change of the same
         // page slides the items a control's new width moved.
         let (glides, changed) = if edge == Edge::Fade { self.glides_between(old, new) } else { (Vec::new(), false) };
         if edge == Edge::Cut { self.glides.clear(); }
-        let before = carry(old);
+        let mut before = carry(old);
+        for readout in before.iter_mut().filter(|c| c.item.readout) { readout.glides = glides.iter().any(|g| g.item.readout); }
         let after = carry(new);
         let same = match edge {
             Edge::Fade => before.len() == after.len()

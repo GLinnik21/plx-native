@@ -1394,6 +1394,70 @@ fn a_third_criterion_picked_mid_slide_keeps_the_edge_and_lands_exact() {
     assert_eq!(Shot::of(&third, &swap).numbers(), rest.numbers());
 }
 
+/// [`drawn_cluster`] with the filter read-out ("312 of 1,284") ahead of Collections, as a genre or
+/// Unwatched filter puts it on the row.
+fn drawn_cluster_filtered(criterion: &str, readout: &str) -> HeaderRow {
+    let m = crate::widgets::LegacyMeasure;
+    let place = |label: &str| HeaderItem { place: true, ..item(label, None) };
+    let collections = HeaderItem { value: Some("24".into()), value_slot: Some("999".into()), ..place("Collections") };
+    let sort = HeaderItem {
+        glyph: Some(Icon::Sort), value_only: true, fold_glyph: true, fold_quiet: true, ..item("Sort & Filter", Some(criterion))
+    };
+    let divider = HeaderItem { divider: true, ..Default::default() };
+    let readout = HeaderItem { readout: true, focusable: false, ..item(readout, None) };
+    let spec = PageHeaderSpec { right: vec![readout, collections, place("Recommended"), divider, sort], ..Default::default() };
+    let widest = spec.right.clone();
+    let page = PageHeader::new(spec, &widest, &m);
+    let layout = page.layout(1920.0, &m);
+    row_of(page, layout, &[])
+}
+
+/// **With a filter on, the read-out glides with its neighbours** when a criterion change moves it.
+/// It is the cluster's leading item, so it moves by the same amount as Collections; its text does
+/// not change, so it is no cross-fade on the swap's clock (the neighbours travel on the slide's
+/// spring, and the read-out fading out and in beside them read as two animations). On every frame
+/// the read-out is drawn ONCE, at its resting opacity, as far from its new place as Collections is
+/// from its own, and nothing is dissolving; the settled row is the new one exactly. A read-out whose
+/// text changes still dissolves ([`a_readout_that_moves_or_changes_dissolves_at_each_x`]).
+#[test]
+fn a_readout_whose_text_is_unchanged_glides_with_the_cluster_on_a_criterion_change() {
+    let _g = plx_base::testlock::serial();
+    let rest = theme::COUNT_FILTERED_INK[3];
+    let (old, new) = (drawn_cluster_filtered("Date added", "312 of 1,284"), drawn_cluster_filtered("Title", "312 of 1,284"));
+    let x = |row: &HeaderRow, text: &str| swap_runs(row, &HeaderSwap::new()).iter().find(|(t, ..)| t == text).map(|(_, x, _)| *x).expect("drawn");
+    let (readout_from, readout_to) = (x(&old, "312 of 1,284"), x(&new, "312 of 1,284"));
+    let (collections_from, collections_to) = (x(&old, "Collections"), x(&new, "Collections"));
+    assert!(readout_to > readout_from, "premise: the shorter criterion moves the read-out right ({readout_from} to {readout_to})");
+    assert!(((readout_to - readout_from) - (collections_to - collections_from)).abs() < 0.01, "premise: it moves as Collections does");
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_sliding(), "premise: the criterion slides");
+    let mut last = readout_from - 1.0;
+    for frame in 0..600 {
+        let runs = swap_runs(&new, &swap);
+        let drawn: Vec<_> = runs.iter().filter(|(t, ..)| t == "312 of 1,284").collect();
+        assert_eq!(drawn.len(), 1, "frame {frame}: the read-out is drawn once, not as a leaving and an arriving face: {drawn:?}");
+        let (_, at, alpha) = drawn[0];
+        assert!((alpha - rest).abs() < 1e-4, "frame {frame}: at its resting opacity ({alpha}), not cross-fading");
+        let shift = |from: f32, to: f32, now: f32| (now - from) / (to - from);
+        let collections = x_of(&runs, "Collections");
+        assert!((shift(readout_from, readout_to, *at) - shift(collections_from, collections_to, collections)).abs() < 1e-3,
+            "frame {frame}: the read-out is {} of the way with Collections {}", shift(readout_from, readout_to, *at), shift(collections_from, collections_to, collections));
+        assert!(*at >= last - 1e-3 && *at <= readout_to + 1e-3, "frame {frame}: it travels one way and never past its place: {at}");
+        assert!(!swap.dissolving(), "frame {frame}: nothing of the swap is on the cross-fade clock");
+        last = *at;
+        if !swap.is_active() { break; }
+        swap.step(DT);
+    }
+    assert!(!swap.is_active(), "the spring landed");
+    assert_eq!(swap_runs(&new, &swap), swap_runs(&new, &HeaderSwap::new()), "and the settled swap is the new row, exactly");
+}
+
+/// The x of the run `text` among `runs` (`swap_runs`).
+fn x_of(runs: &[(String, f32, f32)], text: &str) -> f32 {
+    runs.iter().find(|(t, ..)| t == text).map(|(_, x, _)| *x).unwrap_or_else(|| panic!("{text} is drawn"))
+}
+
 /// What the sort control draws when a menu has LIFTED it (`HeaderRow::draw_opener_with`): the
 /// accent pill and the face, as boxes.
 #[derive(Clone, Debug)]
