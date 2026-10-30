@@ -1052,3 +1052,118 @@ fn the_board_cluster_stands_where_the_native_renders_have_it() {
     assert_eq!(date.left_budget, duration.left_budget);
     assert!(page.spec().right[3].value_only, "the name is carried, the criterion is what is drawn");
 }
+
+/// The Library's right cluster as the board has it: Collections (a slotted count) and Recommended as
+/// places, the divider, and the sort control, whose criterion is `criterion` (its name never drawn).
+fn cluster_row(criterion: &str) -> HeaderRow {
+    let place = |label: &str| HeaderItem { place: true, ..item(label, None) };
+    let collections = HeaderItem { value: Some("24".into()), value_slot: Some("999".into()), ..place("Collections") };
+    let sort = HeaderItem {
+        glyph: Some(Icon::Sort), value_only: true, fold_glyph: true, fold_quiet: true, ..item("Sort & Filter", Some(criterion))
+    };
+    let divider = HeaderItem { divider: true, ..Default::default() };
+    let spec = PageHeaderSpec { right: vec![collections, place("Recommended"), divider, sort], ..Default::default() };
+    let widest = spec.right.clone();
+    let page = PageHeader::new(spec, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    row_of(page, layout, &[(1, 0), (2, 1), (3, 3)])
+}
+
+/// Where the cluster's pieces are DRAWN at `swap`: Collections' and Recommended's x, the divider's x
+/// (the one 2 px wide rounded rect) and each criterion text as `(text, x, alpha)`.
+struct Drawn { collections: f32, recommended: f32, divider: f32, criteria: Vec<(String, f32, f32)> }
+
+fn drawn(row: &HeaderRow, swap: &HeaderSwap) -> Drawn {
+    let runs = swap_runs(row, swap);
+    let at = |name: &str| runs.iter().find(|(text, ..)| text == name).map(|(_, x, _)| *x).unwrap();
+    let divider = crate::draw_census::capture(|| row.draw_with(Painter::recording(), 0.0, &TabStrip::new(), 1.0, None, swap))
+        .into_iter().find(|(tag, rect)| *tag == 2 && rect.w == DIVIDER_W).map(|(_, rect)| rect.x).unwrap();
+    let criteria = runs.iter().filter(|(text, ..)| ["Date added", "Year"].contains(&text.as_str()))
+        .map(|(text, x, a)| (text.clone(), *x, *a)).collect();
+    Drawn { collections: at("Collections"), recommended: at("Recommended"), divider, criteria }
+}
+
+/// **A criterion change slides the places and the divider on the header's spring**: over a stepped
+/// sequence the places' x moves monotonically from the old layout to the new one, never past it (the
+/// spring is critically damped), the divider travels with them, frame zero is the row before, and the
+/// swap ends with every piece at its new rest, exactly.
+#[test]
+fn a_changed_criterion_slides_the_places_and_the_divider_to_their_new_places_without_overshoot() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (cluster_row("Date added"), cluster_row("Year"));
+    let rest = |row: &HeaderRow| drawn(row, &HeaderSwap::new());
+    let (from, to) = (rest(&old), rest(&new));
+    assert!(to.recommended > from.recommended, "premise: a shorter criterion moves the places right ({} to {})", from.recommended, to.recommended);
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_sliding() && swap.is_active());
+    let mut last = drawn(&new, &swap);
+    assert_eq!((last.collections, last.recommended, last.divider), (from.collections, from.recommended, from.divider), "frame zero: where the row before had them");
+    for frame in 0..600 {
+        swap.step(DT);
+        let now = drawn(&new, &swap);
+        for (name, before, after, end) in [("Collections", last.collections, now.collections, to.collections),
+            ("Recommended", last.recommended, now.recommended, to.recommended), ("divider", last.divider, now.divider, to.divider)] {
+            assert!(after >= before - 1e-3, "{name} moved back on frame {frame}: {before} -> {after}");
+            assert!(after <= end + 1e-3, "{name} overshot its place on frame {frame}: {after} past {end}");
+        }
+        assert!((now.divider - now.recommended - (to.divider - to.recommended)).abs() < 1e-3, "the divider travels with the places");
+        last = now;
+        if !swap.is_active() { break; }
+    }
+    assert!(!swap.is_active(), "the spring landed");
+    let end = drawn(&new, &swap);
+    assert_eq!((end.collections, end.recommended, end.divider), (to.collections, to.recommended, to.divider), "and the pieces stand exactly at the new layout");
+}
+
+/// **The criterion cross-fades and the control keeps its right edge**: the old and the new criterion
+/// are each drawn with opacities that sum to one on every frame (frame zero is the old alone, the end
+/// the new alone), and each ends at the same x, the control's right edge, whatever its width.
+#[test]
+fn the_criterion_cross_fades_and_the_sort_controls_right_edge_never_moves() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (cluster_row("Date added"), cluster_row("Year"));
+    let edge = |text: &str, x: f32| x + Fixed.width(&std::ffi::CString::new(text).unwrap(), theme::size::BODY, false);
+    let rest = drawn(&new, &HeaderSwap::new());
+    let rest_edge = rest.criteria.iter().find(|(text, ..)| text == "Year").map(|(text, x, _)| edge(text, *x)).unwrap();
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    for frame in 0..600 {
+        let now = drawn(&new, &swap);
+        let alpha = |text: &str| now.criteria.iter().find(|(t, ..)| t == text).map_or(0.0, |c| c.2);
+        let (out, arriving) = (alpha("Date added"), alpha("Year"));
+        assert!((out + arriving - 1.0).abs() < 1e-3, "frame {frame}: {out} + {arriving} is one");
+        for (text, x, _) in &now.criteria { assert!((edge(text, *x) - rest_edge).abs() < 1e-3, "frame {frame}: {text} ends at {}, not {rest_edge}", edge(text, *x)); }
+        if frame == 0 { assert_eq!((out, arriving), (1.0, 0.0), "frame zero is the old criterion alone"); }
+        if !swap.is_active() { break; }
+        swap.step(DT);
+    }
+    let end = drawn(&new, &swap);
+    assert_eq!(end.criteria.iter().map(|(t, _, a)| (t.as_str(), *a)).collect::<Vec<_>>(), [("Year", 1.0)], "the old criterion is gone and the new one whole");
+}
+
+/// **A snapped spring snaps the slide**, and a library switch shows nothing of the row left: no
+/// slide from it, and a slide of the row it left ends with it.
+#[test]
+fn a_settled_slide_snaps_and_a_library_switch_slides_nothing() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (cluster_row("Date added"), cluster_row("Year"));
+    let to = drawn(&new, &HeaderSwap::new());
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    swap.step(DT);
+    swap.settle();
+    let snapped = drawn(&new, &swap);
+    assert_eq!((snapped.recommended, snapped.divider), (to.recommended, to.divider));
+    assert!(!swap.is_sliding());
+    let mut swap = HeaderSwap::new();
+    swap.begin_switch(&old, &new);
+    assert!(!swap.is_active(), "a switch begins no slide");
+    let shown = drawn(&new, &swap);
+    assert_eq!((shown.collections, shown.recommended, shown.divider), (to.collections, to.recommended, to.divider));
+    assert!(shown.criteria.iter().all(|(t, ..)| t != "Date added"), "nothing of the criterion left is drawn");
+    let mut running = HeaderSwap::new();
+    running.begin(&old, &new);
+    running.begin_switch(&new, &old);
+    assert!(!running.is_sliding(), "a switch ends a slide of the row it left");
+}

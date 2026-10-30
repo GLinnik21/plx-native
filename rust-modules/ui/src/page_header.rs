@@ -49,7 +49,7 @@ use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
 use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip, PILL_FOCUS_OUTSET};
 use super::xfade::Xfade;
-use super::{icons::{self, Icon}, theme, Painter, Rect};
+use super::{icons::{self, Icon}, theme, Painter, Rect, Spring};
 
 /// Left text edge of the first library name.
 pub const TEXT_X0: f32 = 96.0;
@@ -457,7 +457,7 @@ impl PageHeader {
             });
         }
         for (item, text_x, text_w, opacity) in swap.leaving(&self.spec.right, layout) {
-            let face = Face { fade: Some(FaceFade { face: opacity, from_value: None, value_in: 1.0 }), ..Self::face_of(item) };
+            let face = Face { fade: Some(FaceFade::fade(opacity, None, 1.0)), ..Self::face_of(item) };
             self.draw_face_at(p, Rect::new(text_x, layout.top(), text_w, HEIGHT), &face, (0.0, 0.0), (0.0, 0.0));
         }
     }
@@ -509,12 +509,15 @@ impl PageHeader {
         let look = face.look;
         if look.divider {
             // A hairline, vertically centred on the row; it has no text, no plate and no stop.
-            let line = Rect::new(text.x + dx, text.y + dy + (text.h - DIVIDER_H) * 0.5, DIVIDER_W, DIVIDER_H);
+            let line = Rect::new(text.x + dx + fade.map_or(0.0, |fade| fade.lead), text.y + dy + (text.h - DIVIDER_H) * 0.5, DIVIDER_W, DIVIDER_H);
             p.rrect(line, 0.0, 0.0, theme::HEADER_DIVIDER_INK);
             return;
         }
         let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, text.y + dy + text.h * 0.5);
-        let mut x = text.x + dx;
+        // A slide in flight shifts what comes before the value by `lead`; the value and what trails
+        // it stand `value_slide` from rest (below, where the value begins).
+        let (lead, value_slide, from_dx) = fade.map_or((0.0, 0.0, 0.0), |fade| (fade.lead, fade.value_slide, fade.from_dx));
+        let mut x = text.x + dx + lead;
         let centred = |x: f32, size: f32| Rect::new(x, text.y + dy + (text.h - size) * 0.5, size, size);
         if let Some(glyph) = look.glyph {
             icons::draw(p, glyph, centred(x, GLYPH_SIZE), to_accent(strong));
@@ -546,10 +549,13 @@ impl PageHeader {
                 value_end = x;
             }
         }
+        x += value_slide - lead;
         for (value, opacity) in leaving.into_iter().chain(face.value.map(|value| (value, arriving))) {
             if opacity <= 0.0 { continue; }
+            let leaving_value = face.value != Some(value);
             if let Ok(v) = CString::new(value) {
-                let advance = p.alpha(opacity).text(v.as_ptr(), x, y, theme::size::BODY, to_accent(strong), 0, 0);
+                let at = if leaving_value { x + from_dx } else { x };
+                let advance = p.alpha(opacity).text(v.as_ptr(), at, y, theme::size::BODY, to_accent(strong), 0, 0);
                 // The fold glyph follows the value the face wears, not the one leaving.
                 if face.value == Some(value) { value_end = x + advance; }
             }
@@ -611,6 +617,22 @@ struct FaceFade<'a> {
     /// The value this one replaces, and its opacity (falling); `value`'s own is `value_in`.
     from_value: Option<(&'a str, f32)>,
     value_in: f32,
+    /// A slide in flight, in px from where the face stands at rest: `lead` shifts what comes before
+    /// the value (the mark, the label), `value_slide` the value and what trails it. Both are the
+    /// same for a face whose width is unchanged (it slides whole); a control whose criterion changed
+    /// keeps its right edge, so its mark slides and its value does not.
+    lead: f32,
+    value_slide: f32,
+    /// Where the value this one replaces stood, relative to the value now (the old criterion
+    /// stood at its own x, ending at the same right edge).
+    from_dx: f32,
+}
+
+impl<'a> FaceFade<'a> {
+    /// A fade with no slide in it.
+    const fn fade(face: f32, from_value: Option<(&'a str, f32)>, value_in: f32) -> Self {
+        Self { face, from_value, value_in, lead: 0.0, value_slide: 0.0, from_dx: 0.0 }
+    }
 }
 
 /// **A built header row**: the widget, its geometry (document space: y is the row's own top before
@@ -746,7 +768,14 @@ fn carried(item: &HeaderItem) -> bool { item.value_slot.is_some() || item.readou
 /// leave-and-arrive, never a cut. A switch to another library's row ([`Self::begin_switch`]) shows only what the
 /// new library has: a control the old one had is not drawn on it, even fading. All on [`Xfade`], the one
 /// content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`] smoothstepped), so no page keeps
-/// a timer of its own. Nothing glides: a label is never drawn between its two places.
+/// a timer of its own. A dissolving label is never drawn between its two places. **Items that a
+/// control's new width moves SLIDE** instead (the Library's sort criterion changing: Collections,
+/// Recommended and the divider stand where the row before had them and travel to the new row's
+/// places, the sort control's mark with them, on the swap's slide: the tab bar's own spring,
+/// critically damped, so with no overshoot; every drawn x is a function of its progress, so a landed
+/// or [`HeaderSwap::settle`]d spring is the new layout). The criterion itself cross-fades in place
+/// on the same progress and the control keeps its right edge. A switch ([`HeaderSwap::begin_switch`])
+/// slides nothing.
 ///
 /// **Held by the SCREEN beside the row's capsules**, for the same reason they are: the row is
 /// replaced whole on every rebuild, and the swap must outlive the row it began on. It is
@@ -762,6 +791,29 @@ pub struct HeaderSwap {
     running: bool,
     /// What the swap does with a control only one of the two rows has.
     edge: Edge,
+    /// **The slide**: the progress, 0 (every item where the row before had it) to 1 (where the new
+    /// row has it), of the cluster's items that moved when a control's width did (the sort control's
+    /// criterion). The tab bar's own spring ([`crate::widgets::K_TAB_CAP`], critically damped, so no
+    /// overshoot), the one the row's capsules travel on, so the plate under a place and the place
+    /// arrive together. Every drawn position is a pure function of it: a spring that lands (or is
+    /// jumped) puts every item at rest.
+    slide: Spring,
+    /// The items that slide; empty at rest.
+    glides: Vec<Glide>,
+}
+
+/// One right-cluster item a [`HeaderSwap`]'s slide carries: the item as the row before had it (its
+/// identity and its old value) and where its text stood, `from`, and stands now, `to`.
+struct Glide {
+    item: HeaderItem,
+    from: f32,
+    to: f32,
+}
+
+/// Is `a` the same control as `b`? A read-out is the read-out, a divider the divider, any other item
+/// by its label (the sort control's is its NAME, which its criterion does not change).
+fn same_item(a: &HeaderItem, b: &HeaderItem) -> bool {
+    !a.readout && !b.readout && a.divider == b.divider && a.label == b.label
 }
 
 /// What a [`HeaderSwap`] does with a control that only one of the two rows has.
@@ -785,10 +837,45 @@ impl Default for HeaderSwap {
 }
 
 impl HeaderSwap {
-    pub const fn new() -> Self { Self { clock: Xfade::new(), from: Vec::new(), running: false, edge: Edge::Fade } }
+    pub const fn new() -> Self {
+        Self { clock: Xfade::new(), from: Vec::new(), running: false, edge: Edge::Fade, slide: Spring::at(0.0), glides: Vec::new() }
+    }
 
-    /// Is a swap on screen?
-    pub fn is_active(&self) -> bool { self.running && self.clock.is_swapping() }
+    /// Is a swap on screen: a dissolve running or items sliding?
+    pub fn is_active(&self) -> bool { self.dissolving() || self.is_sliding() }
+
+    /// Is a dissolve (a value cross-fading, a control arriving or leaving) running?
+    fn dissolving(&self) -> bool { self.running && self.clock.is_swapping() }
+
+    /// Are items sliding to their new places?
+    pub fn is_sliding(&self) -> bool { !self.glides.is_empty() }
+
+    /// How far the slide has run, 0 (the row before) to 1 (the new row).
+    pub fn slide_progress(&self) -> f32 { self.slide.pos.clamp(0.0, 1.0) }
+
+    /// Put the slide at its end (the instant frame, a settle): every item stands at rest.
+    pub fn settle(&mut self) {
+        self.glides.clear();
+        self.slide = Spring::at(0.0);
+    }
+
+    /// The right-cluster items that stand elsewhere on `new` than on `old` (or say another value
+    /// while they do not dissolve): each where it is DRAWN now (a slide still running is picked up
+    /// where it is, so a second change never jumps) and where it will stand.
+    fn glides_between(&self, old: &HeaderRow, new: &HeaderRow) -> Vec<Glide> {
+        let spot = |row: &HeaderRow, i: usize| row.layout.items.iter().find(|r| r.slot == Slot::Right(i)).map(|r| r.text.x);
+        let shown = |item: &HeaderItem, x: f32| {
+            self.glides.iter().find(|g| same_item(&g.item, item)).map_or(x, |g| g.to + (g.from - g.to) * (1.0 - self.slide_progress()))
+        };
+        let (before, after) = (&old.page.spec().right, &new.page.spec().right);
+        after.iter().enumerate().filter(|(_, item)| !item.readout).filter_map(|(i, item)| {
+            let (j, was) = before.iter().enumerate().find(|(_, was)| same_item(was, item))?;
+            let (to, from) = (spot(new, i)?, shown(was, spot(old, j)?));
+            // A slotted control whose value changed is the dissolve's (it leaves and arrives).
+            let dissolves = carried(item) && was.value != item.value;
+            (!dissolves && ((from - to).abs() >= SAME_X || was.value != item.value)).then(|| Glide { item: was.clone(), from, to })
+        }).collect()
+    }
 
     /// The row `old` is being replaced by `new`: start a swap when a slotted control changed (its
     /// value, or its being there at all). A row that changes nothing a swap carries starts nothing
@@ -818,6 +905,10 @@ impl HeaderSwap {
                 Some(Carried { item: item.clone(), x: at.text.x, w: at.text.w })
             }).collect()
         };
+        // A switch shows nothing of the row left, so nothing slides from it; a change of the same
+        // page slides the items a control's new width moved.
+        let glides = if edge == Edge::Fade { self.glides_between(old, new) } else { Vec::new() };
+        if edge == Edge::Cut { self.glides.clear(); }
         let before = carry(old);
         let after = carry(new);
         let same = match edge {
@@ -829,26 +920,41 @@ impl HeaderSwap {
             // A switch is a different page: a Fade of the row it leaves must not outlive it (its
             // `leaving()` faces are the left library's, not the new page's).
             if edge == Edge::Cut { self.end(); }
-            return;
+        } else {
+            self.from = before;
+            self.running = true;
+            self.edge = edge;
+            self.clock.arrive();
         }
-        self.from = before;
-        self.running = true;
-        self.edge = edge;
-        self.clock.arrive();
+        if !glides.is_empty() {
+            self.glides = glides;
+            self.slide = Spring::at(0.0);
+        }
     }
 
-    /// Stop at once, the row as it is.
+    /// Stop at once, the row as it is: the dissolve and the slide both.
     pub fn end(&mut self) {
+        self.end_dissolve();
+        self.settle();
+    }
+
+    fn end_dissolve(&mut self) {
         self.from.clear();
         self.running = false;
         self.clock = Xfade::new();
     }
 
-    /// One frame of the swap's clock: **decoration, not layout** ([`plx_machine::idle::decorative`]).
+    /// One frame of the swap's clocks: the dissolve's, and the slide's spring on the tab bar's own
+    /// stiffness. **Decoration, not layout** ([`plx_machine::idle::decorative`]).
     pub fn step(&mut self, dt: f32) {
-        if !self.running { return; }
-        plx_machine::idle::decorative(|| { self.clock.tick(dt, true); });
-        if !self.clock.is_swapping() { self.end(); }
+        if self.running {
+            plx_machine::idle::decorative(|| { self.clock.tick(dt, true); });
+            if !self.clock.is_swapping() { self.end_dissolve(); }
+        }
+        if self.is_sliding() {
+            plx_machine::idle::decorative(|| self.slide.step(1.0, crate::widgets::K_TAB_CAP, dt));
+            if self.slide.land(1.0, dt) { self.settle(); }
+        }
     }
 
     /// How far the swap has run, 0 (the old row) to 1 (the new one), eased.
@@ -867,23 +973,42 @@ impl HeaderSwap {
     /// How the item `right[index]`, whose text stands at `x`, is painted now; `None` when the swap
     /// has nothing to say about it.
     fn fade_of<'a>(&'a self, right: &'a [HeaderItem], index: usize, x: f32) -> Option<FaceFade<'a>> {
-        if !self.is_active() { return None; }
-        let item = right.get(index).filter(|item| carried(item))?;
+        let item = right.get(index)?;
+        self.dissolve_of(item, x).or_else(|| self.glide_of(item))
+    }
+
+    /// The dissolve's say about `item` (a slotted control or the read-out), standing at `x`.
+    fn dissolve_of<'a>(&'a self, item: &'a HeaderItem, x: f32) -> Option<FaceFade<'a>> {
+        if !self.dissolving() || !carried(item) { return None; }
         let a = self.progress();
         let Some(before) = self.from.iter().find(|c| c.is(item)) else {
-            return (self.edge == Edge::Fade).then_some(FaceFade { face: a, from_value: None, value_in: 1.0 });
+            return (self.edge == Edge::Fade).then_some(FaceFade::fade(a, None, 1.0));
         };
         if !before.differs(item, x) { return None; }
-        if Self::moved(before, item, x) { return Some(FaceFade { face: a, from_value: None, value_in: 1.0 }); }
+        if Self::moved(before, item, x) { return Some(FaceFade::fade(a, None, 1.0)); }
         let from_value = before.item.value.as_deref().map(|value| (value, 1.0 - a));
-        Some(FaceFade { face: 1.0, from_value, value_in: if item.value.is_some() { a } else { 0.0 } })
+        Some(FaceFade::fade(1.0, from_value, if item.value.is_some() { a } else { 0.0 }))
+    }
+
+    /// The slide's say about `item`: it stands `(from - to) * (1 - progress)` px from its place, the
+    /// whole face together. When its value changed too (the sort control's criterion) the face's
+    /// width changed with it and its right edge stays: the mark before the value slides, the value
+    /// and the chevron do not move, and the criterion it replaces cross-fades out where it stood
+    /// (`from - to` px from the new one's place, ending at the same edge). Both opacities come from
+    /// the slide's one progress, so they sum to 1 and end exact.
+    fn glide_of<'a>(&'a self, item: &'a HeaderItem) -> Option<FaceFade<'a>> {
+        let g = self.glides.iter().find(|g| same_item(&g.item, item))?;
+        let (s, shift) = (self.slide_progress(), (g.from - g.to) * (1.0 - self.slide_progress()));
+        if g.item.value == item.value { return Some(FaceFade { lead: shift, value_slide: shift, ..FaceFade::fade(1.0, None, 1.0) }); }
+        let from_value = g.item.value.as_deref().map(|value| (value, 1.0 - s));
+        Some(FaceFade { lead: shift, value_slide: 0.0, from_dx: g.from - g.to, ..FaceFade::fade(1.0, from_value, if item.value.is_some() { s } else { 0.0 }) })
     }
 
     /// The faces of the row before that leave: a slotted control the new row (`right`, placed as
     /// `layout`) does not have, and one it has at another x with another value. Each with where its
     /// text stood and its opacity now, falling.
     fn leaving<'a>(&'a self, right: &'a [HeaderItem], layout: &'a HeaderLayout) -> impl Iterator<Item = (&'a HeaderItem, f32, f32, f32)> + 'a {
-        let active = self.is_active();
+        let active = self.dissolving();
         let opacity = 1.0 - self.progress();
         let edge = self.edge;
         self.from.iter().filter(move |c| active && {

@@ -5699,7 +5699,7 @@ impl View for TabPill {
 /// capsule rides *inside* the strip it marks, and a highlight that settles at a different rate from
 /// the row under it reads as two objects instead of one control. (The detail season row springs its
 /// own scroll at the same 240 — the directive above [`TAB_PILL_H`] covers their motion too.)
-const K_TAB_CAP: f32 = K_TAB_SCROLL;
+pub(crate) const K_TAB_CAP: f32 = K_TAB_SCROLL;
 /// Stiffness of a capsule's ALPHA — the app's shared appear spring
 /// ([`crate::popover::K_APPEAR`]), because entering or leaving a row is a FADE, not a journey.
 const K_TAB_CAP_A: f32 = crate::popover::K_APPEAR;
