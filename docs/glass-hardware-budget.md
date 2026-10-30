@@ -604,14 +604,19 @@ hierarchy is made of. Brightening the idle label instead was the alternative and
 step (tertiary → secondary) buys 11 points of transparency and costs **36% of the idle:selected
 separation**, two steps buys 17 and costs half of it.
 
-The ground has to be the PIXELS. Five taps under the bar, every thirtieth drawn frame — a readback
-stalls a tiler, which is exactly why the rate is low: a hero holds for eight seconds and a scrim
-density has no business changing faster than the picture does. Measured on the panel with `homeosc`
-running, the frame rate was unchanged when the taps were copied from framebuffer 0 before the bar
-drew. They are now copied from the retained backdrop image of the bar's own band (the blurred
-prefix below it, which the frame builds before the page draws) at the frame boundary after the
-swap, so the copy adds no render pass to framebuffer 0 (`gfx::sample_ground`); that change is not
-measured here.
+The ground has to be the PIXELS. Five taps under the bar, once per `GROUND_SAMPLE_EVERY` drawn
+frames — a readback stalls a tiler, which is exactly why the rate is low: a hero holds for eight
+seconds and a scrim density has no business changing faster than the picture does. Measured on the
+panel with `homeosc` running, the frame rate was unchanged when the taps were copied from
+framebuffer 0 before the bar drew. They are now copied from the retained backdrop image of the
+bar's own band (the blurred prefix below it, which the frame builds before the page draws) at the
+frame boundary after the swap, so the copy adds no render pass to framebuffer 0
+(`gfx::sample_ground`); what that did to the frame is measured under "What to index on instead".
+The new reading agrees with the old one. On the demo library's 8 hero titles (television,
+2026-10-31, `src=image` on every `groundlog` line) the median |ΔL*| between the two probes was
+0.15 and the worst 1.8, the median |Δspan| 0.25 and the worst 2.1, and the bar was pixel-identical
+on all 8. That art is L* 17 to 51, so the density stayed at its 0.200 floor: this says nothing yet
+about bright grounds.
 
 **The cheap sources are the wrong colour, and this cost an iteration.** Plex's `UltraBlurColors` are
 a derived muted palette for an ambient wash: for the hero whose top edge measures (0.00, 0.68, 0.91)
@@ -894,6 +899,24 @@ below, and they are consistent with it.
 > 16 at 1544 px on `hero-pong`, and 15 flat, 20 at 679 px and 17 at 1544 px on `grid-pong`. The
 > 1544 px `hero-pong` leg missed 104 and 69 before `backdrop::surface_with` stopped splitting the
 > shared band on touching sampling footprints.
+>
+> **2026-10-31, the ground probe reads the band's image.** Same setup (`FLAVOR=debug`,
+> `ARM_PROFILE=release`, mock library, `hero-pong`). The 2026-10-30 legs above were taken with the
+> probe that copied framebuffer 0 mid-page, which splits the frame's render pass on the Mali once
+> per reading: at 679 px `GPU_ACTIVE` p95 read 10.54M against 8.82M with the probe disabled, with
+> 93 period-31 gaps and 7 frames over one refresh. The probe now copies five 13-texel boxes from the
+> band's retained image at the frame boundary (`GroundProbe::kick_queued`), behind the same fence
+> and read-back. At 679 px `GPU_ACTIVE` reads p50 8.70M, p95 8.83M, p99 10.64M, with 0 frames over
+> one refresh and no period-31 gaps. At 1544 px it reads p50 9.73M, p95 9.87M, p99 11.64M, with
+> 3.7% of frames over one refresh; the old probe read p50 9.65M, p95 11.47M, 6.8%. Missed refreshes
+> in cycles 2-60 read 8 on `hero-pong` and 13 on `grid-pong`, both inside the control spread
+> (`profile-tv`, fact (b)), so no change is claimed.
+>
+> The copy now lands in the gap between frames. A kick-and-read repeats every
+> `GROUND_SAMPLE_EVERY` + 2 frames (copied at one boundary, read at the next), and the gap at that
+> frame is 2.88 ms against 1.67 ms (+1.21 ms, about 0.8M cycles) at 679 px, and 3.07 ms against
+> 1.74 ms at 1544 px. None of it shows in the next frame's `GPU_ACTIVE`. That was measured on the
+> HWCNT-serialised timeline, so its cost in an unprofiled frame is not determined.
 
 ### What it actually costs
 
