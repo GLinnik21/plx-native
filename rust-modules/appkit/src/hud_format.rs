@@ -37,6 +37,11 @@ pub mod validate; // the package-level invariants no geometry is needed for (I3,
 
 pub use reach::{check, Checked, Fold, Slot};
 
+/// **`builtin:classic`, as the bytes the app ships**: the one place the package is embedded
+/// (`include_str!`). The player compiles exactly these bytes ([`crate::player_hud::loaded`]), the
+/// tests parse exactly these bytes, and `--hud-export builtin:classic` prints exactly these bytes.
+pub const CLASSIC_PACKAGE: &str = include_str!("hud_format/fixtures/classic.plxhud.json");
+
 #[cfg(test)]
 mod tests; // the corpus of valid and invalid packages, the seeded mutation tests and the table-vs-parser drift test
 #[cfg(test)]

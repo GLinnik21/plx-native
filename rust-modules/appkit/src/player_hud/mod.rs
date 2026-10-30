@@ -22,6 +22,7 @@
 pub mod classic;
 pub mod command;
 pub mod geometry;
+pub mod loaded;
 pub mod model;
 pub mod motion;
 pub mod seek_jump;

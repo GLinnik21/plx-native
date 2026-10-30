@@ -186,6 +186,50 @@ pub enum Rest {
     Custom,
 }
 
+/// A control's focus face (`item.focus`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    /// the flat accent fill with a dark glyph: classic's
+    Accent,
+    /// a ring round the control; its rest face stays
+    Ring,
+}
+
+/// How a band draws while a scrub is live (`band.chrome`): a `fades` band on the chrome alpha, a
+/// `steady` one at full alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chrome {
+    Fades,
+    Steady,
+}
+
+/// A playbar's knob (`playbar.knob`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnobMode {
+    /// classic's: a thin tick at rest, a knob while scrubbing or focused
+    Tick,
+    /// a permanent knob
+    Always,
+}
+
+/// Where a playbar's clocks sit (`playbar.clocks`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockMode {
+    /// classic's: elapsed under the playhead, remaining at the right
+    FollowHead,
+    /// elapsed at the bar's start, remaining at its end
+    Ends,
+}
+
+/// The transport mark (`playbar.mark`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkMode {
+    /// classic's: the state glyph beside the elapsed clock
+    AfterElapsed,
+    /// the busy spinner alone
+    BusyOnly,
+}
+
 /// A value that depends on something only the frame knows (`transport.paused`, `item.*`): the value
 /// when no case holds, and the cases in document order, the first holding one winning.
 #[derive(Clone, Debug, PartialEq)]
@@ -222,6 +266,7 @@ pub struct ControlRect {
     pub command: String,
     pub widget: Widget,
     pub rest: Rest,
+    pub focus: Focus,
     pub rect: Rect,
     /// the band holding it
     pub band: String,
@@ -294,6 +339,9 @@ pub enum DrawOp {
         fill: Live<Rgba>,
         track_ink: Live<Rgba>,
         clock_size: i32,
+        knob: KnobMode,
+        clocks: ClockMode,
+        mark: MarkMode,
     },
     /// The chapters strip: `visible` cards at `pitch`, each laid out as `template` is at card 0.
     Strip {
@@ -352,6 +400,15 @@ pub struct Cost {
     pub top: Vec<Contributor>,
 }
 
+/// The ops of one band (`ops[ops.clone()]` of its state) and how the band draws while a scrub is live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    /// the band's id; empty for the scrim
+    pub band: String,
+    pub chrome: Chrome,
+    pub ops: std::ops::Range<usize>,
+}
+
 /// One state, laid out.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompiledState {
@@ -373,6 +430,11 @@ pub struct CompiledState {
     /// absent in this valuation: the stable item indices of [`HudGeometry::items`]
     pub row_ids: Vec<Option<String>>,
     pub cost: Cost,
+    /// **Which band each op belongs to and how that band draws under a live scrub**, over `ops` in draw
+    /// order: contiguous, covering every op once. The scrim and the stand-in's ops have entries of their
+    /// own (the scrim is `Steady`; the stand-in takes its host band's chrome). Additive to `ops`: no op
+    /// index moves.
+    pub spans: Vec<Span>,
     /// The package's caption band ([`Compiled::band`]): the same in every state.
     pub band: HudBand,
     /// A Skip state only, and only when the credits pill changes anything: the whole state as laid out
@@ -729,6 +791,7 @@ struct Ctl<'p> {
     command: &'p str,
     widget: Widget,
     rest: Rest,
+    focus: Focus,
     size: f32,
 }
 
@@ -753,6 +816,8 @@ struct Out {
     /// the `item.*` terms of the `when`s around what is being emitted
     gate: Vec<CondTerm>,
     controls: Vec<ControlRect>,
+    /// each band's ops, as ranges of `ops`, in the order the bands were filled
+    spans: Vec<Span>,
     /// the rects of the replaced segments
     replaced: Vec<Rect>,
     title: Option<Rect>,
@@ -770,6 +835,7 @@ impl Out {
 
 struct Band<'p> {
     id: &'p str,
+    chrome: Chrome,
     before: Option<f32>,
     gap: f32,
     z: i64,
@@ -954,6 +1020,13 @@ impl<'e, 'p> Env<'e, 'p> {
         }
     }
 
+    fn focus(o: &Object) -> Focus {
+        match o.get("focus").and_then(Val::as_str).unwrap_or_else(|| default_name("item", "focus")) {
+            "ring" => Focus::Ring,
+            _ => Focus::Accent,
+        }
+    }
+
     fn label(&self, item: &Object) -> &str {
         let command = item.get("command").and_then(Val::as_str).unwrap_or("");
         let section = item.get("section").and_then(Val::as_str);
@@ -1006,6 +1079,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 command: item.get("command").and_then(Val::as_str).unwrap_or(""),
                 widget,
                 rest: Self::rest(item),
+                focus: Self::focus(item),
                 size,
             }));
         }
@@ -1374,6 +1448,9 @@ impl<'e, 'p> Env<'e, 'p> {
                     fill: self.live_ink(o, "fill"),
                     track_ink: self.live_ink(o, "track"),
                     clock_size: self.size_px(o, "clock_size"),
+                    knob: if self.name(o, "knob") == Some("always") { KnobMode::Always } else { KnobMode::Tick },
+                    clocks: if self.name(o, "clocks") == Some("ends") { ClockMode::Ends } else { ClockMode::FollowHead },
+                    mark: if self.name(o, "mark") == Some("busy_only") { MarkMode::BusyOnly } else { MarkMode::AfterElapsed },
                 });
             }
             "segment" => {
@@ -1405,6 +1482,7 @@ impl<'e, 'p> Env<'e, 'p> {
             command: ctl.command.to_owned(),
             widget: ctl.widget,
             rest: ctl.rest,
+            focus: ctl.focus,
             rect,
             band: out.band.clone(),
             section: ctl.o.get("section").and_then(Val::as_str).map(str::to_owned),
@@ -1508,6 +1586,7 @@ impl<'e, 'p> Env<'e, 'p> {
             .filter(|b| self.when(b))
             .map(|b| Band {
                 id: b.get("id").and_then(Val::as_str).unwrap_or(""),
+                chrome: if b.get("chrome").and_then(Val::as_str) == Some("steady") { Chrome::Steady } else { Chrome::Fades },
                 before: self.gap(b, "gap_before"),
                 gap: self.gap(b, "gap").unwrap_or(0.0),
                 z: b.get("z").and_then(Val::as_i64).unwrap_or(0),
@@ -1529,7 +1608,10 @@ impl<'e, 'p> Env<'e, 'p> {
                 standin_left: if bands[i].id == mode.host { mode.standin_left } else { None },
                 host: mode.host,
             };
+            let start = out.ops.len();
             self.place_row(&bands[i].cells, bands[i].gap, boxes[i], &band_mode, &mut out);
+            let span = Span { band: bands[i].id.to_owned(), chrome: bands[i].chrome, ops: start..out.ops.len() };
+            out.spans.push(span);
         }
         out
     }
@@ -1599,6 +1681,7 @@ impl<'e, 'p> Env<'e, 'p> {
         };
 
         // the stand-in's ops, then the scrim in front of everything
+        let band_ops = out.ops.len();
         match slot {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
@@ -1622,6 +1705,18 @@ impl<'e, 'p> Env<'e, 'p> {
             Some(Rect::new(0.0, top, SCR_W, SCR_H - top))
         });
         let mut ops: Vec<DrawOp> = scrim.map(|rect| DrawOp::Scrim { rect }).into_iter().collect();
+        // the spans: the scrim's own (it never fades), every band's, and the stand-in's, which takes the
+        // chrome of the band that hosts it
+        let shift = ops.len();
+        let mut spans: Vec<Span> = Vec::new();
+        if shift > 0 {
+            spans.push(Span { band: String::new(), chrome: Chrome::Steady, ops: 0..shift });
+        }
+        spans.extend(out.spans.iter().map(|s| Span { ops: s.ops.start + shift..s.ops.end + shift, ..s.clone() }));
+        if out.ops.len() > band_ops {
+            let chrome = bands.iter().find(|b| b.id == host).map_or(Chrome::Fades, |b| b.chrome);
+            spans.push(Span { band: host.to_owned(), chrome, ops: band_ops + shift..out.ops.len() + shift });
+        }
         ops.append(&mut out.ops);
 
         let row_ids = self.row_ids(host, &replaces);
@@ -1641,6 +1736,7 @@ impl<'e, 'p> Env<'e, 'p> {
             tab_row: boxes.last().map_or_else(Rect::default, |b| Rect::new(b.x, b.y, 0.0, b.h)),
             row_ids,
             cost,
+            spans,
             band: HudBand::CLASSIC,
             skip_alt: None,
         }

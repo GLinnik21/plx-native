@@ -27,7 +27,7 @@ use crate::player_hud::{classic, ControlSlot, Controls};
 use crate::skip_pill::prompt_for;
 use crate::{chapters_panel, info_panel};
 
-const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
+const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
 const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
 const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
@@ -748,4 +748,74 @@ fn a_row_wider_than_the_report_keeps_every_control() {
     assert_eq!(nine.len(), 9, "all nine stay addressable by index in `row_ids`");
     let g = state.geometry(SkipKind::Intro);
     assert_eq!(g.items.iter().flatten().count(), crate::player_hud::BTN_N as usize, "the report holds the first BTN_N");
+}
+
+// ---------------------------------------------------------------------------------------------------
+// PR7: what the renderer reads besides the rects
+// ---------------------------------------------------------------------------------------------------
+
+fn compact(c: &Compiled, slot: Slot) -> &CompiledState {
+    c.states().iter().find(|s| s.key.open == 0 && s.key.slot == slot).expect("a compact state")
+}
+
+/// **Every op belongs to exactly one band's span**, the spans tile `ops` in draw order, and a Skip
+/// state's credits layout is tiled too: the renderer picks the chrome alpha per span.
+#[test]
+fn every_state_tiles_its_ops_with_band_spans() {
+    for package in [CLASSIC, REFERENCE, HERO, TABS, PALETTE, MINIMAL] {
+        let c = build(package, &FM);
+        for state in c.states() {
+            for s in std::iter::once(state).chain(state.skip_alt.as_deref()) {
+                let mut next = 0;
+                for span in &s.spans {
+                    assert_eq!(span.ops.start, next, "{:?}: spans are contiguous", s.key);
+                    next = span.ops.end;
+                }
+                assert_eq!(next, s.ops.len(), "{:?}: spans cover every op", s.key);
+            }
+        }
+    }
+}
+
+/// **Classic's chrome split**: while a scrub is live the title block, the row and the tabs fade and the
+/// bar stays at full alpha (`draw_hud`'s `pc` and `p`); the scrim never fades. The Up Next offer and the
+/// Skip pill take their host band's chrome (`top`: they fade with the row they replace).
+#[test]
+fn classic_fades_the_title_the_row_and_the_tabs_and_keeps_the_bar_and_the_scrim() {
+    let c = build(CLASSIC, &FM);
+    for slot in [Slot::Discs, Slot::UpNext, Slot::Skip] {
+        let state = compact(&c, slot);
+        for span in &state.spans {
+            let want = match span.band.as_str() {
+                "bar" | "" => Chrome::Steady,
+                "top" | "tabs" => Chrome::Fades,
+                other => panic!("an unexpected band {other:?}"),
+            };
+            assert_eq!(span.chrome, want, "{slot:?} band {:?}", span.band);
+        }
+        assert_eq!(state.spans.first().map(|s| s.band.as_str()), Some(""), "the scrim is the first span");
+    }
+    let up = compact(&c, Slot::UpNext);
+    let last = up.spans.last().expect("a span");
+    assert_eq!(last.band, "top");
+    assert!(matches!(up.ops[last.ops.start], DrawOp::UpNext { .. }), "the offer is the host band's last span");
+    let skip = compact(&c, Slot::Skip);
+    assert!(matches!(skip.ops[skip.spans.last().unwrap().ops.start], DrawOp::SkipPill { .. }));
+}
+
+/// The faces and knobs a package picks reach the draw list: classic's are the defaults; the reference
+/// asks for the permanent knob, end clocks, the busy-only mark, a ring on the play disc and bare discs.
+#[test]
+fn the_focus_face_and_the_playbar_looks_reach_the_draw_list() {
+    let bar = |c: &Compiled| match compact(c, Slot::Discs).ops.iter().find(|o| matches!(o, DrawOp::Playbar { .. })) {
+        Some(DrawOp::Playbar { knob, clocks, mark, .. }) => (*knob, *clocks, *mark),
+        _ => panic!("no playbar"),
+    };
+    let classic = build(CLASSIC, &FM);
+    assert_eq!(bar(&classic), (KnobMode::Tick, ClockMode::FollowHead, MarkMode::AfterElapsed));
+    assert!(compact(&classic, Slot::Discs).controls.iter().all(|c| c.focus == Focus::Accent && c.rest == Rest::Film));
+    let reference = build(REFERENCE, &FM);
+    assert_eq!(bar(&reference), (KnobMode::Always, ClockMode::Ends, MarkMode::BusyOnly));
+    let play = compact(&reference, Slot::Discs).control("play").expect("the play disc").clone();
+    assert_eq!((play.focus, play.rest), (Focus::Ring, Rest::Solid));
 }
