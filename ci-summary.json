@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-30T06:39:19Z",
+ "generated": "2026-10-30T06:45:00Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 30.8,
+   "change7_pct": 28.7,
    "d30": null,
    "delta30": null,
-   "delta7": 44.0,
+   "delta7": 41.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 70,
-   "now": 187,
+   "now": 184.0,
    "prev7": 143.0,
    "shown": true,
    "state": "worse",
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -58.7,
+   "change30_pct": -58.8,
    "change7_pct": 13.5,
-   "d30": 915,
-   "delta30": -537.0,
+   "d30": 916.5,
+   "delta30": -538.5,
    "delta7": 45.0,
    "group": "ci",
    "id": "pr_wait",
@@ -153,9 +153,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 78,
-   "now": 367.0,
+   "now": 367,
    "prev7": 330.0,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 50.0,
-   "change7_pct": 3.5,
+   "change30_pct": 50.3,
+   "change7_pct": 3.7,
    "d30": 178,
-   "delta30": 89,
-   "delta7": 9.0,
+   "delta30": 89.5,
+   "delta7": 9.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 70,
-   "now": 267,
+   "now": 267.5,
    "prev7": 258.0,
    "shown": true,
    "state": "flat",
@@ -432,15 +432,15 @@
    "change30_pct": -73.2,
    "change7_pct": 6.0,
    "d30": 794,
-   "delta30": -581,
-   "delta7": 12,
+   "delta30": -581.0,
+   "delta7": 12.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 69,
-   "now": 213,
+   "now": 213.0,
    "prev7": 201,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1,
+   "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 70,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.2,
    "commits": [
     {
-     "pr": 1142,
-     "sha": "a51d70e7b",
-     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
-    },
-    {
      "pr": 1143,
      "sha": "4d27dec82",
      "title": "HUD plugins: the JSON Schema emitted from the descriptor table, the lint report, and the published examples"
@@ -715,6 +710,11 @@
      "pr": 986,
      "sha": "36e5ffea8",
      "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
+    },
+    {
+     "pr": 1153,
+     "sha": "aef53a3f6",
+     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
     }
    ],
    "from": 178,
@@ -725,13 +725,8 @@
    "to": 306.5
   },
   {
-   "change_pct": 30.8,
+   "change_pct": 28.7,
    "commits": [
-    {
-     "pr": 1142,
-     "sha": "a51d70e7b",
-     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
-    },
     {
      "pr": 1143,
      "sha": "4d27dec82",
@@ -776,6 +771,11 @@
      "pr": 986,
      "sha": "36e5ffea8",
      "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
+    },
+    {
+     "pr": 1153,
+     "sha": "aef53a3f6",
+     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
     }
    ],
    "from": 143.0,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-30",
    "threshold_pct": 20.0,
-   "to": 187
+   "to": 184.0
   },
   {
    "change_pct": 28.6,
    "commits": [
-    {
-     "pr": 1142,
-     "sha": "a51d70e7b",
-     "title": "HUD plugins: reachability, the More folds and the package invariants; classic as a package"
-    },
     {
      "pr": 1143,
      "sha": "4d27dec82",
@@ -837,6 +832,11 @@
      "pr": 986,
      "sha": "36e5ffea8",
      "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
+    },
+    {
+     "pr": 1153,
+     "sha": "aef53a3f6",
+     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
     }
    ],
    "from": 120.3,
