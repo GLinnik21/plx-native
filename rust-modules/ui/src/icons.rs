@@ -245,6 +245,11 @@ pub enum Icon {
     /// A ring with a bar through it — the Watchlist's on-no-server mark, the universal "unavailable"
     /// sign at the inline weight.
     CircleSlash,
+    /// Three centred bars, long to short — the sort mark. Worn by
+    /// the Library header's sort control, where it leads the chosen criterion
+    /// ("= Date added v"); it says "ordered by", not "filter". Our own path (`M4 7h16M7 12h10M10
+    /// 17h4`, stroke 2.2, round caps), so it has no third-party entry.
+    Sort,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -273,6 +278,8 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
         Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
         Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
+        // The sort bars: path x 4..20 plus the 2.2-unit stroke's 1.1 each side.
+        Icon::Sort => (2.9 / 24.0, 21.1 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -362,6 +369,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Clock => include_str!("../../../assets/icons/clock.svg"),
         Icon::ServerSlash => include_str!("../../../assets/icons/server-slash.svg"),
         Icon::CircleSlash => include_str!("../../../assets/icons/circle-slash.svg"),
+        Icon::Sort => include_str!("../../../assets/icons/sort.svg"),
     }
 }
 
@@ -606,6 +614,7 @@ mod ink_tests {
             Icon::ChevronDown,
             Icon::ChevronUp,
             Icon::Check,
+            Icon::Sort,
         ] {
             let (l, r) = ink_x(id);
             assert!(
@@ -635,6 +644,34 @@ mod ink_tests {
         assert!(src(Icon::ChevronUp).contains(r#"d="M6 15l6-6 6 6""#));
         let (l, r) = ink_x(Icon::ChevronDown);
         assert!((l - (6.0 - 1.5) / 24.0).abs() < 1e-6 && (r - (18.0 + 1.5) / 24.0).abs() < 1e-6);
+    }
+
+    /// The sort mark's `ink_x` is its asset's own bounds (the long bar's path x 4..20 and the
+    /// 2.2-unit stroke's 1.1 each side), and it rasterizes clean at the header's 26 px (and 4x):
+    /// full opacity reached, no ink on the border, the board's three decreasing bars.
+    #[test]
+    fn the_sort_mark_matches_its_asset_and_rasterizes_clean() {
+        let svg = src(Icon::Sort);
+        assert!(svg.contains(r#"d="M4 7h16M7 12h10M10 17h4""#));
+        assert!(svg.contains(r#"stroke-width="2.2""#) && svg.contains(r#"stroke-linecap="round""#));
+        let (l, r) = ink_x(Icon::Sort);
+        assert!((l - (4.0 - 1.1) / 24.0).abs() < 1e-6 && (r - (20.0 + 1.1) / 24.0).abs() < 1e-6);
+        for px in [26, 104] {
+            let px = icon_raster_px(px);
+            let rgba = plx_gfx::svg::rasterize(svg, px, px).expect("the sort mark rasterizes");
+            assert_eq!(rgba.len(), (px * px * 4) as usize);
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            assert_eq!((0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max(), Some(255), "never full at {px}px");
+            for i in 0..px {
+                for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "ink on the border at {px}px ({x},{y})");
+                }
+            }
+            // Three bars, each shorter than the last: the ink in the middle row of each bar's band
+            // is wider for the top bar than the middle, and for the middle than the bottom.
+            let ink_in_row = |unit: f32| (0..px).filter(|&x| alpha(x, (unit / 24.0 * px as f32) as i32) > 127).count();
+            assert!(ink_in_row(7.0) > ink_in_row(12.0) && ink_in_row(12.0) > ink_in_row(17.0));
+        }
     }
 
     #[test]
