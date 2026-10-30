@@ -648,6 +648,118 @@ mod tests {
         assert!(drawn.0.is_empty(), "{:?}", drawn.0);
     }
 
+    /// **The Chapters strip through the renderer** (`draw_state` over classic's `OPEN_CHAPTERS` state, the
+    /// strip a `cards::Shelf`) against the hand-written strip (`ChaptersState::draw`) on the same playing item,
+    /// both at rest on the same chapter. The screen does not switch to it yet, so this is the one place the two
+    /// meet. Every difference between them is D11's (`docs/hud-plugins.md`) or listed in the PR's handoff.
+    mod chapters_section {
+        use super::*;
+        use crate::chapters_panel::ChaptersState;
+        use crate::hud_format::compile::OPEN_CHAPTERS;
+        use crate::hud_format::Slot;
+        use crate::player_hud::strip::{Cards, Geometry};
+        use plx_data::metadata::Chapter;
+        use plx_machine::machine::{By, Effects, FocusKey, InstanceId, MachineId, ScreenEvent};
+        use plx_machine::present::Present;
+        use plx_ui::draw_census::capture_rings;
+
+        const ENTRY: EntryId = EntryId(0);
+
+        fn chapters(names: &[&str]) -> Vec<Chapter> {
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, t)| Chapter { index: i as i64 + 1, start_ms: i as i64 * 125_000, title: (*t).into(), thumb: format!("/library/metadata/{i}/thumb") })
+                .collect()
+        }
+
+        /// What one side drew: the census, its rings (rect, radius) and the runs that are the strip's.
+        struct Side {
+            runs: Vec<Run>,
+            rings: Vec<(Rect, f32)>,
+        }
+
+        fn side(c: Census, rings: Vec<(Rect, f32)>) -> Side {
+            // the renderer draws the section tabs too (the hand-written strip was only the strip)
+            let mut runs: Vec<Run> = c.1.into_iter().filter(|r| r.text != "Chapters" && r.text != "Info").collect();
+            runs.sort_by(|a, b| (a.at.x, a.at.y, &a.text).partial_cmp(&(b.at.x, b.at.y, &b.text)).unwrap());
+            Side { runs, rings }
+        }
+
+        /// (the renderer's side, the hand-written strip's side) with focus on chapter `sel`, scroll at rest.
+        fn both(items: Vec<Chapter>, sel: u32) -> (Side, Side) {
+            let _serial = plx_base::testlock::serial();
+            let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+            let mut store = plx_data::stores::metadata::MetadataStore::default();
+            plx_data::metadata::set_playing_chapters_for_test(store.state_mut(), items);
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let state = hud.compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).expect("classic has a chapters state");
+            let geo = state.ops.iter().find_map(Geometry::of).expect("the chapters state has a strip");
+            let ps = plx_media::route::PlaybackSession::IDLE;
+            let model = HudModel::default();
+            let up = Countdown::default();
+            let mut row = HudMotion::new();
+            let frame = Frame {
+                entry: ENTRY, ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                focus: GROUP_SCRUB, btn: 0, tab: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+            };
+            let key = FocusKey { entry: ENTRY, elem: sel };
+            let focus = FocusRead { current: Some(key), ..FocusRead::default() };
+            // the screen's tick: the engine said focus arrived on `sel`, then frames pass until the Shelf rests
+            with_df_focus(focus.clone(), |df| {
+                let src = Cards::<u32>::new(store.view().playing_chapters(), 0, geo);
+                let mut out = Vec::new();
+                let mut present = Present::new();
+                let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
+                let shelf = row.strip(ENTRY, &geo);
+                shelf.on(&ScreenEvent::FocusMoved { from: None, to: key, by: By::Restore }, df, &src, &mut fx);
+                for k in 1..=240u32 {
+                    shelf.on(&ScreenEvent::Tick(Tick { ms: k * 17, dt_us: 16_667 }), df, &src, &mut fx);
+                }
+            });
+            let mut new = None;
+            let rings = capture_rings(|| new = Some(census(|| with_df_focus(focus, |df| draw_state(&hud.compiled, state, &frame, df, &mut row, Painter::root())))));
+            let new = side(new.unwrap(), rings);
+            let mut panel = ChaptersState::new(store.view());
+            panel.set_sel(sel as std::os::raw::c_int);
+            for _ in 0..240 {
+                panel.update(0.016_667, store.view());
+            }
+            let mut old = None;
+            let rings = capture_rings(|| old = Some(census(|| panel.draw(&ps, 1.0, &FM, store.view()))));
+            (new, side(old.unwrap(), rings))
+        }
+
+        fn close(a: f32, b: f32) -> bool {
+            (a - b).abs() < 0.01
+        }
+
+        /// The strip draws what the hand-written strip draws: the same runs (the words, their size, ink, weight and
+        /// alignment, where each stands and how wide it is) and the same ring (rect and corner), on the first and the
+        /// second chapter (the two seats both scroll rules leave at 0).
+        #[test]
+        fn a_strip_at_rest_draws_what_the_hand_written_strip_draws() {
+            for sel in [0, 1] {
+                let (new, old) = both(chapters(&["Opening", "Dinner", "The Chase", "Aftermath", "Credits"]), sel);
+                assert_eq!(old.runs.len(), 10, "sel {sel}: a name and a time on each of five cards: {:?}", old.runs);
+                assert_eq!(new.runs.len(), old.runs.len(), "sel {sel}: the same runs:\nrenderer {:#?}\nstrip    {:#?}", new.runs, old.runs);
+                for (n, o) in new.runs.iter().zip(&old.runs) {
+                    assert_eq!((&n.text, n.size, n.ink, n.bold, n.align), (&o.text, o.size, o.ink, o.bold, o.align), "sel {sel}: the run `{}`", o.text);
+                    assert!(
+                        close(n.at.x, o.at.x) && close(n.at.y, o.at.y) && close(n.at.w, o.at.w),
+                        "sel {sel}: `{}` stands at {:?} where the strip draws it at {:?}", o.text, n.at, o.at
+                    );
+                    assert_eq!((n.clip, n.fade, n.lead), (o.clip, o.fade, o.lead), "sel {sel}: `{}`'s window", o.text);
+                }
+                assert_eq!(old.rings.len(), 1, "sel {sel}: the focused card wears one ring");
+                assert_eq!(new.rings.len(), 1, "sel {sel}: {:?}", new.rings);
+                let (n, o) = (new.rings[0], old.rings[0]);
+                assert!(close(n.0.x, o.0.x) && close(n.0.y, o.0.y) && close(n.0.w, o.0.w) && close(n.0.h, o.0.h), "sel {sel}: the ring's rect {:?} against {:?}", n.0, o.0);
+                assert!(close(n.1, o.1), "sel {sel}: the ring's corner {} against the strip's {}", n.1, o.1);
+            }
+        }
+    }
+
     /// **The Info section through the renderer** (`draw_state` over classic's `OPEN_INFO` state), against the
     /// hand-written card (`InfoPanelState::draw`) on the same playing item. The screen does not switch to it
     /// yet, so this is the one place the two meet.
