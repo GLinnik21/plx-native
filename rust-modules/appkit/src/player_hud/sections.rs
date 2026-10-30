@@ -16,17 +16,19 @@
 
 use std::ffi::CString;
 
+use plx_ui::hstack::{Item, Kept};
 use plx_ui::icons::Icon;
 use plx_ui::text_view::TextView;
 use plx_ui::theme;
+use plx_ui::vstack::VStack;
 use plx_ui::widgets::{resolve_tex_wh_on, Button};
 use plx_ui::{Painter, Rect, View};
 
 use super::classic::tab_labels;
 use super::command::HudCommand;
 use super::render::Frame;
-use crate::chip_row::draw_chip_row;
-use crate::hud_format::compile::{ControlRect, Live};
+use crate::chip_row::{draw_chip_row, ChipRow};
+use crate::hud_format::compile::{Compiled, CompiledState, ControlRect, DrawOp, Live, OpGroup};
 use crate::info_panel::{actions, info_chips, info_content, FactsShape};
 
 type Rgba = [f32; 4];
@@ -105,6 +107,16 @@ pub(super) fn line_frame(rect: Rect, size: i32, bold: bool) -> Rect {
     Rect::new(rect.x, rect.y + cap_top, rect.w, 0.0)
 }
 
+/// The shared [`TextView`] a section `text` draws through: wrapped at the compiled `max_lines` and `leading`.
+fn text_view<'a>(content: &'a str, size: i32, bold: bool, ink: Rgba, max_lines: u8, leading: f32) -> TextView<'a> {
+    let view = TextView::new(content, size, ink).leading(leading).max_lines(usize::from(max_lines));
+    if bold {
+        view.bold()
+    } else {
+        view
+    }
+}
+
 /// A section `text`: wrapped through the shared [`TextView`] at the compiled width, `max_lines` and `leading`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn text(
@@ -121,19 +133,22 @@ pub(super) fn text(
 ) {
     let Some(content) = text_of(f, bind) else { return };
     let bold = bold.at(holds(f));
-    let mut view = TextView::new(&content, size, ink.at(holds(f))).leading(leading).max_lines(usize::from(max_lines));
-    if bold {
-        view = view.bold();
-    }
+    let view = text_view(&content, size, bold, ink.at(holds(f)), max_lines, leading);
     view.draw(if alpha < 1.0 { q.alpha(alpha) } else { q }, line_frame(rect, size, bold));
 }
 
-/// A `Facts` row: the metadata line and the capability badges, built by [`info_chips`], fit to the cell's
-/// width (tail-first drop) and centred on its height.
+/// A `Facts` row, built and fit to the cell's width (tail-first drop): the chips and the cut, which the
+/// group measures before it draws (`n == 0` drops the row) exactly as the Info card does.
+pub(super) struct FactsRun {
+    chips: ChipRow,
+    kept: Kept,
+    /// how many chips survive the cut
+    pub n: usize,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn facts(
+pub(super) fn facts_run(
     f: &Frame<'_>,
-    q: Painter,
     rect: Rect,
     order: &[String],
     badges: &[String],
@@ -141,8 +156,8 @@ pub(super) fn facts(
     playback_fact: bool,
     bold: &Live<bool>,
     ink: &Live<Rgba>,
-) {
-    let Some(c) = info_content(f.meta) else { return };
+) -> Option<FactsRun> {
+    let c = info_content(f.meta)?;
     let (order, badges): (Vec<&str>, Vec<&str>) = (order.iter().map(String::as_str).collect(), badges.iter().map(String::as_str).collect());
     let shape = FactsShape {
         order: &order,
@@ -155,7 +170,104 @@ pub(super) fn facts(
     let chips = info_chips(&c, &shape, f.ps, f.measure);
     let row = chips.row(rect.x);
     let kept = row.fit(rect.w);
-    draw_chip_row(q, &chips, row.kept(kept), rect.y + rect.h * 0.5, f.measure);
+    let n = row.kept(kept).placed().count();
+    Some(FactsRun { chips, kept, n })
+}
+
+impl FactsRun {
+    /// Draw the surviving chips centred on `my`.
+    fn draw(&self, q: Painter, x: f32, my: f32, f: &Frame<'_>) {
+        draw_chip_row(q, &self.chips, self.chips.row(x).kept(self.kept), my, f.measure);
+    }
+}
+
+/// A `Facts` row: the metadata line and the capability badges, centred on the cell's height.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn facts(
+    f: &Frame<'_>,
+    q: Painter,
+    rect: Rect,
+    order: &[String],
+    badges: &[String],
+    genres_max: u32,
+    playback_fact: bool,
+    bold: &Live<bool>,
+    ink: &Live<Rgba>,
+) {
+    if let Some(run) = facts_run(f, rect, order, badges, genres_max, playback_fact, bold, ink) {
+        run.draw(q, rect.x, rect.y + rect.h * 0.5, f);
+    }
+}
+
+/// **A group's children, stacked from the REAL heights** ([`OpGroup`]; `docs/hud-plugins.md`, PR8). The hand-written
+/// Info card does this by hand: it centres [title, synopsis, tags] in CAP-TOP coordinates from the heights
+/// it actually wraps and drops what is absent. This is the same run through the same [`VStack`]: each child is
+/// an [`Item`] of its real height (a text, `lines x leading`, absent when it is a block of more than one line
+/// with nothing to say; a facts row, its compiled height, absent when the cut keeps no chip; anything else,
+/// its compiled height), carrying the cell's `gap_before` / `gap_after`, anchored where the compile's `valign`
+/// put the box. A text draws with its CAP top on the span (the compile's box top is a line box above it), a facts
+/// row centred on its span, a fixed child at its span, moved by the distance it moved.
+///
+/// A single line (a heading) keeps its line when it is empty, as the card's title does; a block collapses.
+pub(super) fn group(compiled: &Compiled, f: &Frame<'_>, q: Painter, state: &CompiledState, g: &OpGroup) {
+    enum Body<'a> {
+        Text { view: TextView<'a>, rect: Rect, alpha: f32 },
+        Facts { run: Option<FactsRun>, rect: Rect },
+        Fixed(&'a [DrawOp]),
+    }
+    // the texts a child names, owned first so the views can borrow them
+    let ops_of = |c: &crate::hud_format::compile::GroupChild| &state.ops[c.ops.clone()];
+    let contents: Vec<Option<String>> = g
+        .children
+        .iter()
+        .map(|c| match ops_of(c) {
+            [DrawOp::Text { bind, .. }] => text_of(f, bind),
+            _ => None,
+        })
+        .collect();
+    let mut bodies = Vec::with_capacity(g.children.len());
+    let mut items = Vec::with_capacity(g.children.len());
+    for (c, content) in g.children.iter().zip(&contents) {
+        let (body, h) = match ops_of(c) {
+            [DrawOp::Text { rect, size, bold, ink, alpha, max_lines, leading, .. }] => {
+                let text = content.as_deref().unwrap_or("");
+                let view = text_view(text, *size, bold.at(holds(f)), ink.at(holds(f)), *max_lines, *leading);
+                // a block with nothing to say takes no room; a heading keeps its line
+                let h = (!text.is_empty() || (*max_lines == 1 && content.is_some())).then(|| view.measure_h(rect.w));
+                (Body::Text { view, rect: *rect, alpha: *alpha }, h)
+            }
+            [DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. }] => {
+                let run = facts_run(f, *rect, order, badges, *genres_max, *playback_fact, bold, ink);
+                let h = run.as_ref().is_some_and(|r| r.n > 0).then_some(rect.h);
+                (Body::Facts { run, rect: *rect }, h)
+            }
+            ops => (Body::Fixed(ops), Some(c.h)),
+        };
+        let item = h.map_or_else(Item::absent, Item::new);
+        let item = c.after.map_or(item, |a| item.after(a));
+        items.push(c.before.map_or(item, |b| item.before(b)));
+        bodies.push(body);
+    }
+    for span in VStack::new(&items, g.gap, g.anchor).placed() {
+        match &bodies[span.i] {
+            Body::Text { view, rect, alpha } => {
+                view.draw(if *alpha < 1.0 { q.alpha(*alpha) } else { q }, Rect::new(rect.x, span.y, rect.w, 0.0));
+            }
+            Body::Facts { run: Some(run), rect } => run.draw(q, rect.x, span.y + rect.h * 0.5, f),
+            Body::Facts { run: None, .. } => {}
+            Body::Fixed(ops) => {
+                let moved = q.translate(0.0, span.y - g.children[span.i].y);
+                for op in *ops {
+                    match op {
+                        DrawOp::Image { rect, bind, radius } => image(f, moved, *rect, bind, *radius),
+                        DrawOp::Icon { rect, asset, ink } => icon(compiled, moved, *rect, asset, ink, f),
+                        DrawOp::Rule { rect, ink } => rule(moved, *rect, ink, f),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The glyph of an `actions` button: the hand-written card's (Play on From the Beginning, Info on Go to

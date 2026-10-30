@@ -9,7 +9,7 @@
 //! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
 //! because the app's snapshot is a frame old by then.
 use super::classic::fmt_time;
-use super::geometry::GROUP_ROW;
+use super::geometry::{GROUP_ROW, GROUP_SECTION, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
 use crate::knob_spring::KnobSpring;
@@ -124,6 +124,9 @@ fn row_pops(slot: ControlSlot) -> usize {
 /// exactly where [`step`](Self::step)'s doc says they must be.
 pub struct HudMotion {
     pub(super) pop: RowPop,
+    /// An open section's own buttons' focus pop ([`super::geometry::GROUP_SECTION`]), one spring per button:
+    /// the Info card's `ctl_pop`, kept with the HUD's motion now that the card is a section of it.
+    pub(super) section_pop: RowPop,
     /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
     pub(super) title_clock: plx_ui::marquee::Clock,
     /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
@@ -152,6 +155,7 @@ impl HudMotion {
     pub fn new() -> Self {
         Self {
             pop: RowPop::new(),
+            section_pop: RowPop::new(),
             title_clock: plx_ui::marquee::Clock::new(),
             play_at: None,
             pause_seen: None,
@@ -189,6 +193,14 @@ impl HudMotion {
             .flatten()
             .filter(|&i| i < row_pops(slot));
         self.pop.step(f, dt);
+        // an open section's buttons pop on `GROUP_SECTION`; the index is bounded by what a segment can hold
+        let section = (focus == GROUP_SECTION).then(|| usize::try_from(btn).ok()).flatten().filter(|&i| i < MAX_ROW_ITEMS);
+        self.section_pop.step(section, dt);
+    }
+
+    /// Section button `i`'s focus pop this frame.
+    pub fn section_scale(&self, i: usize) -> f32 {
+        self.section_pop.scale(i)
     }
 
     /// Do the title block, control row and bottom tabs take the pointer? Not while a scrub has

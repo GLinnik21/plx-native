@@ -90,6 +90,16 @@ pub enum Section {
     Info,
 }
 
+impl Section {
+    /// The bit this section sets in a state's `open` key ([`crate::hud_format::compile::StateKey::open`]).
+    pub fn open_bit(self) -> u8 {
+        match self {
+            Section::Chapters => crate::hud_format::compile::OPEN_CHAPTERS,
+            Section::Info => crate::hud_format::compile::OPEN_INFO,
+        }
+    }
+}
+
 /// One thing the HUD can ask the app to do. Exactly the vocabulary of the design's "Commands"
 /// table; a new command is a format MINOR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -44,7 +44,7 @@
         { "align": "start", "rect": { "ink": "PANEL_TOP", "radius": 28, "pad": 28, "bleed": 16, "h": 236, "gap": 34, "cells": [
           { "align": "start", "image": { "bind": "info.still", "w": 320, "h": 180, "radius": 16 } },
           { "align": "start", "valign": "center", "vstack": { "gap": 6, "w": "fill", "cells": [
-            { "text": { "bind": "info.title", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1 } },
+            { "text": { "bind": "info.title", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "leading": 42, "max_lines": 1 } },
             { "text": { "bind": "info.summary", "size": "LABEL", "ink": "TEXT_SECONDARY", "leading": 29, "max_lines": 2 } },
             { "gap_before": 12, "facts": { "bind": "info.facts", "order": [ "genres", "year", "duration" ], "genres_max": 2,
               "bold": true, "ink": "TEXT_PRIMARY", "playback_fact": true,

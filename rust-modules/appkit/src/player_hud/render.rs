@@ -130,7 +130,17 @@ pub fn draw_state(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>, row
             return;
         }
         let q = if span.chrome == Chrome::Fades { pc } else { p };
-        for op in &state.ops[span.ops.clone()] {
+        // the end of the group being drawn: its children are drawn together, from their real heights
+        let mut grouped_to = 0;
+        for (at, op) in state.ops[span.ops.clone()].iter().enumerate().map(|(k, op)| (span.ops.start + k, op)) {
+            if at < grouped_to {
+                continue;
+            }
+            if let Some(g) = state.groups.iter().find(|g| g.ops.start == at) {
+                sections::group(compiled, f, q, state, g);
+                grouped_to = g.ops.end;
+                continue;
+            }
             match op {
                 DrawOp::Scrim { rect } => draw_scrim_at(q, *rect),
                 _ if hides_transport && !is_section_tab(op) => {}
@@ -370,6 +380,10 @@ fn draw_control(
             let labels = tab_labels(crate::chapters_panel::has_chapters(f.meta));
             let Some(Ok(label)) = usize::try_from(i).ok().and_then(|i| labels[i]).map(CString::new) else { return };
             let (focused, selected) = hud_tab_state(f.transport, f.focus, f.tab, i);
+            // the state the walk is in says which sections are open: their tabs read selected, whatever the
+            // policy (a modal section hides the row, an inline one leaves it live)
+            let open = matches!(c.act, Some(HudCommand::ToggleSection(s)) if state.key.open & s.open_bit() != 0);
+            let selected = selected || open;
             TabPill::new(label.as_ptr(), theme::size::BODY, c.rect)
                 .focused(focused)
                 .selected(selected)
@@ -387,7 +401,7 @@ fn draw_control(
                 return;
             };
             let focused = f.focus == GROUP_SECTION && usize::try_from(f.btn).is_ok_and(|b| b == i);
-            sections::button(f, q, e, c, focused, 1.0);
+            sections::button(f, q, e, c, focused, row.section_scale(i));
         }
     }
 }
@@ -655,27 +669,141 @@ mod tests {
             let _ = button_rect(0, &FM);
         }
 
-        /// **The first place PR8's stage 3 looks if classic's info state is not identical.** The text block's
-        /// vertical rhythm: the hand-written card centres a stack of [title 42 advance, 6, synopsis' actual lines,
-        /// 12, tags 34] in CAP-TOP coordinates and omits what is absent, the compiled one centres BOX heights
-        /// (title `line_h(TITLE)`, synopsis `max_lines x leading`, facts `line_h(CAPTION)`) that never depend on
-        /// the content. The deltas with a two-line synopsis, a full facts row and the fixture measure are
-        /// pinned here, so changing a fixture number (`leading` on the title, a `h` on the facts) moves them
-        /// on purpose, and a one-line synopsis or an item with no facts moves the hand-written block alone.
-        #[test]
-        fn the_text_blocks_vertical_rhythm_differs_by_these_pinned_amounts() {
-            let (new, old) = both(playing());
-            let starting = |c: &Census, prefix: &str| c.1.iter().find(|r| r.text.starts_with(prefix)).unwrap_or_else(|| panic!("no run `{prefix}`")).at.y;
-            for (prefix, want) in [("The Long Title", 5.6), ("A summary of the film", 9.5), ("Drama", 3.0)] {
-                let got = starting(&new, prefix) - starting(&old, prefix);
-                assert!((got - want).abs() < 0.11, "`{prefix}` sits {got} below the card's, the pin says {want}");
+        /// Every run of the two censuses but the tab's label, in a common order (the renderer also draws the
+        /// Info tab, which the card does not), as (text, size, x, y, w).
+        fn runs(c: &Census) -> Vec<(String, i32, f32, f32, f32)> {
+            let mut runs: Vec<(String, i32, f32, f32, f32)> =
+                c.1.iter().filter(|r| r.text != "Info").map(|r| (r.text.clone(), r.size, r.at.x, r.at.y, r.at.w)).collect();
+            runs.sort_by(|a, b| (a.2, a.3, &a.0).partial_cmp(&(b.2, b.3, &b.0)).unwrap());
+            runs
+        }
+
+        /// **The text block sits exactly where the card puts it.** The card centres [title, synopsis, tags] in
+        /// CAP-TOP coordinates from the REAL wrapped heights and drops what is absent; the renderer places the
+        /// compiled `vstack` at draw time the same way (`sections::stack`), so every run of the block, its y
+        /// included, is the card's. `want` names the runs the case must contain (a case whose census lacks them
+        /// would be comparing nothing).
+        fn same_block(detail: Detail, want: &[&str], absent: &[&str]) {
+            let (new, old) = both(detail);
+            let (a, b) = (runs(&new), runs(&old));
+            for w in want {
+                assert!(b.iter().any(|r| r.0.starts_with(w)), "the card draws a `{w}` run: {b:?}");
             }
+            for w in absent {
+                assert!(!b.iter().any(|r| r.0.starts_with(w)), "the card draws no `{w}` run: {b:?}");
+            }
+            assert_eq!(a.len(), b.len(), "the same runs:\nrenderer {a:?}\ncard     {b:?}");
+            for (n, o) in a.iter().zip(&b) {
+                assert_eq!((&n.0, n.1), (&o.0, o.1), "the same run");
+                assert!(
+                    (n.2 - o.2).abs() < 0.001 && (n.3 - o.3).abs() < 0.001 && (n.4 - o.4).abs() < 0.001,
+                    "`{}` stands at ({}, {}, w {}) where the card draws it at ({}, {}, w {})",
+                    o.0, n.2, n.3, n.4, o.2, o.3, o.4
+                );
+            }
+        }
+
+        #[test]
+        fn a_two_line_synopsis_and_a_full_facts_row_sit_where_the_card_puts_them() {
+            same_block(playing(), &["The Long Title", "A summary of the film", "Drama"], &[]);
+        }
+
+        #[test]
+        fn a_one_line_synopsis_sits_where_the_card_puts_it() {
+            same_block(Detail { summary: "A short one.".into(), ..playing() }, &["The Long Title", "A short one.", "Drama"], &[]);
+        }
+
+        #[test]
+        fn an_item_with_no_synopsis_drops_the_synopsis_and_its_gap() {
+            same_block(Detail { summary: String::new(), ..playing() }, &["The Long Title", "Drama"], &["A summary"]);
+        }
+
+        /// `n == 0` drops the tag row, which is not the same as having no genres: an item with a year and a
+        /// duration but no genres still has its row, and an item with none of the facts has none.
+        #[test]
+        fn an_item_with_no_facts_drops_the_tag_row() {
+            let bare = Detail { genres: vec![], year: 0, dur_ms: 0, rating: String::new(), ..playing() };
+            same_block(bare.clone(), &["The Long Title", "A summary of the film"], &["Drama", "2001", "PG-13"]);
+            same_block(Detail { summary: String::new(), ..bare }, &["The Long Title"], &["A summary", "Drama", "2001"]);
+        }
+
+        #[test]
+        fn an_item_with_facts_but_no_genres_still_has_its_tag_row() {
+            same_block(Detail { genres: vec![], ..playing() }, &["The Long Title", "A summary of the film", "2001"], &["Drama"]);
         }
 
         #[test]
         fn an_open_chapters_state_has_no_info_arms_and_the_gate_only_hides_the_compact_state() {
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
             assert!(hud.compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).is_some());
+        }
+    }
+
+    /// **An open section's focus**: the buttons' pop on `GROUP_SECTION` and the tab's selected state, both read
+    /// from the walk (the state it is in, the group the focus is on), so the screen has nothing to hand in but
+    /// the group once the sections go live.
+    mod section_focus {
+        use super::*;
+        use crate::hud_format::compile::OPEN_INFO;
+        use crate::hud_format::Slot;
+
+        fn info_frame_census(transport: bool, tab: i32, focus: GroupId, btn: i32, row: &mut HudMotion) -> Census {
+            let _serial = plx_base::testlock::serial();
+            let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+            let mut store = plx_data::stores::metadata::MetadataStore::default();
+            plx_data::metadata::set_current_for_test(store.state_mut(), Some(plx_data::metadata::Detail { title: "T".into(), ..Default::default() }));
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("an info state");
+            let ps = plx_media::route::PlaybackSession::IDLE;
+            let model = HudModel::default();
+            let up = Countdown::default();
+            let frame = Frame {
+                ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                focus, btn, tab, now: 1_000, transport, measure: &FM, meta: store.view(),
+            };
+            census(|| draw_state(&hud.compiled, state, &frame, row, Painter::root()))
+        }
+
+        /// The Info tab reads selected because the STATE has Info open, not because the transport is hidden: an
+        /// inline policy keeps the transport (and the tab cursor) live.
+        #[test]
+        fn the_tab_of_an_open_section_reads_selected_whatever_the_transport_and_the_cursor() {
+            let mut row = HudMotion::new();
+            let modal = info_frame_census(false, 0, GROUP_SCRUB, 0, &mut row);
+            let inline = info_frame_census(true, 1, GROUP_SCRUB, 0, &mut row);
+            assert_eq!(census_hash(&modal), census_hash(&inline), "the Info tab is drawn selected in both");
+        }
+
+        #[test]
+        fn a_section_button_pops_only_while_the_section_group_has_focus() {
+            use crate::player_hud::geometry::GROUP_SECTION;
+            let slot = ControlSlot::Discs(Controls::NONE);
+            let mut row = HudMotion::new();
+            for _ in 0..20 {
+                row.step(slot, GROUP_SECTION, 1, 0.05, 1_000);
+            }
+            assert!(row.section_scale(1) > 1.0, "the focused section button pops: {}", row.section_scale(1));
+            assert_eq!(row.section_scale(0), 1.0, "its sibling does not");
+            assert_eq!(row.scale(1), 1.0, "and the control row's own springs are not the section's");
+            for _ in 0..40 {
+                row.step(slot, GROUP_ROW, 1, 0.05, 1_000);
+            }
+            assert_eq!(row.section_scale(1), 1.0, "focus moved off the section group: it settles");
+        }
+
+        /// The drawn button wears the pop: the focused button's census differs from its resting one.
+        #[test]
+        fn the_focused_section_button_is_drawn_popped() {
+            use crate::player_hud::geometry::GROUP_SECTION;
+            let slot = ControlSlot::Discs(Controls::NONE);
+            let mut rest = HudMotion::new();
+            let mut popped = HudMotion::new();
+            for _ in 0..20 {
+                popped.step(slot, GROUP_SECTION, 0, 0.05, 1_000);
+            }
+            let at_rest = info_frame_census(false, 0, GROUP_SECTION, 0, &mut rest);
+            let lifted = info_frame_census(false, 0, GROUP_SECTION, 0, &mut popped);
+            assert_ne!(census_hash(&at_rest), census_hash(&lifted), "the popped button is bigger than the resting one");
         }
     }
 
