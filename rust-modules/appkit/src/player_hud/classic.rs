@@ -427,8 +427,14 @@ pub(super) fn hud_tab_state(transport: bool, focus: GroupId, tab: i32, index: i3
 /// The transport's dark ground: transparent at its top edge, `theme::scrim_black(0.86)` at the
 /// panel bottom, [`SCRIM_H`] tall. Drawn under every transport, the player's and the trailer's.
 pub fn draw_scrim(p: Painter) {
+    draw_scrim_at(p, Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H));
+}
+
+/// [`draw_scrim`] over any rect: the compiled package's scrim (`CompiledState::scrim`) is classic's
+/// rect for `builtin:classic`, and a package's own for another.
+pub fn draw_scrim_at(p: Painter, rect: Rect) {
     p.rect(
-        Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H),
+        rect,
         0.0,
         theme::scrim_black(0.0),
         theme::scrim_black(0.86),
@@ -458,6 +464,22 @@ pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char
     p.text(title, SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
 }
 
+/// Where the player title's two lines stand: `x` the left edge both start at, and the y each line is
+/// drawn from. `Default` is classic's (`SB_X`, `SCR_H - 312`, `SCR_H - 278`), so
+/// [`draw_player_title`] is [`draw_player_title_at`] over it and every existing caller keeps its frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TitleLook {
+    pub x: f32,
+    pub kicker_y: f32,
+    pub title_y: f32,
+}
+
+impl Default for TitleLook {
+    fn default() -> Self {
+        Self { x: SB_X, kicker_y: SCR_H - 312.0, title_y: SCR_H - 278.0 }
+    }
+}
+
 /// The player's title is always contained before the control row. While playing it is
 /// ellipsised; while paused the full line glides once to reveal its end, then rests.
 pub(super) fn draw_player_title(
@@ -469,8 +491,23 @@ pub(super) fn draw_player_title(
     paused: bool,
     clock: &plx_ui::marquee::Clock,
 ) {
-    let width = (right - SB_X).max(0.0);
-    let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(SB_X, 0.0, width, SCR_H));
+    draw_player_title_at(p, TitleLook::default(), kicker, title, right, measure, paused, clock);
+}
+
+/// [`draw_player_title`] over a [`TitleLook`]: the compiled package's title cell (its text ops' rects).
+pub(super) fn draw_player_title_at(
+    p: Painter,
+    look: TitleLook,
+    kicker: Kicker,
+    title: *const std::os::raw::c_char,
+    right: f32,
+    measure: &dyn Measure,
+    paused: bool,
+    clock: &plx_ui::marquee::Clock,
+) {
+    let TitleLook { x: left, kicker_y, title_y } = look;
+    let width = (right - left).max(0.0);
+    let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(left, 0.0, width, SCR_H));
     let (text, ink, bold) = match kicker {
         Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, true),
         Kicker::Context(text) => (text, theme::TEXT_SECONDARY, false),
@@ -478,7 +515,7 @@ pub(super) fn draw_player_title(
     if !text.is_null() {
         let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
         let fitted = measure.fit_line(&label, width, theme::size::CAPTION, bold);
-        p.text(fitted.as_ptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, i32::from(bold));
+        p.text(fitted.as_ptr(), left, kicker_y, theme::size::CAPTION, ink, 0, i32::from(bold));
     }
     if title.is_null() {
         clock.release();
@@ -505,14 +542,14 @@ pub(super) fn draw_player_title(
             // an Arabic or Hebrew title's end is on its left: it moves right instead
             let rtl = plx_gfx::text::is_rtl_paragraph(&label);
             let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
-            p.text(title, SB_X + x, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+            p.text(title, left + x, title_y, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
             return;
         }
     } else {
         clock.release();
     }
     let fitted = measure.fit_line(&label, width, HUD_TITLE_SZ, true);
-    p.text(fitted.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+    p.text(fitted.as_ptr(), left, title_y, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
 }
 
 /// Reserve the same geometry used by focus placement, plus focus pop and a reading gap.
@@ -605,17 +642,44 @@ impl Playbar {
     }
 }
 
+/// What a playbar looks like where a package places it: the track's rect, the fill and track inks and
+/// the clocks' size. `Default` is classic's (`SB_*`, `TEXT_PRIMARY`, `RAIL_TRACK`, `CAPTION`), so
+/// [`draw_playbar`] is [`draw_playbar_look`] over it and the trailer's frame cannot move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlaybarLook {
+    pub track: Rect,
+    pub fill: [f32; 4],
+    pub track_ink: [f32; 4],
+    pub clock_size: i32,
+}
+
+impl Default for PlaybarLook {
+    fn default() -> Self {
+        Self {
+            track: Rect::new(SB_X, SB_Y, sb_w(), SB_H),
+            fill: theme::TEXT_PRIMARY,
+            track_ink: theme::RAIL_TRACK,
+            clock_size: theme::size::CAPTION,
+        }
+    }
+}
+
 /// The playbar: scrubber, playhead knob, elapsed/remaining clocks and the state read-out. The
 /// player HUD and the detail page's full-trailer transport both draw it, so the two cannot drift.
 pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine::Measure) {
+    draw_playbar_look(p, bar, PlaybarLook::default(), measure);
+}
+
+/// [`draw_playbar`] over a [`PlaybarLook`]: the compiled package's bar (`DrawOp::Playbar`).
+pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &dyn plx_machine::machine::Measure) {
     let e = hud_env();
-    let white = theme::TEXT_PRIMARY;
+    let white = look.fill;
     let dim = theme::TEXT_SECONDARY;
-    let track = theme::RAIL_TRACK;
-    let sx = SB_X;
-    let sw = sb_w();
-    let sy = SB_Y;
-    let sh = SB_H;
+    let track = look.track_ink;
+    let sx = look.track.x;
+    let sw = look.track.w;
+    let sy = look.track.y;
+    let sh = look.track.h;
     let dispos = bar.pos_ns;
     let dur = bar.dur_ns;
     let now = bar.now;
@@ -678,8 +742,8 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
     // the line clears are the union of the faces drawn.
     let elapsed = fmt_time(dispos, false);
     let (mut el_l, mut el_r) = (f32::INFINITY, f32::NEG_INFINITY);
-    for (sz, face_a) in crate::scrub_preview::clock_faces(theme::size::CAPTION, bar.clock_grow).into_iter().flatten() {
-        let ety = plx_gfx::text::baseline_y(sz, 1, theme::size::CAPTION, 1, ty);
+    for (sz, face_a) in crate::scrub_preview::clock_faces(look.clock_size, bar.clock_grow).into_iter().flatten() {
+        let ety = plx_gfx::text::baseline_y(sz, 1, look.clock_size, 1, ty);
         let (l, r) = draw_clock(p.alpha(face_a), &elapsed, hx, ety, sz, white, sx, sx + sw, measure);
         el_l = el_l.min(l);
         el_r = el_r.max(r);
@@ -698,12 +762,12 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
         .chars()
         .map(|c| if c.is_ascii_digit() { '0' } else { c })
         .collect();
-    let rem_w = measure.width_str(&rem_tmpl, theme::size::CAPTION, true);
+    let rem_w = measure.width_str(&rem_tmpl, look.clock_size, true);
     let rem_l = sx + sw - rem_w;
     let rem_shown = el_r + 20.0 < rem_l;
     if rem_shown {
         if let Ok(cs) = CString::new(rem.as_str()) {
-            p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
+            p.text(cs.as_ptr(), sx + sw, ty, look.clock_size, dim, 2, 0);
         }
     }
     // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by
@@ -742,7 +806,7 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
             TransportMark::Working | TransportMark::None => None,
         };
         let ink = glyph.map_or((0.0, 1.0), plx_ui::icons::ink_x);
-        let icy = ty + plx_gfx::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
+        let icy = ty + plx_gfx::text::text_height(look.clock_size, 1) * 0.5; // vertical center of the clock line
                                                                                 // scaled so every member of the family lands the SAME height of ink in this one box
         let bs = glyph.map_or(isz, |g| {
             isz * plx_ui::icons::band(plx_ui::icons::Icon::Pause)

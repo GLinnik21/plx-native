@@ -306,6 +306,19 @@ fn caption(u: &UpNext) -> String {
     plx_platform::i18n::msg::widgets_next_caption(&episode)
 }
 
+/// Which of the offer's two pieces of decor a package draws (`up_next.still`, `up_next.caption`). The
+/// two buttons are always drawn: they are the offer's targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Decor {
+    pub still: bool,
+    pub caption: bool,
+}
+
+impl Decor {
+    /// classic's: the still and its caption
+    pub const BOTH: Self = Self { still: true, caption: true };
+}
+
 pub fn draw(
     ps: &plx_media::route::PlaybackSession,
     row: &mut crate::player_hud::motion::HudMotion,
@@ -316,34 +329,57 @@ pub fn draw(
     now: u32,
     measure: &dyn plx_machine::machine::Measure,
 ) {
+    // `layout` also warms the row's label-width memo (`ctrl_slot`), which `ControlSlot::item_rect`'s
+    // `layout_peek` reads for the buttons' hit rects: the one place that write happens.
+    let l = layout(row, measure);
+    draw_over(ps, &l, Decor::BOTH, row, up, p, focused, btn, now, measure);
+}
+
+/// [`draw`] over a [`Layout`] the caller already has: the compiled package's rects
+/// (`Standin::up_next`), placed at compile time, so nothing here measures a button.
+pub fn draw_over(
+    ps: &plx_media::route::PlaybackSession,
+    l: &Layout,
+    decor: Decor,
+    row: &crate::player_hud::motion::HudMotion,
+    up: &Countdown,
+    p: Painter,
+    focused: bool,
+    btn: c_int,
+    now: u32,
+    measure: &dyn plx_machine::machine::Measure,
+) {
     let Some(u) = plx_media::route::up_next(ps) else {
         return;
     };
-    let l = layout(row, measure);
     let (pop_credits, pop_next) = (row.scale(BTN_CREDITS), row.scale(BTN_NEXT));
     // NOT scaled: `CARD_FOCUS_SCALE` is the terminal value of a focus spring the shelves drive, and
     // passing it as a constant drew the still permanently 7% oversized — overhanging the column on
     // both sides. The still is decoration on a focusable row, not a focusable tile itself, so it
     // keeps the card treatment (sheen + resting shadow) at rest scale.
-    draw_card(
-        p,
-        l.still,
-        plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
-        &u.thumb,
-        (480, 270),
-        10.0,
-        false,
-        1.0,
-    );
+    if decor.still {
+        draw_card(
+            p,
+            l.still,
+            plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
+            &u.thumb,
+            (480, 270),
+            10.0,
+            false,
+            1.0,
+        );
+    }
 
-    let elided = plx_gfx::text::elide_by(&caption(u), l.caption.w, false, |t| {
-        measure.width_str(t, theme::size::CAPTION, true)
-    });
-    if let Ok(cs) = CString::new(elided) {
-        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY)
-            .bold()
-            .h(HAlign::Right)
-            .draw(p, l.caption);
+    if decor.caption {
+        let elided = plx_gfx::text::elide_by(&caption(u), l.caption.w, false, |t| {
+            measure.width_str(t, theme::size::CAPTION, true)
+        });
+        if let Ok(cs) = CString::new(elided) {
+            Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY)
+                .bold()
+                .h(HAlign::Right)
+                .draw(p, l.caption);
+        }
     }
 
     let e = Env::inert();

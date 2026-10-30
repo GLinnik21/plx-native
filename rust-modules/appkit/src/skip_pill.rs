@@ -81,6 +81,15 @@ pub fn rect(row: &mut crate::player_hud::motion::HudMotion, pr: Prompt, measure:
 
 /// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.
 pub fn draw(row: &mut crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, focused: bool, measure: &dyn plx_machine::machine::Measure) {
+    // `rect` also warms the row's label-width memo (`ctrl_slot`), which `ControlSlot::item_rect` reads
+    // for the pill's hit rect: the one place that write happens.
+    let slot = rect(row, pr, measure);
+    draw_at(row, p, pr, slot, focused);
+}
+
+/// [`draw`] at a rect the caller already has: the compiled package's pill (`Standin::skip`, one per
+/// label width), placed at compile time.
+pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, slot: Rect, focused: bool) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };
@@ -88,7 +97,6 @@ pub fn draw(row: &mut crate::player_hud::motion::HudMotion, p: Painter, pr: Prom
     // navigate anywhere was reading as "more" rather than "skip".
     // Its slot's only item, so index 0 — the pop is the control ROW's (`HudMotion::scale`),
     // shared with the transport discs this pill stands in for.
-    let slot = rect(row, pr, measure);
     let pop = row.scale(0);
     Button::new(label.as_ptr(), theme::size::BODY, slot)
         .scale(pop)
