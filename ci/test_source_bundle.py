@@ -210,6 +210,18 @@ class BundleTests(unittest.TestCase):
         self.refresh()
         self.check()
 
+    def test_the_ui_text_source_is_required_when_the_recipe_compiles_it(self):
+        self.test_ass_source_requires_every_static_dependency()
+        for name in ['ci/build-libass.sh', 'ci/deps.py', 'include/ass.h', 'src/ass.c']:
+            self.contents[name] = b'fixture recipe', 0o644
+        self.contents['ci/build-libass.py'] = b"str(ROOT / 'src/ass_text.c')\n", 0o644
+        self.refresh()
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer source: src/ass_text.c'):
+            self.check()
+        self.contents['src/ass_text.c'] = b'fixture', 0o644
+        self.refresh()
+        self.check()
+
     def test_corrupt_compression_requires_exact_reviewed_hash(self):
         data = b'\x1f\x8bintentionally invalid gzip fixture'
         self.contents['dependencies/ffmpeg/corrupt.bin'] = data, 0o644

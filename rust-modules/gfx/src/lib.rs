@@ -2,15 +2,17 @@
 //!
 //! The GLES2 renderer (`gfx`: the shader programs, the draw primitives, the live-backdrop walk,
 //! the design tokens and the draw-phase instruments), the boot-time EGL probe (`egl`), text
-//! rasterization over SDL2_ttf (`text`), image decoding (`img`), the runtime SVG rasterizer's FFI
+//! rasterization (`text`: SDL2_ttf for every run but Arabic and Hebrew, which `rtl` shapes through
+//! the bundled libass-plx), image decoding (`img`), the runtime SVG rasterizer's FFI
 //! (`svg`, which calls into `src/svg.c`), and the GPU instruments: the async timer queries
 //! (`gpu_timer`), the Mali counter reader (`hwcnt`) and the per-draw-class overdraw ledger
 //! (`overdraw`, which lived in `ui` until the split). It is the `gfx` layer of
 //! `ci/module-layers.ini`: it uses `base` and `machine` (and may use `platform`, which nothing
 //! here names today).
 //!
-//! The crate declares the `extern "C"` blocks (GLES2, EGL, SDL2_ttf, nanosvg) but links nothing on
-//! the television: the final link stays the Makefile's. On the host, the application crate's build
+//! The crate declares the `extern "C"` blocks (GLES2, EGL, SDL2_ttf, nanosvg) and one `dynlib!`
+//! table (`rtl`, opened at run time), but links nothing on the television: the final link stays
+//! the Makefile's. On the host, the application crate's build
 //! script supplies SDL, GL and the nanosvg object for the application's own binaries, and this
 //! crate's build script does the same for this crate's own test binary, which is a real
 //! executable that reaches those symbols (`build_support/host_link.rs`, shared by both).
@@ -31,3 +33,5 @@ pub mod img;
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 pub mod text;
+// Arabic and Hebrew: FriBidi + HarfBuzz runs through the bundled libass-plx's UI text facade
+mod rtl;

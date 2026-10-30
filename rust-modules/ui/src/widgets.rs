@@ -1581,7 +1581,7 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
 // read-out's whole output format, and a keyline survives a phone camera's chroma subsampling where
 // a colour or weight change does not.
 //
-// The idiom was written first as a private `draw_hint_with_keycap` in `player_hud.rs`, screen-local
+// The idiom was written first as a private `draw_hint_with_keycap` in the player HUD (`appkit/player_hud/`), screen-local
 // and centred on `SCR_W`. It is here because the alert panels want the same object RIGHT-aligned
 // inside a panel, and the guide's rule 4 answers that: promote the widget, don't fork it. Three
 // alert lanes reached for it independently and all three rejected the HUD's CONSTRUCTION for the
@@ -6415,9 +6415,9 @@ pub const TAB_KEY_CHIP: u32 = crate::dispatch::STRIP_BASE + 4;
 /// BEFORE Search in the strip's visual order (`app::chrome::strip_keys`) — a key is a destination's
 /// identity, never its position.
 pub const TAB_KEY_WATCHLIST: u32 = crate::dispatch::STRIP_BASE + 5;
-/// The Requests tab, `+6` (docs/seerr.md): appended, shown only while a Seerr address is set, and
+/// The Seerr tab, `+6` (docs/seerr.md): appended, shown only while a Seerr address is set, and
 /// placed just BEFORE the Watchlist mark in the strip's visual order.
-pub const TAB_KEY_REQUESTS: u32 = crate::dispatch::STRIP_BASE + 6;
+pub const TAB_KEY_SEERR: u32 = crate::dispatch::STRIP_BASE + 6;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 ///
 /// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
@@ -8970,7 +8970,7 @@ pub fn badge(
 // behind that provider's own brand mark — Rotten Tomatoes' fruit and popcorn tub as tinted
 // silhouettes, IMDb and TMDB as logotype chips in their brand colours. All of that is gone:
 //
-//   * the RT marks had no licensing route (see `ui/icons.rs`), and
+//   * the RT marks had no public licence and we held no permission (see `ui/icons.rs`), and
 //   * the chips were reproducing two more brands' logotypes to solve a problem — "whose score is
 //     this?" — that a WORD solves for free, and that naming the provider solves *lawfully*, since
 //     referential use needs no licence where a mark does.
@@ -9070,6 +9070,24 @@ pub fn rating_group_w(
         return 0.0;
     }
     rating_walk(0.0, caption, cells, measure, |_, _| {})
+}
+
+/// A single caption score centred with its mark. The native Measure retains both the fitted
+/// drawable and its width; drawing a warm cell does no CString construction or measurement.
+pub(crate) fn rating_cell_fitted(
+    p: Painter, cx: f32, cy: f32, budget: f32, cell: &RatingCell,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    debug_assert!(cell.suffix.is_empty(), "caption scores carry their unit in the value");
+    let lead = if cell.mark.is_empty() { 0.0 } else { RATING_MARK_D + RATING_GAP };
+    let (run, width) = measure.fit_line_measured(cell.value, (budget - lead).max(0.0), theme::size::LABEL, true);
+    let x = cx - (lead + width).min(budget) * 0.5;
+    if !cell.mark.is_empty() {
+        let rect = Rect::new(x, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
+        for (mask, tint) in cell.mark { crate::icons::draw(p, *mask, rect, *tint); }
+    }
+    let y = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy);
+    p.text(run.as_ptr(), x + lead, y, theme::size::LABEL, theme::TEXT_PRIMARY, 0, 1);
 }
 
 /// Draw one provider's group with its LEFT edge at `x`, centred on `cy`; returns its width.

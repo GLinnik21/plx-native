@@ -1073,7 +1073,7 @@ impl SubtitleSize {
 
 /// The persisted subtitle vertical placements, lowest first — one per profile, like [`SubtitleTone`].
 /// Absence is `Low`, which is where every build before this preference drew the caption
-/// (`media::player::text_style`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
+/// (`media::player::text_style`'s fixed `SUB_BASE_Y` baseline, lifted to the HUD's `HudBand` ceiling). Only the plain-text caption draw
 /// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement
 /// (`docs/ass-subtitles.md`).
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1289,6 +1289,9 @@ pub struct UnderPosters {
     pub title: bool,
     #[serde(deserialize_with = "de_soft_under_posters_details")]
     pub details: UnderPostersDetails,
+    /// Persistent title, year and sort fact in the movie library grid only.
+    #[serde(deserialize_with = "de_soft_under_posters_title", skip_serializing_if = "std::ops::Not::not")]
+    pub show_sort_info: bool,
 }
 
 fn de_soft_under_posters_title<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
@@ -1303,16 +1306,16 @@ fn de_soft_under_posters_details<'de, D: Deserializer<'de>>(d: D) -> Result<Unde
 
 impl UnderPosters {
     /// The defaults, as a `const` for callers that compare against them.
-    pub const DEFAULT: UnderPosters = UnderPosters { title: false, details: UnderPostersDetails::YearLength };
+    pub const DEFAULT: UnderPosters = UnderPosters { title: false, details: UnderPostersDetails::YearLength, show_sort_info: false };
 
-    /// One byte for the media layer's live cell: the title in bit 0, the details' index in bits 1-3.
+    /// One byte for the live cell: title in bit 0, details in bits 1-3, sort information in bit 4.
     pub fn pack(self) -> u8 {
-        u8::from(self.title) | (self.details.index() << 1)
+        u8::from(self.title) | (self.details.index() << 1) | (u8::from(self.show_sort_info) << 4)
     }
 
     /// The inverse of [`UnderPosters::pack`]; an out-of-range details index is the default.
     pub fn unpack(b: u8) -> UnderPosters {
-        UnderPosters { title: b & 1 != 0, details: UnderPostersDetails::from_index((b >> 1) & 0b111) }
+        UnderPosters { title: b & 1 != 0, details: UnderPostersDetails::from_index((b >> 1) & 0b111), show_sort_info: b & 16 != 0 }
     }
 }
 

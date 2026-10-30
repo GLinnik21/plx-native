@@ -27,7 +27,7 @@ fn content_instances_compare_item_identity_and_keep_distinct_entries() {
 #[test]
 fn a_page_arg_wears_the_chrome_its_own_table_says() {
     for r in every_route() {
-        let want = if matches!(r, AppArg::Home | AppArg::Search | AppArg::Watchlist | AppArg::Requests) || r.is_library_family() {
+        let want = if matches!(r, AppArg::Home | AppArg::Search | AppArg::Watchlist | AppArg::Seerr) || r.is_library_family() {
             Chrome::TabBar
         } else {
             Chrome::None
@@ -400,7 +400,7 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
         OverlayKind::Tracks { tab: 0 },
         OverlayKind::Info,
         OverlayKind::Chapters,
-        OverlayKind::More { quality: false },
+        OverlayKind::More { page: None },
     ] {
         open_player_overlay(
             plx_media::route::idle_session_for_test(),

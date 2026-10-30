@@ -527,10 +527,10 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 halt_preview(app);
                 content_back(&mut app.pages, source, entry, ret);
             }
-            // The strip of a page that has no lane of its own (the Requests tab), under the gate
+            // The strip of a page that has no lane of its own (the Seerr tab), under the gate
             // Home's pills keep: a stale key does not resurrect a destination the strip withdrew.
             ContentReq::Tab(tab) => {
-                if !home_tab_available(app.bridge.strip_source(), tab) || tab == HomeTab::Requests { continue; }
+                if !home_tab_available(app.bridge.strip_source(), tab) || tab == HomeTab::Seerr { continue; }
                 match tab {
                     HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
                     other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
@@ -1067,7 +1067,7 @@ fn home_tab_available(
     let kind = match tab {
         HomeTab::Movies => Some(plx_data::stores::browse::SecKind::Movie),
         HomeTab::Shows => Some(plx_data::stores::browse::SecKind::Show),
-        HomeTab::Requests => return source.requests,
+        HomeTab::Seerr => return source.seerr,
         _ => None,
     };
     kind.is_none_or(|kind| source.directory.tab_of_kind(kind).is_some())
@@ -1324,12 +1324,12 @@ mod library_publication_tests {
             },
         ]);
 
-        let source = |requests| super::super::chrome::StripSource { directory: directory.view(), requests };
+        let source = |seerr| super::super::chrome::StripSource { directory: directory.view(), seerr };
         assert!(home_tab_available(source(false), HomeTab::Movies));
         assert!(!home_tab_available(source(false), HomeTab::Shows));
         assert!(home_tab_available(source(false), HomeTab::Home));
-        assert!(!home_tab_available(source(false), HomeTab::Requests), "no Seerr address, no Requests tab");
-        assert!(home_tab_available(source(true), HomeTab::Requests));
+        assert!(!home_tab_available(source(false), HomeTab::Seerr), "no Seerr address, no Seerr tab");
+        assert!(home_tab_available(source(true), HomeTab::Seerr));
     }
 
     #[test]

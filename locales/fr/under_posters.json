@@ -15,5 +15,8 @@
   "under_posters.reset": "Rétablir par défaut",
   "under_posters.reset_detail": "Année et durée, sans titre.",
   "under_posters.sample_title": "Film",
-  "under_posters.sample_genre": "Drame"
+  "under_posters.sample_genre": "Drame",
+  "under_posters.show_sort_info": "Afficher les informations de tri",
+  "under_posters.sort_info_detail": "Titre, année et tri dans la bibliothèque de films.",
+  "under_posters.default_version": "Principale"
 }

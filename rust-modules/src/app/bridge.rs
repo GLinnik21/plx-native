@@ -56,7 +56,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, FocusSource, ReturnState, Screen, ScreenEvent,
+    At, Enter, FocusSource, FocusTarget, ReturnState, Screen, ScreenEvent,
 };
 
 
@@ -1004,10 +1004,10 @@ impl Bridge {
             d.nav.tabs.strip_fallback = Some(match route {
                 AppArg::Search => plx_ui::widgets::TAB_KEY_SEARCH,
                 AppArg::Watchlist => plx_ui::widgets::TAB_KEY_WATCHLIST,
-                AppArg::Requests => plx_ui::widgets::TAB_KEY_REQUESTS,
+                AppArg::Seerr => plx_ui::widgets::TAB_KEY_SEERR,
                 _ => plx_screens::home::STRIP_HOME_ELEM,
             });
-            let source = super::chrome::StripSource { directory: self.directory.view(), requests: self.stores.seerr.configured() };
+            let source = super::chrome::StripSource { directory: self.directory.view(), seerr: self.stores.seerr.configured() };
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, source, Some((&io.profile, &io.preferences)));
             } else {
@@ -1380,10 +1380,7 @@ impl Bridge {
     /// A screen's ask of the Seerr store (`StoreCmd::Seerr`), as the seated profile; the call it
     /// emitted is started in this call.
     pub(crate) fn seerr_run(&mut self, cmd: plx_data::stores::seerr::SeerrCmd) {
-        match cmd {
-            plx_data::stores::seerr::SeerrCmd::Ask { slot, op } =>
-                self.stores.seerr.ask(slot, op, &Self::watchlist_input()),
-        }
+        self.stores.seerr.run(cmd, &Self::watchlist_input());
         self.start_store_jobs_of(StoreId::Seerr);
     }
 
@@ -1796,9 +1793,9 @@ impl Bridge {
     }
 
     /// What the strip's destinations are read from: the directory, and whether a Seerr address is
-    /// set (the Requests pill, docs/seerr.md).
+    /// set (the Seerr pill, docs/seerr.md).
     pub(crate) fn strip_source(&self) -> super::chrome::StripSource<'_> {
-        super::chrome::StripSource { directory: self.directory.view(), requests: self.stores.seerr.configured() }
+        super::chrome::StripSource { directory: self.directory.view(), seerr: self.stores.seerr.configured() }
     }
 
     /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
@@ -3667,7 +3664,7 @@ fn pill_of_arg(arg: &AppArg, source: crate::app::chrome::StripSource<'_>) -> Opt
         AppArg::Home => pill_of(source, Pill::Home),
         AppArg::Search => pill_of(source, Pill::Search),
         AppArg::Watchlist => pill_of(source, Pill::Watchlist),
-        AppArg::Requests => pill_of(source, Pill::Requests),
+        AppArg::Seerr => pill_of(source, Pill::Seerr),
         // The grid and the two pages its header pushes (Collections, Recommended) are all the
         // library's: they select its type's pill, the pill they were opened from.
         arg if arg.is_library_family() => {
@@ -3708,7 +3705,7 @@ pub(crate) fn nav_tab(
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
                     Pill::Watchlist => HomeTab::Watchlist,
-                    Pill::Requests => HomeTab::Requests,
+                    Pill::Seerr => HomeTab::Seerr,
                     Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
                     Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
                 };
@@ -3724,7 +3721,7 @@ pub(crate) fn nav_tab(
         }
         HomeTab::Search => AppArg::Search,
         HomeTab::Watchlist => AppArg::Watchlist,
-        HomeTab::Requests => AppArg::Requests,
+        HomeTab::Seerr => AppArg::Seerr,
     };
     nav_peer(d, arg, ret);
 }
@@ -4045,6 +4042,35 @@ pub(crate) fn player_mut(
         .downcast_mut::<plx_screens::player::PlayerScreen>()
 }
 
+/// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half
+/// of an APP-SIDE write to `hud.nav.focus`.
+///
+/// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
+/// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in five
+/// places — a Chapters / Info panel handing the ring back to the tabs (`PlayerReq::FocusTabs`), the
+/// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, the auto-hide
+/// park (in `run::update`) and the Skip / Up Next stand-in's departure (`run::follow_control_row`: the
+/// ring goes back to the scrubber, `standin_left_the_ring`'s contract) — and a bare write would leave
+/// the engine on the group it was on, so the next Up, Down or OK travelled from there. Each such
+/// write is followed by this, which hands the page
+/// the same `Enter::Fresh { ContainerGroup }` the screen's own `repair_focus` delivers. It rides
+/// the dispatcher's queue from outside a step and drains in the next frame, ahead of its input.
+///
+/// A no-op when no player page is mounted. The engine acts on an `Enter` only for the page that owns
+/// input at the moment it drains; for a page under a panel it only reaches the screen, which mirrors it.
+pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
+    let Some(instance) = d.top_page() else { return };
+    let Some(group) = player(d).map(|player| player.hud.nav.focus) else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(
+        page,
+        Fx::Deliver(
+            page,
+            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(group) })),
+        ),
+    );
+}
+
 /// **The top page answers its own keys** — the engine owns the input for it.
 ///
 /// The `route: Route` parameter these three took is gone with the fold (D1): `owns_input` already
@@ -4069,6 +4095,12 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
 /// queued for nobody (`textinput::on_event`).
 pub(crate) fn keyboard_takes_text(d: &Dispatcher<AppHost>) -> bool {
     search_owns_input(d) || d.input.keyboard
+}
+
+/// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
+/// page scrolls itself by a wheel (`Screen::glides`): the pointer's edge glide is offered to it.
+pub(crate) fn page_glides(d: &Dispatcher<AppHost>) -> bool {
+    !d.surface_up() && d.owns_input() && d.top_screen().is_some_and(|screen| screen.glides())
 }
 
 pub(crate) fn owns_input(d: &Dispatcher<AppHost>) -> bool {
@@ -4387,6 +4419,10 @@ mod library_push_capture_tests;
 #[cfg(test)]
 #[path = "recommended_enter_tests.rs"]
 mod recommended_enter_tests;
+
+#[cfg(test)]
+#[path = "library_back_lift_tests.rs"]
+mod library_back_lift_tests;
 
 #[cfg(test)]
 #[path = "library_diagnostic_tests.rs"]

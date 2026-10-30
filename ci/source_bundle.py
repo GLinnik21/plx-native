@@ -21,6 +21,7 @@ ROOT_FILES = {'Makefile', 'LICENSE', 'LICENSING.md', 'THIRD-PARTY-NOTICES.md',
               'TRADEMARKS.md', '.gitignore', 'AGENTS.md', 'CLAUDE.md'}
 ROOT_DIRS = {'src', 'include', 'rust-modules', 'assets', 'ci', 'tools', 'docs', 'tests', 'licenses', 'locales', '.agents'}
 PKG_FILES = {'OFL.txt', 'appfont.ttf', 'appfont-bold.ttf', 'appfont-cjk.ttf', 'appfont-emoji.ttf', 'le-roots.pem',
+             'appfont-arabic.ttf', 'appfont-arabic-bold.ttf', 'appfont-hebrew.ttf', 'appfont-hebrew-bold.ttf',
              'appinfo.json', 'icon.png', 'icon160.png', 'icon320.png', 'icon400.png',
              'largeIcon.png', 'splash.png', 'telemetry.local.json.example'}
 # `tv-host`/`tv-mac` (no dot) are the per-user copies of the first two (tools/tv-config.sh,
@@ -309,6 +310,10 @@ def validate(path, expected_snapshot=None, private_values=()):
             for required in ['src/ass_internal.h', 'src/ass_fonts.c']:
                 if required not in contents:
                     fail('missing ASS renderer source: ' + required)
+        # From ABI 4 the recipe also compiles the UI text surface into the same library.
+        if b'src/ass_text.c' in contents.get('ci/build-libass.py', b''):
+            if 'src/ass_text.c' not in contents:
+                fail('missing ASS renderer source: src/ass_text.c')
     if 'ci/dependencies.json' in contents:
         # Every dependency the manifest bundles (FFmpeg, Sentry Native, the libass stack, nanosvg)
         # is a required source of this tree.

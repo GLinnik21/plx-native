@@ -1,10 +1,7 @@
 {
-  "requests.tab": "Zamówienia",
-  "requests.row.mine": "Moje zamówienia",
   "requests.row.trending": "Na czasie",
   "requests.row.popular_movies": "Popularne filmy",
   "requests.row.popular_tv": "Popularne seriale",
   "requests.row.upcoming_movies": "Wkrótce: filmy",
-  "requests.row.upcoming_tv": "Wkrótce: seriale",
-  "requests.empty": "Seerr nie ma jeszcze nic do pokazania."
+  "requests.row.upcoming_tv": "Wkrótce: seriale"
 }

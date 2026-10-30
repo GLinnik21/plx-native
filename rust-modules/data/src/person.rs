@@ -2819,7 +2819,7 @@ mod tests {
             owner.current().unwrap().srcs[0].shelves[0].items.iter()
                 .map(|m| (m.rk.clone(), m.watched, m.unwatched, m.resume_ms)).collect::<Vec<_>>()
         };
-        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
         assert!(run(&mut owner, "3", facts));
         assert!(!run(&mut owner, "3", facts), "facts that agree with the tile change nothing");
         assert_eq!(marks(&owner), [("3".into(), true, false, 0), ("4".into(), false, true, 0)]);

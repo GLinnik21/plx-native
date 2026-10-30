@@ -184,7 +184,7 @@ fn a_refused_job_is_asked_again_after_the_wait() {
     let io = Script::new(signed_in(), vec![Ok(titles(4))]);
     let mut store = store(&io);
     let input = WatchlistInput::for_test(1);
-    store.ask(Slot::Discover(DiscoverRow::Trending), SeerrOp::Discover { row: DiscoverRow::Trending, page: 1 }, &input);
+    store.ask(Slot::Discover(DiscoverRow::Trending, 1), SeerrOp::Discover { row: DiscoverRow::Trending, page: 1 }, &input);
     let StoreJob::Seerr(job, port) = store.take_jobs().remove(0) else { unreachable!() };
     port.refused(job.addr);
     assert!(!store.pump(input.profile()), "a refusal changes nothing a surface reads");
@@ -196,7 +196,7 @@ fn a_refused_job_is_asked_again_after_the_wait() {
     store.pump(input.profile());
     assert_eq!(run_jobs(&mut store), 1, "asked again, once");
     store.pump(input.profile());
-    assert_eq!(store.answer(&Slot::Discover(DiscoverRow::Trending)), Some(&Answer::Ready(titles(4))));
+    assert_eq!(store.answer(&Slot::Discover(DiscoverRow::Trending, 1)), Some(&Answer::Ready(titles(4))));
 }
 
 #[test]
@@ -228,17 +228,71 @@ fn another_profile_forgets_the_session_and_its_landings() {
     let io = Script::new(signed_in(), vec![Ok(titles(1)), Ok(titles(2))]);
     let mut store = store(&io);
     let first = WatchlistInput::for_test(1);
-    store.ask(Slot::MyRequests, SeerrOp::MyRequests { page: 1 }, &first);
+    store.ask(Slot::Requests(1), SeerrOp::Requests { page: 1 }, &first);
     run_jobs(&mut store);
     let second = WatchlistInput::for_test(2);
     assert!(store.pump(second.profile()), "the landing is the old profile's");
-    assert_eq!((store.connection(), store.answer(&Slot::MyRequests)), (&Connection::Idle, None));
-    store.ask(Slot::MyRequests, SeerrOp::MyRequests { page: 1 }, &second);
+    assert_eq!((store.connection(), store.answer(&Slot::Requests(1))), (&Connection::Idle, None));
+    store.ask(Slot::Requests(1), SeerrOp::Requests { page: 1 }, &second);
     run_jobs(&mut store);
     store.pump(second.profile());
-    assert_eq!(store.answer(&Slot::MyRequests), Some(&Answer::Ready(titles(2))));
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(2))));
     assert_eq!(io.calls.lock().unwrap().iter().filter(|c| c.starts_with("sign_in")).count(), 2,
         "the new profile signs in for itself");
+}
+
+#[test]
+fn a_refresh_keeps_the_shown_answer_until_the_new_one_lands_and_when_it_fails() {
+    let io = Script::new(signed_in(), vec![Ok(titles(1)), Ok(titles(2)), Err(SeerrError::Transport)]);
+    let mut store = store(&io);
+    let input = WatchlistInput::for_test(1);
+    let op = SeerrOp::Requests { page: 1 };
+    store.run(SeerrCmd::Refresh { slot: Slot::Requests(1), op: op.clone() }, &input);
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Loading), "nothing shown yet: a plain ask");
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    store.run(SeerrCmd::Refresh { slot: Slot::Requests(1), op: op.clone() }, &input);
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(1))), "kept while the refresh runs");
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(2))), "the new answer replaces it");
+    store.refresh(Slot::Requests(1), op.clone(), &input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(2))), "a failed refresh keeps it");
+}
+
+#[test]
+fn a_plain_ask_over_a_refresh_in_flight_shows_its_own_outcome() {
+    let io = Script::new(signed_in(), vec![Ok(titles(1)), Err(SeerrError::Transport)]);
+    let mut store = store(&io);
+    let input = WatchlistInput::for_test(1);
+    let op = SeerrOp::Requests { page: 1 };
+    store.ask(Slot::Requests(1), op.clone(), &input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    store.refresh(Slot::Requests(1), op.clone(), &input);
+    store.ask(Slot::Requests(1), op, &input);
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Loading));
+    assert_eq!(run_jobs(&mut store), 2);
+    store.pump(input.profile());
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Failed(SeerrError::Transport)),
+        "the ask is no refresh: its failure is shown");
+}
+
+#[test]
+fn the_signed_in_users_permissions_say_who_decides_and_who_sees_everything() {
+    let mut store = store(&Script::new(signed_in(), vec![Ok(SeerrData::Connected)]));
+    assert!(!store.may_manage_requests() && !store.sees_all_requests(), "nobody signed in");
+    let manager = Ok((SeerrSession::for_test("c"), SeerrUser { id: 1, name: String::new(), permissions: 16 }));
+    let io = Script::new(manager, vec![]);
+    store = SeerrStore::with_io(io);
+    store.set_address("http://127.0.0.1:5055");
+    let input = WatchlistInput::for_test(1);
+    store.connect(&input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    assert!(store.may_manage_requests() && store.sees_all_requests());
 }
 
 #[test]
@@ -310,7 +364,7 @@ fn show(statuses: &[Availability]) -> TitleDetail {
         title: Title { kind: Some(MediaKind::Tv), tmdb: 2, status: Availability::PartlyAvailable, ..Default::default() },
         seasons: statuses.iter().enumerate()
             .map(|(i, &status)| Season { number: i as i32 + 1, episodes: Some(8), status }).collect(),
-        anime: false,
+        ..Default::default()
     }
 }
 

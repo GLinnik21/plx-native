@@ -613,12 +613,14 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
+        let persistent = self.kind == SecKind::Movie && self.listed == plx_data::browse::LibraryType::Primary
+            && crate::registry::captions::show_sort_info();
         let band_h = self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h);
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
-        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h)
+        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h).with_sort_info(persistent)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h)
+        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h).with_sort_info(persistent)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);
@@ -726,7 +728,11 @@ impl LibraryScreen {
             }
         }
         self.relayout(Some(key));
-        let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
+        // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and a
+        // click by what it clicked, `Input`'s `Click` arm).
+        let want = if by == By::Pointer {
+            None
+        } else if let Some(index) = self.pair.detail.index_of(key.elem) {
             // held in the coordinates `scroll` is in until the grid's tick rebases both by a landing
             Some(self.target_layout.row_reveal(index / self.layout.cols()) - self.pair.detail.pending_shift(cx))
         } else if let Some(top) = self.header_focus().and_then(|focus| focus.reveal(key.elem)) {
@@ -959,14 +965,14 @@ impl LibraryScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_REQUESTS, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEERR, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
         let req = match elem {
             TAB_KEY_HOME => Some(LibraryReq::Tab(HomeTab::Home)),
             TAB_KEY_MOVIES => Some(LibraryReq::Tab(HomeTab::Movies)),
             TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
             TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
             TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
-            TAB_KEY_REQUESTS => Some(LibraryReq::Tab(HomeTab::Requests)),
+            TAB_KEY_SEERR => Some(LibraryReq::Tab(HomeTab::Seerr)),
             TAB_KEY_CHIP => Some(LibraryReq::Account),
             _ => None,
         };
@@ -1205,6 +1211,9 @@ impl LibraryScreen {
             }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
             ScreenEvent::Enter(enter) => {
+                // A page that returns (`Enter::Restored`: BACK onto it, a modal's dismissal) keeps its
+                // seat lifted under the dip's image or a fade, as it was left: the grid's own rule.
+                self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 self.live = true;
                 self.buried = false;
                 // The engine seats the target right after this event, so a key it names must hold
@@ -1264,8 +1273,9 @@ impl LibraryScreen {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
                 // tile from rest over the frames after this. A restore or a reconcile announced
                 // here is adopted whole by its next tick, unless a dormant tick ran since (a page
-                // returning from a Detail push under the held image, `Tick` below), in which case
-                // the first awake tick regrows the tile from rest (`ui::cards`, the pop rule).
+                // ENTERED under the held image, `Tick` below), in which case the first awake tick
+                // grows the tile from rest (`ui::cards`, the pop rule); a page that RETURNS runs
+                // none (`Grid::dormant`).
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 // The engine seats a page it has just mounted in the first group it can (the bar), before a
                 // page whose listing is still loading has anything to seat. Such a page holds no seat
@@ -1352,6 +1362,7 @@ impl LibraryScreen {
                     // A page still dissolving in shows its seat unpopped: the lift starts on the
                     // dissolve's last frame, where it can be seen, instead of playing out under the
                     // fade or the held image of a route dip (the page arrives in its first poster).
+                    // A page that returns is not put to sleep (`Grid::dormant`).
                     self.pair.detail.dormant(self.page_fade.is_arriving() || plx_ui::containers::transition::page_image_held());
                     self.handoff.step(dt, self.scroll.pos, self.scroll_target, self.layout.grid_pitch(), self.capsule_wanted());
                     // The grid steps its pop and bands. A content landing that moved the focused
@@ -1440,6 +1451,14 @@ impl LibraryScreen {
                     && cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
                     self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
                     return Handled::Yes;
+                }
+                // A click brings the page to the card it clicked, the way a key's move does.
+                if let InputKind::Click { hit: Some(hit), .. } = input.kind {
+                    if let Some(index) = self.pair.detail.index_of(hit) {
+                        self.scroll_target = self.target_layout.row_reveal(index / self.layout.cols())
+                            - self.pair.detail.pending_shift(cx);
+                        fx.invalidate(Provenance::Input);
+                    }
                 }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * self.layout.grid_pitch())
@@ -1574,6 +1593,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         LibraryScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
     fn chrome_tuck(&self) -> f32 { self.handoff.tuck() }
     fn state(&self) -> &dyn LogicalState { self }

@@ -198,7 +198,9 @@ impl Shelf {
     /// halves and the hold after it) nothing on screen can show the ease, and stepping it would hold
     /// the image past its dissolve (a page that is covered freezes its shelves mid-ease and resumes
     /// them under the BACK dip's image), so the springs and the caption band jump to rest on the
-    /// first tick, as [`Grid::dormant`](super::Grid::dormant) does. The scroll is kept either way.
+    /// first tick, as a [`Grid`](super::Grid) put to sleep by [`Grid::dormant`](super::Grid::dormant)
+    /// does (a grid that RETURNS is not put to sleep; a shelf has no such rule). The scroll is kept
+    /// either way.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }
@@ -246,6 +248,10 @@ impl Shelf {
                 let arrived = (to.entry == self.entry).then(|| here(&to.elem)).flatten();
                 if let Some(a) = arrived {
                     self.seen = Seen::of(by, a);
+                    // a key's move along the row brings it back to its focus; a hover does not
+                    if *by != plx_machine::machine::By::Pointer {
+                        self.row.unfree();
+                    }
                 }
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| here(&k.elem));
                 self.left |= left.is_some();
@@ -261,6 +267,16 @@ impl Shelf {
                 .focused_elem(cx, src)
                 .filter(|&(i, _)| src.holdable(i))
                 .map(|(_, e)| CardEvent::Hold(e)),
+            // A click on one of the row's cards brings the row back to its focus (the card).
+            ScreenEvent::Input(input) => {
+                if let plx_machine::machine::InputKind::Click { hit: Some(hit), .. } = &input.kind {
+                    if src.index_of(hit).is_some() {
+                        self.row.unfree();
+                        fx.invalidate(Provenance::Input);
+                    }
+                }
+                None
+            }
             // A covering menu changes nothing here: the page keeps its focus and the settled pop is
             // what the opener redraw reads.
             _ => None,
@@ -977,6 +993,18 @@ impl Shelf {
     #[cfg(feature = "devtriggers")]
     pub fn scroll_velocity(&self) -> f32 {
         self.row.scroll_velocity()
+    }
+
+    /// **The pointer's sideways glide** (`InputKind::Pan`) over this row: move it by `dx` px, held
+    /// to its `n` cards, and leave it there until a key moves along it or a click lands on one of
+    /// its cards ([`CardRow::glide`]).
+    pub fn glide(&mut self, dx: f32, n: usize) {
+        self.row.glide(dx, n, self.style);
+    }
+
+    /// Release a row the pointer's glide holds: it follows its focused card again.
+    pub fn unfree(&mut self) {
+        self.row.unfree();
     }
 
     /// Restore a saved viewport (`n` is the current card count).

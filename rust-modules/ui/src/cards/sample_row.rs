@@ -42,17 +42,28 @@ impl SampleRow {
         label: &TileLabel,
         measure: &dyn Measure,
     ) {
+        Self::draw_labeled(p, area, sty, tiles, focused,
+            |i| if i == focused { label.clone() } else { TileLabel::default() }, measure);
+    }
+
+    /// A persistent-caption sample; each tile uses the same label painter as a real grid.
+    pub fn draw_labeled<'a>(p: Painter, area: Rect, sty: &RowStyle,
+        tiles: impl ExactSizeIterator<Item = Art<'a>>, focused: usize,
+        mut label: impl FnMut(usize) -> TileLabel, measure: &dyn Measure) {
         let n = tiles.len();
         let mut lifted = None;
         for (i, art) in tiles.enumerate() {
             if i == focused {
-                lifted = Some(art);
+                lifted = Some((art, label(i)));
             } else {
-                card_row::draw_tile(p, art, Self::tile(sty, n, i, area), 1.0, sty, None);
+                let rect = Self::tile(sty, n, i, area);
+                let mut label = label(i); label.static_text = true;
+                card_row::draw_label(p, rect, 1.0, sty, &label, measure);
+                card_row::draw_tile(p, art, rect, 1.0, sty, None);
             }
         }
-        if let Some(art) = lifted {
-            card_row::draw_focused(p, art, Self::lifted(sty, n, focused, area), sty.focus_scale, sty, None, label, measure);
+        if let Some((art, label)) = lifted {
+            card_row::draw_focused(p, art, Self::lifted(sty, n, focused, area), sty.focus_scale, sty, None, &label, measure);
         }
     }
 }

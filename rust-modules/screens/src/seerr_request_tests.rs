@@ -140,7 +140,7 @@ impl SeerrIo for Script {
                 title: Title { kind: Some(*kind), tmdb: *tmdb, ..Default::default() },
                 seasons: vec![Season { number: 1, episodes: Some(8), status: Availability::Available },
                     Season { number: 2, episodes: Some(8), status: Availability::Unknown }],
-                anime: false,
+                ..Default::default()
             }),
             SeerrOp::Servers { .. } => SeerrData::Servers(servers()),
             SeerrOp::ServerOptions { server, .. } => SeerrData::ServerOptions(options(*server)),

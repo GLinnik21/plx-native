@@ -38,7 +38,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         AppArg::Content(ContentArg::SeerrTitle { .. }) => plx_screens::seerr_title::SeerrTitleScreen::WORD,
         AppArg::Search => "search",
         AppArg::Watchlist => "watchlist",
-        AppArg::Requests => plx_screens::requests::RequestsScreen::WORD,
+        AppArg::Seerr => plx_screens::seerr_tab::SeerrScreen::WORD,
         AppArg::Player => "player",
         AppArg::Home => "home",
         // Not pages: a surface's word is ` overlay=`, and none of these reaches the page stack's
@@ -96,7 +96,7 @@ pub(crate) fn every_route() -> [AppArg; 16] {
         AppArg::Content(ContentArg::SeerrTitle { kind: plx_data::seerr::MediaKind::Movie, tmdb: 0 }),
         AppArg::Search,
         AppArg::Watchlist,
-        AppArg::Requests,
+        AppArg::Seerr,
         AppArg::Player,
     ]
 }

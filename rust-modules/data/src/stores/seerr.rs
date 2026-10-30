@@ -1,5 +1,5 @@
 //! The Seerr store (docs/seerr.md): the connection to the household's Seerr server and every answer
-//! a request surface reads — Settings' connection line, the Search row, the Requests tab, a title's
+//! a request surface reads — Settings' connection line, the Search row, the Seerr tab, a title's
 //! page and the Detail page's missing seasons.
 //!
 //! Main-thread state plus an `Arc` mailbox, on the catalog store's shape (`stores::catalog`): the
@@ -7,6 +7,11 @@
 //! ([`SeerrStore::take_jobs`]) that the application's runner starts in the same call. Answers are
 //! kept per [`Slot`] — one surface's question — and only a slot's LATEST ask is answered: a landing
 //! for an older ask of the slot, for another address or for another profile is dropped.
+//!
+//! **A refresh keeps what is shown.** [`SeerrCmd::Refresh`] (the Seerr tab's request list, read
+//! again while downloads move) asks like [`SeerrCmd::Ask`] but leaves a slot's `Ready` answer drawn
+//! until the new one lands, and a refresh that fails keeps it too: a list that was right a moment
+//! ago is better than a failure read-out for one missed poll.
 //!
 //! **Every job is answered once, a refusal included.** A job the runner never started (the thread
 //! ceiling) comes back as `NotStarted` and its slot is asked again after [`RETRY_FRAMES`]. A job
@@ -22,7 +27,7 @@ use crate::watchlist::{WatchlistAuth, WatchlistInput};
 use plx_machine::job::{Job, Port};
 use plx_machine::machine::{Addr, MachineId, RequestId};
 use plx_plex::plex::session::CurrentProfile;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -39,6 +44,8 @@ const SETTLE_FRAMES: u32 = 18;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SeerrCmd {
     Ask { slot: Slot, op: SeerrOp },
+    /// Ask again, keeping the slot's answer shown meanwhile (module doc).
+    Refresh { slot: Slot, op: SeerrOp },
 }
 
 /// One surface's question. A new ask of a slot replaces the old one's answer.
@@ -48,8 +55,10 @@ pub enum Slot {
     Connect,
     /// The Search page's row (one query at a time).
     Search,
-    Discover(DiscoverRow),
-    MyRequests,
+    /// One page of one discover row.
+    Discover(DiscoverRow, u32),
+    /// One page of the request list.
+    Requests(u32),
     Detail(MediaKind, i64),
     /// A request write for one title.
     Request(MediaKind, i64),
@@ -57,6 +66,8 @@ pub enum Slot {
     Servers(MediaKind),
     /// The request menu's profiles and folders of one of those servers.
     ServerOptions(MediaKind, i64),
+    /// An approval or a decline of one request, by its id.
+    Decide(i64),
 }
 
 /// The connection, as Settings states it.
@@ -248,6 +259,8 @@ pub struct SeerrStore {
     tried: Option<u32>,
     /// Each slot's latest ask, so a surface can tell whose answer it reads.
     asked: HashMap<Slot, SeerrOp>,
+    /// The asks in flight that are refreshes: their slot keeps its `Ready` answer (module doc).
+    refreshes: HashSet<u32>,
     /// A typed-in ask waiting for its term to settle, and the frames it has stood.
     wanted: Option<(Slot, SeerrOp, u32)>,
     req: u32,
@@ -278,6 +291,7 @@ impl SeerrStore {
             owed: HashMap::new(),
             tried: None,
             asked: HashMap::new(),
+            refreshes: HashSet::new(),
             wanted: None,
             req: 0,
             io,
@@ -348,6 +362,17 @@ impl SeerrStore {
         self.session.as_ref().is_some_and(|(_, user)| user.may_choose_options())
     }
 
+    /// May the signed-in user approve and decline requests (`SeerrUser::may_manage_requests`)?
+    pub fn may_manage_requests(&self) -> bool {
+        self.session.as_ref().is_some_and(|(_, user)| user.may_manage_requests())
+    }
+
+    /// Does the request list hold everybody's requests for the signed-in user
+    /// (`SeerrUser::sees_all_requests`), or only their own?
+    pub fn sees_all_requests(&self) -> bool {
+        self.session.as_ref().is_some_and(|(_, user)| user.sees_all_requests())
+    }
+
     /// What `slot` was last asked: a surface reads [`Self::answer`] only when this is its question.
     pub fn asked(&self, slot: &Slot) -> Option<&SeerrOp> {
         self.asked.get(slot)
@@ -373,6 +398,7 @@ impl SeerrStore {
             if let Some(req) = self.asks.remove(slot) {
                 self.flights.remove(&req);
                 self.owed.remove(&req);
+                self.refreshes.remove(&req);
             }
             self.bump();
         }
@@ -398,6 +424,7 @@ impl SeerrStore {
         self.flights.clear();
         self.owed.clear();
         self.asked.clear();
+        self.refreshes.clear();
         self.wanted = None;
         self.mailbox = Arc::new(Mailbox::default());
         self.jobs.clear();
@@ -433,6 +460,24 @@ impl SeerrStore {
     /// an older ask of the slot still in flight lands into nothing. With no address the slot fails
     /// at once; with nobody to sign in as, the connection stays idle and the slot fails.
     pub fn ask(&mut self, slot: Slot, op: SeerrOp, input: &WatchlistInput) {
+        self.ask_keeping(slot, op, input, false);
+    }
+
+    /// [`Self::ask`], leaving a `Ready` answer shown until the new one lands, and in place if the new
+    /// one fails (module doc). A slot with no `Ready` answer is asked as by [`Self::ask`].
+    pub fn refresh(&mut self, slot: Slot, op: SeerrOp, input: &WatchlistInput) {
+        self.ask_keeping(slot, op, input, true);
+    }
+
+    /// A screen's command, as the Bridge hands it on.
+    pub fn run(&mut self, cmd: SeerrCmd, input: &WatchlistInput) {
+        match cmd {
+            SeerrCmd::Ask { slot, op } => self.ask(slot, op, input),
+            SeerrCmd::Refresh { slot, op } => self.refresh(slot, op, input),
+        }
+    }
+
+    fn ask_keeping(&mut self, slot: Slot, op: SeerrOp, input: &WatchlistInput, keep: bool) {
         if self.auth.as_ref().is_none_or(|a| !a.is_current(input.profile())) {
             if self.auth.take().is_some() {
                 self.forget();
@@ -451,9 +496,17 @@ impl SeerrStore {
         if slot == Slot::Connect || self.session.is_none() {
             self.connection = Connection::Connecting;
         }
+        let keep = keep && matches!(self.answers.get(&slot), Some(Answer::Ready(_)));
         self.asked.insert(slot.clone(), op.clone());
-        self.answers.insert(slot.clone(), Answer::Loading);
+        if !keep {
+            self.answers.insert(slot.clone(), Answer::Loading);
+        }
         self.start(slot, op);
+        if keep {
+            self.refreshes.insert(self.req);
+        } else {
+            self.refreshes.remove(&self.req);
+        }
         self.bump();
     }
 
@@ -463,6 +516,9 @@ impl SeerrStore {
         if let Some(old) = self.asks.insert(slot.clone(), self.req) {
             self.flights.remove(&old);
             self.owed.remove(&old);
+            if self.refreshes.remove(&old) {
+                self.refreshes.insert(self.req);
+            }
         }
         self.flights.insert(self.req, (slot, op.clone()));
         let req = SeerrReq { address: self.address.clone(), auth, held: self.session.clone(), op };
@@ -516,7 +572,8 @@ impl SeerrStore {
                 return true;
             }
             self.flights.remove(&landing.req);
-            self.land(slot, outcome);
+            let refresh = self.refreshes.remove(&landing.req);
+            self.land(slot, outcome, refresh);
             changed = true;
         }
         if changed {
@@ -525,7 +582,7 @@ impl SeerrStore {
         changed
     }
 
-    fn land(&mut self, slot: Slot, outcome: SeerrOutcome) {
+    fn land(&mut self, slot: Slot, outcome: SeerrOutcome, refresh: bool) {
         match outcome.session {
             SessionChange::Fresh(session, user) => {
                 self.connection = Connection::Connected { name: user.name.clone() };
@@ -541,6 +598,7 @@ impl SeerrStore {
         }
         let answer = match outcome.result {
             Ok(data) => Answer::Ready(data),
+            Err(_) if refresh && matches!(self.answers.get(&slot), Some(Answer::Ready(_))) => return,
             Err(e) => Answer::Failed(e),
         };
         self.answers.insert(slot, answer);

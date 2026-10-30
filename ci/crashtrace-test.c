@@ -169,6 +169,13 @@ static void one_case(const char *name, int sig, const char *signame, enum how ho
                "the time: line does not hold the current unix second");
     }
 
+    /* The thread and phase lines, once per descriptor. The tracer runs on the crashing thread of a
+     * child that never named itself, so `main=1` (tid == pid on Linux; the pid stands in elsewhere)
+     * and the phase is the zero the test leaves `plx_crash_phase` at. */
+    expect(name, count(log, "\nthread: tid=") == 2, "no thread: line under the signal line");
+    expect(name, count(log, " main=1 name=") == 2, "the crashing (main) thread was not reported as main");
+    expect(name, count(log, "\nphase: running uptime=") == 2, "no phase: line, or the phase is not running");
+
     /* (1)+(4) A REAL FAULT carries a real address. `raise()` cannot: the kernel fills `si_addr`
      * only for a genuine memory fault, so this assertion is scoped to the case that produces one. */
     if (how == FAULT) {
@@ -349,6 +356,8 @@ static void maps_cases(void) {
 /* Rust's probe number, which the Rust watchdog (`plx_base::task::watchdog`) exports and stores
  * right before it signals. The tracer only reads it, so the test stands in for that owner. */
 volatile unsigned int plx_freeze_seq;
+/* Rust's process phase (`plx_base::task::watchdog`); the tracer only reads it. */
+volatile unsigned int plx_crash_phase;
 
 /* `mode`: 0 = armed probes numbered 10, 11, ...; 1 = stray signals that arm nothing; 2 = armed
  * probes with SIGUSR2 inherited as SIG_IGN, as from a parent that ignored it. */

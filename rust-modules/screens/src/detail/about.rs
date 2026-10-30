@@ -7,6 +7,7 @@ use std::ffi::CString;
 
 use plx_data::metadata::Detail;
 use plx_machine::machine::{GroupId, Measure};
+use plx_ui::label::HAlign;
 use plx_ui::text_lift::{draw_focused, TextLift, CENTRE};
 use plx_ui::hstack::Item;
 use plx_ui::text_view::TextView;
@@ -264,9 +265,9 @@ impl Rows {
         // columns drawn after it use the caller's own `p` and cannot inherit the lift.
         draw_focused(p, card, LIFT_RADIUS, card_lift, CENTRE, |p| {
             let ix = card.x + CARD_PAD;
-            text_at(
+            card_line(
                 p,
-                ix,
+                card,
                 card.y + CARD_PAD,
                 theme::size::HEADLINE,
                 theme::TEXT_PRIMARY,
@@ -276,9 +277,9 @@ impl Rows {
                 }),
             );
             if !d.genres.is_empty() {
-                text_at(
+                card_line(
                     p,
-                    ix,
+                    card,
                     card.y + CARD_PAD + 44.0,
                     theme::size::CAPTION,
                     theme::TEXT_TERTIARY,
@@ -288,15 +289,19 @@ impl Rows {
                     }),
                 );
             }
-            synopsis(&d.summary, measure)
-                .draw(p, Rect::new(ix, card.y + CARD_PAD + 100.0, SYNOPSIS_W, 0.0));
+            let syn = synopsis(&d.summary, measure);
+            syn.draw(p, Rect::new(ix, card.y + CARD_PAD + 100.0, SYNOPSIS_W, 0.0));
+            // The MORE the synopsis dissolves into: bottom-right, or bottom-LEFT for an Arabic or
+            // Hebrew synopsis, which is drawn right-aligned and dissolves at its left end.
+            let (more_x, more_align) =
+                if syn.is_rtl() { (card.x + CARD_PAD, 0) } else { (card.x + card.w - CARD_PAD, 2) };
             p.text(
                 plx_ui::text_view::more_mark().as_ptr(),
-                card.x + card.w - CARD_PAD,
+                more_x,
                 card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
                 theme::size::CAPTION,
                 theme::TEXT_TERTIARY,
-                2,
+                more_align,
                 1,
             );
         });
@@ -456,6 +461,19 @@ fn draw_pair(p: Painter, x: f32, y: f32, label: &str, value: &str, measure: &dyn
         .max_lines(2)
         .draw(p, Rect::new(x, y + PAIR_VALUE_DY, 520.0, 0.0));
     PAIR_VALUE_DY + h.max(30.0)
+}
+
+/// One line of the About card, inside its padding and in the line's OWN direction: it stands at
+/// the [`HAlign::Start`] edge, flush right for an Arabic or Hebrew line, as the synopsis under it
+/// does, any other flush left.
+#[allow(clippy::too_many_arguments)]
+fn card_line(p: Painter, card: Rect, y: f32, size: i32, color: [f32; 4], bold: i32, text: &str) -> f32 {
+    let inner = Rect::new(card.x + CARD_PAD, y, card.w - 2.0 * CARD_PAD, 0.0);
+    let (x, align) = HAlign::Start.resolve(text).anchor(inner);
+    CString::new(text)
+        .ok()
+        .map(|s| p.text(s.as_ptr(), x, y, size, color, align, bold))
+        .unwrap_or(0.0)
 }
 
 fn text_at(p: Painter, x: f32, y: f32, size: i32, color: [f32; 4], bold: i32, text: &str) -> f32 {
@@ -763,5 +781,62 @@ mod tests {
             .at
             .y;
         assert!((desc - want).abs() < 0.5, "the first description is at {desc}, want {want}: a row stands {HEAD_TO_ROWS} under the heading");
+    }
+
+    /// An Arabic or Hebrew synopsis is drawn right-aligned and dissolves at its LEFT end
+    /// (`TextView::is_rtl`), so the card's MORE moves to the bottom-left corner with it; any other
+    /// synopsis keeps the bottom-right.
+    #[test]
+    fn the_more_mark_follows_a_right_to_left_synopsis_to_the_left_corner() {
+        let _g = plx_base::testlock::serial();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let rows = Rows::new();
+        let more = plx_ui::text_view::more_mark().to_string_lossy().into_owned();
+        for (summary, rtl) in [
+            ("تدور أحداث المسلسل في قرية حدودية بين لبنان وسوريا", true),
+            ("A chemistry teacher turns to manufacturing methamphetamine.", false),
+        ] {
+            let mut d = Detail::default();
+            d.summary = summary.into();
+            let card = rows.card_rect(&d, 0.0, &measure);
+            let runs = plx_ui::draw_census::capture_runs(|| {
+                rows.draw(Painter::recording(), &d, 0.0, false, &TextLift::new(), &TextLift::new(), &measure)
+            });
+            let mark = runs.iter().find(|r| r.text == more).expect("the card's MORE");
+            let want = if rtl { (0, card.x + CARD_PAD) } else { (2, card.x + card.w - CARD_PAD) };
+            assert_eq!((mark.align, mark.at.x), want, "{summary:?}: {mark:?}");
+        }
+    }
+
+    /// The card's title and genres line each read in their OWN direction, like its synopsis: an
+    /// Arabic or Hebrew line stands flush with the card's right padding, any other with its left.
+    /// (The page's hero title is not this rule's: it stands in for the logo and keeps the layout.)
+    #[test]
+    fn the_cards_title_and_genres_each_follow_their_own_direction() {
+        let _g = plx_base::testlock::serial();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let rows = Rows::new();
+        for (title, genres, title_rtl, genres_rtl) in [
+            ("باب الحارة", vec!["دراما", "تاريخي"], true, true),
+            ("Breaking Bad", vec!["Drama", "Crime"], false, false),
+            ("الهيبة", vec!["Drama", "Thriller"], true, false),
+            ("שטיסל", vec!["דרמה"], true, true),
+        ] {
+            let mut d = Detail::default();
+            d.title = title.into();
+            d.genres = genres.iter().map(|g| g.to_string()).collect();
+            d.summary = "A summary.".into();
+            let card = rows.card_rect(&d, 0.0, &measure);
+            let runs = plx_ui::draw_census::capture_runs(|| {
+                rows.draw(Painter::recording(), &d, 0.0, false, &TextLift::new(), &TextLift::new(), &measure)
+            });
+            let at = |text: &str| {
+                let r = runs.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("{text:?} not drawn: {runs:?}"));
+                (r.align, r.at.x)
+            };
+            let side = |rtl: bool| if rtl { (2, card.x + card.w - CARD_PAD) } else { (0, card.x + CARD_PAD) };
+            assert_eq!(at(title), side(title_rtl), "title {title:?}");
+            assert_eq!(at(&d.genres.join(", ")), side(genres_rtl), "genres of {title:?}");
+        }
     }
 }

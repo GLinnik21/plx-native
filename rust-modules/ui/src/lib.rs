@@ -66,6 +66,7 @@ pub mod runtime_warning;
 pub mod label;
 pub mod linked_heading; // linked shelf-entry control: shared entry/heading geometry, focus and hits
 pub mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/return/follow policy
+pub mod media_row; // one wide row of a media list: poster, title, lines, a status chip, the progress band
 // Library is owned by screens::library; its legacy state/focus model is retired.
 // `login` retired (phase 6): the QR sign-in is `screens::login::LoginScreen` now, an owned
 // `Screen` mounted through `app::bridge` rather than a `Popover` reached through `app.rs`'s key

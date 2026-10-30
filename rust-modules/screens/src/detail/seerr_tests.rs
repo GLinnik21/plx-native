@@ -28,7 +28,7 @@ impl SeerrIo for Script {
                 title: Title { kind: Some(MediaKind::Tv), tmdb: *tmdb, ..Default::default() },
                 seasons: self.seasons.iter().enumerate()
                     .map(|(i, &status)| Season { number: i as i32 + 1, episodes: Some(10), status }).collect(),
-                anime: false,
+                ..Default::default()
             })),
             SeerrOp::Request { .. } => self.request.lock().unwrap().clone(),
             other => panic!("the Detail page asked for {other:?}"),

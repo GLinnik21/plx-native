@@ -20,7 +20,8 @@ pub(super) const SCOPE_Y: f32 = FIELD.y + FIELD.h + 12.0;
 /// below it) both depend on it.
 pub const CONTENT_TOP: f32 = 300.0;
 pub(super) const HEAD_TO_ROW: f32 = 60.0;
-pub(super) const KEYBOARD_H: f32 = 324.0;
+/// The raised keyboard's height: the shared measured value (`plx_ui::text_field::SYSTEM_KEYBOARD_H`).
+pub(super) const KEYBOARD_H: f32 = plx_ui::text_field::SYSTEM_KEYBOARD_H;
 pub(super) const SCOPE_H: f32 = plx_ui::theme::size::CAPTION as f32 * 1.35;
 pub(super) const CLEAR_H: f32 = 60.0;
 pub(super) const RECENT_CAP: usize = plx_data::search::recents::CAP;

@@ -12,21 +12,21 @@ pub(crate) enum Pill {
     Home,
     Section(SecKind),
     Watchlist,
-    /// The Requests tab (docs/seerr.md).
-    Requests,
+    /// The Seerr tab (docs/seerr.md).
+    Seerr,
     Search,
 }
 
 /// What decides the strip's destinations: the Browse directory's type pills, and whether the
-/// household has a Seerr server (the Requests pill, docs/seerr.md).
+/// household has a Seerr server (the Seerr pill, docs/seerr.md).
 #[derive(Clone, Copy)]
 pub(crate) struct StripSource<'a> {
     pub(crate) directory: DirectoryView<'a>,
     /// A Seerr address is set (`SeerrStore::configured`).
-    pub(crate) requests: bool,
+    pub(crate) seerr: bool,
 }
 
-/// The strip's destination keys in strip order: Home, one key per type pill, Requests while a
+/// The strip's destination keys in strip order: Home, one key per type pill, Seerr while a
 /// Seerr address is set, the Watchlist bookmark, Search. The one
 /// place that order is written; `refresh` publishes it and the pill maps below read it, so no
 /// map assumes which index Search holds.
@@ -37,8 +37,8 @@ fn strip_keys(source: StripSource<'_>) -> Vec<u32> {
         SecKind::Movie => widgets::TAB_KEY_MOVIES,
         SecKind::Show => widgets::TAB_KEY_SHOWS,
     }));
-    if source.requests {
-        keys.push(widgets::TAB_KEY_REQUESTS);
+    if source.seerr {
+        keys.push(widgets::TAB_KEY_SEERR);
     }
     keys.push(widgets::TAB_KEY_WATCHLIST);
     keys.push(widgets::TAB_KEY_SEARCH);
@@ -55,7 +55,7 @@ fn pill_in(i: usize, keys: &[u32]) -> Pill {
         Some(widgets::TAB_KEY_MOVIES) => Pill::Section(SecKind::Movie),
         Some(widgets::TAB_KEY_SHOWS) => Pill::Section(SecKind::Show),
         Some(widgets::TAB_KEY_WATCHLIST) => Pill::Watchlist,
-        Some(widgets::TAB_KEY_REQUESTS) => Pill::Requests,
+        Some(widgets::TAB_KEY_SEERR) => Pill::Seerr,
         Some(widgets::TAB_KEY_SEARCH) => Pill::Search,
         _ => Pill::Home,
     }
@@ -71,7 +71,7 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
         Pill::Section(SecKind::Movie) => widgets::TAB_KEY_MOVIES,
         Pill::Section(SecKind::Show) => widgets::TAB_KEY_SHOWS,
         Pill::Watchlist => widgets::TAB_KEY_WATCHLIST,
-        Pill::Requests => widgets::TAB_KEY_REQUESTS,
+        Pill::Seerr => widgets::TAB_KEY_SEERR,
         Pill::Search => widgets::TAB_KEY_SEARCH,
     };
     keys.iter().position(|&k| k == key)
@@ -80,8 +80,8 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
 #[derive(Default)]
 pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
-    /// The Requests pill was on the strip the faces were built for.
-    tabs_requests: bool,
+    /// The Seerr pill was on the strip the faces were built for.
+    tabs_seerr: bool,
     profile_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     faces: Vec<TabFace>,
@@ -124,19 +124,19 @@ impl ChromeSnapshot {
     pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, source: StripSource<'_>,
         captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
         let generation = source.directory.tabs_gen();
-        if self.tabs_generation != Some(generation) || self.tabs_requests != source.requests {
+        if self.tabs_generation != Some(generation) || self.tabs_seerr != source.seerr {
             self.keys = strip_keys(source);
             self.faces = self.keys.iter().map(|&key| match key {
                 widgets::TAB_KEY_HOME => TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()),
                 widgets::TAB_KEY_MOVIES => TabFace::Label(plx_platform::i18n::msg::browse_kind_movies().into()),
                 widgets::TAB_KEY_SHOWS => TabFace::Label(plx_platform::i18n::msg::browse_kind_tv_shows().into()),
                 widgets::TAB_KEY_WATCHLIST => TabFace::Icon(Icon::Bookmark),
-                widgets::TAB_KEY_REQUESTS => TabFace::Label(plx_platform::i18n::msg::requests_tab().into()),
+                widgets::TAB_KEY_SEERR => TabFace::Label(plx_platform::i18n::msg::seerr_tab().into()),
                 _ => TabFace::Icon(Icon::Search),
             }).collect();
             self.widths = widgets::tab_widths(&self.faces, measure);
             self.tabs_generation = Some(generation);
-            self.tabs_requests = source.requests;
+            self.tabs_seerr = source.seerr;
         }
         let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
         let session_changed = captured.is_none() && self.session_watch.changed();
@@ -214,8 +214,8 @@ mod tests {
     use plx_data::stores::browse::{DirectorySnapshot, SectionView, SrcRow};
     use plx_machine::machine::EntryId;
 
-    fn source(directory: &DirectorySnapshot, requests: bool) -> StripSource<'_> {
-        StripSource { directory: directory.view(), requests }
+    fn source(directory: &DirectorySnapshot, seerr: bool) -> StripSource<'_> {
+        StripSource { directory: directory.view(), seerr }
     }
 
     fn directory(kinds: &[SecKind]) -> DirectorySnapshot {
@@ -326,7 +326,7 @@ mod tests {
             widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
         assert_eq!(pill_of(view, Pill::Watchlist), Some(3));
         assert_eq!(pill_of(view, Pill::Search), Some(4));
-        assert_eq!(pill_of(view, Pill::Requests), None, "no Seerr address, no Requests pill");
+        assert_eq!(pill_of(view, Pill::Seerr), None, "no Seerr address, no Seerr pill");
         assert_eq!(pill_at(view, 3), Pill::Watchlist);
         assert_eq!(pill_at(view, 4), Pill::Search);
     }
@@ -336,20 +336,20 @@ mod tests {
         let directory = directory(&[SecKind::Movie, SecKind::Show]);
         let view = source(&directory, true);
         assert_eq!(strip_keys(view), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_SHOWS,
-            widgets::TAB_KEY_REQUESTS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
-        assert_eq!(pill_of(view, Pill::Requests), Some(3));
+            widgets::TAB_KEY_SEERR, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+        assert_eq!(pill_of(view, Pill::Seerr), Some(3));
         assert_eq!(pill_of(view, Pill::Watchlist), Some(4));
         assert_eq!(pill_of(view, Pill::Search), Some(5));
-        assert_eq!(pill_at(view, 3), Pill::Requests);
+        assert_eq!(pill_at(view, 3), Pill::Seerr);
         let mut snapshot = ChromeSnapshot {
             profile_generation: Some(plx_plex::plex::session::current_gen()), ..Default::default()
         };
         snapshot.refresh(&plx_ui::fixture::FixtureMeasure, source(&directory, false));
-        assert!(!snapshot.keys.contains(&widgets::TAB_KEY_REQUESTS));
+        assert!(!snapshot.keys.contains(&widgets::TAB_KEY_SEERR));
         snapshot.refresh(&plx_ui::fixture::FixtureMeasure, view);
-        assert_eq!(snapshot.keys[3], widgets::TAB_KEY_REQUESTS,
+        assert_eq!(snapshot.keys[3], widgets::TAB_KEY_SEERR,
             "setting an address rebuilds the strip without a directory change");
-        assert_eq!(snapshot.faces[3], TabFace::Label(plx_platform::i18n::msg::requests_tab().into()));
+        assert_eq!(snapshot.faces[3], TabFace::Label(plx_platform::i18n::msg::seerr_tab().into()));
     }
 
     #[test]

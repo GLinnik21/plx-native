@@ -749,7 +749,8 @@ impl RecommendedScreen {
     /// **The shelves are held at rest while the page is not yet seen** (`Shelf::dormant`): under
     /// the route dip's image (`page_image_held`) or while the shelves dissolve in (the page's
     /// `fade`). Under the image a card that was lifted (a page returning from a Detail it froze
-    /// mid-ease) is put at rest on the first tick, as the Library's grid does, because an ease
+    /// mid-ease) is put at rest on the first tick, as the Library's grid is on an ENTRY (a grid that
+    /// RETURNS keeps its seat, `Grid::dormant`; a shelf has no such rule), because an ease
     /// stepped under the image would hold it past the dissolve; while the shelves dissolve in the
     /// page is in view and the let-go eases like an unfocused shelf's. The seat the page makes for
     /// itself then grows from rest the frame the page can be seen, on the standard lift spring, and
@@ -872,7 +873,7 @@ impl RecommendedScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_REQUESTS, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEERR, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
         use crate::registry::HomeTab;
         let req = match elem {
             TAB_KEY_HOME => Some(LibraryReq::Tab(HomeTab::Home)),
@@ -880,7 +881,7 @@ impl RecommendedScreen {
             TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
             TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
             TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
-            TAB_KEY_REQUESTS => Some(LibraryReq::Tab(HomeTab::Requests)),
+            TAB_KEY_SEERR => Some(LibraryReq::Tab(HomeTab::Seerr)),
             TAB_KEY_CHIP => Some(LibraryReq::Account),
             _ => None,
         };
@@ -991,6 +992,21 @@ impl RecommendedScreen {
                 if matches!(input.kind, InputKind::Key { key: Key::Up | Key::Down | Key::Left | Key::Right, edge: Edge::Down, .. }
                     | InputKind::Pointer { .. } | InputKind::Click { .. } | InputKind::Drag { .. }) {
                     self.initial = false;
+                }
+                // The pointer's sideways glide moves the shelf under it (`Shelf::glide`).
+                if let InputKind::Pan { dx, y, .. } = input.kind {
+                    if dx.is_finite() {
+                        let under = self.shelf_window().find(|&index| {
+                            let origin = shelf_y(&self.run, index, self.scroll.pos);
+                            y >= origin - TITLE_DY && y < origin + self.run.pitch(index)
+                        });
+                        if let Some(row) = under.and_then(|index| self.shelves.get_mut(index)) {
+                            let n = row.elems.len();
+                            row.cards.glide(dx, n);
+                            fx.invalidate(Provenance::Input);
+                        }
+                    }
+                    return Handled::Yes;
                 }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * shelf_pitch(false, ui_cards::LEGACY_BAND_H, 0.0))
@@ -1293,6 +1309,7 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
     }
     // The heartbeat's `route=` word and the focus probe's screen both read this: it is the
     // library family's word, so a scene that greps `route=library` keeps matching.
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

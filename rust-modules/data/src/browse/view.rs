@@ -29,6 +29,8 @@ struct ListingData {
     sorts: Arc<Vec<SortEntry>>,
     genres: Arc<Vec<GenreEntry>>,
     letters: Arc<Vec<(String, i64)>>,
+    /// Do `letters` describe the listing the query now asks for ([`super::SecState::letters_current`])?
+    letters_current: bool,
     sort_idx: usize,
     sort_desc: bool,
     genre: Option<Arc<GenreEntry>>,
@@ -151,6 +153,7 @@ impl ListingSnapshot {
                 }]),
                 genres: Arc::new(Vec::new()),
                 letters: Arc::new(letters),
+                letters_current: true,
                 sort_idx: 0,
                 sort_desc: false,
                 genre: None,
@@ -222,8 +225,10 @@ impl<'a> ListingView<'a> {
     pub fn genres(self) -> &'a [GenreEntry] {
         self.0.data.as_ref().map_or(&[], |s| s.genres.as_slice())
     }
+    /// The per-letter counts of THIS listing: empty while the list on hand was counted under other
+    /// terms than the grid has now (or none has landed), so a stale list can never size a jump.
     pub fn letters(self) -> &'a [(String, i64)] {
-        self.0.data.as_ref().map_or(&[], |s| s.letters.as_slice())
+        self.0.data.as_ref().filter(|s| s.letters_current).map_or(&[], |s| s.letters.as_slice())
     }
     pub fn sort_index(self) -> usize {
         self.0.data.as_ref().map_or(0, |s| s.sort_idx)
@@ -251,14 +256,15 @@ impl<'a> ListingView<'a> {
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
+    /// Is the A-Z rail offered? The sort is the title, ascending (the order the counts sum in), and
+    /// there are letters of THIS listing to jump to. Unwatched and a genre do not hide it: the letters
+    /// are asked with the grid's own terms and shown only while they describe them ([`Self::letters`]).
     pub fn rail_available(self) -> bool {
         self.id().is_some()
             && self
                 .sorts()
                 .get(self.sort_index())
                 .is_none_or(|s| s.key == "titleSort" && !self.sort_desc())
-            && !self.unwatched()
-            && self.genre().is_none()
             && self.letters().len() > 1
     }
     pub fn letter_start(self, index: usize) -> usize {
@@ -325,7 +331,8 @@ impl super::BrowseState {
                     items: state.items.clone(),
                     sorts: state.sorts.clone(),
                     genres: state.genres.clone(),
-                    letters: state.letters.clone(),
+                    letters: state.shown_letters().unwrap_or(&state.letters).clone(),
+                    letters_current: state.letters_current(),
                     sort_idx: state.sort_idx,
                     sort_desc: state.sort_desc,
                     genre: state.genre.clone(),
@@ -739,7 +746,8 @@ mod tests {
                 id: "7".into(),
                 title: "Drama".into(),
             }]);
-            section.letters = Arc::new(vec![("A".into(), 3), ("B".into(), 4)]);
+            let key = section.letters_key();
+            section.land_letters(key, vec![("A".into(), 3), ("B".into(), 4)]);
             (section.sorts.clone(), section.genres.clone(), section.letters.clone())
         };
         let initial = owner.listing_snapshot();
@@ -764,12 +772,20 @@ mod tests {
         assert_eq!(initial.view().letter_start(99), 7);
         owner.set_genre_by_id(Some("7"));
         owner.set_unwatched(true);
+        // The counts of the listing the grid now shows (the letters job asks with its terms).
+        super::super::seed_letter_counts_for_owner_test(&mut owner, &[("A", 2), ("B", 1)]);
+        let narrowed = owner.listing_snapshot();
+        assert!(narrowed.view().unwatched());
+        assert_eq!(narrowed.view().genre().unwrap().id, "7");
+        assert!(narrowed.view().rail_available(), "Unwatched and a genre no longer hide the rail");
+        assert_eq!(narrowed.view().letter_start(1), 2);
+        assert_eq!(narrowed.view().rail_available(), owner.rail_available());
         owner.set_sort_by_key("titleSort", true);
         let filtered = owner.listing_snapshot();
         assert!(filtered.view().unwatched());
         assert!(filtered.view().sort_desc());
         assert_eq!(filtered.view().genre().unwrap().id, "7");
-        assert!(!filtered.view().rail_available());
+        assert!(!filtered.view().rail_available(), "a descending title sort hides it");
         assert!(initial.view().genre().is_none());
         assert!(!initial.view().unwatched());
         assert!(initial.view().rail_available());

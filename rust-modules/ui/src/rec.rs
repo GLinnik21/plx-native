@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use plx_machine::machine::{Canon, LogicalState, Measure, Tick};
-mod strict_json;
+pub mod strict_json; // the duplicate-key-preserving JSON reader; `appkit::hud_format::parse` shares it (decode_ordered)
 #[cfg(test)]
 mod measurements_tests; // `Measurements` over a memoizing native source (moved from `text.rs`, module-layers step L5)
 

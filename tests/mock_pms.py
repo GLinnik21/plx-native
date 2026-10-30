@@ -1134,8 +1134,19 @@ class Library:
             kind = {"1": "movie", "2": "show", "3": "season", "4": "episode"}.get(t, kind)
         rows = [it for it in self.items.values() if it["type"] == kind
                 and it["librarySectionID"] == int(key)]
-        if q.get("unwatched") == "1":
+        # Two keys, not one. `unwatchedLeaves=1` is the key the app sends for shows and seasons: a row
+        # whose leaves are not all watched. A real PMS answers `unwatched=1` on such a row differently
+        # (30 of 33 shows against 24, docs/pms-api.md "Unwatched"; its rule is not documented), so the
+        # mock models only that the two DIFFER: `unwatched=1` reads the row's own `viewCount`, which a
+        # show or season never carries here. An app sending the wrong key for a show gets an unnarrowed
+        # listing instead of passing by luck. Movies and episodes have no leaves: `unwatched` as usual.
+        if q.get("unwatchedLeaves") == "1":
             rows = [it for it in rows if not self._watched(it)]
+        if q.get("unwatched") == "1":
+            if kind in ("show", "season"):
+                rows = [it for it in rows if not it.get("viewCount", 0) > 0]
+            else:
+                rows = [it for it in rows if not self._watched(it)]
         g = q.get("genre")
         if g:
             rows = [it for it in rows if any(str(t["id"]) == g for t in it.get("Genre", []))]
@@ -1163,11 +1174,16 @@ class Library:
         return rows
 
     def first_characters(self, key, q=None):
-        """Counts in the unfiltered ascending titleSort order, exactly the rail's query —
-        of the section's collections for `type=18`, as PMS answers `firstCharacter?type=18`."""
+        """Counts in ascending titleSort order (the rail's order) of the listing `q` describes: the
+        terms that scope `/all` (`type`, `unwatched`, `unwatchedLeaves`, `genre`, ...) scope the counts
+        the same way, as PMS does, so the sum is the filtered `totalSize` and prefix sums are the
+        offsets of each letter in that listing. `type=18` counts the section's collections."""
+        q = q or {}
         counts = {}
         rows = (sorted(self.collection_metadata(key), key=lambda c: c["titleSort"].lower())
-                if (q or {}).get("type") == "18" else self.section_items(key, {}))
+                if q.get("type") == "18"
+                else self.section_items(key, {k: v for k, v in q.items()
+                                              if k != "sort" and not k.startswith("X-Plex-")}))
         for item in rows:
             letter = item["titleSort"][0].upper()
             counts[letter] = counts.get(letter, 0) + 1
@@ -2395,6 +2411,14 @@ class SeerrFixture:
     server does not let in); `{"plex_login": "allow"}` restores it. The user is an admin, who may
     choose a request's server, profile and folder (the app's request menu); `{"advanced": false}`
     makes it a plain requester (Seerr's Request permission alone), `{"advanced": true}` an admin again.
+    `{"manage": false}` takes Manage Requests away while keeping the request menu (Advanced Requests):
+    the request list then answers only the user's own, and approving or declining answers 403.
+
+    Two other users have requests from the start (pending, approved with a download moving, declined,
+    completed), so the request list shows everybody's; the list answers newest change first and, as
+    Seerr does, only the caller's own requests to a user without Manage Requests or View Requests.
+    `POST /api/v1/request/{id}/approve|decline` answers a pending one (409 for any other) and is a
+    WRITE like a new request.
     """
 
     COOKIE = "connect.sid"
@@ -2414,11 +2438,30 @@ class SeerrFixture:
                            ({1: 4, 2: 4, 3: 4} if kind == "tv" and statuses[i % len(statuses)] == 5 else
                             {1: None, 2: None, 3: None} if kind == "tv" else {}),
             })
+        for i, t in enumerate(self.titles):
+            t["facts"] = {"voteAverage": round(5.5 + (i % 7) * 0.5, 1), "runtime": 90 + i * 7,
+                          "genres": [{"id": 1, "name": swords(rng, 1)}, {"id": 2, "name": swords(rng, 1)}],
+                          "studio": swords(rng, 2), "tmdbStatus": "Released" if t["kind"] == "movie" else "Ended"}
         self.sessions = set()
-        self.requests = []
         self.refuse_login = False
         self.user = {"id": 1, "displayName": "s5eeb0001", "plexUsername": "s5eeb0001", "username": "s5eeb0001",
                      "permissions": self.ADMIN}
+        self.others = [{"id": 2, "displayName": "s5eeb0002"}, {"id": 3, "displayName": "s5eeb0003"}]
+        # The requests the server holds before the app asks anything: (title index, user, request
+        # status, seasons). Title 2 is processing and downloading; title 1's request waits for approval.
+        self.requests = []
+        for n, (index, who, status, seasons) in enumerate([
+                (4, self.others[1], 5, []), (8, self.others[0], 3, []), (2, self.others[1], 2, []),
+                (1, self.others[0], 1, [2]), (7, self.others[1], 1, [1, 2, 3])]):
+            t = self.titles[index]
+            self.requests.append({"id": n + 1, "kind": t["kind"], "tmdb": t["id"], "status": status,
+                                  "seasons": seasons, "by": who, "modified_by": self.user if status in (2, 3) else None,
+                                  "created": self.stamp(n), "updated": self.stamp(n), "serverId": None,
+                                  "profileId": None, "rootFolder": None})
+        # What Radarr / Sonarr is downloading: title 2 (a movie), two thirds done.
+        self.downloads = {self.titles[2]["id"]: [{"title": swords(rng, 3), "size": 6 * 1024 ** 3,
+                                                  "sizeLeft": 2 * 1024 ** 3, "status": "downloading",
+                                                  "timeLeft": "00:12:30", "mediaType": "movie"}]}
         # Seerr's `/service/{radarr|sonarr}` rows. Movies have one ordinary server and a 4K one (never
         # offered: the app sends no 4K request); shows have two ordinary ones, so the menu offers a
         # server choice, and the default one has an anime profile and folder.
@@ -2444,7 +2487,19 @@ class SeerrFixture:
         }
 
     ADMIN = 2
+    MANAGE_REQUESTS = 16
     REQUEST = 32
+    REQUEST_ADVANCED = 8192
+    REQUEST_VIEW = 16384
+
+    @staticmethod
+    def stamp(n):
+        """The n-th synthetic request time, an hour apart (ISO 8601, as Seerr sends)."""
+        return f"2026-01-{1 + n // 24:02d}T{n % 24:02d}:00:00.000Z"
+
+    def may(self, *bits):
+        perms = self.user["permissions"]
+        return bool(perms & self.ADMIN) or any(perms & b for b in bits)
 
     def configure(self, patch):
         if "plex_login" in patch:
@@ -2455,8 +2510,13 @@ class SeerrFixture:
             if not isinstance(patch["advanced"], bool):
                 return 400, {"error": "advanced is true|false"}
             self.user["permissions"] = self.ADMIN if patch["advanced"] else self.REQUEST
+        if "manage" in patch:
+            if not isinstance(patch["manage"], bool):
+                return 400, {"error": "manage is true|false"}
+            self.user["permissions"] = self.ADMIN if patch["manage"] else self.REQUEST | self.REQUEST_ADVANCED
         return 200, {"plex_login": "refuse" if self.refuse_login else "allow",
-                     "advanced": self.user["permissions"] != self.REQUEST}
+                     "advanced": self.may(self.REQUEST_ADVANCED, self.MANAGE_REQUESTS),
+                     "manage": self.may(self.MANAGE_REQUESTS)}
 
     def by_id(self, kind, tmdb):
         return next((t for t in self.titles if t["kind"] == kind and t["id"] == tmdb), None)
@@ -2465,11 +2525,36 @@ class SeerrFixture:
         if t["status"] is None and not any(v for v in t["seasons"].values()):
             return None
         info = {"tmdbId": t["id"], "status": t["status"] or 1,
-                "requests": [{"status": r["status"], "seasons": [{"seasonNumber": n} for n in r["seasons"]]}
-                             for r in self.requests if r["tmdb"] == t["id"] and r["kind"] == t["kind"]]}
+                "requests": [self.request_row(r, media=False)
+                             for r in self.requests if r["tmdb"] == t["id"] and r["kind"] == t["kind"]],
+                "downloadStatus": self.downloads.get(t["id"], [])}
         if t["kind"] == "tv":
             info["seasons"] = [{"seasonNumber": n, "status": st} for n, st in t["seasons"].items() if st]
         return info
+
+    def request_row(self, r, media=True):
+        """One request as Seerr's list sends it; `media=False` for a detail's `mediaInfo.requests`."""
+        row = {"id": r["id"], "status": r["status"], "type": r["kind"], "createdAt": r["created"],
+               "updatedAt": r["updated"], "requestedBy": r["by"], "modifiedBy": r["modified_by"],
+               "seasons": [{"seasonNumber": n} for n in r["seasons"]]}
+        if media:
+            t = self.by_id(r["kind"], r["tmdb"])
+            row["media"] = {"tmdbId": r["tmdb"], "mediaType": r["kind"], "status": (t and t["status"]) or 1,
+                            "downloadStatus": self.downloads.get(r["tmdb"], [])}
+        return row
+
+    def detail(self, t):
+        """A title's detail record: its row and TMDB's facts."""
+        out = self.row(t)
+        f = t["facts"]
+        out.update({"voteAverage": f["voteAverage"], "genres": f["genres"], "status": f["tmdbStatus"]})
+        if t["kind"] == "movie":
+            out.update({"runtime": f["runtime"], "productionCompanies": [{"id": 1, "name": f["studio"]}]})
+        else:
+            out.update({"episodeRunTime": [f["runtime"] // 2], "networks": [{"id": 1, "name": f["studio"]}],
+                        "numberOfSeasons": len(t["seasons"]),
+                        "seasons": [{"seasonNumber": n, "episodeCount": 8} for n in t["seasons"]]})
+        return out
 
     def row(self, t):
         row = {"id": t["id"], "mediaType": t["kind"], "overview": t["overview"], "posterPath": None,
@@ -2525,11 +2610,7 @@ class SeerrFixture:
             t = self.by_id(segs[0], int(segs[1]))
             if t is None:
                 return j({"message": "Not found"}, 404)
-            out = self.row(t)
-            if t["kind"] == "tv":
-                out["numberOfSeasons"] = len(t["seasons"])
-                out["seasons"] = [{"seasonNumber": n, "episodeCount": 8} for n in t["seasons"]]
-            return j(out)
+            return j(self.detail(t))
         if segs[:1] == ["service"] and len(segs) in (2, 3) and segs[1] in self.services:
             servers = self.services[segs[1]]
             if len(segs) == 2:
@@ -2539,13 +2620,34 @@ class SeerrFixture:
                 return j({"message": "Server with provided ID does not exist."}, 404)
             return j(dict({"server": server, "tags": []}, **self.service_options[(segs[1], server["id"])]))
         if segs == ["request"] and method == "GET":
-            take, skip = int(q.get("take", "20")), int(q.get("skip", "0"))
-            mine = self.requests[::-1]
-            rows = [{"id": r["id"], "status": r["status"], "type": r["kind"],
-                     "media": {"tmdbId": r["tmdb"], "mediaType": r["kind"], "status": 2},
-                     "seasons": [{"seasonNumber": n} for n in r["seasons"]]} for r in mine[skip:skip + take]]
-            return j({"pageInfo": {"pages": max(1, (len(mine) + take - 1) // take), "page": skip // take + 1,
-                                   "results": len(mine)}, "results": rows})
+            take, skip = int(q.get("take", "10")), int(q.get("skip", "0"))
+            asked_for = q.get("requestedBy")
+            if not self.may(self.MANAGE_REQUESTS, self.REQUEST_VIEW):
+                if asked_for and asked_for != str(self.user["id"]):
+                    return j({"message": "You do not have permission to view this user's requests."}, 403)
+                asked_for = str(self.user["id"])
+            seen = [r for r in self.requests if not asked_for or str(r["by"]["id"]) == asked_for]
+            key = "updated" if q.get("sort") == "modified" else "created"
+            seen.sort(key=lambda r: (r[key], r["id"]), reverse=True)
+            rows = [self.request_row(r) for r in seen[skip:skip + take]]
+            return j({"pageInfo": {"pages": max(1, (len(seen) + take - 1) // take), "page": skip // take + 1,
+                                   "results": len(seen)}, "results": rows})
+        if len(segs) == 3 and segs[0] == "request" and segs[1].isdigit() and method == "POST":
+            if segs[2] not in ("approve", "decline"):
+                return j({"message": "Status must be approve or decline."}, 400)
+            if not self.may(self.MANAGE_REQUESTS):
+                return j({"message": "You do not have permission to access this endpoint."}, 403)
+            r = next((r for r in self.requests if r["id"] == int(segs[1])), None)
+            if r is None:
+                return j({"message": "Request not found."}, 404)
+            if r["status"] != 1:
+                return j({"message": "Request is not pending."}, 409)
+            r["status"] = 2 if segs[2] == "approve" else 3
+            r["modified_by"], r["updated"] = self.user, self.stamp(len(self.requests) + 24 * 7)
+            t = self.by_id(r["kind"], r["tmdb"])
+            if t is not None and r["status"] == 2 and t["status"] in (None, 1, 2):
+                t["status"] = 3
+            return j(self.request_row(r))
         if segs == ["request"] and method == "POST":
             try:
                 ask = json.loads(body or b"{}")
@@ -2561,8 +2663,10 @@ class SeerrFixture:
             if (t["kind"] == "movie" and (t["status"] or any(r["tmdb"] == t["id"] for r in self.requests))) or \
                     (t["kind"] == "tv" and all(n in open_seasons or t["seasons"].get(n) for n in seasons)):
                 return j({"message": "Request for this media already exists."}, 409)
+            n = len(self.requests) + 24 * 7
             req = {"id": len(self.requests) + 1, "kind": t["kind"], "tmdb": t["id"], "status": 1,
-                   "seasons": [n for n in seasons if n not in open_seasons],
+                   "seasons": [n for n in seasons if n not in open_seasons], "by": self.user, "modified_by": None,
+                   "created": self.stamp(n), "updated": self.stamp(n),
                    "serverId": ask.get("serverId"), "profileId": ask.get("profileId"),
                    "rootFolder": ask.get("rootFolder")}
             self.requests.append(req)
@@ -2955,7 +3059,7 @@ class MockPms:
             return j(obj, status)
         answered = self.seerr.handle(method, p, q, headers, body)
         if answered is not None:
-            if method == "POST" and p == "/api/v1/request":
+            if method == "POST" and (p == "/api/v1/request" or p.startswith("/api/v1/request/")):
                 self.note_write(method, path, body)
             return answered
         answered = self.discover.handle(method, p, q, headers, lib)
@@ -4310,6 +4414,31 @@ def _selftest_seerr():
         status, _, _ = call("/api/v1/request", {"mediaType": "tv", "mediaId": show["id"], "seasons": [3],
                                                 "serverId": 1, "profileId": 1, "rootFolder": "/media/tv-archive"}, cookie)
         assert status == 201 and pms.seerr.requests[-1]["rootFolder"] == "/media/tv-archive"
+        # Everybody's requests for a manager, newest change first, with who and the download.
+        everyone = call("/api/v1/request?take=20&skip=0&filter=all&sort=modified", cookie=cookie)[1]["results"]
+        assert {r["requestedBy"]["id"] for r in everyone} == {1, 2, 3}
+        assert [r["updatedAt"] for r in everyone] == sorted((r["updatedAt"] for r in everyone), reverse=True)
+        moving = next(r for r in everyone if r["media"]["downloadStatus"])
+        assert moving["media"]["downloadStatus"][0]["sizeLeft"] < moving["media"]["downloadStatus"][0]["size"]
+        movie = pms.seerr.by_id(moving["type"], moving["media"]["tmdbId"])
+        facts = call(f"/api/v1/movie/{movie['id']}", cookie=cookie)[1]
+        assert facts["runtime"] and facts["genres"] and facts["mediaInfo"]["downloadStatus"]
+        # Approving a pending request is a write; a second answer is 409, and an unknown verb 400.
+        pending = next(r for r in everyone if r["status"] == 1 and r["requestedBy"]["id"] != 1)
+        before = len(pms.writes)
+        status, answered, _ = call(f"/api/v1/request/{pending['id']}/approve", {}, cookie)
+        assert status == 200 and answered["status"] == 2 and answered["modifiedBy"]["id"] == 1
+        assert len(pms.writes) == before + 1
+        assert call(f"/api/v1/request/{pending['id']}/decline", {}, cookie)[0] == 409
+        assert call(f"/api/v1/request/{pending['id']}/retry", {}, cookie)[0] == 400
+        # Without Manage Requests: only the user's own, and no decisions.
+        pms.seerr.configure({"manage": False})
+        own = call("/api/v1/request?take=20&skip=0&filter=all&sort=modified", cookie=cookie)[1]["results"]
+        assert own and {r["requestedBy"]["id"] for r in own} == {1}
+        assert call("/api/v1/request?requestedBy=2", cookie=cookie)[0] == 403
+        other = next(r for r in pms.seerr.requests if r["status"] == 1)
+        assert call(f"/api/v1/request/{other['id']}/decline", {}, cookie)[0] == 403
+        pms.seerr.configure({"manage": True})
         pms.seerr.configure({"advanced": False})
         assert call("/api/v1/auth/me", cookie=cookie)[1]["permissions"] == SeerrFixture.REQUEST
         pms.seerr.configure({"plex_login": "refuse"})

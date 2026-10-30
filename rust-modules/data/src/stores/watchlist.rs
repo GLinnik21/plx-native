@@ -1820,7 +1820,7 @@ pub(super) mod tests {
         assert_eq!(s.view().facts(1), Some(TileFacts { watched: false, resume_ms: 30_000, dur_ms: 100_000 }));
         assert!(s.apply_view(&change("42", ViewFact::Watched(true))));
         assert_eq!(s.view().facts(1).map(|f| (f.watched, f.resume_ms)), Some((true, 0)));
-        assert!(s.apply_view(&change("42", ViewFact::Facts { watched: false, unwatched: true, resume_ms: 5 })));
+        assert!(s.apply_view(&change("42", ViewFact::Facts { watched: false, unwatched: true, resume_ms: 5, sort: None })));
         assert_eq!(s.view().facts(1).map(|f| (f.watched, f.resume_ms)), Some((false, 5)));
         assert!(!s.apply_view(&change("999", ViewFact::Watched(true))), "an item no tile is matched to");
         assert!(!s.apply_view(&ViewChange { sid: ServerId::from_raw(3), ..change("42", ViewFact::Watched(true)) }),
