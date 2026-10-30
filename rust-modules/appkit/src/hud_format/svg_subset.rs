@@ -1701,8 +1701,9 @@ mod tests {
             for (i, poly) in digits.iter().enumerate() {
                 assert!(poly.len() > 4, "{id}: sub-path {i} is a bare rectangle: {poly:?}");
                 for &(x, y) in poly {
-                    let r = ((x - 12.0).powi(2) + (y - 13.0).powi(2)).sqrt();
-                    assert!(r <= 6.0, "{id}: ({x}, {y}) is {r} from the ring's centre; its inner edge is 7");
+                    let (dx, dy) = (x - 12.0, y - 13.0);
+                    let r2 = dx * dx + dy * dy;
+                    assert!(r2 <= 36.0, "{id}: ({x}, {y}) is {r2} (squared) from the ring's centre; its inner edge is 7, so 49");
                 }
             }
             let (outline, counter) = (signed_area(&digits[1]), signed_area(&digits[2]));
