@@ -384,7 +384,7 @@ impl MoreMenuState {
             speeds,
             pages: PageStack::new(),
             motion: PanelMotion::new(),
-            anchor: crate::player_hud::classic::frame_geometry().row,
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
             side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
         // A page entry opens straight on that page, no slide. Quality (the failure screen's OK)
@@ -897,13 +897,13 @@ fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
 }
 
 /// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`]) and TALLEST, for the overscan audit
-/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside classic's anchor:
+/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside the anchor of the compiled classic (`player_hud::audit_geometry`):
 /// asked for the whole screen's height it gets the whole room, which is what a list longer than
 /// the room fills (the track menu's audit asks the same).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let placed = place_panel(
-        crate::player_hud::classic::frame_geometry().row,
+        crate::player_hud::audit_geometry().row,
         (plx_ui::table::MENU_MAX_W, plx_ui::consts::SCR_H),
     );
     out.push(("… overflow menu panel", placed.rect));
@@ -1001,7 +1001,7 @@ mod tests {
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true;
         form.set_or_open(root_form(&ps, &rows, forced, current, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES), None);
-        MoreMenuState { form, rows, forced, current, speed: plx_media::player::RATE_NORMAL, speeds: plx_media::player::PLAY_RATES.to_vec(), pages: PageStack::new(), motion: PanelMotion::new(), anchor: crate::player_hud::classic::frame_geometry().row, side: std::cell::Cell::new(plx_ui::popover::Side::Above) }
+        MoreMenuState { form, rows, forced, current, speed: plx_media::player::RATE_NORMAL, speeds: plx_media::player::PLAY_RATES.to_vec(), pages: PageStack::new(), motion: PanelMotion::new(), anchor: crate::player_hud::classic::ctrl_row_hit_rect(), side: std::cell::Cell::new(plx_ui::popover::Side::Above) }
     }
 
     /// The same menu with the Quality page pushed (and its slide skipped).
@@ -1299,7 +1299,7 @@ mod tests {
             speeds: plx_media::player::PLAY_RATES.to_vec(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
-            anchor: crate::player_hud::classic::frame_geometry().row,
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
             side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
         for a in rows_for(false).into_iter().filter(|a| matches!(a, Action::SetQuality(_))) {
@@ -1603,7 +1603,7 @@ mod focus_tests {
             speeds: plx_media::player::PLAY_RATES.to_vec(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
-            anchor: crate::player_hud::classic::frame_geometry().row,
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
             side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         }
     }

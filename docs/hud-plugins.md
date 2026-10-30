@@ -169,8 +169,8 @@ Text, formatting, languages
 - F26. `ui/src/CLAUDE.md`, Localization: "App-owned text (`i18n::msg`, `plex::languages` names,
   `Quality::label`) never elides in any shipped language ... server- and user-owned text ... may", and
   "Adaptive text size or kerning is not used to make text fit"; the player HUD, `up_next` and chapters are
-  listed under "Known unchecked surfaces". `i18n::SHIPPED` is generated from `locales/languages.json`, ten
-  tags: en es be fr it pt de hu ru pl (`python3 -I -c` over the file).
+  listed under "Known unchecked surfaces". `i18n::SHIPPED` is generated from `locales/languages.json`, eleven
+  tags: en es be fr it pt de hu ru pl nl (`python3 -I -c` over the file).
 - F27. Formatting: `fmt::clock` prints `m:ss` (`h:mm:ss` past an hour) with no leading zero
   (`ui/src/fmt.rs:159-167`), so a chapter at 0 prints "0:00"; `fmt::duration` uses `core.duration_minutes`
   = "{minutes}m" in English (`locales/en/core.json:19-25`), so 56 minutes prints "56m"; the HUD's
@@ -259,7 +259,7 @@ Other subsystems the plan touches
 - D2. **One renderer.** The built-in HUD becomes the package `builtin:classic`, JSON embedded in the
   binary. When its captures are pixel-identical to today's, `draw_hud`'s hard-coded ARRANGEMENT is
   deleted; the widgets it arranges stay as the shared primitives the renderer composes (`draw_scrim`,
-  `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw`). The trailer
+  `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw_at`). The trailer
   keeps drawing through those primitives at classic geometry (F35); a user HUD does not restyle trailers.
 - D3. **The contract has two halves, versioned together**: `HudModel`, a per-frame read-only snapshot of
   exactly the values presentation reads (every F3 global becomes a field `src/app/run.rs` fills once a frame and
@@ -331,7 +331,7 @@ Other subsystems the plan touches
   add a hint if the room test then needs one. Section "Menus and other HUD popovers".
 - D10. **App-owned text never elides; server text may.** A text cell bound to an app label or an
   app-formatted value hugs its measured width (it takes no `w` and no `max_lines`), lint measures it in
-  all ten shipped languages, and overlap is the z-census's job (F26). Server text (`title.main`, chapter
+  all eleven shipped languages, and overlap is the z-census's job (F26). Server text (`title.main`, chapter
   names, the synopsis) may set `w` and `max_lines`. The kicker mixes the two ("S2, E3 · " is the app's,
   the episode title the server's): only the server tail elides, and lint checks that the app prefix fits,
   as `Section::accessory_app_prefix` does for tables. The facts run drops whole chips tail first (classic's
@@ -375,10 +375,11 @@ Other subsystems the plan touches
 ```
 app (src/)               runners: HudStore effects -> net fetch / storage worker / dir scan (app/adapters/huds.rs);
                          one command performer shared by placed controls and folded More rows
-screens/player           Focusable and pointer stops read HudGeometry; draw calls HudRenderer::draw(model)
+screens/player           Focusable and pointer stops read HudGeometry; the page draws through player_hud::render::draw(&Compiled, &Frame, ..)
 appkit/player_hud/       state.rs (F4 logic, unchanged), model.rs (HudModel), motion.rs (HudMotion),
                          render.rs (compiled draw list -> shared widgets), geometry.rs (HudGeometry),
-                         command.rs (HudCommand, enabled predicates), builtin/classic.json (include_str)
+                         command.rs (HudCommand, enabled predicates); builtin:classic is hud_format/fixtures/classic.plxhud.json,
+                         embedded as hud_format::BUILTIN_CLASSIC
 appkit/hud_format        schema descriptor table, strict parser, validator, SVG-subset checker, layout compiler
 data/hudpacks            HudStore machine (new [data] member): installed set, selection (the index cache joins in PR13); pure; never parses
 media/player/text_style  HudBand value type replaces the two constants as the caption ceiling input
@@ -394,8 +395,8 @@ ui/popover               the shared anchored placer (D9), used by the player men
   `NewerFormat`, `OlderFormat` or `AppRange`). The supported format range stays with the runner, which owns the
   validator: the store is handed no range.
 - Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing, allocation or
-  hashing; all text goes through `measure` (`draw_tabs`' doc: "measures none" when not drawn,
-  `player_hud.rs:2160-2162`).
+  hashing; all text goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each
+  text draw.
 - Package icons are rasterized through the same `plx_gfx::svg::rasterize` (F36); their textures belong to
   the `CompiledHud` instance `App` hands the player screen and are released when the HUD changes. The
   icon draw API takes `IconRef { Builtin(Icon), Pack(PackIcon) }`; no second cache, no new global.
@@ -453,7 +454,13 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
   bottom edges, default 72 and 80: classic's grab band `(SB_X, SCR_H - 270, sb_w, 160)` around the track at
   `SB_Y = SCR_H - 198`, 8 tall, `player_hud.rs:474-475`, `:1405-1407`; registered as the lowest stop, #162)}: exactly one,
-  the scrub group. Its band's box is the track (`thickness`); the knob, clocks and mark overhang it;
+  the scrub group. Its cell is the track plus the line the clocks are drawn on: as tall as `CLOCK_TOP` (30 px, the
+  clocks' line top below the track's top, the one constant `draw_playbar_look` draws at) plus `clock_size` x
+  `CLOCK_LINE` (1.25, a ratio so a measurer cannot move a band), or `thickness` if that is taller, so no band under
+  the bar lands on the clocks. The compile also emits the two clocks as rects on the line (the widest string the app
+  can print, `H:MM:SS`, in the weight each is drawn in; under `follow_head` the elapsed clock travels the track, so
+  its rect is the track's width), which I4 reads as decor and I10 judges as app text. The knob and mark overhang the
+  track;
 - `segment` {`id`, `gap`, `items`}: one `HStack` of controls (below);
 - `strip` {`bind`: `chapters`, `w`, `card_w`, `card_h`, `gap`, `radius`, `focus`: `"ring"`, `label_align` (`centre`,
   the Shelf's default, or `leading`, D11), `card`: {`art`, `overlay`, `below`, `below_gap`}}: the chapters
@@ -552,7 +559,7 @@ Bindings: `title.kicker`, `title.main`, `title.is_episode`, `transport.paused`, 
 `chrome.alpha`, `chapters.present`, `slot.kind`, `focus.id`, `stats.on`, `seek.interval`; the chapter list
 `chapters` with `item.thumb`, `item.start` (`fmt::clock`), `item.title` (the server's chapter name, which may elide; when it is empty, the app's
 `widgets_chapters_number(index)`, `chapters_panel.rs:176-179`, which is APP text: drawn whole, never elided, and lint
-measures it with a 3-digit N at the cell's width in all ten languages, an error if it does not fit), `item.is_current`
+measures it with a 3-digit N at the cell's width in all eleven languages, an error if it does not fit), `item.is_current`
 (from `HudModel`), `item.focused`; `info.still`, `info.title`, `info.summary`, `info.facts`; app labels
 `label.chapters`, `label.info` (the existing tab strings); Up Next draws its own inside (below), so it has no bindings.
 
@@ -566,22 +573,22 @@ Up Next (`layout.up_next`): `replaces` (segment ids), `band`, `align`, `still` (
 `widgets::progress_bar` (`ui/src/widgets.rs:1478`), `numeric` through the new i18n key
 `player.up_next.seconds_left` with a `fit_report`). While `slot.kind` is UpNext or Skip in the compact
 state, the named segments leave the frame and the focus map; the others stay. The block's INSIDE is app-owned and
-drawn by `up_next::draw` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
+drawn by `up_next::draw_over` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
 `TEXT_PRIMARY`, in a 460 box, elided; `up_next.rs:290-298`, `:320-330`), the still a 16:9 `draw_card` at the primary's
 width, radius 10, the caption `CAP_GAP` 8 above the still's foot and `BTN_GAP` 24 above the buttons, the pills `PILL_GAP`
 apart (`up_next.rs:194-200`, `:226-258`), the primary floored at the floor width (below), Watch Credits at its own
 label's width (`:259-266`). The column overhangs its band upward from the replaced segment and adds nothing to the band's
 height; I4 refuses an overhang over any drawn interactive rect, and under `band: "block"` it counts as the compact
 block's decor (Captions). `align` places it: `end` at the replaced segments' end edge (classic, `CTRL_RIGHT`), `center` on their centre,
-`start` on their start edge, and the caption's text alignment follows (right, centre, left): `layout_of` gains that
-`Align` in place. A package chooses whether the still and the caption draw, never their inside. The FLOOR exists where it
+`start` on their start edge, and the caption's text alignment follows (right, centre, left): the compile applies
+`align` (`standin` in `hud_format/compile.rs`) over `up_next::layout_at`. A package chooses whether the still and the caption draw, never their inside. The FLOOR exists where it
 means what it does today, "never narrower than the pair it replaces, so the row does not visibly shrink"
 (`up_next.rs:252-259`): when `replaces` names ONE start- or end-aligned segment, the floor is that segment's width with
 every item that CAN be absent collapsed (a Previous/Next member, an item with `when`), whatever the current item holds;
 for classic that is `disc_row()` over `disc_items(false)`, the three always-present discs, `ctrl_row_w` = 3 x 64 + 2 x 20 =
 232 (`player_hud.rs:672-683`, `:717-719`). A centred or multi-segment replace has no floor: the primary takes its own
-label's width (`ctrl_slot`'s measure without the `.max`). The Skip pill is `ctrl_slot` of ITS OWN label
-(`skip_pill.rs:75-77`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
+label's width (`classic::stand_in_w` with no floor). The Skip pill is `classic::stand_in_w` of ITS OWN label
+(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
 timing and cancel rules (`up_next.rs:105-125`, production sites `src/app/run.rs:2001`, `:2026-2045`,
 `src/app/playback.rs:939`), what the buttons do.
 
@@ -635,7 +642,7 @@ marker ends or Watch Credits dismisses the offer.
   enabled (a valuation where its predicate fails, Previous for a movie, asks nothing); a command placed under only some
   of them folds. Each command that none places is
   folded into More's root, after Quality and Speed and before Options (the More fold PR adds the rows, their
-  i18n keys in all ten catalogs and a `fit_report` over More's FormTable; the section rows reuse
+  i18n keys in all eleven catalogs and a `fit_report` over More's FormTable; the section rows reuse
   `widgets_player_chapters`/`widgets_player_info` (`player_hud.rs:1433-1434`) and the Info actions reuse
   their button strings (`info_panel.rs:566-575`), so only Previous, Next and the track-menu row need new keys). A command that already has a
   More row (`toggle_stats`, the Options switch) never folds. Reachability can therefore never fail except
@@ -686,13 +693,13 @@ three places:
 
 A package that fails on the TV does not load in that language: playback uses `builtin:classic`, one `hud: fallback`
 event-log line names the package, the language and the first finding's code, and Settings > Player HUD marks the
-package's row with the reason (a new key `settings.hud.unfit_language`, "Doesn't fit in {language}", in all ten
+package's row with the reason (a new key `settings.hud.unfit_language`, "Doesn't fit in {language}", in all eleven
 catalogs with a `fit_report`). The selection is kept, so a change back to a language it fits restores it.
 
 The gap: an app release can lengthen a translation or add a language, so a package that passed can fail later.
 - (a) Re-lint on every app release: YES. A job in `plxnative-huds`, triggered by a `repository_dispatch` from this
   repo's release workflow and also weekly as a backstop (a missed dispatch must not leave the index stale), re-lints
-  the latest version of every entry with the new release's simulator in all ten languages. Per entry it records the
+  the latest version of every entry with the new release's simulator in all eleven languages. Per entry it records the
   result in the index as `unfit: [{"from": "<app release>", "langs": [...]}]`; when every language fails, or a
   non-text invariant does, it writes `app.max` = the last release that passed, the field Versioning already defines.
   It opens an issue on the registry repo mentioning the author, with the lint JSON per language. The gallery hides an
@@ -700,16 +707,16 @@ The gap: an app release can lengthen a translation or add a language, so a packa
   passes as its update; an installed copy keeps compiling locally and falls back per (b). Why a job: the failure is
   caused by the app's release, not by the author's push, and per-PR CI never runs again on an unchanged entry. In this
   repo, every PR's CI lints `site/hud/examples/` (PR6) and `builtin:classic` (`builtin_classic_passes_every_invariant`,
-  PR5) in all ten languages, so a string change that breaks a shipped package fails before any release.
+  PR5) in all eleven languages, so a string change that breaks a shipped package fails before any release.
 - (b) The fallback is per language. A failure is a property of (package, app release, language); failing the package
-  everywhere would punish nine languages for one translation, and keeping the selection lets a later fix (a new app
+  everywhere would punish ten languages for one translation, and keeping the selection lets a later fix (a new app
   release, a package update, a language switch) restore it with no step from the viewer.
 - (c) Headroom. No margin for future translation edits: their size has no distribution to derive one from (catalog
   strings change one by one, by hand), so any figure would be arbitrary, and it would reject designs that fit every
   shipped language today; (a) and (b) turn a later change into a visible, attributed event instead of a guess. One
   margin IS derivable and is required, in registry CI only: the measurement skew between the pinned simulator and the
   TV. PR12 measures the lint's app-text corpus (every app string a package can show, at every rung lint allows it, in
-  all ten languages, `item.title`'s fallback `widgets_chapters_number(N)` up to 3 digits) through the simulator and through the TV's own `Measure` (a dev
+  all eleven languages, `item.title`'s fallback `widgets_chapters_number(N)` up to 3 digits) through the simulator and through the TV's own `Measure` (a dev
   trigger under `devtriggers` dumps the widths under `--guest --mock`, the TV lock held), and sets `CI_TEXT_SKEW`, per
   rung, to the largest observed `tv_w - sim_w` rounded up to a whole px. Registry CI then requires app text to fit with
   that many px to spare (`HUD-W0602`, a warning locally, an error in registry CI). Until it is measured the margin is 0
@@ -860,8 +867,8 @@ image's proportions rounded to tokens and are approximate.
     "list": "<svg viewBox='0 0 24 24'><path d='M4 6h16v2H4zM4 11h16v2H4zM4 16h16v2H4z'/></svg>",
     "gear": "<svg viewBox='0 0 24 24'><path d='M10 2h4l1 3 3-1 2 3-2 2v2l2 2-2 3-3-1-1 3h-4l-1-3-3 1-2-3 2-2v-2L4 7l2-3 3 1z'/></svg>",
     "eq": "<svg viewBox='0 0 24 24'><path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/></svg>",
-    "back10": "<svg viewBox='0 0 24 24'><path d='M12 3v3a7 7 0 1 1-7 7H3a9 9 0 1 0 9-9V1L8 5zM9 10h1v6H9zM12 10h3v6h-3z'/></svg>",
-    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM9 10h2v6H9zM12 10h3v6h-3z'/></svg>"
+    "back10": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7v3l-4-4zM9 8h1.5v8h-1.5v-6.5l-1.5 1.5v-1.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
+    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM8 8h2l1 1v6l-1 1h-2l-1-1v-0.5h2.5v-2h-2v-1.5h2v-1.5h-2.5v-0.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>"
   },
   "layout": {
     "anchor": "bottom",
@@ -1045,7 +1052,7 @@ whole file):
     { "id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26, "cells": [
       { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION" } }
     ] },
-    { "id": "tabs", "gap_before": 59, "cells": [
+    { "id": "tabs", "gap_before": 7, "cells": [
       { "align": "start", "segment": { "id": "tabs", "gap": "SM", "items": [
         { "id": "tab_info", "command": "toggle_section", "section": "info", "widget": "pill", "size": 64 },
         { "id": "tab_chapters", "command": "toggle_section", "section": "chapters", "when": "chapters.present", "widget": "pill", "size": 64 }
@@ -1076,7 +1083,7 @@ at 768 and the title at 802.
 | Chrome fade | title, row and tabs on `pc = p.alpha(chrome_a)`; bar, clocks and preview on `p` (`:2075-2081`, `:2146-2160`) | bands `top` and `tabs` default `fades`; `bar` `steady` |
 | Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and the rest at its defaults, which are classic's |
 | Grab band | `scrub_hit_rect` = `(SB_X, SCR_H - 270, sb_w, 160)` (`:1405-1407`) | `playbar.grab` defaults 72 / 80 |
-| Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 59`; `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
+| Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 7` (`tab_y()` 949 less the bar cell's foot, 882 + 60: the cell holds the clocks' line); `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
 | Skip | `ctrl_slot` of its own label (`skip_pill.rs:75-77`) | the Skip rule (Package format) |
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |
@@ -1088,7 +1095,7 @@ at 768 and the title at 802.
 
 The loader and compiler enforce these for EVERY source (built-in, registry, sideload), per state, per slot
 and per shipped language (measured widths change with the language: the TV compiles for its language and
-recompiles on a change; registry CI lints all ten):
+recompiles on a change; registry CI lints all eleven):
 - I1. App-owned surfaces cannot be replaced or covered: the failure read-out (never red), the repair alert,
   decision prompts, caption drawing, Up Next's and the sections' logic, the Skip pill, the scrub-preview
   still, the Tracks, More and Timing overlays. `readout_owns_frame` keeps deciding whether the HUD draws.
@@ -1436,7 +1443,7 @@ PR8. Sections.
 
 PR9. The More fold.
 - Goal: `more_menu::Action::Hud(HudCommand)` performed through PR3's performer; the folded rows from the compiled
-  package; i18n keys in all ten catalogs (`be` looked up per the repo's dictionary rule) with a `fit_report` over
+  package; i18n keys in all eleven catalogs (`be` looked up per the repo's dictionary rule) with a `fit_report` over
   More's FormTable (new keys only for Previous, Next and the track-menu row; R2); `OverlayKind::More`'s
   address becomes a `MorePage` so `page: speed` opens on Speed.
 - Verify: a package with no previous/next folds both and the rows perform them; classic folds nothing (its More
@@ -1450,7 +1457,7 @@ PR10. Store, local install, selection, drop folder.
   `Validate`, `Selection`, `Notice`), runners in `app/adapters/huds.rs` on the storage worker, `paths::hud_candidates()`,
   a `Profile` `setting!` with the install fallback, and `SettingsPage::PlayerHud`, a FormTable keyed by package id
   (not a `PickerKind`, a static vocabulary, F32) with a `fit_report`; a compile failure in the current language falls
-  back per language with the `hud: fallback` line and the Settings reason (`settings.hud.unfit_language`, ten catalogs,
+  back per language with the `hud: fallback` line and the Settings reason (`settings.hud.unfit_language`, eleven catalogs,
   `fit_report`), Text fit.
 - Files: `data/src/hudpacks.rs`, `ci/module-layers.ini`, `docs/module-layers.md`, `ci/machines.ini`, `base/src/paths.rs`,
   `plex/src/plex/session/prefs.rs`, `screens/src/family.rs`, `screens/src/preferences*`, `src/app/adapters/`.

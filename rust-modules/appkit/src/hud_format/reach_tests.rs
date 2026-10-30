@@ -12,7 +12,7 @@ use super::parse::{self, Package};
 use super::reach::Layout;
 use super::{check, codes, Code, Finding, Fold};
 
-const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
+const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
 const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
 

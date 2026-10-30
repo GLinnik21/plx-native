@@ -4,16 +4,19 @@
 //! transport HUD).
 //!
 //! This was one 3600-line file; it is now a directory so that a layout can be swapped without
-//! touching the rules, and so that the draw path reads no process global:
+//! touching the rules, and so that the draw path reads no player global (the localized labels it draws go through
+//! `plx_platform::i18n`, [`classic::tab_labels`] among them):
 //!
 //! | module | what it is |
 //! |---|---|
 //! | [`state`] | the HUD's LOGIC, no pixels: the control slot (which disc / pill / pair occupies the row), the busy and transport marks, the failure read-out's rows and actions, the scrub tuning. Re-exported here, so `player_hud::slot`, `player_hud::Action`, `player_hud::scrub_speed` keep their paths |
-//! | [`model`] | [`model::HudModel`]: the per-frame, read-only snapshot of every global the presentation reads. Every draw takes `&HudModel` |
+//! | [`model`] | [`model::HudModel`]: the per-frame, read-only snapshot of every player global the presentation reads. The draws take what they paint and the values they read as arguments; the scrub preview and the renderer's `Frame` carry the snapshot |
 //! | [`motion`] | the clock prewarm ([`motion::ClockWarm`]), the pop-in of a row ([`motion::RowPop`]) and the HUD's per-frame animation state ([`motion::HudMotion`], formerly `TransportRow`) |
 //! | [`geometry`] | the focus GROUPS ([`geometry::GROUP_SCRUB`] ..), [`geometry::HudGeometry`] and [`geometry::RowAnchor`]: what a layout reports back to focus, the pointer, the overscan audit and the stand-ins |
 //! | [`command`] | [`command::HudCommand`], the closed vocabulary of things a control asks the app to do, with its app-owned enabled predicates, and classic's five discs as controls |
-//! | [`classic`] | the classic layout: its constants, hit rects, and every draw of the transport (scrim, title, playbar, control row, tabs, the failure read-out) |
+//! | [`classic`] | the transport's primitives and `builtin:classic`'s constants: the draws the renderer calls (scrim, title, playbar, clocks, scrub preview), the three the trailer calls (scrim, title, playbar), the failure read-out, `ROW_ANCHOR`; the tab pills are the renderer's. The arrangement is the compiled package's |
+//! | [`loaded`] | a package parsed and compiled once, never in the draw ([`loaded::LoadedHud`]), and the production [`AppLabels`](crate::hud_format::compile::AppLabels) constructor over a passed-in locale |
+//! | [`render`] | the renderer: it draws a [`Compiled`](crate::hud_format::compile::Compiled) package's state through the shared widgets; `builtin:classic` is the embedded package it draws |
 //! | [`seek_jump`] | the long-seek jump chord |
 //!
 //! What stays here is the caption drawing (`draw_subtitle_message`, `draw_subtitle_bitmap`), which
@@ -22,8 +25,10 @@
 pub mod classic;
 pub mod command;
 pub mod geometry;
+pub mod loaded;
 pub mod model;
 pub mod motion;
+pub mod render;
 pub mod seek_jump;
 pub mod state;
 use plx_gfx::gfx::{delete_tex, upload_rgba};
@@ -397,6 +402,17 @@ impl SubtitleBitmaps {
     }
 }
 
+/// **The geometry the audits grade**: the embedded `builtin:classic`, compiled, in its compact Discs state
+/// (the same report the player page places from). The audit has no measurer of its own and none of these
+/// facts needs one, so the compile runs on the shipped advances; it is the same package and the same
+/// numbers the (since deleted) hand-written layout reported (`compiled_classic_matches_the_hand_written_layout`, against
+/// the frozen golden).
+#[cfg(any(test, feature = "test-support"))]
+pub fn audit_geometry() -> geometry::HudGeometry {
+    let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure);
+    geometry::geometry(&hud.compiled, ControlSlot::Discs(Controls::NONE), false, false)
+}
+
 /// **The transport's outermost drawn chrome, for the overscan audit**
 /// ([`plx_ui::consts::SAFE`]). Private geometry, so the rects are built where they are drawn
 /// rather than restated in the module that grades them.
@@ -408,7 +424,7 @@ impl SubtitleBitmaps {
 /// the audit is about here is the row's left edge and its BOTTOM, and both are font-independent.
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let g = classic::frame_geometry();
+    let g = audit_geometry();
     out.push(("player scrubber", g.playbar));
     out.push(("player control row", g.row));
     out.push(("player bottom tab row", g.tab_row));

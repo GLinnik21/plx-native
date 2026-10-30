@@ -53,7 +53,7 @@ pub fn secs_short(ms: i64) -> String {
 #[cfg(test)]
 mod one_shape_tests {
     use super::*;
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
 
     const MINUTE: i64 = 60_000;
 
@@ -76,8 +76,9 @@ mod one_shape_tests {
     /// the unit marks every other length on screen wears ("6m", "2h 14m"), in every shipped language.
     #[test]
     fn time_left_wears_the_unit_marks_of_a_duration_in_every_language() {
-        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
-            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
             for minutes in [8, 62] {
                 let (left, length) = (time_left_minutes_in(cx, minutes), duration_minutes_in(cx, minutes));
@@ -88,8 +89,9 @@ mod one_shape_tests {
 
     #[test]
     fn every_shipped_language_tells_a_duration_with_both_numbers() {
-        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
-            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
             let (hours, minutes) = (duration(134 * MINUTE), duration(14 * MINUTE));
             assert!(hours.contains('2') && hours.contains("14"), "{tag}: {hours}");
             assert!(minutes.contains("14") && !minutes.contains('0'), "{tag}: {minutes}");
@@ -104,8 +106,9 @@ mod one_shape_tests {
         for bad in ["", "tomorrow", "2027-13-40", "2027-02-30", "2027-03", "2027-03-12-01"] {
             assert_eq!(coming_on(bad, MonthWidth::Medium), None, "{bad:?}");
         }
-        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
-            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
             let lead = msg::watchlist_state_coming_on("");
             let (medium, long) = (coming_on("2027-03-12", MonthWidth::Medium).unwrap(), coming_on("2027-03-12", MonthWidth::Long).unwrap());
             assert!(medium.starts_with(lead.trim_end()), "{tag}: {medium} vs {lead:?}");

@@ -138,6 +138,66 @@ impl HudCommand {
     }
 }
 
+/// The `by` of a `seek` item as the package wrote it: a nonzero integer of seconds, or the name `setting`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ByParam<'a> {
+    Secs(i64),
+    Name(&'a str),
+}
+
+/// A control item's command parameters, the sibling keys of its `command` as the package wrote them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Params<'a> {
+    pub by: Option<ByParam<'a>>,
+    pub dir: Option<&'a str>,
+    pub tab: Option<&'a str>,
+    pub page: Option<&'a str>,
+    pub section: Option<&'a str>,
+}
+
+impl HudCommand {
+    /// **The command a control item names**, from its `command` string and parameter keys. `None` for a
+    /// name outside the vocabulary or a parameter outside its type (a zero or out-of-range `by`, a
+    /// `setting` seek with no `dir`); the format's validation rejects those before a compile, so a `None`
+    /// here is a control that performs nothing rather than something wrong.
+    pub fn from_item(name: &str, p: &Params<'_>) -> Option<Self> {
+        Some(match name {
+            "toggle_play" => HudCommand::TogglePlay,
+            "seek" => HudCommand::Seek(match p.by? {
+                ByParam::Secs(n) => SeekBy::Secs(NonZeroI32::new(i32::try_from(n).ok()?)?),
+                ByParam::Name("setting") => SeekBy::Setting(match p.dir? {
+                    "back" => SeekDir::Back,
+                    "forward" => SeekDir::Forward,
+                    _ => return None,
+                }),
+                ByParam::Name(_) => return None,
+            }),
+            "previous" => HudCommand::Previous,
+            "next" => HudCommand::Next,
+            "open_tracks" => HudCommand::OpenTracks(match p.tab? {
+                "subtitles" => TrackTab::Subtitles,
+                "audio" => TrackTab::Audio,
+                _ => return None,
+            }),
+            "open_more" => HudCommand::OpenMore(match p.page.unwrap_or("root") {
+                "root" => MorePage::Root,
+                "quality" => MorePage::Quality,
+                "speed" => MorePage::Speed,
+                _ => return None,
+            }),
+            "toggle_section" => HudCommand::ToggleSection(match p.section? {
+                "chapters" => Section::Chapters,
+                "info" => Section::Info,
+                _ => return None,
+            }),
+            "from_beginning" => HudCommand::FromBeginning,
+            "go_to_detail" => HudCommand::GoToDetail,
+            "toggle_stats" => HudCommand::ToggleStats,
+            _ => return None,
+        })
+    }
+}
+
 /// Classic's five discs as the controls they are, in the order they are drawn and walked:
 /// Previous, Next, Subtitles, Audio, More. The index is the control's ordinal and
 /// [`super::BTN_PREVIOUS`] .. [`super::BTN_MORE`] name them.
@@ -297,6 +357,39 @@ mod tests {
         assert_eq!(SeekBy::Setting(SeekDir::Forward).step_ns(interval), interval);
         assert_eq!(SeekBy::Setting(SeekDir::Back).step_ns(interval), -interval);
         assert!(NonZeroI32::new(0).is_none(), "a zero jump is not representable");
+    }
+
+    /// Every command of the vocabulary is built from the keys a package writes, a parameter outside its
+    /// type builds nothing, and a literal `by` keeps its sign.
+    #[test]
+    fn a_control_item_names_its_command_by_its_sibling_keys() {
+        let none = Params::default();
+        assert_eq!(HudCommand::from_item("toggle_play", &none), Some(HudCommand::TogglePlay));
+        assert_eq!(HudCommand::from_item("previous", &none), Some(HudCommand::Previous));
+        assert_eq!(HudCommand::from_item("next", &none), Some(HudCommand::Next));
+        assert_eq!(HudCommand::from_item("from_beginning", &none), Some(HudCommand::FromBeginning));
+        assert_eq!(HudCommand::from_item("go_to_detail", &none), Some(HudCommand::GoToDetail));
+        assert_eq!(HudCommand::from_item("toggle_stats", &none), Some(HudCommand::ToggleStats));
+        let by = |by| Params { by: Some(by), ..Params::default() };
+        assert_eq!(HudCommand::from_item("seek", &by(ByParam::Secs(-10))), Some(HudCommand::Seek(secs(-10))));
+        assert_eq!(HudCommand::from_item("seek", &by(ByParam::Secs(30))), Some(HudCommand::Seek(secs(30))));
+        assert_eq!(HudCommand::from_item("seek", &by(ByParam::Secs(0))), None, "a zero jump is nothing");
+        assert_eq!(HudCommand::from_item("seek", &by(ByParam::Secs(i64::MAX))), None);
+        assert_eq!(HudCommand::from_item("seek", &none), None, "a seek needs its `by`");
+        let setting = Params { by: Some(ByParam::Name("setting")), dir: Some("forward"), ..Params::default() };
+        assert_eq!(HudCommand::from_item("seek", &setting), Some(HudCommand::Seek(SeekBy::Setting(SeekDir::Forward))));
+        assert_eq!(HudCommand::from_item("seek", &Params { dir: None, ..setting }), None, "`setting` needs a `dir`");
+        let tab = |t| Params { tab: Some(t), ..Params::default() };
+        assert_eq!(HudCommand::from_item("open_tracks", &tab("subtitles")), Some(HudCommand::OpenTracks(TrackTab::Subtitles)));
+        assert_eq!(HudCommand::from_item("open_tracks", &tab("audio")), Some(HudCommand::OpenTracks(TrackTab::Audio)));
+        assert_eq!(HudCommand::from_item("open_tracks", &tab("video")), None);
+        assert_eq!(HudCommand::from_item("open_more", &none), Some(HudCommand::OpenMore(MorePage::Root)), "`page` defaults to the root");
+        let page = Params { page: Some("speed"), ..Params::default() };
+        assert_eq!(HudCommand::from_item("open_more", &page), Some(HudCommand::OpenMore(MorePage::Speed)));
+        let section = |s| Params { section: Some(s), ..Params::default() };
+        assert_eq!(HudCommand::from_item("toggle_section", &section("chapters")), Some(HudCommand::ToggleSection(Section::Chapters)));
+        assert_eq!(HudCommand::from_item("toggle_section", &section("info")), Some(HudCommand::ToggleSection(Section::Info)));
+        assert_eq!(HudCommand::from_item("dance", &none), None);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::hud_format::{codes, Finding};
 
 const REFERENCE: &str = include_str!("../fixtures/reference.plxhud.json");
 const MINIMAL: &str = include_str!("../fixtures/minimal.plxhud.json");
-const CLASSIC: &str = include_str!("../fixtures/classic.plxhud.json");
+const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
 const HERO_CENTER: &str = include_str!("../fixtures/hero-center.plxhud.json");
 const TABS: &str = include_str!("../fixtures/tabs.plxhud.json");
 const PALETTE: &str = include_str!("../fixtures/palette.plxhud.json");

@@ -109,7 +109,7 @@ pub enum ControlSlot {
 
 impl ControlSlot {
     /// Stable slots in this occupant. An absent or disabled disc has no focus stop; `enabled`
-    /// and `item_rect` define those independently of the stable indices.
+    /// and the compile's `items` define those independently of the stable indices.
     pub fn items(self) -> c_int {
         match self {
             ControlSlot::Discs(_) => BTN_N,
@@ -285,7 +285,7 @@ pub fn busy_surface_with(
     }
 }
 
-/// PURE: does the read-out own the WHOLE frame, so [`draw_hud`] draws nothing at all?
+/// PURE: does the read-out own the WHOLE frame, so [`render::draw`](super::render::draw) draws nothing at all?
 ///
 /// **Only a failure**, and the asymmetry is the point. A `Failed` read-out is terminal: there is no
 /// picture and no position, so every piece of transport under it is a lie — `Player Screen.dc.html`
@@ -319,7 +319,7 @@ pub fn transport_hidden(ps: &plx_media::route::PlaybackSession) -> bool {
 }
 
 /// Sample the live globals ONCE and resolve the owner. Call this once per frame and pass the result
-/// to both [`draw_hud`] and [`draw_readout`] — the same discipline [`slot`] keeps, and for the same
+/// to both [`render::draw`](super::render::draw) and [`draw_readout`] — the same discipline [`slot`] keeps, and for the same
 /// reason: two independent derivations of one three-way choice is how the two indicators drifted
 /// apart in the first place.
 pub fn busy(ps: &plx_media::route::PlaybackSession) -> Busy {
@@ -582,13 +582,13 @@ impl FailureReadout {
 // old `app/run.rs` ladder calling `icon_hit`/`scrub_hit` on the raw pointer position by hand. The
 // GEOMETRY those functions describe is unchanged — only how a caller LEARNS it: a registered `Stop`
 // (and its mirror in `PlayerScreen`'s own `Focusable::place`) rather than a bare function the
-// frame loop had to know to call. `scrub_hit` is GONE for that reason (phase 12); `icon_hit`
-// survives as the geometry its own tests grade. Kept as plain `u32` constants,
+// frame loop had to know to call. `scrub_hit` is GONE for that reason (phase 12), and `icon_hit`
+// went with the hand-written arrangement (the compile's `items` are the geometry now). Kept as plain `u32` constants,
 // not an enum, so `PlayerScreen` can address a control-row/tab-row ITEM by `BASE + index` exactly
-// as `icon_hit`'s `0..BTN_N` scan already did.
+// as the old `icon_hit`'s `0..BTN_N` scan did.
 pub const ELEM_SCRUB: u32 = 0;
 /// `+ 0..items()` for whatever occupies the row — the discs, the Skip pill, or both Up Next
-/// buttons, each at its own rect ([`ControlSlot::item_rect`]).
+/// buttons, each at its own rect (`HudGeometry::items`).
 ///
 /// **A control's element is `ELEM_CONTROL_BASE + ordinal`, in an open-ended range**: the ordinal
 /// is the control's place in its layout (classic's five discs are 0..5), and there is no upper

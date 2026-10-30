@@ -13,7 +13,7 @@
 //! timer are one object rather than a button beside a rail.
 //!
 //! **Two buttons, and they are deliberately not equals** (the design's own note): *Next Episode*
-//! takes the [`ctrl_slot`](crate::player_hud::classic::ctrl_slot) width — the floor that keeps the row
+//! takes the row's floor width (`hud_format/compile.rs`, through `classic::stand_in_w`) — the floor that keeps the row
 //! from visibly shrinking when it appears — while *Watch Credits* takes only its own label's, since
 //! a second full-width capsule would read as a pair of equals when one continues watching and the
 //! other does nothing at all. They are laid out in that spatial order, so LEFT reaches Watch
@@ -119,7 +119,7 @@ pub fn tick(&mut self, slot: crate::player_hud::ControlSlot, now: u32) {
 /// `bare_transport` is the third way and the one that reads as an omission until it bites: an
 /// OVERLAY — a track menu, the Info card, the Chapters strip — is the only way of taking hold
 /// of the transport that never moves the focus ring. Worse,
-/// [`crate::player_hud::classic::draw_hud`] draws the control row only for the BARE transport, so with
+/// the renderer (`player_hud::render`) draws the control row only for the BARE transport, so with
 /// the Info card open the tile is not on screen at all. Without this term a countdown that was
 /// already running when the card opened kept its clock behind a panel nobody could see it through
 /// and cut to the next episode out of nowhere — the same failure `HudState::raise_for_offer`
@@ -225,16 +225,10 @@ pub struct Layout {
     pub next: Rect,
 }
 
-/// PURE — the whole column from the two MEASURED pill widths, so the draw and the pointer hit-test
-/// are one arrangement and the arrangement is host-testable. Measuring is the impure half and lives
-/// in [`layout`]: `text_width` is `TTF_SizeUTF8`, which the host suite cannot even link against.
-pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
-    // Where the row hangs, as the layout reports it: the stand-in lands on exactly these.
-    layout_at(crate::player_hud::classic::frame_geometry().row_anchor, next_w, credits_w)
-}
-
-/// [`layout_of`] over any row anchor: the column from the two pill widths, right-anchored at
-/// `anchor.right` on the row `anchor.top` / `anchor.h` describe. PURE. The layout compiler
+/// **The offer's column from the two pill widths**, right-anchored at
+/// `anchor.right` on the row `anchor.top` / `anchor.h` describe. PURE, so the draw and the pointer hit-test
+/// are one arrangement and the arrangement is host-testable (measuring the pills is the caller's, since
+/// `text_width` is `TTF_SizeUTF8`, which the host suite cannot even link against). The layout compiler
 /// (`hud_format::compile`) calls it with the anchor of the segments its package's Up Next replaces,
 /// so a package's offer and the classic one are the one arrangement.
 pub fn layout_at(anchor: crate::player_hud::geometry::RowAnchor, next_w: f32, credits_w: f32) -> Layout {
@@ -269,30 +263,6 @@ pub fn layout_at(anchor: crate::player_hud::geometry::RowAnchor, next_w: f32, cr
     }
 }
 
-/// [`layout_of`] over the two measured widths. The primary takes the same control-row slot the
-/// Subtitles/Audio pair occupies — never narrower than the pair it replaces, so the row does not
-/// visibly shrink when it appears — while *Watch Credits* takes only its own label's width:
-/// deliberately NOT a second `ctrl_slot`, because that floor exists to hold the row's right edge
-/// steady, which is the primary's job, and two equal capsules would say the two choices are
-/// equivalent.
-pub fn layout(row: &mut crate::player_hud::motion::HudMotion, measure: &dyn plx_machine::machine::Measure) -> Layout {
-    layout_of(
-        crate::player_hud::classic::ctrl_slot(row, plx_platform::i18n::msg::widgets_next_episode(), measure).w,
-        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, None, measure),
-    )
-}
-
-/// [`layout`] without writing the row's width memo — what `ControlSlot::item_rect` places the two
-/// buttons at. Only the two BUTTONS are pointer targets: the still and its caption are not, since
-/// with two actions in the row a click on the artwork has no single obvious meaning, and guessing
-/// one is how a stray click starts an episode the user did not ask for.
-pub fn layout_peek(row: &crate::player_hud::motion::HudMotion, measure: &dyn plx_machine::machine::Measure) -> Layout {
-    layout_of(
-        crate::player_hud::classic::ctrl_slot_w(row, plx_platform::i18n::msg::widgets_next_episode(), measure),
-        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, None, measure),
-    )
-}
-
 /// The caption — `"Up Next · S2, E4 · Laura"`. PRIMARY and bold, not secondary: it sits at y≈760
 /// where the HUD scrim is only ~0.28, so over a bright end card a secondary grey measures ~1.3:1 —
 /// invisible. It is also the only thing distinguishing this episode's ID from the now-playing one
@@ -306,9 +276,26 @@ fn caption(u: &UpNext) -> String {
     plx_platform::i18n::msg::widgets_next_caption(&episode)
 }
 
-pub fn draw(
+/// Which of the offer's two pieces of decor a package draws (`up_next.still`, `up_next.caption`). The
+/// two buttons are always drawn: they are the offer's targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Decor {
+    pub still: bool,
+    pub caption: bool,
+}
+
+impl Decor {
+    /// classic's: the still and its caption
+    pub const BOTH: Self = Self { still: true, caption: true };
+}
+
+/// **Draw the offer** over a [`Layout`] the caller already has: the compiled package's rects
+/// (`Standin::up_next`), placed at compile time, so nothing here measures a button.
+pub fn draw_over(
     ps: &plx_media::route::PlaybackSession,
-    row: &mut crate::player_hud::motion::HudMotion,
+    l: &Layout,
+    decor: Decor,
+    row: &crate::player_hud::motion::HudMotion,
     up: &Countdown,
     p: Painter,
     focused: bool,
@@ -319,31 +306,34 @@ pub fn draw(
     let Some(u) = plx_media::route::up_next(ps) else {
         return;
     };
-    let l = layout(row, measure);
     let (pop_credits, pop_next) = (row.scale(BTN_CREDITS), row.scale(BTN_NEXT));
     // NOT scaled: `CARD_FOCUS_SCALE` is the terminal value of a focus spring the shelves drive, and
     // passing it as a constant drew the still permanently 7% oversized — overhanging the column on
     // both sides. The still is decoration on a focusable row, not a focusable tile itself, so it
     // keeps the card treatment (sheen + resting shadow) at rest scale.
-    draw_card(
-        p,
-        l.still,
-        plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
-        &u.thumb,
-        (480, 270),
-        10.0,
-        false,
-        1.0,
-    );
+    if decor.still {
+        draw_card(
+            p,
+            l.still,
+            plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
+            &u.thumb,
+            (480, 270),
+            10.0,
+            false,
+            1.0,
+        );
+    }
 
-    let elided = plx_gfx::text::elide_by(&caption(u), l.caption.w, false, |t| {
-        measure.width_str(t, theme::size::CAPTION, true)
-    });
-    if let Ok(cs) = CString::new(elided) {
-        Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY)
-            .bold()
-            .h(HAlign::Right)
-            .draw(p, l.caption);
+    if decor.caption {
+        let elided = plx_gfx::text::elide_by(&caption(u), l.caption.w, false, |t| {
+            measure.width_str(t, theme::size::CAPTION, true)
+        });
+        if let Ok(cs) = CString::new(elided) {
+            Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY)
+                .bold()
+                .h(HAlign::Right)
+                .draw(p, l.caption);
+        }
     }
 
     let e = Env::inert();
@@ -442,11 +432,11 @@ mod tests {
     /// the host suite cannot link SDL2_ttf at all.
     #[test]
     fn the_column_is_right_anchored_on_one_edge() {
-        // the real orders of magnitude: `ctrl_slot`'s floor is 232, and "Watch Credits" measures a
+        // the real orders of magnitude: the row's floor is 232, and "Watch Credits" measures a
         // little under it — which is the asymmetry the design is making a point of
-        let l = layout_of(243.0, 226.0);
+        let l = layout_at(crate::player_hud::classic::ROW_ANCHOR, 243.0, 226.0);
         let (n, c, t, cap) = (l.next, l.credits, l.still, l.caption);
-        let right = crate::player_hud::classic::frame_geometry().row_anchor.right;
+        let right = crate::player_hud::classic::ROW_ANCHOR.right;
         assert_eq!(n.x + n.w, right, "the primary holds the row's right edge");
         assert_eq!(t.x + t.w, right, "…and the still shares it");
         assert_eq!(
