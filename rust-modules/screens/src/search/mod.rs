@@ -318,14 +318,14 @@ impl SearchScreen {
     }
 
     fn activate<H: SearchLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_REQUESTS, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEERR, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
         if elem >= plx_ui::dispatch::STRIP_BASE {
             let request = match elem {
                 TAB_KEY_HOME => SearchReq::Tab(HomeTab::Home),
                 TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
                 TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
                 TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
-                TAB_KEY_REQUESTS => SearchReq::Tab(HomeTab::Requests),
+                TAB_KEY_SEERR => SearchReq::Tab(HomeTab::Seerr),
                 // The Search mark is the page the user is already on: nothing to request, but the
                 // same ask as arriving by it — back onto the field, keyboard up.
                 TAB_KEY_SEARCH => {
@@ -653,7 +653,7 @@ impl SearchScreen {
         Some((self.stack.shelf_frame(self, cx, k)?, self.stack.shelf(k)?))
     }
     fn request_cards<'a, H: SearchLike>(&'a self, cx: &Cx<'_, H>) -> RequestCards<'a> {
-        RequestCards { elems: &self.request_elems, cards: &self.request, art_server: Self::request_art_server(cx) }
+        RequestCards { elems: &self.request_elems, cards: &self.request, art_server: Self::request_art_server(cx), more: false, epoch: 0 }
     }
     /// The stack's key of result row `row`.
     fn section(&self, row: usize) -> Sec { Sec::Row(self.rows[row].kind, self.rows_gen) }

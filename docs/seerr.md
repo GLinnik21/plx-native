@@ -19,7 +19,7 @@ it is reached at exactly that address.
 | store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands; a `SeerrCmd::Refresh` keeps a slot's shown answer while it is read again, and when that read fails |
 | app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, the runner's `seerr-call` | hands the store the stored address, signs a seated profile in once |
 | Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`), Connect with the live connection line, Remove |
-| Requests tab | `screens/src/requests.rs` (`AppArg::Requests`, `TAB_KEY_REQUESTS`) | on the strip after the type pills and just before the Watchlist mark while an address is set (`chrome::StripSource::requests`); rows My requests (the first `MINE_SHOWN`, each title read by its own `Detail`), Trending, Popular movies and shows, Upcoming movies and shows; a card opens the Seerr title page |
+| Seerr tab | `screens/src/seerr_tab/` (`AppArg::Seerr`, `TAB_KEY_SEERR`) | on the strip after the type pills and just before the Watchlist mark while an address is set (`chrome::StripSource::seerr`); a header row switches its two sections, Requests (the request list as `plx_ui::media_row` rows) and Discover (Trending, Popular and Upcoming shelves); see below |
 | Detail page | `screens/src/detail` (`HeroCtl::Request`, `RequestFace`, `request_face`) | a show's missing seasons: the last disc of the hero row (see below) |
 | request menu | `screens/src/seerr_request.rs` (`ContentPanel::SeerrRequest`, `AppArg::SeerrRequest`) | where a request goes: server, quality profile, root folder (see below) |
 
@@ -38,6 +38,33 @@ call. The session is never stored: it lives in the store, goes with the profile 
 for, and is signed in again after a 401 (a server restart forgets sessions). A 403 at sign-in is a
 Plex account the server does not let in (not imported, or Seerr's "new Plex sign-in" off); Settings
 says so. Redirects are never followed: a cookie must not reach another host.
+
+## The Seerr tab
+
+One page, two sections under the Library's header row (`plx_ui::page_header`): the section pills
+"Requests" and "Discover" stand on the left, the one on view on the selected plate, and OK on the
+other switches in place. The page opens on Requests.
+
+- **Requests** is the request list (`Slot::Requests(page)`), everybody's for a user the server shows
+  them to and the user's own otherwise; the header's read-out says which ("Everyone's requests",
+  "Your requests", from `SeerrUser::sees_all_requests`). Each request is a row
+  (`plx_ui::media_row::MediaRow`, its words composed in `seerr_tab/rows.rs`): the poster and the
+  title (read by the title's own `Detail`, since the list names none), the kind, year and requested
+  seasons, who asked and when, then the download while it moves ("68% · 1.2 GB of 4.0 GB · 12m
+  left", with the amber band along the poster's foot) or who approved or declined it, and a chip for
+  what became of it (Pending, Approved, Declined, Failed, Downloading, Processing, Partly available,
+  Available). A row is a section of its own, so the page scrolls to the focused row as it does to a
+  shelf. OK on a row opens the title's Seerr page.
+- The list is read again when the page is uncovered or Requests is chosen, and every 30 s
+  (`REFRESH_MS`) while a request on view is approved and not yet available; a refresh
+  (`SeerrCmd::Refresh`) keeps the rows on screen until it lands. Rows keep their order while the
+  page stands: a refresh updates them in place, and a request new to the page goes on top, so the
+  server re-sorting by its change time never moves the row under focus. The next page is read as
+  focus nears the last rows, so every request is reachable.
+- **Discover** is the five suggestion rows as shelves of the Request card. Titles wholly on the
+  server are left out unless the header's "Available · Hidden / Shown" control shows them (a partly
+  available show stays). A shelf the filter leaves short reads up to three pages by itself
+  (`MAX_FILL_PAGES`), and every further page as the reader walks near its end.
 
 ## A show's missing seasons (the Detail page)
 
@@ -131,9 +158,10 @@ query, a title, the token or the cookie.
 - Managed Plex Home profiles may not be allowed to sign in to Seerr; Settings shows the refusal.
 - Requests are never 4K: a 4K server is not offered, and there is no 4K request.
 - The menu has no tag or language-profile choice: the server's defaults apply.
-- "My requests" shows the first page of the list, newest first, and only its first `MINE_SHOWN`
-  titles: Seerr's request list carries no title, so each card costs one more call. It is read
-  again whenever the tab is uncovered.
+- Seerr's request list carries no title, so each request row costs one more call (its title's
+  detail), made once per page as the page arrives.
+- Request dates are the request's own UTC day in the language's short form, not "2 days ago": the
+  television's clock can be wrong after an offline start, and the UI has no wall clock.
 - A show's request asks for every missing season at once: there is no season picker, on the Detail
   page or the title page.
 - A show's TMDB id comes from its PMS record. A show matched by an agent that records none (the

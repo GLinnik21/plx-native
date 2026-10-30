@@ -228,15 +228,15 @@ fn another_profile_forgets_the_session_and_its_landings() {
     let io = Script::new(signed_in(), vec![Ok(titles(1)), Ok(titles(2))]);
     let mut store = store(&io);
     let first = WatchlistInput::for_test(1);
-    store.ask(Slot::Requests, SeerrOp::Requests { page: 1 }, &first);
+    store.ask(Slot::Requests(1), SeerrOp::Requests { page: 1 }, &first);
     run_jobs(&mut store);
     let second = WatchlistInput::for_test(2);
     assert!(store.pump(second.profile()), "the landing is the old profile's");
-    assert_eq!((store.connection(), store.answer(&Slot::Requests)), (&Connection::Idle, None));
-    store.ask(Slot::Requests, SeerrOp::Requests { page: 1 }, &second);
+    assert_eq!((store.connection(), store.answer(&Slot::Requests(1))), (&Connection::Idle, None));
+    store.ask(Slot::Requests(1), SeerrOp::Requests { page: 1 }, &second);
     run_jobs(&mut store);
     store.pump(second.profile());
-    assert_eq!(store.answer(&Slot::Requests), Some(&Answer::Ready(titles(2))));
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(2))));
     assert_eq!(io.calls.lock().unwrap().iter().filter(|c| c.starts_with("sign_in")).count(), 2,
         "the new profile signs in for itself");
 }
@@ -247,19 +247,19 @@ fn a_refresh_keeps_the_shown_answer_until_the_new_one_lands_and_when_it_fails() 
     let mut store = store(&io);
     let input = WatchlistInput::for_test(1);
     let op = SeerrOp::Requests { page: 1 };
-    store.run(SeerrCmd::Refresh { slot: Slot::Requests, op: op.clone() }, &input);
-    assert_eq!(store.answer(&Slot::Requests), Some(&Answer::Loading), "nothing shown yet: a plain ask");
+    store.run(SeerrCmd::Refresh { slot: Slot::Requests(1), op: op.clone() }, &input);
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Loading), "nothing shown yet: a plain ask");
     run_jobs(&mut store);
     store.pump(input.profile());
-    store.run(SeerrCmd::Refresh { slot: Slot::Requests, op: op.clone() }, &input);
-    assert_eq!(store.answer(&Slot::Requests), Some(&Answer::Ready(titles(1))), "kept while the refresh runs");
+    store.run(SeerrCmd::Refresh { slot: Slot::Requests(1), op: op.clone() }, &input);
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(1))), "kept while the refresh runs");
     run_jobs(&mut store);
     store.pump(input.profile());
-    assert_eq!(store.answer(&Slot::Requests), Some(&Answer::Ready(titles(2))), "the new answer replaces it");
-    store.refresh(Slot::Requests, op.clone(), &input);
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(2))), "the new answer replaces it");
+    store.refresh(Slot::Requests(1), op.clone(), &input);
     run_jobs(&mut store);
     store.pump(input.profile());
-    assert_eq!(store.answer(&Slot::Requests), Some(&Answer::Ready(titles(2))), "a failed refresh keeps it");
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Ready(titles(2))), "a failed refresh keeps it");
 }
 
 #[test]
@@ -268,15 +268,15 @@ fn a_plain_ask_over_a_refresh_in_flight_shows_its_own_outcome() {
     let mut store = store(&io);
     let input = WatchlistInput::for_test(1);
     let op = SeerrOp::Requests { page: 1 };
-    store.ask(Slot::Requests, op.clone(), &input);
+    store.ask(Slot::Requests(1), op.clone(), &input);
     run_jobs(&mut store);
     store.pump(input.profile());
-    store.refresh(Slot::Requests, op.clone(), &input);
-    store.ask(Slot::Requests, op, &input);
-    assert_eq!(store.answer(&Slot::Requests), Some(&Answer::Loading));
+    store.refresh(Slot::Requests(1), op.clone(), &input);
+    store.ask(Slot::Requests(1), op, &input);
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Loading));
     assert_eq!(run_jobs(&mut store), 2);
     store.pump(input.profile());
-    assert_eq!(store.answer(&Slot::Requests), Some(&Answer::Failed(SeerrError::Transport)),
+    assert_eq!(store.answer(&Slot::Requests(1)), Some(&Answer::Failed(SeerrError::Transport)),
         "the ask is no refresh: its failure is shown");
 }
 

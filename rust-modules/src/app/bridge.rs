@@ -1004,10 +1004,10 @@ impl Bridge {
             d.nav.tabs.strip_fallback = Some(match route {
                 AppArg::Search => plx_ui::widgets::TAB_KEY_SEARCH,
                 AppArg::Watchlist => plx_ui::widgets::TAB_KEY_WATCHLIST,
-                AppArg::Requests => plx_ui::widgets::TAB_KEY_REQUESTS,
+                AppArg::Seerr => plx_ui::widgets::TAB_KEY_SEERR,
                 _ => plx_screens::home::STRIP_HOME_ELEM,
             });
-            let source = super::chrome::StripSource { directory: self.directory.view(), requests: self.stores.seerr.configured() };
+            let source = super::chrome::StripSource { directory: self.directory.view(), seerr: self.stores.seerr.configured() };
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, source, Some((&io.profile, &io.preferences)));
             } else {
@@ -1793,9 +1793,9 @@ impl Bridge {
     }
 
     /// What the strip's destinations are read from: the directory, and whether a Seerr address is
-    /// set (the Requests pill, docs/seerr.md).
+    /// set (the Seerr pill, docs/seerr.md).
     pub(crate) fn strip_source(&self) -> super::chrome::StripSource<'_> {
-        super::chrome::StripSource { directory: self.directory.view(), requests: self.stores.seerr.configured() }
+        super::chrome::StripSource { directory: self.directory.view(), seerr: self.stores.seerr.configured() }
     }
 
     /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
@@ -3664,7 +3664,7 @@ fn pill_of_arg(arg: &AppArg, source: crate::app::chrome::StripSource<'_>) -> Opt
         AppArg::Home => pill_of(source, Pill::Home),
         AppArg::Search => pill_of(source, Pill::Search),
         AppArg::Watchlist => pill_of(source, Pill::Watchlist),
-        AppArg::Requests => pill_of(source, Pill::Requests),
+        AppArg::Seerr => pill_of(source, Pill::Seerr),
         // The grid and the two pages its header pushes (Collections, Recommended) are all the
         // library's: they select its type's pill, the pill they were opened from.
         arg if arg.is_library_family() => {
@@ -3705,7 +3705,7 @@ pub(crate) fn nav_tab(
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
                     Pill::Watchlist => HomeTab::Watchlist,
-                    Pill::Requests => HomeTab::Requests,
+                    Pill::Seerr => HomeTab::Seerr,
                     Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
                     Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
                 };
@@ -3721,7 +3721,7 @@ pub(crate) fn nav_tab(
         }
         HomeTab::Search => AppArg::Search,
         HomeTab::Watchlist => AppArg::Watchlist,
-        HomeTab::Requests => AppArg::Requests,
+        HomeTab::Seerr => AppArg::Seerr,
     };
     nav_peer(d, arg, ret);
 }

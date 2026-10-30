@@ -1,34 +1,22 @@
 {
-  "requests.tab": {
-    "value": "Requests",
-    "description": "The Requests tab, titles on the household's Seerr server: Top bar tab label: the page of Seerr requests and suggestions"
-  },
-  "requests.row.mine": {
-    "value": "My requests",
-    "description": "The Requests tab, titles on the household's Seerr server: Row heading: titles this user asked the Seerr server for"
-  },
   "requests.row.trending": {
     "value": "Trending",
-    "description": "The Requests tab, titles on the household's Seerr server: Row heading: titles popular right now"
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: titles popular right now"
   },
   "requests.row.popular_movies": {
     "value": "Popular movies",
-    "description": "The Requests tab, titles on the household's Seerr server: Row heading: popular movies"
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: popular movies"
   },
   "requests.row.popular_tv": {
     "value": "Popular shows",
-    "description": "The Requests tab, titles on the household's Seerr server: Row heading: popular TV shows"
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: popular TV shows"
   },
   "requests.row.upcoming_movies": {
     "value": "Upcoming movies",
-    "description": "The Requests tab, titles on the household's Seerr server: Row heading: movies not released yet"
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: movies not released yet"
   },
   "requests.row.upcoming_tv": {
     "value": "Upcoming shows",
-    "description": "The Requests tab, titles on the household's Seerr server: Row heading: TV shows not aired yet"
-  },
-  "requests.empty": {
-    "value": "Nothing to show from Seerr yet.",
-    "description": "The Requests tab, titles on the household's Seerr server: Whole-page message when the Seerr server sent nothing to show"
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: TV shows not aired yet"
   }
 }

@@ -1,11 +1,11 @@
-//! The cards of a row of Seerr titles (docs/seerr.md): Search's Request row and the Requests
-//! tab's rows draw the same card, so it is written once here, where a screen may name it.
+//! The cards of a row of Seerr titles (docs/seerr.md): Search's Request row and the Seerr tab's
+//! Discover shelves draw the same card, so it is written once here, where a screen may name it.
 use plx_ui::cards::{CardSource, TileLabel};
 use plx_ui::widgets::Art;
 
 /// One card of the Request row: a title the household's Seerr server found for the query and the
 /// household's servers do not hold yet (docs/seerr.md). Owned by the page, built from the store's
-/// answer by the page that shows it (Search's Request row, the Requests tab).
+/// answer by the page that shows it (Search's Request row, the Seerr tab's Discover shelves).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RequestCard {
     pub kind: plx_data::seerr::MediaKind,
@@ -36,6 +36,12 @@ pub struct RequestCards<'a> {
     pub cards: &'a [RequestCard],
     /// A household server whose photo proxy fetches the TMDB posters; `None` draws blank faces.
     pub art_server: Option<u16>,
+    /// The server has further pages of this row: walking near its end asks for the next one
+    /// (`CardEvent::Want`).
+    pub more: bool,
+    /// How many of the row's pages have landed, so the shelf knows an ask was answered even when
+    /// the page brought no card it shows (`CardSource::page_epoch`).
+    pub epoch: u32,
 }
 
 impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for RequestCards<'_> {
@@ -50,6 +56,8 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for RequestCards<'
             _ => Art::Poster(None),
         }
     }
+    fn more(&self) -> bool { self.more }
+    fn page_epoch(&self) -> u32 { self.epoch }
     fn label(&self, i: usize) -> TileLabel {
         self.cards.get(i).map_or_else(TileLabel::default, |card| TileLabel::titled(&card.title, request_caption(card.status)))
     }

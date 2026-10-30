@@ -1,10 +1,7 @@
 {
-  "requests.tab": "Запросы",
-  "requests.row.mine": "Мои запросы",
   "requests.row.trending": "В тренде",
   "requests.row.popular_movies": "Популярные фильмы",
   "requests.row.popular_tv": "Популярные сериалы",
   "requests.row.upcoming_movies": "Скоро: фильмы",
-  "requests.row.upcoming_tv": "Скоро: сериалы",
-  "requests.empty": "Seerr пока нечего показать."
+  "requests.row.upcoming_tv": "Скоро: сериалы"
 }

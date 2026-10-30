@@ -44,7 +44,7 @@ pub mod tile_facts;
 /// The Under posters setting read once, and the one builder of a focused poster's caption.
 pub mod captions;
 
-/// The card of a Seerr title, shared by Search's Request row and the Requests tab.
+/// The card of a Seerr title, shared by Search's Request row and the Seerr tab's Discover section.
 pub mod seerr_cards;
 
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
@@ -279,8 +279,8 @@ pub enum HomeTab {
     /// The Watchlist mark, before Search (docs/watchlist-plan.md §2.4 W45).
     Watchlist,
     Search,
-    /// The Requests tab (docs/seerr.md): on the strip only while a Seerr address is set.
-    Requests,
+    /// The Seerr tab (docs/seerr.md): on the strip only while a Seerr address is set.
+    Seerr,
 }
 
 /// Addressed bootstrap/diagnostic intentions. They use the same owned step and focus engine as
@@ -1096,7 +1096,7 @@ pub enum ContentReq {
     Present(ContentArg),
     Back,
     /// A press on the shared strip from a page that wears it and has no lane of its own (the
-    /// Requests page): the destination's tab.
+    /// Seerr tab): the destination's tab.
     Tab(HomeTab),
     /// A press on the strip's profile chip, from such a page.
     Account,
@@ -1810,7 +1810,7 @@ pub mod page_id {
     pub const LIBRARY_COLLECTIONS: ScreenId = ScreenId(28);
     pub const LIBRARY_RECOMMENDED: ScreenId = ScreenId(29);
     /// 32, forward of the Seerr title page's 31.
-    pub const REQUESTS: ScreenId = ScreenId(32);
+    pub const SEERR: ScreenId = ScreenId(32);
 }
 
 /// **A screen argument: everything the container needs to mount one screen, and nothing else.**
@@ -1913,9 +1913,9 @@ pub enum AppArg {
     /// from the bookmark mark. It carries nothing — the list is the store's, the order is the
     /// store's sort and filter.
     Watchlist,
-    /// The Requests page (`screens::requests`, docs/seerr.md): a PEER of Home and the Watchlist on
-    /// the strip. It carries nothing — the rows are the Seerr store's.
-    Requests,
+    /// The Seerr tab (`screens::seerr_tab`, docs/seerr.md): a PEER of Home and the Watchlist on the
+    /// strip. It carries nothing — the rows are the Seerr store's.
+    Seerr,
     /// Playback. Its panels are NOT here — they are entries on the player page's own
     /// `ModalStack` ([`Self::PlayerOverlay`]), and the container owns which one is up.
     Player,
@@ -1939,7 +1939,7 @@ impl AppArg {
     }
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Requests,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str},SeerrTitle{tv:bool,tmdb:u64}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Seerr,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str},SeerrTitle{tv:bool,tmdb:u64}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
@@ -1991,7 +1991,7 @@ impl LogicalState for AppArg {
             Self::LibraryCollections { section } => { c.u32(0).u32(12).u32(*section); }
             Self::LibraryRecommended { section } => { c.u32(0).u32(13).u32(*section); }
             // 14, forward of LibraryRecommended's 13.
-            Self::Requests => { c.u32(0).u32(14); }
+            Self::Seerr => { c.u32(0).u32(14); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
             Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
@@ -2008,7 +2008,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
     /// them fade the bar with the page.
     fn chrome(&self) -> Chrome {
         match self {
-            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist | AppArg::Requests => Chrome::TabBar,
+            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist | AppArg::Seerr => Chrome::TabBar,
             // The two sub-pages of a library keep the bar, as the Library they are pushed over.
             AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => Chrome::TabBar,
             AppArg::Login
@@ -2057,7 +2057,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::ItemMenu(_) => 20,
             // 25 and 26, forward of Collection's 24: the Watchlist page and its Sort & Filter menu.
             AppArg::Watchlist => page_id::WATCHLIST.0,
-            AppArg::Requests => page_id::REQUESTS.0,
+            AppArg::Seerr => page_id::SEERR.0,
             AppArg::WatchlistMenu(_) => 26,
             // The seven page ids are the ones `Legacy(Route)` computed, unchanged: an id is a
             // screen's identity in a recorded state and in `same_instance`, so they are allocated
@@ -2087,7 +2087,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::SeerrTitle { .. }) => 31,
             // 30, forward of the Recommended page's 29.
             AppArg::VersionsPanel(_) => 30,
-            // 33, forward of the Requests page's 32.
+            // 33, forward of the Seerr tab's 32.
             AppArg::SeerrRequest(_) => 33,
         })
     }
@@ -2303,7 +2303,7 @@ where
             // The list is the store's: the page mounts on "loading" and the application feeds it
             // the rows, the options and the matched facts (`WatchlistIn`) on its first frames.
             AppArg::Watchlist => Box::new(crate::watchlist::page::WatchlistScreen::loading(entry)),
-            AppArg::Requests => Box::new(crate::requests::RequestsScreen::new(entry)),
+            AppArg::Seerr => Box::new(crate::seerr_tab::SeerrScreen::new(entry)),
             // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
             // gesture, the held-key timer, the control row's springs and the Up Next countdown,
             // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
@@ -2443,7 +2443,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::LibraryRecommended { .. }
             | AppArg::Search
             | AppArg::Watchlist
-            | AppArg::Requests
+            | AppArg::Seerr
             | AppArg::Player
             | AppArg::Content(_) => {
                 panic!("a page argument is not a surface: its word is `route=`")
@@ -2510,7 +2510,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::watchlist::menu::SHAPE,
     crate::catalog::CatalogScreen::SHAPE,
     crate::seerr_title::SeerrTitleScreen::SHAPE,
-    crate::requests::RequestsScreen::SHAPE,
+    crate::seerr_tab::SeerrScreen::SHAPE,
     crate::versions_panel::SHAPE,
     crate::seerr_request::SHAPE,
 ];
@@ -2707,7 +2707,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // (the show it asked Seerr about); the previous pin was 0x996c_f958_8b43_8bcb.
 // The request menu (docs/seerr.md): `ARG_SHAPE` gains `SeerrRequest{tv,tmdb,anchor}` and
 // `SCREEN_SHAPES` gains `seerr_request::SHAPE`; the previous pin was 0xc7ee_9398_b737_249e.
-const SCREEN_SHAPES_PIN: u64 = 0x5234_18a3_2b35_8218;
+// The Seerr tab (docs/seerr.md): `ARG_SHAPE`'s `Requests` becomes `Seerr`, and `RequestsScreen::SHAPE`
+// in `SCREEN_SHAPES` becomes `SeerrScreen::SHAPE` (two sections under a header row, the request
+// rows); the previous pin was 0x5234_18a3_2b35_8218.
+const SCREEN_SHAPES_PIN: u64 = 0xdb97_2b53_a03a_e324;
 
 #[cfg(test)]
 mod arg_tests {

@@ -147,8 +147,8 @@ pub(crate) enum Screen {
     Catalog,
     /// A title on the household's Seerr server (`screens::seerr_title`); its fields ride on `content`.
     SeerrTitle,
-    /// The Requests tab (`screens::requests`); its fields ride on `content`.
-    Requests,
+    /// The Seerr tab (`screens::seerr_tab`); its fields ride on `content`.
+    Seerr,
     /// `overlay` is the same word the heartbeat prints after `overlay=`, supplied by `app.rs` from
     /// its own exhaustive match on the private `Overlay` enum.
     Player {
@@ -272,7 +272,7 @@ fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: S
         Screen::Home => s.push_str(content),
         Screen::Library => s.push_str(content),
         Screen::Detail | Screen::Person | Screen::Collection | Screen::Catalog | Screen::SeerrTitle
-            | Screen::Requests => s.push_str(content),
+            | Screen::Seerr => s.push_str(content),
         // Owned like Library/Detail/Person: the content string is built generically by the
         // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
         // `LogicalState::probe` output), not read off a legacy global here.
@@ -451,7 +451,7 @@ mod tests {
             ("seerr_title", Screen::SeerrTitle),
             ("search", Screen::Search),
             ("watchlist", Screen::Watchlist),
-            ("requests", Screen::Requests),
+            ("seerr", Screen::Seerr),
             ("player", Screen::Player { overlay: "none" }),
             ("player", Screen::Player { overlay: "info" }),
         ]

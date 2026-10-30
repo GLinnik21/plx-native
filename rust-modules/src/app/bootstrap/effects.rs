@@ -29,7 +29,7 @@ fn tab(tab: &plx_screens::registry::HomeTab) -> &'static str {
     use plx_screens::registry::HomeTab;
     match tab {
         HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search",
-        HomeTab::Watchlist => "watchlist", HomeTab::Requests => "requests",
+        HomeTab::Watchlist => "watchlist", HomeTab::Seerr => "seerr",
     }
 }
 fn home_command(command: &plx_screens::registry::HomeCmd) -> Value {

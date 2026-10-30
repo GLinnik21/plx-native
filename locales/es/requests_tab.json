@@ -1,10 +1,7 @@
 {
-  "requests.tab": "Solicitudes",
-  "requests.row.mine": "Mis solicitudes",
   "requests.row.trending": "Tendencias",
   "requests.row.popular_movies": "Películas populares",
   "requests.row.popular_tv": "Series populares",
   "requests.row.upcoming_movies": "Próximas películas",
-  "requests.row.upcoming_tv": "Próximas series",
-  "requests.empty": "Seerr aún no tiene nada que mostrar."
+  "requests.row.upcoming_tv": "Próximas series"
 }

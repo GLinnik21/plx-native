@@ -1,5 +1,5 @@
 //! The Seerr store (docs/seerr.md): the connection to the household's Seerr server and every answer
-//! a request surface reads — Settings' connection line, the Search row, the Requests tab, a title's
+//! a request surface reads — Settings' connection line, the Search row, the Seerr tab, a title's
 //! page and the Detail page's missing seasons.
 //!
 //! Main-thread state plus an `Arc` mailbox, on the catalog store's shape (`stores::catalog`): the
@@ -57,8 +57,8 @@ pub enum Slot {
     Search,
     /// One page of one discover row.
     Discover(DiscoverRow, u32),
-    /// The request list's first page.
-    Requests,
+    /// One page of the request list.
+    Requests(u32),
     Detail(MediaKind, i64),
     /// A request write for one title.
     Request(MediaKind, i64),
