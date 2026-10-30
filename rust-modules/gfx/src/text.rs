@@ -3339,7 +3339,7 @@ mod tests {
         let pkg = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../pkg"));
         let shipped = [pkg.join("appfont.ttf"), pkg.join("appfont-bold.ttf")];
         assert_eq!(unreadable_face(&shipped), Ok(()));
-        let gone = pkg.join("appfont-gone.ttf");
+        let gone = pkg.join("no-such-face.ttf");
         let err = unreadable_face(&[shipped[0].clone(), gone.clone()]).unwrap_err();
         assert!(err.starts_with(&format!("{}: ", gone.display())), "{err}");
         let err = unreadable_face(&[pkg.to_path_buf()]).unwrap_err();
