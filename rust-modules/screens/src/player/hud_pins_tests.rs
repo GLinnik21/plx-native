@@ -2011,7 +2011,8 @@ mod sections {
         along_row_to(&mut run, info);
         run.step('K');
         assert_eq!(run.open_sections(), vec![Section::Info, Section::Chapters], "Info opened beside Chapters, as the latest");
-        assert_eq!(run.group(), GROUP_SECTION.0);
+        // the reference's Info places no action, so there is nothing to seat: the ring stays on the disc that opened it
+        assert_eq!((run.group(), run.screen().hud.nav.btn), (GROUP_ROW.0, info));
         run.step('B');
         assert_eq!(run.open_sections(), vec![Section::Chapters]);
         assert_eq!((run.group(), run.screen().hud.nav.btn), (GROUP_ROW.0, info), "BACK lands on Info's disc");
