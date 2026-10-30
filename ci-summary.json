@@ -57,47 +57,26 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-30T14:11:13Z",
+ "generated": "2026-10-30T16:10:03Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 69.6,
+   "change7_pct": 69.1,
    "d30": null,
    "delta30": null,
-   "delta7": 126.0,
+   "delta7": 125.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 95,
-   "n_prev": 74,
-   "now": 307,
-   "prev7": 181.0,
+   "n_now": 94,
+   "n_prev": 72,
+   "now": 307.0,
+   "prev7": 181.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
    "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 32.6,
-   "d30": null,
-   "delta30": null,
-   "delta7": 46.0,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 83,
-   "n_prev": 64,
-   "now": 187,
-   "prev7": 141.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -124,18 +103,39 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 21.8,
+   "change7_pct": 30.0,
    "d30": null,
    "delta30": null,
-   "delta7": 56,
+   "delta7": 42.5,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 82,
+   "n_prev": 62,
+   "now": 184.0,
+   "prev7": 141.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 21.3,
+   "d30": null,
+   "delta30": null,
+   "delta7": 55.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 95,
-   "n_prev": 73,
-   "now": 313,
-   "prev7": 257,
+   "n_now": 94,
+   "n_prev": 71,
+   "now": 313.0,
+   "prev7": 258,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -144,19 +144,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 3.6,
-   "change7_pct": 16.0,
-   "d30": 2295.0,
-   "delta30": 83.0,
-   "delta7": 328.0,
+   "change30_pct": 1.2,
+   "change7_pct": 15.8,
+   "d30": 2350,
+   "delta30": 28.0,
+   "delta7": 324.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 76,
-   "n_prev": 61,
+   "n_prev": 59,
    "now": 2378.0,
-   "prev7": 2050,
+   "prev7": 2054,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -165,19 +165,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -59.0,
-   "change7_pct": 14.5,
-   "d30": 922,
-   "delta30": -544.0,
-   "delta7": 48.0,
+   "change30_pct": -59.2,
+   "change7_pct": 14.4,
+   "d30": 926.5,
+   "delta30": -548.5,
+   "delta7": 47.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 232,
-   "n_prev": 145,
+   "n_prev": 140,
    "now": 378.0,
-   "prev7": 330,
+   "prev7": 330.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -188,17 +188,17 @@
   {
    "change30_pct": -60.3,
    "change7_pct": 12.7,
-   "d30": 929.0,
-   "delta30": -560.5,
-   "delta7": 41.5,
+   "d30": 936,
+   "delta30": -564.0,
+   "delta7": 42.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 96,
-   "n_prev": 72,
-   "now": 368.5,
-   "prev7": 327.0,
+   "n_now": 94,
+   "n_prev": 71,
+   "now": 372.0,
+   "prev7": 330,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -325,18 +325,18 @@
   },
   {
    "change30_pct": 26.2,
-   "change7_pct": 5.4,
+   "change7_pct": 5.1,
    "d30": 787,
    "delta30": 206.0,
-   "delta7": 51.0,
+   "delta7": 48.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
    "n_now": 6,
-   "n_prev": 17,
+   "n_prev": 15,
    "now": 993.0,
-   "prev7": 942,
+   "prev7": 945,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -346,18 +346,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.1,
+   "change7_pct": 14.2,
    "d30": null,
    "delta30": null,
-   "delta7": 48.0,
+   "delta7": 45.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 95,
-   "n_prev": 74,
-   "now": 365,
-   "prev7": 317.0,
+   "n_now": 94,
+   "n_prev": 72,
+   "now": 366.0,
+   "prev7": 320.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -367,17 +367,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 4.1,
+   "change7_pct": 4.3,
    "d30": null,
    "delta30": null,
-   "delta7": 13.0,
+   "delta7": 13.5,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 95,
-   "n_prev": 74,
-   "now": 327,
+   "n_now": 94,
+   "n_prev": 72,
+   "now": 327.5,
    "prev7": 314.0,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.6,
-   "change7_pct": 2.7,
-   "d30": 188,
-   "delta30": 80,
-   "delta7": 7.0,
+   "change30_pct": 39.0,
+   "change7_pct": 2.5,
+   "d30": 192.5,
+   "delta30": 75.0,
+   "delta7": 6.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 83,
-   "n_prev": 64,
-   "now": 268,
+   "n_now": 82,
+   "n_prev": 62,
+   "now": 267.5,
    "prev7": 261.0,
    "shown": true,
    "state": "flat",
@@ -409,18 +409,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.0,
+   "change7_pct": 14.1,
    "d30": null,
    "delta30": null,
-   "delta7": 30.0,
+   "delta7": 28.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 95,
-   "n_prev": 74,
-   "now": 230,
-   "prev7": 200.0,
+   "n_now": 94,
+   "n_prev": 72,
+   "now": 230.5,
+   "prev7": 202.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -429,19 +429,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -73.7,
-   "change7_pct": 4.4,
-   "d30": 811,
-   "delta30": -598,
-   "delta7": 9,
+   "change30_pct": -74.4,
+   "change7_pct": 5.7,
+   "d30": 831.0,
+   "delta30": -618.5,
+   "delta7": 11.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 83,
-   "n_prev": 63,
-   "now": 213,
-   "prev7": 204,
+   "n_now": 82,
+   "n_prev": 61,
+   "now": 212.5,
+   "prev7": 201,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -451,18 +451,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 5.0,
+   "change7_pct": 4.0,
    "d30": null,
    "delta30": null,
-   "delta7": 8.0,
+   "delta7": 6.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 95,
-   "n_prev": 74,
-   "now": 168,
-   "prev7": 160.0,
+   "n_now": 94,
+   "n_prev": 72,
+   "now": 167.5,
+   "prev7": 161.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -525,7 +525,7 @@
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
    "n_now": 6,
-   "n_prev": 17,
+   "n_prev": 15,
    "now": 23.0,
    "prev7": 19,
    "shown": false,
@@ -538,16 +538,16 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -5.3,
-   "d30": 17,
-   "delta30": 1,
+   "d30": 17.0,
+   "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 83,
-   "n_prev": 64,
-   "now": 18,
+   "n_now": 82,
+   "n_prev": 62,
+   "now": 18.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -567,7 +567,7 @@
    "kind": "job",
    "label": "Nightly: plan today's nightly",
    "n_now": 6,
-   "n_prev": 17,
+   "n_prev": 15,
    "now": 16.5,
    "prev7": 17,
    "shown": false,
@@ -587,9 +587,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 95,
-   "n_prev": 74,
-   "now": 5,
+   "n_now": 94,
+   "n_prev": 72,
+   "now": 5.0,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -601,16 +601,16 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 288.5,
-   "delta30": -285.5,
-   "delta7": 0,
+   "d30": 293.0,
+   "delta30": -290.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 95,
-   "n_prev": 73,
-   "now": 3,
+   "n_now": 94,
+   "n_prev": 71,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -622,16 +622,16 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 919.0,
-   "delta30": -916.0,
-   "delta7": 0,
+   "d30": 924.0,
+   "delta30": -921.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 95,
-   "n_prev": 73,
-   "now": 3,
+   "n_now": 94,
+   "n_prev": 71,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -664,7 +664,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 69.6,
+   "change_pct": 69.1,
    "commits": [
     {
      "pr": 1140,
@@ -717,73 +717,12 @@
      "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
     }
    ],
-   "from": 181.0,
+   "from": 181.5,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
    "since": "2026-10-30",
    "threshold_pct": 20.0,
-   "to": 307
-  },
-  {
-   "change_pct": 32.6,
-   "commits": [
-    {
-     "pr": 1140,
-     "sha": "c5e2bec77",
-     "title": "HUD split: state, model, motion and geometry; HUD travel on FocusEngine groups"
-    },
-    {
-     "pr": 1148,
-     "sha": "c0b61dff8",
-     "title": "HUD plugins: the caption band as a value through every caption reader"
-    },
-    {
-     "pr": 1150,
-     "sha": "58876a0f5",
-     "title": "HUD plugins: control identity and the command vocabulary; one shared command performer; OK on the engine"
-    },
-    {
-     "pr": 1146,
-     "sha": "9c1c600c1",
-     "title": "CI: Bump Swatinem/rust-cache in the actions group"
-    },
-    {
-     "pr": 1145,
-     "sha": "ab4b67ebb",
-     "title": "Tools: Bump @github/copilot and @sentry/cli in /tools"
-    },
-    {
-     "pr": 1152,
-     "sha": "f03cf3e0a",
-     "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
-    },
-    {
-     "pr": 1151,
-     "sha": "70a7aa66a",
-     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
-    },
-    {
-     "pr": 986,
-     "sha": "36e5ffea8",
-     "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
-    },
-    {
-     "pr": 1153,
-     "sha": "aef53a3f6",
-     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
-    },
-    {
-     "pr": 1159,
-     "sha": "8b634f436",
-     "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
-    }
-   ],
-   "from": 141.0,
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "since": "2026-10-30",
-   "threshold_pct": 20.0,
-   "to": 187
+   "to": 307.0
   },
   {
    "change_pct": 30.6,
@@ -847,7 +786,7 @@
    "to": 157.1
   },
   {
-   "change_pct": 21.8,
+   "change_pct": 30.0,
    "commits": [
     {
      "pr": 1140,
@@ -900,15 +839,76 @@
      "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
     }
    ],
-   "from": 257,
+   "from": 141.5,
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "since": "2026-10-30",
+   "threshold_pct": 20.0,
+   "to": 184.0
+  },
+  {
+   "change_pct": 21.3,
+   "commits": [
+    {
+     "pr": 1140,
+     "sha": "c5e2bec77",
+     "title": "HUD split: state, model, motion and geometry; HUD travel on FocusEngine groups"
+    },
+    {
+     "pr": 1148,
+     "sha": "c0b61dff8",
+     "title": "HUD plugins: the caption band as a value through every caption reader"
+    },
+    {
+     "pr": 1150,
+     "sha": "58876a0f5",
+     "title": "HUD plugins: control identity and the command vocabulary; one shared command performer; OK on the engine"
+    },
+    {
+     "pr": 1146,
+     "sha": "9c1c600c1",
+     "title": "CI: Bump Swatinem/rust-cache in the actions group"
+    },
+    {
+     "pr": 1145,
+     "sha": "ab4b67ebb",
+     "title": "Tools: Bump @github/copilot and @sentry/cli in /tools"
+    },
+    {
+     "pr": 1152,
+     "sha": "f03cf3e0a",
+     "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
+    },
+    {
+     "pr": 1151,
+     "sha": "70a7aa66a",
+     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
+    },
+    {
+     "pr": 986,
+     "sha": "36e5ffea8",
+     "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
+    },
+    {
+     "pr": 1153,
+     "sha": "aef53a3f6",
+     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
+    },
+    {
+     "pr": 1159,
+     "sha": "8b634f436",
+     "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
+    }
+   ],
+   "from": 258,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-30",
    "threshold_pct": 20.0,
-   "to": 313
+   "to": 313.0
   },
   {
-   "change_pct": 16.0,
+   "change_pct": 15.8,
    "commits": [
     {
      "pr": 1140,
@@ -961,7 +961,7 @@
      "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
     }
    ],
-   "from": 2050,
+   "from": 2054,
    "id": "minutes",
    "label": "Runner time per push",
    "since": "2026-10-29",
@@ -981,25 +981,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 365
+   "now": 366.0
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 327
+   "now": 327.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 313
+   "now": 313.0
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 307
+   "now": 307.0
   }
  ],
  "slowest_local": [
