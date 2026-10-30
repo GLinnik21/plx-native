@@ -247,8 +247,8 @@ pub enum Icon {
     CircleSlash,
     /// Three centred bars, long to short — the sort mark. Worn by
     /// the Library header's sort control, where it leads the chosen criterion
-    /// ("= Date added v"); it says "ordered by", not "filter". Our own path (`M4 7h16M7 12h10M10
-    /// 17h4`, stroke 2.2, round caps), so it has no third-party entry.
+    /// ("= Date added v"); it says "ordered by", not "filter". The Design System's own `sort.svg`
+    /// byte for byte (`M4 7L20 7M7 12L17 12M10 17L14 17`, stroke 2.2, round caps), so it has no third-party entry.
     Sort,
 }
 
@@ -652,7 +652,10 @@ mod ink_tests {
     #[test]
     fn the_sort_mark_matches_its_asset_and_rasterizes_clean() {
         let svg = src(Icon::Sort);
-        assert!(svg.contains(r#"d="M4 7h16M7 12h10M10 17h4""#));
+        // The Design System's own `sort.svg`, byte for byte (its one source of truth for the geometry).
+        assert_eq!(svg.trim_end(), concat!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" "##,
+            r#"stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7L20 7M7 12L17 12M10 17L14 17"></path></svg>"#));
+        assert!(svg.contains(r#"d="M4 7L20 7M7 12L17 12M10 17L14 17""#));
         assert!(svg.contains(r#"stroke-width="2.2""#) && svg.contains(r#"stroke-linecap="round""#));
         let (l, r) = ink_x(Icon::Sort);
         assert!((l - (4.0 - 1.1) / 24.0).abs() < 1e-6 && (r - (20.0 + 1.1) / 24.0).abs() < 1e-6);
