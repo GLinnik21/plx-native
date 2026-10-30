@@ -1652,3 +1652,24 @@ fn empty_state_pair_is_one_md_apart_and_centred_in_its_area() {
     let bottom = statement_y + sh;
     assert!(((top + bottom) * 0.5 - (area.y + area.h * 0.5)).abs() < 0.01, "the pair is centred");
 }
+
+/// **The pointer's edge glide moves Search's results by poster rows, the unit every page glides
+/// by.** The glide hands the page a fraction of a row every frame; by the 60 px table row Search's
+/// wheel uses, the results crawled at a seventh of the speed of every other page. A notch of the
+/// remote's wheel (a whole step) still moves one table row.
+#[test]
+fn the_edge_glide_moves_the_results_by_poster_rows_and_a_wheel_notch_by_a_table_row() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.query("glide").shelves(vec![shelf(Kind::Movie, "g0", 6), shelf(Kind::Show, "g1", 6), shelf(Kind::Movie, "g2", 6)]);
+    let mut screen = fixture.screen();
+    let engine = seated(&screen, &fixture);
+    let wheel = |dy: f32| ScreenEvent::Input(InputEvent { at: Tick::default(),
+        source: plx_machine::machine::Source::Script, kind: InputKind::Wheel { dy } });
+    for _ in 0..10 { deliver(&mut screen, &fixture, engine.current(OWNER), wheel(-0.03)); }
+    let glided = screen.stack.target();
+    assert!((glided - 0.3 * plx_ui::consts::ROW_PITCH).abs() < 0.01, "the glide moves by poster rows: {glided}");
+    deliver(&mut screen, &fixture, engine.current(OWNER), wheel(-1.0));
+    assert!((screen.stack.target() - glided - plx_ui::table::ROW_H).abs() < 0.01,
+        "a wheel notch moves one table row: {} -> {}", glided, screen.stack.target());
+}

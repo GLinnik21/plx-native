@@ -1579,6 +1579,7 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
     fn opener_departing(&self, key: FocusKey<u32>) -> bool {
         self.stack.view(&self.page).opener_departing::<H>(key)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str {
         Self::WORD
     }

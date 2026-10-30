@@ -2643,6 +2643,63 @@ mod stack {
         assert!(r.stack.scroll().abs() < 0.5, "focus on the header brings the page home: {}", r.stack.scroll());
     }
 
+    /// The pointer's sideways glide (`InputKind::Pan`) moves the stack's shelf under the pointer,
+    /// and only that shelf; a `Pan` over the grid below moves nothing.
+    #[test]
+    fn a_sideways_glide_moves_the_shelf_under_the_pointer() {
+        let pan = |y: f32| ScreenEvent::Input(plx_machine::machine::InputEvent {
+            at: Default::default(),
+            source: plx_machine::machine::Source::Script,
+            kind: plx_machine::machine::InputKind::Pan { dx: 30.0, x: 1900.0, y },
+        });
+        let mut r = rig(24, 60);
+        r.go(100, By::Restore);
+        r.run(2);
+        let before = r.place(100).unwrap().rect;
+        let grid_card = r.place(1000).unwrap().rect;
+        for _ in 0..10 { r.feed(pan(before.cy())); }
+        r.run(60);
+        let after = r.place(100).unwrap().rect;
+        assert!((before.x - after.x - 300.0).abs() < 0.5, "the shelf under the pointer glides 300 px: {before:?} -> {after:?}");
+        r.feed(pan(grid_card.cy()));
+        assert_eq!(r.place(1000).unwrap().rect.x, grid_card.x, "the grid does not move sideways");
+    }
+
+    /// The pointer's edge glide (a fractional wheel every frame) moves a stack page itself: the
+    /// page follows the wheel and stays where it put it instead of the tick pulling it back to the
+    /// focused row; a hover moves focus and not the page, and a key's move brings it back.
+    #[test]
+    fn a_wheel_glides_the_page_and_it_stays_until_focus_moves() {
+        let wheel = |dy: f32| ScreenEvent::Input(plx_machine::machine::InputEvent {
+            at: Default::default(),
+            source: plx_machine::machine::Source::Script,
+            kind: plx_machine::machine::InputKind::Wheel { dy },
+        });
+        let mut r = rig(6, 60);
+        r.go(1000, By::Restore);
+        r.run(2);
+        r.go(1042, By::Dir);
+        r.run(120);
+        let deep = r.stack.scroll();
+        assert!(deep > 400.0, "the page followed the focused row: {deep}");
+        let mut last = deep;
+        for _ in 0..30 {
+            r.feed(wheel(0.04));
+            r.run(1);
+            assert!(r.stack.scroll() < last, "every frame of the glide moves the page up");
+            last = r.stack.scroll();
+        }
+        r.run(120);
+        let glided = r.stack.scroll();
+        assert!((glided - (deep - 1.2 * crate::consts::ROW_PITCH)).abs() < 1.0, "1.2 rows up: {deep} -> {glided}");
+        r.go(1043, By::Pointer);
+        r.run(120);
+        assert!((r.stack.scroll() - glided).abs() < 0.5, "a hover moves focus, not the page: {}", r.stack.scroll());
+        r.go(1042, By::Dir);
+        r.run(120);
+        assert!((r.stack.scroll() - deep).abs() < 1.0, "a key's move reveals the focused row again: {}", r.stack.scroll());
+    }
+
     #[test]
     fn a_page_stays_put_when_focus_leaves_it_unless_it_asks_to_go_home() {
         let scrolled = |home: bool| {
