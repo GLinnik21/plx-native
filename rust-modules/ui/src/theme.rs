@@ -132,6 +132,13 @@ pub const COUNT_FILTERED_INK: [f32; 4] = with_a(WHITE, 0.50);
 /// The details line under a focused poster (Under posters: "2019 · 2h 6m"): white at 82%, a step
 /// below the title above it and neutral where [`TEXT_SECONDARY`] read bluish over the ground.
 pub const CAPTION_DETAIL_INK: [f32; 4] = with_a(WHITE, 0.82);
+/// The sort value under every poster of a library grid sorted by something other than Title or
+/// Random (Settings > Libraries > Under posters > Sort value): white at 80% at rest. The focused
+/// poster's value is [`TEXT_PRIMARY`] in bold.
+pub const SORT_VALUE_INK: [f32; 4] = with_a(WHITE, 0.80);
+/// The en dash a poster shows when it has no value for the sort (a never-viewed film under Date
+/// viewed): white at 50%, a step below [`SORT_VALUE_INK`] so the gap reads as absence.
+pub const SORT_VALUE_MISSING_INK: [f32; 4] = with_a(WHITE, 0.50);
 /// The `·` between fine-print facts, and **only** that — a step below the words it separates.
 /// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is
 /// worth keeping: a dot at the full ink of its neighbours joins the list instead of punctuating

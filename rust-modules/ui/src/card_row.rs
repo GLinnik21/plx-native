@@ -933,12 +933,11 @@ pub fn draw_tile(
 pub struct TileLabel {
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
-    /// A grid's optional third line, below its identity (title and year).
-    pub sort_info: Option<std::ffi::CString>,
-    pub sort_mark: &'static [crate::widgets::MarkLayer],
-    /// Scores have emphasis; ordinary sort metadata uses the regular details face.
-    pub sort_bold: bool,
-    /// Unfocused persistent captions elide; only the focused caption may marquee.
+    /// The sort value line of a library grid sorted by something other than Title or Random: the
+    /// ONE line such a grid draws under every poster, in place of the title and details block
+    /// ([`draw_sort_value`]). `None` for every other label.
+    pub value: Option<SortValue>,
+    /// A sample row's unfocused tiles elide rather than glide; only the focused caption may marquee.
     pub static_text: bool,
     /// lead the FIRST line drawn with the amber play triangle (Continue Watching's tile has no play
     /// disc): the title when the block has one, else the details line. The mark hangs to the left of
@@ -967,6 +966,29 @@ pub struct TileLabel {
     pub within_tile: bool,
 }
 
+/// **The sort value under one poster** of a library grid sorted by something other than Title or
+/// Random (spec "Under posters", item 5): the words, an optional "+1" for a second version, the
+/// rating provider's mark. The words are built once per item and cached by the screen; the grid
+/// only borrows them ([`draw_sort_value`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SortValue {
+    /// "98%", "2h 14m", "4K", "27 Oct", "Oct 2024": numbers and their units joined by a no-break
+    /// space. The en dash when the item has no value for the sort.
+    pub text: String,
+    /// A second version exists ("4K +1"): the first thing dropped when the line does not fit.
+    pub plus: bool,
+    /// The rating provider's mark, hung to the LEFT of the number so the number stays on the
+    /// poster's axis; dropped, after the "+1", when the line does not fit. Empty for every sort
+    /// that is not a score.
+    pub mark: &'static [crate::widgets::MarkLayer],
+    /// The item has no value for the sort: the dash is drawn at [`theme::SORT_VALUE_MISSING_INK`]
+    /// and never bold.
+    pub missing: bool,
+}
+
+/// The "+1" a second version adds, after a no-break space.
+pub const SORT_VALUE_PLUS: &str = "\u{a0}+1";
+
 /// A label band part-way through opening or closing: its whole height, its expansion and how far
 /// what stands below it is drawn above its place ([`TileLabel::revealed`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -993,15 +1015,6 @@ pub struct LineBox {
 }
 
 impl TileLabel {
-    /// Fixed room for three lines; unknown values leave their own slot blank.
-    pub const SORT_BAND_H: f32 = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP
-        + 2.0 * UNDER_CAPTION_H + crate::consts::UNDER_LABEL_AIR;
-
-    pub fn all_lines(&self) -> [Option<LineBox>; 3] {
-        let [title, caption] = self.lines();
-        let top = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP + UNDER_CAPTION_H;
-        [title, caption, self.sort_info.as_ref().map(|_| self.line(top, top + UNDER_CAPTION_H))]
-    }
     /// **A line of the block is the label BAND's content, so it may not be on screen before the
     /// room for it is.** `band_h` is the band's whole height ([`CardRow::band_h`],
     /// `Grid::band_h`), `e` its live expansion, 0 collapsed → 1 open, and `rise` how far the tile
@@ -1201,12 +1214,84 @@ pub fn draw_label(
     draw_label_mode(p, rect, s, sty, label, measure, label.static_text, label.within_tile);
 }
 
-/// Persistent grid presentation borrows the cached words; focus changes only their presentation.
-pub(crate) fn draw_persistent_label(
-    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
+/// The sort value line's box: CAPTION 24 on a 24 px line.
+pub const SORT_VALUE_H: f32 = 24.0;
+/// How far under the poster's bottom edge the value line's box starts at rest.
+pub const SORT_VALUE_GAP: f32 = 12.0;
+/// The same, measured from the LIFTED poster's bottom edge when the card is focused.
+pub const SORT_VALUE_GAP_LIFTED: f32 = 14.0;
+/// A row's collapsed gap under its posters while values show (40 otherwise): the air above a value
+/// is at most half the air below it, so it reads as its own poster's.
+pub const SORT_VALUE_ROW_GAP: f32 = 60.0;
+/// How far the FOCUSED row opens past the collapsed one while values show (the board's `openBy`).
+pub const SORT_VALUE_OPEN: f32 = 26.0;
+/// The Under posters band height ([`crate::caption_policy::band_h`]'s unit: the whole open gap)
+/// that opens a row [`SORT_VALUE_OPEN`] past the 40 px collapsed gap the band machinery counts from.
+pub const SORT_VALUE_BAND_H: f32 = COLLAPSED_GAP + SORT_VALUE_OPEN;
+/// Room under an UNSCALED poster bottom a value line can reach (the lifted card's shift, the focused
+/// gap and the box), what the grid culls and reveals with.
+pub const SORT_VALUE_REACH: f32 = 56.0;
+/// The rating mark beside a value: 20 px, the board's size, hung [`SORT_VALUE_MARK_GAP`] to the
+/// left of the number.
+const SORT_VALUE_MARK_D: f32 = 20.0;
+/// A budget no line reaches: asking the memoised fit for it yields the run's natural width.
+const SORT_VALUE_NATURAL: f32 = 1.0e5;
+const SORT_VALUE_MARK_GAP: f32 = 6.0;
+
+/// **The two textures of a sort value at lift factor `t`** (0 at rest, 1 fully lifted), as the
+/// `(regular, bold)` alphas: the weight change is a crossfade on the lift's own spring, so it is a
+/// function of the spring's value and nothing else (a snapped lift shows exactly one texture), and
+/// the LEAVING texture fades faster than the arriving one (the card taking focus is `rising`: its
+/// regular texture leaves; a card giving it up leaves with its bold). Both ends are exact.
+pub fn sort_value_weights(t: f32, rising: bool) -> (f32, f32) {
+    let t = t.clamp(0.0, 1.0);
+    if rising { ((1.0 - t) * (1.0 - t), t) } else { (1.0 - t, t * t) }
+}
+
+/// **A value line, drawn under one poster of a grid** (`rect` is the poster as drawn, scale `s`):
+/// CAPTION 24, tabular figures (the face's digits), centred on the poster's axis, 12 px under the
+/// poster at rest at 80% white and regular, 14 px under the LIFTED poster at 100% white and bold
+/// once the card is focused; between the two the weight is a crossfade of two textures on the
+/// lift ([`sort_value_weights`]). Never smaller type and never an ellipsis: a line wider than the
+/// tile drops its "+1", then its mark. The mark hangs to the left of the number, which stays on
+/// the axis, so the line is judged against the tile as symmetric about it.
+pub(crate) fn draw_sort_value(
+    p: Painter, rect: Rect, s: f32, sty: &RowStyle, value: &SortValue,
     measure: &dyn plx_machine::machine::Measure, focused: bool,
 ) {
-    draw_label_mode(p, rect, s, sty, label, measure, !focused, true);
+    use crate::caption_policy::{CAPTION_SHADOW, CAPTION_SHADOW_DY};
+    let size = theme::size::CAPTION;
+    let t = crate::widgets::pop_factor(s, sty.focus_scale);
+    let top = rect.y + rect.h + SORT_VALUE_GAP + (SORT_VALUE_GAP_LIFTED - SORT_VALUE_GAP) * t;
+    let cy = top + SORT_VALUE_H * 0.5;
+    let with_plus = format!("{}{SORT_VALUE_PLUS}", value.text);
+    let hang = 2.0 * (SORT_VALUE_MARK_D + SORT_VALUE_MARK_GAP);
+    // Judged on the bold face, the widest the line gets, so the choice is the same whichever
+    // texture shows; the memoised fitted run answers it, so a warm frame measures nothing.
+    let width_of = |text: &str, mark: bool| measure.fit_line_measured(text, SORT_VALUE_NATURAL, size, true).1
+        + if mark { hang } else { 0.0 };
+    let has_mark = !value.mark.is_empty();
+    let (text, mark) = if value.plus && width_of(&with_plus, has_mark) <= sty.w { (with_plus.as_str(), value.mark) }
+        else if width_of(&value.text, has_mark) <= sty.w { (value.text.as_str(), value.mark) }
+        else { (value.text.as_str(), &[][..]) };
+    // A line that fits at its natural width is not given a budget it could be cut to.
+    let budget = if width_of(text, !mark.is_empty()) <= sty.w { SORT_VALUE_NATURAL } else { sty.w };
+    let (regular, bold) = if value.missing { (1.0, 0.0) } else { sort_value_weights(t, focused) };
+    let mut width = 0.0;
+    for (is_bold, alpha, ink) in [(false, regular, if value.missing { theme::SORT_VALUE_MISSING_INK } else { theme::SORT_VALUE_INK }),
+        (true, bold, theme::TEXT_PRIMARY)] {
+        if alpha <= 0.0 { continue; }
+        let (run, w) = measure.fit_line_measured(text, budget, size, is_bold);
+        width = f32::max(width, w);
+        let y = plx_gfx::text::text_vcenter_y(size, i32::from(is_bold), cy);
+        let layer = p.alpha(alpha);
+        layer.text(run.as_ptr(), rect.cx(), y + CAPTION_SHADOW_DY, size, CAPTION_SHADOW, 1, i32::from(is_bold));
+        layer.text(run.as_ptr(), rect.cx(), y, size, ink, 1, i32::from(is_bold));
+    }
+    if mark.is_empty() { return; }
+    let mark_rect = Rect::new(rect.cx() - width * 0.5 - SORT_VALUE_MARK_GAP - SORT_VALUE_MARK_D, cy - SORT_VALUE_MARK_D * 0.5,
+        SORT_VALUE_MARK_D, SORT_VALUE_MARK_D);
+    for (mask, tint) in mark { crate::icons::draw(p, *mask, mark_rect, *tint); }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1223,23 +1308,12 @@ fn draw_label_mode(
     // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
     // only about whether the room under it holds the line yet.
     let lines = label.lines();
-    if label.all_lines().iter().flatten().all(|l| l.alpha <= 0.0) {
+    if lines.iter().flatten().all(|l| l.alpha <= 0.0) {
         return;
     }
     draw_label_block(p, rect, sty, label, lines, bottom, measure, static_text, within_tile);
-    if let (Some(text), Some(line)) = (&label.sort_info, label.all_lines()[2].filter(|l| l.alpha > 0.0)) {
-        let raw = text.to_string_lossy();
-        if !label.sort_bold && label.sort_mark.is_empty() {
-            let run = measure.fit_line(&raw, sty.w, theme::size::CAPTION, false);
-            p.alpha(line.alpha).text(run.as_ptr(), rect.cx(), bottom + line.top,
-                theme::size::CAPTION, theme::CAPTION_DETAIL_INK, 1, 0);
-            return;
-        }
-        crate::widgets::rating_cell_fitted(p.alpha(line.alpha), rect.cx(),
-            bottom + line.top + UNDER_CAPTION_H * 0.5, sty.w,
-            &crate::widgets::RatingCell { mark: label.sort_mark, value: &raw, suffix: "" }, measure);
-    }
 }
+
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
 /// caption rung of the deck's state, replacing the details line, and always shown on the deck (the
 /// owner's 2026-10-22 call), Details Nothing included (`captions::deck_policy`); a
@@ -3671,34 +3745,38 @@ mod sort_caption_review_tests {
     }
 
     #[test]
-    fn review_persistent_captions_reuse_fitted_text_and_rating_widths() {
+    fn a_warm_sort_value_line_measures_nothing_and_a_focused_one_adds_only_its_second_texture() {
         let _guard = plx_base::testlock::serial();
         let measure = CachedMeasure::default();
-        let mut label = TileLabel::titled("A very long movie title repeated across frames", "1997");
-        label.static_text = true;
-        label.sort_info = std::ffi::CString::new("100%").ok();
-        label.sort_bold = true;
-        label.sort_mark = &[(crate::icons::Icon::Crowd, theme::RATING_AUDIENCE)];
-        let rect = Rect::new(100.0, 100.0, 200.0, 300.0);
-        let style = RowStyle { w: 200.0, ..crate::poster_grid::STYLE };
-        let draw = || draw_label(Painter::recording(), rect, 1.0, &style, &label, &measure);
-        draw();
+        let value = SortValue { text: "98%".into(), mark: &[(crate::icons::Icon::Crowd, theme::RATING_AUDIENCE)], ..Default::default() };
+        let rect = Rect::new(100.0, 100.0, 250.0, 375.0);
+        let style = RowStyle { w: 250.0, ..crate::poster_grid::STYLE };
+        let draw = |s: f32, focused: bool| draw_sort_value(Painter::recording(), rect, s, &style, &value, &measure, focused);
+        draw(1.0, false);
         let cold = measure.widths.get();
         assert!(cold > 0);
-        draw();
-        assert_eq!(measure.widths.get(), cold, "a warm persistent caption must not measure again");
-        // Focused identity lines keep the existing shared marquee, but reuse full-run metrics.
-        let mut focused = label.clone();
-        focused.static_text = false;
-        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        draw(1.0, false);
+        assert_eq!(measure.widths.get(), cold, "a warm value line must not measure again");
+        draw(style.focus_scale, true);
         let focused_cold = measure.widths.get();
-        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        draw(style.focus_scale, true);
         assert_eq!(measure.widths.get(), focused_cold);
-        // The ordinary metadata face takes the same fitted path, with no rating group.
-        let plain = TileLabel { sort_bold: false, sort_mark: &[], ..label };
-        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
-        let plain_cold = measure.widths.get();
-        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
-        assert_eq!(measure.widths.get(), plain_cold);
+    }
+
+    #[test]
+    fn the_weight_crossfade_has_exact_ends_and_the_leaving_texture_fades_faster() {
+        for rising in [true, false] {
+            assert_eq!(sort_value_weights(0.0, rising), (1.0, 0.0), "at rest only the regular texture");
+            assert_eq!(sort_value_weights(1.0, rising), (0.0, 1.0), "lifted only the bold texture");
+            assert_eq!(sort_value_weights(-0.5, rising), (1.0, 0.0));
+            assert_eq!(sort_value_weights(2.0, rising), (0.0, 1.0));
+        }
+        for step in 1..10 {
+            let t = step as f32 / 10.0;
+            let (regular, bold) = sort_value_weights(t, true);
+            assert!(regular < 1.0 - t && bold == t, "the card taking focus loses its regular texture first: {t}");
+            let (regular, bold) = sort_value_weights(t, false);
+            assert!(bold < t && regular == 1.0 - t, "the card giving focus up loses its bold texture first: {t}");
+        }
     }
 }
