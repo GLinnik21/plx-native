@@ -970,8 +970,10 @@ impl Shelf {
     /// What [`draw_card`](Self::draw_card) paints and [`caption_lines_probe`](Self::caption_lines_probe)
     /// reads, so a test sees the ink the frame carries.
     fn focused_label<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, at: SectionFrame) -> TileLabel {
-        self.row.reveal(src.label(i), at.below_rise)
-            .settling(self.row.settle_lag(src.len(), i, &self.style))
+        // a style that hangs its block at its own drop shows it whole: no band opens for it
+        let label = src.label(i);
+        let label = if self.style.label_drop.is_some() { label } else { self.row.reveal(label, at.below_rise) };
+        label.settling(self.row.settle_lag(src.len(), i, &self.style))
     }
 
     /// Test support: every caption LINE [`draw`](Self::draw) puts on screen now for the focused card,
@@ -986,7 +988,7 @@ impl Shelf {
         };
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
-        let bottom = card_row::unscaled_bottom(self.slot(i, src.len(), at, 0.0).scaled(s), s);
+        let bottom = card_row::label_bottom(self.slot(i, src.len(), at, 0.0).scaled(s), s, &self.style);
         self.focused_label(src, i, at).lines().into_iter().flatten().filter(|l| l.alpha > 0.0)
             .map(|l| (i, bottom + l.top, bottom + l.bottom, l.alpha)).collect()
     }
