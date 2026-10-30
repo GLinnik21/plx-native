@@ -781,3 +781,23 @@ fn numeric_dates_match_icu_without_month_name_data() {
         }
     }
 }
+
+#[test]
+fn month_year_is_the_ymmm_skeleton_in_every_shipped_language_and_never_numeric() {
+    let read: Vec<String> = [
+        Preference::En, Preference::Be, Preference::De, Preference::Es, Preference::Fr,
+        Preference::Hu, Preference::It, Preference::Pl, Preference::Pt, Preference::Ru,
+    ].into_iter().map(|preference| {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        let text = cx.month_year(2024, 10).expect("a real month");
+        assert!(cx.month_year(2024, 13).is_none() && cx.month_year(2024, 0).is_none());
+        format!("{}={text}", cx.language().tag())
+    }).collect();
+    assert_eq!(read.join("|"), "en=Oct 2024|be=кас 2024 г.|de=Okt. 2024|es=oct 2024|fr=oct. 2024|hu=2024. okt.|it=ott 2024|pl=paź 2024|pt=out. de 2024|ru=окт. 2024 г.");
+}
+
+#[test]
+fn today_is_a_calendar_date_from_the_wall_clock() {
+    let [year, month, day] = local_calendar_today().expect("a representable date");
+    assert!(year >= 2026 && (1..=12).contains(&month) && (1..=31).contains(&day));
+}

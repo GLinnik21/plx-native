@@ -13,10 +13,11 @@
   "under_posters.age_rating_score": "Classification · Note",
   "under_posters.none": "Rien",
   "under_posters.reset": "Rétablir par défaut",
-  "under_posters.reset_detail": "Année et durée, sans titre.",
+  "under_posters.reset_detail": "Année et durée, valeur de tri activée, sans titre.",
   "under_posters.sample_title": "Film",
   "under_posters.sample_genre": "Drame",
-  "under_posters.show_sort_info": "Afficher les informations de tri",
-  "under_posters.sort_info_detail": "Titre, année et tri dans la bibliothèque de films.",
-  "under_posters.default_version": "Principale"
+  "under_posters.sort_value": "Valeur de tri",
+  "under_posters.sort_value_detail": "Remplace la ligne de détails pendant le tri d’une bibliothèque.",
+  "under_posters.value_today": "Aujourd’hui",
+  "under_posters.value_yesterday": "Hier"
 }

@@ -13,10 +13,11 @@
   "under_posters.age_rating_score": "Узроставы рэйтынг · Ацэнка",
   "under_posters.none": "Нічога",
   "under_posters.reset": "Скінуць па змаўчанні",
-  "under_posters.reset_detail": "Год і працягласць, без назвы.",
+  "under_posters.reset_detail": "Год і працягласць, значэнне сартавання ўключана, без назвы.",
   "under_posters.sample_title": "Фільм",
   "under_posters.sample_genre": "Драма",
-  "under_posters.show_sort_info": "Паказваць звесткі сартавання",
-  "under_posters.sort_info_detail": "Назва, год і сартаванне ў бібліятэцы фільмаў.",
-  "under_posters.default_version": "Прадвызначаная"
+  "under_posters.sort_value": "Значэнне сартавання",
+  "under_posters.sort_value_detail": "Замяняе радок звестак, пакуль бібліятэка сартуецца.",
+  "under_posters.value_today": "Сёння",
+  "under_posters.value_yesterday": "Учора"
 }

@@ -172,6 +172,22 @@ impl LocaleContext {
         let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
         Some(self.date_medium.format(&d).to_string())
     }
+    /// Month and year, the yMMM skeleton in the interface language with its abbreviated month and
+    /// never a numeric one: "Oct 2024", "out. de 2024", "2024. okt.", "окт. 2024 г." (the unit
+    /// "г." after a no-break space). Hand-written over the same month tables as
+    /// [`month_day`](Self::month_day): ICU's compiled yMMM data answers numerically ("10/2024")
+    /// for the shipped German, Portuguese and Belarusian once the month names are ours.
+    pub fn month_year(&self, year: i32, month: u8) -> Option<String> {
+        icu_calendar::Date::try_new_gregorian(year, month, 1).ok()?;
+        let (names, _) = month_names(self.language, MonthWidth::Medium);
+        let name = names[usize::from(month - 1)];
+        Some(match self.language {
+            Language::Hu => format!("{year}. {name}"),
+            Language::Pt => format!("{name} de {year}"),
+            Language::Ru | Language::Be => format!("{name} {year}\u{a0}г."),
+            _ => format!("{name} {year}"),
+        })
+    }
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
     /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Polish, Belarusian and Russian the genitive
@@ -640,6 +656,16 @@ pub mod msg {
 mod catalog_tests;
 #[cfg(test)]
 mod tests;
+
+/// **Today's calendar date in the operating system's timezone** — the ONE wall-clock read for
+/// calendar display, here in the platform layer and never in a machine (`screens/`, `ui/`,
+/// `data/src/stores`: the `wall` gate). The application's clock door (`app::clock::today`) calls it
+/// once a minute and hands the date to the screens as an input, the way a frame's time arrives on
+/// a `Tick`.
+pub fn local_calendar_today() -> Option<[i32; 3]> {
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    local_calendar_date(i64::try_from(seconds).ok()?)
+}
 
 /// A Unix timestamp as a calendar date in the operating system's timezone. Called while building
 /// cached presentation labels, never by data parsers or once per card per frame. Checked time_t conversion

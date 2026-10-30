@@ -13,10 +13,11 @@
   "under_posters.age_rating_score": "Wiek · Ocena",
   "under_posters.none": "Nic",
   "under_posters.reset": "Przywróć domyślne",
-  "under_posters.reset_detail": "Rok i czas trwania, bez tytułu.",
+  "under_posters.reset_detail": "Rok i czas trwania, wartość sortowania włączona, bez tytułu.",
   "under_posters.sample_title": "Film",
   "under_posters.sample_genre": "Dramat",
-  "under_posters.show_sort_info": "Pokaż informacje o sortowaniu",
-  "under_posters.sort_info_detail": "Tytuł, rok i sortowanie w bibliotece filmów.",
-  "under_posters.default_version": "Domyślna"
+  "under_posters.sort_value": "Wartość sortowania",
+  "under_posters.sort_value_detail": "Zastępuje wiersz szczegółów, gdy biblioteka jest posortowana.",
+  "under_posters.value_today": "Dziś",
+  "under_posters.value_yesterday": "Wczoraj"
 }
