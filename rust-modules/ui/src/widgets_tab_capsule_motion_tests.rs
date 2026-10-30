@@ -927,7 +927,8 @@ fn the_top_bar_draws_every_label_at_full_ink_in_one_weight_per_frame() {
         for frame in 0..80 {
             strip.update(labels, sel, TopFocus::Pill(to), DT);
             let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band));
-            let (widths, glass_on) = with_tab_metrics_for(labels, |_, _, w| (w.to_vec(), tab_glass_on()));
+            let widths = with_tab_metrics_for(labels, |_, _, w| w.to_vec());
+            let glass_on = tab_glass_on();
             for (i, word) in words.iter().enumerate() {
                 let mine: Vec<_> = runs.iter().filter(|r| r.text == *word).collect();
                 assert!(!mine.is_empty(), "{from} -> {to} frame {frame}: \"{word}\" is not drawn");
