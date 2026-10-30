@@ -1424,6 +1424,8 @@ pub enum LoopReq {
     /// Lab builds only, and it changes no route: the tester stays where they were and the toast
     /// says what happened.
     AccountSendDiagnostics,
+    /// Open Settings directly on Favorite libraries from the Library's Sort & Filter menu.
+    LibraryFavourites,
 }
 
 /// Any host that carries this bundle. The screens under `screens/` are written against it, so the
