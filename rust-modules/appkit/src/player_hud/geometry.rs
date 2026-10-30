@@ -37,6 +37,9 @@ pub const GROUP_ROW: GroupId = GroupId(1);
 pub const GROUP_TABS: GroupId = GroupId(2);
 /// The failure read-out's action row.
 pub const GROUP_FAILURE: GroupId = GroupId(3);
+/// An open section's own controls (Info's two buttons). The renderer reads focus on it
+/// ([`super::render::draw_state`]); the screen registers the group when the sections go live.
+pub const GROUP_SECTION: GroupId = GroupId(4);
 
 /// **The most controls a layout can place in the control row**: the format's bound on one segment
 /// ([`crate::hud_format::schema::MAX_SEGMENT_ITEMS`]), so a row a package can write is a row the report

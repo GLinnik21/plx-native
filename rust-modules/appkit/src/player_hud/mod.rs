@@ -30,6 +30,7 @@ pub mod model;
 pub mod motion;
 pub mod render;
 pub mod seek_jump;
+mod sections;
 pub mod state;
 use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;

@@ -8,7 +8,7 @@ use plx_data::metadata;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
 use plx_ui::geom::IndexElem;
-use plx_ui::hstack::{Item, Kept};
+use plx_ui::hstack::Item;
 use plx_ui::icons::Icon;
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host};
 use plx_ui::screen::{
@@ -126,65 +126,13 @@ impl InfoPanelState {
         measure: &dyn plx_machine::machine::Measure,
         meta: metadata::MetadataView<'_>,
     ) {
-        let np = meta.now_playing();
-        let d = meta.current();
-        if np.is_none() && d.is_none() {
-            return;
-        }
+        let Some(c) = info_content(meta) else { return };
         // no scrim — the card floats over the transport; reproduces exactly what
         // `Popover::painter(0.0, 20.0)` (i.e. no scrim + `Popover::content_painter(20.0)`) drew.
         let p = Painter::root()
             .alpha(appear)
             .translate(0.0, plx_ui::popover::Popover::RISE * (1.0 - appear));
-
-        // Resolve the playing leaf's fields: `now_playing` describes the episode (show title + SxEy
-        // + its still) or the movie; the loaded `Detail` backs the capability badges + genres.
-        let is_ep = np.map(|n| n.is_episode).unwrap_or(false);
-        let big_title = np
-            .map(|n| n.title.clone())
-            .or_else(|| d.map(|x| x.title.clone()))
-            .unwrap_or_default();
-        let ep_name = np.map(|n| n.ep_title.clone()).unwrap_or_default();
-        let summary = np
-            .map(|n| n.summary.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| d.map(|x| x.summary.clone()))
-            .unwrap_or_default();
-        let year = np
-            .map(|n| n.year)
-            .or_else(|| d.map(|x| x.year))
-            .unwrap_or(0);
-        let dur_ms = np
-            .map(|n| n.dur_ms)
-            .or_else(|| d.map(|x| x.dur_ms))
-            .unwrap_or(0);
-        let rating = np
-            .map(|n| n.rating.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| d.map(|x| x.rating.clone()))
-            .unwrap_or_default();
-        let thumb_path = np
-            .map(|n| n.thumb.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                d.map(|x| {
-                    if !x.art.is_empty() {
-                        x.art.clone()
-                    } else {
-                        x.thumb.clone()
-                    }
-                })
-            })
-            .unwrap_or_default();
-        // capability badges come from the PLAYING item's own tracks — `current()` is the show
-        // (episode-1 streams) during a show-page episode play, or another item entirely
-        let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match meta.playing() {
-            Some(t) => (&t.audio, &t.subs),
-            None => (
-                d.map(|x| x.audio.as_slice()).unwrap_or(&[]),
-                d.map(|x| x.subs.as_slice()).unwrap_or(&[]),
-            ),
-        };
+        let thumb_path = c.thumb.clone();
 
         // card — tall enough that the still gets equal padding on every side (see `pad`/`sh` below)
         let (card, pad) = card_geometry();
@@ -257,116 +205,15 @@ impl InfoPanelState {
         let white = theme::TEXT_PRIMARY;
         let dim = theme::TEXT_SECONDARY;
 
-        let info_title = if is_ep {
-            ep_name.clone()
-        } else {
-            big_title.clone()
-        };
-        // What the server is actually sending, straight off the resolved route — see `playback_now`.
-        // `has_url`, not `!url().is_empty()`: this card sits on the one route exempt from the idle
-        // present gate, so it draws at ~60/s, and `url()` clones the longest string in the app (a
-        // universal-transcode `start.mkv` query is several hundred bytes) purely to test emptiness.
-        // The `play_pending` half is the resolve window — see the doc.
-        let now_fact = playback_now(
-            plx_media::route::has_url(ps) && !plx_media::route::play_pending(),
-            plx_media::route::is_transcoding(ps),
-            plx_media::route::is_remux(ps),
-            &plx_media::route::stream_vcodec(ps),
-        );
-        // metadata line (genres · year · duration) + capability badges. Built and FIT here, before the
-        // title/synopsis layout below, rather than inside its own draw block further down — see
-        // [`ChipRow`]'s doc for issue #26 itself; the reason this part specifically has to happen
-        // before `span` is a second, smaller bug the same fix could otherwise reintroduce. `span` folds
-        // in a fixed `gap_tags + tag_h` for this row whenever it might have anything to say
-        // (`has_tags`), which used to be exactly right because the row always drew SOMETHING once
-        // `has_tags` was true. Once a row can be fit down to nothing at all — a single candidate (one
-        // very long genre string, say) wider than `tw` on its own — `has_tags` and "this row draws a
-        // pixel" stop being the same question, and centring the title/synopsis group as though a tag
-        // row existed would leave a blank gap where one doesn't. So the row's actual chip COUNT, `n`,
-        // has to be known before `span` is computed, not decided by a separate boolean.
-        let has_tags = year > 0
-            || dur_ms > 0
-            || !rating.is_empty()
-            || d.map(|x| !x.genres.is_empty()).unwrap_or(false)
-            || !subs.is_empty()
-            || audio.iter().any(|s| s.ad)
-            || now_fact.is_some()
-            || audio.first().and_then(|s| audio_badge(&s.codec)).is_some();
-
-        // `has_tags` is the cheap pre-filter (a handful of comparisons, no allocation) that skips this
-        // entirely for the common "nothing at all to report" case; once it's true the row still might
-        // fit zero chips (see above), which is exactly what `n` then says.
-        let mut chips = ChipRow::new();
-        let (kept, n) = if has_tags {
-            let mut meta = Vec::new();
-            if let Some(x) = d {
-                for g in x.genres.iter().take(2) {
-                    meta.push(g.clone());
-                }
-            }
-            if year > 0 {
-                meta.push(year.to_string());
-            }
-            if dur_ms > 0 {
-                meta.push(plx_ui::fmt::duration(dur_ms));
-            }
-            // The item's own facts are ONE text run, its parts a dot apart exactly as the Detail
-            // page's identity line spaces them (`widgets::DottedRun`: `space::SM` each side
-            // of the dot), and the badges follow at the same `SM` / `XS` the identity line gives its
-            // badges. Nothing about the spacing is baked into a string. Every candidate's width is
-            // known before any of them touches the screen.
-            let has_meta = !meta.is_empty();
-            if has_meta {
-                chips.push(Chip::run(&meta, false, 1, white, measure));
-            }
-            // …then the live playback fact, in its own quieter ink. It is a separate run rather than
-            // one more entry joined into `meta` because it is a different KIND of statement — a fact
-            // about this session, not a property of the item — and tertiary is what says so. No chip
-            // and no capsule: a conversion that worked is not a warning.
-            //
-            // REGULAR weight, unlike the item run beside it, and that is the mock's: its whole meta line
-            // is `font-weight:400` at `--text-tertiary`. The item run's bold/primary is this screen's own
-            // long-standing deviation (the card is read over live video, not over a panel); repeating it
-            // on a run the mock has no bold in would make the quiet fine print the loudest thing on the
-            // row.
-            //
-            // It continues the meta run, so it leads with a dot when there is a meta run. Whether it is
-            // needed depends only on whether the meta line EXISTS, which is known right here — not on
-            // whether the meta line ends up FITTING. By construction a chip only draws once every
-            // higher-priority chip already fit (see [`ChipRow`]'s tail-first drop), so by the time
-            // this fact chip is actually on screen those two questions have the same answer.
-            if let Some(fact) = now_fact.as_ref() {
-                chips.push(Chip::run(
-                    std::slice::from_ref(fact),
-                    has_meta,
-                    0,
-                    theme::TEXT_TERTIARY,
-                    measure,
-                ));
-            }
-            // badges: rating (from the leaf), top-audio Dolby tag, CC/SDH/AD (from the loaded streams)
-            if !rating.is_empty() {
-                chips.push(Chip::badge(rating.clone(), measure));
-            }
-            if let Some(tag) = audio.first().and_then(|s| audio_badge(&s.codec)) {
-                chips.push(Chip::badge(tag, measure));
-            }
-            if !subs.is_empty() {
-                chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_cc().to_string(), measure));
-            }
-            if subs.iter().any(|s| s.sdh) {
-                chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_sdh().to_string(), measure));
-            }
-            if audio.iter().any(|s| s.ad) {
-                chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_ad().to_string(), measure));
-            }
-
-            let row = chips.row(tx);
-            let kept = row.fit(tw);
-            (kept, row.kept(kept).placed().count())
-        } else {
-            (Kept::ALL, 0)
-        };
+        let info_title = c.title.clone();
+        let summary = c.summary.clone();
+        // metadata line (genres · year · duration) + capability badges: built and FIT here, before the
+        // title/synopsis layout below, because the row's actual chip COUNT, `n`, decides whether the
+        // group below reserves its line (see [`info_chips`] for issue #26 and the drop rule).
+        let chips = info_chips(&c, &FactsShape::CLASSIC, ps, measure);
+        let row = chips.row(tx);
+        let kept = row.fit(tw);
+        let n = row.kept(kept).placed().count();
 
         // vertical rhythm — line *advances* (deliberately below the full font line-box) + small gaps
         let title_h = 42.0f32; // title advance (font 40)
@@ -563,7 +410,7 @@ fn is_episode(meta: metadata::MetadataView<'_>) -> bool {
 /// [`N_ACTIONS`] (it is what `CtlPop`'s const generic is sized from) — every caller that only
 /// needs the count uses that constant instead, so this is called only where the actual label TEXT
 /// is drawn ([`InfoPanelState::draw`]).
-fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
+pub(crate) fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
     [
         plx_platform::i18n::msg::widgets_info_from_beginning(),
         if is_episode(meta) {
@@ -605,6 +452,157 @@ pub(crate) fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure)
     let total_bh = n as f32 * bh + n.saturating_sub(1) as f32 * 16.0;
     let by0 = card.y + (card.h - total_bh) * 0.5;
     Rect::new(bx, by0 + i as f32 * (bh + 16.0), bw, bh)
+}
+
+/// **What the Info section says about the playing item**, resolved once: `now_playing` describes the
+/// episode (show title + SxEy + its still) or the movie, the loaded `Detail` backs the genres, and the
+/// capability badges come from the PLAYING item's own tracks (`current()` is the show, with episode 1's
+/// streams, during a show-page episode play, or another item entirely). The ONE reading of those
+/// fields: the hand-written card draws from it, and so does the HUD renderer's section arms.
+pub(crate) struct InfoContent<'a> {
+    /// the playing leaf's own name: the episode's, else the movie's (the show-title + SxEy treatment
+    /// lives on the transport HUD under the playbar, not here)
+    pub title: String,
+    pub summary: String,
+    pub year: i64,
+    pub dur_ms: i64,
+    pub rating: String,
+    /// the 16:9 still (episode) or landscape art (movie)
+    pub thumb: String,
+    pub genres: &'a [String],
+    pub audio: &'a [metadata::Stream],
+    pub subs: &'a [metadata::Stream],
+}
+
+/// The playing item's [`InfoContent`], or `None` when nothing playing has a name to show.
+pub(crate) fn info_content<'a>(meta: metadata::MetadataView<'a>) -> Option<InfoContent<'a>> {
+    let np = meta.now_playing();
+    let d = meta.current();
+    if np.is_none() && d.is_none() {
+        return None;
+    }
+    let is_ep = np.map(|n| n.is_episode).unwrap_or(false);
+    let big_title = np.map(|n| n.title.clone()).or_else(|| d.map(|x| x.title.clone())).unwrap_or_default();
+    let ep_name = np.map(|n| n.ep_title.clone()).unwrap_or_default();
+    let summary = np
+        .map(|n| n.summary.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| d.map(|x| x.summary.clone()))
+        .unwrap_or_default();
+    let thumb = np
+        .map(|n| n.thumb.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| d.map(|x| if !x.art.is_empty() { x.art.clone() } else { x.thumb.clone() }))
+        .unwrap_or_default();
+    let (audio, subs): (&[metadata::Stream], &[metadata::Stream]) = match meta.playing() {
+        Some(t) => (&t.audio, &t.subs),
+        None => (d.map(|x| x.audio.as_slice()).unwrap_or(&[]), d.map(|x| x.subs.as_slice()).unwrap_or(&[])),
+    };
+    Some(InfoContent {
+        title: if is_ep { ep_name } else { big_title },
+        summary,
+        year: np.map(|n| n.year).or_else(|| d.map(|x| x.year)).unwrap_or(0),
+        dur_ms: np.map(|n| n.dur_ms).or_else(|| d.map(|x| x.dur_ms)).unwrap_or(0),
+        rating: np.map(|n| n.rating.clone()).filter(|s| !s.is_empty()).or_else(|| d.map(|x| x.rating.clone())).unwrap_or_default(),
+        thumb,
+        genres: d.map(|x| x.genres.as_slice()).unwrap_or(&[]),
+        audio,
+        subs,
+    })
+}
+
+/// A package's `facts` cell as the chip builder reads it (`DrawOp::Facts`): which of the item's own
+/// facts, in what order, how many genres, whether the live playback fact follows, which badges, in
+/// what priority order, and the inks.
+pub(crate) struct FactsShape<'a> {
+    /// `genres`, `year`, `duration`, in the order they run
+    pub order: &'a [&'a str],
+    /// `content_rating`, `audio_format`, `cc`, `sdh`, `ad`, in drop-priority order
+    pub badges: &'a [&'a str],
+    pub genres_max: usize,
+    pub playback_fact: bool,
+    pub ink: [f32; 4],
+    pub bold: i32,
+}
+
+/// How many genres the hand-written card's meta line names (the detail page's About card lists them all).
+const CLASSIC_GENRES_MAX: usize = 2;
+
+impl FactsShape<'static> {
+    /// What the hand-written card always drew: the same shape `builtin:classic`'s `info.facts` cell declares.
+    pub(crate) const CLASSIC: Self = Self {
+        order: &["genres", "year", "duration"],
+        badges: &["content_rating", "audio_format", "cc", "sdh", "ad"],
+        genres_max: CLASSIC_GENRES_MAX,
+        playback_fact: true,
+        ink: theme::TEXT_PRIMARY,
+        bold: 1,
+    };
+}
+
+/// **The metadata line and the capability badges, built and measured** but not yet fit or drawn: the
+/// item's own facts as ONE text run (parts a dot apart exactly as the Detail page's identity line
+/// spaces them, `widgets::DottedRun`), the live playback fact in its own quieter run (what the server
+/// is actually sending, [`playback_now`]: REGULAR weight and tertiary ink, because it is a fact about
+/// this session and not a property of the item; no chip and no capsule, a conversion that worked is
+/// not a warning), then the badges. Every candidate's width is known before any of them touches the
+/// screen, so the caller's `row.fit(tw)` decides what fits ([`ChipRow`]: tail-first drop, issue #26:
+/// the chips used to draw straight under the action column).
+///
+/// The row's actual chip COUNT, not "there might be something to say", is what the caller's layout
+/// must reserve a line for: a single candidate wider than the room fits down to nothing.
+pub(crate) fn info_chips(
+    c: &InfoContent<'_>,
+    shape: &FactsShape<'_>,
+    ps: &plx_media::route::PlaybackSession,
+    measure: &dyn plx_machine::machine::Measure,
+) -> ChipRow {
+    // What the server is actually sending, straight off the resolved route. `has_url`, not
+    // `!url().is_empty()`: the card draws at ~60/s, and `url()` clones the longest string in the app.
+    let now_fact = shape.playback_fact.then(|| {
+        playback_now(
+            plx_media::route::has_url(ps) && !plx_media::route::play_pending(),
+            plx_media::route::is_transcoding(ps),
+            plx_media::route::is_remux(ps),
+            &plx_media::route::stream_vcodec(ps),
+        )
+    });
+    let now_fact = now_fact.flatten();
+    let mut chips = ChipRow::new();
+    let mut meta = Vec::new();
+    for part in shape.order {
+        match *part {
+            "genres" => meta.extend(c.genres.iter().take(shape.genres_max).cloned()),
+            "year" if c.year > 0 => meta.push(c.year.to_string()),
+            "duration" if c.dur_ms > 0 => meta.push(plx_ui::fmt::duration(c.dur_ms)),
+            _ => {}
+        }
+    }
+    let has_meta = !meta.is_empty();
+    if has_meta {
+        chips.push(Chip::run(&meta, false, shape.bold, shape.ink, measure));
+    }
+    // It continues the meta run, so it leads with a dot when there is one. Whether it is needed depends
+    // only on whether the meta line EXISTS, not on whether it ends up FITTING: a chip only draws once
+    // every higher-priority chip already fit.
+    if let Some(fact) = now_fact.as_ref() {
+        chips.push(Chip::run(std::slice::from_ref(fact), has_meta, 0, theme::TEXT_TERTIARY, measure));
+    }
+    for badge in shape.badges {
+        match *badge {
+            "content_rating" if !c.rating.is_empty() => chips.push(Chip::badge(c.rating.clone(), measure)),
+            "audio_format" => {
+                if let Some(tag) = c.audio.first().and_then(|s| audio_badge(&s.codec)) {
+                    chips.push(Chip::badge(tag, measure));
+                }
+            }
+            "cc" if !c.subs.is_empty() => chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_cc().to_string(), measure)),
+            "sdh" if c.subs.iter().any(|s| s.sdh) => chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_sdh().to_string(), measure)),
+            "ad" if c.audio.iter().any(|s| s.ad) => chips.push(Chip::badge(plx_platform::i18n::msg::widgets_badge_ad().to_string(), measure)),
+            _ => {}
+        }
+    }
+    chips
 }
 
 // ---- helpers ----

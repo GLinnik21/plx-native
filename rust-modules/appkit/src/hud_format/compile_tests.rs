@@ -329,31 +329,37 @@ fn compiled_classic_info_section_matches_the_info_panel() {
 }
 
 #[test]
-fn compiled_classic_chapters_section_matches_the_chapters_panel_but_for_its_top() {
+fn compiled_classic_chapters_section_matches_the_chapters_panel() {
     // The hand-written strip is placed by its constants (`CH_TOP`), the compiled one by the chain from the
-    // tabs up, in which the timestamp is a LINE with a height: the strip's top is that line higher. The
-    // delta is reported here, not forced: a fixture note (PR5b) names the chapters gap a placeholder.
+    // tabs up. The timestamp is a LINE with a height in that chain, and a line's height is its measurer's
+    // (`line_h` is the font's: 1.2 x the size in the fixture measure, 1.21 in the shipped advances, the
+    // face's own on the television), so no gap can land the strip on `CH_TOP` for all of them. The fixture
+    // gives `item.start` the smallest leading (1 px: the stand-in for `label_ys`'s zero-height origin) and
+    // the tabs a gap of 43 less that, so the top is the same number on every measure.
+    for (name, measure) in [("fixture", &FM as &dyn Measure), ("shipped", &ShippedMeasure)] {
+        let compiled = build(CLASSIC, measure);
+        let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
+        let (card, pitch, rect) = state
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                DrawOp::Strip { card, pitch, rect, .. } => Some((*card, *pitch, *rect)),
+                _ => None,
+            })
+            .expect("the chapters strip");
+        let want = chapters_panel::card_rect(0, 0.0);
+        assert_eq!((card.x, card.w, card.h), (want.x, want.w, want.h), "{name}: the card's own shape");
+        assert_eq!(rect.x, MARGIN_X);
+        assert_eq!(pitch, chapters_panel::card_rect(1, 0.0).x - want.x, "{name}: the cards' pitch");
+        // `card.y` is a difference of sums, so it equals `CH_TOP` to the last f32 bit only by luck:
+        // compare to a thousandth of a pixel.
+        assert!((want.y - card.y).abs() < 0.001, "{name}: the strip's top is {} not the hand-written CH_TOP {}", card.y, want.y);
+    }
     let compiled = build(CLASSIC, &FM);
     let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
-    let (card, pitch, rect) = state
-        .ops
-        .iter()
-        .find_map(|op| match op {
-            DrawOp::Strip { card, pitch, rect, .. } => Some((*card, *pitch, *rect)),
-            _ => None,
-        })
-        .expect("the chapters strip");
-    let want = chapters_panel::card_rect(0, 0.0);
-    assert_eq!((card.x, card.w, card.h), (want.x, want.w, want.h), "the card's own shape");
-    assert_eq!(rect.x, MARGIN_X);
-    assert_eq!(pitch, chapters_panel::card_rect(1, 0.0).x - want.x, "the cards' pitch");
-    // `want.y - card.y` is a difference of two sums, so it equals the line's height to the last f32 bit
-    // only by luck: compare to a thousandth of a pixel.
-    let caption = FM.line_h(theme::size::CAPTION);
-    assert!(
-        (want.y - card.y - caption).abs() < 0.001,
-        "the chapters strip sits one CAPTION line ({caption}) above the hand-written CH_TOP, not {}",
-        want.y - card.y
+    let (card, want) = (
+        state.ops.iter().find_map(|op| match op { DrawOp::Strip { card, .. } => Some(*card), _ => None }).expect("the strip"),
+        chapters_panel::card_rect(0, 0.0),
     );
     // Whatever the strip's top, the card is the same column: the name 26 px and the timestamp 34 px
     // under the one before it (`CH_NAME_DROP`, `CH_TIME_DROP`), which `label_ys` stands for.

@@ -5,21 +5,25 @@
 //! renderer to the hashes that draw froze on the host, and the simulator's frame dump is the proof of pixels.
 //! A package with no state for the frame draws nothing: [`draw`] returns `false`.
 //!
-//! **What it walks.** The state [`Compiled::lookup`] answers for the frame (`open == 0`: the sections
-//! draw their own panels in this release), then its [`Span`]s in draw order. A `Fades` span draws on the
-//! scrub's chrome alpha and is skipped when that alpha is spent; a `Steady` one draws at full alpha. In
-//! a Skip state it walks [`CompiledState::skip_variant`], because the two labels have two widths. While
-//! a panel owns the middle (`!transport`) only the scrim and the section tabs draw.
+//! **What it walks.** The state [`Compiled::lookup`] answers for the frame ([`draw`]: `open == 0`, the
+//! compact state; the sections go live in the screen with PR8's switch), then its [`Span`]s in draw
+//! order, through [`draw_state`], which walks any state, an open section's included. A `Fades` span draws on
+//! the scrub's chrome alpha and is skipped when that alpha is spent; a `Steady` one draws at full alpha.
+//! In a Skip state it walks [`CompiledState::skip_variant`], because the two labels have two widths. While
+//! a panel owns the middle (`!transport`) only the scrim and the section tabs of a COMPACT state draw.
+//! The section arms (a ground, a rule, an icon, the still, the sections' text, a facts row, an `actions`
+//! button) are `sections.rs`'s.
 //!
 //! **Motion stays here.** The focus springs, the title marquee, the scrub preview and the knob's spring
 //! are the renderer's, read from the [`HudMotion`] the page owns.
 //!
 //! **What it does not draw yet** (each is a decision, not an omission): a section's selected face (the
 //! `toggle_section` disc while its panel is open: section time, PR8), `rest: custom` (it takes the film),
-//! the text binds of the sections and the strip, `hairline`, a strip, a facts row and an image. [`draw`]
-//! draws nothing for them, so a package that needs them shows less rather than something wrong. A
-//! title's declared `ink` and `bold` are not carried: classic's rule (an episode's kicker is primary and
-//! bold, a context line secondary and regular) draws, and only the declared sizes are honoured.
+//! and a `strip` (the chapters strip is a `cards::Shelf`, which paints through a `DrawFrame` this walk does
+//! not carry: PR8 stage 2). [`draw`] draws nothing for them, so a package that needs them shows less
+//! rather than something wrong. A title's declared `ink` and `bold` are not carried: classic's rule (an
+//! episode's kicker is primary and bold, a context line secondary and regular) draws, and only the
+//! declared sizes are honoured.
 //!
 //! **What PR10b owes before a package can be installed** (only `builtin:classic` ships and the dev trigger is
 //! the one way in, so no shipped HUD reaches any of these; each is a way a package draws or behaves wrongly
@@ -50,7 +54,8 @@ use super::classic::{
     draw_player_title_at, draw_playbar_look, draw_scrim_at, draw_scrub_preview, hud_env, hud_tab_state, tab_labels,
     tab_of_section, Kicker, Playbar, PlaybarLook, TitleLook,
 };
-use super::geometry::{frame_state, GROUP_ROW};
+use super::geometry::{frame_state, GROUP_ROW, GROUP_SECTION};
+use super::sections;
 use super::model::HudModel;
 use super::motion::HudMotion;
 use super::state::{readout_owns_frame, Busy, ControlSlot};
@@ -94,7 +99,18 @@ pub fn draw(compiled: &Compiled, f: &Frame<'_>, row: &mut HudMotion, p: Painter)
         return true;
     }
     let Some(state) = state_for(compiled, f) else { return false };
+    draw_state(compiled, state, f, row, p);
+    true
+}
+
+/// Walk one compiled state's ops into `p`. [`draw`] hands it the compact state the frame is in; a test
+/// hands it an open-section state (`compiled.lookup(OPEN_INFO | OPEN_CHAPTERS, ..)`), which the screen does
+/// not reach until the sections go live. The failure read-out is [`draw`]'s: it owns the frame before any
+/// state is chosen.
+pub fn draw_state(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>, row: &mut HudMotion, p: Painter) {
     let e = hud_env();
+    // a panel owning the middle hides the compact state's transport; a section state IS the panel
+    let hides_transport = state.key.open == 0 && !f.transport;
 
     // While a scrub is live the `fades` bands (the title block, the control row, the tabs) fade away so
     // the card has the room; the bar, the knob and both clocks stay. The same alpha restores them.
@@ -117,11 +133,11 @@ pub fn draw(compiled: &Compiled, f: &Frame<'_>, row: &mut HudMotion, p: Painter)
         for op in &state.ops[span.ops.clone()] {
             match op {
                 DrawOp::Scrim { rect } => draw_scrim_at(q, *rect),
-                _ if !f.transport && !is_section_tab(op) => {}
-                DrawOp::Text { bind, rect, size, .. } => match text_of(bind) {
+                _ if hides_transport && !is_section_tab(op) => {}
+                DrawOp::Text { bind, rect, size, bold, ink, alpha, max_lines, leading } => match text_of(bind) {
                     Some(Text::Kicker) => kicker_rect = Some((*rect, *size)),
                     Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), *rect, *size),
-                    None => {}
+                    None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading),
                 },
                 DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
                 DrawOp::UpNext { rects, .. } => {
@@ -160,13 +176,15 @@ pub fn draw(compiled: &Compiled, f: &Frame<'_>, row: &mut HudMotion, p: Painter)
                     draw_playbar_look(q, live, look, f.measure);
                     bar = Some(live);
                 }
+                DrawOp::Ground { rect, ink, radius } => sections::ground(q, *rect, *radius, ink, f),
+                DrawOp::Rule { rect, ink } => sections::rule(q, *rect, ink, f),
+                DrawOp::Icon { rect, asset, ink } => sections::icon(compiled, q, *rect, asset, ink, f),
+                DrawOp::Image { rect, bind, radius } => sections::image(f, q, *rect, bind, *radius),
+                DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. } => {
+                    sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, bold, ink)
+                }
                 // not drawn by this renderer yet: see the module doc
-                DrawOp::Ground { .. }
-                | DrawOp::Image { .. }
-                | DrawOp::Icon { .. }
-                | DrawOp::Rule { .. }
-                | DrawOp::Facts { .. }
-                | DrawOp::Strip { .. } => {}
+                DrawOp::Strip { .. } => {}
             }
         }
         // right after the bar's band, so the still floats over the title block and the row above it
@@ -189,7 +207,6 @@ pub fn draw(compiled: &Compiled, f: &Frame<'_>, row: &mut HudMotion, p: Painter)
             }
         }
     }
-    true
 }
 
 /// A section tab: the one control that draws while a panel owns the middle.
@@ -197,9 +214,8 @@ fn is_section_tab(op: &DrawOp) -> bool {
     matches!(op, DrawOp::Control(c) if c.command == "toggle_section")
 }
 
-/// What a `Text` op's bind names. The ONE resolver of binds: an op draws through the arm its bind
-/// resolves to, and a bind with none (`info.*`, `item.*`, `label.*`: the sections' and the strip's,
-/// PR8's) draws nothing here.
+/// What a `Text` op's bind names. The ONE resolver of the title's binds: a bind with none (`info.*` and
+/// `label.*`: the sections', drawn by `sections::text`; `item.*`: the strip card's) is not the title pair's.
 enum Text {
     /// the kicker line: an episode's numbering and title, else the item's context line
     Kicker,
@@ -360,7 +376,19 @@ fn draw_control(
                 .ground(ControlGround::Unkeyed)
                 .draw(e, q);
         }
-        Widget::Button => {}
+        // An `actions` button of a section: the focus and the pop are the section group's.
+        Widget::Button => {
+            let Some(i) = state
+                .controls
+                .iter()
+                .filter(|k| k.widget == Widget::Button)
+                .position(|k| k.id == c.id)
+            else {
+                return;
+            };
+            let focused = f.focus == GROUP_SECTION && usize::try_from(f.btn).is_ok_and(|b| b == i);
+            sections::button(f, q, e, c, focused, 1.0);
+        }
     }
 }
 
@@ -549,6 +577,106 @@ mod tests {
         };
         let drawn = census(|| assert!(draw(&hud.compiled, &frame, &mut row, Painter::root())));
         assert!(drawn.0.is_empty(), "{:?}", drawn.0);
+    }
+
+    /// **The Info section through the renderer** (`draw_state` over classic's `OPEN_INFO` state), against the
+    /// hand-written card (`InfoPanelState::draw`) on the same playing item. The screen does not switch to it
+    /// yet, so this is the one place the two meet.
+    mod info_section {
+        use super::*;
+        use crate::hud_format::compile::{OPEN_CHAPTERS, OPEN_INFO};
+        use crate::hud_format::Slot;
+        use crate::info_panel::{button_rect, card_geometry, InfoPanelState};
+        use plx_data::metadata::Detail;
+
+        fn playing() -> Detail {
+            Detail {
+                title: "The Long Title".into(),
+                summary: "A summary of the film that is long enough to run onto a second line when the column is narrow, and then some more words besides.".into(),
+                year: 2001,
+                dur_ms: 7_320_000,
+                rating: "PG-13".into(),
+                genres: vec!["Drama".into(), "Thriller".into(), "Crime".into()],
+                thumb: "/library/metadata/1/thumb".into(),
+                ..Detail::default()
+            }
+        }
+
+        /// (the renderer's census, the hand-written card's census) over one playing item
+        fn both(detail: Detail) -> (Census, Census) {
+            let _serial = plx_base::testlock::serial();
+            let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+            let mut store = plx_data::stores::metadata::MetadataStore::default();
+            plx_data::metadata::set_current_for_test(store.state_mut(), Some(detail));
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("classic has an info state");
+            let ps = plx_media::route::PlaybackSession::IDLE;
+            let model = HudModel::default();
+            let up = Countdown::default();
+            let mut row = HudMotion::new();
+            let frame = Frame {
+                ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                focus: GROUP_SCRUB, btn: 0, tab: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+            };
+            let new = census(|| draw_state(&hud.compiled, state, &frame, &mut row, Painter::root()));
+            let old = census(|| InfoPanelState::new().draw(&ps, 1.0, &FM, store.view()));
+            (new, old)
+        }
+
+        fn run<'a>(c: &'a Census, text: &str) -> &'a Run {
+            c.1.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("no run `{text}` in {:?}", c.1))
+        }
+
+        /// The ground, the buttons, the glyphs and every run's x, width and size are the card's. The renderer
+        /// draws the section tabs too (the compiled state is the panel AND the tab row under it, the hand-written
+        /// card was only the panel), so it has one run more: the Info tab's label.
+        #[test]
+        fn the_ground_the_buttons_the_glyphs_and_the_columns_are_the_cards() {
+            let (new, old) = both(playing());
+            let (card, _) = card_geometry();
+            let rect_of = |c: &Census, r: Rect| c.0.iter().filter(|(_, at)| *at == r).count();
+            assert!(rect_of(&new, card) > 0 && rect_of(&new, card) == rect_of(&old, card), "the ground is painted as the card paints it");
+            assert_eq!(new.2, old.2, "the glyphs: Play on From the Beginning, Info on Go to Show/Movie");
+            assert_eq!(new.1.len(), old.1.len() + 1, "the card's runs and the Info tab's label");
+            // the runs in a common order (the tab's label is not the card's: it stands at the screen's left)
+            fn ordered(c: &Census) -> Vec<&Run> {
+                let mut runs: Vec<&Run> = c.1.iter().filter(|r| r.text != "Info").collect();
+                runs.sort_by(|a, b| (a.at.x, &a.text).partial_cmp(&(b.at.x, &b.text)).unwrap());
+                runs
+            }
+            assert_eq!(ordered(&new).len(), ordered(&old).len());
+            for (n, o) in ordered(&new).into_iter().zip(ordered(&old)) {
+                assert_eq!((&n.text, n.size, n.at.x, n.at.w), (&o.text, o.size, o.at.x, o.at.w), "size, left edge and width of `{}`", o.text);
+            }
+            // the two buttons' labels are placed by the compile at `button_rect`: the SAME y as the card draws
+            for label in ["From Beginning", "Go to Movie"] {
+                assert_eq!(run(&new, label).at, run(&old, label).at, "`{label}`");
+            }
+            let _ = button_rect(0, &FM);
+        }
+
+        /// **The first place PR8's stage 3 looks if classic's info state is not identical.** The text block's
+        /// vertical rhythm: the hand-written card centres a stack of [title 42 advance, 6, synopsis' actual lines,
+        /// 12, tags 34] in CAP-TOP coordinates and omits what is absent, the compiled one centres BOX heights
+        /// (title `line_h(TITLE)`, synopsis `max_lines x leading`, facts `line_h(CAPTION)`) that never depend on
+        /// the content. The deltas with a two-line synopsis, a full facts row and the fixture measure are
+        /// pinned here, so changing a fixture number (`leading` on the title, a `h` on the facts) moves them
+        /// on purpose, and a one-line synopsis or an item with no facts moves the hand-written block alone.
+        #[test]
+        fn the_text_blocks_vertical_rhythm_differs_by_these_pinned_amounts() {
+            let (new, old) = both(playing());
+            let starting = |c: &Census, prefix: &str| c.1.iter().find(|r| r.text.starts_with(prefix)).unwrap_or_else(|| panic!("no run `{prefix}`")).at.y;
+            for (prefix, want) in [("The Long Title", 5.6), ("A summary of the film", 9.5), ("Drama", 3.0)] {
+                let got = starting(&new, prefix) - starting(&old, prefix);
+                assert!((got - want).abs() < 0.11, "`{prefix}` sits {got} below the card's, the pin says {want}");
+            }
+        }
+
+        #[test]
+        fn an_open_chapters_state_has_no_info_arms_and_the_gate_only_hides_the_compact_state() {
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            assert!(hud.compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).is_some());
+        }
     }
 
     /// **The reference's compact state draws.** Its faces, rest and focus faces and playbar options all
