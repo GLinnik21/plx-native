@@ -633,7 +633,7 @@ fn under_posters_is_picked_into_the_seated_profiles_record_and_follows_the_seat(
     restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
     assert_eq!(under_posters(), UnderPosters::DEFAULT, "nothing picked: the default");
 
-    let pick = UnderPosters { title: true, details: UnderPostersDetails::AgeRatingScore, show_sort_info: false };
+    let pick = UnderPosters { title: true, details: UnderPostersDetails::AgeRatingScore, sort_value: false };
     assert!(confirm::<UnderPostersPref>(pick));
     assert_eq!(under_posters(), pick, "the cell holds the pick");
     let after = session::load();
