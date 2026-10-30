@@ -4,12 +4,12 @@
     "description": "Settings > Libraries row and page title: the setting for what shows under the focused poster. Row label, short."
   },
   "under_posters.detail": {
-    "value": "What shows under the poster you are on.",
-    "description": "Detail line under the Under posters row on the Settings root. One short sentence."
+    "value": "Under posters, for movies and TV shows.",
+    "description": "Detail line under the Under posters row on the Settings root. One short sentence naming the kinds it applies to: movies and TV shows."
   },
   "under_posters.copy": {
-    "value": "Most posters already show their title. Choose what appears under the poster you are on.",
-    "description": "Narrative copy beside the Under posters page: what the setting does. Two short sentences."
+    "value": "Most posters already show their title. Choose what appears under them, for movies and TV shows alike. The preview uses the library you last opened.",
+    "description": "Narrative copy beside the Under posters page: what the setting does, which kinds it covers, and where the preview's posters come from. Three short sentences."
   },
   "under_posters.title_row": {
     "value": "Title",
@@ -24,12 +24,12 @@
     "description": "Row label on the Under posters page that opens the details picker, and that picker's page title. Its right side reads the chosen line, e.g. Year · Length. One short word."
   },
   "under_posters.details_detail": {
-    "value": "One line of information.",
-    "description": "Detail line under the Details row on the Under posters page."
+    "value": "One line, worded for a movie or a TV show.",
+    "description": "Detail line under the Details row on the Under posters page. One short sentence."
   },
   "under_posters.details_copy": {
-    "value": "Titles that are started, coming soon or a collection show that instead: time left, the release date, the number of films.",
-    "description": "Narrative copy beside the Details picker page: the facts that replace the details line on started, upcoming and collection titles. One sentence."
+    "value": "Each choice fits the poster: a movie shows 2019 · 2h 14m, a TV show 2019 · 6 seasons, or 4 new episodes once you have started it. Started, upcoming and collection titles show time left, the release date or how many titles they hold instead.",
+    "description": "Narrative copy beside the Details picker page: what a choice shows on a movie and on a TV show (year and length; year and season count, or the new-episode count once started), and the facts that replace it on started, upcoming and collection titles. Keep the middle dots and each language's own duration spelling in the samples."
   },
   "under_posters.year_length": {
     "value": "Year · Length",
@@ -42,6 +42,10 @@
   "under_posters.video": {
     "value": "Video",
     "description": "Under posters details choice: video quality marks such as 4K · HDR."
+  },
+  "under_posters.video_detail": {
+    "value": "A TV show has no single video quality; it shows its year.",
+    "description": "Detail line under the Video choice of the details picker, shown while that row has focus: a TV show has no single video quality, so the choice shows its year instead. Names the kind and what it does instead. One short sentence."
   },
   "under_posters.age_rating_score": {
     "value": "Age rating · Score",
@@ -82,5 +86,13 @@
   "under_posters.value_yesterday": {
     "value": "Yesterday",
     "description": "Sort value in a library grid sorted by a date (Date added, Date viewed, release date): the date is yesterday. One short word."
+  },
+  "under_posters.sorted_by": {
+    "value": "Sorted by Year",
+    "description": "Caption under the Under posters preview while Sort value is on: the sample posters are shown as a library sorted by year, whose values are the years under them. One short phrase, whole (the sort's name is inside it, so a language can inflect it); no placeholder."
+  },
+  "under_posters.last_opened": {
+    "value": "The library you last opened",
+    "description": "Caption under the Details picker's preview: the sample posters come from the library the viewer last opened. One short noun phrase."
   }
 }
