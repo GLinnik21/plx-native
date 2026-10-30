@@ -399,9 +399,14 @@ impl LibraryScreen {
     /// **The opener lift for a header control** (`Screen::redraw_focused`): `elem`, the control a
     /// menu opened from, painted as the focused one above the menu's scrim, where the page pass
     /// left it out. Nothing is drawn for an element that is no stop of this row (a card).
+    ///
+    /// **It paints through the row's swap**, as the page's pass does: a sort picked from the menu
+    /// rebuilds the row on the frame the menu is dismissed, and until the menu is gone this lift is
+    /// the only thing that draws the sort control, so a lift that ignored the swap drew the new
+    /// criterion whole from the first frame and popped when it stood down mid-slide.
     pub(super) fn draw_header_opener<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>, elem: u32) {
         let Some(row) = self.header.row() else { return };
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha() * self.handoff.clearance(layout::HEADER_Y - self.scroll.pos));
-        row.draw_opener(p, self.scroll.pos, self.header_pop.scale_with(0, f.press.scale), elem);
+        row.draw_opener_with(p, self.scroll.pos, self.header_pop.scale_with(0, f.press.scale), elem, &self.header_swap);
     }
 }

@@ -451,8 +451,7 @@ impl PageHeader {
         }
         for (index, r) in layout.items.iter().enumerate() {
             if lifted == Some(index) { continue; }
-            let mut face = self.face(r.slot);
-            if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i, r.text.x); }
+            let face = self.face_in(r, swap);
             // Inked by what is under each pixel: a label a capsule's arc is crossing wears the
             // capsule's ink on its side of the arc and the resting one on the other.
             paint_inked(p, &self.ink(capsules, r, &face, ground), |focus, selected| {
@@ -470,19 +469,34 @@ impl PageHeader {
     /// focused control wears it. What [`Self::draw`] shows for a focused item, without the row
     /// around it, so a menu can keep it lit above its scrim.
     pub fn draw_opener(&self, p: Painter, layout: &HeaderLayout, index: usize, pop: f32) {
-        let Some(r) = layout.items.get(index) else { return };
-        let pill = focus_pill_popped(r.plate, pop);
-        p.rrect(pill, pill.h * 0.5, pill.h * 0.5, crate::ACCENT);
-        self.draw_face(p, layout, index, r.plate, true);
+        self.draw_opener_with(p, layout, index, pop, &HeaderSwap::new());
     }
 
-    /// Draw item `layout.items[index]`'s face (label, value, fold glyph) with its plate at `to`,
-    /// and no plate of its own (`focused`: the accent ink the focused control wears). The same
-    /// paint as [`Self::draw`]'s, so the opener's face ([`Self::draw_opener`] is its caller) cannot
-    /// drift from the row's.
-    pub fn draw_face(&self, p: Painter, layout: &HeaderLayout, index: usize, to: Rect, focused: bool) {
+    /// [`Self::draw_opener`] on a row that is changing under the reader. **A sort picked from the
+    /// menu is seen through the lift**: the menu pushes its edit and dismisses itself on one frame,
+    /// so the control that opened it is drawn by the lift (the page's pass leaves it out) for the
+    /// whole of the swap, and the lift must paint it as the page's pass would
+    /// ([`Self::face_in`], the one place a face meets its swap): the criterion it replaces falling
+    /// as the new one rises, the mark travelling and the right edge fixed. The pill rides the
+    /// face: the lift has no focus capsule to chase the new plate, so its left edge travels with
+    /// the mark (`fade.lead`) and its right edge stays, and it wears the face's opacity.
+    pub fn draw_opener_with(&self, p: Painter, layout: &HeaderLayout, index: usize, pop: f32, swap: &HeaderSwap) {
         let Some(r) = layout.items.get(index) else { return };
-        self.draw_face_at(p, r.text, &self.face(r.slot), (to.x - r.plate.x, to.y - r.plate.y), (f32::from(focused), 0.0));
+        let face = self.face_in(r, swap);
+        let lead = face.fade.map_or(0.0, |fade| fade.lead);
+        let pill = focus_pill_popped(Rect::new(r.plate.x + lead, r.plate.y, r.plate.w - lead, r.plate.h), pop);
+        face.fade.map_or(p, |fade| p.alpha(fade.face)).rrect(pill, pill.h * 0.5, pill.h * 0.5, crate::ACCENT);
+        self.draw_face_at(p, r.text, &face, (0.0, 0.0), (1.0, 0.0));
+    }
+
+    /// What `r` says about itself on a row `swap` is changing: its face, and for a right-cluster
+    /// control the swap's say about how it is painted now. The page's pass ([`Self::draw_with`])
+    /// and the opener lift ([`Self::draw_opener_with`]) both read a face here, so the two cannot
+    /// disagree about a frame of the swap.
+    fn face_in<'a>(&'a self, r: &ItemRect, swap: &'a HeaderSwap) -> Face<'a> {
+        let mut face = self.face(r.slot);
+        if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i, r.text.x); }
+        face
     }
 
     /// One item's label, value segment and fold glyph at the text box `text`, shifted by `(dx, dy)`,
@@ -707,13 +721,20 @@ impl HeaderRow {
     /// dim AND the menu's panel; `Z::OPENER`), so the panel never covers it. `pop` is the
     /// row's [`CtlPop`] factor, so the pill follows the press spring as the menu opens.
     pub fn draw_opener(&self, p: Painter, scroll: f32, pop: f32, elem: u32) {
+        self.draw_opener_with(p, scroll, pop, elem, &HeaderSwap::new());
+    }
+
+    /// [`Self::draw_opener`] while the screen's `swap` carries the row's controls from the row
+    /// before it ([`PageHeader::draw_opener_with`]): a sort picked from the menu changes the
+    /// control that opened it, which only the lift draws until the menu is gone.
+    pub fn draw_opener_with(&self, p: Painter, scroll: f32, pop: f32, elem: u32, swap: &HeaderSwap) {
         let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) else { return };
         let mut layout = self.layout.clone();
         for item in &mut layout.items {
             item.text.y -= scroll;
             item.plate.y -= scroll;
         }
-        self.page.draw_opener(p, &layout, *index, pop);
+        self.page.draw_opener_with(p, &layout, *index, pop, swap);
     }
 
     /// Paint the row `scroll` px up from its document position (it scrolls away with its page).

@@ -520,6 +520,52 @@ fn every_header_opener_is_lit_by_the_lift_while_its_menu_is_open() {
     }
 }
 
+/// **A sort picked from the menu is seen through the lift** (the press path: the menu's pick pushes
+/// the `LibraryEdit` and dismisses itself on the same frame, so the opener lift is the only thing
+/// that draws the sort control until the menu is gone). The existing swap tests draw the page's
+/// pass with `lifted = None`, which is how the lift painted the NEW criterion whole from its first
+/// frame while the places slid underneath and then popped when it stood down. Driven through real
+/// ticks and the lift (`Screen::redraw_focused`): the old criterion starts the swap and falls as the
+/// new one rises, and the settled lift draws the new one alone.
+#[test]
+fn a_picked_sort_swaps_its_criterion_through_the_opener_lift() {
+    use plx_platform::i18n::msg;
+    use plx_ui::screen::Screen;
+    let _guard = plx_base::testlock::serial();
+    let (mut fixture, mut page, mut engine) = grid_page(2);
+    let key = page.key(SORTFILTER);
+    engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    let mut ms = 0;
+    for _ in 0..60 { ms += 16; fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 })); }
+    let (old, new) = (msg::sort_facts_title(), msg::sort_facts_date_added());
+    // What the pick publishes: the same section under a new query, sorted by Date added.
+    fixture.listing = fixture.listing.clone().with_sort_key("addedAt").with_query(2);
+    // `(opacity of the old criterion, of the new one)` as the lift draws them now.
+    let lifted = |page: &LibraryScreen, engine: &FocusEngine<u32>| {
+        let cx = fixture.cx(engine);
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        let runs = plx_ui::draw_census::capture_runs(|| Screen::<TestHost>::redraw_focused(page, &mut frame, Some(key)));
+        let opacity = |text: &str| runs.iter().find(|run| run.text == text).map_or(0.0, |run| run.ink[3]);
+        (opacity(old), opacity(new))
+    };
+    let mut last: Option<(f32, f32)> = None;
+    for frame in 0..240 {
+        ms += 16;
+        fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        if frame == 0 { assert!(page.header_swap.is_sliding(), "premise: the pick began a criterion swap"); }
+        let (out, arriving) = lifted(&page, &engine);
+        assert!((out + arriving - 1.0).abs() < 1e-3, "frame {frame}: the lift draws the criteria at {out} + {arriving}, which is not one");
+        if frame == 0 { assert!(out > 0.9 && arriving < 0.1, "frame {frame}: the lift starts on the OLD criterion: {out}, {arriving}"); }
+        if let Some((was_out, was_arriving)) = last {
+            assert!(out <= was_out + 1e-3 && arriving >= was_arriving - 1e-3, "frame {frame}: the cross-fade runs one way");
+        }
+        last = Some((out, arriving));
+        if !page.header_swap.is_active() { break; }
+    }
+    assert!(!page.header_swap.is_active(), "the swap landed");
+    assert_eq!(lifted(&page, &engine), (0.0, 1.0), "the settled lift draws the new criterion alone");
+}
+
 /// The kinds one descriptive draw of `page`, scrolled one grid pitch (the chrome fully tucked),
 /// declares: a capsule is a `glass` paint (the nav pill's live material).
 fn tucked_draw_kinds(fixture: &Fixture, page: &mut LibraryScreen, engine: &FocusEngine<u32>) -> Vec<(String, [f32; 4])> {

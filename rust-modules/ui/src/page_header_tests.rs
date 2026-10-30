@@ -1352,6 +1352,71 @@ fn a_third_criterion_picked_mid_slide_keeps_the_edge_and_lands_exact() {
     assert_eq!(Shot::of(&third, &swap).numbers(), rest.numbers());
 }
 
+/// What the sort control draws when a menu has LIFTED it (`HeaderRow::draw_opener_with`): the
+/// accent pill and the face, as boxes.
+#[derive(Clone, Debug)]
+struct Opened { pill: Rect, icon: Rect, chevron: Rect, criteria: Vec<(String, Rect, f32)> }
+
+impl Opened {
+    /// The sort control (stop 3 of [`drawn_cluster`]) at the focused pop, through the swap.
+    fn of(row: &HeaderRow, swap: &HeaderSwap) -> Self {
+        let paint = || row.draw_opener_with(Painter::recording(), 0.0, crate::widgets::CTRL_FOCUS_SCALE, 3, swap);
+        let icon = |wanted: Icon| crate::draw_census::capture_icons(paint).into_iter().find(|(icon, _)| *icon == wanted).map(|(_, r)| r).expect("drawn");
+        let pill = crate::draw_census::capture(paint).into_iter().find(|(tag, rect)| *tag == 2 && rect.h > HEIGHT).map(|(_, rect)| rect).expect("the accent pill");
+        let criteria = crate::draw_census::capture_runs(paint).iter().filter(|run| ["Title", "Date added", "Year"].contains(&run.text.as_str()))
+            .map(|run| (run.text.clone(), run.at, run.ink[3])).collect();
+        Self { pill, icon: icon(Icon::Sort), chevron: icon(Icon::ChevronDown), criteria }
+    }
+
+    fn opacity(&self, text: &str) -> f32 { self.criteria.iter().find(|(t, ..)| t == text).map_or(0.0, |c| c.2) }
+}
+
+/// **A sort picked from the menu is seen through the lift** (the press path: the menu pushes the
+/// edit and dismisses itself the same frame, so the sort control is drawn by the opener lift, not
+/// the page's pass, for the whole slide). The lifted control paints exactly what the page's pass
+/// paints for it on EVERY frame: the old criterion alone on frame zero and the new one arriving as
+/// it falls, the icon and the pill's left edge travelling from the old control's place to the new
+/// one's with the right edge and the chevron fixed, and the settled swap is the opener at rest. It
+/// drew the new layout whole from the first frame, then popped when the lift stood down.
+#[test]
+fn a_lifted_sort_control_swaps_its_criterion_on_the_swap_the_page_pass_runs() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (drawn_cluster("Title"), drawn_cluster("Date added"));
+    let (was, rest) = (Opened::of(&old, &HeaderSwap::new()), Opened::of(&new, &HeaderSwap::new()));
+    assert!(was.pill.w != rest.pill.w, "premise: the control changes width with its criterion");
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_sliding());
+    let mut last: Option<Opened> = None;
+    for frame in 0..600 {
+        let (lifted, page) = (Opened::of(&new, &swap), Shot::of(&new, &swap));
+        let label = format!("frame {frame}");
+        assert_eq!((lifted.icon, lifted.chevron), (page.icon, page.chevron), "{label}: the lifted icon and chevron stand where the page's pass has them");
+        for text in ["Title", "Date added"] {
+            assert!((lifted.opacity(text) - page.opacity(text)).abs() < 1e-3, "{label}: {text} is {} lifted, {} on the page", lifted.opacity(text), page.opacity(text));
+        }
+        assert_eq!(lifted.pill.x + lifted.pill.w, rest.pill.x + rest.pill.w, "{label}: the pill keeps its right edge");
+        assert!((lifted.pill.x - (lifted.icon.x - OVERHANG - crate::widgets::PILL_FOCUS_OUTSET)).abs() < 1e-3,
+            "{label}: the pill's left edge travels with the icon: pill {:?}, icon {:?}", lifted.pill, lifted.icon);
+        if frame == 0 {
+            assert_eq!((lifted.pill, lifted.icon), (was.pill, was.icon), "frame zero is the control as the row before had it");
+            assert_eq!((lifted.opacity("Title"), lifted.opacity("Date added")), (1.0, 0.0), "frame zero is the old criterion alone");
+        }
+        let between = |x: f32, a: f32, b: f32| x >= a.min(b) - 1e-3 && x <= a.max(b) + 1e-3;
+        assert!(between(lifted.pill.x, was.pill.x, rest.pill.x), "{label}: the pill stays between its two places: {:?}", lifted.pill);
+        if let Some(last) = &last {
+            assert!((lifted.pill.x - last.pill.x) * (rest.pill.x - was.pill.x).signum() >= -1e-3, "{label}: the pill moved back");
+        }
+        last = Some(lifted);
+        if !swap.is_active() { break; }
+        swap.step(DT);
+    }
+    assert!(!swap.is_active(), "the spring landed");
+    let end = Opened::of(&new, &swap);
+    assert_eq!((end.pill, end.icon, end.chevron), (rest.pill, rest.icon, rest.chevron), "the settled swap is the opener at rest");
+    assert_eq!(end.criteria.iter().map(|(t, _, a)| (t.as_str(), *a)).collect::<Vec<_>>(), [("Date added", 1.0)]);
+}
+
 /// **The slide is decoration with a known end** ([`plx_machine::idle`]): it wakes the present gate
 /// on every frame it moves, never holds a page freeze (it is no layout), and a swap at rest asks for
 /// no frame at all.
