@@ -1599,7 +1599,7 @@ impl PlayerScreen {
             elem: plx_ui::screen::ElemKind::Control,
         });
         // Every item of whatever occupies the row — the Up Next PAIR included, which is two
-        // controls the D-pad walks and so two stops (`ControlSlot::item_rect`).
+        // controls the D-pad walks and so two stops (the compile's `items`).
         let row_len = self.row_len(plx_appkit::chapters_panel::has_chapters(H::metadata(cx))).max(1);
         out.push(GroupSpec {
             id: GROUP_ROW,

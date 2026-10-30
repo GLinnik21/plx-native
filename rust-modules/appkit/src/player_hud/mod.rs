@@ -403,7 +403,7 @@ impl SubtitleBitmaps {
 /// **The geometry the audits grade**: the embedded `builtin:classic`, compiled, in its compact Discs state
 /// (the same report the player page places from). The audit has no measurer of its own and none of these
 /// facts needs one, so the compile runs on the shipped advances; it is the same package and the same
-/// numbers the hand-written layout reported (`compiled_classic_matches_the_hand_written_layout`, against
+/// numbers the (since deleted) hand-written layout reported (`compiled_classic_matches_the_hand_written_layout`, against
 /// the frozen golden).
 #[cfg(any(test, feature = "test-support"))]
 pub fn audit_geometry() -> geometry::HudGeometry {

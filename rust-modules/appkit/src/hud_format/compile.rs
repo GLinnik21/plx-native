@@ -3,8 +3,8 @@
 //! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards.
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork. The two things a layout needs from
-//! outside arrive as values: text measurement as the existing [`Measure`] capability (the one
-//! `classic::geometry` takes, so both sides measure identically), and the app's own strings as
+//! outside arrive as values: text measurement as the existing [`Measure`] capability (the one the
+//! lint and the draw share, so every side measures identically), and the app's own strings as
 //! [`AppLabels`] in [`CompileCtx`] (a pill is labelled by its command's app string; the caller builds
 //! the labels from the viewer's language and a different language is a different compile).
 //!
@@ -32,12 +32,13 @@
 //! to the band above it, an absent band gives and takes none). A band's cells pack per alignment group
 //! in `plx_ui::hstack::HStack` runs, `gap` apart, with `gap_before`/`gap_after` as `Item::before` /
 //! `Item::after`; a segment is one `HStack` of controls; a `vstack` is a `VStack`. Widths come from the
-//! same widget functions the hand-written layout calls (`TabPill::width_measured`,
+//! same widget functions the draw calls (`TabPill::width_measured`,
 //! `Button::pill_w_measured`, `classic::stand_in_w`, `up_next::layout_at`), never a re-derived padding.
 //!
 //! **Fill.** A start-aligned `w: fill` cell runs to the nearest edge of the next present cell of a
 //! later group (a control's rect scaled by `CTRL_FOCUS_SCALE`, a slot stand-in's leftmost rect), minus
-//! the band's `gap`: `classic::title_right` made the rule. A fill in a centre or end group takes the
+//! the band's `gap`: the hand-written `title_right` (since deleted; its values are frozen in
+//! `classic-title-right.golden.tsv`) made the rule. A fill in a centre or end group takes the
 //! row's free room, shared equally. A `facts`, `rect`, `playbar` or `strip` cell with no `w` is a fill
 //! cell; server text with no `w` is too.
 //!
@@ -1989,7 +1990,7 @@ impl<'e, 'p> Env<'e, 'p> {
                         .flatten()
                         .fold(f32::MAX, f32::min)
                 }),
-                // the pill actually shown: a start-aligned fill stops at ITS edge, as `classic::title_right` does
+                // the pill actually shown: a start-aligned fill stops at ITS edge, as the hand-written `title_right` did
                 _ => standin.skip.map(|s| s[skip as usize].scaled(CTRL_FOCUS_SCALE).x),
             };
             self.fill_bands(&bands, &boxes, &Mode { replaces: &replaces, hide: true, standin_left: left, host })

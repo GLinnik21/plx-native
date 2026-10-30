@@ -3,7 +3,7 @@
 //! [`super::report`]; the registry's CI reads the same JSON.
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork in production code. The text measurer is the
-//! existing [`Measure`] capability (the one [`compile`] and `classic::geometry` take, so every side
+//! existing [`Measure`] capability (the one [`compile`] takes, so every side
 //! measures identically), and the language is an ARGUMENT: [`LintLang`] carries the tag and the app's
 //! own strings looked up in THAT language's catalog (`LocaleContext::resolve` and the generated
 //! `msg::*_in`), so nothing here reads `i18n::current()` or any other process-wide registry.

@@ -176,8 +176,8 @@ mod tests {
     /// **Classic answers every frame the player can be in**, in every shipped language: for every slot the
     /// HUD can hold, with and without chapters, as an episode or a movie, paused or playing, the compact
     /// state (`open == 0`) and its geometry exist. This is the proof that `frame_state` returning `None`
-    /// cannot happen for `builtin:classic`: the player draws and places from the compile with no
-    /// hand-written layout behind it.
+    /// cannot happen for `builtin:classic`: the player draws and places from the compile, and has no
+    /// other layout behind it.
     #[test]
     fn classic_answers_every_frame_the_player_can_be_in() {
         use crate::hud_format::compile::SkipKind;

@@ -1,11 +1,11 @@
 //! **The layout compiler's tests** (`compile.rs`).
 //!
 //! The headline is `compiled_classic_matches_the_hand_written_layout`: the shipped classic package,
-//! compiled, reports the SAME rects as the hand-written layout (`classic::geometry`), field for field and
+//! compiled, reports the SAME rects as the hand-written layout (`classic::geometry`, since deleted) reported, field for field and
 //! to the exact `f32`, in every compact slot, for a movie and an episode, with and without chapters, in
 //! every shipped language and under both measurers (`FixtureMeasure`, whose advances are arithmetic, and
 //! `ShippedMeasure`, the real fonts' advances, which is headless here). A mismatch means the compiler or
-//! the fixture is wrong, never the hand-written layout. (That layout's numbers are frozen as literals:
+//! the fixture is wrong, never the frozen numbers. (The deleted layout's numbers are pinned as literals:
 //! see `frozen_classic_geometry`.) Then every fixture compiles in every state
 //! `reach` enumerates, the cost of classic's compact state is pinned, and the section states are held
 //! against the panels' own constants.

@@ -1,8 +1,9 @@
 //! **The renderer of a compiled HUD** (`docs/hud-plugins.md`, "Architecture"): it draws the compact
 //! state of a [`Compiled`] package through the shared widgets, computing nothing a frame could have
 //! been told. `builtin:classic` is the only package that ships, and it draws here exactly as the
-//! hand-written [`classic::draw_hud`] does (the census test in this module's tests is the proof on the
-//! host; the simulator's frame dump is the proof of pixels).
+//! hand-written `classic::draw_hud` (since deleted) did: the census test in this module's tests holds the
+//! renderer to the hashes that draw froze on the host, and the simulator's frame dump is the proof of pixels.
+//! A package with no state for the frame draws nothing: [`draw`] returns `false`.
 //!
 //! **What it walks.** The state [`Compiled::lookup`] answers for the frame (`open == 0`: the sections
 //! draw their own panels in this release), then its [`Span`]s in draw order. A `Fades` span draws on the
@@ -11,7 +12,7 @@
 //! a panel owns the middle (`!transport`) only the scrim and the section tabs draw.
 //!
 //! **Motion stays here.** The focus springs, the title marquee, the scrub preview and the knob's spring
-//! are the renderer's, read from the same [`HudMotion`] the hand-written draw reads.
+//! are the renderer's, read from the [`HudMotion`] the page owns.
 //!
 //! **What it does not draw yet** (each is a decision, not an omission): a section's selected face (the
 //! `toggle_section` disc while its panel is open: section time, PR8), `rest: custom` (it takes the film),
@@ -23,7 +24,7 @@
 //! **The kicker is the one place it overrides the compile.** The compile folds `title.is_episode` into
 //! the state ([`StateKey::episode`] is the ROW's pair boolean, because that is what classic's golden
 //! equates it with), so a real episode with no queue neighbours compiles in the movie state. The kicker's
-//! face is therefore chosen from `now_playing().is_real_episode`, as the hand-written draw does, and only
+//! face is therefore chosen from `now_playing().is_real_episode`, as classic's draw always did, and only
 //! the rects are taken from the ops.
 
 use std::ffi::CString;
@@ -48,7 +49,7 @@ use crate::skip_pill;
 use crate::up_next::{self, Countdown, Decor, Layout};
 
 /// Everything besides the compiled package, the motion and the painter that one frame of the
-/// transport draws from: [`classic::draw_hud`]'s inputs, bundled.
+/// transport draws from, bundled.
 pub struct Frame<'a> {
     pub ps: &'a plx_media::route::PlaybackSession,
     pub model: &'a HudModel,
@@ -157,13 +158,13 @@ pub fn draw(compiled: &Compiled, f: &Frame<'_>, row: &mut HudMotion, p: Painter)
             }
         }
         // right after the bar's band, so the still floats over the title block and the row above it
-        // and under the tabs below, as the hand-written draw orders them
+        // and under the tabs below, as classic orders them
         if let Some(live) = bar.take() {
             draw_scrub_preview(p, f.ps, f.model, row, live);
         }
     };
     // The stand-in's ops are the LAST span, carrying the id of the band that hosts them; they draw right
-    // after that band's own ops, where the hand-written draw puts the row, and so before the bar.
+    // after that band's own ops, where classic puts the row, and so before the bar.
     for (i, span) in state.spans.iter().enumerate() {
         let standin = !span.band.is_empty() && state.spans[..i].iter().any(|s| s.band == span.band);
         if standin {
@@ -203,8 +204,8 @@ fn text_of(bind: &str) -> Option<Text> {
 }
 
 /// The title pair, in the cell the compile placed it: the kicker's rect and size, and the main line's. The
-/// main line's right edge is the bound both lines fit before (`title_right`, golden-pinned for classic;
-/// a package's `w: fill` cell for any other).
+/// main line's right edge is the bound both lines fit before (the `w: fill` cell's, golden-pinned for classic in
+/// `classic-title-right.golden.tsv`).
 fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<(Rect, i32)>, main: Rect, title_size: i32) {
     let classic = TitleLook::default();
     let look = TitleLook {
