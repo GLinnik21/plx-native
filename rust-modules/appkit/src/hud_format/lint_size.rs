@@ -30,14 +30,17 @@ use super::{codes, Finding};
 ///
 /// **Derivation** (every figure re-checked against the tree this constant landed on):
 /// - The narrowest focus target the app places is a LETTER of the Library's jump rail, which the Right key
-///   reaches from the grid's last column (`screens/src/library/rail.rs:253`, `Focusable for RailPart`). Its
+///   reaches from the grid's last column (`screens/src/library/rail.rs:251`, `Focusable for RailPart`). Its
 ///   seat is `RAIL_TRACK_W` (44) wide (`screens/src/library/layout.rs:29`) and one pitch tall
 ///   (`screens/src/library/rail.rs:197-203`, the slot a focus step lands on). The pitch is
 ///   `RAIL_AVAIL / n` clamped to `[RAIL_MIN_PITCH, RAIL_PITCH]` (`screens/src/library/layout.rs:235-237`)
-///   with `RAIL_PITCH` 32 (`:31`) and `RAIL_MIN_PITCH` 26 (`:33`, "the least a letter is squeezed to"), so
-///   a long alphabet (a Latin one is 27 letters with `#`) is placed at 26 and its seat's smaller side is 26.
-/// - **26, not 32.** 32 is the pitch of a SHORT alphabet, the most a letter is ever given. The seat the app
-///   places in the worst case is 26, and a floor that the app itself undercuts would not be derived from it.
+///   with `RAIL_PITCH` 32 (`:31`) and `RAIL_MIN_PITCH` 26 (`:33`, "the least a letter is squeezed to"), and
+///   `RAIL_AVAIL` 864 (`:227`: `RAIL_BOTTOM` 1016 less `RAIL_TOP_HIGH` 152, `:221-225`). A listing of 34 or
+///   more labels (864 / 34 = 25.4; a script other than Latin lists the server's own labels) is therefore
+///   placed at 26, and scrolls, so that seat's smaller side is 26.
+/// - **26, not 32.** 32 is the pitch of a SHORT alphabet, the most a letter is ever given (a Latin one, 27
+///   letters with `#`, is 864 / 27 = 32). The seat the app places in the worst case is 26, and a floor that
+///   the app itself undercuts would not be derived from it.
 /// - **A seat, not the drawn disc.** The focused letter draws a disc `pitch - 2` wide inside its seat
 ///   (`screens/src/library/rail.rs:14`, 24 at the least). A package control's rect is both its face and
 ///   its seat (a disc is `size` x `size`, `ControlRect::rect` is the rect it is DRAWN at, and the focus
