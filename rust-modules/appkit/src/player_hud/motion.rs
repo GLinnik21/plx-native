@@ -104,7 +104,16 @@ impl ClockWarm {
 /// — it is drawn entirely from the caller's arguments — so this and the resume clock beside it are
 /// the whole of the route's retained motion state, and phase 9 gave them the one owner the rest of
 /// the route already has.
-pub type RowPop = plx_ui::widgets::CtlPop<{ BTN_N as usize }>;
+pub type RowPop = plx_ui::widgets::CtlPop<{ super::geometry::MAX_ROW_ITEMS }>;
+
+/// How many items of the row can pop for `slot`: the discs of a package are as many as the format lets one
+/// row hold, a stand-in has its own count. (A stale cursor left by a wider occupant pops nothing.)
+fn row_pops(slot: ControlSlot) -> usize {
+    match slot {
+        ControlSlot::Discs(_) => super::geometry::MAX_ROW_ITEMS,
+        other => other.items().max(0) as usize,
+    }
+}
 
 /// **Everything the transport row remembers between frames**: the control row's per-item focus pop
 /// and the paused→playing edge the state read-out's `Play` mark is timed from.
@@ -187,7 +196,7 @@ impl HudMotion {
         let f = (focus == GROUP_ROW)
             .then(|| usize::try_from(btn).ok())
             .flatten()
-            .filter(|&i| i < slot.items().max(0) as usize);
+            .filter(|&i| i < row_pops(slot));
         self.pop.step(f, dt);
     }
 

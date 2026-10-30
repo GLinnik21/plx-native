@@ -1346,8 +1346,10 @@ pub(crate) unsafe fn activate_player_row(
     // The cursor is the instance's; read the one field this dispatch turns on, so the container
     // is borrowed once and the arms below are free to present a panel on it.
     let btn = super::bridge::player(pages).map_or(0, |player| player.hud.nav.btn);
-    if let plx_appkit::player_hud::ControlSlot::Discs(controls) = ctrl {
-        if let Some(command) = controls.command(btn) {
+    if let plx_appkit::player_hud::ControlSlot::Discs(_) = ctrl {
+        // the command of the control the PACKAGE placed at the cursor's index, as a press of it asks for
+        let command = super::bridge::player(pages).and_then(|screen| screen.row_command(btn));
+        if let Some(command) = command {
             perform_hud_command(command, player, pa, repause_at, now, refresh_hubs, pages, bridge);
         }
     } else {

@@ -22,8 +22,10 @@ use plx_media::player::text_style::HudBand;
 use plx_ui::Rect;
 
 use super::classic;
+use super::command::HudCommand;
+use super::model::HudModel;
 use super::motion::HudMotion;
-use super::state::ControlSlot;
+use super::state::{ControlSlot, Controls};
 use crate::hud_format::compile::{Compiled, CompiledState, SkipKind};
 use crate::hud_format::reach::Slot;
 
@@ -164,4 +166,52 @@ pub fn row_len(compiled: Option<&Compiled>, slot: ControlSlot, chapters: bool, p
         (ControlSlot::Discs(_), Some((state, _))) => state.row_ids.len(),
         _ => slot.items().max(0) as usize,
     }
+}
+
+/// The compiled state of the discs for the frame and the `Controls` the slot sampled, when the occupant is
+/// the discs and the package has a state for the frame. `None` is "ask the slot" (classic's table).
+fn package_row<'c>(compiled: Option<&'c Compiled>, slot: ControlSlot, model: &HudModel) -> Option<(&'c CompiledState, Controls)> {
+    let ControlSlot::Discs(controls) = slot else { return None };
+    let (state, _) = frame_state(compiled?, slot, model.chapters, model.paused)?;
+    Some((state, controls))
+}
+
+/// **What a press of the row's item `i` performs**, `None` for an absent or disabled one (it has no stop).
+/// For the discs of a package it is the command of the control the package placed at that stable index
+/// (`CompiledState::row_ids`), with its parameters, enabled by the command's own predicate
+/// ([`HudCommand::enabled`]) over the frame's `model` (with the slot's sampled `Controls`, so the discs
+/// and the model cannot disagree). Everywhere else it is the slot's: classic's table, a stand-in's none.
+/// For `builtin:classic` the two are one answer (the test next to this fn pins it).
+pub fn row_command(compiled: Option<&Compiled>, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
+    match package_row(compiled, slot, model) {
+        Some((state, controls)) => {
+            let id = state.row_ids.get(usize::try_from(i).ok()?)?.as_deref()?;
+            let act = state.control(id)?.act?;
+            act.enabled(&HudModel { controls, ..*model }).then_some(act)
+        }
+        None => slot.command(i),
+    }
+}
+
+/// Does item `i` of the row have a focus stop and a pointer target? [`row_command`] for the discs of a
+/// package, [`ControlSlot::enabled`] elsewhere.
+pub fn row_enabled(compiled: Option<&Compiled>, slot: ControlSlot, model: &HudModel, i: i32) -> bool {
+    match package_row(compiled, slot, model) {
+        Some(_) => row_command(compiled, slot, model, i).is_some(),
+        None => slot.enabled(i),
+    }
+}
+
+/// **Where the cursor parks when the row appears.** Classic's rule over commands: an enabled Next, else an
+/// enabled Previous, else an enabled Play/Pause, else the first enabled control (classic has no Play/Pause
+/// control, so for it that is `Controls::primary`: Next, Previous, then Subtitles).
+pub fn row_primary(compiled: Option<&Compiled>, slot: ControlSlot, model: &HudModel) -> i32 {
+    let Some((state, _)) = package_row(compiled, slot, model) else { return slot.primary_btn() };
+    let len = i32::try_from(state.row_ids.len()).unwrap_or(0);
+    let at = |want: Option<HudCommand>| (0..len).find(|&i| row_command(compiled, slot, model, i).is_some_and(|c| want.is_none_or(|w| c == w)));
+    at(Some(HudCommand::Next))
+        .or_else(|| at(Some(HudCommand::Previous)))
+        .or_else(|| at(Some(HudCommand::TogglePlay)))
+        .or_else(|| at(None))
+        .unwrap_or_else(|| slot.primary_btn())
 }

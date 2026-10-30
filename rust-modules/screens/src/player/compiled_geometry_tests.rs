@@ -192,3 +192,79 @@ fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
     let first_tracks = state.controls.iter().position(|c| c.command == "open_tracks").expect("an opener");
     assert_eq!(page.menu_anchor(tracks, false), state.menu_anchor(first_tracks));
 }
+
+// ---------------------------------------------------------------------------------------------------
+// PR7 stage 1d: a press performs the command of the control the PACKAGE placed
+// ---------------------------------------------------------------------------------------------------
+
+fn reference() -> Arc<Compiled> {
+    let text = include_str!("../../../appkit/src/hud_format/fixtures/reference.plxhud.json");
+    load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the reference loads").compiled
+}
+
+/// The row's stable index of the control `id` in the reference's movie form.
+fn ordinal(compiled: &Compiled, id: &str) -> i32 {
+    let state = compiled.lookup(0, Slot::Discs, false, false, false).expect("the compact state");
+    state.row_ids.iter().position(|r| r.as_deref() == Some(id)).unwrap_or_else(|| panic!("no `{id}` in the row")) as i32
+}
+
+/// **A control past classic's five performs its own command.** The page resolved a press through classic's
+/// table (`slot.command(i)`), so under the reference the Play disc asked for whatever classic's fourth
+/// control is. The page now asks the package's control at that index, with its parameters.
+#[test]
+fn a_press_asks_for_the_command_of_the_control_the_package_placed() {
+    use plx_appkit::player_hud::command::{HudCommand, MorePage, SeekBy, TrackTab};
+    use std::num::NonZeroI32;
+    let _g = plx_base::testlock::serial();
+    let compiled = reference();
+    let secs = |n| HudCommand::Seek(SeekBy::Secs(NonZeroI32::new(n).unwrap()));
+    let mut page = page_with(Some(Arc::clone(&compiled)));
+    page.model.duration_ns = 3_600_000_000_000;
+    page.hud.visible_at_press = true;
+    page.hud.nav.focus = GROUP_ROW;
+    let mut rig = super::travel_rig::Rig::on(&page, ENTRY);
+    for (id, want) in [
+        ("play", HudCommand::TogglePlay),
+        ("back", secs(-10)),
+        ("fwd", secs(30)),
+        ("subs", HudCommand::OpenTracks(TrackTab::Subtitles)),
+        ("more", HudCommand::OpenMore(MorePage::Root)),
+    ] {
+        let i = ordinal(&compiled, id);
+        rig.seat_on(player_hud::control_elem(i));
+        let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        assert_eq!(reqs, vec![PlayerReq::Command(want)], "`{id}` at index {i}");
+        assert_eq!(page.hud.nav.btn, i, "the cursor is seated on the pressed control");
+    }
+}
+
+/// **A control is enabled by its own command's predicate** (`HudCommand::enabled`): a seek needs a known
+/// duration, an absent Previous/Next has no stop, and the rest are always there.
+#[test]
+fn a_package_controls_stop_is_its_commands_enabled_predicate() {
+    let _g = plx_base::testlock::serial();
+    let compiled = reference();
+    let mut page = page_with(Some(Arc::clone(&compiled)));
+    let (back, play, prev) = (ordinal(&compiled, "back"), ordinal(&compiled, "play"), 2);
+    assert!(page.row_enabled(play));
+    assert!(!page.row_enabled(back), "no duration, no jump");
+    page.model.duration_ns = 1;
+    assert!(page.row_enabled(back));
+    assert!(!page.row_enabled(prev), "a movie has no Previous: its index is held, its stop is not");
+    assert!(!page.row_enabled(40), "past the row");
+}
+
+/// The cursor parks, when the row appears, on Next, else Previous, else Play, else the first enabled control
+/// (classic's rule over commands: its Next, else Previous, else Subtitles).
+#[test]
+fn the_row_parks_on_the_primary_control_of_the_package() {
+    let _g = plx_base::testlock::serial();
+    let compiled = reference();
+    let mut page = page_with(Some(Arc::clone(&compiled)));
+    assert_eq!(page.row_primary(), ordinal(&compiled, "play"), "a movie: no pair, so Play");
+    page.slot = ControlSlot::Discs(plx_appkit::player_hud::Controls::for_item(true, true, true, false));
+    let episode = compiled.lookup(0, Slot::Discs, false, true, false).expect("the episode form");
+    let next = episode.row_ids.iter().position(|r| r.as_deref() == Some("next")).unwrap() as i32;
+    assert_eq!(page.row_primary(), next, "an episode with a Next: Next");
+    assert_eq!(page_with(None).row_primary(), page_with(None).slot.primary_btn(), "no package: classic's rule");
+}

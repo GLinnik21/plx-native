@@ -1519,3 +1519,35 @@ mod playback_navigation_tests {
         assert_eq!(last.action(BTN_NEXT), None);
     }
 }
+
+/// **Under `builtin:classic`, the row resolved through the compile is the row resolved through `Controls`.**
+/// The page now asks the package's control at an index what a press performs and whether it has a stop;
+/// for classic's five discs that must be exactly classic's table, for every valuation of the pair and of
+/// Previous's restart target, and the cursor parks where `Controls::primary` parks it.
+#[test]
+fn classic_resolved_through_the_compile_is_classics_table() {
+    use super::command::HudCommand;
+    use super::model::HudModel;
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let hud = super::loaded::load_classic("test", plx_platform::i18n::english(), &ShippedMeasure).expect("classic loads");
+    let compiled = Some(&*hud.compiled);
+    let model = HudModel::default();
+    for episode in [false, true] {
+        for previous in [false, true] {
+            for next in [false, true] {
+                for restart in [false, true] {
+                    let controls = Controls::for_item(episode, previous, next, restart);
+                    let slot = ControlSlot::Discs(controls);
+                    for i in -1..=BTN_N + 2 {
+                        let want: Option<HudCommand> = controls.command(i);
+                        assert_eq!(row_command(compiled, slot, &model, i), want, "{controls:?} item {i}");
+                        assert_eq!(row_enabled(compiled, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
+                        assert_eq!(row_command(None, slot, &model, i), want, "no package: {controls:?} item {i}");
+                    }
+                    assert_eq!(row_primary(compiled, slot, &model), controls.primary(), "{controls:?}");
+                    assert_eq!(row_primary(None, slot, &model), controls.primary(), "no package: {controls:?}");
+                }
+            }
+        }
+    }
+}

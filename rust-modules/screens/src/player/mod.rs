@@ -643,7 +643,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
             // A move inside a group (the row's Left/Right) keeps its own key handling's extend.
             ScreenEvent::FocusMoved { from, to, by } if let Some(group) = Self::hud_group_of(to.elem) => {
                 if let Some(btn) = player_hud::row_index(to.elem) {
-                    if self.slot.enabled(btn) {
+                    if self.row_enabled(btn) {
                         self.hud.nav.focus = GROUP_ROW;
                         self.hud.nav.btn = btn;
                         self.scrub.cancel();
@@ -670,8 +670,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {
-                if self.hud.nav.focus == GROUP_ROW && !self.slot.enabled(self.hud.nav.btn) {
-                    self.hud.nav.btn = self.slot.primary_btn();
+                if self.hud.nav.focus == GROUP_ROW && !self.row_enabled(self.hud.nav.btn) {
+                    self.hud.nav.btn = self.row_primary();
                     Self::repair_focus(fx, GROUP_ROW);
                 }
                 self.render.ass.update(H::session(cx), tick.ms);
@@ -889,7 +889,7 @@ impl PlayerScreen {
             }
             e if let Some(btn) = player_hud::row_index(e) => {
                 self.hud.nav.focus = GROUP_ROW;
-                if !self.slot.enabled(btn) {
+                if !self.row_enabled(btn) {
                     Self::repair_focus(fx, GROUP_ROW);
                     return Handled::Yes;
                 }
@@ -1194,7 +1194,7 @@ impl PlayerScreen {
 
     /// The command of the control the engine holds, if it holds one of the row's.
     fn focused_command(&self, focused: Option<u32>) -> Option<player_hud::command::HudCommand> {
-        self.slot.command(focused.and_then(player_hud::row_index)?)
+        self.row_command(focused.and_then(player_hud::row_index)?)
     }
 
     /// **A press on the row committed** (the engine's `PressCommit`, once the dip has played): ask
@@ -1203,11 +1203,11 @@ impl PlayerScreen {
     /// Nothing happens when the engine is not on an enabled control of the row any more (the row
     /// changed under the press).
     fn row_pressed<H: AppLike>(&mut self, focused: Option<u32>, fx: &mut Effects<'_, H>) {
-        let Some(ordinal) = focused.and_then(player_hud::row_index).filter(|&i| self.slot.enabled(i)) else {
+        let Some(ordinal) = focused.and_then(player_hud::row_index).filter(|&i| self.row_enabled(i)) else {
             return;
         };
         self.hud.nav.btn = ordinal;
-        match self.slot.command(ordinal) {
+        match self.row_command(ordinal) {
             Some(command) => Self::ask(fx, PlayerReq::Command(command)),
             None => Self::ask(fx, PlayerReq::StandIn),
         }
@@ -1549,6 +1549,23 @@ impl PlayerScreen {
         Some(opener.and_then(|i| state.menu_anchor(i)).unwrap_or(state.standin.row))
     }
 
+    /// Does item `i` of the row have a stop? The command's own predicate for a package's discs, the slot's
+    /// elsewhere (`player_hud::geometry::row_enabled`).
+    fn row_enabled(&self, i: i32) -> bool {
+        player_hud::geometry::row_enabled(self.compiled.as_deref(), self.slot, &self.model, i)
+    }
+
+    /// What a press of item `i` performs (`player_hud::geometry::row_command`): the command of the control the
+    /// package placed there, with its parameters.
+    pub fn row_command(&self, i: i32) -> Option<player_hud::command::HudCommand> {
+        player_hud::geometry::row_command(self.compiled.as_deref(), self.slot, &self.model, i)
+    }
+
+    /// Where the cursor parks when the row appears (`player_hud::geometry::row_primary`).
+    fn row_primary(&self) -> i32 {
+        player_hud::geometry::row_primary(self.compiled.as_deref(), self.slot, &self.model)
+    }
+
     /// How many stops the row group holds this frame (`player_hud::geometry::row_len`): the package's
     /// declared row for the discs, the stand-ins' own counts otherwise.
     fn row_len(&self, chapters: bool) -> usize {
@@ -1658,7 +1675,7 @@ impl PlayerScreen {
         let rect = match *key {
             e if e == ELEM_SCRUB => geo.grab,
             e if let Some(index) = player_hud::row_index(e) => {
-                if !self.slot.enabled(index) { return None; }
+                if !self.row_enabled(index) { return None; }
                 geo.items.get(index as usize).copied().flatten()?
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => {
@@ -1709,7 +1726,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             let forward = match dir { Dir::Left => false, Dir::Right => true, _ => return Step::Edge };
             let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
             if let Some(next) = plx_ui::focus::next_enabled_index(index as usize, self.row_len(chapters), forward,
-                |i| self.slot.enabled(i as i32)) {
+                |i| self.row_enabled(i as i32)) {
                 return Step::Move(FocusKey { entry: self.entry, elem: player_hud::control_elem(next as i32) });
             }
         }
@@ -1720,14 +1737,14 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         self.place_in(&geo, key, cx)
     }
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        if player_hud::row_index(want.elem).is_some_and(|i| !self.slot.enabled(i)) {
-            FocusKey { entry: self.entry, elem: player_hud::control_elem(self.slot.primary_btn()) }
+        if player_hud::row_index(want.elem).is_some_and(|i| !self.row_enabled(i)) {
+            FocusKey { entry: self.entry, elem: player_hud::control_elem(self.row_primary()) }
         } else { want }
     }
     fn seat(&self, g: GroupId, _from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         let elem = match g {
             GROUP_SCRUB => player_hud::ELEM_SCRUB,
-            GROUP_ROW => player_hud::control_elem(self.slot.primary_btn()),
+            GROUP_ROW => player_hud::control_elem(self.row_primary()),
             // the tab the user last stood on (Down from the scrubber returns to it), held to the
             // tabs this item has
             GROUP_TABS => {
