@@ -9,8 +9,9 @@ household's Watchlist. The owner creates the file by hand, from their own termin
 check real writes; AGENTS.md: no agent creates it unless the owner asks for it in that same session.
 
 `plxnative-seerr-live` is the same switch for the household's Seerr server
-(`rust-modules/plex/src/plex/seerr.rs`, docs/seerr.md): with it a debug build sends `POST
-/api/v1/request`, which starts a real download on the owner's server. It is guarded the same way.
+(`rust-modules/plex/src/plex/seerr.rs`, docs/seerr.md): with it a debug build sends every `POST` under
+`/api/v1/request` (a request, an approval, a decline), which starts or stops a real download on the
+owner's server. It is guarded the same way.
 
 What is refused is a Bash command that would CREATE the file: `touch`, `tee`, `cp`/`mv`/`install`/
 `ln`/`dd`/`rsync`/`scp`, a `>`/`>>` redirection onto it, a script that opens it for writing, or

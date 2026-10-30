@@ -359,7 +359,7 @@ pub struct Preferences {
     pub profile_prefs: Vec<ProfilePrefsRecord>,
     // ---- the household's request service ----
     /// **The address of the household's Seerr server** (Overseerr / Jellyseerr, docs/seerr.md), as
-    /// the owner typed it in Settings > Requests; `plex::seerr::normalize_address` reads it. Empty
+    /// the owner typed it in Settings > Services > Seerr; `plex::seerr::normalize_address` reads it. Empty
     /// means no Seerr: every request surface stays hidden. Install-wide and kept across sign-out:
     /// it names the household's server, it is no credential (the Seerr session is never stored, it
     /// is signed in again for whoever is seated). Skipped while empty so a session that never set it
