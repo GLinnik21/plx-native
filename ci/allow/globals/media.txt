@@ -1,4 +1,4 @@
-# count: 3
+# count: 4
 # Process-global reads inside machines (docs/sans-io.md), area `media`: one line per production read of a registry in a machine —
 # (the spellings are ci/check-deps.sh's `globals` rule) — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -9,6 +9,7 @@
 # Attempt-caps PR (#1044): the spellings widened again, to `devcaps::caps(` and the zero-argument `is_dp_audio(` / `is_dp_audio_track(`. That is a coverage
 # expansion, not a shrink: `plan.rs` plans from the attempt's `&Caps` (`ResolveEnv::caps`) and read none of them after the PR, and no other machine reads
 # them, so nothing was seeded and the three `build_stream` lines below are unchanged.
+rust-modules/media/src/route/plan.rs::build_stream::client_for
 rust-modules/media/src/route/plan.rs::build_stream::client_for
 rust-modules/media/src/route/plan.rs::build_stream::current_snapshot
 rust-modules/media/src/route/plan.rs::build_stream::session::peek

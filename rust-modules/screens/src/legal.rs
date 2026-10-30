@@ -24,8 +24,15 @@ use super::registry::word;
 /// **The one contact address the application prints.**
 /// `every_document_prints_only_the_one_contact_address` scans the documents for stray `@`s;
 /// `screens::consent` imports it.
+#[cfg(not(feature = "finnative"))]
 pub const CONTACT_EMAIL: &str = "support@plxnative.com";
-
+// FinNative: its own contact address, the PlxNative base it names, its policy and their tests.
+#[cfg(feature = "finnative")]
+mod finnative;
+#[cfg(feature = "finnative")]
+pub use finnative::{CONTACT_EMAIL, PLXNATIVE_BASE};
+#[cfg(feature = "finnative")]
+use finnative::PRIVACY;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Privacy,
@@ -83,6 +90,7 @@ pub fn privacy_policy() -> &'static str {
     &PRIVACY
 }
 
+#[cfg(not(feature = "finnative"))]
 static PRIVACY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| [
     plx_platform::i18n::msg::settings_legal_privacy_responsible(),
     plx_platform::i18n::msg::settings_legal_privacy_responsible_body(),
@@ -117,7 +125,7 @@ static FFMPEG: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(plx_
 static SOURCE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| plx_platform::i18n::msg::settings_legal_source_body(build_sha()));
 static TRADEMARKS: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(plx_platform::i18n::msg::settings_legal_trademarks_body);
 static CONTACT: std::sync::LazyLock<&'static str> = std::sync::LazyLock::new(plx_platform::i18n::msg::settings_legal_contact_body);
-static ABOUT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| plx_platform::i18n::msg::settings_about_body(build_sha(), plx_plex::plex::identity::version()));
+static ABOUT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| plx_platform::i18n::msg::settings_about_body(build_sha(), PLXNATIVE_BASE, plx_plex::plex::identity::version()));
 
 /// The short commit this binary was built from, handed in by the application: `PLX_BUILD_SHA` is a
 /// `cargo:rustc-env` of the application crate's build script and reaches that one crate only, and
@@ -584,7 +592,8 @@ mod tests {
     #[test]
     fn every_document_prints_only_the_one_contact_address() {
         for page in Page::ALL {
-            let local_len = CONTACT_EMAIL.find('@').expect("CONTACT_EMAIL has a local part");
+            // A contact with no `@` (FinNative's) admits no `@` anywhere: every tail fails.
+            let local_len = CONTACT_EMAIL.find('@').unwrap_or(0);
             for (i, _) in page.body().match_indices('@') {
                 let tail = i
                     .checked_sub(local_len)
@@ -622,6 +631,7 @@ mod tests {
     /// Reword the document freely; when you do, move the assertion with it deliberately rather
     /// than deleting it.
     #[test]
+    #[cfg(not(feature = "finnative"))]
     fn the_policy_describes_what_this_build_actually_does() {
         let p = Page::Privacy.body();
         assert!(
@@ -703,6 +713,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "finnative"))]
     fn plex_boundary_is_explicit() {
         assert!(PRIVACY.contains(
             "Plex processes information received by those services under Plex’s own Privacy Policy"

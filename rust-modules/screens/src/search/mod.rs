@@ -789,6 +789,10 @@ impl SearchScreen {
 }
 
 impl<H: SearchLike> Screen<H> for SearchScreen {
+    /// The query field takes typed text whenever Search is the top page.
+    fn text_entry(&self) -> plx_ui::screen::TextEntry {
+        plx_ui::screen::TextEntry::Plain
+    }
     fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
         let item = self.selected_item(focus, cx)?;
         let placed = focus.zip(at).and_then(|(key, at)| plx_ui::screen::Focusable::<H>::place(self, &key.elem, cx, at));

@@ -111,7 +111,7 @@ pub trait ObservationSink {
 pub enum SessionWork {
     Login { client_id: String },
     Rediscover { client_id: String, account_token: String },
-    HomeRoster { client_id: String, account_token: String, expected: Identity },
+    HomeRoster { client_id: String, account_token: String, expected: Identity, session: PersistedSession },
     ServerRoster { session: PersistedSession, expected: Identity },
     ProfileSwitch { session: PersistedSession, expected: Identity, tile: UserTile,
         pin: Option<String>, recently_unreachable: bool },
@@ -173,6 +173,9 @@ pub enum Command {
     DismissPinError,
     BackAtRoot { reply: ReplyTo },
     SignOut,
+    /// Sign out the seated user alone: the other users stay saved and *Change profile* opens on
+    /// them. The last (or only) user is a full [`Command::SignOut`].
+    SignOutUser,
     EraseLocal,
     NoteDeleteLeftovers(usize),
     RefreshRoster,
@@ -1893,15 +1896,46 @@ impl SessionMachine {
     }
 
     fn refresh_roster(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if self.state.persisted.account_token.is_empty() { return false; }
+        if !roster_refresh_applies(&self.state.persisted.account_token, plx_plex::plex::has_plex_home()) {
+            return false;
+        }
         let Some(req) = self.allocate(SessionOp::ServerRoster, None) else { return false };
         self.emit_work(req, SessionWork::ServerRoster { session: self.state.persisted.clone(),
             expected: Identity::of(&self.state.persisted) }, emit);
         true
     }
 
+    /// **Forget the seated user and open the picker on the rest.** The seated user's roster tile
+    /// and cached sign-in go; the first remaining user's server stands as the saved session until
+    /// one is picked. No one else saved is a full sign-out.
+    fn sign_out_user(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
+        if self.state.pending_erase.is_some() || self.state.pending_commit.is_some() { return false; }
+        if !self.state.persisted.others_saved() { return self.erase(true, emit); }
+        let seated = self.state.persisted.user.uuid.clone();
+        let mut next = self.state.persisted.clone();
+        next.profiles.retain(|p| p.uuid != seated);
+        next.home_users.retain(|u| u.uuid != seated);
+        let first = next.profiles[0].clone();
+        next.user = first.user;
+        next.server = first.server;
+        next.sources = first.sources;
+        let patch = CredentialPatch::of(&next);
+        self.state.persisted = next;
+        self.state.users.clear();
+        self.start_switch_with(Picker::ChangeProfile, Some(patch), emit)
+    }
+
     fn start_switch(&mut self, picker: Picker, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if matches!(self.state.authority, BootstrapAuthority::DevPms { .. }) {
+        self.start_switch_with(picker, None, emit)
+    }
+
+    /// [`Self::start_switch`]; `sign_out` is the credentials a user's sign-out leaves, written
+    /// with the picker's commit (and the picker opens even on a single saved user).
+    fn start_switch_with(&mut self, picker: Picker, sign_out: Option<CredentialPatch>,
+        emit: &mut impl FnMut(SessionFx)) -> bool {
+        // A backend with no plex.tv account and one saved user has nobody to switch to: the same refusal, said on
+        // the picker, for a switch asked for anyway (the account menu does not offer one).
+        if sign_out.is_none() && (matches!(self.state.authority, BootstrapAuthority::DevPms { .. }) || !plx_plex::plex::can_switch_profiles(self.state.persisted.home_users.len())) {
             // A dev-token session has no account behind it to list a roster with. The account
             // menu still offers *Change profile* (it reads the on-disk sign-in), and the app has
             // already routed to the picker by the time this runs — so refusing SILENTLY left that
@@ -1944,18 +1978,19 @@ impl SessionMachine {
             });
             let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
                 expected_disk: self.state.disk_identity.clone(),
-                credentials: None, lifecycle: None, registry,
-                purpose: PersistencePurpose::Background, writes_durable: false,
+                credentials: sign_out.clone(), lifecycle: None, registry,
+                purpose: if sign_out.is_some() { PersistencePurpose::Final } else { PersistencePurpose::Background },
+                writes_durable: sign_out.is_some(),
                 authority: plx_plex::plex::session::SaveAuthority::Routine };
             self.begin_commit(req, 0, true, plan, CommitDelta {
-                activate_profile: initial_profile, ..Default::default()
+                activate_profile: initial_profile, credentials: sign_out, ..Default::default()
             }, emit);
         }
         self.refresh_roster(emit);
         if let Some(req) = self.allocate(SessionOp::HomeRoster, None) {
             self.emit_work(req, SessionWork::HomeRoster { client_id: self.state.persisted.client_id.clone(),
                 account_token: self.state.persisted.account_token.clone(),
-                expected: Identity::of(&self.state.persisted) }, emit);
+                expected: Identity::of(&self.state.persisted), session: self.state.persisted.clone() }, emit);
         }
         self.replace_publication();
         true
@@ -2230,6 +2265,8 @@ impl SessionMachine {
                         &next.home_users) {
                     next.profiles = self.state.committed_credentials.profiles.clone();
                 }
+                #[cfg(feature = "finnative")]
+                super::finnative::add_user(&mut next, &self.state.committed_credentials);
                 // A fresh QR sign-in's account token is the owner's plex.tv credential. Keep it
                 // on the owner profile too; rediscovery can belong to a managed active profile
                 // and must not overwrite that profile's switch credential with the owner's.
@@ -2285,6 +2322,8 @@ impl SessionMachine {
                         super::RegistryProgress::Install { sources, primary, .. } =>
                             RegistryPlan::Install { sources: sources.clone(), primary: *primary, commit: RosterCommit::Merge },
                     });
+                    #[cfg(feature = "finnative")]
+                    super::finnative::seat_signed_in_roster(&mut plan.registry, pending.key.op);
                 }
             }
             Observation::HomeRoster(progress) => {
@@ -2876,6 +2915,7 @@ impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
             }
             SessionEvent::Command(Command::BackAtRoot { reply }) => self.back(*reply, &mut emit),
             SessionEvent::Command(Command::SignOut) => self.erase(true, &mut emit),
+            SessionEvent::Command(Command::SignOutUser) => self.sign_out_user(&mut emit),
             SessionEvent::Command(Command::EraseLocal) => self.erase(false, &mut emit),
             SessionEvent::Command(Command::RefreshRoster) => self.refresh_roster(&mut emit),
             SessionEvent::Command(Command::RequestEndpoint { sid }) => self.request_endpoint(*sid, &mut emit),
@@ -2935,6 +2975,14 @@ impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod scenarios;
+
+/// Whether a server roster refresh has anything to ask. The roster is plex.tv's `/resources` for
+/// the signed-in account, so a sign-in with no plex.tv account behind it (an alternative backend's,
+/// `plex::has_plex_home`) has none to list: its saved server is re-proved by its own endpoint work,
+/// and the refresh would only dial the closed port that backend points plex.tv at.
+fn roster_refresh_applies(account_token: &str, plex_tv_account: bool) -> bool {
+    !account_token.is_empty() && plex_tv_account
+}
 
 #[cfg(test)]
 mod tests {
@@ -3093,6 +3141,15 @@ mod tests {
                 assert!(!owner.take_logical_dirty() || ms == 0, "no logical change");
             }
         }
+    }
+
+    /// The server roster is plex.tv's: a sign-in with no plex.tv account behind it (FinNative's
+    /// Jellyfin) asks for none, and neither does a signed-out session.
+    #[test]
+    fn a_roster_refresh_is_asked_only_of_a_plex_tv_account() {
+        assert!(roster_refresh_applies("account", true));
+        assert!(!roster_refresh_applies("finnative-jellyfin", false), "no plex.tv account behind it");
+        assert!(!roster_refresh_applies("", true), "signed out");
     }
 
     #[test]
@@ -4088,6 +4145,45 @@ mod tests {
         assert_eq!(owner.state.held_handoff, held_before,
             "the handoff held behind the still-showing warning must be untouched");
         assert!(owner.state.persistence_warning.is_some(), "the warning itself is still unanswered");
+    }
+
+    fn two_saved_users() -> SessionMachine {
+        use plx_plex::plex::session::{HomeUserRef, ProfileCreds, UserRef};
+        let mut owner = SessionMachine::from_init(reopened_after_authorization());
+        let creds = |id: &str| ProfileCreds { uuid: id.into(),
+            user: UserRef { uuid: id.into(), token: format!("t-{id}"), ..Default::default() }, ..Default::default() };
+        let p = &mut owner.state.persisted;
+        p.account_token = "finnative-jellyfin".into();
+        p.profiles = vec![creds("a"), creds("b")];
+        p.home_users = ["a", "b"].map(|id| HomeUserRef { uuid: id.into(), ..Default::default() }).to_vec();
+        p.user = p.profiles[0].user.clone();
+        owner.state.phase = Phase::Ready;
+        owner
+    }
+
+    /// Ending the seated user's session leaves the other user saved, and the picker opens on it.
+    #[test]
+    fn sign_out_user_keeps_the_other_users() {
+        let mut owner = two_saved_users();
+        let effects = step(&mut owner, SessionEvent::Command(Command::SignOutUser));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Erase { .. })), "nothing is erased");
+        let uuids = |o: &SessionMachine| o.state.persisted.profiles.iter().map(|p| p.uuid.clone()).collect::<Vec<_>>();
+        assert_eq!(uuids(&owner), ["b"]);
+        assert_eq!(owner.state.persisted.home_users.len(), 1);
+        assert_eq!(owner.state.persisted.user.uuid, "b");
+        assert_eq!(owner.state.phase, Phase::Profiles);
+        assert!(effects.iter().any(|fx| matches!(fx,
+            SessionFx::Commit { plan, .. } if plan.writes_durable && plan.credentials.is_some())),
+            "the removal is written");
+    }
+
+    /// The last saved user's sign-out is the full one.
+    #[test]
+    fn sign_out_user_of_the_last_user_erases() {
+        let mut owner = two_saved_users();
+        owner.state.persisted.profiles.truncate(1);
+        let effects = step(&mut owner, SessionEvent::Command(Command::SignOutUser));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Erase { .. })));
     }
 
     #[test]

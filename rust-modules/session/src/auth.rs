@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 pub mod owner;
 pub mod observation;
 mod causes;
+#[cfg(feature = "finnative")]
+pub mod finnative; // FinNative: Jellyfin sign-in in place of the plex.tv QR flow
 pub use causes::FailureCauses;
 mod scripted; // the dev triggers that script the sign-in worker's outcomes (`readout`, `signinfail`)
 pub use owner::{SessionInit, SessionMachine, SessionRead};
@@ -43,11 +45,14 @@ pub fn run_session_work(key: owner::SessionWorkKey,
             profile_uuid: value.profile_uuid }
     }
     let epoch = key.epoch;
+    // FinNative: the Jellyfin sign-in, its users and its server's re-proof.
+    #[cfg(feature = "finnative")]
+    let Some(input) = finnative::run_session_work(epoch, input, &ask, output) else { return };
     match input {
         owner::SessionWork::Login { client_id } => login_worker_with_output(epoch, client_id, &ask, output),
         owner::SessionWork::Rediscover { client_id, account_token } =>
             rediscovery_worker_with_output(client_id, account_token, epoch, &ask, output),
-        owner::SessionWork::HomeRoster { client_id, account_token, expected } =>
+        owner::SessionWork::HomeRoster { client_id, account_token, expected, .. } =>
             home_roster_worker_with_output(epoch, identity(expected), client_id, account_token, output),
         owner::SessionWork::ServerRoster { session, expected } => {
             let household = session.household_ids();

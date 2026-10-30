@@ -182,18 +182,17 @@ mod tests {
     #[test]
     fn unsafe_identity_or_install_path_never_reaches_the_executor() {
         let called = std::cell::Cell::new(false);
+        let stable = plx_base::paths::STABLE_APP_ID;
+        let bad = format!("{stable}.bad;id");
         for (path, id) in [
             (dir("com.evil"), "com.evil"),
-            (dir("com.beb.plxnative.bad;id"), "com.beb.plxnative.bad;id"),
+            (dir(&bad), bad.as_str()),
+            (PathBuf::from(format!("/tmp/{stable}")), stable),
             (
-                PathBuf::from("/tmp/com.beb.plxnative"),
-                plx_base::paths::STABLE_APP_ID,
-            ),
-            (
-                PathBuf::from(
-                    "/media/developer/apps/usr/palm/applications/com.beb.plxnative.debug",
-                ),
-                plx_base::paths::STABLE_APP_ID,
+                PathBuf::from(format!(
+                    "/media/developer/apps/usr/palm/applications/{stable}.debug"
+                )),
+                stable,
             ),
         ] {
             assert_eq!(
@@ -214,11 +213,11 @@ mod tests {
 
     #[test]
     fn command_is_fixed_and_contains_the_only_validated_install_arguments() {
-        let id = "com.beb.plxnative.debug-1";
+        let id = &format!("{}.debug-1", plx_base::paths::STABLE_APP_ID);
         let c = command(&dir(id), id).unwrap();
-        assert!(c.contains("/usr/bin/jailer -t native -p '/media/developer/apps/usr/palm/applications/com.beb.plxnative.debug-1' -i 'com.beb.plxnative.debug-1' /bin/true"));
+        assert!(c.contains(&format!("/usr/bin/jailer -t native -p '/media/developer/apps/usr/palm/applications/{id}' -i '{id}' /bin/true")));
         assert!(c.contains("id -u"));
         assert!(c.contains("[ ! -c /dev/rtkmem ]"));
-        assert!(c.contains("/var/palm/jail/com.beb.plxnative.debug-1/dev/rtkmem"));
+        assert!(c.contains(&format!("/var/palm/jail/{id}/dev/rtkmem")));
     }
 }

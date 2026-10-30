@@ -44,8 +44,13 @@ pub const BUDGET_BYTES: usize = 32 * 1024;
 /// Bounds, in bytes. A string longer than its bound is DROPPED (it reads as absent) except a
 /// title, which is cut at a character boundary. A key string (`machine_id`, `show_rk`) that is
 /// dropped leaves the entry with no key, and an entry with no key is forgotten.
-pub const MACHINE_ID_MAX: usize = 64;
-pub const SHOW_RK_MAX: usize = 16;
+///
+/// A Plex `machineIdentifier` is 40 hex digits and a show's ratingKey a short number; a Jellyfin
+/// server id and a series id are both 32 hex digits (`plx_jellyfin` `ids::normalize`). The show key
+/// is sized for the GUID and the machine id keeps 8 bytes over Plex's 40, so the worst-case entry
+/// is the size it was when the bounds were 64 and 16.
+pub const MACHINE_ID_MAX: usize = 48;
+pub const SHOW_RK_MAX: usize = 32;
 /// A BCP 47 language tag.
 pub const TAG_MAX: usize = 35;
 pub const CODEC_MAX: usize = 16;

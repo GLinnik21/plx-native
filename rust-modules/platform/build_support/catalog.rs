@@ -370,7 +370,7 @@ fn read_locale(root: &Path, spec: &LanguageSpec) -> Result<Catalog, Vec<String>>
     for p in catalog_files(&root.join(tag)).map_err(|e| vec![e])? {
         let file = format!("{tag}/{}", p.file_name().unwrap().to_string_lossy());
         if p.extension().and_then(|s| s.to_str()) != Some("json") || !p.is_file() {
-            errors.push(format!("{file}: not a catalog file; only <name>.json files belong in locales/{tag}"));
+            errors.push(format!("{file}: not a catalog file; only <name>.json files belong in {}/{tag}", root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()));
             continue;
         }
         let v = match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| parse(&t)) {
@@ -409,12 +409,17 @@ fn translatable(entry: &Value) -> Result<bool, String> {
 /// Missing and extra keys of one language against the translatable English keys, one line each,
 /// capped. A key that is English-only gets its own message: "unknown" would send the translator
 /// looking for a typo.
-fn check_keys(lang: &Catalog, expected: &BTreeSet<&str>, english_only: &BTreeSet<&str>) -> Vec<String> {
+fn check_keys(lang: &Catalog, source: &Catalog, expected: &BTreeSet<&str>, english_only: &BTreeSet<&str>) -> Vec<String> {
     let have: BTreeSet<&str> = lang.entries.keys().map(String::as_str).collect();
     let tag = &lang.spec.tag;
     let mut lines: Vec<String> = expected
         .difference(&have)
-        .map(|k| format!("locales/{tag}: {k}: missing; add a translation (the key is in locales/en)"))
+        .map(|k| {
+            // An overlay key's origin is `<overlay dir>/<tag>/<file>`; a source key's is `<tag>/<file>`.
+            let from = &source.origin[*k];
+            let root = if from.matches('/').count() > 1 { from.split('/').next().unwrap_or("locales") } else { "locales" };
+            format!("{root}/{tag}: {k}: missing; add a translation (the key is in {from})")
+        })
         .collect();
     lines.extend(have.difference(expected).map(|k| {
         if english_only.contains(k) {
@@ -777,7 +782,7 @@ pub fn compile(source: &Catalog, langs: &[Catalog]) -> Result<Generated, Vec<Str
         split
     };
     for l in langs {
-        errors.extend(check_keys(l, &expected, &english_only));
+        errors.extend(check_keys(l, source, &expected, &english_only));
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -869,11 +874,43 @@ pub fn discover(root: &Path, specs: &[LanguageSpec]) -> Result<Vec<Catalog>, Vec
     if errors.is_empty() { Ok(catalogs) } else { Err(errors) }
 }
 
-pub fn build(root: &Path, out: &Path) -> Result<(), Vec<String>> {
+/// Lay a brand's **overlay** over the catalogs: `<overlay>/<tag>/*.json`, read like a language's own
+/// files, whose entries replace or add to that language's. A downstream build (another name on the
+/// same code, another server behind it) keeps its wording there and leaves `locales/` as the source
+/// tree ships it. The overlay is per language and voluntary: a language with no directory keeps the
+/// source's entries, and every key the overlay adds still has to exist in every language, which
+/// `compile`'s key check enforces over the merged result.
+pub fn overlay(catalogs: &mut [Catalog], root: &Path) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    for catalog in catalogs.iter_mut() {
+        let dir = root.join(&catalog.spec.tag);
+        if !dir.is_dir() {
+            continue;
+        }
+        match read_locale(root, &catalog.spec) {
+            Ok(layer) => {
+                let from = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                for (k, v) in layer.entries {
+                    catalog.entries.insert(k.clone(), v);
+                    catalog.origin.insert(k.clone(), format!("{from}/{}", layer.origin[&k]));
+                }
+            }
+            Err(e) => errors.extend(e),
+        }
+    }
+    if errors.is_empty() { Ok(()) } else { Err(errors) }
+}
+
+/// Compile the catalogs under `root` into `out`, with a brand [`overlay`] laid over them first when
+/// one is given.
+pub fn build(root: &Path, overlay_root: Option<&Path>, out: &Path) -> Result<(), Vec<String>> {
     let text = std::fs::read_to_string(root.join("languages.json"))
         .map_err(|e| vec![format!("locales/languages.json: {e}; every UI language is registered there ({GUIDE})")])?;
     let specs = parse_registry(&text)?;
     let mut catalogs = discover(root, &specs)?;
+    if let Some(over) = overlay_root {
+        overlay(&mut catalogs, over)?;
+    }
     let at = catalogs.iter().position(|c| c.spec.tag == "en").expect("registry requires en");
     let source = catalogs.remove(at);
     let generated = compile(&source, &catalogs)?;
@@ -938,7 +975,7 @@ mod tests {
     fn build_in(root: &Path) -> Result<(), Vec<String>> {
         let out = root.with_extension("out");
         std::fs::create_dir_all(&out).unwrap();
-        let result = build(root, &out);
+        let result = build(root, None, &out);
         let _ = std::fs::remove_dir_all(&out);
         result
     }
@@ -991,7 +1028,7 @@ mod tests {
         std::fs::write(root.join("languages.json"), registry).unwrap();
         write_locale(&root, "it", r#"{"test.label":"Ciao"}"#);
         let out = temp_root("seventh-out");
-        build(&root, &out).expect("registered plus catalog directory builds");
+        build(&root, None, &out).expect("registered plus catalog directory builds");
         let languages = std::fs::read_to_string(out.join("languages.rs")).unwrap();
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&out);
@@ -1245,5 +1282,42 @@ mod tests {
         langs[0].entries.insert("test.label".into(), forms(&["one", "few", "many", "other"]));
         let e = errors_of(compile(&en, &langs));
         assert!(e.contains("es needs one, many, other; few is never selected for this language"), "{e}");
+    }
+
+    /// A brand overlay replaces a language's wording and adds keys, per language, and leaves the
+    /// languages without a directory as the source has them.
+    #[test]
+    fn an_overlay_replaces_and_adds_entries_per_language() {
+        let specs = parse_registry(REGISTRY).unwrap();
+        let en = specs.iter().find(|s| s.tag == "en").unwrap().clone();
+        let es = specs.iter().find(|s| s.tag == "es").unwrap().clone();
+        let entry = |v: &str| serde_json::json!({ "value": v, "description": "d" });
+        let mut catalogs = vec![
+            Catalog {
+                spec: en,
+                entries: [("a.k".to_string(), entry("Source")), ("a.o".to_string(), entry("Other"))].into(),
+                origin: [("a.k".to_string(), "en/a.json".to_string()), ("a.o".to_string(), "en/a.json".to_string())].into(),
+            },
+            Catalog {
+                spec: es,
+                entries: [("a.k".to_string(), Value::String("Fuente".into())), ("a.o".to_string(), Value::String("Otro".into()))].into(),
+                origin: [("a.k".to_string(), "es/a.json".to_string()), ("a.o".to_string(), "es/a.json".to_string())].into(),
+            },
+        ];
+        let dir = std::env::temp_dir().join(format!("plx-overlay-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("brand/en")).unwrap();
+        std::fs::write(dir.join("brand/en/a.json"), r#"{"a.k":{"value":"Brand","description":"d"},"a.new":{"value":"New","description":"d"}}"#).unwrap();
+        overlay(&mut catalogs, &dir.join("brand")).unwrap();
+        assert_eq!(catalogs[0].entries["a.k"]["value"], "Brand");
+        assert_eq!(catalogs[0].entries["a.o"]["value"], "Other", "an entry the overlay does not name stays");
+        assert_eq!(catalogs[0].entries["a.new"]["value"], "New");
+        assert_eq!(catalogs[0].origin["a.k"], "brand/en/a.json", "errors name the overlay file");
+        assert_eq!(catalogs[1].entries["a.k"], Value::String("Fuente".into()), "no es directory: untouched");
+        // The merged result still has to agree across languages: es lacks a.new.
+        let source = catalogs.remove(0);
+        let err = compile(&source, &catalogs).err().unwrap_or_default();
+        assert!(err.iter().any(|e| e.contains("a.new") && e.contains("missing")), "{err:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

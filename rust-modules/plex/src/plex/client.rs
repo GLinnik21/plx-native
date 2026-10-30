@@ -147,6 +147,9 @@ pub struct Client {
     /// art, `app::adapters::poster::lookup`), which must drop on a new identity and survive a
     /// refresh. Seeded from the same sequence as `token_gen`, so a new `Client` never shares one.
     grant_epoch: AtomicU32,
+    /// The credential the registration NAMED for this server, whether the slot holds it or
+    /// withholds it for want of a plaintext grant ([`Client::set_token_named`]).
+    named: RwLock<String>,
     /// Immutable process-local instance identity for adapter recordings, distinct from both the
     /// secret token and the Plex device identifier. A token swap must not rename this instance.
     instance_gen: u32,
@@ -287,6 +290,7 @@ impl Client {
             platform: super::identity::PLATFORM.into(),
             token_gen: AtomicU32::new(generation),
             grant_epoch: AtomicU32::new(generation),
+            named: RwLock::new(token.to_owned()),
             instance_gen: generation,
             data_io_disabled: std::sync::atomic::AtomicBool::new(false),
             denied_data_requests: AtomicU32::new(0),
@@ -367,6 +371,48 @@ impl Client {
         }
         self.token_gen.store(next_gen(), Relaxed);
     }
+    /// The credential a registration named for this client when it admitted `admitted` onto it:
+    /// the same token, or nothing while a plaintext grant is missing ([`Client::set_token_named`]).
+    pub(super) fn naming(self, named: &str) -> Client {
+        *self.named.write().unwrap_or_else(|e| e.into_inner()) = named.to_owned();
+        self
+    }
+
+    /// [`Client::set_token`] for a registration that named `named` and admits `admitted`, the same
+    /// token or nothing while a plaintext grant is missing.
+    ///
+    /// FinNative: with an alternative backend installed, a slot's token rides no request (every
+    /// call goes to the backend, which carries its own credential), so admitting or withholding the
+    /// token the slot already names is a grant coming or going, not a new credential. The token
+    /// still changes, so nothing Plex-shaped can send a withheld one, but the generations stay:
+    /// every store keyed on them would otherwise drop what it is fetching and start again, which
+    /// a release launch did each time the saved server's grant was proved, and every return from
+    /// the background twice. A Plex build, or any other token, is [`Client::set_token`].
+    pub(super) fn set_token_named(&self, admitted: &str, named: &str) {
+        self.set_token_named_under(admitted, named, super::alt_installed());
+    }
+
+    /// [`Client::set_token_named`] with whether an alternative backend answers passed in.
+    fn set_token_named_under(&self, admitted: &str, named: &str, backend: bool) {
+        let mut held = self.named.write().unwrap_or_else(|e| e.into_inner());
+        if backend && !named.is_empty() && *held == named {
+            if let Ok(mut g) = self.token.write() {
+                *g = admitted.to_owned();
+            }
+            return;
+        }
+        *held = named.to_owned();
+        drop(held);
+        self.set_token(admitted);
+    }
+
+    /// The grant this client's token rested on ended: withhold the token it names
+    /// ([`Client::set_token_named`]).
+    pub(super) fn withhold_token(&self) {
+        let named = self.named.read().unwrap_or_else(|e| e.into_inner()).clone();
+        self.set_token_named("", &named);
+    }
+
     /// **Revoke a live token that `token` would replace**, when the caller cannot prove the two
     /// speak for one identity: the live one is blanked, so the replacement lands across a
     /// revocation edge and [`Client::grant_epoch`] moves exactly as for a profile switch. A blank
@@ -1197,6 +1243,30 @@ mod tests {
         assert_eq!(IpVersion::of_host("192.0.2.1"), Some(IpVersion::V4));
         assert_eq!(IpVersion::of_host("2001:db8::1"), Some(IpVersion::V6));
         assert_eq!(IpVersion::of_host("server.example"), None);
+    }
+
+    /// FinNative: with an alternative backend, a grant coming or going (the slot withholding, then
+    /// admitting, the token it already names) moves no generation, so nothing keyed on them drops
+    /// a fetch; the withheld token is still never sent. Another token, or a Plex build, moves them.
+    #[test]
+    fn a_grant_coming_or_going_on_an_alt_backend_keeps_the_generations() {
+        let c = a_client("mach-A", "").naming("tok-a"); // registered while its grant is missing
+        let (token_gen, epoch) = (c.token_gen(), c.grant_epoch());
+        c.set_token_named_under("tok-a", "tok-a", true); // the grant arrives
+        assert_eq!(c.with_token("/x"), "/x?X-Plex-Token=tok-a");
+        assert_eq!((c.token_gen(), c.grant_epoch()), (token_gen, epoch), "the same credential");
+        c.set_token_named_under("", "tok-a", true); // the grant ends (a return from the background)
+        assert_eq!(c.with_token("/x"), "/x?X-Plex-Token=", "a withheld token is never sent");
+        assert_eq!((c.token_gen(), c.grant_epoch()), (token_gen, epoch));
+        c.set_token_named_under("tok-b", "tok-b", true); // another credential: everything moves
+        assert_eq!(c.with_token("/x"), "/x?X-Plex-Token=tok-b");
+        assert_ne!(c.token_gen(), token_gen);
+        assert_ne!(c.grant_epoch(), epoch);
+
+        let plex = a_client("mach-B", "").naming("tok-a");
+        let token_gen = plex.token_gen();
+        plex.set_token_named_under("tok-a", "tok-a", false);
+        assert_ne!(plex.token_gen(), token_gen, "a Plex build moves them as it always did");
     }
 
     /// The token generation is per-CLIENT (it was a process-global `TOKEN_GEN`). Two properties

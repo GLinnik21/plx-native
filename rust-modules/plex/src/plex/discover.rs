@@ -97,11 +97,17 @@ fn person_credits_url(guid: &str) -> String {
 /// through the same gate the request does ([`discover_read_allowed`]), so the refusal is logged once
 /// per endpoint shape here as well. A release build never refuses.
 pub fn person_profile_refused(guid: &str) -> bool {
+    if super::alt_installed() {
+        return false;
+    }
     !discover_read_allowed(&person_profile_url(guid))
 }
 
 /// [`person_profile_refused`] for the filmography read.
 pub fn person_credits_refused(guid: &str) -> bool {
+    if super::alt_installed() {
+        return false;
+    }
     !discover_read_allowed(&person_credits_url(guid))
 }
 
@@ -118,6 +124,7 @@ impl AccountClient {
     /// 200 with an empty container, and that comes back here as a **default (all-empty) profile**,
     /// so the caller settles on it, stops retrying, and the page degrades to portrait + name.
     pub fn person_profile(&self, guid: &str) -> Option<PersonProfile> {
+        crate::alt!(b => b.person_profile(guid));
         let url = person_profile_url(guid);
         if !discover_read_allowed(&url) {
             return None;
@@ -144,6 +151,7 @@ impl AccountClient {
     /// department: the provider sends every group in one body, and the screen's tabs are those
     /// groups.
     pub fn person_credits(&self, guid: &str) -> Option<Vec<CreditGroup>> {
+        crate::alt!(b => b.person_credits(guid));
         let url = person_credits_url(guid);
         if !discover_read_allowed(&url) {
             return None;

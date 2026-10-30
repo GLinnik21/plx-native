@@ -663,7 +663,7 @@ if len(sys.argv) > 2 and sys.argv[1] == "--print-nightly-label":
     sys.exit(0)
 
 # The same entry point onto `rc_stamp_number`, for the same caller and the same reason: the source
-# bundle of a release candidate is named `plxnative-source-X.Y.Z-rc.N`, and the number comes from
+# bundle of a release candidate is named `finnative-source-X.Y.Z-rc.N`, and the number comes from
 # the stamp. Empty output (exit 0) when the build was not a candidate.
 if len(sys.argv) > 2 and sys.argv[1] == "--print-rc":
     rc = rc_stamp_number(Path(sys.argv[2]).read_text())
@@ -959,9 +959,10 @@ def check_tracked_resources(expect_title: str) -> list:
         check(bool(desc.strip()) and desc != english,
               f"{loc}/appinfo.json appDescription is present and actually translated")
         # The English sentence is a trademark disclaimer. A translation that transliterated the
-        # mark ("플렉스") would both lose the disclaimer's force and misuse it, and no reader of
-        # this repository is placed to catch that by eye in twelve languages.
-        check("Plex" in desc, f"{loc}/appinfo.json names Plex verbatim (the disclaimer's subject)")
+        # mark would both lose the disclaimer's force and misuse it, and no reader of this
+        # repository is placed to catch that by eye in twelve languages. FinNative's subject is
+        # Jellyfin.
+        check("Jellyfin" in desc, f"{loc}/appinfo.json names Jellyfin verbatim (the disclaimer's subject)")
     return locales
 
 
@@ -1168,7 +1169,11 @@ HOSTPATH = re.compile(rb"(?:^|[^A-Za-z0-9/_.-])(/(?:Users|home)/[A-Za-z0-9_./+-]
 # The NDK's own location cannot be removed — `--cross-prefix` must be absolute (the wrapper gcc
 # dies when invoked through PATH), so it rides in FFmpeg's recorded configure string. It is
 # identical on every CI runner, which is the reason releases must be BUILT by CI.
-ALLOWED_PATH = re.compile(rb"webos-ndk|^/home/runner/")
+# FinNative: Jellyfin's own API paths (`/Users/AuthenticateWithQuickConnect`, `/Users/Me`, ...)
+# are endpoints the app calls, not a home folder; each is allowed by name.
+ALLOWED_PATH = re.compile(
+    rb"webos-ndk|^/home/runner/|^/Users/(?:AuthenticateByName|AuthenticateWithQuickConnect|Configuration|Public|Me(?:[^a-z]|$))"
+)
 
 # A missing payload directory is a HARD failure, not an empty loop. `check` only ever prints for
 # something it was given, so an absent stage used to print nothing at all here — no ok, no FAIL —
@@ -1293,7 +1298,7 @@ check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 # THE ID IS THE RULE, and it is graded whatever the stamp says — note the `if IS_STABLE`
 # below sits BESIDE the `BUILD` branch, never inside it.
 #
-# `com.beb.plxnative` is what a user installs, so a dev-featured binary under it ships the whole
+# `io.github.tiper.finnative` is what a user installs, so a dev-featured binary under it ships the whole
 # /tmp trigger surface, the world-writable `plxnative-remote` FIFO and the `:8910` listener to the
 # public. The Makefile's `release-guard` refuses to BUILD that; this is the same rule on the bytes,
 # which is the half that survives someone reaching for the documented `ALLOW_DEV_ON_STABLE=1`
@@ -1497,8 +1502,8 @@ elif sha_file.exists():
 
 # The Makefile derives IPK_VERSION from appinfo.json, so the built filename is the fourth witness.
 # Scoped to THIS flavour's id: two flavours' artifacts can sit in pkg/ side by side, and the
-# `_arm.ipk` suffix in the pattern is what keeps `com.beb.plxnative_*` from also matching
-# `com.beb.plxnative.debug_*` (the dot is not a `_`, but a bare prefix test would still match).
+# `_arm.ipk` suffix in the pattern is what keeps `io.github.tiper.finnative_*` from also matching
+# `io.github.tiper.finnative.debug_*` (the dot is not a `_`, but a bare prefix test would still match).
 built = sorted((ROOT / "pkg").glob(f"{PACKAGED_ID}_*_arm.ipk"))
 if built:
     check(len(built) == 1, f"exactly one built {PACKAGED_ID} ipk in pkg/ (saw {[p.name for p in built]})")

@@ -84,7 +84,11 @@ DEV_WITNESSES = (
 # `/home/users`, and it is applied per PATH rather than per line so that FFmpeg's single
 # configure blob cannot have one allowed token vouch for a forbidden one beside it.
 HOSTPATH = re.compile(rb"(?:^|[^A-Za-z0-9/_.-])(/(?:Users|home)/[A-Za-z0-9_./+-]+)")
-ALLOWED_PATH = re.compile(rb"webos-ndk|^/home/runner/")
+# FinNative: Jellyfin's own API paths (`/Users/AuthenticateWithQuickConnect`, `/Users/Me`, ...)
+# are endpoints the app calls, not a home folder; each is allowed by name.
+ALLOWED_PATH = re.compile(
+    rb"webos-ndk|^/home/runner/|^/Users/(?:AuthenticateByName|AuthenticateWithQuickConnect|Configuration|Public|Me(?:[^a-z]|$))"
+)
 
 HOSTNAME = re.compile(rb"\b((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.){1,4}(?:tv|com|org|net|io|dev))\b")
 RUNTIME_PATH = re.compile(rb"(/(?:tmp|media|etc|var|proc|dev)/[A-Za-z0-9_.%/-]{2,60})")
@@ -385,7 +389,7 @@ def generate(args) -> str:
     rows = [
         row("flavour", f"`{app_id}` — "
             + ("the stable id, which is what users install"
-               if app_id == "com.beb.plxnative" else "**not the stable id**")),
+               if app_id == "io.github.tiper.finnative" else "**not the stable id**")),
         row("cargo features", f"`{args.build_config}`" if args.build_config
             else "not recorded in the assets — the dev-trigger row below is the same property, "
                  "measured on the bytes"),

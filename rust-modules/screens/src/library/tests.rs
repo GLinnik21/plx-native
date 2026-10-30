@@ -570,7 +570,7 @@ fn a_failed_source_ignores_a_clock_fact_about_another_server() {
 fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
     use plx_ui::widgets::{StatusKind, StatusOverlay};
     let _guard = plx_base::testlock::serial();
-    let home = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
+    let home = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your server", StatusKind::Failed)
         .page(plx_ui::icons::Icon::ServerBadgeMinus)
         .action(c"Try again");
     for owner in ["", "friend"] {
@@ -583,7 +583,7 @@ fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
         let cx = fixture.cx(Some(page.key(RETRY)));
         let (caption, reason) = page.status_text(&cx);
         if owner.is_empty() {
-            assert_eq!(caption.to_str().unwrap(), "Can\u{2019}t reach your Plex server");
+            assert_eq!(caption.to_str().unwrap(), "Can\u{2019}t reach your server");
         }
         let library = page.status_overlay(&cx, &caption, reason.as_deref());
         let (lv, hv) = (library.verdict_band_measured(cx.measure), home.verdict_band_measured(cx.measure));

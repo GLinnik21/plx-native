@@ -103,6 +103,17 @@ impl Scrim {
     }
 }
 
+/// What typed text on a screen is for — see [`Screen::text_entry`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextEntry {
+    /// Nothing on this screen takes typed text.
+    None,
+    /// Typed text is ordinary input, recorded and replayed like a key.
+    Plain,
+    /// Typed text is a secret (a password): delivered, but never written to a recording.
+    Secret,
+}
+
 /// The screen (§6.1). `step` is the only entrance that mutates logical state after construction.
 pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The heartbeat word — byte-identical to today's route word (§15.3).
@@ -162,6 +173,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     }
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
+    }
+    /// **What the television's keyboard types into on this screen.** The application delivers
+    /// typed text (`InputKind::Text`) only to a top screen that answers other than
+    /// [`TextEntry::None`], and a [`TextEntry::Secret`] answer keeps what is typed out of the
+    /// input recording. Search answers `Plain` for as long as it is up; a form answers for the
+    /// field it is editing.
+    fn text_entry(&self) -> TextEntry {
+        TextEntry::None
     }
     /// **The pointer is held** while this screen answers `true`: the dispatcher swallows every
     /// pointer move, click and drag addressed to it BEFORE hit resolution, so none of them is ever

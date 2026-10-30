@@ -223,7 +223,7 @@ fn the_librarys_real_ceiling_shrinks_the_glyph_to_a_size_that_rasterizes_1to1() 
     let icon = crate::icons::Icon::ServerBadgeMinus;
     let natural_top = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE;
     let ceiling = natural_top + 38.0;
-    let overlay = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
+    let overlay = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your server", StatusKind::Failed)
         .page(icon).glyph_ceiling(ceiling);
     let rect = overlay.glyph_frame().expect("this ceiling leaves room for a shrunk glyph");
     let size = rect.w;

@@ -3812,8 +3812,20 @@ impl AutoOriginalWatch {
     }
 }
 
+/// Auto's Original watchdog, for the demux worker to run: `None` when the current route is not an
+/// Auto Original it may abandon.
 pub fn auto_original_watch(ps: &PlaybackSession) -> Option<AutoOriginalWatch> {
-    if forced_direct_play(ps) { return None; }
+    auto_original_watch_on(ps, plx_plex::plex::fixed_hls_available())
+}
+
+/// [`auto_original_watch`] for a server that does (`fixed_hls`) or does not have the fixed-HLS
+/// transcode. Every exit the watchdog takes lands on HLS ([`plan_auto_hls`]), so on a server
+/// without it (FinNative's Jellyfin) a watched Original could only stop the demux to hand over to
+/// a fallback that is then refused ([`AUTO_HLS_REJECTED`]), ending playback on the error screen.
+/// Unwatched, Auto plays Original the way a manual Original does: the demux keeps feeding and the
+/// set rebuffers.
+pub(super) fn auto_original_watch_on(ps: &PlaybackSession, fixed_hls: bool) -> Option<AutoOriginalWatch> {
+    if !fixed_hls || forced_direct_play(ps) { return None; }
     let s = &*ps;
     if applied_quality() != Quality::Auto
         || !s.cur_auto_original_watched
@@ -4205,6 +4217,62 @@ pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64, v
     }
 }
 
+/// [`audio_direct_plays_with`], or the app converts the track to AC3 ("Convert audio: on the TV",
+/// `devcaps::converted_with`, at any channel count and rate): the same rule as
+/// `plx_plex::plex::is_dp_audio_track_with`. `conversion` is the viewer's choice, passed in so the
+/// rule is decidable from values alone.
+pub(super) fn audio_direct_plays_or_converted(
+    caps: &plx_platform::devcaps::Caps, conversion: bool, mode: DirectPlayMode, codec: &str, channels: i64,
+    sample_rate: i64,
+) -> bool {
+    audio_direct_plays_with(caps, mode, codec, channels, sample_rate)
+        || plx_platform::devcaps::converted_with(caps, conversion, codec, channels, sample_rate)
+}
+
+/// Does the app convert this stream's audio on the TV ("Convert audio: on the TV") under the
+/// attempt's capabilities? The attempt is what the recovery ladder narrowed, so after a refusal of
+/// a native codec this answers true for a codec the app converts, where the process-wide caps still
+/// list the codec as the set's own. The Load declaration reads it (`engine::start_bufferfeed`).
+pub fn audio_converts_on_tv(ps: &PlaybackSession) -> bool {
+    let (channels, rate) = ps.cur_audio.as_ref().map_or((0, 0), |a| (a.channels, a.sample_rate));
+    plx_platform::devcaps::converted_with(
+        &ps.attempt_caps(), plx_platform::devcaps::tv_audio_conversion(), &stream_acodec(ps), channels, rate,
+    )
+}
+
+/// The refused audio facet's conversion when the APP does it: the stream is a direct play and
+/// [`audio_converts_on_tv`] holds for the facet the machine just narrowed out, so the replacement
+/// is the same route reloaded (no server round trip) and the demuxer converts the audio. `None`
+/// when the server must convert (a server transcode, the setting off, a codec the app does not
+/// convert), and the ladder asks for [`dispatch_refusal_conversion`] instead.
+pub fn dispatch_refusal_on_tv(ps: &mut PlaybackSession, offset_secs: i64) -> Option<RecoveryDispatch> {
+    if is_transcoding(ps) || !audio_converts_on_tv(ps) {
+        return None;
+    }
+    let expected = worker_ticket();
+    if !rebuild_precheck(ps, &expected) {
+        return Some(RecoveryDispatch::Refused);
+    }
+    let Some(ticket) = begin_recovery_flight_start() else {
+        return Some(RecoveryDispatch::Refused);
+    };
+    let offset_ns = offset_secs * 1_000_000_000;
+    begin_recovery_flight(ticket.serial, offset_ns);
+    if spawn_flight(
+        FlightOwner::Recovery(ticket),
+        offset_ns,
+        offset_ns,
+        None,
+        ClaimWork::KeepRoute,
+        RetranscodeFallback::RejectWith(REFUSAL_CONVERSION_REJECTED),
+    ) {
+        Some(RecoveryDispatch::Flying { serial: ticket.serial })
+    } else {
+        let _ = reject_route_start_preparation(ticket);
+        Some(RecoveryDispatch::Refused)
+    }
+}
+
 /// [`plan_unopened_auto_hls`], [`run_auto_hls`] and [`install_auto_hls_outcome`] run in a row on
 /// the calling thread, for the host tests that grade the steps' joint outcome (the pump's own
 /// fallback is a flight: [`dispatch_unopened_auto_hls`]). No shipping caller is left, so it is not
@@ -4311,6 +4379,9 @@ fn plan_auto_hls_for(
     visible_switch: bool,
     reason: crate::player::report::DeliveryReason,
 ) -> Option<AutoHlsPlan> {
+    if !plx_plex::plex::fixed_hls_available() {
+        return None;
+    }
     let route = if ps.auto_fixture_base.is_empty() {
         AutoHlsRoute::Encode {
             inputs: prepare_retranscode_inputs(ps, expected, offset_secs)?,
@@ -7372,7 +7443,7 @@ pub fn forced_direct_play(ps: &PlaybackSession) -> bool {
 }
 
 pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
-    audio_direct_plays_with(&ps.attempt_caps(), ps.direct_play_mode, codec, channels, sample_rate)
+    audio_direct_plays_or_converted(&ps.attempt_caps(), plx_platform::devcaps::tv_audio_conversion(), ps.direct_play_mode, codec, channels, sample_rate)
 }
 
 /// **Would the server convert this track's audio if it played?** The track menu's "converted by
@@ -8231,7 +8302,7 @@ fn playback_preview_with_capability(
     if mode == DirectPlayMode::Forced {
         return (!part.is_empty() && part_is_streamable(part)
             && video_feed_supported(vcodec, presentation, &caps)
-            && d.audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
+            && d.audio.iter().any(|a| audio_direct_plays_or_converted(&caps, plx_platform::devcaps::tv_audio_conversion(), mode, &a.codec, a.channels, a.sampling_rate)))
             .then_some(Preview::DirectPlay);
     }
     let p = playback_preview_with_audio(
@@ -8920,7 +8991,7 @@ pub fn request_play_movie(
     ctx: &str,
     version: Option<plx_plex::plex::MediaId>,
 ) -> bool {
-    if m.part.is_empty() {
+    if !movie_row_playable(&m.part, &m.rk, plx_plex::plex::rows_resolve_by_key()) {
         return false;
     }
     // **The ITEM's server, not the browsed one.** This passed `surface_sid()` — i.e. whichever
@@ -8946,6 +9017,28 @@ pub fn request_play_movie(
         ctx,
         version,
     )
+}
+
+/// Whether a movie row can start a play. A row with its part plays it; a row without one (a
+/// FinNative listing, which leaves media out) is resolved by its key like an episode is, when the
+/// server's rows work that way ([`plx_plex::plex::rows_resolve_by_key`]).
+pub(crate) fn movie_row_playable(part: &str, rk: &str, resolve_by_key: bool) -> bool {
+    !part.is_empty() || (resolve_by_key && !rk.is_empty())
+}
+
+#[cfg(test)]
+mod movie_row_tests {
+    use super::movie_row_playable;
+
+    // FinNative's Home and library rows carry no part (the listing leaves media out); under a
+    // backend whose rows resolve by key they still play.
+    #[test]
+    fn a_row_without_a_part_plays_by_key_only_where_rows_resolve_that_way() {
+        assert!(movie_row_playable("", "abc", true));
+        assert!(!movie_row_playable("", "abc", false));
+        assert!(!movie_row_playable("", "", true));
+        assert!(movie_row_playable("/library/parts/1/file.mkv", "abc", false));
+    }
 }
 
 /// The server an item's ids belong to: its own when it has one, else the browsed surface.

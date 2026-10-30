@@ -12,9 +12,9 @@
 # It is a CI job, not a checklist item, for the reason the whole exercise exists: v0.2.1 was
 # published by hand, which skipped every gate, and a checklist would have been skipped with them.
 #
-# `com.beb.plxnative` is written out three times below and every one is deliberate, not a leftover
-# the FLAVOR work missed: a release is always the STABLE flavour, never `com.beb.plxnative.debug`
-# (docs/two-installs.md). The trailing `/` in the `applications/com.beb.plxnative/` payload path is
+# `io.github.tiper.finnative` is written out three times below and every one is deliberate, not a leftover
+# the FLAVOR work missed: a release is always the STABLE flavour, never `io.github.tiper.finnative.debug`
+# (docs/two-installs.md). The trailing `/` in the `applications/io.github.tiper.finnative/` payload path is
 # load-bearing for the flip side of the same fact — the stable id is a PREFIX of the debug id, so an
 # unanchored match would also walk a debug install's directory if one ever landed in an archive.
 set -uo pipefail
@@ -32,7 +32,9 @@ HOSTPATH='(^|[^A-Za-z0-9/_.-])/(Users|home)/[a-z]'
 # The NDK's own location is unavoidable: --cross-prefix must be absolute (the wrapper gcc dies when
 # invoked through PATH), so it rides in FFmpeg's recorded configure string. It is identical on every
 # CI runner, which is precisely why releases must be built by CI.
-ALLOWED='webos-ndk|/home/runner/'
+# FinNative: Jellyfin's own API paths (/Users/AuthenticateWithQuickConnect, /Users/Me, ...) are
+# endpoints the app calls, not a home folder; each is allowed by name.
+ALLOWED='webos-ndk|/home/runner/|^/Users/(AuthenticateByName|AuthenticateWithQuickConnect|Configuration|Public|Me([^a-z]|$))'
 
 # Extract each PATH individually rather than filtering whole lines. FFmpeg records its entire
 # configure invocation as one long string, so the offending `--prefix=/Users/<me>/...` sits on the
@@ -64,7 +66,7 @@ if true; then
 
   gh release download "$TAG" -D "$WORK" --clobber >/dev/null 2>&1 \
     || { bad "release $TAG has downloadable assets"; exit 1; }
-  IPK="$WORK/com.beb.plxnative_${VER}_arm.ipk"
+  IPK="$WORK/io.github.tiper.finnative_${VER}_arm.ipk"
   [ -f "$IPK" ] && ok "the .ipk is published" || { bad "no .ipk asset named for $VER"; exit 1; }
 
   SHA=$(shasum -a 256 "$IPK" | cut -d' ' -f1)
@@ -76,7 +78,7 @@ if true; then
 
   # Four copies of the hash must agree: the artifact, the checksum file, the manifest, the note.
   grep -q "$SHA" "$WORK/ipk.sha256" 2>/dev/null && ok "checksum file matches the artifact" || bad "checksum file disagrees with the artifact"
-  python3 - "$WORK/com.beb.plxnative.manifest.json" "$SHA" "$IPK" <<'PY' && ok "manifest hash and size match the artifact" || bad "manifest disagrees with the artifact"
+  python3 - "$WORK/io.github.tiper.finnative.manifest.json" "$SHA" "$IPK" <<'PY' && ok "manifest hash and size match the artifact" || bad "manifest disagrees with the artifact"
 import json, sys, os
 m = json.load(open(sys.argv[1]))
 sys.exit(0 if m["ipkHash"]["sha256"] == sys.argv[2] and m["ipkSize"] == os.path.getsize(sys.argv[3]) else 1)
@@ -84,8 +86,9 @@ PY
   gh release view "$TAG" --json body --jq .body 2>/dev/null | grep "$SHA" >/dev/null \
     && ok "the release note quotes this hash" || bad "the note's hash is not the published artifact's"
 
-  # Who built it. A person's name here means the gates did not run.
-  UP=$(gh api "repos/GLinnik21/plx-native/releases/tags/$TAG" --jq '[.assets[].uploader.login] | unique | join(",")' 2>/dev/null)
+  # Who built it. A person's name here means the gates did not run. FinNative: asked of the
+  # repository this checkout belongs to, like the two `gh release` calls above.
+  UP=$(gh api "repos/{owner}/{repo}/releases/tags/$TAG" --jq '[.assets[].uploader.login] | unique | join(",")' 2>/dev/null)
   [ "$UP" = "github-actions[bot]" ] && ok "assets uploaded by CI" \
     || bad "assets uploaded by '$UP' — hand-published, so the build/verify gates were skipped"
 
@@ -95,7 +98,7 @@ PY
 d=open('$(basename "$IPK")','rb').read(); i=d.find(b'data.tar.gz')
 open('data.tar.gz','wb').write(d[i+60:i+60+int(d[i+48:i+58])])" && tar xzf data.tar.gz ) >/dev/null 2>&1
   DIRTY=0
-  for f in "$WORK"/usr/palm/applications/com.beb.plxnative/*; do
+  for f in "$WORK"/usr/palm/applications/io.github.tiper.finnative/*; do
     [ -f "$f" ] || continue
     scan_paths "$f" || { bad "$(basename "$f") carries a build-machine path"; DIRTY=1; }
   done

@@ -1,0 +1,39 @@
+[package]
+name = "plx_jellyfin"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "FinNative jellyfin layer: the typed Jellyfin API, translated into the app's common item model."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[lib]
+name = "plx_jellyfin"
+# An rlib the application crate links, like every other layer crate (see plex/Cargo.toml).
+crate-type = ["rlib"]
+
+[dependencies]
+# The app's common item model (`MediaContainer`, `Metadata`, `Media`, `Stream`, ...) is the Plex
+# layer's: every screen and store already renders it, so this layer produces it rather than a
+# parallel one. `alt-backend` gives it the `Backend` trait the `Client` methods hand their calls
+# to; a build that does not link this crate (PlxNative) never turns it on.
+plx_plex = { path = "../plex", features = ["alt-backend"] }
+# `task::OffFrame`, the worker token the live-update feed (`Backend::notifications`) runs under.
+plx_base = { path = "../base" }
+# `idle::invalidate`, so a favourite's flip and its server's answer are drawn at once.
+plx_machine = { path = "../machine" }
+# The app's translated strings (`i18n::msg`), for the shelf titles this layer names.
+plx_platform = { path = "../platform" }
+# The libcurl transport (`plx_net::net::request`) the real `Transport` sends through.
+plx_net = { path = "../net" }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+# The sign-in screen's QR (the same pinned encoder plx_ui uses).
+qrcodegen = "=1.8.0"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Tests read the shelf titles in English without the boot-time locale (`i18n::current`).
+plx_platform = { path = "../platform", features = ["test-support"] }

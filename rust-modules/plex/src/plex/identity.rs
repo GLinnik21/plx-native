@@ -35,6 +35,17 @@
 /// The product name. Unique, and not `Plex …` anything.
 pub const PRODUCT: &str = "PlxNative";
 
+/// The name the app shows the viewer (the Diagnostics header, a failure's support line). PlxNative
+/// shows [`PRODUCT`]; a build with an alternative backend is FinNative, which keeps [`PRODUCT`]
+/// only for what it would send a Plex server.
+pub const fn app_name() -> &'static str {
+    if cfg!(feature = "alt-backend") {
+        "FinNative"
+    } else {
+        PRODUCT
+    }
+}
+
 /// The app version, handed in by the application: `plx_plex` cannot see `PLX_VERSION`, because a
 /// `cargo:rustc-env` reaches one crate only and the rule that derives it (`rust-modules/build.rs`)
 /// is written exactly once. The application passes `env!("PLX_VERSION")` to [`set_version`] before

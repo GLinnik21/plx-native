@@ -54,8 +54,12 @@ use super::origin::Origin;
 use super::probe::Location;
 mod playback_options;
 pub use playback_options::{DolbyVisionMode, InstantDpadSeeking};
+// FinNative: the Convert-audio setting's value and its preference row.
+mod audio_conversion;
+pub use audio_conversion::AudioConversion;
+pub use prefs::AudioConversionPref;
 
-pub use prefs::{DolbyVisionModePref, InstantDpadSeekingPref, HoldHintTaughtPref, effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own, stored_effective, stored_effective_hud, tenure, HudSelectionPref, AudioConversionPref, AudioEnhancementsPref,
+pub use prefs::{DolbyVisionModePref, InstantDpadSeekingPref, HoldHintTaughtPref, effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own, stored_effective, stored_effective_hud, tenure, HudSelectionPref, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
@@ -1431,37 +1435,6 @@ impl UiResolution {
     }
 }
 
-/// **Where audio this television cannot decode is converted** (Settings > Playback > Convert
-/// audio) — one per profile, like [`DirectPlayMode`]. The TV's own decoder takes AC3, E-AC3, AAC
-/// and DTS; TrueHD, FLAC, ALAC, Opus, Vorbis and PCM are none of them. `Server`, the default and
-/// what every build before the setting did, leaves those out of the direct-play profile, so the
-/// server converts the file. `Tv` offers them for direct play and the app decodes the sound itself
-/// and re-encodes it to AC3 (`plx_media`'s `ff_audio.rs`), whenever the FFmpeg it ships can
-/// (`devcaps::converted_on_tv`).
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AudioConversion {
-    #[default]
-    #[serde(rename = "server")]
-    Server,
-    #[serde(rename = "tv")]
-    Tv,
-}
-
-impl AudioConversion {
-    /// Both places, the default first — the order the picker lists them in.
-    pub const LADDER: [AudioConversion; 2] = [AudioConversion::Server, AudioConversion::Tv];
-
-    /// An in-memory index back to a value — out of range is the default, for the reason
-    /// [`SubtitleTone::from_index`] gives.
-    pub fn from_index(i: u8) -> AudioConversion {
-        Self::LADDER.get(i as usize).copied().unwrap_or_default()
-    }
-
-    pub fn index(self) -> u8 {
-        Self::LADDER.iter().position(|&c| c == self).unwrap_or(0) as u8
-    }
-}
-
 /// **How bright the player's overlay and captions are drawn while the picture is HDR** — one per
 /// profile, like [`SubtitleTone`]. A television maps graphics white in an HDR picture to a far
 /// brighter level than the same white in SDR (the HUD and the captions are graphics; the panel
@@ -2428,6 +2401,12 @@ impl Session {
         }
         self.profiles.retain(|p| p.uuid != creds.uuid);
         self.profiles.push(creds);
+    }
+
+    /// Whether another user's sign-in is saved beside the seated one: what *Sign out* of a user
+    /// (rather than of the set) leaves to switch to.
+    pub fn others_saved(&self) -> bool {
+        !self.user.uuid.is_empty() && self.profiles.iter().any(|p| p.uuid != self.user.uuid)
     }
 
     /// Bring the ACTIVE profile's cached record up to date with the session's own user, primary
@@ -5586,7 +5565,8 @@ pub struct Account {
     pub signed_in: bool,
     /// Profile switching is possible. It needs the **plex.tv account token**: both the Plex Home
     /// roster and the per-user tokens come from plex.tv, so a server-only session cannot switch
-    /// (`auth::start_switch` refuses one outright). Deliberately NOT gated on the roster length —
+    /// (`auth::start_switch` refuses one outright), and neither can a backend with no plex.tv
+    /// account behind it until two of its users are saved ([`super::can_switch_profiles`]). Deliberately NOT gated on the roster length —
     /// see `home_users`' note on why an empty roster means "unknown", not "there are none".
     pub can_switch: bool,
     /// Who we may say the user is: the active managed profile, else the account owner off the
@@ -5612,6 +5592,12 @@ impl Session {
     /// (`auth::owner::SessionSnapshot::switch_refused`), and it is `screens::account_menu`, not
     /// this, that hides the row on it.
     pub fn account(&self, active: Option<&UserRef>) -> Account {
+        self.account_with(active, super::can_switch_profiles(self.home_users.len()))
+    }
+
+    /// [`Self::account`] with whether a Plex Home can exist at all ([`super::can_switch_profiles`])
+    /// given rather than read: without one, a signed-in account still cannot switch profiles.
+    pub fn account_with(&self, active: Option<&UserRef>, plex_home: bool) -> Account {
         let named = |t: &str| Some(t.to_string()).filter(|t| !t.is_empty());
         // the roster hop searches for a NAMED admin, then any named entry — a `find(admin)` whose
         // hit happens to carry an empty title must not swallow the answer sitting behind it, which
@@ -5631,7 +5617,7 @@ impl Session {
             .or_else(roster);
         Account {
             signed_in: !self.account_token.is_empty() || self.can_go_local(),
-            can_switch: !self.account_token.is_empty(),
+            can_switch: plex_home && !self.account_token.is_empty(),
             name,
         }
     }

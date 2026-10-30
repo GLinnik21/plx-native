@@ -138,7 +138,7 @@ fn created_or_removed_items_owe_the_servers_grids_one_re_list() {
     let mut stores = holding(&[]);
     use crate::stores::notify::NotifyLibrary;
     use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState};
-    let entry = |id: &str, state| LibraryEntry { item_id: id.into(), kind: LibraryKind::Movie, state, section: None };
+    let entry = |id: &str, state| LibraryEntry { item_id: id.into(), kind: LibraryKind::Unknown, state, section: None };
     let out = NotifyOut {
         library: vec![
             NotifyLibrary { sid: SID, entries: vec![entry("a", LibraryState::Created)] },

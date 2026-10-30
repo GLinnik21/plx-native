@@ -42,6 +42,12 @@ const PLEX_TV: &str = "https://plex.tv";
 /// able to point the account API, and the token it carries, at another host. Read once. A redirected
 /// plex.tv also moves Discover ([`discover`]): the mock answers both.
 pub fn plex_tv() -> &'static str {
+    // FinNative: a build running another backend has no plex.tv account. Every account call goes
+    // to a closed local port, so it fails fast as "plex.tv unreachable", the offline case this
+    // client already handles, and no credential leaves the device.
+    if super::alt_installed() {
+        return NO_PLEX_TV;
+    }
     static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BASE.get_or_init(|| match plx_base::devtrig::read("plextv") {
         Some(v) if loopback_http(&v) => {
@@ -57,6 +63,9 @@ pub fn plex_tv() -> &'static str {
         None => PLEX_TV.to_string(),
     })
 }
+
+/// Where plex.tv calls go in a build with another backend installed (see [`plex_tv`]).
+pub const NO_PLEX_TV: &str = "http://127.0.0.1:9";
 
 /// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`.
 fn loopback_http(v: &str) -> bool {
@@ -162,7 +171,11 @@ fn discover_resolved() -> DiscoverBase {
 /// to ([`DiscoverSource::FollowsPlexTv`]). **The one copy**: the person profile and credits
 /// (`discover.rs`) and the Watchlist (`watchlist.rs`) both build their URLs on it, so a stand-in
 /// armed for one serves the other and neither can reach the real host behind the other's back.
+/// With another backend installed it is `NO_PLEX_TV`, as for plex.tv itself.
 pub fn discover() -> String {
+    if super::alt_installed() {
+        return NO_PLEX_TV.to_string();
+    }
     discover_resolved().base
 }
 
@@ -513,6 +526,7 @@ impl AccountClient {
     fn fetch_audio_preferences(&self, expected: &super::session::UserRef,
         timeouts: plx_net::net::Timeouts) -> AudioPreferencesOutcome
     {
+        crate::alt!(b => b.audio_preferences().map_or(AudioPreferencesOutcome::Failed, AudioPreferencesOutcome::Available));
         let url = format!("{}/api/v2/user", plex_tv());
         let response = plx_net::net::request_evidence(&url, &self.headers(), "GET", None,
             timeouts, false, None, None);

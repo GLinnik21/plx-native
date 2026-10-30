@@ -15,9 +15,9 @@ pub const LEDGER_CAPACITY: usize = 16;
 
 // Install identities come from the packaging manifest via `build_support/install_identities.rs`,
 // called from each package's build.rs (the platform crate and the storage helper).
-// Compatibility: plxstate.stable/debug are live DB8 keys and must never change. The allowlist
+// Compatibility: finstate.stable/debug are live DB8 keys and must never change. The allowlist
 // landed in 6f78842e (2026-09-17), before nightly in 1c96bb7e (2026-09-19). Nightly now uses
-// plxstate.night (14 bytes): on webOS 4.10.2, the earlier 16-byte ID failed get with -995
+// finstate.night (14 bytes): on webOS 4.10.2, the earlier 16-byte ID failed get with -995
 // (generated base64 ID), and the 18-byte ID failed put with -3968 ("Invalid _id length").
 // Neither ID ever stored anything, so there is nothing to migrate.
 // Flavor is serialized as snake_case. An old binary rejects the unknown "nightly" variant
@@ -1037,9 +1037,9 @@ mod tests {
 
     #[test]
     fn exact_ids_and_key_names() {
-        assert_eq!(Flavor::Stable.object_id().as_bytes(), b"plxstate.stable");
-        assert_eq!(Flavor::Debug.object_id().as_bytes(), b"plxstate.debug");
-        assert_eq!(Flavor::Nightly.object_id().as_bytes(), b"plxstate.night");
+        assert_eq!(Flavor::Stable.object_id().as_bytes(), b"finstate.stable");
+        assert_eq!(Flavor::Debug.object_id().as_bytes(), b"finstate.debug");
+        assert_eq!(Flavor::Nightly.object_id().as_bytes(), b"finstate.night");
         assert_eq!(Flavor::Stable.object_id().len(), 15);
         assert_eq!(Flavor::Debug.object_id().len(), 14);
         assert_eq!(Flavor::Nightly.object_id().len(), 14);
@@ -1952,7 +1952,7 @@ mod install_identity_tests {
 
     #[test]
     fn unknown_flavors_are_invalid_and_cross_flavor_reads_are_rejected() {
-        assert_eq!(Flavor::from_app_id("com.beb.plxnative.typo"), None);
+        assert_eq!(Flavor::from_app_id("io.github.tiper.finnative.typo"), None);
         let state = CanonicalState::new(Flavor::Nightly, Generation([1; 16]));
         let bytes = state.encode().unwrap();
         assert_eq!(

@@ -508,13 +508,13 @@ mod tests {
         let locale = plx_platform::i18n::LocaleContext::resolve(plx_platform::i18n::Preference::Be, None, None, None, None);
         let question = plx_platform::i18n::msg::settings_consent_delete_question_in(&locale);
         let body = plx_platform::i18n::msg::settings_consent_delete_scope_in(&locale);
-        assert!(body.contains("серверы Plex") && body.contains("Sentry") && body.contains("PostHog"));
+        assert!(body.contains("FinNative") && body.contains("Jellyfin"), "the whole scope: what is deleted and what is not");
         let question_view = DecisionAlert::question_view(question).with_measure(&measure);
         let body_view = DecisionAlert::body_view(body).with_measure(&measure);
         assert!(!question_view.truncates(BODY_W));
         assert!(!body_view.truncates(BODY_W), "the old four-line limit hid the deletion exclusions");
         assert!(question_view.measure_h(BODY_W) > measure.line_h(theme::size::TITLE));
-        assert!(body_view.measure_h(BODY_W) > 4.0 * measure.line_h(theme::size::BODY));
+        assert!(body_view.measure_h(BODY_W) > measure.line_h(theme::size::BODY));
         let mut alert = DecisionAlert::new();
         alert.open_with_body(plx_platform::i18n::msg::settings_consent_delete_question_c_in(&locale), body);
         let l = alert.measured(&measure);

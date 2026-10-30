@@ -37,6 +37,9 @@ mod sections;
 pub mod state;
 pub mod strip;
 pub mod travel;
+// FinNative: the scrubbing thumbnail above the playhead.
+mod scrub_thumb;
+pub use scrub_thumb::{draw_scrub_thumb, ScrubThumb};
 use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
 // The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,

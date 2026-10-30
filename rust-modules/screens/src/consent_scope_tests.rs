@@ -14,7 +14,17 @@ use super::test_support::*;
 #[test]
 fn an_automated_boot_never_sees_the_question() {
     assert!(!should_show(&Consent::default(), true));
-    assert!(should_show(&Consent::default(), false), "…but an ordinary first boot does");
+    assert!(consent::should_ask(&Consent::default(), false), "…but an ordinary first boot does");
+}
+
+/// **FinNative asks nothing it would not send.** A build with no telemetry endpoint keeps the
+/// first-run question away entirely, so the cases above pin the policy itself (`should_ask`).
+#[cfg(feature = "finnative")]
+#[test]
+fn a_build_with_no_telemetry_endpoint_never_asks() {
+    if !plx_telemetry::telemetry::sender::configured() {
+        assert!(!should_show(&Consent::default(), false));
+    }
 }
 
 /// An answer against the current policy is not re-asked, whichever way it went.
@@ -38,7 +48,7 @@ fn a_policy_bump_reasks_without_reusing_the_old_answer() {
         errors_id: Some("old-errors-id".into()),
         ..Default::default()
     };
-    assert!(should_show(&old, false));
+    assert!(consent::should_ask(&old, false));
     let current = consent::apply(&Consent::default(), true, false, || Some("new-id".into()));
     assert!(!should_show(&current, false));
 }

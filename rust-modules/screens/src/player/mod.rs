@@ -94,6 +94,8 @@ pub struct PlayerRender {
     pub ass: ass_subtitles::AssSubtitles,
     /// Has a frame the package has no state for been reported yet — the log line is once, not per frame.
     pub no_state_logged: bool,
+    /// The picture above the playhead while scrubbing, and its worker.
+    pub scrub: player_hud::ScrubThumb,
 }
 
 /// **What the surfaces over the player page do to the transport this frame** — one value
@@ -809,6 +811,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // playback had ended; an instance is told exactly once.
                 self.render.subs.release();
                 self.render.ass.release();
+                self.render.scrub.release();
                 Handled::Yes
             }
             ScreenEvent::Input(input) => {
@@ -2485,6 +2488,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         if over_section {
             self.draw_captions(ps, f.cx.measure, subs_lift, band);
         }
+        // Every frame, not only the HUD's: a scrub that ends with the HUD gone must still let the
+        // worker drop its decoded sheet.
+        let (scrub_up, playbar) = (hud_drawn && self.middle_up(), self.hud_geometry(f.cx).playbar);
+        plx_appkit::player_hud::draw_scrub_thumb(&mut self.render.scrub, ps, scrub_up, playbar);
         // The read-out is NOT transport chrome — it is drawn whether or not the HUD is up, so a
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
         // instead of vanishing with the 4.5 s linger. AFTER the transport, so it is never dimmed by

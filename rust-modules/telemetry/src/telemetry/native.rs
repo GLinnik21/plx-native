@@ -1315,7 +1315,7 @@ mod tests {
                 "exception": {"values": [{
                     "mechanism": {"meta": {"signal": {"number": 11, "name": "SIGSEGV"}}},
                     "stacktrace": {"frames": [
-                    {"instruction_addr": "0x1234", "package": "/media/developer/apps/usr/palm/applications/com.beb.plxnative/plxnative", "vars": "must-not-pass"},
+                    {"instruction_addr": "0x1234", "package": format!("/media/developer/apps/usr/palm/applications/{}/plxnative", plx_base::paths::STABLE_APP_ID), "vars": "must-not-pass"},
                     {"instruction_addr": "0xf00", "filename": "/private/source/main.c"}
                 ], "registers": {"pc": "0x1234", "sp": "0xbeef", "future": "must-not-pass"},
                     "future": "must-not-pass"}, "future": "must-not-pass"}]},

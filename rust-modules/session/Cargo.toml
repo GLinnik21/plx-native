@@ -17,6 +17,8 @@ crate-type = ["rlib"]
 
 [features]
 default = []
+# FinNative: sign in to a Jellyfin server (LAN discovery + Quick Connect) instead of plex.tv.
+finnative = ["dep:plx_jellyfin"]
 # Forwarded from the application crate, which is the only one that sets them. `devtriggers` is not
 # only plumbing here: `auth_registry_tests` selects its shipping-policy cases with
 # `cfg(not(feature = "devtriggers"))`, and the sign-in trouble and read-out triggers read their
@@ -38,6 +40,7 @@ plx_platform = { path = "../platform" }
 plx_net = { path = "../net" }
 plx_plex = { path = "../plex" }
 plx_telemetry = { path = "../telemetry" }
+plx_jellyfin = { path = "../jellyfin", optional = true }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 

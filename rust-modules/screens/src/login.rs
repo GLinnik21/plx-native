@@ -86,6 +86,8 @@ const ALERT_CANCEL: u32 = 3;
 const ALERT_SEND: u32 = 4;
 const CONTROL_GROUP: GroupId = GroupId(0);
 const ALERT_GROUP: GroupId = GroupId(1);
+#[cfg(feature = "finnative")]
+use finnative::{form, FORM_GROUP, MANUAL};
 
 /// The Details card's title — the pill's own word, so the card names what opened it.
 /// The report alert's disclosure — short, because it is read from the sofa. **Every clause is a
@@ -592,6 +594,9 @@ struct LoginState {
     /// `Some(question_open)` while the read-out offers an unencrypted connection. Written to the
     /// canon only when `Some`, so every other state's digest is unchanged.
     plaintext: Option<bool>,
+    /// FinNative: the open form's digest (`form::Form::digest`) — lengths, never text. Written
+    /// only when `Some`, so every other state's digest is unchanged.
+    form: Option<(u32, u64, u64, u64, bool)>,
 }
 
 /// The onboarding report's part of the logical state: which offer is shown and where it has got
@@ -653,11 +658,14 @@ impl LogicalState for LoginState {
         if let Some(open) = self.plaintext {
             w.bool(open);
         }
+        if let Some((editing, server, user, pass, problem)) = self.form {
+            w.u32(editing).u64(server).u64(user).u64(pass).bool(problem);
+        }
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
             "login phase={} qr_gen={} replaced={} control={} leftovers={} next={:?} restart={:?} warning={} \
-             incident={:?} link_trouble={} details={} alert={:?} resolved={:?} plaintext={:?}",
+             incident={:?} link_trouble={} details={} alert={:?} resolved={:?} plaintext={:?} form={:?}",
             self.phase,
             self.qr_gen,
             self.qr_replaced,
@@ -672,6 +680,7 @@ impl LogicalState for LoginState {
             self.report.alert,
             self.report.resolved,
             self.plaintext,
+            self.form,
         ));
     }
 }
@@ -859,7 +868,7 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
 /// The control group's elements in walk order. At most two, so a fixed array.
 #[derive(Clone, Copy, Default)]
 struct Row {
-    elems: [u32; 2],
+    elems: [u32; 3],
     n: usize,
 }
 
@@ -881,6 +890,8 @@ fn slot_of(elem: u32) -> Option<usize> {
     match elem {
         CONTROL => Some(0),
         DETAILS => Some(1),
+        #[cfg(feature = "finnative")]
+        MANUAL => Some(1),
         _ => None,
     }
 }
@@ -940,6 +951,9 @@ pub struct LoginScreen {
     question: PlaintextQuestion,
     ground: RouteGround,
     report: Report,
+    /// FinNative: the manual sign-in form, while it is open.
+    #[cfg(feature = "finnative")]
+    form: Option<form::Form>,
     state: LoginState,
 }
 
@@ -972,6 +986,8 @@ impl LoginScreen {
             question: PlaintextQuestion::new(),
             ground: RouteGround::new(),
             report: Report::new(),
+            #[cfg(feature = "finnative")]
+            form: None,
             state: LoginState {
                 phase: 0,
                 qr_gen: 0,
@@ -983,6 +999,7 @@ impl LoginScreen {
                 warning: false,
                 report: ReportState::default(),
                 plaintext: None,
+                form: None,
             },
         };
         // Read once at construction — not a `draw`-time poll — so the first frame is coherent
@@ -1055,6 +1072,7 @@ impl LoginScreen {
             plaintext: self.plaintext_asks().then(|| {
                 self.report.alert.is_open() && self.report.sheet == Sheet::Plaintext
             }),
+            form: self.form_digest(),
         };
     }
 
@@ -1188,7 +1206,9 @@ impl LoginScreen {
             }
             // An eligible plaintext-only server is a CHOICE, not a failure: the read-out asks
             // it through *Connect*, and the report stays one press away behind *Details*.
+            // FinNative has no reporting endpoint (`details_offered`), so it asks nothing either.
             if matches!(o.state, S::Offered { .. })
+                && !cfg!(feature = "finnative")
                 && !self.plaintext_eligible()
                 && !self.report.alert.visible()
                 && self.report.alert_for != Some(o.id)
@@ -1283,6 +1303,11 @@ impl LoginScreen {
     /// Whether the held incident offers its *Details*: on the failure read-out, and on the QR
     /// screen while the wait itself is what failed, or for the helper failure on a save warning.
     fn details_offered(&self) -> bool {
+        // FinNative ships without a reporting endpoint, so a report has nowhere to go: its slot
+        // on the read-out is *Manual sign-in* instead.
+        if cfg!(feature = "finnative") {
+            return false;
+        }
         if let Some(warning) = self.persistence_warning {
             return warning.helper.is_some() && self.report.offer.as_ref().is_some_and(|o|
                 o.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed);
@@ -1309,6 +1334,8 @@ impl LoginScreen {
         };
         if self.phase == Phase::Waiting && self.persistence_warning.is_none() {
             report(&mut row);
+            #[cfg(feature = "finnative")]
+            row.push(MANUAL);
             if primary {
                 row.push(CONTROL);
             }
@@ -1317,8 +1344,25 @@ impl LoginScreen {
                 row.push(CONTROL);
             }
             report(&mut row);
+            #[cfg(feature = "finnative")]
+            if self.manual_offered() {
+                row.push(MANUAL);
+            }
         }
         row
+    }
+
+    #[cfg(not(feature = "finnative"))]
+    fn form_digest(&self) -> Option<(u32, u64, u64, u64, bool)> {
+        None
+    }
+
+    /// FinNative: whether the manual sign-in form is up.
+    fn form_open(&self) -> bool {
+        #[cfg(feature = "finnative")]
+        return self.form.is_some();
+        #[cfg(not(feature = "finnative"))]
+        false
     }
 
     /// **The report's one status line** — shared by the failed read-out and the QR screen, so the
@@ -1380,6 +1424,10 @@ impl LoginScreen {
             ControlKind::UseAnotherAccount => true, // the no-server reason is always stated
         };
         let details = self.details_offered().then_some(plx_platform::i18n::msg::settings_login_details_c());
+        #[cfg(feature = "finnative")]
+        let details = details.or_else(|| {
+            (self.phase == Phase::Error && self.manual_offered()).then(plx_platform::i18n::msg::browse_jf_manual_c)
+        });
         ([Some(label_for(kind)), details], has_reason)
     }
 
@@ -1433,6 +1481,8 @@ impl LoginScreen {
                 // so its geometry is the status line's own rect rather than a computed pill.
                 CONTROL => Some(qr_layout(RouteLayout::screen(), self.waiting_label(), measure).status),
                 DETAILS => self.waiting_details(measure),
+                #[cfg(feature = "finnative")]
+                MANUAL => Some(Self::waiting_manual(measure)),
                 _ => None,
             };
         }
@@ -1476,6 +1526,11 @@ impl LoginScreen {
         match elem {
             DETAILS => {
                 self.open_details(fx);
+                self.sync_state();
+            }
+            #[cfg(feature = "finnative")]
+            MANUAL => {
+                self.open_form(fx);
                 self.sync_state();
             }
             _ => self.activate(fx),
@@ -1786,7 +1841,12 @@ impl LoginScreen {
         let status = self.waiting_label();
         let right = qr_layout(layout, status, f.measure);
 
-        TextView::new("plex.tv/link", theme::size::TITLE, theme::TEXT_HEADING)
+        // FinNative: the Jellyfin server's address, where the Quick Connect code is entered.
+        #[cfg(feature = "finnative")]
+        let link = plx_jellyfin::jellyfin::backend::link_address();
+        #[cfg(not(feature = "finnative"))]
+        let link = "plex.tv/link";
+        TextView::new(&link, theme::size::TITLE, theme::TEXT_HEADING)
             .bold()
             .h(HAlign::Center)
             .draw(p, right.url);
@@ -1845,6 +1905,13 @@ impl LoginScreen {
                 .scale(self.report.pop.scale_with(1, f.press.scale))
                 .draw(&Env::inert(), p);
         }
+        #[cfg(feature = "finnative")]
+        let manual = Self::waiting_manual(f.measure);
+        #[cfg(feature = "finnative")]
+        Button::new(plx_platform::i18n::msg::browse_jf_manual_c().as_ptr(), theme::size::BODY, manual)
+            .focused(focus == Some(MANUAL))
+            .scale(if focus == Some(MANUAL) { f.press.scale } else { 1.0 })
+            .draw(&Env::inert(), p);
         self.draw_disclosure(p, layout, f.measure);
 
         if self.report.alert.visible() {
@@ -1856,6 +1923,8 @@ impl LoginScreen {
         if let Some(rect) = details {
             self.control_stop(f, p, DETAILS, rect);
         }
+        #[cfg(feature = "finnative")]
+        self.control_stop(f, p, MANUAL, manual);
     }
 
     /// The QR screen's report status — [`Self::report_note`], the failed read-out's own line — as
@@ -2008,11 +2077,20 @@ impl LoginScreen {
     }
 }
 
+/// FinNative: the manual sign-in form's life cycle (`login/finnative.rs`).
+#[cfg(feature = "finnative")]
+mod finnative;
+
 /// **Two groups, never at once.** While the alert is OPEN its answers are the only group — the player's repair alert's shape — and the read-out's controls return the moment it
 /// is answered (its fade is drawn, not focusable: `groups` gates on `is_open`, not `visible`, so
 /// the focus a dismissal hands back has somewhere to land).
 impl<H: AppLike> Focusable<H> for LoginScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        #[cfg(feature = "finnative")]
+        if self.form.is_some() {
+            self.form_groups(cx, out);
+            return;
+        }
         if self.report.alert.is_open() {
             out.push(GroupSpec {
                 id: ALERT_GROUP,
@@ -2055,6 +2133,10 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         });
     }
     fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
+        #[cfg(feature = "finnative")]
+        if self.form.is_some() {
+            return form::ELEMS.contains(key).then_some(FORM_GROUP);
+        }
         if self.report.alert.is_open() {
             return self.alert_elems().contains(key).then_some(ALERT_GROUP);
         }
@@ -2066,6 +2148,10 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         dir: Dir,
         _cx: &Cx<'_, H>,
     ) -> Step<u32> {
+        #[cfg(feature = "finnative")]
+        if self.form.is_some() {
+            return self.form_neighbour(key.elem, dir).map_or(Step::Edge, |e| Step::Move(self.key(e)));
+        }
         if self.report.alert.is_open() {
             return match (key.elem, dir) {
                 (ALERT_CANCEL, Dir::Right) if self.alert_elems().contains(&ALERT_SEND) => {
@@ -2087,6 +2173,10 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         next.map_or(Step::Edge, |i| Step::Move(self.key(row.elems[i])))
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        #[cfg(feature = "finnative")]
+        if self.form.is_some() {
+            return self.form_place(key, cx);
+        }
         if self.report.alert.is_open() {
             if !self.alert_elems().contains(key) {
                 return None;
@@ -2119,6 +2209,10 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         if self.group_of(&want.elem, cx).is_some() {
             return want;
         }
+        #[cfg(feature = "finnative")]
+        if let Some(f) = &self.form {
+            return self.key(f.seat());
+        }
         if self.report.alert.is_open() {
             // Content reconciliation can remove Send while Details stays open. The shared card
             // has already retained a valid choice; map that choice back to the engine's keys.
@@ -2140,6 +2234,10 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         _from: Placed,
         _cx: &Cx<'_, H>,
     ) -> plx_machine::machine::FocusKey<u32> {
+        #[cfg(feature = "finnative")]
+        if g == FORM_GROUP {
+            return self.key(self.form.as_ref().map_or(form::SERVER, form::Form::seat));
+        }
         if g == ALERT_GROUP {
             // The Details card opens on *Send report* while there is one; the question on *Not now*.
             let send = self.report.sheet == Sheet::Details && self.alert_elems().contains(&ALERT_SEND);
@@ -2153,6 +2251,12 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
 impl<H: AuthLike> Machine<H> for LoginScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        #[cfg(feature = "finnative")]
+        if self.form.is_some() {
+            if let Some(handled) = self.step_form(ev, cx, fx) {
+                return handled;
+            }
+        }
         // **The alert traps everything under it** while it is on screen, fade included — the
         // player repair alert's trap, verbatim in shape: its answers are `Control` elements (the
         // press dip, a commit on release), BACK is the cancel slot (*Not now* / *Close*), the
@@ -2299,6 +2403,11 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
         let env = Env::inert();
         let focus = f.focus.current.map(|k| k.elem);
 
+        if self.form_open() {
+            #[cfg(feature = "finnative")]
+            self.draw_form(f, p, focus);
+            return;
+        }
         if self.persistence_warning.is_some() {
             // AUTH-03: reachable before consent/profile routing, exactly as the phase-keyed
             // branches below — see `app/run.rs`'s own routing gate for the mirror of this check.
@@ -2348,6 +2457,15 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
     }
+    /// FinNative: the form's field takes typed text while the keyboard is up for it, as a secret
+    /// for the password; nothing else on this screen does.
+    fn text_entry(&self) -> plx_ui::screen::TextEntry {
+        #[cfg(feature = "finnative")]
+        if let Some(f) = &self.form {
+            return f.text_entry();
+        }
+        plx_ui::screen::TextEntry::None
+    }
 }
 
 #[cfg(test)]
@@ -2372,6 +2490,9 @@ mod text_fit_tests;
 
 #[cfg(test)]
 mod tests {
+    // Tests marked `#[cfg(not(feature = "finnative"))]` are PlxNative's own behaviour (the QR
+    // sign-in's report read-outs and plex.tv link); FinNative replaces them and
+    // `finnative_tests` pins its own.
     use super::*;
 
     #[test]
@@ -2805,6 +2926,8 @@ mod tests {
             question: PlaintextQuestion::new(),
             ground: RouteGround::new(),
             report: Report::new(),
+            #[cfg(feature = "finnative")]
+            form: None,
             state: LoginState {
                 phase: 0,
                 qr_gen: 0,
@@ -2816,6 +2939,7 @@ mod tests {
                 warning: false,
                 report: ReportState::default(),
                 plaintext: None,
+                form: None,
             },
         }
     }
@@ -2898,9 +3022,7 @@ mod tests {
         cx_with(m, &EMPTY_SNAPSHOT)
     }
 
-    /// The focus GROUP exists exactly when [`LoginScreen::has_control`] does, and its one element
-    /// is `ElemKind::Bare` — the escape acts on the key-down edge with no hold and no press dip,
-    /// like every read-out action in this family, never a `Control`/`Card`.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn the_control_group_exists_only_while_a_control_is_offered() {
         let m = plx_ui::fixture::FixtureMeasure;
@@ -2970,10 +3092,7 @@ mod tests {
         }
     }
 
-    /// **The failed read-out stands on the page read-out's anchor and never grows.** Its verdict
-    /// hangs from `StatusOverlay::FULL_ANCHOR_TOP` and its row — the primary (*Try again*, or
-    /// *Use another account* on the no-server verdict) / *Details*, nothing else — stacks `space::LG` plus the fixed drop under the reserved two-line reason slot; a report's status line, a sendable offer and a
-    /// delivered report all leave the row exactly where it was.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn the_failed_readout_stands_on_the_page_lines_and_never_grows() {
         use auth::owner::IncidentState as S;
@@ -3179,6 +3298,7 @@ mod tests {
     /// token, so that read-out's one primary starts a whole fresh sign-in instead of `Try again`.
     /// Every other discovery verdict keeps `Try again`.
     #[test]
+    #[cfg(not(feature = "finnative"))]
     fn no_servers_readout_offers_a_fresh_sign_in_and_other_discovery_errors_keep_retry() {
         use plx_telemetry::telemetry::incident::{DiscoveryClass, IncidentKind};
         let state = auth::owner::IncidentState::NotNow;
@@ -3575,7 +3695,7 @@ mod tests {
         assert_eq!(resolves(&second), 0, "…and not again while the owner has yet to answer");
     }
 
-    /// (b) An offered incident puts the question on screen, with focus on its answers.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn an_offered_incident_opens_the_report_alert_with_focus_on_its_answers() {
         let _serial = plx_base::testlock::serial();
@@ -3621,8 +3741,7 @@ mod tests {
         failed
     }
 
-    /// **Details opens the card** — the one alert, as the Details sheet, with focus sent to its
-    /// answers — and the read-out itself gains nothing: the row stays *Try again* / *Details*.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn details_opens_the_details_card() {
         let _serial = plx_base::testlock::serial();
@@ -3638,6 +3757,7 @@ mod tests {
         assert_eq!(s.row().as_slice(), [CONTROL, DETAILS]);
     }
 
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn open_details_card_reconciles_delivery_failure_without_reopening() {
         use auth::owner::IncidentState as S;
@@ -3658,6 +3778,7 @@ mod tests {
         assert_eq!(s.report.alert.choice(), Choice::Cancel, "adding Send must not steal focus from Close");
     }
 
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn open_details_card_reconciles_a_receipt_arriving_while_open() {
         use auth::owner::IncidentState as S;
@@ -3681,6 +3802,7 @@ mod tests {
         assert_eq!(s.report.alert.body_for_test()[0], "Report ID: fedc ba98 7654 3210");
     }
 
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn open_details_card_reconciles_focus_when_send_is_removed() {
         use auth::owner::IncidentState as S;
@@ -3700,9 +3822,7 @@ mod tests {
         assert!(<LoginScreen as Focusable<SessionHost>>::place(&s, &key.elem, &cx, At::Drawn).is_some());
     }
 
-    /// **Send report is on the card iff the report can still be sent**, and holds focus when it is
-    /// there; otherwise *Close* is the one answer. The body carries the Report ID once there is one,
-    /// then the support line.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn the_details_card_offers_send_report_iff_sendable() {
         use auth::owner::IncidentState as S;
@@ -3743,8 +3863,7 @@ mod tests {
         assert!(!screen_with(Phase::Error, S::Delivered { receipt }, pin).report.sendable());
     }
 
-    /// **BACK and Close close the card and put focus back on Details** — and neither sends
-    /// anything or leaves the screen; with the card closed, BACK is the root press it always was.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn back_or_close_returns_focus_to_details() {
         let _serial = plx_base::testlock::serial();
@@ -3771,8 +3890,7 @@ mod tests {
         assert_eq!(root_backs(&fx), 1, "with the card closed, BACK is the root press");
     }
 
-    /// **Send report on the card sends the held report**, closes the card and returns focus to
-    /// Details, where the status line then reports it.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn send_report_on_the_card_sends_the_report() {
         let _serial = plx_base::testlock::serial();
@@ -3822,9 +3940,7 @@ mod tests {
         }).collect()
     }
 
-    /// **An eligible plaintext-only server is a choice, not a failure**: the read-out's one primary
-    /// is *Connect* beside *Details* — never a third button — and the report question is NOT raised
-    /// on its own; the report stays behind *Details*.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn an_eligible_plaintext_failure_offers_connect_and_does_not_raise_the_report_question() {
         let _serial = plx_base::testlock::serial();
@@ -3901,6 +4017,7 @@ mod tests {
 
     /// A verdict that cannot be offered (remote-only here) keeps today's read-out: *Try again*, and
     /// the report question raised as for any failure.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn an_ineligible_plaintext_failure_keeps_try_again_and_the_report_question() {
         let _serial = plx_base::testlock::serial();
@@ -3921,6 +4038,7 @@ mod tests {
             .count()
     }
 
+    #[cfg(not(feature = "finnative"))]
     fn enters_elem(effects: &[Stamped<SessionHost>], elem: u32) -> bool {
         effects.iter().any(|st| matches!(&st.fx,
             Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
@@ -4030,6 +4148,7 @@ mod tests {
         assert!(!support_line(&offer).contains("attempts:"), "{}", support_line(&offer));
     }
 
+    #[cfg(not(feature = "finnative"))]
     fn screen_with(phase: Phase, state: auth::owner::IncidentState,
         kind: plx_telemetry::telemetry::incident::IncidentKind) -> LoginScreen {
         let mut s = bare_screen(phase, 0.0);
@@ -4039,13 +4158,12 @@ mod tests {
         s
     }
 
+    #[cfg(not(feature = "finnative"))]
     fn text(note: Option<Note>) -> Option<String> {
         note.map(|n| n.text.to_str().unwrap().to_string())
     }
 
-    /// **The calm default**: a failure nobody has reported draws its verdict, reason and row and
-    /// nothing else — no status line — and a report's line is its status alone: the Report ID
-    /// and the support line are the Details card's, never the read-out's.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn a_failure_with_no_report_draws_no_status_line() {
         use auth::owner::IncidentState as S;
@@ -4059,9 +4177,7 @@ mod tests {
         assert_eq!(text(s.report_note()).as_deref(), Some(plx_platform::i18n::msg::settings_login_report_sent()));
     }
 
-    /// **(e) A report on its way keeps the inline spinner turning over a settled read-out** — the
-    /// failed sign-in draws no spinner of its own, so its clock must still run for the report's,
-    /// and stop once the report has settled.
+    #[cfg(not(feature = "finnative"))]
     #[test]
     fn a_report_on_its_way_turns_the_spinner_on_a_failed_readout() {
         let _serial = plx_base::testlock::serial();
@@ -4079,6 +4195,10 @@ mod tests {
         assert_eq!(spin_after_ticks(auth::owner::IncidentState::Delivered { receipt: "r".into() }), 0.0, "delivered: still");
     }
 
+
+    /// FinNative: the read-out's *Manual sign-in* and the form it opens.
+    #[cfg(feature = "finnative")]
+    mod finnative_tests;
 }
 
 #[cfg(test)]

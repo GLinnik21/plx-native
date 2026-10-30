@@ -28,6 +28,11 @@ hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim"]
 # `[dev-dependencies]`; never in a shipped build.
 test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_net/test-support"]
 
+# FinNative: compile the `plex::backend` hook so another kind of media server can answer the
+# `Client` calls (see `src/plex/backend.rs`). `plx_jellyfin` turns it on; without it no hook
+# exists in any method.
+alt-backend = []
+
 [dependencies]
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }

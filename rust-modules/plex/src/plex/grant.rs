@@ -23,6 +23,9 @@
 //! Consent is the ACCOUNT's ([`account_key`]): an answer is honoured only while the plex.tv
 //! account that gave it is the one signed in, so a different account signing in on the same
 //! television is asked again.
+//! An alternative backend (FinNative's Jellyfin) has no plex.tv verdict to offer: its own sign-in
+//! and a tokenless identity answer from the same origin vouch instead
+//! ([`PlaintextAsk::settle_vouched`]), under the same origin and generation rules.
 //! It names:
 //!
 //! * the server's `machineIdentifier` — a grant admits THAT server's credential ([`allowed_for`]),
@@ -335,6 +338,24 @@ pub fn mint(
     mint_consented(scope, CONSENT.load(Ordering::Acquire), machine_id, origin, evidence)
 }
 
+/// Pure: may a grant for `origin` be minted on an alternative backend's word ([`PlaintextAsk::
+/// settle_vouched`]) at `scope`, when the current generations are `now`? The conditions
+/// [`mint_check`] asks of the origin itself — plaintext, a numeric private-network host — and the
+/// generations. There is no plex.tv verdict to judge: the backend's own tokenless identity check
+/// stands in for it.
+fn vouch_check(origin: &Origin, scope: GrantScope, now: GrantScope) -> Result<(), MintRefusal> {
+    if origin.scheme() != Scheme::Http {
+        return Err(MintRefusal::NotPlaintext);
+    }
+    if !AddressScope::of(origin.host()).0.is_private_network() {
+        return Err(MintRefusal::NotPrivateLiteral);
+    }
+    if scope != now {
+        return Err(MintRefusal::Stale);
+    }
+    Ok(())
+}
+
 /// [`mint`] for a capture that recorded the [`CONSENT`] generation `consent`: refused as stale when
 /// any refusal was answered since. Checked under the table's lock, which a refusal also takes, so
 /// a revocation and an in-flight mint cannot interleave into a grant nobody consented to.
@@ -345,11 +366,23 @@ fn mint_consented(
     origin: &Origin,
     evidence: &InsecureEvidence,
 ) -> Result<(), MintRefusal> {
+    mint_checked(scope, consent, machine_id, origin, || mint_check(origin, evidence, scope, self::scope()))
+}
+
+/// The table half of every mint: `check` (the origin and generation rule) runs under the table's
+/// lock, then the [`CONSENT`] generation is compared, then the grant replaces the server's last.
+fn mint_checked(
+    scope: GrantScope,
+    consent: u64,
+    machine_id: &str,
+    origin: &Origin,
+    check: impl FnOnce() -> Result<(), MintRefusal>,
+) -> Result<(), MintRefusal> {
     if machine_id.is_empty() {
         return Err(MintRefusal::NotConsented);
     }
     let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
-    mint_check(origin, evidence, scope, self::scope())?;
+    check()?;
     if consent != CONSENT.load(Ordering::Acquire) {
         return Err(MintRefusal::Stale);
     }
@@ -750,6 +783,49 @@ impl PlaintextAsk {
         }
         mint_consented(self.scope, self.consent, machine_id, origin, evidence)
     }
+
+    /// **Mint `machine_id`'s grant at `origin` on an alternative backend's word** — FinNative's
+    /// Jellyfin sign-in and its endpoint re-proof (`session::auth::finnative`), and the Jellyfin
+    /// backend before a request carries the saved server's token (`JfBackend::prove_saved_server`), which have just
+    /// asked the server at `origin`, without a credential, who it is, and heard `machine_id`.
+    ///
+    /// There is no plex.tv to offer the question here, so the person's choice is the sign-in
+    /// itself: they typed that address, or picked the server their network answered with, and
+    /// signed in to it. *Undecided* therefore allows, and only a refusal they gave since — Settings'
+    /// *Unencrypted connections* switch turned off — withholds the grant. Everything else is
+    /// [`mint`]'s rule: a plaintext origin whose host is a numeric private-network literal (a name
+    /// is never granted), under this capture's generations, with no refusal answered since.
+    ///
+    /// Refused unless an alternative backend is installed, so a Plex build's grants still come
+    /// from discovery alone.
+    #[cfg(feature = "alt-backend")]
+    pub fn settle_vouched(&self, machine_id: &str, origin: &Origin) -> Result<(), MintRefusal> {
+        if !super::alt_installed() || self.refused(machine_id) {
+            return Err(MintRefusal::NotConsented);
+        }
+        mint_checked(self.scope, self.consent, machine_id, origin, || vouch_check(origin, self.scope, self::scope()))
+    }
+
+    /// Did the person turn plaintext off for `machine_id` (as opposed to never being asked)?
+    pub fn refused(&self, machine_id: &str) -> bool {
+        matches!(self.choice(machine_id), PlaintextChoice::Declined | PlaintextChoice::Revoked)
+    }
+}
+
+/// **Queue one endpoint re-proof for `machine_id`** — drained, like the servers a network change
+/// stranded, by the next [`UpgradeRetry::due`]. For a server registered at a plaintext origin with
+/// no grant behind it on an alternative backend (`super::servers`): there is no plex.tv discovery
+/// to re-prove it, so the backend's own endpoint work does, and mints the grant again when the
+/// server still answers there as itself ([`PlaintextAsk::settle_vouched`]).
+pub fn strand(machine_id: &str) {
+    if machine_id.is_empty() {
+        return;
+    }
+    let mut stranded = STRANDED.lock().unwrap_or_else(|e| e.into_inner());
+    if !stranded.iter().any(|m| m == machine_id) {
+        stranded.push(machine_id.to_owned());
+    }
+    STRANDED_COUNT.store(stranded.len(), Ordering::Release);
 }
 
 /// **The HTTPS upgrade retry.** While a server is on a grant, its endpoint is re-discovered:
@@ -954,6 +1030,34 @@ mod tests {
         );
         let later = GrantScope { identity: 1, network: 2 };
         assert_eq!(mint_check(&lan(), &eligible(), now, later), Err(MintRefusal::Stale));
+    }
+
+    /// An alternative backend's word stands in for plex.tv's verdict, never for the origin rule: a
+    /// plaintext numeric private-network host under the current generations, and nothing else.
+    #[test]
+    fn a_vouched_grant_takes_only_a_private_plaintext_literal() {
+        let now = GrantScope { identity: 1, network: 1 };
+        assert_eq!(vouch_check(&lan(), now, now), Ok(()));
+        assert_eq!(vouch_check(&Origin::http("fd12::1", 8096), now, now), Ok(()), "a v6 ULA is private");
+        let https = Origin::new(Scheme::Https, "192.168.0.10", 8920);
+        assert_eq!(vouch_check(&https, now, now), Err(MintRefusal::NotPlaintext));
+        for host in ["nas.local", "jellyfin.example.test", "203.0.113.9", "127.0.0.1"] {
+            assert_eq!(vouch_check(&Origin::http(host, 8096), now, now), Err(MintRefusal::NotPrivateLiteral), "{host}");
+        }
+        let later = GrantScope { identity: 1, network: 2 };
+        assert_eq!(vouch_check(&lan(), now, later), Err(MintRefusal::Stale));
+    }
+
+    /// A stranded server is asked for once, however many times it was queued.
+    #[test]
+    fn a_stranded_server_is_queued_once() {
+        let _g = plx_base::testlock::serial();
+        reset_for_test();
+        strand("m");
+        strand("m");
+        strand("");
+        assert_eq!(take_stranded(), vec!["m".to_owned()]);
+        assert!(take_stranded().is_empty());
     }
 
     /// The live authority end to end: a store policy refuses plaintext until a grant is minted,

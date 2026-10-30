@@ -25,7 +25,10 @@ fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
         SecKind::Movie => widgets::TAB_KEY_MOVIES,
         SecKind::Show => widgets::TAB_KEY_SHOWS,
     }));
-    keys.push(widgets::TAB_KEY_WATCHLIST);
+    // FinNative: the Watchlist is a plex.tv list, so a server behind another backend has none.
+    if !plx_plex::plex::alt_installed() {
+        keys.push(widgets::TAB_KEY_WATCHLIST);
+    }
     keys.push(widgets::TAB_KEY_SEARCH);
     keys
 }
@@ -64,6 +67,8 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
 pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
     profile_generation: Option<u32>,
+    /// `plx_plex::plex::signed_in_generation` when the chip was last named.
+    signed_in_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     faces: Vec<TabFace>,
     pub(crate) keys: Vec<u32>,
@@ -126,16 +131,26 @@ impl ChromeSnapshot {
         let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
         let session_changed = captured.is_none() && self.session_watch.changed();
         let mut profile_changed = false;
-        if self.profile_generation != Some(generation) || session_changed {
+        let signed_in_generation = plx_plex::plex::signed_in_generation();
+        if self.profile_generation != Some(generation) || session_changed
+            || self.signed_in_generation != Some(signed_in_generation) {
             let current = captured.map_or_else(plx_plex::plex::session::current, |(profile, _)| profile.user.clone());
-            let account = if let Some((_, saved)) = captured { saved.account(current.as_ref()) }
+            let mut account = if let Some((_, saved)) = captured { saved.account(current.as_ref()) }
                 else { plx_plex::plex::session::peek().account(current.as_ref()) };
-            self.thumb = current.map(|user| user.thumb).unwrap_or_default();
+            self.thumb = current.as_ref().map(|user| user.thumb.clone()).unwrap_or_default();
+            // An alternative backend (FinNative) names who is signed in, and its answer is the live
+            // one: the published profile keeps the name and avatar as of the switch, so a change
+            // the server announced later (`signed_in_generation` moved) shows only from here.
+            if let Some((name, avatar)) = plx_plex::plex::signed_in_user() {
+                account.name = Some(name);
+                self.thumb = avatar;
+            }
             self.label = plx_screens::account_menu::chip_label(&account);
             self.initial_text = account.name.as_deref().and_then(|name| name.chars().next())
                 .map(|c| c.to_uppercase().to_string()).unwrap_or_default();
             self.profile_generation = Some(generation);
             profile_changed = true;
+            self.signed_in_generation = Some(signed_in_generation);
         }
         if profile_changed || strip_changed {
             self.elide_chip_name(measure);

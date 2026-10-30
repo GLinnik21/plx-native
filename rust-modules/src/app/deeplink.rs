@@ -277,12 +277,23 @@ impl DeepLink {
             return out;
         }
         let LinkState::Waiting { link, .. } = std::mem::take(&mut self.0) else { return out };
+        // FinNative: the installed backend reads the id in the form its own rating keys take.
+        let rk = match plx_plex::plex::backend::active() {
+            Some(b) => match b.item_key(&link.rk) {
+                Some(rk) => rk,
+                None => {
+                    out.fx.push(log_line("deeplink: not opened (the item id is not one this server's items take)"));
+                    return out;
+                }
+            },
+            None => link.rk.clone(),
+        };
         out.fx.push(Fx::App(AppFx::Store(
             plx_data::stores::StoreId::Metadata,
             plx_data::stores::StoreCmd::Metadata(plx_data::stores::metadata::MetadataCmd::RequestDetail {
-                sid, rk: link.rk.clone() }),
+                sid, rk: rk.clone() }),
         )));
-        out.arm = Some((sid, link.rk, link.action == Action::Open));
+        out.arm = Some((sid, rk, link.action == Action::Open));
         out
     }
 

@@ -2,9 +2,9 @@
 """Which install a package is for — a transform from the tracked descriptors to a flavour's.
 
 Three builds of this app live on one television: `stable` is what users install
-(`com.beb.plxnative` — the id in every release, every manifest and the webosbrew channel listing),
-`debug` is the day-to-day developer build beside it (`com.beb.plxnative.debug`), with its own
-launcher tile, its own sign-in and its own `/tmp` root, and `nightly` (`com.beb.plxnative.nightly`)
+(`io.github.tiper.finnative` — the id in every release, every manifest and the webosbrew channel listing),
+`debug` is the day-to-day developer build beside it (`io.github.tiper.finnative.debug`), with its own
+launcher tile, its own sign-in and its own `/tmp` root, and `nightly` (`io.github.tiper.finnative.nightly`)
 is a third install beside both — always a `RELEASE=1` build (no dev triggers, ever), with its own
 tile ("PlxNative Nightly"), its own sign-in and its own `/tmp` root, that additionally carries a
 PACKAGE version ahead of the tracked one (see `appinfo_for`'s nightly arm) and a dated REPORTED
@@ -67,7 +67,7 @@ def _release_line_content() -> "str | None":
 
 
 def app_id(flavor: str) -> str:
-    """`com.beb.plxnative` for stable, `com.beb.plxnative.<flavour>` otherwise."""
+    """`io.github.tiper.finnative` for stable, `io.github.tiper.finnative.<flavour>` otherwise."""
     if flavor not in FLAVORS:
         raise SystemExit(f"unknown flavour {flavor!r} — one of: {', '.join(FLAVORS)}")
     return next(identity["app_id"] for identity in INSTALL_IDENTITIES
@@ -290,21 +290,19 @@ def _selftest() -> int:
           f"a bare `make` builds the binary (default goal is {goal_name!r}, want 'all')")
 
     # THE RUNTIME ROOT, the last flavour rule spelled in two languages with nothing comparing them.
-    # `Makefile`'s RUNDIR and `paths::resolve_runtime_dir` must agree that stable is bare /tmp and a
-    # flavour is /tmp/<app id>. On a divergence the APP writes its triggers, its FIFO and its three
-    # logs into one root while `tests/run.py`, `tv-session.sh`, `crash-report.sh` and
-    # `stream-screen.py` read the other — both sides silent, and every assertion downstream reports
-    # "no line found", which this repository documents as indistinguishable from a total
+    # FinNative: `Makefile`'s RUNDIR and `paths::resolve_runtime_dir` must agree that on the
+    # television EVERY install, stable included, is /tmp/<app id> (the bare /tmp is a stable
+    # PlxNative's); only a host build keeps /tmp. On a divergence the APP writes its triggers, its
+    # FIFO and its three logs into one root while `tests/run.py`, `tv-session.sh`, `crash-report.sh`
+    # and `stream-screen.py` read the other — both sides silent, and every assertion downstream
+    # reports "no line found", which this repository documents as indistinguishable from a total
     # regression. It cannot be caught on the television either: the harness's `install:` check can
     # only fire once it has found the log it is looking for.
-    mk_rundir = re.search(
-        r"(?m)^RUNDIR\s*=\s*\$\(if \$\(filter stable,\$\(FLAVOR\)\),(\S+),(\S+)\)", mk)
-    check(mk_rundir is not None
-          and mk_rundir.group(1) == "/tmp"
-          and mk_rundir.group(2) == "/tmp/$(APPID)",
-          "Makefile RUNDIR: stable is bare /tmp, a flavour is /tmp/<app id>")
+    mk_rundir = re.search(r"(?m)^RUNDIR\s*=\s*(\S+)\s*$", mk)
+    check(mk_rundir is not None and mk_rundir.group(1) == "/tmp/$(APPID)",
+          "Makefile RUNDIR: every install is /tmp/<app id>")
     check('const DEFAULT_RUNTIME_DIR: &str = "/tmp"' in rust
-          and "if app_id == STABLE_APP_ID {" in rust
+          and "if ENV_STEERABLE && app_id == STABLE_APP_ID {" in rust
           and "return PathBuf::from(DEFAULT_RUNTIME_DIR);" in rust
           and "Path::new(DEFAULT_RUNTIME_DIR).join(app_id)" in rust,
           "paths::resolve_runtime_dir spells the same rule as the Makefile's RUNDIR")

@@ -346,13 +346,19 @@ fn request_with(
     }
 }
 
+/// Does this request carry a credential: a Plex token, or the Jellyfin/Emby one an alternative
+/// backend puts on its media URLs (`ApiKey=` / `api_key=`) and headers (`X-Emby-Token`,
+/// `X-MediaBrowser-Token`)? Every spelling is a credential whichever backend built the request, so
+/// none of them slips past the policy because it is not Plex's.
 fn carries_credential(path: &str, headers: &[&str]) -> bool {
-    path.to_ascii_lowercase().contains("x-plex-token=")
+    const QUERY: [&str; 3] = ["x-plex-token=", "apikey=", "api_key="];
+    const HEADERS: [&str; 4] = ["x-plex-token", "authorization", "x-emby-token", "x-mediabrowser-token"];
+    let path = path.to_ascii_lowercase();
+    QUERY.iter().any(|key| path.contains(key))
         || headers.iter().any(|header| {
-            header.split_once(':').is_some_and(|(name, _)| {
-                name.trim().eq_ignore_ascii_case("x-plex-token")
-                    || name.trim().eq_ignore_ascii_case("authorization")
-            })
+            header
+                .split_once(':')
+                .is_some_and(|(name, _)| HEADERS.iter().any(|h| name.trim().eq_ignore_ascii_case(h)))
         })
 }
 
@@ -1208,6 +1214,16 @@ mod tests {
             &[],
             CredentialPolicy::AllowPlaintext,
         ));
+        // A Jellyfin credential is one too, in the URL or a header.
+        for path in ["/Videos/abc/stream?Static=true&ApiKey=secret", "/Items/abc/Download?api_key=secret"] {
+            assert!(!credential_transport_allowed_by_policy(&http, path, &[], CredentialPolicy::HttpsOnly), "{path}");
+        }
+        for header in ["X-Emby-Token: secret", "X-MediaBrowser-Token: secret"] {
+            assert!(
+                !credential_transport_allowed_by_policy(&http, "/Items", &[header], CredentialPolicy::HttpsOnly),
+                "{header}"
+            );
+        }
     }
 
     #[test]

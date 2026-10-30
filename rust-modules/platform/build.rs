@@ -8,7 +8,8 @@
 //! `storage/state.rs` by `#[path]` and runs `install_identities` from its own build script, so the
 //! client and the helper cannot disagree about which installs exist.
 //!
-//! The inputs are the only things this script re-runs for: the catalog sources under `locales/`,
+//! The inputs are the only things this script re-runs for: the catalog sources under `locales/` (and
+//! a brand overlay beside it, `locales-finnative/`, when present),
 //! the packaging manifest of installs, and the two generator files. No environment variable is
 //! read, so an ordinary rebuild never re-runs it.
 
@@ -24,9 +25,18 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/catalog.rs");
     println!("cargo:rerun-if-changed=../build_support/install_identities.rs");
     println!("cargo:rerun-if-changed=../../locales");
-    if let Err(mut errors) =
-        catalog::build(Path::new("../../locales"), &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()))
-    {
+    // A brand's own wording, laid over `locales/` when the directory exists (FinNative's
+    // `locales-finnative/`); absent, the catalogs are the source tree's alone.
+    let overlay = Path::new("../../locales-finnative");
+    if overlay.is_dir() {
+        // Only when it exists: cargo treats a missing rerun path as always changed.
+        println!("cargo:rerun-if-changed=../../locales-finnative");
+    }
+    if let Err(mut errors) = catalog::build(
+        Path::new("../../locales"),
+        overlay.is_dir().then_some(overlay),
+        &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()),
+    ) {
         errors.sort();
         for e in &errors {
             eprintln!("{e}");

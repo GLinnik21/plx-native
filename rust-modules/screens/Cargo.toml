@@ -24,6 +24,8 @@ mount = "screens"
 
 [features]
 default = []
+# FinNative: the sign-in screen names the Jellyfin server rather than plex.tv/link.
+finnative = ["dep:plx_jellyfin", "plx_session/finnative"]
 # Forwarded from the application crate, which is the only one that sets it. Nothing in this crate
 # has a `cfg` on it; it is declared so that `cargo test -p plx_screens` (which dev-depends on this
 # crate with it) builds the layers below with the dev trigger surface, as the Makefile's suite does.
@@ -47,6 +49,7 @@ plx_data = { path = "../data" }
 plx_session = { path = "../session" }
 plx_media = { path = "../media" }
 plx_appkit = { path = "../appkit" }
+plx_jellyfin = { path = "../jellyfin", optional = true }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 
 [dev-dependencies]

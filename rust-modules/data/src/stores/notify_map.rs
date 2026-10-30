@@ -43,6 +43,8 @@
 //! re-queried, keeping the reader's place, when a page covers it (at once when no Library page is
 //! on the navigation stack, `Shown::library`); the server's other sections forget their pages, and
 //! a section left while stale forgets its pages too.
+//! An entry of a kind the feed does not name (`LibraryKind::Unknown`) moves the lists and owes the
+//! Watchlist nothing.
 //!
 //! **Owed work is spent only when [`Stores::reread_allowed`]** (not under the player, not while a
 //! recording or replay is armed). Until then it is queued, not dropped, and coalesced.
@@ -268,10 +270,11 @@ impl NotifyMap {
     }
 }
 
-fn watch_kind(kind: LibraryKind) -> WatchKind {
+fn watch_kind(kind: LibraryKind) -> Option<WatchKind> {
     match kind {
-        LibraryKind::Movie => WatchKind::Movie,
-        LibraryKind::Show => WatchKind::Show,
+        LibraryKind::Movie => Some(WatchKind::Movie),
+        LibraryKind::Show => Some(WatchKind::Show),
+        LibraryKind::Unknown => None,
     }
 }
 
@@ -429,10 +432,18 @@ impl Stores {
         // A delete is followed to the tile it was matched to; one lookup table per server and frame.
         let held = (ready && library.entries.iter().any(|e| e.state == LibraryState::Deleted))
             .then(|| self.watchlist.held_by_rk(sid));
-        let (mut created, mut deleted) = (0, 0);
+        let (mut created, mut deleted, mut updated) = (0, 0, 0);
         for e in &library.entries {
-            let kind = watch_kind(e.kind);
+            let Some(kind) = watch_kind(e.kind).filter(|_| e.state != LibraryState::Updated) else {
+                match e.state {
+                    LibraryState::Created => created += 1,
+                    LibraryState::Deleted => deleted += 1,
+                    LibraryState::Updated => updated += 1,
+                }
+                continue;
+            };
             match e.state {
+                LibraryState::Updated => {}
                 LibraryState::Created if !follow => created += 1,
                 LibraryState::Deleted if !follow => deleted += 1,
                 LibraryState::Created => {
@@ -456,7 +467,7 @@ impl Stores {
             }
         }
         plx_base::eventlog::log(&format!(
-            "notify: library sid={} created={created} deleted={deleted}",
+            "notify: library sid={} created={created} deleted={deleted} updated={updated}",
             sid.raw()
         ));
     }

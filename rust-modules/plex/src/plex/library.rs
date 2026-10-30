@@ -49,6 +49,7 @@ impl Client {
     /// GET /library/sections (D-3: spec-canonical is /library/sections/all; keep the
     /// known-working bare path). Read `.directory[]` for {kind, key}.
     pub fn sections(&self) -> Option<MediaContainer> {
+        crate::alt!(b => b.sections());
         self.get_json("/library/sections")
     }
 
@@ -61,6 +62,7 @@ impl Client {
     /// this is a per-server string a roster row needs once. Sharing the state would mean the last
     /// server discovered renamed the one you are signed in to.
     pub fn friendly_name(&self) -> Option<String> {
+        crate::alt!(b => b.friendly_name());
         self.get_json("/")
             .map(|mc| mc.friendly_name)
             .filter(|s| !s.is_empty())
@@ -94,6 +96,7 @@ impl Client {
     /// all rather than guessing 1, because a wrong type answers `size 0` and would read as "that
     /// server does not have it".
     pub fn find_by_guid(&self, guid: &str) -> Option<MediaContainer> {
+        crate::alt!(_b => None); // another server has no Plex guids
         if guid.is_empty() {
             return None;
         }
@@ -140,6 +143,7 @@ impl Client {
     /// `GET /library/sections/{k}/all?includeMeta=1&sort=…&genre=…` plus the paging window
     /// → `.metadata[]` + `total_size` (+ `.meta` when `include_meta`).
     pub fn section_items_query(&self, q: &SectionQuery) -> Option<MediaContainer> {
+        crate::alt!(b => b.section_items_query(q));
         let mut b = QueryBuilder::new(format!("/library/sections/{}/all", q.section_key));
         if q.include_meta {
             b = b.int("includeMeta", 1);
@@ -168,6 +172,7 @@ impl Client {
         directory: &str,
         filters: &[(String, String)],
     ) -> Option<MediaContainer> {
+        crate::alt!(b => b.section_directory(section_key, directory, filters));
         self.get_json(&section_directory_path(section_key, directory, filters))
     }
 
@@ -241,6 +246,7 @@ impl Client {
     /// time, so anything it computed itself would change with the selected season tab. Verified live
     /// 2026-07-30 on rk 437 → S2E2 at 635510/3130720 while season 1 was the loaded tab.
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
+        crate::alt!(b => b.metadata(rating_key));
         let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
             .int("includeChapters", 1)
             .int("includeMarkers", 1)
@@ -253,6 +259,7 @@ impl Client {
     /// Same playable `Media`/`Part` as `?includeExtras=1` nested under the parent (docs/pms-api.md §4).
     /// A refused GET is `None`; an empty list is `Some` with `metadata` empty.
     pub fn extras(&self, rating_key: &str) -> Option<MediaContainer> {
+        crate::alt!(b => b.extras(rating_key));
         self.get_json(&format!("/library/metadata/{rating_key}/extras"))
     }
 
@@ -276,6 +283,7 @@ impl Client {
     ///
     /// Absent from `docs/plex-openapi.json`, which documents only the single-key form.
     pub fn metadata_many(&self, rating_keys: &[&str]) -> Option<MediaContainer> {
+        crate::alt!(b => b.metadata_many(rating_keys));
         const EXCLUDE_ELEMENTS: &str =
             "Media,Genre,Country,Collection,Director,Writer,Producer,Similar,Chapter,Marker,Guid,Rating,Review,Extras";
         let path = QueryBuilder::new(format!("/library/metadata/{}", rating_keys.join(",")))
@@ -287,6 +295,7 @@ impl Client {
 
     /// GET /library/metadata/{rating_key}/children (D-5 undocumented but real) → `.metadata[]`.
     pub fn children(&self, rating_key: &str) -> Option<MediaContainer> {
+        crate::alt!(b => b.children_paged(rating_key, 0, 0));
         self.get_json(&format!("/library/metadata/{rating_key}/children"))
     }
 
@@ -294,6 +303,7 @@ impl Client {
     /// `totalSize` the whole listing. A season's episodes page through this; `children` stays for
     /// the season tabs, which need every row.
     pub fn children_paged(&self, rating_key: &str, start: i64, size: i64) -> Option<MediaContainer> {
+        crate::alt!(b => b.children_paged(rating_key, start, size));
         let path = paged_path(
             &format!("/library/metadata/{rating_key}/children"),
             PageReq::window(start, size),
@@ -303,7 +313,25 @@ impl Client {
 
     /// GET /library/metadata/{rating_key}/related → `.hub[]`.
     pub fn related(&self, rating_key: &str) -> Option<MediaContainer> {
+        crate::alt!(b => b.related(rating_key));
         self.get_json(&format!("/library/metadata/{rating_key}/related"))
+    }
+
+    /// The scrubbing thumbnails of the item's part `part_id` (the version that plays), or `None`
+    /// when it has none. PMS keeps its preview pictures as a BIF index this client does not read,
+    /// so only an alternative backend answers.
+    pub fn trickplay(&self, rating_key: &str, part_id: i64) -> Option<super::params::Trickplay> {
+        crate::alt!(b => b.trickplay(rating_key, part_id));
+        let _ = (rating_key, part_id);
+        None
+    }
+
+    /// One sheet of `info`'s pictures (`Trickplay::place`) of the same part, as the server's
+    /// compressed image.
+    pub fn trickplay_sheet(&self, rating_key: &str, part_id: i64, info: &super::params::Trickplay, sheet: u32) -> Option<Vec<u8>> {
+        crate::alt!(b => b.trickplay_sheet(rating_key, part_id, info, sheet));
+        let _ = (rating_key, part_id, info, sheet);
+        None
     }
 
     /// GET /library/people/{person_id}/media → `.metadata[]` — every item this person appears
@@ -315,6 +343,7 @@ impl Client {
     /// field is unreliable here: it read `"movie"` on a response whose only row was a `show`
     /// (verified on person 6059, 5 movies + 1 show). See `crate::person::split_by_type`.
     pub fn person_media(&self, person_id: &str) -> Option<MediaContainer> {
+        crate::alt!(b => b.person_media(person_id));
         self.get_json(&format!("/library/people/{person_id}/media"))
     }
 
@@ -328,6 +357,7 @@ impl Client {
     /// for. It does NOT distinguish a 200 from a 404 — `get_ok` is `http_get`'s own success — which
     /// is the honest limit of a GET whose body carries nothing.
     pub fn scrobble(&self, rating_key: &str) -> bool {
+        crate::alt!(b => b.scrobble(rating_key));
         self.get_ok(&format!(
             "/:/scrobble?key={rating_key}&identifier=com.plexapp.plugins.library"
         ))
@@ -336,6 +366,7 @@ impl Client {
     /// GET /:/unscrobble — mark unwatched (clears viewCount + viewOffset). Reports like
     /// [`Client::scrobble`].
     pub fn unscrobble(&self, rating_key: &str) -> bool {
+        crate::alt!(b => b.unscrobble(rating_key));
         self.get_ok(&format!(
             "/:/unscrobble?key={rating_key}&identifier=com.plexapp.plugins.library"
         ))
@@ -356,6 +387,7 @@ impl Client {
     /// (`HTTP 404 (0 bytes)`, `curl rc=28`, `empty body`, ...), joined with `; `. No URL, host or
     /// token appears in it, so a caller may log it.
     pub fn sidecar_subtitle_detailed(&self, key: &str, codec: &str) -> Result<Vec<u8>, String> {
+        crate::alt!(b => b.sidecar_subtitle_detailed(key, codec));
         if !sidecar_key_allowed(key) {
             // a key is server data: only ever the path this method is for
             return Err("key refused (not /library/streams/<id>[.ext])".into());
@@ -387,6 +419,7 @@ impl Client {
     /// back. Returns the HTTP status (route logs it).
     #[track_caller]
     pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
+        crate::alt!(_b => 200); // another server takes the track choice on the stream URL
         let mut q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id)).int("allParts", 1);
         if let Some(subtitle) = sel.subtitle_stream_id {
             q = q.int("subtitleStreamID", subtitle);
@@ -403,6 +436,7 @@ impl Client {
     /// (`/services/iva/assets?…`). [`QueryBuilder`] joins onto that query instead of
     /// writing a second `?`.
     pub fn direct_play_url(&self, part_key: &str, session: &str) -> StreamUrl {
+        crate::alt_some!(b => b.direct_play_url(part_key, session));
         self.part_url(part_key, Some(session))
     }
 

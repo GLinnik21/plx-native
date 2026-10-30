@@ -1867,16 +1867,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
         // predicate `visible_ctls` and `valid` gate on, so this cannot silently drift from either.
         if let Some(Located::Hero(ctl)) = self.locate(want.elem, meta) {
             if hero::focusable(ctl, self.full_trailer()) {
-                let set = self.hero_set(meta);
-                if hero::index_of(set, ctl).is_some() {
-                    return want;
-                }
-                if ctl.is_watch() {
-                    let (controls, _) = hero::hero_ctls(set);
-                    return FocusKey {
-                        entry: want.entry,
-                        elem: controls[hero::watch_index(set).unwrap()].elem(),
-                    };
+                if let Some(carried) = hero::carried(self.hero_set(meta), ctl) {
+                    return FocusKey { entry: want.entry, elem: carried.elem() };
                 }
             }
         }
@@ -3117,6 +3109,8 @@ impl DetailScreen {
                         hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist.pos()).0,
                         hero::HeroCtl::GoToShow => hero::GO_TO_SHOW_ICON,
                         hero::HeroCtl::Version => hero::VERSION_ICON,
+                        hero::HeroCtl::Favorite => plx_ui::icons::Icon::Heart,
+                        hero::HeroCtl::Unfavorite => plx_ui::icons::Icon::HeartFill,
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -4322,6 +4316,11 @@ impl DetailScreen {
         // `a_movie_trailer_disc_plays_the_extra_from_the_start` et al., which explicitly assert
         // `!hero_set().trailer` and then drive `ELEM_TRAILER` directly to prove `activate_hero`'s
         // handling stays correct even though the disc itself is never shown.)
+        // The favourite toggle: a movie, show or episode, where the server keeps favourites.
+        let favorite = self
+            .detail(meta)
+            .filter(|d| matches!(d.kind.as_str(), "movie" | "show" | "episode"))
+            .and_then(|d| plx_plex::plex::favorite_mark(&d.rk));
         hero::HeroSet {
             version: self.detail(meta).is_some_and(|d| hero_versions(d).len() >= 2),
             go_show: self.detail(meta).is_some_and(|d| hero::go_to_show_target(d).is_some()),
@@ -4330,6 +4329,7 @@ impl DetailScreen {
             alt: self.alt_available(meta),
             mark,
             watchlist: self.detail(meta).is_some_and(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid).is_some()),
+            favorite,
         }
     }
 
@@ -4544,6 +4544,11 @@ impl DetailScreen {
                             act, sid: d.sid, item: None, season: None, loaded_episode: false, from_home: false,
                         })));
                     }
+                }
+            }
+            hero::HeroCtl::Favorite | hero::HeroCtl::Unfavorite => {
+                if let Some(d) = self.detail(meta) {
+                    plx_plex::plex::set_favorite_mark(&d.rk, ctl == hero::HeroCtl::Favorite);
                 }
             }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {

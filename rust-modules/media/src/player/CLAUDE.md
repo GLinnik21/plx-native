@@ -478,7 +478,11 @@ something.
   carries, `PlaybackSession::attempt_caps`, derived from the request's `start` on each rung's entry,
   never narrowed in place and never from a later read of the process-wide answer), and `ConvertFacet`
   has `route::dispatch_refusal_conversion` fly a `ClaimWork::Encode` under a `FlightOwner::Recovery`
-  that rebuilds today's route (which now plans the audio as the server's to convert), or, for a
+  that rebuilds today's route (which now plans the audio as the server's to convert), unless the
+  stream is a direct play and "Convert audio: On the TV" covers the refused codec under the narrowed
+  attempt (`route::audio_converts_on_tv`): then `route::dispatch_refusal_on_tv` flies a
+  `ClaimWork::KeepRoute` (no server round trip), the landing reloads the same route and the Load
+  declares AC3 for the demuxer's conversion (`engine::start_bufferfeed` reads the attempt too); or, for a
   video facet (`VideoLane::Encode`), an encode with `no_video_copy` under the lower of the route's
   ceiling and the 1080p rung's (`Caps::video_ceiling` lowers that codec's `raster_bound` to 1920x1088
   in the profile and the direct-play gate too). A video facet never proves and is never stored

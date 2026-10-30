@@ -385,10 +385,16 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
         plx_telemetry::telemetry::consent::install(c);
     }
     // The first-run consent surface is a Settings-family screen: its `Screen::name()` is "settings".
+    // A FinNative build with no reporting endpoint never asks (`consent::should_show`), so there
+    // the picker mounts alone; the remount loop this pins is the same either way.
+    let asked = usize::from(plx_screens::consent::should_show(
+        &plx_telemetry::telemetry::consent::Consent::default(),
+        false,
+    ));
     let named = |w: &str| mounts.iter().filter(|(_, n)| *n == w).count();
     assert_eq!(
         (named("profiles"), named("settings"), unmounts),
-        (1, 1, 0),
+        (1, asked, 0),
         "(frame, screen) mounts {mounts:?}; {unmounts} unmounts; coldopen lines {cold:?}",
     );
     // The perpetual dip is invisible to the mount count above (the redundant `Root` used to keep

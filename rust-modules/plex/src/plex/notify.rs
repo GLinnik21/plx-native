@@ -161,6 +161,9 @@ pub struct PlaySession {
 pub enum LibraryKind {
     Movie,
     Show,
+    /// A feed that names no kind (an alternative backend's): the change still re-lists the
+    /// server's pages, but the Watchlist, which matches movies and shows, does not follow it.
+    Unknown,
 }
 
 /// A library item's lifecycle as a finished `timeline` entry reports it.
@@ -173,6 +176,9 @@ pub enum LibraryState {
     /// The item left the library (state 9). **UNVERIFIED: no delete has been captured**; 9 is the
     /// community-documented value and the frame's other fields are unknown.
     Deleted,
+    /// The item changed in place (an alternative backend's feed: Jellyfin reports an added item
+    /// again as it finishes scanning). It moves the server's lists, not the Watchlist.
+    Updated,
 }
 
 /// One finished create or delete of a movie or show. The wire names an `itemID` (the item's
@@ -397,7 +403,11 @@ impl Client {
         cancel: &AtomicBool,
         on: &mut dyn FnMut(Notification),
     ) -> NotifyEnd {
-        if self.data_io_disabled() || !self.has_token() {
+        if self.data_io_disabled() {
+            return NotifyEnd::Refused { status: 0 };
+        }
+        crate::alt!(b => b.notifications(_off, cancel, on));
+        if !self.has_token() {
             return NotifyEnd::Refused { status: 0 };
         }
         let path = self.with_token(

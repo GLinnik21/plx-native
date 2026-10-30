@@ -52,7 +52,7 @@ TAG_PREFIX = "nightly/v"
 SITE_ORIGIN = "https://plxnative.com"
 REPO_JSON_URL = f"{SITE_ORIGIN}/nightly/repo.json"
 GUIDE_URL = f"{SITE_ORIGIN}/nightly/"
-PACKAGE_ID = "com.beb.plxnative.nightly"
+PACKAGE_ID = "io.github.tiper.finnative.nightly"
 #: The manifest `build-package.yml` generates for the nightly package and `publish` attaches to the
 #: release under this name; also what is served beside `repo.json`.
 MANIFEST_NAME = f"{PACKAGE_ID}.manifest.json"
@@ -645,7 +645,7 @@ def _selftest() -> int:
         except SystemExit:
             return True
         return False
-    check(refuses({**good_manifest, "id": "com.beb.plxnative"}),
+    check(refuses({**good_manifest, "id": "io.github.tiper.finnative"}),
           "a manifest for the STABLE id is refused (it would install over the wrong app)")
     check(refuses(good_manifest, sha="cd" * 32), "a manifest whose sha256 differs from nightly.sha256 is refused")
     check(refuses(good_manifest, sha=""), "an empty published checksum is refused, not matched against")

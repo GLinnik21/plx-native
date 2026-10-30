@@ -850,7 +850,7 @@ fn support_line_of(i: &plx_platform::tv::device::Info, hw: &plx_platform::tv::de
     let set: &str = if set.is_empty() { plx_platform::i18n::msg::settings_login_unknown_device() } else { &set };
     format!(
         "{} {} · {} · {} · {}",
-        plx_plex::plex::identity::PRODUCT,
+        plx_plex::plex::identity::app_name(),
         plx_plex::plex::identity::version(),
         plx_platform::i18n::webos_release_line(i),
         set,
@@ -3445,7 +3445,8 @@ mod tests {
         assert_eq!(
             line,
             format!(
-                "PlxNative {} · webOS 4.10.2 · 43LM6300PVB · m3r · tv_pipeline",
+                "{} {} · webOS 4.10.2 · 43LM6300PVB · m3r · tv_pipeline",
+                plx_plex::plex::identity::app_name(),
                 plx_plex::plex::identity::version()
             )
         );

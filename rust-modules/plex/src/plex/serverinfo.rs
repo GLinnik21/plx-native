@@ -160,6 +160,11 @@ pub(super) fn refresh(id: ServerId) {
     if !id.is_set() {
         return;
     }
+    // FinNative: `GET /` is a Plex Media Server's description; another backend's server has none
+    // to give (Jellyfin answers it with a redirect to its web page), so it is not asked.
+    if super::alt_installed() {
+        return;
+    }
     let Some(c) = super::client_for(id) else {
         return;
     }; // nothing registered there to ask

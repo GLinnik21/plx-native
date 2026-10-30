@@ -495,8 +495,9 @@ mod log_sink_tests {
         }
 
         let mut sink = Sink::default();
-        write_log_line(&mut sink, "install: id=com.beb.plxnative.debug").unwrap();
+        let line = format!("install: id={}.debug", crate::paths::STABLE_APP_ID);
+        write_log_line(&mut sink, &line).unwrap();
         assert_eq!(sink.calls, 1);
-        assert_eq!(sink.bytes, b"install: id=com.beb.plxnative.debug\n");
+        assert_eq!(sink.bytes, format!("{line}\n").into_bytes());
     }
 }

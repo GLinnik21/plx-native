@@ -106,6 +106,36 @@ pub fn img_decode_owned(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     }
 }
 
+/// [`img_decode_owned`] keeping three bytes a pixel (RGB) rather than four: for a large picture a
+/// caller holds while it cuts pieces out of it (a sheet of scrubbing thumbnails), where the alpha
+/// a JPEG never has would add a third to the buffer. A JPEG decodes straight to RGB, so this is
+/// also one allocation fewer than converting.
+pub fn img_decode_rgb_owned(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if data.is_empty() {
+        return None;
+    }
+    let len = data.len();
+    let decoded = catch_unwind(AssertUnwindSafe(|| -> Result<(u32, u32, Vec<u8>), String> {
+        let mut rdr = image::ImageReader::new(std::io::Cursor::new(data))
+            .with_guessed_format()
+            .map_err(|e| format!("unreadable: {e}"))?;
+        rdr.limits(decode_limits());
+        let r = rdr.decode().map_err(|e| e.to_string())?.into_rgb8();
+        Ok((r.width(), r.height(), r.into_raw()))
+    }));
+    match decoded {
+        Ok(Ok(t)) => Some(t),
+        Ok(Err(why)) => {
+            log(&format!("img: decode-none len={len} magic={} — {why}", magic(data)));
+            None
+        }
+        Err(_) => {
+            log(&format!("img: PANIC len={len} magic={}", magic(data)));
+            None
+        }
+    }
+}
+
 /// The first six bytes as hex, for a failure line only — never built on the success path.
 fn magic(data: &[u8]) -> String {
     data.iter().take(6).map(|b| format!("{b:02x}")).collect()

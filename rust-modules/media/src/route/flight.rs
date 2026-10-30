@@ -153,6 +153,9 @@ pub(super) enum RetranscodeClaimResult {
     /// installs it ([`install_auto_hls_outcome`]) and the pump reloads onto the HLS route.
     AutoHls(Box<AutoHlsLanding>),
     NativeAudio { ordinal: i32, codec: String },
+    /// A refused audio the app converts on the TV ([`ClaimWork::KeepRoute`]): nothing was asked of
+    /// the server, the route on screen is the one to reload.
+    KeepRoute,
     Rejected(&'static str),
 }
 
@@ -200,7 +203,7 @@ impl RetranscodeClaimResult {
                 let AutoHlsLanding { plan, outcome } = *landing;
                 discard_auto_hls(plan, outcome);
             }
-            Self::NativeAudio { .. } | Self::Rejected(_) => {}
+            Self::NativeAudio { .. } | Self::KeepRoute | Self::Rejected(_) => {}
         }
     }
 }
@@ -215,6 +218,9 @@ pub(super) enum ClaimWork {
     Rebase(Box<RebasePlan>),
     /// The Auto watchdog's Original-to-HLS fallback ([`run_auto_hls`]).
     AutoHls(Box<AutoHlsPlan>),
+    /// No server work: the refused audio is converted by the app on the TV ("Convert audio: on the
+    /// TV"), so the recovery reloads the route as it stands ([`dispatch_refusal_on_tv`]).
+    KeepRoute,
 }
 
 /// One claimed `Retranscode`'s worker landing, gated for reuse the same way every other mailbox in
@@ -293,6 +299,9 @@ fn run_retranscode_claim_worker(
             (outcome, _) => RetranscodeClaimResult::Rebase(Box::new(RebaseLanding { plan: *plan, outcome })),
         };
     }
+    if matches!(work, ClaimWork::KeepRoute) {
+        return RetranscodeClaimResult::KeepRoute;
+    }
     // The automatic fallback carries its own inputs in its plan, like a rebuild.
     if let ClaimWork::AutoHls(plan) = work {
         return match run_auto_hls(off, &plan) {
@@ -306,7 +315,7 @@ fn run_retranscode_claim_worker(
     // client to capture them from) flies without them.
     let claim_inputs = || inputs.expect("an encode, or a recovery owing a rebuild, is dispatched with its claim inputs");
     match work {
-        ClaimWork::Rebase(_) | ClaimWork::AutoHls(_) => unreachable!("handled above"),
+        ClaimWork::Rebase(_) | ClaimWork::AutoHls(_) | ClaimWork::KeepRoute => unreachable!("handled above"),
         ClaimWork::Encode(primary_contract) => {
             let inputs = claim_inputs();
             select_streams_for_encode(off, inputs);
@@ -740,6 +749,17 @@ fn install_recovery_landing(
             crate::player::report::note_refusal_recovery_delivery(ps);
             RecoveryVerdict::Install
         }
+        RetranscodeClaimResult::KeepRoute => {
+            // The conversion is the app's own: the route stays, and the attempt (which the machine
+            // narrowed to lack the facet) plans the Load, so the demuxer converts the audio.
+            regrade_original(ps);
+            if !prepare_route_start(ticket) {
+                crate::player::log("recovery: kept route lost its start transaction");
+                return RecoveryVerdict::Refused;
+            }
+            crate::player::report::note_refusal_recovery_delivery(ps);
+            RecoveryVerdict::Install
+        }
         // A refused rebuild (the worker answered `Rejected`), a panicked worker, or a kind a
         // recovery never dispatches: nothing installs.
         other => {
@@ -859,6 +879,8 @@ fn install_claim_landing(
             crate::player::stage_native_audio(ps, ordinal, &codec);
             ClaimTail::NativeAudio
         }
+        // Only a recovery flight dispatches KeepRoute, and its landing is `install_recovery_landing`'s.
+        RetranscodeClaimResult::KeepRoute => ClaimTail::Rejected(RETRANSCODE_REJECTED),
         RetranscodeClaimResult::Rejected(reason) => ClaimTail::Rejected(reason),
     };
     (action, tail)

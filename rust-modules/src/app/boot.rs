@@ -436,6 +436,10 @@ mod panic_log_tests {
 ///   telemetry/consent legacy-file sweep a durable sign-out runs. It exists only where the sweep does
 ///   (ARM, not the simulator, not a test build); unset, `plex` reads it as already retired.
 pub(crate) fn install_plex_seams() {
+    // FinNative: every hooked `Client` call is answered by the Jellyfin backend. Not in unit
+    // tests, which drive the Plex paths against their own fakes.
+    #[cfg(not(test))]
+    plx_jellyfin::jellyfin::backend::install();
     plx_plex::plex::session::install_auto_quality_ready(plx_media::route::auto_quality_ready);
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
     plx_plex::plex::session::install_account_clear_cleanup(plx_telemetry::telemetry::cleanup_after_account_clear);
@@ -1624,7 +1628,7 @@ pub(crate) unsafe fn construct(
     // the first thing a desktop shows, so the two builds spell it differently: the device keeps
     // the process-shaped name every log, `pidof` recipe and skill already uses.
     #[cfg(feature = "hostsim")]
-    let title = c"PlxNative";
+    let title = c"FinNative";
     #[cfg(not(feature = "hostsim"))]
     let title = c"plxnative";
     // A frame dump's drawable is exactly the window's size in points: it is the one desktop window

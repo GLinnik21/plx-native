@@ -16,6 +16,10 @@
 //! `session::install_or_drop_after_write`).
 #![allow(dead_code)]
 
+/// FinNative: another kind of media server behind the `Client` surface (`alt_backend.rs`).
+mod alt_backend;
+pub use alt_backend::*;
+
 mod client;
 // WHICH client a slot holds, as a value a step is handed instead of reading the registry itself.
 mod client_keys;

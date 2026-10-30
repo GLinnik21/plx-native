@@ -1337,6 +1337,7 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
         watchlist: true,
         go_show: false,
         version: false,
+        favorite: None,
         restart: true,
         trailer: false,
         alt: false,
@@ -1346,6 +1347,7 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
         watchlist: true,
         go_show: false,
         version: false,
+        favorite: None,
         alt: true,
         ..before
     };
@@ -1506,6 +1508,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
         watchlist: true,
         go_show: false,
         version: false,
+        favorite: None,
         restart: true,
         trailer: false,
         alt: false,

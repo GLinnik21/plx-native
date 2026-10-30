@@ -11,7 +11,7 @@
 //! frame per frame. Like the other FFmpeg tests it is `#[ignore]`d in the plain suite and skips,
 //! loudly, without the command line tools; `make check-ffmpeg` runs it.
 
-use super::audio::{ac3_pts_ns, fed_natively, Ac3Target, AudioConverter, SampleQueue};
+use super::audio::{ac3_pts_ns, app_decodes_with, fed_natively, Ac3Target, AudioConverter, SampleQueue};
 use super::*;
 
 #[test]
@@ -55,6 +55,20 @@ fn the_frame_clock_is_the_anchor_plus_the_samples_encoded() {
     assert_eq!(ac3_pts_ns(5_000_000_000, 1536, 48_000), 5_032_000_000);
     assert_eq!(ac3_pts_ns(0, 1536, 44_100), 34_829_931);
     assert_eq!(ac3_pts_ns(7, 1536, 0), 7, "a rate of 0 cannot place anything");
+}
+
+/// A multichannel FLAC under "Convert audio: on the TV" is declared AC3, so the PCM decoder must not
+/// claim it (it refused: "the Load declared no PCM for a flac track"); at 1x with the setting off, or
+/// for a track the converter does not take, the app decoders stay as they were.
+#[test]
+fn a_converted_track_is_not_also_claimed_by_the_app_pcm_decoders() {
+    for name in ["flac", "alac", "pcm_s16le", "pcm_s24be"] {
+        assert!(app_decodes_with(false, name), "{name} is the app's PCM decoder when not converting");
+        assert!(!app_decodes_with(true, name), "{name} is the converter's while converting");
+    }
+    // TrueHD is an app decode too (a lossy row, behind its gate), and the converter's while converting.
+    assert!(app_decodes_with(false, "truehd"));
+    assert!(!app_decodes_with(true, "truehd"));
 }
 
 #[test]
@@ -160,7 +174,7 @@ unsafe fn convert_file(path: &std::path::Path) -> (Vec<(i64, Vec<u8>)>, String) 
     let mut out = Vec::new();
     while av_read_frame(fmt, pkt) >= 0 {
         if (*pkt).stream_index == ai {
-            conv.push(pkt, &mut out);
+            out.extend(conv.decode(pkt));
         }
         av_packet_unref(pkt);
     }
@@ -245,7 +259,7 @@ fn a_reset_reanchors_the_clock_on_the_next_frame() {
         // given to the converter, which is what a seek looks like from its side (the fixture has
         // no index for `av_seek_frame` to land with).
         while out.len() < 30 && av_read_frame(fmt, pkt) >= 0 {
-            conv.push(pkt, &mut out);
+            out.extend(conv.decode(pkt));
             av_packet_unref(pkt);
         }
         conv.reset();
@@ -253,7 +267,7 @@ fn a_reset_reanchors_the_clock_on_the_next_frame() {
         let mut after = Vec::new();
         while after.is_empty() && av_read_frame(fmt, pkt) >= 0 {
             if av_rescale_q((*pkt).pts, tb, NS_TB) >= 4_000_000_000 {
-                conv.push(pkt, &mut after);
+                after.extend(conv.decode(pkt));
             }
             av_packet_unref(pkt);
         }

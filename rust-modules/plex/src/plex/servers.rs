@@ -918,6 +918,15 @@ fn populated(id: ServerId) -> Option<&'static Client> {
     (!p.is_null()).then(|| unsafe { &*p })
 }
 
+/// A plaintext origin just registered without its credential on an alternative backend (a saved
+/// FinNative session at boot, before anything re-proved the server): queue the backend's own
+/// endpoint re-proof, which plex.tv discovery would otherwise have been ([`super::grant::strand`]).
+fn strand_on_backend(machine_id: &str, origin: &Origin) {
+    if !origin.is_tls() && super::alt_installed() {
+        super::grant::strand(machine_id);
+    }
+}
+
 /// Record whether `id`'s credential rests on a plaintext grant — see [`Slot::on_grant`].
 fn mark_on_grant(id: ServerId, on_grant: bool) {
     if let Some(s) = slot_of(id) {
@@ -1214,11 +1223,12 @@ fn register_lazy(
             publish(
                 id,
                 Client::new(id, mid, origin.clone(), admitted_token, &client_id)
-                    .with_resolve_pin(pin.cloned()),
+                    .with_resolve_pin(pin.cloned())
+                    .naming(token),
             );
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         } else {
-            c.set_token(admitted_token); // every reference already handed out follows along
+            c.set_token_named(admitted_token, token); // every reference already handed out follows along
             // The slot set did not change, but its lifecycle did. Catalog source tables key their
             // reconciliation on this generation so they can release an old single-flight and
             // re-arm with the new per-profile credential even on a same-origin retoken.
@@ -1240,6 +1250,7 @@ fn register_lazy(
             }
         } else {
             s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+            strand_on_backend(grant_machine, origin);
         }
         return id;
     }
@@ -1265,7 +1276,8 @@ fn register_lazy(
     publish(
         id,
         Client::new(id, machine_id, origin.clone(), admitted_token, &client_id)
-            .with_resolve_pin(pin.cloned()),
+            .with_resolve_pin(pin.cloned())
+            .naming(token),
     );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     if let Some(fresh) = populated(id) {
@@ -1275,6 +1287,7 @@ fn register_lazy(
     mark_on_grant(id, on_grant);
     if !credential_eligible {
         s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+        strand_on_backend(grant_machine, origin);
     }
     // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
@@ -1514,7 +1527,7 @@ pub fn regrade_credentials() {
         {
             continue;
         }
-        c.set_token("");
+        c.withhold_token();
         activate(id, false);
         mark_on_grant(id, false);
         s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);

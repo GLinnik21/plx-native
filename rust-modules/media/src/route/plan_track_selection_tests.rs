@@ -2,6 +2,7 @@
 //! ladder, direct-play-eligible fallbacks, and subtitle stream id resolution.
 
 use super::*;
+use crate::route::audio_direct_plays_or_converted;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -1191,13 +1192,13 @@ fn c1_opus_caps() -> plx_platform::devcaps::Caps {
 fn auto_direct_plays_audio_the_app_converts_on_the_tv() {
     let caps = c1_opus_caps();
     for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
-        assert!(audio_direct_plays_for(&caps, true, mode, "opus", 6, 0), "{mode:?}: converted on the TV");
-        assert!(audio_direct_plays_for(&caps, true, mode, "opus", 2, 0), "{mode:?}: stereo is the set's own");
+        assert!(audio_direct_plays_or_converted(&caps, true, mode, "opus", 6, 0), "{mode:?}: converted on the TV");
+        assert!(audio_direct_plays_or_converted(&caps, true, mode, "opus", 2, 0), "{mode:?}: stereo is the set's own");
     }
-    assert!(!audio_direct_plays_for(&caps, false, DirectPlayMode::Auto, "opus", 6, 0), "conversion off: the server converts");
-    assert!(audio_direct_plays_for(&caps, false, DirectPlayMode::Auto, "opus", 2, 0), "stereo Opus stays native");
-    assert!(!audio_direct_plays_for(&caps, true, DirectPlayMode::Auto, "dts", 8, 0), "DTS is not one the app converts");
-    assert!(audio_direct_plays_for(&caps, true, DirectPlayMode::Auto, "truehd", 8, 0), "TrueHD is");
+    assert!(!audio_direct_plays_or_converted(&caps, false, DirectPlayMode::Auto, "opus", 6, 0), "conversion off: the server converts");
+    assert!(audio_direct_plays_or_converted(&caps, false, DirectPlayMode::Auto, "opus", 2, 0), "stereo Opus stays native");
+    assert!(!audio_direct_plays_or_converted(&caps, true, DirectPlayMode::Auto, "dts", 8, 0), "DTS is not one the app converts");
+    assert!(audio_direct_plays_or_converted(&caps, true, DirectPlayMode::Auto, "truehd", 8, 0), "TrueHD is");
 }
 
 /// The planner's pick follows it: a lone Opus 5.1 track is picked with conversion on and left to
@@ -1210,7 +1211,7 @@ fn the_planner_picks_an_opus_51_track_only_when_the_tv_converts_it() {
     let tracks = [opus];
     let pick = |conversion: bool| {
         pick_dp_audio_eligible(&tracks, "opus", AudioLangPrefs::default(), 0, StandIn::Any,
-            |c, n, r| audio_direct_plays_for(&caps, conversion, DirectPlayMode::Auto, c, n, r))
+            |c, n, r| audio_direct_plays_or_converted(&caps, conversion, DirectPlayMode::Auto, c, n, r))
             .map(|(_, _, id)| id)
     };
     assert_eq!(pick(true), Some(7));

@@ -97,8 +97,9 @@ mod tests {
 
     #[test]
     fn payload_carries_source_id_noaction_and_message() {
-        let v = parsed(&payload("com.beb.plxnative.debug", "Hello"));
-        assert_eq!(v["sourceId"], "com.beb.plxnative.debug");
+        let id = format!("{}.debug", plx_base::paths::STABLE_APP_ID);
+        let v = parsed(&payload(&id, "Hello"));
+        assert_eq!(v["sourceId"], id.as_str());
         assert_eq!(v["noaction"], true);
         assert_eq!(v["message"], "Hello");
         assert_eq!(v.as_object().unwrap().len(), 3, "no stray fields: {v}");
@@ -107,7 +108,7 @@ mod tests {
     #[test]
     fn payload_escapes_quotes_backslashes_and_newlines() {
         let message = "say \"hi\"\\ back\nnext line\ttab";
-        let text = payload("com.beb.plxnative", message);
+        let text = payload(plx_base::paths::STABLE_APP_ID, message);
         assert!(!text.contains('\n'), "a raw newline would break the line-oriented bus log: {text}");
         assert_eq!(parsed(&text)["message"], message);
     }
@@ -115,7 +116,7 @@ mod tests {
     #[test]
     fn payload_keeps_non_ascii_text_intact() {
         let message = "Гадзіннік тэлевізара ідзе няправільна — 時計";
-        assert_eq!(parsed(&payload("com.beb.plxnative", message))["message"], message);
+        assert_eq!(parsed(&payload(plx_base::paths::STABLE_APP_ID, message))["message"], message);
     }
 
     #[test]

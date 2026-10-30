@@ -236,8 +236,14 @@ fi
 # Dots also belong to the token: do not extract four components out of a longer
 # dotted number sequence. URL separators and ports still delimit real IPv4 literals.
 PRIVATE_IPV4_RE='(^|[^[:alnum:]_.])(10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}($|[^[:alnum:]_.])'
-if grep -qE "$PRIVATE_IPV4_RE" "$AUDIT_TMP/strings"; then
-  grep -oE "$PRIVATE_IPV4_RE" "$AUDIT_TMP/strings" | sort -u | sed -n '1,10p'
+# FinNative: 192.168.1.20 is the example address the Jellyfin sign-in hint shows (locales-finnative/*/browse.json,
+# `browse.jf.server_example` and `browse.jf.plaintext_name`), not anybody's server; that exact
+# address is let through and its neighbours are not.
+SIGN_IN_EXAMPLE_RE='(^|[^0-9.])192\.168\.1\.20($|[^0-9.])'
+PRIVATE_HITS=$({ grep -oE "$PRIVATE_IPV4_RE" "$AUDIT_TMP/strings" || true; } \
+  | { grep -vE "$SIGN_IN_EXAMPLE_RE" || true; } | sort -u)
+if [ -n "$PRIVATE_HITS" ]; then
+  printf '%s\n' "$PRIVATE_HITS" | sed -n '1,10p'
   fail "private IP address baked into the binary — was this built with src/config.local.h present?"
 fi
 grep -q YOUR_PMS_HOST "$AUDIT_TMP/strings" \

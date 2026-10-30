@@ -538,8 +538,11 @@ pub(super) fn quality_policy(
 }
 
 
+/// Auto adapts over HLS when Original is out of reach, on a server that has the fixed-HLS
+/// transcode (`plx_plex::plex::fixed_hls_available`); without it Auto is Original or the
+/// progressive transcode at the device's own bound.
 pub(super) fn auto_uses_hls(q: Quality, auto_original: bool) -> bool {
-    q == Quality::Auto && !auto_original
+    q == Quality::Auto && !auto_original && plx_plex::plex::fixed_hls_available()
 }
 
 
@@ -1616,6 +1619,18 @@ pub enum SubWrite {
 /// the wrong authority for every id in this function. The server arrives in `env.sid` and the only
 /// client here is `client_for` of it.
 pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveEnv) -> Plan {
+    // A FinNative row (Home shelf, library grid, episode list) carries no media: the listing
+    // leaves it out. Played by its key, the file and its codecs are read from the item itself,
+    // or every such play would reach the gate below with no source codec and be re-encoded.
+    // That read is also the playing item's below, so the item is asked for once.
+    let item = (part.is_empty() && !rk.is_empty() && plx_plex::plex::rows_resolve_by_key())
+        .then(|| plx_plex::plex::client_for(env.sid).and_then(|c| c.metadata(rk)))
+        .flatten();
+    let resolved = item.as_ref().and_then(item_media);
+    let (part, vcodec, acodec) = match &resolved {
+        Some((p, v, a)) => (p.as_str(), v.as_str(), a.as_str()),
+        None => (part, vcodec, acodec),
+    };
     // The play queue is asked for beside the rest of the plan, on a sibling thread of this scope
     // (`plx_base::task::beside`). The scope joins it on EVERY exit of the body, the early returns
     // included, and `land_queue` is the one place its answer joins the plan.
@@ -1674,11 +1689,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
             // loaded detail can be a different item (show page / straight-from-Home play)
-            // detail already had this item's streams — no GET
+            // detail already had this item's streams — no GET; nor when the item was just read above
             let (playing, played) = match env.version {
                 None => (
                     env.cached_item
                         .clone()
+                        .or_else(|| item.as_ref().map(|it| plx_data::metadata::playing_version_from(env.sid, rk, Some(it), None).0))
                         .or_else(|| plx_data::metadata::fetch_playing_item(client, env.sid, rk, None).map(|(item, _)| item)),
                     None,
                 ),
@@ -3138,19 +3154,8 @@ pub(super) fn audio_direct_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
 ) -> bool {
-    audio_direct_plays_for(caps, plx_platform::devcaps::tv_audio_conversion(), mode, codec, channels, sample_rate)
-}
-
-/// [`audio_direct_plays_with`] with the "Convert audio: on the TV" choice passed in, so the rule
-/// is decidable from values alone: what the set decodes, what the app decodes to PCM, or what the
-/// app converts to AC3 itself (`devcaps::converted_with`).
-pub(super) fn audio_direct_plays_for(
-    caps: &plx_platform::devcaps::Caps, conversion: bool, mode: DirectPlayMode, codec: &str, channels: i64,
-    sample_rate: i64,
-) -> bool {
     audio_natively_plays_with(caps, mode, codec, channels, sample_rate)
         || caps.app_decodes_lossy_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
-        || plx_platform::devcaps::converted_with(caps, conversion, codec, channels, sample_rate)
 }
 
 /// [`audio_direct_plays_with`] for the set's own decoder only: the Forced pick's first pass and last
@@ -3909,6 +3914,40 @@ pub fn playback_preview_with_audio(
     })
 }
 
+
+/// An item's first part and its video and audio codecs, as a listing row would have carried them:
+/// `(part key, video codec, audio codec)`. `None` when the item has no part.
+pub(super) fn item_media(m: &plx_plex::plex::Metadata) -> Option<(String, String, String)> {
+    let media = m.media.first()?;
+    let part = media.part.first().filter(|p| !p.key.is_empty())?;
+    Some((part.key.clone(), media.video_codec.clone(), media.audio_codec.clone()))
+}
+
+#[cfg(test)]
+mod item_media_tests {
+    use super::item_media;
+    use plx_plex::plex::{Media, MediaPart, Metadata};
+
+    // The Jellyfin row a movie card or an episode list hands the route has no media; the route
+    // reads it from the item so the direct-play gate sees the real codecs instead of none.
+    #[test]
+    fn the_item_supplies_the_part_and_codecs_a_bare_row_lacks() {
+        let m = Metadata {
+            media: vec![Media {
+                video_codec: "hevc".into(),
+                audio_codec: "eac3".into(),
+                part: vec![MediaPart { key: "/Videos/a/stream.mkv?static=true&mediaSourceId=a".into(), ..Default::default() }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            item_media(&m),
+            Some(("/Videos/a/stream.mkv?static=true&mediaSourceId=a".into(), "hevc".into(), "eac3".into()))
+        );
+        assert_eq!(item_media(&Metadata::default()), None);
+    }
+}
 
 /// True when the part's container is one the buffer-feed demuxer streams over HTTP: MKV, or
 /// MP4/M4V since the AVIO became seekable (see the `streamable` note at the decision site — the

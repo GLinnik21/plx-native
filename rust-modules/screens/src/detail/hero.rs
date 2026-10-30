@@ -51,6 +51,9 @@ pub const ELEM_VERSION: u32 = 7;
 /// The Go to Show disc — present only on an episode's own page (`Detail::kind == "episode"` with a
 /// `show_rk`), never on a show's page, whose hero is already about the show.
 pub const ELEM_GO_TO_SHOW: u32 = 8;
+/// The favourite toggle's two faces.
+pub const ELEM_FAVORITE: u32 = 9;
+pub const ELEM_UNFAVORITE: u32 = 10;
 
 /// The hero's one focus group. Local to this screen — nothing outside `screens::detail` ever names
 /// it — so, like `screens::profiles`'s `ROSTER_GROUP`/`FOOTER_GROUP`, any small integer would do;
@@ -107,7 +110,8 @@ pub enum HeroCtl {
     Restart,
     /// the Trailer disc, present only while the loaded item has a playable extra
     Trailer,
-    /// the *Also available* pill, present only while a second pinned source holds this item
+    /// the *Also available* pill, present only while a second pinned source holds this item or
+    /// the item has versions to choose between
     Alt,
     /// the ✓ face of the watched TOGGLE — worn while the item is not watched (part-watched
     /// included)
@@ -124,6 +128,11 @@ pub enum HeroCtl {
     /// the Play Version disc, present only while the loaded movie or episode has two or more
     /// versions; it opens the list of them (`screens::versions_panel`)
     Version,
+    /// the outlined-heart face of the favourite TOGGLE — worn while the item is not a favourite,
+    /// and only where the server keeps favourites (`HeroSet::favorite`)
+    Favorite,
+    /// the filled-heart face of that toggle — worn once the item IS a favourite
+    Unfavorite,
 }
 
 impl HeroCtl {
@@ -139,9 +148,11 @@ impl HeroCtl {
             HeroCtl::Watchlist => ELEM_WATCHLIST,
             HeroCtl::GoToShow => ELEM_GO_TO_SHOW,
             HeroCtl::Version => ELEM_VERSION,
+            HeroCtl::Favorite => ELEM_FAVORITE,
+            HeroCtl::Unfavorite => ELEM_UNFAVORITE,
         }
     }
-    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the nine identities
+    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the eleven identities
     /// above, which is every elem a NON-hero group can mint (the completed sections use
     /// their own disjoint range, per the module doc).
     pub fn of_elem(e: u32) -> Option<Self> {
@@ -155,12 +166,18 @@ impl HeroCtl {
             ELEM_WATCHLIST => Some(HeroCtl::Watchlist),
             ELEM_GO_TO_SHOW => Some(HeroCtl::GoToShow),
             ELEM_VERSION => Some(HeroCtl::Version),
+            ELEM_FAVORITE => Some(HeroCtl::Favorite),
+            ELEM_UNFAVORITE => Some(HeroCtl::Unfavorite),
             _ => None,
         }
     }
     /// Is `self` the watched toggle, wearing either face?
     pub fn is_watch(self) -> bool {
         matches!(self, HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
+    }
+    /// Is `self` the favourite toggle, wearing either face?
+    pub fn is_favorite(self) -> bool {
+        matches!(self, HeroCtl::Favorite | HeroCtl::Unfavorite)
     }
 }
 
@@ -179,6 +196,9 @@ pub struct HeroSet {
     pub trailer: bool,
     pub alt: bool,
     pub mark: PosterMark,
+    /// The favourite toggle's face — `None` where the server keeps no favourites (Plex), so the
+    /// row has no such control at all.
+    pub favorite: Option<bool>,
 }
 
 /// The row's controls, in drawn order, for a given set. A fixed [`MAX_CTLS`]-slot array plus a
@@ -218,6 +238,10 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     n += 1;
     if set.version {
         v[n] = HeroCtl::Version;
+        n += 1;
+    }
+    if let Some(favourite) = set.favorite {
+        v[n] = if favourite { HeroCtl::Unfavorite } else { HeroCtl::Favorite };
         n += 1;
     }
     (v, n)
@@ -286,6 +310,22 @@ pub fn index_of(set: HeroSet, ctl: HeroCtl) -> Option<usize> {
 pub fn watch_index(set: HeroSet) -> Option<usize> {
     let (v, n) = hero_ctls(set);
     v[..n].iter().position(|&c| c.is_watch())
+}
+
+/// The control in `set` doing `ctl`'s job: `ctl` itself, or the other face of a two-faced toggle
+/// whose press flipped it. `None` when `set` has no such control. This is what
+/// [`DetailScreen::reconcile`](super::DetailScreen) carries the focus by.
+pub fn carried(set: HeroSet, ctl: HeroCtl) -> Option<HeroCtl> {
+    if index_of(set, ctl).is_some() {
+        return Some(ctl);
+    }
+    if ctl.is_watch() {
+        return watch_index(set).and_then(|i| ctl_at(set, i));
+    }
+    if ctl.is_favorite() {
+        return set.favorite.map(|f| if f { HeroCtl::Unfavorite } else { HeroCtl::Favorite });
+    }
+    None
 }
 
 /// Has this show been started AT ALL? PMS puts `S1E1 off=0` on deck for a show nobody has
@@ -446,6 +486,8 @@ pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect 
             HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
             HeroCtl::Version => cw.disc[3],
             HeroCtl::GoToShow => cw.disc[4],
+            // An icon-only disc: it never unfurls to a verb, so it is always the closed disc.
+            HeroCtl::Favorite | HeroCtl::Unfavorite => CD,
         };
     }
     plx_appkit::hero_layout::row_rect(&widths[..n], i, y)
@@ -902,11 +944,33 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart,
             trailer,
             alt,
             mark,
         }
+    }
+
+    /// The favourite toggle: absent where the server keeps no favourites (Plex), else last in the
+    /// row wearing the face of the mark its press would set, as a closed disc that never unfurls.
+    #[test]
+    fn the_favourite_toggle_is_offered_only_where_favourites_exist() {
+        let base = set(false, false, PosterMark::None);
+        let (v, n) = hero_ctls(base);
+        assert!(!v[..n].iter().any(|c| matches!(c, HeroCtl::Favorite | HeroCtl::Unfavorite)));
+        for (fav, face) in [(false, HeroCtl::Favorite), (true, HeroCtl::Unfavorite)] {
+            let s = HeroSet { favorite: Some(fav), ..base };
+            let (v, n) = hero_ctls(s);
+            assert_eq!(v[n - 1], face);
+            assert_eq!(HeroCtl::of_elem(face.elem()), Some(face));
+            assert_eq!(disc_verb(face, false), None, "an icon-only disc");
+            let cw = HeroWidths { pill: 200.0, alt: 300.0, disc: [CD; DISCS] };
+            assert_eq!(hero_btn_rect_at(s, n - 1, 0.0, cw).w, CD);
+        }
+        // The widest row fits the fixed array.
+        let all = HeroSet { watchlist: true, version: true, restart: true, trailer: true, alt: true, mark: PosterMark::InProgress, favorite: Some(true), go_show: true };
+        assert_eq!(hero_ctls(all).1, MAX_CTLS);
     }
 
     /// **The row offers exactly ONE watched toggle, never both faces at once** — the property
@@ -1030,6 +1094,23 @@ mod tests {
         assert_eq!(ctl_at(watched, i_watched), Some(HeroCtl::MarkUnwatched));
     }
 
+    /// A press flips a toggle's face, and the focus stays on the toggle: both faces of the watch
+    /// and the favourite toggles carry over to the other, and a control the set dropped does not.
+    #[test]
+    fn a_flipped_toggle_carries_the_focus_to_its_other_face() {
+        let unwatched = set(false, false, PosterMark::None);
+        let watched = set(false, false, PosterMark::Watched);
+        assert_eq!(carried(watched, HeroCtl::MarkWatched), Some(HeroCtl::MarkUnwatched));
+        assert_eq!(carried(unwatched, HeroCtl::MarkUnwatched), Some(HeroCtl::MarkWatched));
+        let not_fav = HeroSet { favorite: Some(false), ..unwatched };
+        let fav = HeroSet { favorite: Some(true), ..unwatched };
+        assert_eq!(carried(fav, HeroCtl::Favorite), Some(HeroCtl::Unfavorite));
+        assert_eq!(carried(not_fav, HeroCtl::Unfavorite), Some(HeroCtl::Favorite));
+        assert_eq!(carried(unwatched, HeroCtl::Favorite), None, "no favourites on this server");
+        assert_eq!(carried(unwatched, HeroCtl::Restart), None);
+        assert_eq!(carried(fav, HeroCtl::Play), Some(HeroCtl::Play));
+    }
+
     /// A finished-then-restarted item reads `InProgress`, never `Watched` — the viewer is
     /// part-way through a re-watch, and "not watched" is the honest state for the toggle to read.
     #[test]
@@ -1136,6 +1217,7 @@ mod tests {
                                     HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
                                     HeroCtl::Version => cw.disc[3],
                                     HeroCtl::GoToShow => cw.disc[4],
+                                    HeroCtl::Favorite | HeroCtl::Unfavorite => CD,
                                 };
                                 if k >= i {
                                     break;
@@ -1416,6 +1498,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: true,
             trailer: false,
             alt: false,
@@ -1434,6 +1517,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: false,
             trailer: false,
             alt: false,
@@ -1443,6 +1527,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             alt: true,
             ..without
         };
@@ -1458,6 +1543,7 @@ mod tests {
                     watchlist: true,
                     go_show: false,
                     version: false,
+                    favorite: None,
                     restart: true,
                     trailer,
                     alt,
@@ -1588,6 +1674,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: false,
             trailer: false,
             alt: false,
@@ -1597,6 +1684,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: true,
             trailer: false,
             alt: true,
@@ -1615,6 +1703,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: true,
             trailer: false,
             alt: true,
@@ -1691,12 +1780,14 @@ mod tests {
 
     /// **The widest row with all five discs** (bookmark, Go to Show, Play Version, Restart, Alt,
     /// the watch toggle, Trailer drawn as well): every real verb, measured, either unfurls inside
-    /// the People column or the row stays circles. Never across.
+    /// the People column or the row stays circles. Never across. The favourite face is a server's
+    /// that keeps favourites (Jellyfin), which has no plex.tv bookmark and no Also available, so
+    /// its widest row trades those two for the heart.
     #[test]
     fn five_discs_never_cross_the_people_column_in_any_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
-        let wide = HeroSet {
+        let plex = HeroSet {
             watchlist: true,
             go_show: true,
             version: true,
@@ -1704,22 +1795,26 @@ mod tests {
             trailer: true,
             alt: true,
             mark: PosterMark::InProgress,
+            favorite: None,
         };
-        for language in SHIPPED {
-            let _guard = language_on_this_thread_for_test(language);
-            for named_show in [false, true] {
-                for focus in 0..DISCS {
-                    let mut unfurl = [0.0; DISCS];
-                    unfurl[focus] = 1.0;
-                    let caps = disc_caps(&measure, wide, unfurl, named_show);
-                    let (_, n) = hero_ctls(wide);
-                    let last = hero_btn_rect_at(
-                        wide,
-                        n - 1,
-                        0.0,
-                        HeroWidths { pill: hero_pill_w(&measure, true), alt: alt_pill_w(&measure), disc: caps },
-                    );
-                    assert!(last.x + last.w <= FACTS_R + 0.01, "{} slot {focus}", language.tag());
+        let favourites = HeroSet { watchlist: false, alt: false, favorite: Some(true), ..plex };
+        for wide in [plex, favourites] {
+            for language in SHIPPED {
+                let _guard = language_on_this_thread_for_test(language);
+                for named_show in [false, true] {
+                    for focus in 0..DISCS {
+                        let mut unfurl = [0.0; DISCS];
+                        unfurl[focus] = 1.0;
+                        let caps = disc_caps(&measure, wide, unfurl, named_show);
+                        let (_, n) = hero_ctls(wide);
+                        let last = hero_btn_rect_at(
+                            wide,
+                            n - 1,
+                            0.0,
+                            HeroWidths { pill: hero_pill_w(&measure, true), alt: alt_pill_w(&measure), disc: caps },
+                        );
+                        assert!(last.x + last.w <= FACTS_R + 0.01, "{} slot {focus} {wide:?}", language.tag());
+                    }
                 }
             }
         }
@@ -1732,6 +1827,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: true,
             trailer: true,
             alt: true,
@@ -1758,6 +1854,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: false,
             trailer: true,
             alt: false,
@@ -1787,6 +1884,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: true,
             trailer: true,
             alt: true,
@@ -1829,6 +1927,7 @@ mod tests {
             watchlist: true,
             go_show: false,
             version: false,
+            favorite: None,
             restart: true,
             trailer: true,
             alt: true,
@@ -2128,7 +2227,7 @@ mod tests {
         for restart in [false, true] {
             for version in [false, true] {
                 for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
-                    let set = HeroSet { watchlist: false, version, restart, trailer: false, alt: false, mark, go_show: true };
+                    let set = HeroSet { watchlist: false, version, restart, trailer: false, alt: false, mark, go_show: true, favorite: None };
                     for language in SHIPPED {
                         let _guard = language_on_this_thread_for_test(language);
                         let mut unfurl = [0.0; DISCS];

@@ -158,7 +158,7 @@ def write_plist(contents: Path, ver: str):
         "CFBundleName": "PlxNative",
         "CFBundleDisplayName": "PlxNative",
         "CFBundleExecutable": "PlxNative",
-        "CFBundleIdentifier": "com.beb.plxnative",
+        "CFBundleIdentifier": "io.github.tiper.finnative",
         "CFBundleIconFile": "AppIcon",
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundlePackageType": "APPL",
@@ -310,7 +310,7 @@ def main():
 
     readme = REPO / "docs/macos-app-readme.md"
     if readme.exists():
-        shutil.copy2(readme, out / "PlxNative-README.md")
+        shutil.copy2(readme, out / "FinNative-README.md")
 
     if args.zip:
         zip_path = out / f"PlxNative-{ver}-{platform.machine()}.zip"

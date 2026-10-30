@@ -494,7 +494,7 @@ fn header(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, n
             plx_platform::devcaps::dv::capability().compact_display(),
             &vh.to_string(),
             &os,
-            plx_plex::plex::identity::PRODUCT,
+            plx_plex::plex::identity::app_name(),
             plx_plex::plex::identity::version(),
             &vw.to_string(),
         ),

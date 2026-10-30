@@ -150,6 +150,20 @@ class ElfGateTests(unittest.TestCase):
                 self.assertIn("private IP address", result.stdout)
                 self.assertIn(address, result.stdout, "the gate must identify the full four-octet address")
 
+    def test_finnatives_sign_in_example_is_not_a_leaked_address(self):
+        # FinNative: the Jellyfin sign-in hint shows 192.168.1.20:8096 as an example (browse.jf.*).
+        spec = defaults()
+        spec["strings"]["output"] += ("192.168.1.20:8096 or https://jellyfin.example.com\n"
+                                      "like http://192.168.1.20:8096. Or use its https:// address.\n")
+        self.assert_pass(spec)
+        for address in ("192.168.1.2", "192.168.1.200", "192.168.1.21"):
+            with self.subTest(address=address):
+                spec = defaults()
+                spec["strings"]["output"] += "192.168.1.20:8096 or http://" + address + ":8096\n"
+                result = self.run_gate(spec)
+                self.assertNotEqual(result.returncode, 0, "a neighbour of the example was allowed")
+                self.assertIn(address, result.stdout)
+
     def test_neighbouring_public_ipv4_ranges_are_allowed(self):
         spec = defaults()
         spec["strings"]["output"] += "9.11.12.13\n11.11.12.13\n172.15.255.255\n172.32.0.1\n192.167.0.1\n192.169.0.1\n"

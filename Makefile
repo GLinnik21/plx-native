@@ -131,7 +131,7 @@ $(if $(filter $(FLAVOR),$(FLAVORS)),,$(error unknown FLAVOR "$(FLAVOR)" — one 
 # The id users get. Also `paths::STABLE_APP_ID` in the Rust half and `STABLE_ID` in ci/flavor.py —
 # three copies of one string, each in a language that cannot see the others, and ci/flavor.py's
 # selftest is what keeps them in step.
-APPID_STABLE = com.beb.plxnative
+APPID_STABLE = io.github.tiper.finnative
 APPID        = $(if $(filter stable,$(FLAVOR)),$(APPID_STABLE),$(APPID_STABLE).$(FLAVOR))
 APPDIR       = /media/developer/apps/usr/palm/applications/$(APPID)
 
@@ -152,7 +152,8 @@ SERVICEDIR   = /media/developer/apps/usr/palm/services/$(APPID).storage
 # name, never a hyphen, because `dev::any_trigger_present` scans the root for entries beginning
 # `plxnative-` and a sibling directory matching that prefix would silently suppress the OTHER
 # install's who's-watching picker.
-RUNDIR       = $(if $(filter stable,$(FLAVOR)),/tmp,/tmp/$(APPID))
+# FinNative: the stable install gets /tmp/<app id> too (AGENTS.md), so the comment above does not hold here.
+RUNDIR       = /tmp/$(APPID)
 EVENTLOG     = $(RUNDIR)/plxnative-events.log
 
 # Machine-readable answers, so no tool has to restate any of the above. `make -s print-appdir
@@ -897,13 +898,13 @@ src/%.o: src/%.c $(wildcard src/*.h) Makefile $(CONFIG_LOCAL_STAMP)
 #
 # Built once into vendor/ffmpeg-prefix (gitignored, derived); ~2 minutes cold, nothing after.
 # RELEASE=1 drops swscale and the mpeg1/mpegts pair, which only the dev capture stream uses.
-# libswresample ships in both: the audio converter ("Convert audio: on the TV") and the Opus
-# decoder need it, and libavcodec names it in its DT_NEEDED.
 FFMPEG_PREFIX = vendor/ffmpeg-prefix
 FFMPEG_INC    = $(FFMPEG_PREFIX)/include
 # Staged into pkg/ under their SONAMEs, which is the name ff.rs dlopens by absolute path.
-FFMPEG_SONAMES = libavutil-plx.so.61 libswresample-plx.so.7 libavcodec-plx.so.63 libavformat-plx.so.63 \
+FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 \
                  $(if $(RELEASE),,libswscale-plx.so.10)
+# FinNative: libswresample ships too (the audio converter and the Opus decoder need it).
+FFMPEG_SONAMES += libswresample-plx.so.7
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 
 # nanosvg is not in the repository. It is fetched at the commit pinned in ci/dependencies.json
@@ -977,7 +978,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # rule would leave every later `make` linking a library built by the OLD one. Cargo's own
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
-RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/appkit rust-modules/screens rust-modules/build_support locales assets -type f 2>/dev/null)
+RUST_INPUTS := $(shell find rust-modules/src rust-modules/base rust-modules/machine rust-modules/net rust-modules/platform rust-modules/gfx rust-modules/ui rust-modules/plex rust-modules/jellyfin rust-modules/telemetry rust-modules/data rust-modules/session rust-modules/media rust-modules/appkit rust-modules/screens rust-modules/build_support locales locales-finnative assets -type f 2>/dev/null)
 $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile ci/check-staticlib-artifact.py $(FFABI_STAMP)
 	@# BEFORE the mkdir: the seed is only ever cloned into a target dir that does not exist yet.
 	$(CARGO_SEED) restore $(RUST_TDIR) rust-modules/$(RUST_TDIR)
@@ -1906,8 +1907,8 @@ check-python-harness:
 .PHONY: check-c-unit
 check-c-unit:
 	@set -e; d=$$(mktemp -d "$${TMPDIR:-/tmp}/plx-c-unit.XXXXXX"); trap 'rm -rf "'"$$d"'"' EXIT; \
-	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/crashfmt" ci/crashfmt-test.c && "$$d/crashfmt"; \
-	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/crashtrace" ci/crashtrace-test.c src/crashtrace.c && "$$d/crashtrace"; \
+	cc -O1 -Wall -Wextra -Werror -Isrc -DPLX_APPID_STABLE='"$(APPID_STABLE)"' -o "$$d/crashfmt" ci/crashfmt-test.c && "$$d/crashfmt"; \
+	cc -O1 -Wall -Wextra -Werror -Isrc -DPLX_APPID_STABLE='"$(APPID_STABLE)"' -o "$$d/crashtrace" ci/crashtrace-test.c src/crashtrace.c && "$$d/crashtrace"; \
 	cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/private-log" ci/private-log-test.c && "$$d/private-log"
 
 check-python-rest:
@@ -2301,7 +2302,8 @@ SIM_PRE = mkdir -p $(SIM_DIR); test -n "$(SIM_PMS)" || \
 # names. `APP_FILES` is an explicit list, so none of it can reach an .ipk or a television.
 FFMPEG_HOST_PREFIX = vendor/ffmpeg-prefix-host
 FFMPEG_HOST_INC    = $(FFMPEG_HOST_PREFIX)/include
-FFMPEG_HOST_NAMES  = libavutil-plx.61 libswresample-plx.7 libavcodec-plx.63 libavformat-plx.63 libswscale-plx.10
+FFMPEG_HOST_NAMES  = libavutil-plx.61 libavcodec-plx.63 libavformat-plx.63 libswscale-plx.10
+FFMPEG_HOST_NAMES += libswresample-plx.7
 FFMPEG_HOST_STAGED = $(addprefix pkg/,$(addsuffix .dylib,$(FFMPEG_HOST_NAMES)))
 LIBASS_HOST_NAME = $(if $(filter Darwin,$(shell uname -s)),libass-plx.0.dylib,libass-plx-host.so.0)
 LIBASS_HOST_STAGED = pkg/$(LIBASS_HOST_NAME)
@@ -2332,8 +2334,7 @@ $(FFMPEG_HOST_STAGED): pkg/%.dylib: $(FFMPEG_HOST_INC)/libavformat/avformat.h ci
 # FFmpeg to call, so a property of `ci/build-ffmpeg.sh`'s COMPONENT LIST (which demuxer features,
 # which decoders) is invisible to it. These tests load the host build of that same list and are
 # `#[ignore]`d in the plain suite; the first is the zlib-compressed PGS track that no configure
-# flag change may silently drop again (`ff_image_subtitle_tests.rs`), and the audio converter's
-# decoders, resampler and AC3 encoder (`ff_audio_tests.rs`). macOS only, like the staging.
+# flag change may silently drop again (`ff_image_subtitle_tests.rs`). macOS only, like the staging.
 # The ASS reader tests also need staged libass to compare caption pixels after packet ingestion.
 # `ff::late_audio_tests` demux real MKVs generated by the `ffmpeg`/`ffprobe` command line tools (brew's, in CI)
 # through the real `aq` lanes: audio starting late (video lane full first) and audio stored ahead of video (#600).
@@ -2341,7 +2342,10 @@ $(FFMPEG_HOST_STAGED): pkg/%.dylib: $(FFMPEG_HOST_INC)/libavformat/avformat.h ci
 # output to it bit for bit, which is also what proves every decoder `devcaps::APP_DECODED` names is in the build.
 check-ffmpeg: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED)
 	cd rust-modules && CARGO_INCREMENTAL=0 PLX_FFMPEG_DIR=$(CURDIR)/pkg PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_media -- ff::image_subtitle_tests ff::subtitle_charset_tests ff::subside::tests::side_reader_draws_a_shifted_cue_from_a_generated_mkv ff::audio_tests ff::late_audio_tests ff::pcm_decode_tests --ignored
+	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_media -- ff::image_subtitle_tests ff::subtitle_charset_tests ff::subside::tests::side_reader_draws_a_shifted_cue_from_a_generated_mkv ff::late_audio_tests ff::pcm_decode_tests --ignored
+	@echo 'FinNative: the audio converter decoders, resampler and AC3 encoder, a run of their own'
+	cd rust-modules && CARGO_INCREMENTAL=0 PLX_FFMPEG_DIR=$(CURDIR)/pkg PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_media -- ff::audio_tests --ignored
 
 # The same ABI gate the cross build runs, at the other pointer width. ci/ffabi-assert.c `#if`s on
 # `__SIZEOF_POINTER__` and carries both tables, so this compile is what holds ff.rs's 64-bit

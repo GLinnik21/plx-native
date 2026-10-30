@@ -280,7 +280,7 @@ fn every_row_a_source_projects_is_stamped_with_the_server_it_was_asked_of() {
 
 /// The failure this unit exists for. Home used to be one `?` chain over one server, so a single
 /// dead share aborted the whole build: nothing committed, and on a cold boot the user got a
-/// whole-screen "Can't reach your Plex server" about their own working library. A source's
+/// whole-screen "Can't reach your server" about their own working library. A source's
 /// verdict is now its own — the one that answered commits, the one that failed contributes
 /// nothing and backs off alone.
 #[test]

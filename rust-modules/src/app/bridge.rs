@@ -4286,6 +4286,15 @@ pub(crate) fn page_owned(d: &Dispatcher<AppHost>) -> bool {
     d.top_screen().map_or(false, |s| s.focus_source() == FocusSource::Engine)
 }
 
+/// What the television's keyboard types into right now: the top page's answer
+/// ([`plx_ui::screen::Screen::text_entry`]), and nothing while a surface is up over it.
+pub(crate) fn text_entry(d: &Dispatcher<AppHost>) -> plx_ui::screen::TextEntry {
+    if d.surface_up() {
+        return plx_ui::screen::TextEntry::None;
+    }
+    d.top_screen().map_or(plx_ui::screen::TextEntry::None, |screen| screen.text_entry())
+}
+
 pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
     !d.surface_up()
         && d.top_screen().and_then(|screen| screen.as_any())

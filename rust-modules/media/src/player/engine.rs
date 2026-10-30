@@ -2061,14 +2061,19 @@ fn start_bufferfeed_inner(
             // name goes as PCM, `devcaps::audio_track_fits`), is declared AC3 and the demuxer
             // converts it (`ff_audio.rs`), from this one answer. Never at a speed: there the speed
             // decoder feeds every codec as PCM.
-            let pcm_carries = matches!(&app_pcm, Some(Ok(f))
-                if plx_platform::devcaps::audio_track_fits(&codec, i64::from(f.channels), i64::from(f.sample_rate)));
-            let decoded_natively = !plx_platform::devcaps::is_pcm_codec(&codec)
-                && plx_platform::devcaps::caps().audio_supports(&codec, crate::route::stream_achannels(ps));
+            let pcm_shape = match &app_pcm {
+                Some(Ok(f)) => Some((i64::from(f.channels), i64::from(f.sample_rate))),
+                _ => None,
+            };
             let converted = session_rate == super::RATE_NORMAL
-                && !pcm_carries
-                && !decoded_natively
-                && plx_platform::devcaps::converted_on_tv(&codec);
+                && plx_platform::devcaps::track_converted(
+                    &plx_platform::devcaps::caps(),
+                    plx_platform::devcaps::tv_audio_conversion(),
+                    &codec,
+                    crate::route::stream_achannels(ps),
+                    pcm_shape,
+                    crate::route::audio_converts_on_tv(ps),
+                );
             crate::ff::set_convert_audio(converted);
             // Missing facts refuse a PCM Load — a guessed rate plays at the wrong pitch. A converted
             // track is AC3 whatever its facts, and opens no PCM decoder.
@@ -5088,7 +5093,8 @@ mod payload_tests {
     /// composed bytes here is the only gate available for it.
     #[test]
     fn the_shipped_app_composes_the_payload_it_always_did() {
-        let want = r#""appId":"com.beb.plxnative""#;
+        let want = format!(r#""appId":"{}""#, plx_base::paths::STABLE_APP_ID);
+        let want = want.as_str();
         for (name, p) in [
             ("PAYLOAD_V", PAYLOAD_V),
             ("PAYLOAD_AV", PAYLOAD_AV),

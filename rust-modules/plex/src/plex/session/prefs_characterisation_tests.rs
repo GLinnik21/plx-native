@@ -469,7 +469,7 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
                 next["_rev"] = json!(1 + self.record.as_ref().map_or(0, |r| r["_rev"].as_u64().unwrap_or(0)));
                 let rev = next["_rev"].clone();
                 self.record = Some(next);
-                Ok(json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":rev}]}))
+                Ok(json!({"returnValue":true,"results":[{"id":"finstate.stable","rev":rev}]}))
             }
             _ => panic!("the ACL-tier scenario must not invoke a Keymanager RPC"),
         }
@@ -480,7 +480,7 @@ type Store = plx_platform::storage::backend::Backend<Db8>;
 
 fn store() -> Store {
     plx_platform::storage::backend::Backend::new(
-        Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
+        Db8::default(), state::Flavor::Stable, format!("{}.storage", plx_base::paths::STABLE_APP_ID))
 }
 
 fn commit(store: &mut Store, session: &Session, authority: SaveAuthority) {

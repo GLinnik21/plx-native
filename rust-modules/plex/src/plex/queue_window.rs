@@ -36,6 +36,9 @@ impl Client {
     /// GET the existing queue around an item, without transferring ownership or changing the
     /// selected item. The caller validates that the requested identity exists in the response.
     pub fn play_queue_window(&self, id: &str, center: i64) -> Option<Vec<QueueRow>> {
+        if super::alt_installed() {
+            return None; // an alternative backend keeps its queue in the app, so there is nothing to refresh
+        }
         let query = window_query(id, center)?;
         window_rows(self.get_json(&query)?, id.parse().ok()?, self.id())
     }

@@ -51,8 +51,16 @@ use super::legal::CONTACT_EMAIL;
 /// chose — a consent prompt in front of any of them would quietly re-point the entire harness at
 /// a screen nobody wrote an assertion for.
 pub fn should_show(c: &Consent, automated: bool) -> bool {
+    #[cfg(feature = "finnative")]
+    if !finnative::can_report() {
+        return false;
+    }
     consent::should_ask(c, automated)
 }
+
+// FinNative: a build that can send no report offers only the policy and the delete.
+mod finnative;
+use finnative::reporting_configured;
 
 /// Which document a preview page shows (the low nibble of `SettingsPage::Preview`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -190,6 +198,7 @@ fn consent_form(mode: Mode, draft: (bool, bool)) -> Form<RowId, Act, SettingsPag
                         Row::new(plx_platform::i18n::msg::settings_consent_policy()).chevron(true)),
             )
         }
+        Mode::Settings if !reporting_configured() => finnative::policy_and_delete_form(),
         Mode::Settings => {
             let (errors, usage) = draft;
             Form::new()

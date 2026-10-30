@@ -327,7 +327,7 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
     plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
     let (caption, kind, action) = status_read(snapshot.view()).unwrap();
-    assert_eq!((caption.to_str().unwrap(), kind), ("Can\u{2019}t reach your Plex server", StatusKind::Failed));
+    assert_eq!((caption.to_str().unwrap(), kind), ("Can\u{2019}t reach your server", StatusKind::Failed));
     assert_eq!(action.unwrap().to_str().unwrap(), "Try again");
     let measure = plx_ui::fixture::FixtureMeasure;
     let no_offer = OfferWatch::default();

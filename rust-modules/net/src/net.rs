@@ -46,6 +46,9 @@ pub mod origin;
 /// What a caller may add to a request's headers, for both transports (module doc).
 pub mod headers;
 
+/// A verified TLS connection held open for a caller's own protocol ([`connect_tls`]).
+pub mod connect;
+
 type CURL = c_void;
 pub type curl_slist = c_void;
 
@@ -2049,6 +2052,37 @@ pub fn stream_tls(
     }
 }
 
+/// How a held connection ([`connect_tls`]) ended.
+#[derive(Debug)]
+pub enum ConnectEnd {
+    /// The session ran on the verified connection and returned.
+    Ran,
+    /// The connection could not be made or verified.
+    Transport(RequestFailure),
+    /// This device cannot hold one: libcurl unbound, without `curl_easy_send`/`recv`, or only
+    /// serialised HTTPS is safe ([`threaded_tls_ready`]), which a long-lived connection would hold.
+    Unsupported,
+}
+
+/// Connect to `url`'s origin over TLS, verified exactly as a request is (the same function,
+/// [`request_tls_sink`], with `CURLOPT_CONNECT_ONLY`: trust store, key-pin and roots rungs, the
+/// resolve pin, the offline gate), and run `session` on the connection, which closes when it
+/// returns. No request is sent: `session` speaks its own protocol through [`connect::TlsSocket`].
+///
+/// Blocking for as long as `session` runs: call it off the frame thread.
+#[track_caller]
+pub fn connect_tls(url: &str, tls: Tls<'_>, resolve: Option<&str>, session: &mut dyn FnMut(&mut connect::TlsSocket)) -> ConnectEnd {
+    if !available() || !threaded_tls_ready() || !connect::available() {
+        return ConnectEnd::Unsupported;
+    }
+    let held = connect::ConnectSink::new(session);
+    let result = request_tls_sink(url, &[], "GET", None, STREAM, false, None, tls, resolve, false, &SinkMode::Connect(&held));
+    if held.ran() {
+        return ConnectEnd::Ran;
+    }
+    ConnectEnd::Transport(result.err().unwrap_or_else(|| RequestError::Transport.into()))
+}
+
 /// `resolve` is a ready-made `CURLOPT_RESOLVE` entry (`host:port:address`, see
 /// [`origin::ResolvePin::entry`]) for the URL's own host, or `None` to let the resolver
 /// answer. Every request whose origin carries a [`origin::ResolvePin`] passes one; plex.tv
@@ -2098,6 +2132,9 @@ fn request_tls_evidence(
 enum SinkMode<'s, 'a> {
     Buffer,
     Stream(&'s StreamSink<'a>),
+    /// Connect and verify, send no request, and run the caller's session on the connection
+    /// ([`connect_tls`]).
+    Connect(&'s connect::ConnectSink<'a>),
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2110,7 +2147,9 @@ fn request_tls_sink(
     let stream = match sink_mode {
         SinkMode::Buffer => None,
         SinkMode::Stream(s) => Some(*s),
+        SinkMode::Connect(_) => None,
     };
+    let connection = if let SinkMode::Connect(c) = sink_mode { Some(*c) } else { None };
     // The one funnel every libcurl easy request passes (plex.tv account calls, PMS TLS control
     // calls via `request_result_evidence`). A frame-thread caller would freeze the HUD for up to
     // the request timeout: panic in host tests, abort under `threadcheck`.
@@ -2282,6 +2321,12 @@ fn request_tls_sink(
                 curl_easy_setopt_long(easy.0, CURLOPT_FOLLOWLOCATION, follow_redirects as c_long),
                 "CURLOPT_FOLLOWLOCATION"
             );
+            if connection.is_some() {
+                require_setopt!(
+                    curl_easy_setopt_long(easy.0, connect::CURLOPT_CONNECT_ONLY, 1 as c_long),
+                    "CURLOPT_CONNECT_ONLY"
+                );
+            }
             if follow_redirects {
                 require_setopt!(
                     curl_easy_setopt_long(easy.0, CURLOPT_MAXREDIRS, PUBLIC_MAX_REDIRECTS),
@@ -2471,6 +2516,10 @@ fn request_tls_sink(
                     rc = keypin::PIN_MISMATCH;
                     code = 0;
                 }
+            }
+            // A held connection: verified like any other, and only then the caller's.
+            if let (Some(connection), 0) = (connection, rc) {
+                connection.run(easy.0);
             }
 
             if sink.overflowed {
@@ -4519,6 +4568,10 @@ mod wire_characterization_tests;
 #[cfg(test)]
 #[path = "net_stream_tests.rs"]
 mod stream_tests;
+
+#[cfg(test)]
+#[path = "net_connect_tests.rs"]
+mod connect_tests;
 
 /// The latch's clock, through the `*_at` seam: it lapses after [`keypin::LATCH`] and a later key-mode
 /// success inside the interval does not slide it.

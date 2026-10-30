@@ -250,6 +250,10 @@ pub enum Icon {
     /// ("= Date added v"); it says "ordered by", not "filter". The Design System's own `sort.svg`
     /// byte for byte (`M4 7L20 7M7 12L17 12M10 17L14 17`, stroke 2.2, round caps), so it has no third-party entry.
     Sort,
+    /// An outlined heart — "Add to Favourites", for a server that keeps favourites.
+    Heart,
+    /// A filled heart — the item IS a favourite; pressing takes it off.
+    HeartFill,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -370,6 +374,8 @@ fn src(id: Icon) -> &'static str {
         Icon::ServerSlash => include_str!("../../../assets/icons/server-slash.svg"),
         Icon::CircleSlash => include_str!("../../../assets/icons/circle-slash.svg"),
         Icon::Sort => include_str!("../../../assets/icons/sort.svg"),
+        Icon::Heart => include_str!("../../../assets/icons/heart.svg"),
+        Icon::HeartFill => include_str!("../../../assets/icons/heart-fill.svg"),
     }
 }
 
@@ -717,6 +723,8 @@ mod ink_tests {
             Icon::ServerBadgePlus,
             Icon::ServerBadgeXmark,
             Icon::WifiSlash,
+            Icon::Heart,
+            Icon::HeartFill,
         ] {
             let rgba = plx_gfx::svg::rasterize(src(id), px, px)
                 .unwrap_or_else(|| panic!("{id:?} failed to rasterize at {px}px"));

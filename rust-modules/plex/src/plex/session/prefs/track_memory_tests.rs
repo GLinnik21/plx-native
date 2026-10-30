@@ -15,7 +15,7 @@ pub(super) const LONG_USER: &str = "01234567-89ab-cdef-0123-456789abcdef";
 pub(super) use crate::plex::session::test_support::STAMP;
 
 pub(super) fn show(n: u32) -> String {
-    format!("{n:016}")
+    format!("{n:032}")
 }
 
 pub(super) fn audio_pick() -> AudioMemo {
@@ -50,6 +50,18 @@ pub(super) fn put(list: &mut Vec<ProfileList<TrackMemoryEntry>>, user: &str, ent
 
 fn shows_of(list: &[ProfileList<TrackMemoryEntry>], user: &str) -> Vec<String> {
     list.iter().find(|r| r.user == user).map(|r| r.items.iter().map(|e| e.show_rk.clone()).collect()).unwrap_or_default()
+}
+
+/// A Jellyfin server keys a show by a 32-hex-digit GUID and names itself by one too; both must
+/// survive the bounds, or a pick on a Jellyfin show is written as a blank entry and forgotten.
+#[test]
+fn a_jellyfin_show_and_server_key_are_kept() {
+    let (server, series) = ("f4c2a1b0e9d8c7b6a5f4e3d2c1b0a998", "9d7ad6afe9afa2dab1a2f6e00ad28fa6");
+    let entry = TrackMemoryEntry::new(server, series, Some(audio_pick()), None);
+    assert_eq!((entry.machine_id.as_str(), entry.show_rk.as_str()), (server, series));
+    let mut list = Vec::new();
+    assert!(put(&mut list, LONG_USER, entry));
+    assert_eq!(shows_of(&list, LONG_USER), vec![series.to_string()], "the pick is remembered");
 }
 
 // ---- the row ---------------------------------------------------------------------------------

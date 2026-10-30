@@ -33,8 +33,9 @@ extern int plx_sentry_spool_external(const char *path); /* Sentry daemon's spool
 extern void plx_crash_write_image_marker(int fd); /* identify this binary in the append-only log */
 extern void plx_launch_args(const char *json); /* SAM's launch payload — see rust-modules/platform/src/tv/launch.rs */
 
-/* Where this INSTALL's runtime files live — `/tmp/plxnative-events.log` for the app users get,
- * `/tmp/com.beb.plxnative.debug/plxnative-events.log` for a developer build installed beside it.
+/* Where this INSTALL's runtime files live — `/tmp/io.github.tiper.finnative/plxnative-events.log`
+ * for the app users get, `/tmp/io.github.tiper.finnative.debug/plxnative-events.log` for a developer
+ * build installed beside it (the bare `/tmp` is a stable PlxNative's).
  *
  * The answer comes from Rust (`plx_runtime_path`, rust-modules/base/src/paths.rs) rather than from a
  * literal here, and that is the whole point: this file opens three logs before a single line of
@@ -45,8 +46,8 @@ extern void plx_launch_args(const char *json); /* SAM's launch payload — see r
  *
  * Safe to call this early: the resolver touches nothing but its own lazily-initialised path and
  * must not log (it would re-enter that initialisation). If it ever fails — a path longer than the
- * buffer — the literal below keeps the behaviour every release so far has had, which is the right
- * fallback because the app users get is exactly the one whose root IS `/tmp`.
+ * buffer — the literal below still writes somewhere rather than nowhere, which is all a fallback
+ * for an impossible case owes.
  *
  * Two static buffers are alternated per call. No current call site holds two results at once, so
  * this is cheap insurance for a future one rather than a live hazard. */

@@ -42,6 +42,7 @@
 //! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
 //! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
 //! cheaper half of the per-frame identity scan, so it goes first.
+mod alt_key;
 mod fan;
 mod refresh;
 mod trace;
@@ -904,6 +905,12 @@ fn settled_failed(srv: ServerId, key_s: &str) -> bool {
     })
 }
 
+/// A Jellyfin user's picture (`/Users/<id>/Images/Primary`) belongs to no grant: the roster shows
+/// every profile's tile, and a switch's revocation must not blank them while the new one loads.
+fn survives_grant(key: &str) -> bool {
+    plx_plex::plex::backend::active().is_some_and(|b| b.art_outlives_grant(key))
+}
+
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
 /// the least-recently-used SETTLED (`P_READY`/`P_EVICTED`/`P_FAILED`/`P_RETRY`) slot no draw has
 /// touched for [`WANT_STALE_FRAMES`] frames, else the oldest stale request, else `None` —
@@ -1104,7 +1111,9 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // key's `X-Plex-Token`) but not the art — the owner's "every poster blinks when the server is
     // reached" (imgtrace `cause=key_changed`, 2026-09-30).
     for i in 0..PT_CAP {
-        if g.slots[i].cache_gen == cache_gen && g.slots[i].grant_epoch == grant_epoch && same_art(&g.slots[i], srv, key_s.as_bytes()) {
+        if g.slots[i].cache_gen == cache_gen
+            && same_art(&g.slots[i], srv, key_s.as_bytes())
+            && (g.slots[i].grant_epoch == grant_epoch || survives_grant(key_s)) {
             // Same identity, refreshed credential: carry the fresh request so any later fetch of
             // this slot (a re-arm after eviction, a retry) dials with the grant now in force.
             let key_changed = key_bytes(&g.slots[i]) != key_s.as_bytes();
@@ -1801,7 +1810,8 @@ fn load_art<T>(
     let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
         None
     } else {
-        plx_platform::imgcache::classify(&disk_namespace(client), key_s)
+        let ns = disk_namespace(client);
+        plx_platform::imgcache::classify(&ns, key_s).or_else(|| alt_key::disk_key(&ns, key_s))
     };
     if let Some(k) = &disk {
         if let Some(cached) = plx_platform::imgcache::read_at(cache_gen, k) {

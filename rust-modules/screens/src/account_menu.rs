@@ -67,6 +67,8 @@ pub enum Action {
     /// (`docs/lab-diagnostics.md` §7). Never offered in any other build —
     /// [`plx_platform::labcfg::menu_row_enabled`] is `false` at compile time.
     SendDiagnostics,
+    /// FinNative: sign another user in beside the saved ones ([`plx_plex::plex::can_add_users`]).
+    AddUser,
 }
 
 /// A row's identity IS its action. Its focus key is hand-assigned, never the enum's discriminant,
@@ -79,6 +81,7 @@ impl FormId for Action {
             Action::SignOut => 3,
             Action::Settings => 4,
             Action::SendDiagnostics => 5,
+            Action::AddUser => 6,
         })
     }
 }
@@ -109,6 +112,8 @@ struct AccountInputs {
     /// The lab-only *Send diagnostics* row ([`plx_platform::labcfg::menu_row_enabled`], compile-time `false`
     /// outside lab builds).
     lab: bool,
+    /// FinNative's *Add user* ([`plx_plex::plex::can_add_users`]).
+    add_user: bool,
 }
 
 impl AccountInputs {
@@ -127,6 +132,7 @@ impl AccountInputs {
             signed_in: acc.signed_in,
             can_switch: acc.can_switch && !switch_refused,
             lab: plx_platform::labcfg::menu_row_enabled(),
+            add_user: acc.signed_in && plx_plex::plex::can_add_users(),
         }
     }
 }
@@ -168,6 +174,7 @@ fn label(a: Action) -> &'static str {
         Action::SignOut => plx_platform::i18n::msg::settings_account_sign_out(),
         Action::Settings => plx_platform::i18n::msg::settings_account_settings(),
         Action::SendDiagnostics => plx_platform::i18n::msg::settings_account_diagnostics(),
+        Action::AddUser => plx_platform::i18n::msg::settings_account_add_user(),
     }
 }
 
@@ -197,6 +204,7 @@ fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infalli
         (Action::ChangeProfile, signed_in && inputs.can_switch),
         (Action::SignIn, !signed_in),
         (Action::Settings, true),
+        (Action::AddUser, inputs.add_user),
         (Action::SendDiagnostics, inputs.lab),
     ];
     for (action, offered) in rows {
@@ -215,7 +223,7 @@ fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infalli
 /// anyone out.
 fn action_row(a: Action) -> Row {
     Row::new(label(a))
-        .chevron(matches!(a, Action::ChangeProfile | Action::SignIn | Action::Settings))
+        .chevron(matches!(a, Action::ChangeProfile | Action::SignIn | Action::Settings | Action::AddUser))
         .destructive(matches!(a, Action::SignOut))
 }
 
@@ -321,6 +329,8 @@ impl AccountMenuScreen {
             Action::SignOut => LoopReq::AccountSignOut,
             Action::Settings => LoopReq::OpenSettings(crate::registry::SettingsPage::Root),
             Action::SendDiagnostics => LoopReq::AccountSendDiagnostics,
+            // A sign-in keeps the saved session: the owner lays the new user beside it.
+            Action::AddUser => LoopReq::AccountSignIn,
         });
         if let Some(req) = req {
             fx.push(Fx::App(AppFx::Loop(req)));
@@ -1058,6 +1068,7 @@ mod tests {
             (AccountInputs::of(&s.account(None), false), "signed in"),
             (AccountInputs::of(&s.account(None), true), "roster refused"),
             (AccountInputs { lab: true, ..AccountInputs::of(&s.account(None), false) }, "lab build"),
+            (AccountInputs { add_user: true, ..AccountInputs::of(&s.account(None), false) }, "add user"),
         ] {
             let mut t = FormTable::<Action, Action, Infallible>::new(crate::registry::BAND);
             t.set(account_form(&inputs).1, None);
@@ -1067,6 +1078,18 @@ mod tests {
             assert!(t.id_at(n - 3).is_some(), "{why}: and the rows it closes sit above that");
         }
         assert!(!rows_of(&Session::default().account(None), false).contains(&Action::SignOut));
+    }
+
+    /// FinNative's *Add user* goes after Settings, among the rows that lead somewhere, and is
+    /// offered only signed in; on Plex (no alternative backend installed) it never is.
+    #[test]
+    fn add_user_is_a_row_that_leads_somewhere_and_only_signed_in() {
+        let s = local(Session { account_token: "acct".into(), ..Default::default() });
+        assert!(!rows_of(&s.account(None), false).contains(&Action::AddUser), "no backend, no row");
+        let inputs = AccountInputs { add_user: true, ..AccountInputs::of(&s.account(None), false) };
+        assert_eq!(ids(account_form(&inputs).1), [Action::ChangeProfile, Action::Settings, Action::AddUser, Action::SignOut]);
+        let row = action_row(Action::AddUser);
+        assert!(row.ticon.is_some() && !row.destructive, "it leads to the sign-in, and ends nothing");
     }
 
     /// Reordering the form moves no focus key and no behaviour: two forms that differ only in the
@@ -1119,6 +1142,7 @@ mod tests {
                 // diagnostics row included), so every label is judged
                 let (_, form) = account_form(&AccountInputs {
                     name: name.map(str::to_string), signed_in, can_switch: true, lab: true,
+                    add_user: signed_in,
                 });
                 let mut form_table = FormTable::<Action, Action, Infallible>::new(crate::registry::BAND);
                 form_table.table.compact = true;

@@ -143,7 +143,7 @@ index 4b58cea6..1282bdc7 100644
 +                    self.puts += 1;
 +                    next["_rev"] = serde_json::json!(self.puts);
 +                    self.record = Some(next);
-+                    Ok(serde_json::json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":self.puts}]}))
++                    Ok(serde_json::json!({"returnValue":true,"results":[{"id":"finstate.stable","rev":self.puts}]}))
 +                }
 +                other => panic!("unexpected rpc {other}"),
 +            }
@@ -183,7 +183,7 @@ index 4b58cea6..1282bdc7 100644
 +    fn emit() {
 +        let Ok(out) = std::env::var("PLX_FIXTURE_OUT") else { return };
 +        let out = std::path::PathBuf::from(out);
-+        let mut backend = crate::storage::backend::Backend::new(Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
++        let mut backend = crate::storage::backend::Backend::new(Db8::default(), state::Flavor::Stable, "io.github.tiper.finnative.storage".into());
 +        let session: crate::plex::session::Session =
 +            serde_json::from_slice(&std::fs::read(out.join("v0.6.0.session.json")).unwrap()).unwrap();
 +        let (public, protected) = crate::plex::session::split_canonical(&session).unwrap();

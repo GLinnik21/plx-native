@@ -1081,8 +1081,11 @@ impl SessionAdapter {
 
     /// Capacity refusal is synchronous and unsequenced, not appended to a second refusal queue.
     pub(crate) fn start_work(&mut self, req: RequestId, key: SessionWorkKey, admission: AdmissionId,
-        input: plx_session::auth::owner::SessionWork) -> Result<(), AdmissionReply> {
+        mut input: plx_session::auth::owner::SessionWork) -> Result<(), AdmissionReply> {
         use plx_session::auth::owner::SessionOp;
+        if let plx_session::auth::owner::SessionWork::HomeRoster { session, .. } = &mut input {
+            plx_session::auth::finnative::adopt_stored_names(session, &plx_plex::plex::session::peek());
+        }
         let (name, stream) = match key.op {
             SessionOp::Login => ("login", true),
             SessionOp::Rediscover => ("rediscover", true),

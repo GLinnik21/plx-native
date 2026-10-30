@@ -1308,14 +1308,14 @@ mod tests {
                 calls: vec![],
             },
             Flavor::Stable,
-            "com.beb.plxnative.storage".into(),
+            "io.github.tiper.finnative.storage".into(),
         )
     }
     fn record(rev: u64) -> Value {
         let state = CanonicalState::new(Flavor::Stable, Generation([1; 16]));
         let mut value = serde_json::to_value(state).unwrap();
         value["_rev"] = json!(rev);
-        value["_kind"] = json!("com.beb.plxnative.storage:1");
+        value["_kind"] = json!("io.github.tiper.finnative.storage:1");
         json!({"returnValue":true,"results":[value]})
     }
     fn commit(expected: Expectation) -> Request {
@@ -1346,7 +1346,7 @@ mod tests {
         .unwrap();
         let current = initial.apply(&operation).unwrap().0;
         let mut object = serde_json::to_value(&current).unwrap();
-        object["_kind"] = json!("com.beb.plxnative.storage:1");
+        object["_kind"] = json!("io.github.tiper.finnative.storage:1");
         object["_rev"] = json!(9);
         object["operations"][0]["_id"] = json!("B3K8aZ");
         (json!({"returnValue":true,"results":[object]}), current)
@@ -1354,7 +1354,7 @@ mod tests {
     fn wrapped_record(state: &CanonicalState, rev: u64) -> Value {
         json!({"returnValue":true,"results":[{
             "_id":state.id,
-            "_kind":"com.beb.plxnative.storage:1",
+            "_kind":"io.github.tiper.finnative.storage:1",
             "_rev":rev,
             "state":String::from_utf8(state.encode().unwrap()).unwrap()
         }]})
@@ -1533,7 +1533,7 @@ mod tests {
             b.rpc.calls[0],
             (
                 "luna://com.palm.db/get".into(),
-                json!({"ids":["plxstate.stable"]})
+                json!({"ids":["finstate.stable"]})
             )
         );
     }
@@ -1547,8 +1547,8 @@ mod tests {
             (
                 "luna://com.palm.db/putKind".into(),
                 json!({
-                    "id":"com.beb.plxnative.storage:1",
-                    "owner":"com.beb.plxnative.storage",
+                    "id":"io.github.tiper.finnative.storage:1",
+                    "owner":"io.github.tiper.finnative.storage",
                     "private":true,
                     "indexes":[]
                 })
@@ -1596,7 +1596,7 @@ mod tests {
         ));
         assert_eq!(b.rpc.calls.len(), 3);
         assert_eq!(b.rpc.calls[1].0, "luna://com.palm.db/put");
-        assert_eq!(b.rpc.calls[1].1["objects"][0]["_id"], "plxstate.stable");
+        assert_eq!(b.rpc.calls[1].1["objects"][0]["_id"], "finstate.stable");
         assert!(b.rpc.calls[1].1["objects"][0].get("_rev").is_none());
         assert!(b.rpc.calls[1].1.get("force").is_none());
         assert_eq!(b.rpc.calls[2].0, "luna://com.palm.db/get");
@@ -1606,7 +1606,7 @@ mod tests {
         let rev = 9_007_199_254_740_993u64;
         let mut b = backend(vec![
             Ok(record(rev)),
-            Ok(json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":rev+1}]})),
+            Ok(json!({"returnValue":true,"results":[{"id":"finstate.stable","rev":rev+1}]})),
             Ok(Value::Null),
         ]);
         let response = b.dispatch(commit(Expectation::Present {
@@ -1693,7 +1693,7 @@ mod tests {
     fn confirmed_clear_removes_old_key_after_db8_readback() {
         let mut b = backend(vec![
             Ok(protected_record()),
-            Ok(json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":10}]})),
+            Ok(json!({"returnValue":true,"results":[{"id":"finstate.stable","rev":10}]})),
             Ok(Value::Null),
             Err(ErrorCode::Unavailable),
         ]);
@@ -1775,7 +1775,7 @@ mod tests {
                         Err(ErrorCode::Unavailable)
                     } else {
                         Ok(
-                            json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":10}]}),
+                            json!({"returnValue":true,"results":[{"id":"finstate.stable","rev":10}]}),
                         )
                     }
                 }
@@ -1799,7 +1799,7 @@ mod tests {
                 removed: vec![],
             },
             Flavor::Stable,
-            "com.beb.plxnative.storage".into(),
+            "io.github.tiper.finnative.storage".into(),
         )
     }
     fn changing_request(mutation: WireMutation) -> Request {
@@ -1960,7 +1960,7 @@ mod tests {
                 repair_failure: None,
             },
             Flavor::Stable,
-            "com.beb.plxnative.storage".into(),
+            "io.github.tiper.finnative.storage".into(),
         )
     }
     fn protected_auth(public: state::PublicPayload) -> WireMutation {
@@ -3288,7 +3288,7 @@ mod tests {
         stored["results"][0]["migrations"]["session"]["progress"] = json!("Complete");
         b.rpc.replies = vec![
             Ok(stored),
-            Ok(json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":10}]})),
+            Ok(json!({"returnValue":true,"results":[{"id":"finstate.stable","rev":10}]})),
             Ok(Value::Null),
         ]
         .into();
@@ -3350,7 +3350,7 @@ mod tests {
         let wrapped = wrapped_record(&current, 20);
         let mut object = serde_json::to_value(current).unwrap();
         object["_rev"] = json!(20);
-        object["_kind"] = json!("com.beb.plxnative.storage:1");
+        object["_kind"] = json!("io.github.tiper.finnative.storage:1");
         add_db8_array_ids(&mut object);
         let record = json!({"returnValue":true,"results":[object]});
         let reconcile = Request::Reconcile {
@@ -3399,7 +3399,7 @@ mod tests {
         }
         let mut object = serde_json::to_value(current).unwrap();
         object["_rev"] = json!(20);
-        object["_kind"] = json!("com.beb.plxnative.storage:1");
+        object["_kind"] = json!("io.github.tiper.finnative.storage:1");
         let record = json!({"returnValue":true,"results":[object]});
         let mut b = backend(vec![Ok(record.clone()), Ok(record)]);
         assert!(matches!(

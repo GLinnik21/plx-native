@@ -14,7 +14,10 @@ import tempfile
 import textwrap
 import unittest
 
+import flavor
 
+
+DEBUG_ID = flavor.app_id("debug")
 SCRIPT = pathlib.Path(__file__).parents[1] / "tools" / "tv-session.sh"
 
 
@@ -53,7 +56,7 @@ class EnsureBinary(unittest.TestCase):
                     #!/bin/sh
                     case " $* " in
                       *" print-flavor "*)
-                        printf '%s\\n' debug com.beb.plxnative.debug "$0/app" "$0/run" "$0/events" 8911 fake-host
+                        printf '%s\\n' debug {DEBUG_ID} "$0/app" "$0/run" "$0/events" 8911 fake-host
                         ;;
                       *)
                         printf '%s\\n' deploy-called >> "{root / 'calls'}"
@@ -324,7 +327,7 @@ class GuestIdentity(unittest.TestCase):
             # parse time, in that exact order -- same shape as EnsureBinary's fake `make` above.
             (bin_dir / "make").write_text(
                 "#!/bin/sh\n"
-                "printf '%s\\n' debug com.beb.plxnative.debug /app /run /events 8911 fake-host\n",
+                f"printf '%s\\n' debug {DEBUG_ID} /app /run /events 8911 fake-host\n",
                 encoding="utf-8",
             )
             (bin_dir / "python3").write_text(
@@ -581,7 +584,7 @@ class SoundSubcommand(unittest.TestCase):
     def _fake_make(bin_dir):
         (bin_dir / "make").write_text(
             "#!/bin/sh\n"
-            "printf '%s\\n' debug com.beb.plxnative.debug /app /run /events 8911 fake-host\n",
+            f"printf '%s\\n' debug {DEBUG_ID} /app /run /events 8911 fake-host\n",
             encoding="utf-8",
         )
         for command in bin_dir.iterdir():
@@ -815,7 +818,7 @@ class LifecycleSubcommand(unittest.TestCase):
     foreground app (unless the stub is told the launch is ignored) and `fuser` answers the app pid.
     """
 
-    def _run(self, call, *, fg="com.beb.plxnative.debug", launch_takes=True, pid_after="4242"):
+    def _run(self, call, *, fg=DEBUG_ID, launch_takes=True, pid_after="4242"):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             (root / "tools").mkdir()

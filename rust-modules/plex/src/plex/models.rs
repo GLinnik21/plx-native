@@ -608,6 +608,11 @@ pub struct Media {
     /// The default audio track's channel count (`6` for 5.1). Descriptive only.
     #[serde(rename = "audioChannels", default, deserialize_with = "de_i64")]
     pub audio_channels: i64,
+    /// The version's own name, when the server gives one — Jellyfin names each version of an item
+    /// (`"2160p HDR"`, a file's name); PMS sends none for an ordinary library version. Read only by
+    /// the version list.
+    #[serde(default)]
+    pub title: String,
     #[serde(rename = "videoCodec", default)]
     pub video_codec: String,
     #[serde(rename = "audioCodec", default)]

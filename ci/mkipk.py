@@ -11,7 +11,7 @@ Why Python rather than tar flags: the flags differ irreconcilably between GNU ta
 tarfile gives both hosts the same bytes with no branching.
 
 WHICH INSTALL a package is for comes from `$FLAVOR` (see `ci/flavor.py`): unset or `stable` builds
-the app users install, `debug` builds `com.beb.plxnative.debug`, which sits beside it on the same
+the app users install, `debug` builds `io.github.tiper.finnative.debug`, which sits beside it on the same
 television. Every id in the archive — the control `Package:`, `packageinfo.json`, the staged
 `applications/<id>/` directory and the `.ipk` filename — comes from that one transform, and the
 directory is additionally what the installed binary reads to learn which install it is

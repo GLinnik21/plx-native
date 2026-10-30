@@ -38,6 +38,9 @@
  * line appears on this Mac. This test asserts the lines that DO cross both platforms and says so
  * rather than pretending.
  */
+#ifndef PLX_APPID_STABLE
+#error "build with -DPLX_APPID_STABLE (make -s print-appid)"
+#endif
 #include "crashtrace.h"
 
 #include <errno.h>
@@ -258,7 +261,7 @@ static void map_line(char *out, size_t cap, const char *lo, const char *hi, cons
     snprintf(out, cap, "%s-%s r-xp 00000000 b3:35 12345 /media/developer/apps/%s%s\n", lo, hi, pads, path);
 }
 
-static const char *OURS = "com.beb.plxnative/plxnative";
+static const char *OURS = PLX_APPID_STABLE "/plxnative";
 
 static void maps_cases(void) {
     /* The ordinary case, first: one of our own mappings containing the PC. It must produce BOTH

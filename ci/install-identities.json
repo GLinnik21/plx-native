@@ -1,17 +1,17 @@
 [
   {
     "name": "stable",
-    "app_id": "com.beb.plxnative",
-    "object_id": "plxstate.stable"
+    "app_id": "io.github.tiper.finnative",
+    "object_id": "finstate.stable"
   },
   {
     "name": "debug",
-    "app_id": "com.beb.plxnative.debug",
-    "object_id": "plxstate.debug"
+    "app_id": "io.github.tiper.finnative.debug",
+    "object_id": "finstate.debug"
   },
   {
     "name": "nightly",
-    "app_id": "com.beb.plxnative.nightly",
-    "object_id": "plxstate.night"
+    "app_id": "io.github.tiper.finnative.nightly",
+    "object_id": "finstate.night"
   }
 ]

@@ -959,6 +959,10 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             });
             super::bridge::execute_endpoint_outcomes(pages, outcome.endpoints);
         }
+        // The favourite mark: flipped at once, written on a worker, flipped back if the server
+        // refuses (`plx_plex::plex::set_favorite_mark`). Only offered where the server keeps them.
+        Action::Favorite(rk) => plx_plex::plex::set_favorite_mark(&rk, true),
+        Action::Unfavorite(rk) => plx_plex::plex::set_favorite_mark(&rk, false),
         Action::RemoveFromDeck(rk) => {
             // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
             // the shelf while the resume point survives and playing it again picks up where it
@@ -1587,7 +1591,7 @@ mod delete_all_tests {
         fn persistent(&self) -> Vec<std::path::PathBuf> {
             ["lastplace.json", "telemetry.json", "telemetry-spool.bin", "telemetry-crashmark.json", "telemetry-session.json"]
                 .iter()
-                .map(|name| self.0.join("persistent").join(format!(".com.beb.plxnative.debug-{name}")))
+                .map(|name| self.0.join("persistent").join(format!(".{}.debug-{name}", plx_base::paths::STABLE_APP_ID)))
                 .collect()
         }
         fn runtime(&self) -> std::path::PathBuf {

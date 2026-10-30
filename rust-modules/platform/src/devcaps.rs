@@ -332,6 +332,29 @@ pub fn converted_with(caps: &Caps, conversion: bool, codec: &str, channels: i64,
         && !(caps.audio_supports(&codec.to_ascii_lowercase(), channels) && audio_track_fits(codec, channels, sample_rate))
 }
 
+/// Does the Load declare AC3 for this track because the demuxer converts it ("Convert audio: on the
+/// TV", `plx_media`'s `ff_audio.rs`)? One answer for the engine, from: `conversion` (the viewer's
+/// choice, [`tv_audio_conversion`]), the codec being one the app converts ([`tv_convertible`]), and
+/// the track being carried by neither other path: not the app's PCM path (`pcm` is the shape that
+/// path would declare, `(channels, sample_rate)`, and [`audio_track_fits`] holds it to the Load's
+/// limits) and not the TV's own decoder (`caps` lists the codec at `channels`; PCM codecs are the
+/// app's, never the TV's). `attempt_converts` is the same question over the attempt's narrowed
+/// capabilities: a recovery that took a refused native codec out of it has the app convert that
+/// codec, which `caps` (the boot value) still lists as the set's. The caller states whether the
+/// session runs at 1x: at a speed the speed decoder feeds every codec as PCM and nothing converts.
+pub fn track_converted(
+    caps: &Caps,
+    conversion: bool,
+    codec: &str,
+    channels: i64,
+    pcm: Option<(i64, i64)>,
+    attempt_converts: bool,
+) -> bool {
+    let pcm_carries = pcm.is_some_and(|(channels, rate)| audio_track_fits(codec, channels, rate));
+    let decoded_natively = !is_pcm_codec(codec) && caps.audio_supports(codec, channels);
+    conversion && tv_convertible(codec) && !pcm_carries && (!decoded_natively || attempt_converts)
+}
+
 /// The `audioCodec` list of a direct-play profile: `decoded` (what the TV's own decoder takes, and
 /// what the app feeds it as PCM), followed, while `converting`, by the codecs of
 /// [`TV_CONVERTED_AUDIO_CODECS`] not already in it (FLAC is in both on a set whose table was read).
@@ -1842,6 +1865,48 @@ mod tests {
         assert_eq!(base.without(&facet("truehd", 8)), base);
         // Monotone and idempotent, like `minus`.
         assert_eq!(stereo.without(&facet("dts", 2)), stereo);
+    }
+
+    /// The Load's AC3 declaration: only a convertible codec, only while the viewer chose it, and
+    /// not for a track the app's PCM path or the TV's own decoder carries.
+    #[test]
+    fn a_track_is_converted_only_when_nothing_else_carries_it() {
+        let base = native_set();
+        let facet = |codec: &str, channels: u32| Facet::Audio { codec: codec.into(), channels };
+        let stereo_flac = Some((2, 48_000));
+        // TrueHD: the TV has no decoder, the app has no PCM shape for it.
+        assert!(track_converted(&base, true, "truehd", 8, None, false));
+        assert!(!track_converted(&base, false, "truehd", 8, None, false), "the setting is off");
+        assert!(!track_converted(&base, true, "ac3", 6, None, false), "not a codec the app converts");
+        // FLAC the PCM path carries stays PCM; one it cannot (6 channels) converts.
+        assert!(!track_converted(&base, true, "flac", 2, stereo_flac, false));
+        assert!(track_converted(&base, true, "flac", 6, Some((6, 48_000)), false));
+        assert!(!track_converted(&base, true, "flac", 2, Some((2, 96_000)), false), "the app resamples hi-res stereo (#1095)");
+        // Opus: stereo is the TV's own, 5.1 is converted, and a refused stereo one converts too.
+        assert!(!track_converted(&base, true, "opus", 2, None, false));
+        assert!(track_converted(&base, true, "opus", 6, None, false));
+        let refused = base.without(&facet("opus", 2));
+        assert!(track_converted(&base, true, "opus", 2, None, converted_with(&refused, true, "opus", 2, 48_000)));
+    }
+
+    /// The open recovery's on-the-TV rung (`route::dispatch_refusal_on_tv`) asks `converted_with`
+    /// over the attempt's narrowed value: a native codec the set refused becomes one the app converts,
+    /// so the route reloads instead of asking the server. Only for a codec the app converts, and only
+    /// while the viewer picked "on the TV".
+    #[test]
+    fn a_refused_native_codec_the_app_converts_is_converted_on_the_narrowed_value() {
+        let base = native_set();
+        let facet = |codec: &str, channels: u32| Facet::Audio { codec: codec.into(), channels };
+        assert!(!converted_with(&base, true, "opus", 2, 48_000), "the set plays stereo Opus itself");
+
+        let refused = base.without(&facet("opus", 2));
+        assert!(converted_with(&refused, true, "opus", 2, 48_000));
+        assert!(converted_with(&refused, true, "OPUS", 2, 48_000), "any spelling");
+        assert!(!converted_with(&refused, false, "opus", 2, 48_000), "the server converts when the setting is off");
+
+        // A codec the app does not convert stays with the server after its refusal.
+        let no_dts = base.without(&facet("dts", 2));
+        assert!(!converted_with(&no_dts, true, "dts", 2, 48_000));
     }
 
     #[test]

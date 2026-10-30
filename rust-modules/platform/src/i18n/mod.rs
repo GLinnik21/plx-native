@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::OnceLock;
 
 pub const CONTRIBUTE_URL: &str =
-    "https://github.com/GLinnik21/plx-native/blob/main/docs/localization.md";
+    "https://github.com/tiper/fin-native/blob/main/docs/localization.md";
 
 // `Preference`, `Language`, `SHIPPED` and every table over them are generated from
 // `locales/languages.json` (see `platform/build_support/catalog.rs`); this file holds only the

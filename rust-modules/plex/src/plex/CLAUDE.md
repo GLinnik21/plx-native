@@ -276,14 +276,19 @@ asks `CredentialPolicy::may_carry_credential` or `Origin::is_tls` for a credenti
 stamps the policy half at synthesis, and `auth::settle_plaintext` adds the grant half after the
 race. A grant is minted only by discovery, from a FRESH verdict `InsecureEvidence::
 plaintext_eligibility` calls eligible, when the person's recorded answer (`Session::
-plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it; it is bound to
+plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it — or, on an
+alternative backend only, by `PlaintextAsk::settle_vouched` (FinNative's Jellyfin sign-in, its
+endpoint re-proof and the Jellyfin backend's own proof before a request carries the saved server's
+token, after a tokenless identity answer from the origin; only a refusal withholds it,
+and `servers::strand_on_backend` queues the re-proof a tokenless plaintext registration needs); it is bound to
 {identity generation, network generation, machine, exact numeric origin}, never persisted, dies on
 sign-in/sign-out, on every DID foreground (which queues each stranded server's endpoint
 re-discovery, requested by `grant::UpgradeRetry::due`), on a refusal (which also moves the consent generation
 a `PlaintextAsk` captured) and on a roster commit that does not install its (machine, origin) —
 a roster commit moves no generation — and a stored `SourceRef` naming a
 plaintext origin registers tokenless until discovery re-mints. Ending a grant re-grades the
-registry (`servers::regrade_credentials` blanks every client a grant was carrying, and `mark_on_grant` sets the per-slot `on_grant` flag);
+registry (`servers::regrade_credentials` blanks every client a grant was carrying, and `mark_on_grant` sets the per-slot `on_grant` flag;
+on an alternative backend, whose slots' tokens ride no request, a grant coming or going moves no token generation, `Client::set_token_named`);
 `grant::UpgradeRetry` re-discovers a granted server on the hub-retry backoff and the HTTPS
 registration retires the grant (`auth::retire_grant_on_https`).
 

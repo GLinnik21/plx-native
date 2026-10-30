@@ -27,7 +27,66 @@
 //! `AVChannelLayout` API rather than the TV's `channel_layout` mask, AVOption names for the encoder
 //! where libavcodec has them, and the pure halves (the target, the sample queue, the clock) split
 //! out so the host suite can grade them without FFmpeg.
+//!
+//! **Where it touches `ff.rs`** (kept to code, with the prose here): `ff.rs` also owns the shipping
+//! AC3 encode path through this module, besides the dev capture stream's `venc`. It loads FIVE
+//! libraries, `libswresample` (this module's `swresample::load`) between `libavutil` and `libavcodec`,
+//! because libavformat NEEDs libavcodec NEEDs libswresample and libavutil by SONAME; an
+//! all-or-nothing loop over all five would have found four without swscale.
 use super::*;
+
+/// Convert the selected audio track to AC3 unless the pipeline takes it as it is. Set by
+/// `engine::start_bufferfeed` from the same answer that made its Load declare AC3
+/// (`devcaps::converted_on_tv`), so the declaration and the bytes cannot disagree.
+static CONVERT_AUDIO: AtomicBool = AtomicBool::new(false);
+pub fn set_convert_audio(on: bool) {
+    CONVERT_AUDIO.store(on, Ordering::Relaxed);
+}
+
+/// Does the app decode this track itself and feed the TV PCM (`devcaps::app_decoded_by_ffmpeg_name`)?
+/// Not while the Load declared AC3 for it: a FLAC, ALAC or integer PCM track the PCM path cannot carry
+/// (surround, or a rate `pcm_load_rate` has no answer for) is the converter's, and the two must never both claim one
+/// stream, or the PCM path refuses a Load that declared no PCM.
+pub(super) fn app_decodes(name: &str) -> bool {
+    app_decodes_with(CONVERT_AUDIO.load(Ordering::Relaxed), name)
+}
+
+pub(super) fn app_decodes_with(converting: bool, name: &str) -> bool {
+    !converting && plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some()
+}
+
+plx_base::dynlib! {
+    // The audio converter's sample-format, rate and layout conversion (`ff_audio.rs`). REQUIRED,
+    // unlike swscale: libavcodec itself names it in DT_NEEDED (its Opus decoder resamples), so a
+    // package without it has no libavcodec either.
+    swresample: [
+        // The ELF the app SHIPS, and the Mach-O the desktop simulator builds beside it.
+        "libswresample-plx.so.7",
+        "libswresample-plx.7.dylib",
+    ] {
+    fn swresample_version() -> c_uint;
+    fn swr_alloc_set_opts2(
+        ps: *mut *mut c_void,
+        out_ch_layout: *const AVChannelLayout,
+        out_sample_fmt: c_int,
+        out_sample_rate: c_int,
+        in_ch_layout: *const AVChannelLayout,
+        in_sample_fmt: c_int,
+        in_sample_rate: c_int,
+        log_offset: c_int,
+        log_ctx: *mut c_void,
+    ) -> c_int;
+    fn swr_init(s: *mut c_void) -> c_int;
+    fn swr_free(s: *mut *mut c_void);
+    fn swr_convert(
+        s: *mut c_void,
+        out: *mut *mut u8,
+        out_count: c_int,
+        input: *const *const u8,
+        in_count: c_int,
+    ) -> c_int;
+    fn swr_get_out_samples(s: *mut c_void, in_samples: c_int) -> c_int;
+}}
 
 /// The `AVSampleFormat` of the AC3 encoder's input, planar float (asserted in ci/ffabi-assert.c).
 const AV_SAMPLE_FMT_FLTP: c_int = 8;
@@ -235,6 +294,31 @@ pub(crate) struct AudioConverter {
 }
 
 impl AudioConverter {
+    /// The converter for the selected audio track `ai` of `streams`, when the Load declared AC3
+    /// for it ([`set_convert_audio`]) and the pipeline cannot take it as it is (the viewer may
+    /// have picked an AC3 track after the Load). `Err` when it needs one and none opens: an AC3
+    /// declaration over nothing is the stall the payload rule exists to prevent.
+    pub unsafe fn for_track(streams: *mut *mut AVStream, ai: c_int) -> Result<Option<AudioConverter>, ()> {
+        if ai < 0 || !CONVERT_AUDIO.load(Ordering::Relaxed) || !FEED_AUDIO.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let ast = *streams.add(ai as usize);
+        let acp = stream_codecpar(ast);
+        let name = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
+        if fed_natively(&name) {
+            return Ok(None);
+        }
+        match AudioConverter::open(acp, stream_time_base(ast)) {
+            Some(conv) => Ok(Some(conv)),
+            None => {
+                crate::player::log(&format!(
+                    "ff: the Load declared AC3 for a {name} track this build cannot convert; refusing the stream"
+                ));
+                Err(())
+            }
+        }
+    }
+
     /// A converter for the stream `cp` (time base `tb`), or `None` with the reason logged: no
     /// decoder for it in the bundled FFmpeg, no `ac3` encoder, or the decoder refused to open.
     pub unsafe fn open(cp: *const AVCodecParameters, tb: AVRational) -> Option<AudioConverter> {
@@ -294,22 +378,24 @@ impl AudioConverter {
         self.fed = 0;
     }
 
-    /// Decode one demuxed packet and append every AC3 frame it completes to `out`, as (pts in ns,
-    /// bytes). A packet the decoder refuses produces nothing (the next one usually decodes).
-    pub unsafe fn push(&mut self, pkt: *const AVPacket, out: &mut Vec<(i64, Vec<u8>)>) {
+    /// Decode one demuxed packet; returns every AC3 frame it completes, as (pts in ns, bytes). A
+    /// packet the decoder refuses produces nothing (the next one usually decodes).
+    pub unsafe fn decode(&mut self, pkt: *const AVPacket) -> Vec<(i64, Vec<u8>)> {
+        let mut out = Vec::new();
         let r = avcodec_send_packet(self.dec, pkt);
         if r < 0 {
             self.refused += 1;
             if self.refused == 1 {
                 crate::player::log(&format!("ff: audio convert: the {} decoder refused a packet ({r})", self.source));
             }
-            return;
+            return out;
         }
         while avcodec_receive_frame(self.dec, self.frame) == 0 {
             self.take_frame();
             av_frame_unref(self.frame);
-            self.encode_ready(out);
+            self.encode_ready(&mut out);
         }
+        out
     }
 
     /// Resample the decoded frame in `self.frame` into the queue.

@@ -87,7 +87,7 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
                 self.puts += 1;
                 next["_rev"] = serde_json::json!(self.puts);
                 self.record = Some(next);
-                Ok(serde_json::json!({"returnValue": true, "results": [{"id": "plxstate.stable", "rev": self.puts}]}))
+                Ok(serde_json::json!({"returnValue": true, "results": [{"id": "finstate.stable", "rev": self.puts}]}))
             }
             _ => panic!("the DB8 scenario must not invoke any other RPC"),
         }
@@ -96,7 +96,7 @@ impl plx_platform::storage::keymanager::Rpc for Db8 {
 
 fn helper() -> plx_platform::storage::backend::Backend<Db8> {
     plx_platform::storage::backend::Backend::new(
-        Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into())
+        Db8::default(), state::Flavor::Stable, format!("{}.storage", plx_base::paths::STABLE_APP_ID))
 }
 
 fn stored_public(transport: &mut dyn client::Transport) -> state::PublicPayload {

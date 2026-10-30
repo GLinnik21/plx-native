@@ -104,6 +104,45 @@ class SentryUpload(unittest.TestCase):
         self.assertLess(step.index('"$UPLOAD" != true'), step.index("debug-files upload"))
 
 
+class FinNativeTelemetry(unittest.TestCase):
+    """FinNative sends nothing: every publishing caller builds with `telemetry: none`, which the
+    build step proves carries no endpoint and the upload step never sends to Sentry."""
+
+    def test_every_caller_builds_with_no_telemetry(self):
+        for name in ("release.yml", "rc.yml", "nightly.yml"):
+            self.assertEqual(re.findall(r"(?m)^      telemetry: (.*)$", code(name)), ["none"], name)
+
+    def test_a_none_build_is_checked_for_endpoints_and_uploads_nothing(self):
+        build = code("build-package.yml")
+        self.assertIn("production|development|none) ;;", build)
+        self.assertRegex(build, r"SENTRY_AUTH_TOKEN:\n(?:        .*\n)*?        required: false\n")
+        none = build[build.index('elif [ "$TELEMETRY" = none ]'):]
+        self.assertIn("the binary carries a telemetry endpoint", none[:none.index("          else\n")])
+        step = build[build.index("Upload debug files to Sentry"):build.index("ELF + packaging assertions")]
+        self.assertIn('[ "$TELEMETRY" != none ]', step)
+        self.assertLess(step.index("ci/check-debug-files.py"), step.index('"$TELEMETRY" = none'))
+        self.assertLess(step.index('"$TELEMETRY" = none'), step.index("debug-files upload"))
+
+
+class FinNativeRunsItsJellyfinTests(unittest.TestCase):
+    """`make check-cargo-unit-default` names upstream's crates only, so the Jellyfin layer's own tests
+    would run nowhere in CI: a workflow of its own runs them, which keeps `ci.yml` upstream's."""
+
+    def test_jellyfin_yml_tests_plx_jellyfin(self):
+        body = job_body("jellyfin.yml", "plx-jellyfin")
+        self.assertIn('cargo "+$RUST_TOOLCHAIN" test --lib -p plx_jellyfin', body)
+
+
+class FinNativeVerifiesItsOwnRelease(unittest.TestCase):
+    """The release's last check asks who uploaded the assets, and must ask the repository the release
+    was published to: asking PlxNative's reports an empty uploader and fails every FinNative release."""
+
+    def test_the_uploader_is_read_from_the_repository_that_ran(self):
+        script = (ROOT / "ci/verify-published.sh").read_text()
+        self.assertFalse("GLinnik21" in script, "verify-published.sh names PlxNative's repository")
+        self.assertTrue('gh api "repos/{owner}/{repo}/releases/tags/$TAG"' in script)
+
+
 class BundledLibrarySymbols(unittest.TestCase):
     """A frame inside a bundled `.so` symbolicates only if its unstripped symbols were kept, carry the
     shipped copy's build id, were checked to show symbols, and were uploaded. Every link in that chain
@@ -174,8 +213,8 @@ class NightlyHomebrewRepository(unittest.TestCase):
         build = code("build-package.yml")
         start = build.index("Generate the Homebrew Channel manifest")
         step = build[start:build.index("LGPL corresponding source", start)]
-        self.assertIn("app_id=com.beb.plxnative.nightly", step)
-        self.assertIn("app_id=com.beb.plxnative\n", step)
+        self.assertIn("app_id=io.github.tiper.finnative.nightly", step)
+        self.assertIn("app_id=io.github.tiper.finnative\n", step)
         self.assertIn('-o "pkg/${app_id}.manifest.json"', step)
         # the hash gate also pins the id and the version, not just the bytes
         self.assertIn("manifest['id']}_{manifest['version']}_arm.ipk", step)
@@ -188,9 +227,9 @@ class NightlyHomebrewRepository(unittest.TestCase):
 
     def test_the_manifest_is_published_with_the_release_and_checked_after(self):
         publish = job_body("nightly.yml", "publish")
-        self.assertIn("dist/com.beb.plxnative.nightly.manifest.json", publish.split("gh release create")[1].split("--target")[0])
+        self.assertIn("dist/io.github.tiper.finnative.nightly.manifest.json", publish.split("gh release create")[1].split("--target")[0])
         self.assertLess(publish.index("gh release create"),
-                        publish.index("--pattern com.beb.plxnative.nightly.manifest.json"))
+                        publish.index("--pattern io.github.tiper.finnative.nightly.manifest.json"))
 
     def test_check_package_grades_a_nightly_without_the_build_environment(self):
         # In CI, check-package.py runs as its OWN step, without the PLX_NIGHTLY_DATE the build step

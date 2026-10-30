@@ -53,6 +53,10 @@ import run  # noqa: E402  (path juggling above is the point)
 import serve_fixtures  # noqa: E402
 import focusfp_check  # noqa: E402
 
+# The install ids the Makefile derives (`make -s print-appid`), as `tests/run.py` asks for them.
+STABLE_APPID = run.make_query("print-appid", "stable")
+DEBUG_APPID = run.make_query("print-appid", "debug")
+
 _FIXTURE_GEN_SPEC = importlib.util.spec_from_file_location(
     "plx_make_fixtures", os.path.join(TESTS_DIR, "fixtures", "make_fixtures.py"))
 fixturegen = importlib.util.module_from_spec(_FIXTURE_GEN_SPEC)
@@ -870,7 +874,7 @@ class ReplayFixtures(unittest.TestCase):
 
 class TeardownProcessTable(unittest.TestCase):
     def test_non_utf8_argv_cannot_hide_or_crash_a_run_stream_pid(self):
-        marker = "/tmp/com.beb.plxnative.debug/plxnative-events.log"
+        marker = f"/tmp/{DEBUG_APPID}/plxnative-events.log"
         raw = b"431 ssh " + marker.encode("ascii") + b" \xdflegacy\n"
         fake = mock.Mock(return_value=subprocess.CompletedProcess([], 0, stdout=raw))
         with mock.patch.object(run, "RUN_STREAM_MARK", marker):
@@ -1080,7 +1084,7 @@ class StoredSessionGate(unittest.TestCase):
         cases = [{"name": "offline_play", "session": "stored"},
                  {"name": "normal_case"}]
         remaining, skipped = run.partition_stored_sessions(
-            cases, "needs a signed-in session on com.beb.plxnative")
+            cases, f"needs a signed-in session on {STABLE_APPID}")
         self.assertEqual([c["name"] for c in remaining], ["normal_case"])
         self.assertEqual([c["name"] for c in skipped], ["offline_play"])
 
@@ -2163,12 +2167,12 @@ class ResolutionSpike(unittest.TestCase):
 
     def test_apply_triggers_removes_a_stale_trace_before_arming(self):
         saved = run.RUNDIR
-        run.RUNDIR = "/tmp/com.beb.plxnative.debug"
+        run.RUNDIR = f"/tmp/{DEBUG_APPID}"
         try:
             with mock.patch.object(run, "ssh") as ssh:
                 run.apply_triggers("192.0.2.20", [("plxnative-gstlog", "GST_EVENT:6")])
             command = ssh.call_args.args[1]
-            self.assertIn("rm -f /tmp/com.beb.plxnative.debug/plxnative-gst.log", command)
+            self.assertIn(f"rm -f /tmp/{DEBUG_APPID}/plxnative-gst.log", command)
             self.assertIn("plxnative-gstlog", command)
         finally:
             run.RUNDIR = saved
@@ -7644,7 +7648,7 @@ impl PersonOwnerGateFixture {
         # (`fetch_episodes`, `fetch_episode_page` `client_for`).
         # Metadata M3 (the Related tail window read leaves as `StoreJob::MetaRelated`): -1 here (`ask_related`'s
         # `spawn_small`), -1 on globals (its `client_for`).
-        "workers": 7,  # production worker starts inside machines (`ci/allow/workers/`)
+        "workers": 8,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
@@ -7659,10 +7663,13 @@ impl PersonOwnerGateFixture {
         # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
         # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
-        "globals": 114,  # production process-global reads inside machines (`ci/allow/globals/`)
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
-        "forks": 74,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
+        # FinNative: +3 globals (the scrub thumbnails' two `client_for` reads and `build_stream`'s second one, for the
+        # Jellyfin item read) and +2 forks (`consent/finnative.rs::reporting_configured`, which the widened forks rule
+        # now reads). The workers line below carries FinNative's +1 (the scrub-thumbnail worker).
+        "globals": 117,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "forks": 76,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 

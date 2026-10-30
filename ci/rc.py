@@ -2,7 +2,7 @@
 """Release candidates: plan the next `rc/vX.Y.Z-rc.N`, and render its prerelease body. Stdlib only;
 the one subprocess it runs is `git`, over the checkout the workflow already has.
 
-A release candidate is the STABLE package (`com.beb.plxnative`, the id users install) of a version
+A release candidate is the STABLE package (`io.github.tiper.finnative`, the id users install) of a version
 that has not shipped yet, built exactly the way `.github/workflows/release.yml` builds the release
 and published as a GitHub prerelease. Three things set it apart from the release, and nothing else:
 
@@ -136,11 +136,11 @@ def render_notes(*, label: str, sha: str, base_tag: "str | None", prev_tag: "str
                             f"(https://github.com/{repo}/compare/{prev_tag}...{tag})")
 
     return "\n\n".join([
-        f"Release candidate {label} of PlxNative {version}, built from "
+        f"Release candidate {label} of FinNative {version}, built from "
         f"[`{sha[:7]}`]({commit_link}). If nothing turns up, the same source ships as {version}.",
 
-        "**It installs as PlxNative itself, not as a separate app.** It replaces the regular "
-        "PlxNative on your television, the same way an update does; PlxNative Nightly and other "
+        "**It installs as FinNative itself, not as a separate app.** It replaces the regular "
+        "FinNative on your television, the same way an update does; PlxNative and other "
         "separate installs are left alone. It is not offered in the Homebrew Channel, and because "
         f"it carries the package version {version}, the Channel will not offer the final {version} "
         "as an update over it either: reinstall the final release by hand once it is out.",
@@ -149,8 +149,7 @@ def render_notes(*, label: str, sha: str, base_tag: "str | None", prev_tag: "str
 
         "## Reporting problems\n\n"
         f"[Open an issue](https://github.com/{repo}/issues/new) and include the version string "
-        f"`{label}`. If error reporting is enabled, reports from this build are filed under "
-        f"`plxnative@{label}`, apart from any release.",
+        f"`{label}`. FinNative sends no error reports, so the issue is the only report.",
 
         "## Installing\n\n"
         f"Download `{ipk}` below and install it with "
@@ -208,14 +207,14 @@ def _selftest() -> int:
     check(last_release(["rc/v0.1.0-rc.1"]) is None, "no release yet")
 
     body = render_notes(label="0.8.0-rc.2", sha="abc1234def" + "0" * 30, base_tag="v0.7.0",
-                        prev_tag="rc/v0.8.0-rc.1", ipk="plxnative-v0.8.0-rc.2.ipk",
+                        prev_tag="rc/v0.8.0-rc.1", ipk="finnative-v0.8.0-rc.2.ipk",
                         sha256="deadbeef" * 8, repo="GLinnik21/plx-native",
                         changes=["- Home: something (#471)"])
-    check("replaces the regular PlxNative" in body, "notes say it replaces the stable install")
+    check("replaces the regular FinNative" in body, "notes say it replaces the stable install")
     check("will not offer the final 0.8.0" in body, "notes warn the final is not offered over it")
     check("/compare/v0.7.0...rc/v0.8.0-rc.2" in body, "notes compare against the last release")
     check("/compare/rc/v0.8.0-rc.1...rc/v0.8.0-rc.2" in body, "notes link the previous candidate")
-    check(f"{'deadbeef' * 8}  plxnative-v0.8.0-rc.2.ipk" in body, "notes carry a shasum -c line")
+    check(f"{'deadbeef' * 8}  finnative-v0.8.0-rc.2.ipk" in body, "notes carry a shasum -c line")
     check("- Home: something (#471)" in body, "notes list the changes")
     first = render_notes(label="0.8.0-rc.1", sha="0" * 40, base_tag=None, prev_tag=None,
                          ipk="x.ipk", sha256="0" * 64, repo="o/r", changes=[])

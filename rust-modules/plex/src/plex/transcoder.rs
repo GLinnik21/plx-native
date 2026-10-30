@@ -418,6 +418,7 @@ impl Client {
     /// the built PATH (the sole path-returning method): posters uses it as the LRU key AND the
     /// http_get path. `src_path` is the raw thumb/art path; encoding is centralized in enc().
     pub fn image_transcode_path(&self, src_path: &str, w: i64, h: i64, png: bool) -> String {
+        crate::alt!(b => b.image_transcode_path(src_path, w, h, png));
         let mut q = QueryBuilder::new("/photo/:/transcode")
             .int("width", w)
             .int("height", h)
@@ -601,6 +602,7 @@ impl Client {
         caps: &plx_platform::devcaps::Caps,
         forced: bool,
     ) -> Option<MediaContainer> {
+        crate::alt!(b => b.mde_decision(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, forced));
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
             .str("path", &format!("/library/metadata/{rating_key}"))
             .int("mediaIndex", media_index as i64)
@@ -635,6 +637,7 @@ impl Client {
     /// `_off` is the proof the round trip is on a worker: the frame thread cannot mint one.
     #[track_caller]
     pub fn transcode_decision(&self, _off: &plx_base::task::OffFrame, spec: &TranscodeSpec) -> Option<MediaContainer> {
+        crate::alt!(b => b.transcode_decision(spec));
         let path = format!(
             "/video/:/transcode/universal/decision?{}",
             self.transcode_query(spec)
@@ -653,6 +656,13 @@ impl Client {
         spec: &TranscodeSpec,
         deadline: std::time::Instant,
     ) -> JsonDeadlineOutcome {
+        crate::alt!(b => match b.transcode_decision(spec) {
+            Some(mc) => JsonDeadlineOutcome::Response {
+                reply: crate::http::Reply { status: 200, body: Vec::new(), peer_pin: None },
+                parsed: Some(mc),
+            },
+            None => JsonDeadlineOutcome::Transport,
+        });
         let path = format!(
             "/video/:/transcode/universal/decision?{}",
             self.transcode_query(spec)
@@ -663,6 +673,7 @@ impl Client {
 
     /// The delivery-matched stream target for `spec` — same params as the registering decision.
     pub fn transcode_start_url(&self, spec: &TranscodeSpec) -> StreamUrl {
+        crate::alt_some!(b => b.transcode_start_url(spec));
         let endpoint = match spec.contract.delivery {
             TranscodeDelivery::ProgressiveMkv => "start.mkv",
             TranscodeDelivery::FixedHls { .. } => "start.m3u8",
@@ -693,6 +704,7 @@ impl Client {
         if session.is_empty() {
             return false;
         }
+        crate::alt!(b => b.transcode_stop(session));
         self.get_ok(&self.transcode_stop_query(session, true))
     }
 
@@ -704,6 +716,7 @@ impl Client {
         if session.is_empty() {
             return false;
         }
+        crate::alt!(b => b.transcode_stop(session));
         self.get_ok(&self.transcode_stop_query(session, false))
     }
 
@@ -733,6 +746,7 @@ impl Client {
         if session.is_empty() {
             return None;
         }
+        crate::alt!(b => b.transcode_resource_reconciled(session));
         let q =
             QueryBuilder::new("/status/sessions/close").str("X-Plex-Session-Identifier", session);
         match self.post_status(&q.build())? {
@@ -753,6 +767,7 @@ impl Client {
         if session.is_empty() {
             return None;
         }
+        crate::alt!(b => b.transcode_session_present(session));
         let q = QueryBuilder::new("/video/:/transcode/universal/ping").str("session", session);
         match self.get_status(&q.build())? {
             200..=299 => Some(true),

@@ -5,9 +5,8 @@
 //!
 //! This module is THE media demuxer: robust MKV/MP4/TS demux, HTTP input, and
 //! index-based seeking (av_seek_frame). Design record: docs/ffmpeg-demuxer-plan.md.
-//! It also owns both encode paths: `venc` (near the end of the file), the dev
-//! capture stream's MPEG1 + MPEG-TS muxer, and `audio` (`ff_audio.rs`), the
-//! shipping AC3 encoder of Convert audio, kept here because every FFmpeg ABI
+//! It also owns the ONE encode path (`venc`, near the end of the file): the dev
+//! capture stream's MPEG1 + MPEG-TS muxer, kept here because every FFmpeg ABI
 //! detail — struct offsets, AVOption names, custom AVIO — belongs in one module.
 //! The struct layouts below are the FFmpeg n3.3 ABI, confirmed on-device by the
 //! Phase A probe (/tmp/plxnative-ffprobe logs codec_id/width/height for a known title).
@@ -42,13 +41,6 @@ static PUSHED_ANY: AtomicBool = AtomicBool::new(false);
 static SWS_OK: AtomicBool = AtomicBool::new(false);
 pub fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
-}
-/// Convert the selected audio track to AC3 (`ff_audio.rs`) unless the pipeline takes it as it is.
-/// Set by `engine::start_bufferfeed` from the same answer that made its Load declare AC3
-/// (`devcaps::converted_on_tv`), so the declaration and the bytes cannot disagree.
-static CONVERT_AUDIO: AtomicBool = AtomicBool::new(false);
-pub fn set_convert_audio(on: bool) {
-    CONVERT_AUDIO.store(on, Ordering::Relaxed);
 }
 
 /// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed into one word:
@@ -468,12 +460,6 @@ plx_base::dynlib! {
     // Image-subtitle software decode (PGS/VobSub/DVB → paletted bitmap). The classic 3.x
     // API: decode_subtitle2 fills an AVSubtitle the caller must avsubtitle_free.
     fn avcodec_find_decoder(id: c_int) -> *const AVCodec;
-    // Audio decode, send/receive API: playback speed (`SpeedDecoder`), lossless → PCM (`ff_pcm`) and,
-    // with the decoder census, "Convert audio: on the TV" (`ff_audio.rs`).
-    fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
-    fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
-    fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
-    fn avcodec_flush_buffers(ctx: *mut AVCodecContext);
     fn avcodec_alloc_context3(codec: *const AVCodec) -> *mut AVCodecContext;
     fn avcodec_parameters_to_context(ctx: *mut AVCodecContext, par: *const AVCodecParameters) -> c_int;
     fn avcodec_open2(ctx: *mut AVCodecContext, codec: *const AVCodec, opts: *mut *mut AVDictionary) -> c_int;
@@ -498,6 +484,12 @@ plx_base::dynlib! {
     fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
+    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and lossless → PCM (`ff_pcm`).
+    fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
+    fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
+    fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
+    // "Convert audio: on the TV" (`ff_audio.rs`) decodes with the above too, and flushes on a seek.
+    fn avcodec_flush_buffers(ctx: *mut AVCodecContext);
 }}
 plx_base::dynlib! {
     // avformat_version lives in libavformat, not libavutil — but it was declared here and the
@@ -535,38 +527,6 @@ plx_base::dynlib! {
         prev: *const AVDictionaryEntry,
         flags: c_int,
     ) -> *const AVDictionaryEntry;
-}}
-plx_base::dynlib! {
-    // The audio converter's sample-format, rate and layout conversion (`ff_audio.rs`). REQUIRED,
-    // unlike swscale: libavcodec itself names it in DT_NEEDED (its Opus decoder resamples), so a
-    // package without it has no libavcodec either.
-    swresample: [
-        // The ELF the app SHIPS, and the Mach-O the desktop simulator builds beside it.
-        "libswresample-plx.so.7",
-        "libswresample-plx.7.dylib",
-    ] {
-    fn swresample_version() -> c_uint;
-    fn swr_alloc_set_opts2(
-        ps: *mut *mut c_void,
-        out_ch_layout: *const AVChannelLayout,
-        out_sample_fmt: c_int,
-        out_sample_rate: c_int,
-        in_ch_layout: *const AVChannelLayout,
-        in_sample_fmt: c_int,
-        in_sample_rate: c_int,
-        log_offset: c_int,
-        log_ctx: *mut c_void,
-    ) -> c_int;
-    fn swr_init(s: *mut c_void) -> c_int;
-    fn swr_free(s: *mut *mut c_void);
-    fn swr_convert(
-        s: *mut c_void,
-        out: *mut *mut u8,
-        out_count: c_int,
-        input: *const *const u8,
-        in_count: c_int,
-    ) -> c_int;
-    fn swr_get_out_samples(s: *mut c_void, in_samples: c_int) -> c_int;
 }}
 plx_base::dynlib! {
     swscale: [
@@ -1540,7 +1500,7 @@ fn ver(v: c_uint) -> String {
     format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff)
 }
 
-/// Resolve the five FFmpeg libraries by SONAME candidate list. `false` means this device has no
+/// Resolve the four FFmpeg libraries by SONAME candidate list. `false` means this device has no
 /// FFmpeg we can use, and NOTHING in this module may be called — not even `avformat_version`.
 ///
 /// Kept separate from the version check that follows it because the two failures are different
@@ -1552,8 +1512,8 @@ fn load_libraries() -> bool {
     // a bare SONAME there could open the television's copy instead of ours.
     let dir = Some(plx_base::paths::app_dir());
 
-    // DEPENDENCY ORDER, and it is load-bearing. libavformat NEEDs libavcodec NEEDs libswresample
-    // and libavutil by SONAME, and these libraries carry no rpath (FFmpeg's configure evals its flags, so
+    // DEPENDENCY ORDER, and it is load-bearing. libavformat NEEDs libavcodec NEEDs libavutil by
+    // SONAME, and these libraries carry no rpath (FFmpeg's configure evals its flags, so
     // -Wl,-rpath,$ORIGIN does not survive — see ci/build-ffmpeg.sh). Loading a dependency FIRST
     // with RTLD_GLOBAL puts it in the global scope under its SONAME, so when the next library
     // names it the loader finds the one we just opened rather than searching the system paths and
@@ -1561,7 +1521,7 @@ fn load_libraries() -> bool {
     let mut ok = true;
     for (what, verdict) in [
         ("avutil", avutil::load(dir)),
-        ("swresample", swresample::load(dir)),
+        ("swresample", audio::swresample::load(dir)),
         ("avcodec", avcodec::load(dir)),
         ("avformat", avformat::load(dir)),
     ] {
@@ -1586,7 +1546,7 @@ fn load_libraries() -> bool {
     }
     // swscale is NOT required, and treating it as required broke the RELEASE build entirely:
     // `RELEASE=1` drops it from the package (only the dev capture stream's RGBA->YUV conversion
-    // uses it), so an all-or-nothing loop over all five libraries would have found four, reported
+    // uses it), so an all-or-nothing loop over four libraries would have found three, reported
     // failure, and refused to play anything — in the configuration users actually receive, and in
     // no configuration ever tested here.
     match swscale::load(dir) {
@@ -1693,7 +1653,7 @@ pub fn boot() {
         // stale or someone put a different file there — not a firmware difference.
         // libswresample too: the audio converter calls it directly (libavcodec's DT_NEEDED and its
         // symbol versions already pin it, but a stale file beside them would otherwise go unchecked).
-        let bad = (fmt >> 16, cod >> 16, utl >> 16, swresample_version() >> 16) != (63, 63, 61, 7);
+        let bad = (fmt >> 16, cod >> 16, utl >> 16, audio::swresample_version() >> 16) != (63, 63, 61, 7);
         ABI_OK.store(!bad, Ordering::Relaxed);
         if !bad {
             plx_platform::devcaps::set_tv_audio_converter(audio::converter_available());
@@ -2014,6 +1974,7 @@ mod subs;
 pub(crate) mod native_audio;
 #[path = "ff_audio.rs"]
 mod audio;
+pub use audio::set_convert_audio;
 #[path = "ff_subside.rs"]
 pub(crate) mod subside;
 use subs::{SubKind, SubTracks};
@@ -8801,33 +8762,6 @@ fn audio_push_gate(video_lane: *mut AuQueue, video_reach_ns: i64) -> crate::aq::
     }
 }
 
-/// What follows every AU pushed onto the audio lane: the pre-audio headroom's bookkeeping, with its
-/// two log lines, and the lane's tail mark. Shared because a converted track (`ff_audio.rs`) pushes
-/// zero or more AUs per packet where a plain one pushes exactly one.
-unsafe fn audio_au_pushed(headroom: &mut PreAudioHeadroom, aq_p: *mut AuQueue, pts: i64) {
-    let step = headroom.after_audio(pts);
-    if step.first && headroom.granted {
-        // The late audio arrived: say how far ahead video had to run.
-        crate::player::log(&format!(
-            "ff: first audio at {}ms after {} bytes of video queued ahead of it",
-            pts / 1_000_000,
-            crate::aq::aq_bytes(aq_p)
-        ));
-    }
-    if step.release {
-        // The engine's lead-in is on the audio lane: from here the video lane falls back to its
-        // base cap as the consumer drains it, never under what it holds (see
-        // `PRE_AUDIO_VIDEO_HEADROOM`).
-        crate::aq::aq_release_headroom(aq_p);
-        crate::player::log(&format!(
-            "ff: audio lead-in pushed ({}ms past the first); video headroom released with {} bytes queued",
-            (pts - headroom.first_audio_ns.unwrap_or(pts)) / 1_000_000,
-            crate::aq::aq_bytes(aq_p)
-        ));
-    }
-    SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
-}
-
 /// What the video push about to be made means for the lane's headroom.
 #[derive(Debug, PartialEq, Eq)]
 enum VideoStep {
@@ -9606,7 +9540,7 @@ pub fn demux(
                     // A lossy codec is the app's only when the Load declared PCM for it (the attempt
                     // decodes it in the app); otherwise it is native audio and the set's decoder takes it.
                     plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name)
-                        .filter(|c| !c.lossy || pcm_lossy())
+                        .filter(|c| (!c.lossy || pcm_lossy()) && audio::app_decodes(&name))
                         .map(|_| name.into_owned())
                 } else {
                     None
@@ -9673,30 +9607,14 @@ pub fn demux(
                 } else {
                     None
                 };
-                // "Convert audio: on the TV" (`ff_audio.rs`). The Load declared AC3 for a track the
-                // pipeline cannot take, so its packets are decoded and re-encoded here; a track it
-                // can take (the viewer picked an AC3 one after the Load) is fed as it is. A
-                // converter that cannot open leaves an AC3 declaration over nothing, the stall the
-                // payload rule exists to prevent, so the stream is refused like an unfeedable one.
-                let mut converter: Option<audio::AudioConverter> = None;
-                let mut converted_aus: Vec<(i64, Vec<u8>)> = Vec::new();
-                if ai >= 0 && CONVERT_AUDIO.load(Ordering::Relaxed) && FEED_AUDIO.load(Ordering::Relaxed) {
-                    let ast = *streams.add(ai as usize);
-                    let acp = stream_codecpar(ast);
-                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
-                    if !audio::fed_natively(&aname) {
-                        converter = audio::AudioConverter::open(acp, stream_time_base(ast));
-                        if converter.is_none() {
-                            crate::player::log(&format!(
-                                "ff: the Load declared AC3 for a {aname} track this build cannot convert; refusing the stream"
-                            ));
-                            SHARED.demux_failed.store(true, Ordering::Release);
-                            avformat_close_input(&mut fmt);
-                            free_avio(avio);
-                            break;
-                        }
-                    }
-                }
+                // "Convert audio: on the TV" (`ff_audio.rs`): a track the Load declared AC3 for and
+                // this build cannot convert is refused like an unfeedable one.
+                let Ok(mut converter) = audio::AudioConverter::for_track(streams, ai) else {
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                };
                 // Opus goes to the television's own decoder (`ff_native_audio.rs`; its header travels
                 // in the Load). What is fed natively is recorded for the player, which learns a
                 // refusal from it. FLAC, ALAC and LPCM are decoded in the app (`pcm_dec`) and are not native.
@@ -10172,45 +10090,6 @@ pub fn demux(
                         PUSHED_ANY.store(true, Ordering::Relaxed);
                         SHARED.hls_video_tail_ns.store(pts, Ordering::Release);
                         headroom.video_pushed(pts);
-                    } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) && converter.is_some() {
-                        // A converted track: one packet makes zero or more AC3 frames, each its own AU,
-                        // each through the same gate as a plain track's packet.
-                        if let Some(conv) = converter.as_mut() {
-                            conv.push(pkt, &mut converted_aus);
-                        }
-                        av_packet_unref(pkt);
-                        let mut stopped = false;
-                        for (pts, au) in converted_aus.drain(..) {
-                            if headroom.first_audio_ns.is_none() {
-                                SHARED.first_audio_pts.store(pts, Ordering::Release);
-                            }
-                            let gate = audio_push_gate(aq_p, headroom.video_reach_ns());
-                            let pushed = crate::aq::aq_push_gated(
-                                aqa_p, au.as_ptr(), au.len() as c_int, pts, 1, 2, gate,
-                                || state.drain_wire(),
-                            );
-                            if pushed == crate::aq::PUSH_CEILING {
-                                // As for a plain track below: the audio lane is at its ceiling and
-                                // no usable video is coming, so fail rather than park.
-                                crate::player::log(&format!(
-                                    "ff: no usable video after {} bytes of converted audio queued ({} ms of video read); failing the stream",
-                                    crate::aq::aq_bytes(aqa_p),
-                                    headroom.video_reach_ns() / 1_000_000
-                                ));
-                                SHARED.demux_failed.store(true, Ordering::Release);
-                                SHARED.demux_io_failed.store(true, Ordering::Release);
-                                stopped = true;
-                                break;
-                            }
-                            if pushed != 0 {
-                                stopped = true;
-                                break;
-                            }
-                            audio_au_pushed(&mut headroom, aq_p, pts);
-                        }
-                        if stopped {
-                            break;
-                        }
                     } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                         let ast = *streams.add(ai as usize);
                         let pts = pts_ns(pkt, ast);
@@ -10227,6 +10106,19 @@ pub fn demux(
                             for (au_pts, pcm) in dec.decode(pkt, pts) {
                                 rv = crate::aq::aq_push_gated(
                                     aqa_p, pcm.as_ptr(), pcm.len() as c_int, au_pts, 1, 2, gate,
+                                    || state.drain_wire(),
+                                );
+                                if rv != 0 {
+                                    break;
+                                }
+                            }
+                            rv
+                        } else if let Some(conv) = converter.as_mut() {
+                            // A converted track: each AC3 frame the packet completes is its own AU.
+                            let mut rv = 0;
+                            for (au_pts, ac3) in conv.decode(pkt) {
+                                rv = crate::aq::aq_push_gated(
+                                    aqa_p, ac3.as_ptr(), ac3.len() as c_int, au_pts, 1, 2, gate,
                                     || state.drain_wire(),
                                 );
                                 if rv != 0 {
@@ -10316,7 +10208,27 @@ pub fn demux(
                         if pushed != 0 {
                             break;
                         }
-                        audio_au_pushed(&mut headroom, aq_p, pts);
+                        let step = headroom.after_audio(pts);
+                        if step.first && headroom.granted {
+                            // The late audio arrived: say how far ahead video had to run.
+                            crate::player::log(&format!(
+                                "ff: first audio at {}ms after {} bytes of video queued ahead of it",
+                                pts / 1_000_000,
+                                crate::aq::aq_bytes(aq_p)
+                            ));
+                        }
+                        if step.release {
+                            // The engine's lead-in is on the audio lane: from here the video lane
+                            // falls back to its base cap as the consumer drains it, never under what
+                            // it holds (see `PRE_AUDIO_VIDEO_HEADROOM`).
+                            crate::aq::aq_release_headroom(aq_p);
+                            crate::player::log(&format!(
+                                "ff: audio lead-in pushed ({}ms past the first); video headroom released with {} bytes queued",
+                                (pts - headroom.first_audio_ns.unwrap_or(pts)) / 1_000_000,
+                                crate::aq::aq_bytes(aq_p)
+                            ));
+                        }
+                        SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
                     } else if let Some(sub_pos) = sub_tracks.position(si) {
                         // Subtitle packet: `SubTracks::decode` yields a cue for EVERY text track
                         // (not just the selected one) and decodes every image track while subtitles

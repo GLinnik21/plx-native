@@ -130,6 +130,36 @@ fn the_fixture_can_start_in_hls_instead_of_provoking_a_starvation() {
     reset_session(&mut ps);
 }
 
+/// **Auto on a server with no fixed-HLS transcode plays Original unwatched**, the way a manual
+/// Original does: every exit of the Original watchdog lands on HLS, and such a server (FinNative's
+/// Jellyfin) cannot build it. Watched, a buffer that fell to 1.8 s an hour into a film fired
+/// `auto: Original -> HLS EmergencyLowBuffer`, the demux stopped to hand Original over, the
+/// fallback was refused (`AUTO_HLS_REJECTED`) and playback ended on the error screen. Unwatched,
+/// the demux keeps feeding Original and the set rebuffers.
+#[test]
+fn auto_does_not_watch_original_when_the_server_cannot_build_hls() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    assert_eq!(
+        arm_auto_fixture(&mut ps, "http://host/clip.mkv", 24_862, "http://host/__abr", false, HD),
+        None,
+    );
+
+    assert!(
+        auto_original_watch_on(&ps, true).is_some(),
+        "a server with the fixed-HLS transcode keeps Auto's Original watchdog",
+    );
+    assert!(
+        auto_original_watch_on(&ps, false).is_none(),
+        "a server without it has nowhere to fall back to, so nothing may stop the Original",
+    );
+
+    restore_quality(Quality::Original);
+    install_active_encoder("");
+    reset_session(&mut ps);
+}
+
 /// A source request that returns an HTTP error before its first body byte did not measure a
 /// slow link.  Falling back as though it measured 0 kbps throws away the exact evidence which
 /// admitted Original and opens at the emergency floor; on the incident server that left Auto

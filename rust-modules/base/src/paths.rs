@@ -57,14 +57,14 @@ pub const ENV_STEERABLE: bool = cfg!(feature = "hostsim");
 ///
 /// It is a FALLBACK and a comparison value — never the answer on its own. See [`app_id`]: which
 /// app this process is depends on where it was installed, not on what it was compiled with.
-pub const STABLE_APP_ID: &str = "com.beb.plxnative";
+pub const STABLE_APP_ID: &str = "io.github.tiper.finnative";
 
 /// The Developer Mode install dir. Only a last-resort fallback now — it is what the app used to
 /// hardcode, so it keeps the historical behaviour if `/proc` is somehow unreadable.
-const LEGACY_APP_DIR: &str = "/media/developer/apps/usr/palm/applications/com.beb.plxnative";
+const LEGACY_APP_DIR: &str = "/media/developer/apps/usr/palm/applications/io.github.tiper.finnative";
 
-/// **Which install this process is** — `com.beb.plxnative` for the app users get, or
-/// `com.beb.plxnative.<flavour>` for a developer build sitting beside it on the same television.
+/// **Which install this process is** — `io.github.tiper.finnative` for the app users get, or
+/// `io.github.tiper.finnative.<flavour>` for a developer build sitting beside it on the same television.
 ///
 /// Read from the INSTALL DIRECTORY, not compiled in, and that is the whole design.
 ///
@@ -124,7 +124,7 @@ fn installed_app_id(exe: &Path) -> Option<String> {
 }
 
 /// The flavour suffix of [`app_id`] — `None` for the app users get, `Some("debug")` for
-/// `com.beb.plxnative.debug`.
+/// `io.github.tiper.finnative.debug`.
 ///
 /// One definition, so no caller has to know how a flavour is spelled. Everything that must differ
 /// between two installs on one television — the runtime root, the session file, the plex.tv device
@@ -272,7 +272,7 @@ fn macos_app_support() -> Option<PathBuf> {
     if home.is_empty() {
         return None;
     }
-    Some(PathBuf::from(home).join("Library/Application Support/PlxNative"))
+    Some(PathBuf::from(home).join("Library/Application Support/FinNative"))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -288,8 +288,8 @@ fn macos_app_support() -> Option<PathBuf> {
 /// [`plx_runtime_path`] — the same resolver, so the two languages cannot disagree — and
 /// [`ENV_STEERABLE`] guarantees that answer is not steerable from outside.
 ///
-/// `/tmp` on the television for the app users install, always; `/tmp/<app id>` for a developer
-/// build sitting beside it (see [`resolve_runtime_dir`]). Both jail profiles mount the shared
+/// `/tmp/<app id>` on the television for every FinNative install, the one users get included, so
+/// none shares a stable PlxNative's bare `/tmp` (see [`resolve_runtime_dir`]). Both jail profiles mount the shared
 /// system `/tmp`, and every tool, skill and harness recipe addresses those files by absolute path
 /// — which is why `make -s print-rundir` exists rather than a second copy of the rule.
 ///
@@ -311,7 +311,7 @@ fn macos_app_support() -> Option<PathBuf> {
 /// line of output exists to explain why. That is not hypothetical: it is what the first version of
 /// this function did, and the simulator hung silently at startup with an empty log and no stderr.
 ///
-/// There is nothing to announce anyway. On a television the answer is always `/tmp`, and the one
+/// There is nothing to announce anyway. On a television the answer is always `/tmp/<app id>`, and the one
 /// configuration that overrides it is the one that passed the value in.
 pub fn runtime_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -402,7 +402,8 @@ const DEFAULT_RUNTIME_DIR: &str = "/tmp";
 /// reason: it reads `current_exe` and `HOME`, neither of which a test can pin. `app_id` is a
 /// parameter for the same reason.
 ///
-/// **A flavoured install gets its own root, and the app users get keeps `/tmp` byte for byte.**
+/// **Every install gets its own root.** (FinNative: upstream keeps the bare `/tmp` for its stable app,
+/// so FinNative's stable install takes `/tmp/<app id>` like a flavour.)
 /// Two installs on one television otherwise share one event log (the launching one TRUNCATES it),
 /// one append-only crash log with nothing in it saying which binary faulted, one `plxnative-remote`
 /// FIFO, one `:8910` capture listener and one trigger namespace — a set of collisions whose
@@ -439,7 +440,10 @@ fn resolve_runtime_dir(
             return p;
         }
     }
-    if app_id == STABLE_APP_ID {
+    // FinNative: on the television the stable install takes `/tmp/<app id>` like a flavour does,
+    // because the bare `/tmp` is a stable PlxNative's and the two would overwrite each other's logs.
+    // A host build keeps `/tmp`; `make sim` and the test runners pass their own root anyway.
+    if ENV_STEERABLE && app_id == STABLE_APP_ID {
         return PathBuf::from(DEFAULT_RUNTIME_DIR);
     }
     Path::new(DEFAULT_RUNTIME_DIR).join(app_id)
@@ -600,7 +604,7 @@ pub fn session_candidates() -> Vec<PathBuf> {
 /// Candidate locations for the telemetry decision, best first — **the same tier as the session**,
 /// and that choice has a consequence worth stating rather than discovering.
 ///
-/// It goes here, not in [`runtime_dir`], because the runtime root on a television is `/tmp` and
+/// It goes here, not in [`runtime_dir`], because the runtime root on a television is in `/tmp` and
 /// `/tmp` is cleared by a reboot: a consent decision that evaporated overnight would re-ask a
 /// person who had already answered, which is both worse for them and the exact pattern that makes
 /// a consent prompt feel like nagging rather than a choice.
@@ -983,21 +987,21 @@ mod tests {
     #[test]
     fn the_app_id_is_the_install_directory_and_only_a_real_one() {
         use std::path::Path;
-        let dev = "/media/developer/apps/usr/palm/applications/com.beb.plxnative.debug/plxnative";
-        let hbc = "/media/cryptofs/apps/usr/palm/applications/com.beb.plxnative/plxnative";
+        let dev = "/media/developer/apps/usr/palm/applications/io.github.tiper.finnative.debug/plxnative";
+        let hbc = "/media/cryptofs/apps/usr/palm/applications/io.github.tiper.finnative/plxnative";
         let nightly =
-            "/media/developer/apps/usr/palm/applications/com.beb.plxnative.nightly/plxnative";
+            "/media/developer/apps/usr/palm/applications/io.github.tiper.finnative.nightly/plxnative";
         assert_eq!(
             super::installed_app_id(Path::new(dev)).as_deref(),
-            Some("com.beb.plxnative.debug")
+            Some("io.github.tiper.finnative.debug")
         );
         assert_eq!(
             super::installed_app_id(Path::new(hbc)).as_deref(),
-            Some("com.beb.plxnative")
+            Some("io.github.tiper.finnative")
         );
         assert_eq!(
             super::installed_app_id(Path::new(nightly)).as_deref(),
-            Some("com.beb.plxnative.nightly")
+            Some("io.github.tiper.finnative.nightly")
         );
         // A host build: the parent is `debug`, whose parent is `target-sim` — not `applications`.
         // Without this arm the simulator would mint an app called `debug`, take `/tmp/debug` as its
@@ -1028,13 +1032,13 @@ mod tests {
             None
         );
         assert_eq!(
-            "com.beb.plxnative.debug"
+            "io.github.tiper.finnative.debug"
                 .strip_prefix(super::STABLE_APP_ID)
                 .and_then(|r| r.strip_prefix('.')),
             Some("debug")
         );
         assert_eq!(
-            "com.beb.plxnative.nightly"
+            "io.github.tiper.finnative.nightly"
                 .strip_prefix(super::STABLE_APP_ID)
                 .and_then(|r| r.strip_prefix('.')),
             Some("nightly")
@@ -1046,8 +1050,8 @@ mod tests {
         );
     }
 
-    /// Two installs must not share a runtime namespace, and the app users get must keep `/tmp`
-    /// exactly — every skill recipe, harness glob and doc line addresses those paths absolutely.
+    /// Two installs must not share a runtime namespace — FinNative's stable one included, since a
+    /// stable PlxNative on the same television owns the bare `/tmp`.
     ///
     /// The dot in the flavoured root is asserted on purpose: `dev::any_trigger_present` scans the
     /// root for entries starting `plxnative-`, so a root spelled with a hyphen there would read as
@@ -1059,11 +1063,13 @@ mod tests {
             return; // a host build answers from the environment first; this is the television rule
         }
         let stable = super::resolve_runtime_dir(None, None, super::STABLE_APP_ID);
-        let debug = super::resolve_runtime_dir(None, None, "com.beb.plxnative.debug");
-        let nightly = super::resolve_runtime_dir(None, None, "com.beb.plxnative.nightly");
-        assert_eq!(stable, std::path::Path::new("/tmp"));
-        assert_eq!(debug, std::path::Path::new("/tmp/com.beb.plxnative.debug"));
-        assert_eq!(nightly, std::path::Path::new("/tmp/com.beb.plxnative.nightly"));
+        let debug = super::resolve_runtime_dir(None, None, "io.github.tiper.finnative.debug");
+        let nightly = super::resolve_runtime_dir(None, None, "io.github.tiper.finnative.nightly");
+        // FinNative: the stable install gets its own root too, because the bare `/tmp` belongs to a
+        // stable PlxNative installed on the same television.
+        assert_eq!(stable, std::path::Path::new("/tmp/io.github.tiper.finnative"));
+        assert_eq!(debug, std::path::Path::new("/tmp/io.github.tiper.finnative.debug"));
+        assert_eq!(nightly, std::path::Path::new("/tmp/io.github.tiper.finnative.nightly"));
         assert_ne!(
             stable.join("plxnative-events.log"),
             debug.join("plxnative-events.log")
@@ -1072,7 +1078,7 @@ mod tests {
             debug.join("plxnative-events.log"),
             nightly.join("plxnative-events.log")
         );
-        for flavoured in [&debug, &nightly] {
+        for flavoured in [&stable, &debug, &nightly] {
             let name = flavoured.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
                 !name.starts_with("plxnative-"),
@@ -1087,13 +1093,19 @@ mod tests {
     /// silently follow the process's working directory.
     #[test]
     fn absent_or_empty_runtime_root_is_the_television() {
+        // FinNative: the television's stable root is `/tmp/<app id>`; a host build keeps `/tmp`.
+        let tv = if super::ENV_STEERABLE {
+            std::path::PathBuf::from("/tmp")
+        } else {
+            std::path::Path::new("/tmp").join(super::STABLE_APP_ID)
+        };
         assert_eq!(
             super::resolve_runtime_dir(None, None, super::STABLE_APP_ID),
-            std::path::Path::new("/tmp")
+            tv
         );
         assert_eq!(
             super::resolve_runtime_dir(Some("".into()), None, super::STABLE_APP_ID),
-            std::path::Path::new("/tmp")
+            tv
         );
     }
 
@@ -1106,7 +1118,7 @@ mod tests {
         if !super::ENV_STEERABLE {
             return; // a television build has neither concept
         }
-        let sup = std::path::PathBuf::from("/Users/x/Library/Application Support/PlxNative");
+        let sup = std::path::PathBuf::from("/Users/x/Library/Application Support/FinNative");
         assert_eq!(
             super::resolve_runtime_dir(None, Some(sup.clone()), super::STABLE_APP_ID),
             sup
@@ -1171,7 +1183,7 @@ mod tests {
                 Some("/also/anywhere".into()),
                 super::STABLE_APP_ID
             ),
-            std::path::Path::new("/tmp")
+            std::path::Path::new("/tmp/io.github.tiper.finnative")
         );
     }
 
@@ -1191,7 +1203,7 @@ mod tests {
             ]
         };
         let a = named(super::STABLE_APP_ID);
-        let b = named("com.beb.plxnative.debug");
+        let b = named("io.github.tiper.finnative.debug");
         assert!(
             a.iter().all(|p| !b.contains(p)),
             "{a:?} and {b:?} share a session file"

@@ -122,6 +122,11 @@ pub enum Action {
     /// Play this leaf's version `media`, resuming as Play does. The id, never a position: the app
     /// resolves it against the item it fetches (`plx_plex::plex::Metadata::media_version`).
     PlayVersion { rk: String, media: plx_plex::plex::MediaId },
+    /// make this item one of the user's favourites — only where the server keeps them
+    /// (`plx_plex::plex::favorite_mark`)
+    Favorite(String),
+    /// take it off them — the twin of [`Action::Favorite`]
+    Unfavorite(String),
 }
 
 impl Action {
@@ -162,6 +167,8 @@ impl Action {
             | Action::WatchlistRemove(rk)
             | Action::ChooseVersion(rk) => rk,
             Action::PlayVersion { rk, .. } => rk,
+            | Action::Favorite(rk)
+            | Action::Unfavorite(rk) => rk,
             Action::PlayTrailer { rk, .. } => rk,
             // No ratingKey: the subject is a catalog id.
             Action::WatchlistAdd { .. } => "",
@@ -184,6 +191,8 @@ impl Action {
             Action::WatchlistAdd { .. } => 11,
             Action::ChooseVersion(_) => 12,
             Action::PlayVersion { .. } => 13,
+            Action::Favorite(_) => 14,
+            Action::Unfavorite(_) => 15,
         };
         c.u32(tag).str(self.rk());
         if let Action::WatchlistAdd { hex } = self {
@@ -255,6 +264,8 @@ pub enum ItemRow {
     PlayVersion,
     /// One version on the Play Version page, by its position in the list captured at open.
     Version(u16),
+    Favorite,
+    Unfavorite,
 }
 
 impl ItemRow {
@@ -281,6 +292,8 @@ impl FormId for ItemRow {
             ItemRow::WatchlistAdd => 11,
             ItemRow::PlayVersion => 12,
             ItemRow::Version(n) => VERSION_KEY_BASE + u32::from(*n),
+            ItemRow::Favorite => 14,
+            ItemRow::Unfavorite => 15,
         })
     }
 }
@@ -418,6 +431,26 @@ fn build_card(
         trailer.filter(|_| m.kind == 0 || m.kind == 1),
         &m.title,
     );
+
+    // ---- the favourite mark, on a movie, show or episode, where the server keeps favourites ----
+    // One row, stating the outcome of its press (the mark it would set), like the watch rows.
+    if let Some(marked) = plx_plex::plex::favorite_mark(&m.rk).filter(|_| matches!(m.kind, 0 | 1 | 3)) {
+        sec = if marked {
+            sec.item(
+                ItemRow::Unfavorite,
+                RowKind::Button,
+                Action::Unfavorite(m.rk.clone()),
+                Row::new(plx_platform::i18n::msg::browse_jf_favorite_remove()).licon(Icon::HeartFill),
+            )
+        } else {
+            sec.item(
+                ItemRow::Favorite,
+                RowKind::Button,
+                Action::Favorite(m.rk.clone()),
+                Row::new(plx_platform::i18n::msg::browse_jf_favorite_add()).licon(Icon::Heart),
+            )
+        };
+    }
 
     // ---- and, only on a Continue Watching card, the row that takes it off the deck ----
     // Gated on the SHELF, not on the item: the action is meaningless anywhere else (nothing to

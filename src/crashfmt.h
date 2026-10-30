@@ -15,19 +15,19 @@
  * `bin:` line naming the wrong mapping, from which `tools/crash-report.sh` computes an offset and
  * answers with a confident wrong function. That is worse than no answer, it is silent, and it is
  * decidable from a string with no television in the room. Its twin is recorded in that script: the
- * app id `com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`, so triaging the stable
+ * app id `io.github.tiper.finnative` is a PREFIX of `io.github.tiper.finnative.debug`, so triaging the stable
  * install would accept the debug install's load base.
  *
  * **A correction, because this file inherited an invented justification and it is exactly the kind
  * that makes a reader distrust the rest.** `src/main.c` carried, for as long as the tracer existed:
  *
- *     the app dir is itself named ...com.beb.plxnative/, so a bare substring test also matches
+ *     the app dir is itself named ...io.github.tiper.finnative/, so a bare substring test also matches
  *     libraries deployed beside the binary (libturbojpeg.so.0)
  *
  * It does not. The needle is `/plxnative`, with the slash, and the directory component is
- * `/com.beb.plxnative` — slash, then `c`. Measured rather than reasoned: a bare
- * `strstr(line, "/plxnative")` answers no on `…/com.beb.plxnative/libturbojpeg.so.0` and yes on
- * `…/com.beb.plxnative/plxnative`, which is the right answer for the wrong reason. What the
+ * `/io.github.tiper.finnative` — slash, then `i`. Measured rather than reasoned: a bare
+ * `strstr(line, "/plxnative")` answers no on `…/io.github.tiper.finnative/libturbojpeg.so.0` and yes on
+ * `…/io.github.tiper.finnative/plxnative`, which is the right answer for the wrong reason. What the
  * separator test actually buys is the two cases below, and the test file asserts those and not the
  * one that was written down.
  *

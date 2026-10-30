@@ -693,6 +693,13 @@ pub(crate) fn rig_clear_opaque_region() {
     plx_platform::tv::window::clear_opaque_region();
 }
 
+/// Whether a `devtools` build paints the frame-rate counter in the top-right corner. Off in
+/// FinNative: its debug build is the one its owner watches, and the number is a distraction there.
+/// The counter is still compiled and fed (`make check` builds it, the heartbeat's `fps=` is
+/// unchanged); set this to `true` to see it again.
+#[cfg(feature = "devtools")]
+const PAINT_FPS_COUNTER: bool = false;
+
 /// One idle iteration's font-warming slice: a key pressed during it waits at most this long more
 /// than the idle poll already makes it wait.
 const FONT_WARM_SLICE_US: u64 = 2_000;
@@ -874,11 +881,12 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
     }
     // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
     // before a following direct text token, rather than moving all text ahead of all keys.
-    if super::bridge::search_owns_input(&app.pages) { drain_sdl(app, fr); }
-    if super::bridge::search_owns_input(&app.pages) {
+    let entry = super::bridge::text_entry(&app.pages);
+    if entry != plx_ui::screen::TextEntry::None { drain_sdl(app, fr); }
+    if entry != plx_ui::screen::TextEntry::None {
         if let Some(text) = token.strip_prefix("txt:") {
             ingest_text(app, &text.replace('+', " "), crate::textinput::available(),
-                plx_machine::machine::Source::RemoteFifo);
+                plx_machine::machine::Source::RemoteFifo, entry);
             return true;
         }
     }
@@ -910,10 +918,18 @@ pub(crate) fn pin_headless_hud(app: &mut App, now: u32, tab: Option<i32>) {
     }
 }
 
-fn ingest_text(app: &mut App, text: &str, panel: bool, source: plx_machine::machine::Source) {
+/// Typed text, delivered to the top page. A [`TextEntry::Secret`](plx_ui::screen::TextEntry::Secret)
+/// field's text is never written to the input recording: the recording is refused instead, the
+/// way an effect carrying account credentials is, so no capture ever holds a password.
+fn ingest_text(app: &mut App, text: &str, panel: bool, source: plx_machine::machine::Source,
+    entry: plx_ui::screen::TextEntry) {
     if text.is_empty() { return; }
     let at = plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 };
-    app.rec.input(super::recorder::enc_text(text, panel, at, source));
+    if entry == plx_ui::screen::TextEntry::Secret {
+        app.rec.refuse("secret text input");
+    } else {
+        app.rec.input(super::recorder::enc_text(text, panel, at, source));
+    }
     app.inputs.extend(text_inputs(text, panel, at, source));
     app.last_input = at.ms;
     plx_machine::idle::invalidate();
@@ -1720,9 +1736,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // nobody drains. Gating here would also be a second, weaker copy of a rule
         // that lives in one place — and it would flip a frame away from the field's
         // own edit state, because the route changes at the fade floor.
-        if super::bridge::search_owns_input(&app.pages) {
+        let entry = super::bridge::text_entry(&app.pages);
+        if entry != plx_ui::screen::TextEntry::None {
             let text = crate::textinput::decode(&app.ev);
-            ingest_text(app, &text, crate::textinput::available(), plx_machine::machine::Source::Sdl);
+            ingest_text(app, &text, crate::textinput::available(), plx_machine::machine::Source::Sdl, entry);
         } else {
             crate::textinput::on_event(&app.ev);
         }
@@ -2128,6 +2145,15 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // Bridge-owned Browse store through `Bridge::browse_run`.
             app.bridge.browse_run(plx_data::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
+        }
+        // A favourite the server just took or dropped: Home's Favorites shelf is the server's
+        // listing, so it is re-read rather than edited (`plx_plex::plex::take_favorite_landed`).
+        if plx_plex::plex::take_favorite_landed() {
+            super::bridge::execute_endpoint_outcomes(
+                &mut app.pages,
+                app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints,
+            );
+            log("home: hubs refresh queued after a favourite changed");
         }
         // The return hold ends when the refetch it waits for has SETTLED for the played item's
         // source: issued (the owed flag is spent) and that source's read taken, whether it brought
@@ -2546,8 +2572,15 @@ fn loop_requests(app: &mut App) {
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
             plx_screens::registry::LoopReq::AccountSignOut => {
-                super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::SignOut);
-                super::bridge::nav_root(&mut app.pages, AppArg::Login);
+                // Signing out ends the seated user's session alone; the others stay saved and
+                // *Change profile* opens on them. The last user is a full sign-out.
+                let others = plx_plex::plex::session::peek().others_saved();
+                super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::SignOutUser);
+                if others {
+                    super::bridge::switch_profile(&mut app.pages);
+                } else {
+                    super::bridge::nav_root(&mut app.pages, AppArg::Login);
+                }
             }
             // The host route does NOT move: Settings is a surface presented over the same page,
             // and its Privacy, Legal and Favourite-libraries children are pages of that surface's
@@ -3162,8 +3195,12 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // are unaffected by whether the digits are painted.
                         // A supersampled simulator render (`surface::render_scale`) exists to be
                         // captured, so it leaves the diagnostic digits out of the picture.
+                        //
+                        // FinNative's debug build is also the one its owner watches on the TV,
+                        // so the counter is compiled and kept current but not painted unless
+                        // [`PAINT_FPS_COUNTER`] says so.
                         #[cfg(feature = "devtools")]
-                        if plx_base::surface::render_scale() == 1 {
+                        if PAINT_FPS_COUNTER && plx_base::surface::render_scale() == 1 {
                             let fps_col = if app.buffer_flip_count < 30 {
                                 plx_ui::theme::DIAG_FLIP_A
                             } else {
@@ -3655,14 +3692,14 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
         }
         return;
     }
-    if super::bridge::search_owns_input(&app.pages) { drain_sdl(app, fr); }
+    if super::bridge::text_entry(&app.pages) != plx_ui::screen::TextEntry::None { drain_sdl(app, fr); }
     let kind = v["kind"].as_str().unwrap_or("");
     let i = |k: &str| v[k].as_i64().unwrap_or(0) as i32;
     let u = |k: &str| v[k].as_u64().unwrap_or(0) as u32;
     match kind {
         "text" => {
-            if !super::bridge::search_owns_input(&app.pages) {
-                log("replay: text has no owned Search recipient");
+            if super::bridge::text_entry(&app.pages) == plx_ui::screen::TextEntry::None {
+                log("replay: text has no owned text recipient");
             } else if let Some(events) = super::recorder::dec_text(v) {
                 app.inputs.extend(events);
                 plx_machine::idle::invalidate();
@@ -4953,6 +4990,7 @@ mod lifecycle_regression_tests {
                 markers: Vec::new(),
                 chapters: (1..=2).map(chapter).collect(),
                 hdr: false,
+                duration_ms: 0,
             }))));
             super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
             frame(&mut app, 16);
