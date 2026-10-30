@@ -107,6 +107,37 @@ impl<H: LibraryLike> plx_ui::master_detail::KeyRegion<H> for Regions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Readout { Loading, Empty, Failed, Grid }
 
+/// **Whether the grid shows the sort value under its posters**: the Sort value switch is On and the
+/// listing is a movie or TV show library's PRIMARY grid (not its Seasons, Episodes or Collections),
+/// sorted by a criterion the value table words (`sort_key`: the current sort's key, `None` before the
+/// listing declares one). Title, Random and a sort a later server declares keep the captions. An
+/// exhaustive match on the kind, not a wildcard: a library kind added later must decide for itself.
+fn shows_sort_values(kind: SecKind, listed: plx_data::browse::LibraryType, switch_on: bool, sort_key: Option<&str>) -> bool {
+    let kind_has_values = match kind { SecKind::Movie | SecKind::Show => true };
+    kind_has_values && listed == plx_data::browse::LibraryType::Primary && switch_on
+        && sort_key.is_some_and(crate::registry::sort_info::shows_value)
+}
+
+#[cfg(test)]
+#[test]
+fn sort_values_show_on_a_movie_or_show_primary_grid_with_the_switch_on_and_a_worded_sort() {
+    use plx_data::browse::LibraryType;
+    for kind in [SecKind::Movie, SecKind::Show] {
+        assert!(shows_sort_values(kind, LibraryType::Primary, true, Some("addedAt")), "{kind:?}");
+        assert!(shows_sort_values(kind, LibraryType::Primary, true, Some("movie.addedAt:desc")), "{kind:?} scoped");
+        for listed in [LibraryType::Seasons, LibraryType::Episodes, LibraryType::Collections] {
+            assert!(!shows_sort_values(kind, listed, true, Some("addedAt")), "{kind:?} {listed:?} keeps its captions");
+        }
+        assert!(!shows_sort_values(kind, LibraryType::Primary, false, Some("addedAt")), "{kind:?}: the switch is Off");
+        for key in ["titleSort", "random", "futureServerSort", "episode.addedAt", "episode.addedAt:desc"] {
+            assert!(!shows_sort_values(kind, LibraryType::Primary, true, Some(key)), "{kind:?} {key}");
+        }
+        assert!(!shows_sort_values(kind, LibraryType::Primary, true, None), "{kind:?}: no sort declared yet");
+    }
+    // The show-only criterion reads on a show library and is what the server declares for it.
+    assert!(shows_sort_values(SecKind::Show, LibraryType::Primary, true, Some("unviewedLeafCount")));
+}
+
 fn readout(table: SecFetch, sections: usize, fetch: SecFetch, total: i64) -> Readout {
     if total < 0 {
         match table {
@@ -148,8 +179,8 @@ pub struct LibraryScreen {
     /// `sync` like the layout's episode geometry, so not logical state of its own. The toolbar
     /// reads it: collections take no filters, so FILTER leaves the row while they are listed.
     listed: plx_data::browse::LibraryType,
-    /// The grid shows the sort value under every poster (`registry::sort_info`): a movie library's
-    /// primary grid with Sort value On, sorted by something that has a value. Read in `sync`, where
+    /// The grid shows the sort value under every poster (`registry::sort_info`): a movie or TV show
+    /// library's primary grid with Sort value On, sorted by something that has a value. Read in `sync`, where
     /// the listing is, and handed to the layout by `relayout`.
     values: bool,
     keys: KeyRegistry,
@@ -532,9 +563,8 @@ impl LibraryScreen {
                 self.wanted_kind = None;
             }
         }
-        self.values = self.kind == SecKind::Movie && self.listed == plx_data::browse::LibraryType::Primary
-            && crate::registry::captions::sort_value()
-            && listing.sorts().get(listing.sort_index()).is_some_and(|sort| crate::registry::sort_info::shows_value(&sort.key));
+        self.values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value(),
+            listing.sorts().get(listing.sort_index()).map(|sort| sort.key.as_str()));
         self.refresh_header(cx);
         if let Some(kind) = self.wanted_kind.filter(|kind|
             directory.current().map(|i| directory.sections()[i].kind) != Some(*kind)) {
