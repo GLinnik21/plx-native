@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-30T01:05:44Z",
+ "generated": "2026-10-30T01:10:34Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -103,17 +103,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 25.7,
+   "change7_pct": 27.8,
    "d30": null,
    "delta30": null,
-   "delta7": 37,
+   "delta7": 40.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 69,
-   "now": 181,
+   "now": 184.0,
    "prev7": 144,
    "shown": true,
    "state": "worse",
@@ -169,14 +169,14 @@
    "change7_pct": 11.2,
    "d30": 916.5,
    "delta30": -549.5,
-   "delta7": 37.0,
+   "delta7": 37,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 75,
-   "now": 367.0,
+   "now": 367,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -390,15 +390,15 @@
    "change30_pct": 49.4,
    "change7_pct": 3.5,
    "d30": 178,
-   "delta30": 88,
-   "delta7": 9,
+   "delta30": 88.0,
+   "delta7": 9.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 69,
-   "now": 266,
+   "now": 266.0,
    "prev7": 257,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -71.3,
-   "change7_pct": 2.7,
+   "change30_pct": -71.1,
+   "change7_pct": 3.7,
    "d30": 726,
-   "delta30": -518,
-   "delta7": 5.5,
+   "delta30": -516.0,
+   "delta7": 7.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 68,
-   "now": 208,
+   "now": 210.0,
    "prev7": 202.5,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 12.5,
    "change7_pct": -5.3,
    "d30": 16,
-   "delta30": 2,
-   "delta7": -1,
+   "delta30": 2.0,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 69,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 69.3,
    "commits": [
     {
-     "pr": 1136,
-     "sha": "656ed590e",
-     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
-    },
-    {
      "pr": 1139,
      "sha": "2623e4560",
      "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
@@ -715,6 +710,11 @@
      "pr": 1145,
      "sha": "ab4b67ebb",
      "title": "Tools: Bump @github/copilot and @sentry/cli in /tools"
+    },
+    {
+     "pr": 1152,
+     "sha": "f03cf3e0a",
+     "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
     }
    ],
    "from": 177.5,
@@ -728,11 +728,6 @@
    "change_pct": 28.6,
    "commits": [
     {
-     "pr": 1136,
-     "sha": "656ed590e",
-     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
-    },
-    {
      "pr": 1139,
      "sha": "2623e4560",
      "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
@@ -776,6 +771,11 @@
      "pr": 1145,
      "sha": "ab4b67ebb",
      "title": "Tools: Bump @github/copilot and @sentry/cli in /tools"
+    },
+    {
+     "pr": 1152,
+     "sha": "f03cf3e0a",
+     "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
     }
    ],
    "from": 120.3,
@@ -786,13 +786,8 @@
    "to": 154.8
   },
   {
-   "change_pct": 25.7,
+   "change_pct": 27.8,
    "commits": [
-    {
-     "pr": 1136,
-     "sha": "656ed590e",
-     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
-    },
     {
      "pr": 1139,
      "sha": "2623e4560",
@@ -837,6 +832,11 @@
      "pr": 1145,
      "sha": "ab4b67ebb",
      "title": "Tools: Bump @github/copilot and @sentry/cli in /tools"
+    },
+    {
+     "pr": 1152,
+     "sha": "f03cf3e0a",
+     "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
     }
    ],
    "from": 144,
@@ -844,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-30",
    "threshold_pct": 20.0,
-   "to": 181
+   "to": 184.0
   },
   {
    "change_pct": 21.3,
    "commits": [
-    {
-     "pr": 1136,
-     "sha": "656ed590e",
-     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
-    },
     {
      "pr": 1139,
      "sha": "2623e4560",
@@ -898,6 +893,11 @@
      "pr": 1145,
      "sha": "ab4b67ebb",
      "title": "Tools: Bump @github/copilot and @sentry/cli in /tools"
+    },
+    {
+     "pr": 1152,
+     "sha": "f03cf3e0a",
+     "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
     }
    ],
    "from": 258,
