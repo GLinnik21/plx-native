@@ -316,7 +316,7 @@ mod tests {
         assert_eq!((rect.name.as_str(), rect.w, rect.h), ("info", 20.0, 20.0));
         assert!(f.message.contains("`info`") && f.message.contains("20 x 20"), "{}", f.message);
         assert!(f.hint.contains("26"), "{}", f.hint);
-        // ten languages: a disc is the same everywhere, so it collapses to ONE finding with no `lang`
+        // eleven languages: a disc is the same everywhere, so it collapses to ONE finding with no `lang`
         let all = linted(&text, &codes::E0603);
         let [f] = all.as_slice() else { panic!("one collapsed finding, got {all:?}") };
         assert_eq!(f.ctx.lang, None);

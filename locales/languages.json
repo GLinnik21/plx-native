@@ -8,5 +8,6 @@
   {"tag": "de", "native_name": "Deutsch",    "region": "de-DE", "script": "Latn", "plurals": ["one", "other"],                "row": 8},
   {"tag": "hu", "native_name": "Magyar",     "region": "hu-HU", "script": "Latn", "plurals": ["one", "other"],                "row": 9},
   {"tag": "ru", "native_name": "Русский",    "region": "ru-RU", "script": "Cyrl", "plurals": ["one", "few", "many", "other"], "row": 10},
-  {"tag": "pl", "native_name": "Polski",      "region": "pl-PL", "script": "Latn", "plurals": ["one", "few", "many", "other"], "row": 11}
+  {"tag": "pl", "native_name": "Polski",      "region": "pl-PL", "script": "Latn", "plurals": ["one", "few", "many", "other"], "row": 11},
+  {"tag": "nl", "native_name": "Nederlands", "region": "nl-NL", "script": "Latn", "plurals": ["one", "other"],                "row": 12}
 ]

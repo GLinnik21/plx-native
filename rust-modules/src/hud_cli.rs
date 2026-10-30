@@ -460,16 +460,16 @@ mod tests {
     }
 
     #[test]
-    fn lang_de_lints_one_language_and_lang_all_lints_the_ten() {
+    fn lang_de_lints_one_language_and_lang_all_lints_them_all() {
         let de = widths(&["--lang", "de"]);
         let all = widths(&["--lang", "all"]);
         assert!(de > 0, "a compile measures text");
         assert_eq!(widths(&[]), all, "all is the default");
-        let tags = ["en", "es", "be", "fr", "it", "pt", "de", "hu", "ru", "pl"];
+        let tags = ["en", "es", "be", "fr", "it", "pt", "de", "hu", "ru", "pl", "nl"];
         let each: usize = tags.iter().map(|tag| widths(&["--lang", tag])).sum();
-        assert_eq!(all, each, "the all run is the ten single-language runs");
+        assert_eq!(all, each, "the all run is the eleven single-language runs");
         assert!(all > de);
-        assert!(all >= 5 * de, "ten languages, not two: all {all}, de {de}");
+        assert!(all >= 5 * de, "eleven languages, not two: all {all}, de {de}");
     }
 
     #[test]
