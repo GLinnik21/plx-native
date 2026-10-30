@@ -1309,15 +1309,57 @@ fn a_changed_criterion_keeps_the_sort_controls_right_edge_on_every_drawn_frame()
     judge_a_criterion_change("Date added", "Title", &[]);
 }
 
-/// **The same press builds the row twice** (the queued sort, then the listing that lands under it):
-/// the second build, with the criterion the first already shows, moves nothing, restarts nothing
-/// and leaves the sort control's face where the first slide has it. It was the whole control
-/// sliding by the places' offset (the chevron 56 px past the edge), then back.
+/// Every frame of `from` becoming `to` as `(what is drawn, the slide spring's progress and
+/// velocity)`, the row rebuilt unchanged at each frame in `rebuilds` (the swap steps after each
+/// frame's reading, to its end).
+fn trajectory(from: &str, to: &str, rebuilds: &[usize]) -> Vec<(Vec<f32>, f32, f32)> {
+    let (old, mut new) = (drawn_cluster(from), drawn_cluster(to));
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    let mut frames = Vec::new();
+    for frame in 0..600 {
+        if rebuilds.contains(&frame) {
+            let again = drawn_cluster(to);
+            swap.begin(&new, &again);
+            new = again;
+        }
+        frames.push((Shot::of(&new, &swap).numbers(), swap.slide.pos, swap.slide.vel));
+        if !swap.is_active() { break; }
+        swap.step(DT);
+    }
+    frames
+}
+
+/// **The same press builds the row twice** (the queued sort, then the listing that lands under it,
+/// and `header_key` moves on more than that, so a pick can rebuild the row three times or more):
+/// a build that says what the first already shows moves nothing, restarts nothing and leaves the
+/// sort control's face where the first slide has it. It was the whole control sliding by the
+/// places' offset (the chevron 56 px past the edge), then back.
+///
+/// "Restarts nothing" is judged on the spring, not on positions alone: a slide rebuilt in the middle
+/// of its run draws EXACTLY the frames the same slide draws unbuilt, and its spring has the same
+/// progress and the same VELOCITY on every frame. A build that re-based the glides on the drawn x
+/// and started the spring again from rest kept every position and lost the speed, so each rebuild
+/// was a visible stall (a pick rebuilds three times as the listing refetches).
 #[test]
 fn a_row_rebuilt_under_a_running_slide_neither_jumps_nor_moves_the_sort_control() {
     let _g = plx_base::testlock::serial();
     judge_a_criterion_change("Title", "Date added", &[4]);
     judge_a_criterion_change("Date added", "Title", &[1, 9]);
+    for (from, to) in [("Title", "Date added"), ("Date added", "Title"), ("Date added", "Year")] {
+        let unbuilt = trajectory(from, to, &[]);
+        assert!(unbuilt.len() > 20, "premise: the slide runs for a while ({} frames)", unbuilt.len());
+        for rebuilds in [&[4][..], &[1, 9], &[2, 3, 4, 5, 6, 7, 8]] {
+            let rebuilt = trajectory(from, to, rebuilds);
+            assert_eq!(rebuilt.len(), unbuilt.len(), "{from} -> {to}, rebuilt at {rebuilds:?}: the swap lands on the same frame");
+            for (frame, (a, b)) in unbuilt.iter().zip(&rebuilt).enumerate() {
+                let label = format!("{from} -> {to}, rebuilt at {rebuilds:?}, frame {frame}");
+                for (x, y) in a.0.iter().zip(&b.0) { assert!((x - y).abs() < 1e-3, "{label}: what is drawn differs: {:?} against {:?}", a.0, b.0); }
+                assert!((a.1 - b.1).abs() < 1e-4, "{label}: the spring's progress {} against {}", a.1, b.1);
+                assert!((a.2 - b.2).abs() < 1e-3, "{label}: the spring's velocity {} against {}", a.2, b.2);
+            }
+        }
+    }
 }
 
 /// **A third criterion picked mid-slide** (Title, then Date added, then Year before the first has
@@ -1415,6 +1457,47 @@ fn a_lifted_sort_control_swaps_its_criterion_on_the_swap_the_page_pass_runs() {
     let end = Opened::of(&new, &swap);
     assert_eq!((end.pill, end.icon, end.chevron), (rest.pill, rest.icon, rest.chevron), "the settled swap is the opener at rest");
     assert_eq!(end.criteria.iter().map(|(t, _, a)| (t.as_str(), *a)).collect::<Vec<_>>(), [("Date added", 1.0)]);
+}
+
+/// **A target that moves mid-slide hands the speed over**: a criterion picked while the previous
+/// change is still travelling THE SAME WAY (Date added to Title, then Year: the places go right
+/// both times) re-bases the glides on the x they are drawn at (no jump, the test above) and starts
+/// the spring over a new span; the places must leave that frame at the speed they arrived at it,
+/// rescaled to the new span, not from a standstill. Judged as the drawn displacement of the frame
+/// before the pick against the frame after it, for every piece that slides, and the spring never
+/// rings past its end. (A pick that turns the places round starts from rest: speed against the new
+/// direction is dropped, never negative progress.)
+#[test]
+fn a_third_criterion_picked_mid_slide_carries_the_speed_it_had() {
+    let _g = plx_base::testlock::serial();
+    let (first, second, third) = (drawn_cluster("Date added"), drawn_cluster("Title"), drawn_cluster("Year"));
+    let rest = Shot::of(&third, &HeaderSwap::new());
+    let mut swap = HeaderSwap::new();
+    swap.begin(&first, &second);
+    for _ in 0..5 { swap.step(DT); }
+    let a = Shot::of(&second, &swap);
+    swap.step(DT);
+    let b = Shot::of(&second, &swap);
+    let (rate, progress) = (swap.slide.vel, swap.slide.pos);
+    swap.begin(&second, &third);
+    assert_eq!(swap.slide.pos, 0.0, "the new span starts from the x each piece is drawn at");
+    assert!(swap.slide.vel > 0.0, "and with the speed the old one had (it was {rate} at {progress})");
+    swap.step(DT);
+    let c = Shot::of(&third, &swap);
+    for (name, a, b, c) in [("Collections", a.collections, b.collections, c.collections), ("Recommended", a.recommended, b.recommended, c.recommended),
+        ("divider", a.divider, b.divider, c.divider), ("icon", a.icon.x, b.icon.x, c.icon.x)] {
+        let (before, after) = (b - a, c - b);
+        assert!(before.abs() > 0.5, "premise: {name} was travelling ({before} px a frame)");
+        assert!(before * after > 0.0, "{name} turned round on the pick: {before} then {after}");
+        assert!((after - before).abs() < 0.25 * before.abs(), "{name} left the pick at {after} px a frame, having arrived at {before}");
+    }
+    for frame in 0..600 {
+        if !swap.is_active() { break; }
+        swap.step(DT);
+        assert!(swap.slide.pos <= 1.0 + 1e-4, "frame {frame}: the handed-over spring rang past its end ({})", swap.slide.pos);
+    }
+    assert!(!swap.is_active());
+    assert_eq!(Shot::of(&third, &swap).numbers(), rest.numbers());
 }
 
 /// **The slide is decoration with a known end** ([`plx_machine::idle`]): it wakes the present gate

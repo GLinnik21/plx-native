@@ -806,7 +806,10 @@ fn carried(item: &HeaderItem) -> bool { item.value_slot.is_some() || item.readou
 /// or [`HeaderSwap::settle`]d spring is the new layout). The control itself keeps its right edge
 /// and its chevron: the criterion it replaces fades out at its own place and the new one fades in
 /// at its own, each ending at that edge ([`Criterion`]), on the same progress. A row built twice for
-/// one press (the queued sort, then the listing under it) carries that slide on, nothing jumping.
+/// one press (the queued sort, then the listing under it) carries that slide on, nothing jumping and
+/// nothing restarting: a rebuild that moves no target keeps the running spring as it is, and one that
+/// does (another criterion picked mid-slide) starts from where the pieces are drawn at the speed
+/// they have.
 /// A switch ([`HeaderSwap::begin_switch`]) slides nothing.
 ///
 /// **Held by the SCREEN beside the row's capsules**, for the same reason they are: the row is
@@ -926,11 +929,16 @@ impl HeaderSwap {
     /// build says the criterion the first already shows. That one is no new change: the criterion
     /// it replaced keeps fading out from where it had got to, and the control's face stays what
     /// it was (its mark sliding, the criterion and the chevron where the layout has them).
-    fn glides_between(&self, old: &HeaderRow, new: &HeaderRow) -> Vec<Glide> {
+    ///
+    /// Also says whether a criterion changed on THIS rebuild (not one the running slide already
+    /// carries): [`Self::begin_with`] keeps a running slide for a rebuild that moves no target and
+    /// changes no criterion, and hands it over, speed and all, for one that does.
+    fn glides_between(&self, old: &HeaderRow, new: &HeaderRow) -> (Vec<Glide>, bool) {
         let spot = |row: &HeaderRow, i: usize| row.layout.items.iter().find(|r| r.slot == Slot::Right(i)).map(|r| r.text.x);
         let s = self.slide_progress();
         let (before, after) = (&old.page.spec().right, &new.page.spec().right);
-        after.iter().enumerate().filter(|(_, item)| !item.readout).filter_map(|(i, item)| {
+        let mut changed_now = false;
+        let glides = after.iter().enumerate().filter(|(_, item)| !item.readout).filter_map(|(i, item)| {
             let (j, was) = before.iter().enumerate().find(|(_, was)| same_item(was, item))?;
             let (rest, to) = (spot(old, j)?, spot(new, i)?);
             let changed = was.value != item.value;
@@ -946,8 +954,34 @@ impl HeaderSwap {
                     Some(Criterion { dx: rest - to, out0: running.map_or(1.0, |(c, _)| c.arriving(s)), in0: 0.0 })),
                 (false, None) => (was.value.clone(), None),
             };
-            ((from - to).abs() >= SAME_X || changed).then(|| Glide { item: HeaderItem { value, ..was.clone() }, from, to, criterion })
-        }).collect()
+            let glides = (from - to).abs() >= SAME_X || changed;
+            changed_now |= glides && changed;
+            glides.then(|| Glide { item: HeaderItem { value, ..was.clone() }, from, to, criterion })
+        }).collect();
+        (glides, changed_now)
+    }
+
+    /// Does a slide that runs already end where every one of `glides` would end? Then a rebuild
+    /// that asks for them (no target moved, no criterion changed: the same press building its row
+    /// again as the listing refetches) has nothing to say to it.
+    fn already_runs_to(&self, glides: &[Glide]) -> bool {
+        self.is_sliding() && glides.iter().all(|new| {
+            self.glides.iter().any(|running| same_item(&running.item, &new.item) && (running.to - new.to).abs() < SAME_X)
+        })
+    }
+
+    /// The slide's rate to start the spring over `glides` at, so the item that moves furthest keeps
+    /// the speed it has: it is moving `(to - from) * vel` px a second on the running slide and will
+    /// cover `new.to - new.from` per unit of progress on the new one. The rate is kept between 0
+    /// and the spring's own natural frequency, the range a critically damped spring from rest
+    /// covers without overshoot, which a rescale of an undisturbed slide never leaves; a slide that
+    /// is not running (or whose item goes the other way) starts from rest.
+    fn carried_rate(&self, glides: &[Glide]) -> f32 {
+        glides.iter().filter_map(|new| {
+            let running = self.glides.iter().find(|running| same_item(&running.item, &new.item))?;
+            let span = new.to - new.from;
+            (span.abs() >= SAME_X).then(|| ((running.to - running.from) * self.slide.vel / span, span.abs()))
+        }).max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0.0, |(rate, _)| rate.clamp(0.0, crate::widgets::K_TAB_CAP.sqrt()))
     }
 
     /// The row `old` is being replaced by `new`: start a swap when a slotted control changed (its
@@ -980,7 +1014,7 @@ impl HeaderSwap {
         };
         // A switch shows nothing of the row left, so nothing slides from it; a change of the same
         // page slides the items a control's new width moved.
-        let glides = if edge == Edge::Fade { self.glides_between(old, new) } else { Vec::new() };
+        let (glides, changed) = if edge == Edge::Fade { self.glides_between(old, new) } else { (Vec::new(), false) };
         if edge == Edge::Cut { self.glides.clear(); }
         let before = carry(old);
         let after = carry(new);
@@ -999,9 +1033,14 @@ impl HeaderSwap {
             self.edge = edge;
             self.clock.arrive();
         }
-        if !glides.is_empty() {
+        // **A rebuild is not a restart.** One press builds the row three times or more as the listing
+        // refetches, and each build re-bases the glides on the x they are drawn at. A slide whose
+        // targets did not move (and that no criterion change rides) keeps its glides and its
+        // spring, position and velocity both; otherwise the new glides start from where the
+        // running ones are drawn, and the spring starts at the speed they have.
+        if !glides.is_empty() && (changed || !self.already_runs_to(&glides)) {
+            self.slide = Spring { pos: 0.0, vel: self.carried_rate(&glides) };
             self.glides = glides;
-            self.slide = Spring::at(0.0);
         }
     }
 
