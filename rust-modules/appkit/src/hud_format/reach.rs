@@ -5,7 +5,9 @@
 //! **The graph.** A state is (the open sections, the slot). The content conditions the package names
 //! (`chapters.present`, `title.is_episode`, anywhere in a `when` or a keyed value) each take both values,
 //! so at most four valuations; one that the package does not name holds (an unnamed predicate asks
-//! nothing). `transport.paused` is not a dimension: `toggle_play`'s keys flip it, so a control whose
+//! nothing). A package that PLACES `previous` or `next` names `title.is_episode` too, whether or not it
+//! writes the term: the command table makes the pair absent for a non-episode, so the movie form is a
+//! valuation of every such package (the reference has two, not one). `transport.paused` is not a dimension: `toggle_play`'s keys flip it, so a control whose
 //! placement depends on it counts as placed when either value places it. The root is (no section, Discs).
 //! Sections: those the package lays out, a band whose `when` holds `panel.s`; `modal` opens one at a time,
 //! `inline` any subset. Slots: Discs, Up Next and Skip. The edges are the app-owned ones the plan lists:
@@ -43,8 +45,8 @@ pub struct Fold {
     pub section: Option<&'static str>,
 }
 
-/// What [`check`] reports.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What [`check`] reports. (Not `Eq`: a [`Finding`] carries a context of `f32` rects.)
+#[derive(Clone, Debug, PartialEq)]
 pub struct Checked {
     /// Reachability errors R1, R3 and R4 in that order, then the invariants of [`super::validate`]; each
     /// group in document order. No fold is a finding.
@@ -183,6 +185,7 @@ pub(super) struct Layout<'a> {
     modal: bool,
     replaces: BTreeSet<&'a str>,
     pub(super) named_chapters: bool,
+    /// `title.is_episode` appears in a condition, or the package places `previous` or `next`
     pub(super) named_episode: bool,
 }
 
@@ -223,6 +226,13 @@ impl<'a> Layout<'a> {
         let mut named = (false, false);
         scan_named(layout, &mut named);
         (this.named_chapters, this.named_episode) = named;
+        // The command table makes the previous / next pair absent for a non-episode (or with neither
+        // neighbour) whatever the package says, so a package that places either has the movie form
+        // although it never writes `title.is_episode`: it names the condition by placing the pair.
+        this.named_episode |= this
+            .controls
+            .iter()
+            .any(|c| matches!(c.command, "previous" | "next"));
         this
     }
 
@@ -518,7 +528,8 @@ impl<'a> Layout<'a> {
 }
 
 /// Which of `chapters.present` and `title.is_episode` appear anywhere under `root`: in a `when`, or as the
-/// condition of a state-keyed value.
+/// condition of a state-keyed value. (A placed `previous` / `next` names the second as well, which
+/// [`Layout::read`] adds: it is a fact of the controls, not a term of a condition.)
 fn scan_named(root: &Object, named: &mut (bool, bool)) {
     fn note(cond: &Cond, named: &mut (bool, bool)) {
         for term in &cond.terms {

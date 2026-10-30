@@ -191,7 +191,10 @@ fn compiled_classic_band_is_the_classic_band() {
 
 #[test]
 fn compiled_classic_has_the_states_reach_counts() {
-    for (name, text, states) in [("classic", CLASSIC, 18), ("reference", REFERENCE, 6), ("minimal", MINIMAL, 3)] {
+    // classic: 18 (see `reach_tests`). The reference places `previous` and `next`, so it has the movie form
+    // and the episode form, 2 valuations x 6 states = 12 (the compact state under three slots, plus the
+    // three non-empty subsets of its two inline sections). Minimal places neither: 1 x 3.
+    for (name, text, states) in [("classic", CLASSIC, 18), ("reference", REFERENCE, 12), ("minimal", MINIMAL, 3)] {
         assert_eq!(build(text, &FM).states().len(), states, "{name}");
         assert_eq!(check(&package(text)).states, states, "{name}");
     }
@@ -732,6 +735,26 @@ fn the_band_is_one_value_in_the_geometry_and_in_the_compiled_package() {
     let state = hero.lookup(0, Slot::Discs, true, true, false).unwrap();
     assert_ne!(HudBand::from_controls_top(state.standin.anchor.top), hero.band(), "the row's top is not hero-center's band");
     assert_eq!(state.geometry(SkipKind::Intro).band(), hero.band());
+}
+
+#[test]
+fn the_references_movie_form_drops_previous_and_next_and_its_episode_form_keeps_them() {
+    // The reference places the pair and names `title.is_episode` nowhere: the spec's command table makes the
+    // pair absent for a non-episode all the same, so the compile has both forms (reach's valuations).
+    let compiled = build(REFERENCE, &FM);
+    let commands = |episode| -> Vec<String> {
+        let state = compiled.lookup(0, Slot::Discs, true, episode, false).expect("the compact state");
+        assert_eq!(state.key.episode, episode, "the form asked for is the form found");
+        state.controls.iter().map(|c| c.command.clone()).collect()
+    };
+    let (movie, episode) = (commands(false), commands(true));
+    for command in ["previous", "next"] {
+        assert!(!movie.iter().any(|c| c == command), "{command} is absent from a movie: {movie:?}");
+        assert!(episode.iter().any(|c| c == command), "{command} is in an episode: {episode:?}");
+    }
+    assert_eq!((movie.len(), episode.len()), (7, 9), "the movie loses exactly the pair: 9 - 2");
+    assert_eq!(compiled.states().iter().filter(|s| s.key.episode).count(), 6);
+    assert_eq!(compiled.states().iter().filter(|s| !s.key.episode).count(), 6);
 }
 
 #[test]

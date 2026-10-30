@@ -200,8 +200,23 @@ pub struct MoreMenuState {
 /// seven rungs (Auto first) and the table's padding: 536 px in English. It decides the SIDE of the
 /// opener the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`), so it is the same on
 /// every page. 600 leaves room for a longer label that wraps. Classic's room above its row is 710,
-/// which this stays under, so classic opens upward.
-const NEED_H: f32 = 600.0;
+/// which this stays under, so classic opens upward. `pub(crate)` because the HUD lint places this
+/// menu with it (`hud_format::lint_menus`, M2), through [`place_panel`].
+pub(crate) const NEED_H: f32 = 600.0;
+
+/// **The one call of the shared placer for this menu**: a panel of `size` beside `anchor`, on the side
+/// [`NEED_H`] decides, `PLAYER_MENU_GAP` away, inside `SAFE`. The live panel
+/// ([`MoreMenuState::panel_rect`]), the overscan audit ([`overscan_rects`]) and the HUD lint
+/// (`hud_format::lint_menus`) all place through it, so none can drift from another.
+pub(crate) fn place_panel(anchor: Rect, size: (f32, f32)) -> plx_ui::popover::Anchored {
+    plx_ui::popover::anchor_panel(
+        anchor,
+        size,
+        NEED_H,
+        theme::layout::PLAYER_MENU_GAP,
+        plx_ui::popover::Placement::PLAYER_MENU,
+    )
+}
 
 /// The hand-assigned focus key of each row. `SetQuality` rungs are an exhaustive match, so a new
 /// rung cannot compile without claiming a key; none of these is a discriminant, a position or a
@@ -635,13 +650,7 @@ impl MoreMenuState {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
             let ph = self.form.table.measured_height().max(120.0);
-            let placed = plx_ui::popover::anchor_panel(
-                self.anchor,
-                (pw, ph),
-                NEED_H,
-                theme::layout::PLAYER_MENU_GAP,
-                plx_ui::popover::Placement::PLAYER_MENU,
-            );
+            let placed = place_panel(self.anchor, (pw, ph));
             self.side.set(placed.side);
             placed.rect
         })
@@ -893,12 +902,9 @@ fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
 /// the room fills (the track menu's audit asks the same).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let placed = plx_ui::popover::anchor_panel(
+    let placed = place_panel(
         crate::player_hud::classic::frame_geometry().row,
         (plx_ui::table::MENU_MAX_W, plx_ui::consts::SCR_H),
-        NEED_H,
-        theme::layout::PLAYER_MENU_GAP,
-        plx_ui::popover::Placement::PLAYER_MENU,
     );
     out.push(("… overflow menu panel", placed.rect));
 }

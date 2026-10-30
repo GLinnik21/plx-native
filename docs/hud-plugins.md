@@ -486,9 +486,9 @@ glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`u
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
 A `toggle_section` item draws a SELECTED face while its section is open (`hud_tab_state`'s second flag,
 `player_hud.rs:1587-1590`): `pill` uses `TabPill`'s own selected face, `disc` its `solid` face; the focus face wins when
-both hold. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (UNVERIFIED value:
-the repo has no such floor today; the PR derives it from the smallest control the app's own screens place, pins it, and
-it must admit the reference's 52). A control has no alpha key and the palette is `#rrggbb` (D12), but an allow-list ink
+both hold. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
+in PR5d from the narrowest seat the app's own screens place and pinned by a test, see "Unverified items"; it admits the
+reference's 52). A control has no alpha key and the palette is `#rrggbb` (D12), but an allow-list ink
 can be translucent (`HAIRLINE` is `with_a(WHITE, 0.10)`, `ui/src/theme.rs:949`), so a rest face's GLYPH ink, composited
 at its alpha, must reach 3:1 contrast against black (relative luminance at least 0.10), the darkest ground a scrim over a
 dark frame gives it, or, on an opaque ground of its own (`solid`), 3:1 against that ground; lint error otherwise. Classic's
@@ -625,7 +625,8 @@ changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot
 marker ends or Watch Credits dismisses the offer.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
-  of the content conditions the package names (`chapters.present`, `title.is_episode`); `transport.paused` counts as
+  of the content conditions the package names (`chapters.present`, `title.is_episode`; a placed `previous` or `next`
+  names `title.is_episode`, because the app drops that pair for a non-episode); `transport.paused` counts as
   holding either way, because `toggle_play`'s keys flip it (F13). The compiler enumerates the valuations (two per
   content condition, so at most four today). The only hard requirement: a More cell with `when: "title.is_episode"`
   fails, since every movie would lose More and with it Stats for nerds, the bug-report path (F16).
@@ -1514,7 +1515,7 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 ## Unverified items
 
 - Rough caption and block arithmetic (Captions, the reference estimates); the 0.871 crop scale.
-- `MIN_CONTROL_SIZE`'s value (Package format).
+- `MIN_CONTROL_SIZE`'s value: 26 px, derived and not tried on the set: the narrowest seat the app's own screens place (a Library jump-rail letter at `RAIL_MIN_PITCH`, `screens/src/library/layout.rs:33`); the smallest control face is 56 (`ui/src/page_header.rs:56`), which would reject the reference's 52 (Package format).
 - Whether `p.text`'s y is the glyph top or a baseline (changes no offset; Package format, `leading`).
 - Whether the strict reader exposes an object's pairs in document order (state-keyed values).
 - Whether `card_row`'s tile paint can draw the over-video rim in place of the shader ring (D11).

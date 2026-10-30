@@ -12,7 +12,9 @@
 //! and evaluates every `when` with its own `Layout::holds`: there is no second state walk and no second
 //! condition evaluator, so the state count is `reach`'s by construction. A state is
 //! (open sections, slot) under a valuation of `chapters.present` and `title.is_episode`; a condition
-//! the package does not name has the one value it holds.
+//! the package does not name has the one value it holds. A package that places `previous` or `next`
+//! names `title.is_episode` whether it writes the term or not (the command table makes the pair absent
+//! for a non-episode), so it is compiled as a movie as well as an episode.
 //!
 //! **`transport.paused`** is an axis of the compile ONLY when the package names it in a `when` or in a
 //! number or gap (a key that moves geometry): then every state is compiled twice, paused and playing
@@ -105,7 +107,7 @@ pub struct AppLabels {
 impl AppLabels {
     /// The label a `pill` or `button` carries for `command` (a `toggle_section`'s `section` picks the
     /// tab); an empty string for a command with no app string here, which measures as padding only.
-    fn of(&self, command: &str, section: Option<&str>, episode: bool) -> &str {
+    pub(super) fn of(&self, command: &str, section: Option<&str>, episode: bool) -> &str {
         match (command, section) {
             ("toggle_section", Some("info")) => &self.tab_info,
             ("toggle_section", Some("chapters")) => &self.tab_chapters,
@@ -364,6 +366,9 @@ pub enum DrawOp {
 pub struct CardOp {
     pub op: DrawOp,
     pub present: Live<bool>,
+    /// the RFC 6901 pointer into the package of the node that produced `op` (the strip's `card.art`, an
+    /// overlay or below cell's content): the same provenance [`CompiledState::origin`] gives a state's ops
+    pub origin: String,
 }
 
 /// One op's share of the cost terms.
@@ -439,6 +444,16 @@ pub struct CompiledState {
     /// A Skip state only, and only when the credits pill changes anything: the whole state as laid out
     /// when the pill is the CREDITS one (see [`CompiledState::skip_variant`]).
     pub skip_alt: Option<Box<CompiledState>>,
+    /// `origins[i]` is the pointer of the node that produced `ops[i]` ([`CompiledState::origin`])
+    origins: Vec<String>,
+    /// `control_origins[i]` is the pointer of the item that produced `controls[i]`
+    /// ([`CompiledState::control_pointer`])
+    control_origins: Vec<String>,
+    /// `(pointer, rect)` of each `vstack` this state places ([`CompiledState::vstack_rect`])
+    vstacks: Vec<(String, Rect)>,
+    /// the pointer of the `up_next` object, which owns both stand-ins (the offer and the pill); `""` where the
+    /// package places none ([`CompiledState::band_extents`])
+    standin_origin: String,
 }
 
 impl CompiledState {
@@ -451,6 +466,28 @@ impl CompiledState {
             (SkipKind::Credits, Some(alt)) => alt,
             _ => self,
         }
+    }
+
+    /// **Provenance of a draw op:** the RFC 6901 pointer, into the package, of the node that produced
+    /// `ops[op]` (a text cell's `text` object, a `rect` cell's object, a control's item, the strip, the
+    /// scrim object for the scrim, the `up_next` object for the Up Next offer and the Skip pill). A synthetic
+    /// op names the node that owns it, so the pointer is never empty for an index in range. This is what a
+    /// geometric lint finding points at. An index out of range answers `""`.
+    pub fn origin(&self, op: usize) -> &str {
+        self.origins.get(op).map_or("", String::as_str)
+    }
+
+    /// The RFC 6901 pointer of the item that produced `controls[control]` (the same item the control's
+    /// `DrawOp::Control` was pushed for). An index out of range answers `""`.
+    pub fn control_pointer(&self, control: usize) -> &str {
+        self.control_origins.get(control).map_or("", String::as_str)
+    }
+
+    /// **Provenance of a `vstack`:** the rect the `vstack` at `pointer` was laid out in (its cells draw from
+    /// its left edge, a nested row such as a `rect` from further in), or `None` for a pointer that is not a
+    /// `vstack` this state places (a `when` removed it, or it lies in a strip card's template).
+    pub fn vstack_rect(&self, pointer: &str) -> Option<Rect> {
+        self.vstacks.iter().find(|(p, _)| p == pointer).map(|&(_, r)| r)
     }
 
     /// The control called `id`.
@@ -510,36 +547,56 @@ impl CompiledState {
         self.controls.iter().find(|c| c.command == "toggle_section" && c.section.as_deref() == Some(section)).map(|c| c.rect)
     }
 
-    /// The top of the highest drawn extent: interactive only (a control, the bar with its knob, Up Next's
-    /// two buttons, the Skip pill at either width), or under `block` every drawn extent but the scrim,
-    /// Up Next's still and caption included.
-    fn top(&self, block: bool) -> Option<f32> {
-        let mut ys: Vec<f32> = self.controls.iter().map(|c| c.rect.y).collect();
-        ys.extend(self.playbar.map(|p| bar_top(p.track)));
+    /// **The extents the caption band counts** in this state, each with the node that drew it: interactive
+    /// ones only (a control, the bar with its focused knob, Up Next's two buttons, the Skip pill at either
+    /// width), or under `block` every drawn extent but the scrim, Up Next's still and caption included. The
+    /// band is the highest `top` of these over the compact states ([`Compiled::compact_band_extents`]).
+    ///
+    /// The two stand-ins count in EVERY state (they are where the offer or the pill would land,
+    /// [`CompiledState::standin`]), drawn or not, so they are named by the node that owns them. The bar is
+    /// `playbar` (the last playbar cell: each overwrites the one before), which also counts under `block`
+    /// for every earlier playbar cell.
+    pub(crate) fn band_extents(&self, block: bool) -> impl Iterator<Item = BandExtent<'_>> {
+        let mut out = Vec::new();
+        for (i, c) in self.controls.iter().enumerate() {
+            out.push(BandExtent { top: c.rect.y, rect: c.rect, what: "control", pointer: self.control_pointer(i) });
+        }
+        let bar_op = self.ops.iter().rposition(|op| matches!(op, DrawOp::Playbar { .. }));
+        if let Some(bar) = self.playbar {
+            out.push(bar_extent(bar.track, bar_op.map_or("", |i| self.origin(i))));
+        }
+        let owner = self.standin_origin.as_str();
+        let at = |what: &'static str, rect: Rect| BandExtent { top: rect.y, rect, what, pointer: owner };
         if let Some(u) = self.standin.up_next {
-            ys.extend([u.credits.y, u.next.y]);
+            out.extend([at("Up Next button", u.credits), at("Up Next button", u.next)]);
             if block {
-                ys.extend(u.still.map(|r| r.y));
-                ys.extend(u.caption.map(|r| r.y));
+                out.extend(u.still.map(|r| at("Up Next still", r)));
+                out.extend(u.caption.map(|r| at("Up Next caption", r)));
             }
         }
-        ys.extend(self.standin.skip.into_iter().flatten().map(|r| r.y));
+        out.extend(self.standin.skip.into_iter().flatten().map(|r| at("Skip pill", r)));
         if block {
-            for op in &self.ops {
-                match op {
-                    DrawOp::Scrim { .. } | DrawOp::UpNext { .. } | DrawOp::SkipPill { .. } | DrawOp::Control(_) => {}
-                    DrawOp::Ground { rect, .. }
-                    | DrawOp::Text { rect, .. }
-                    | DrawOp::Image { rect, .. }
-                    | DrawOp::Icon { rect, .. }
-                    | DrawOp::Rule { rect, .. }
-                    | DrawOp::Facts { rect, .. }
-                    | DrawOp::Strip { rect, .. } => ys.push(rect.y),
-                    DrawOp::Playbar { track, .. } => ys.push(bar_top(*track)),
-                }
+            for (i, op) in self.ops.iter().enumerate() {
+                let (what, rect) = match op {
+                    // counted above, from the state's own report of them
+                    DrawOp::Scrim { .. } | DrawOp::UpNext { .. } | DrawOp::SkipPill { .. } | DrawOp::Control(_) => continue,
+                    DrawOp::Playbar { track, .. } => {
+                        if Some(i) != bar_op {
+                            out.push(bar_extent(*track, self.origin(i)));
+                        }
+                        continue;
+                    }
+                    DrawOp::Ground { rect, .. } => ("ground", *rect),
+                    DrawOp::Rule { rect, .. } => ("rule", *rect),
+                    DrawOp::Text { rect, .. } | DrawOp::Facts { rect, .. } => ("text", *rect),
+                    DrawOp::Image { rect, .. } => ("image", *rect),
+                    DrawOp::Icon { rect, .. } => ("icon", *rect),
+                    DrawOp::Strip { rect, .. } => ("strip", *rect),
+                };
+                out.push(BandExtent { top: rect.y, rect, what, pointer: self.origin(i) });
             }
         }
-        ys.into_iter().reduce(f32::min)
+        out.into_iter()
     }
 
     /// Set the package's one caption band on this state (and on the credits layout it carries).
@@ -558,15 +615,40 @@ fn bar_top(track: Rect) -> f32 {
     track.y.min(track.y + track.h * 0.5 - KNOB_GLOW_R)
 }
 
+/// One drawn extent that counts toward the caption band ([`CompiledState::band_extents`]), and the node that
+/// drew it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BandExtent<'a> {
+    /// the top the band counts
+    pub top: f32,
+    /// the rect it occupies
+    pub rect: Rect,
+    /// what it is, in a word, for a message
+    pub what: &'static str,
+    /// the RFC 6901 pointer of the node that drew it ([`CompiledState::origin`], `control_pointer`)
+    pub pointer: &'a str,
+}
+
+/// The scrub bar's extent: the track and the focused knob's glow above it ([`bar_top`]), drawn by `pointer`.
+fn bar_extent(track: Rect, pointer: &str) -> BandExtent<'_> {
+    let top = bar_top(track);
+    BandExtent { top, rect: Rect::new(track.x, top, track.w, track.y + track.h - top), what: "scrub bar", pointer }
+}
+
 /// A package compiled in every state `reach` enumerates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Compiled {
     states: Vec<CompiledState>,
-    /// which of `chapters.present`, `title.is_episode` and `transport.paused` the package names; one it
-    /// does not name has a single value (`true`, `true`, `false`)
+    /// which of `chapters.present`, `title.is_episode` and `transport.paused` the package names (placing
+    /// `previous` or `next` names `title.is_episode`); one it does not name has a single value (`true`,
+    /// `true`, `false`)
     named: Named,
     /// the one caption band, in every state
     band: HudBand,
+    /// does the package count every drawn extent toward the band (`layout.band: "block"`) rather than the
+    /// interactive ones alone? Read once, here, by [`Compiled::compact_band_extents`] for the compiler and
+    /// the lint alike
+    block: bool,
     findings: Vec<CompileFinding>,
 }
 
@@ -602,7 +684,8 @@ impl Compiled {
     }
 
     /// The state for `open` and `slot` under the content the viewer has: a condition the package does
-    /// not name is ignored, so a query about `episode` finds the one valuation there is.
+    /// not name is ignored, so a query about `episode` finds the one valuation there is (a package that places
+    /// `previous` or `next` names `episode`, so for it the query picks the movie or the episode form).
     pub fn lookup(&self, open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> Option<&CompiledState> {
         self.state(StateKey {
             open,
@@ -634,6 +717,14 @@ impl Compiled {
     pub fn band(&self) -> HudBand {
         self.band
     }
+
+    /// **Every extent that counts toward the band**, over the compact states in [`Compiled::states`] order
+    /// (the state each belongs to beside it): the one source the band is the minimum `top` of
+    /// ([`compile`]) and a lint names the node that sets it from, so neither can drift from the other.
+    pub(crate) fn compact_band_extents(&self) -> impl Iterator<Item = (&CompiledState, BandExtent<'_>)> {
+        let block = self.block;
+        self.states.iter().filter(|s| s.key.open == 0).flat_map(move |s| s.band_extents(block).map(move |extent| (s, extent)))
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -655,16 +746,6 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
             }
         }
     }
-    let block = package.layout.get("band").and_then(Val::as_str) == Some("block");
-    let band = states
-        .iter()
-        .filter(|s| s.key.open == 0)
-        .filter_map(|s| s.top(block))
-        .reduce(f32::min)
-        .map_or(HudBand::CLASSIC, HudBand::from_controls_top);
-    for state in &mut states {
-        state.set_band(band);
-    }
     let mut findings = frame.findings;
     if let Some(wide) = states.iter().map(|s| s.row_ids.len()).filter(|&n| n > MAX_ROW_ITEMS).max() {
         findings.push(CompileFinding {
@@ -673,12 +754,23 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
             message: format!("the replaced row places {wide} controls, but the geometry report holds {MAX_ROW_ITEMS}, so the tail has no stop"),
         });
     }
-    Compiled {
+    let mut compiled = Compiled {
         states,
         named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
-        band,
+        band: HudBand::CLASSIC,
+        block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
         findings,
+    };
+    let band = compiled
+        .compact_band_extents()
+        .map(|(_, extent)| extent.top)
+        .reduce(f32::min)
+        .map_or(HudBand::CLASSIC, HudBand::from_controls_top);
+    for state in &mut compiled.states {
+        state.set_band(band);
     }
+    compiled.band = band;
+    compiled
 }
 
 /// What a package's conditions ask of the frame, read from the typed tree.
@@ -818,11 +910,17 @@ struct Out {
     ops: Vec<DrawOp>,
     /// `ops[i]`'s presence under the `item.*` terms in force when it was pushed (a strip card's)
     present: Vec<Live<bool>>,
+    /// `ops[i]`'s provenance: the pointer of the node that produced it
+    origins: Vec<String>,
     /// the `item.*` terms of the `when`s around what is being emitted
     gate: Vec<CondTerm>,
     controls: Vec<ControlRect>,
     /// each band's ops, as ranges of `ops`, in the order the bands were filled
     spans: Vec<Span>,
+    /// `controls[i]`'s provenance: the pointer of the item
+    control_origins: Vec<String>,
+    /// `(pointer, rect)` of each `vstack` placed
+    vstacks: Vec<(String, Rect)>,
     /// the rects of the replaced segments
     replaced: Vec<Rect>,
     title: Option<Rect>,
@@ -831,9 +929,10 @@ struct Out {
 }
 
 impl Out {
-    /// Append `op`, present when every `item.*` term in force holds.
-    fn push(&mut self, op: DrawOp) {
+    /// Append `op` that the node at `origin` produced, present when every `item.*` term in force holds.
+    fn push(&mut self, origin: &str, op: DrawOp) {
         self.present.push(presence(&self.gate));
+        self.origins.push(origin.to_owned());
         self.ops.push(op);
     }
 }
@@ -1407,7 +1506,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 if bind.starts_with("title.") && out.title.is_none() {
                     out.title = Some(Rect::new(r.x, r.y, 0.0, 0.0));
                 }
-                out.push(DrawOp::Text {
+                out.push(&o.pointer, DrawOp::Text {
                     rect: r,
                     bind,
                     size: self.size_px(o, "size"),
@@ -1418,18 +1517,18 @@ impl<'e, 'p> Env<'e, 'p> {
                     leading: self.num(o, "leading").unwrap_or_else(|| self.measure.line_h(self.size_px(o, "size"))),
                 });
             }
-            "image" => out.push(DrawOp::Image {
+            "image" => out.push(&o.pointer, DrawOp::Image {
                 rect: r,
                 bind: o.get("bind").and_then(Val::as_str).unwrap_or("").to_owned(),
                 radius: self.num(o, "radius").unwrap_or(0.0),
             }),
-            "icon" => out.push(DrawOp::Icon {
+            "icon" => out.push(&o.pointer, DrawOp::Icon {
                 rect: r,
                 asset: o.get("asset").and_then(Val::as_str).unwrap_or("").to_owned(),
                 ink: self.live_ink(o, "ink"),
             }),
-            "rule" => out.push(DrawOp::Rule { rect: r, ink: self.live_ink(o, "ink") }),
-            "facts" => out.push(DrawOp::Facts {
+            "rule" => out.push(&o.pointer, DrawOp::Rule { rect: r, ink: self.live_ink(o, "ink") }),
+            "facts" => out.push(&o.pointer, DrawOp::Facts {
                 rect: r,
                 size: self.size_px(o, "size"),
                 bold: self.live_bold(o),
@@ -1447,7 +1546,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 let below = self.num_or_default(o, "grab", "below");
                 let grab = Rect::new(r.x, r.y - above, r.w, above + r.h + below);
                 out.playbar = Some(PlaybarRects { track: r, grab });
-                out.push(DrawOp::Playbar {
+                out.push(&o.pointer, DrawOp::Playbar {
                     track: r,
                     grab,
                     fill: self.live_ink(o, "fill"),
@@ -1493,7 +1592,8 @@ impl<'e, 'p> Env<'e, 'p> {
             section: ctl.o.get("section").and_then(Val::as_str).map(str::to_owned),
         };
         out.controls.push(c.clone());
-        out.push(DrawOp::Control(c));
+        out.control_origins.push(ctl.o.pointer.clone());
+        out.push(&ctl.o.pointer, DrawOp::Control(c));
     }
 
     fn emit_rect(&self, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
@@ -1501,7 +1601,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let left = (r.x - bleed).max(0.0);
         let right = (r.x + r.w + bleed).min(SCR_W);
         let ground = Rect::new(left, r.y, right - left, r.h);
-        out.push(DrawOp::Ground { rect: ground, ink: self.live_ink(o, "ink"), radius: self.num(o, "radius").unwrap_or(0.0) });
+        out.push(&o.pointer, DrawOp::Ground { rect: ground, ink: self.live_ink(o, "ink"), radius: self.num(o, "radius").unwrap_or(0.0) });
         let inner = Rect::new(ground.x + pad, ground.y + pad, ground.w - 2.0 * pad, ground.h - 2.0 * pad);
         let cells = self.objects(o, "cells");
         self.place_row(&cells, self.gap(o, "gap").unwrap_or(0.0), inner, mode, out);
@@ -1516,6 +1616,7 @@ impl<'e, 'p> Env<'e, 'p> {
         {
             out.title = Some(Rect::new(r.x, r.y, 0.0, 0.0));
         }
+        out.vstacks.push((o.pointer.clone(), r));
         let ((items, gap), _) = self.vstack_items(o);
         let stack = VStack::new(&items, gap, Anchor::Top(r.y));
         let cells: Vec<&Object> = self.objects(o, "cells").into_iter().filter(|c| self.when(c)).filter(|c| content(c).is_some()).collect();
@@ -1540,11 +1641,16 @@ impl<'e, 'p> Env<'e, 'p> {
         let visible = if pitch > 0.0 { (r.w / pitch).floor() as usize + 1 } else { 0 };
         let art = Rect::new(r.x, r.y, card_w, card_h);
         let mut tmp = Out::default();
-        tmp.push(DrawOp::Image {
-            rect: art,
-            bind: card.get("art").and_then(Val::as_object).and_then(|a| a.get("bind")).and_then(Val::as_str).unwrap_or("").to_owned(),
-            radius: self.num(o, "radius").unwrap_or(0.0),
-        });
+        let art_node = card.get("art").and_then(Val::as_object);
+        let art_origin = art_node.map_or(&card.pointer, |a| &a.pointer);
+        tmp.push(
+            art_origin,
+            DrawOp::Image {
+                rect: art,
+                bind: art_node.and_then(|a| a.get("bind")).and_then(Val::as_str).unwrap_or("").to_owned(),
+                radius: self.num(o, "radius").unwrap_or(0.0),
+            },
+        );
         let overlay = self.objects(card, "overlay");
         self.place_row(&overlay, 0.0, art, &Mode { replaces: &[], hide: false, standin_left: None, host: "" }, &mut tmp);
         let mut y = art.y + card_h + self.gap(card, "below_gap").unwrap_or(0.0);
@@ -1560,8 +1666,14 @@ impl<'e, 'p> Env<'e, 'p> {
             tmp.gate.clear();
             y += h;
         }
-        let template = tmp.ops.into_iter().zip(tmp.present).map(|(op, present)| CardOp { op, present }).collect();
-        out.push(DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
+        let template = tmp
+            .ops
+            .into_iter()
+            .zip(tmp.present)
+            .zip(tmp.origins)
+            .map(|((op, present), origin)| CardOp { op, present, origin })
+            .collect();
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
@@ -1691,18 +1803,22 @@ impl<'e, 'p> Env<'e, 'p> {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
                     let rest = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Rest::Film, Self::rest);
-                    out.push(DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") });
+                    out.push(
+                        up.map_or("", |u| u.pointer.as_str()),
+                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") },
+                    );
                 }
             }
             Slot::Skip => {
                 if let Some(rects) = standin.skip {
-                    out.push(DrawOp::SkipPill { rects });
+                    out.push(up.map_or("", |u| u.pointer.as_str()), DrawOp::SkipPill { rects });
                 }
             }
             Slot::Discs => {}
         }
         let block_top = boxes.iter().map(|b| b.y).reduce(f32::min).unwrap_or(SCR_H);
-        let scrim = layout.get("scrim").and_then(Val::as_object).and_then(|s| {
+        let scrim_node = layout.get("scrim").and_then(Val::as_object);
+        let scrim = scrim_node.and_then(|s| {
             let top = match self.name(s, "cover")? {
                 "fixed" => SCR_H - self.num(s, "height").unwrap_or(0.0),
                 _ => (block_top - self.num(s, "extra").unwrap_or(0.0)).max(0.0),
@@ -1723,6 +1839,10 @@ impl<'e, 'p> Env<'e, 'p> {
             spans.push(Span { band: host.to_owned(), chrome, ops: band_ops + shift..out.ops.len() + shift });
         }
         ops.append(&mut out.ops);
+        // the scrim op is the node `layout.scrim` (its owner is the layout when there is none to name)
+        let mut origins: Vec<String> =
+            scrim.map(|_| scrim_node.map_or(&layout.pointer, |s| &s.pointer).clone()).into_iter().collect();
+        origins.append(&mut out.origins);
 
         let row_ids = self.row_ids(host, &replaces);
         let cost = cost_of(&ops);
@@ -1744,6 +1864,10 @@ impl<'e, 'p> Env<'e, 'p> {
             spans,
             band: HudBand::CLASSIC,
             skip_alt: None,
+            origins,
+            control_origins: out.control_origins,
+            vstacks: out.vstacks,
+            standin_origin: up.map_or_else(String::new, |u| u.pointer.clone()),
         }
     }
 
