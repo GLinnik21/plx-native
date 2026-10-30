@@ -27,8 +27,13 @@
 //! `title.main`, `info.title` and `info.summary` are server text. The labels on pills, buttons, the Up Next
 //! pair and the Skip pill are not Text ops: the compiler sizes those rects FROM their labels
 //! (`TabPill::width_measured`, `Button::pill_w_measured`, `stand_in_w`), so "the label fits its rect" holds
-//! by construction and what a long label can break is the rects' overlap and `SAFE`, which I4 and I5 report.
-//! The playbar's two clocks have no compiled rect (the playbar places them) and are not checked here.
+//! by construction. What a long label can break is the rects' overlap and `SAFE`, which I4 and I5 report, and
+//! the width of the fixed-`w` `vstack` a pill or button lives in, which nothing else sees (the rect is sized
+//! from the label whatever room the cell has, so it draws past the `vstack`'s end with nothing beside it to
+//! collide with). That last one is this module's: each pill or button is judged by its drawn rect against the
+//! enclosing `vstack`'s right edge ([`Scan::control`]), as `HUD-E0601` at the control's item, with the label
+//! it shows as the string. A disc has a fixed face and is no label. The playbar's two clocks have no compiled
+//! rect (the playbar places them) and are not checked here.
 //!
 //! **The room** is the smallest of the limits below, measured from the text's own `x` (it draws left to
 //! right from there):
@@ -69,7 +74,7 @@ use plx_ui::consts::SAFE;
 use plx_ui::fmt::KICKER_SEPARATOR;
 use plx_ui::Rect;
 
-use super::compile::{AppLabels, CompiledState, DrawOp, Live, SkipKind};
+use super::compile::{AppLabels, CompiledState, ControlRect, DrawOp, Live, SkipKind, Widget};
 #[cfg(test)]
 use super::lint::testing::{Base, InvalidCase};
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
@@ -509,6 +514,93 @@ impl Scan<'_, '_> {
                 _ => {}
             }
         }
+        for (i, control) in layout.controls.iter().enumerate() {
+            self.control(control, layout.control_pointer(i), layout, skip, found);
+        }
+    }
+
+    /// Judge a label-sized control (`pill`, `button`) against the fixed-`w` `vstack` it lives in. The compiler
+    /// sizes its rect FROM its label (or `min_w`), whatever room the cell has, so a label that outgrows the
+    /// `vstack` draws past its end and nothing clips it. The rect, not the label, is measured: padding, `min_w`
+    /// and the widest variant of the label (an `actions` button takes one width over all of them) are in it.
+    /// Other limits (`SAFE`, a control beside it) are I5's and I4's: they see the rect, and fail on a
+    /// collision. A disc has a fixed face and is no label.
+    fn control(
+        &self,
+        control: &ControlRect,
+        pointer: &str,
+        layout: &CompiledState,
+        skip: SkipKind,
+        found: &mut Vec<Finding>,
+    ) {
+        if control.widget == Widget::Disc {
+            return;
+        }
+        let Some(right) =
+            enclosing_vstack_right(pointer, self.nodes, &|vstack| layout.vstack_rect(vstack))
+        else {
+            return;
+        };
+        let (measured, room) = (control.rect.w, right - control.rect.x);
+        let verdict = judge(measured, room, self.cx.opts.text_skew);
+        if verdict == Verdict::Fits {
+            return;
+        }
+        let shown = self.texts.labels.of(
+            &control.command,
+            control.section.as_deref(),
+            layout.key.episode,
+        );
+        // a control with no app label (a `min_w` button of `open_more`) is named by its id
+        let string = if shown.is_empty() { &control.id } else { shown };
+        let mut ctx = ctx_for(self.cx, self.state);
+        ctx.text = Some(TextFact {
+            string: string.to_owned(),
+            measured,
+            room,
+        });
+        let own = if skip == SkipKind::Credits {
+            format!("{} (credits layout)", control.id)
+        } else {
+            control.id.clone()
+        };
+        ctx.rects.push(named(&own, control.rect));
+        ctx.rects.push(named(
+            "vstack",
+            Rect::new(control.rect.x, control.rect.y, room, control.rect.h),
+        ));
+        let what = if control.widget == Widget::Pill {
+            "pill"
+        } else {
+            "button"
+        };
+        found.push(
+            match verdict {
+                Verdict::Overflows => Finding::new(
+                    &codes::E0601,
+                    pointer,
+                    format!(
+                        "the {what} `{}` (\"{string}\") is {measured:.1} px wide but has {room:.1} px before the end of its vstack",
+                        control.id
+                    ),
+                    "A control is as wide as its label and never clips: give its vstack room (a wider `w`), or \
+                     place the control outside the vstack, so the longest translation fits",
+                ),
+                _ => Finding::new(
+                    &codes::W0602,
+                    pointer,
+                    format!(
+                        "the {what} `{}` (\"{string}\") fits with {:.1} px to spare before the end of its vstack, less \
+                         than the {:.1} px the measurement skew needs",
+                        control.id,
+                        room - measured,
+                        self.cx.opts.text_skew
+                    ),
+                    "Leave at least the measurement skew between the simulator and the TV free beside the control",
+                ),
+            }
+            .with(ctx),
+        );
     }
 
     fn text(
@@ -653,6 +745,18 @@ const LABEL_BEHIND_AN_IMAGE_IN_A_VSTACK: &[(&str, &str)] = &[(
      ] } } ] } }",
 )];
 
+/// Classic's Info card column cut to a 200 px vstack, its synopsis cell replaced by an `actions` row with one
+/// From the Beginning button.
+#[cfg(test)]
+const BUTTON_IN_NARROW_VSTACK: &[(&str, &str)] = &[
+    ("\"vstack\": { \"gap\": 6, \"w\": \"fill\", \"cells\": [", "\"vstack\": { \"gap\": 6, \"w\": 200, \"cells\": ["),
+    (
+        "{ \"text\": { \"bind\": \"info.summary\", \"size\": \"LABEL\", \"ink\": \"TEXT_SECONDARY\", \"leading\": 29, \"max_lines\": 2 } },",
+        "{ \"actions\": { \"axis\": \"row\", \"gap\": 16, \"item_h\": 50, \"items\": [ \
+         { \"id\": \"fb2\", \"command\": \"from_beginning\", \"widget\": \"button\", \"size\": 50 } ] } },",
+    ),
+];
+
 /// The invalid packages of this module's codes (`lint::testing::assert_case` runs each): the base, the
 /// exact-once edits, the code and pointer the edit must yield.
 #[cfg(test)]
@@ -697,6 +801,20 @@ pub(super) const INVALID: &[InvalidCase] = &[
         base: Base::Reference,
         edits: LABEL_BEHIND_AN_IMAGE_IN_A_VSTACK,
         langs: &["en"],
+        skew: 0.0,
+        also: &[],
+    },
+    // A label-sized control in a fixed-`w` vstack: classic's Info card column cut to 200 px, its synopsis cell
+    // swapped for an `actions` row holding one From the Beginning button. `emit_actions` sizes the button from
+    // its label (or `min_w`) whatever the cell's width, so it runs to x 700..809 depending on the language, past
+    // the vstack's end at 662, and nothing stands beside it for I4 or I5 to find
+    InvalidCase {
+        name: "a button wider than the fixed-width vstack it lives in",
+        code: "HUD-E0601",
+        pointer: "/layout/block/3/cells/0/rect/cells/1/vstack/cells/1/actions/items/0",
+        base: Base::Classic,
+        edits: BUTTON_IN_NARROW_VSTACK,
+        langs: &[],
         skew: 0.0,
         also: &[],
     },
@@ -1058,6 +1176,61 @@ mod tests {
             texts.len(),
             "one E0601 per distinct text, not per state: {found:#?}"
         );
+    }
+
+    const BUTTON: &str = "/layout/block/3/cells/0/rect/cells/1/vstack/cells/1/actions/items/0";
+
+    /// The label-sized control in a narrow vstack, in English: what the finding reports.
+    #[test]
+    fn a_button_past_its_vstack_reports_its_label_its_width_and_the_room() {
+        let text = apply(Base::Classic, BUTTON_IN_NARROW_VSTACK);
+        let lang = LintLang::for_tag("en").unwrap();
+        let found: Vec<Finding> = check_in(&text, &lang, &ShippedMeasure, 0.0);
+        assert_eq!(found.len(), 1, "one fault, one finding: {found:#?}");
+        let f = &found[0];
+        assert_eq!((f.code, f.pointer.as_str()), ("HUD-E0601", BUTTON));
+        let fact = f.ctx.text.clone().expect("the label's width and room");
+        assert_eq!(fact.string, lang.labels.from_beginning);
+        assert!(fact.measured > fact.room, "{fact:?}");
+        let names: Vec<&str> = f.ctx.rects.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["fb2", "vstack"]);
+        // the vstack rect runs from the button's x to the vstack's end: its width is the room
+        assert_eq!(f.ctx.rects[1].w, fact.room);
+        assert_eq!(f.ctx.rects[0].w, fact.measured);
+        assert!(f.message.contains("button `fb2`") && f.message.contains(&lang.labels.from_beginning), "{}", f.message);
+    }
+
+    /// The label is the language's: each of the ten languages names its own, and a language whose button fits
+    /// is silent (a pill or button is judged by its own rect, not by a fixed list of languages).
+    #[test]
+    fn a_button_past_its_vstack_is_found_in_the_languages_it_is_wider_in() {
+        let text = apply(Base::Classic, BUTTON_IN_NARROW_VSTACK);
+        let found = text_findings(&text, 0.0);
+        let tags: BTreeSet<&str> = found.iter().filter_map(|f| f.ctx.lang.as_deref()).collect();
+        assert_eq!(tags.len(), 10, "the button outgrows 200 px in every shipped language: {tags:?}");
+        assert!(found.iter().all(|f| f.pointer == BUTTON), "{:?}", pointers(&found));
+    }
+
+    /// A button inside its vstack is silent, and the check looked: widen the vstack and only a skew nothing
+    /// clears finds it, as the margin warning.
+    #[test]
+    fn a_button_inside_its_vstack_is_silent_until_a_skew_it_cannot_clear() {
+        let wide = apply(Base::Classic, BUTTON_IN_NARROW_VSTACK).replace("\"w\": 200,", "\"w\": 1000,");
+        assert!(in_en(&wide, 0.0).is_empty(), "a 1000 px vstack holds the button");
+        let margin: Vec<Finding> = in_en(&wide, 1e9).into_iter().filter(|f| f.pointer == BUTTON).collect();
+        assert_eq!(margin.len(), 1, "{margin:#?}");
+        assert_eq!(margin[0].code, "HUD-W0602");
+    }
+
+    /// A disc has a fixed face and no label: a disc past a vstack is not this check's.
+    #[test]
+    fn a_disc_is_not_a_label_sized_control() {
+        let text = apply(Base::Classic, BUTTON_IN_NARROW_VSTACK)
+            .replace("\"widget\": \"button\", \"size\": 50 } ] } },", "\"widget\": \"disc\", \"size\": 50 } ] } },")
+            .replace("\"w\": 200,", "\"w\": 20,");
+        assert!(text.contains("\"widget\": \"disc\", \"size\": 50") && text.contains("\"w\": 20,"));
+        let found = in_en(&text, 0.0);
+        assert!(found.iter().all(|f| f.pointer != BUTTON), "{found:#?}");
     }
 
     #[test]

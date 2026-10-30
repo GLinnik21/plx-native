@@ -108,7 +108,7 @@ pub struct AppLabels {
 impl AppLabels {
     /// The label a `pill` or `button` carries for `command` (a `toggle_section`'s `section` picks the
     /// tab); an empty string for a command with no app string here, which measures as padding only.
-    fn of(&self, command: &str, section: Option<&str>, episode: bool) -> &str {
+    pub(super) fn of(&self, command: &str, section: Option<&str>, episode: bool) -> &str {
         match (command, section) {
             ("toggle_section", Some("info")) => &self.tab_info,
             ("toggle_section", Some("chapters")) => &self.tab_chapters,

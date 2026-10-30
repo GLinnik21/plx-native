@@ -361,9 +361,10 @@ pub mod codes {
         /// A palette value that is not `#rrggbb`. Pointer: the value's.
         E0506 = (Error, "HUD-E0506", "palette-value");
         /// I10: app text (a tab or button label, a clock, the chapters fallback) does not fit in a language:
-        /// it is wider than its room, or it grows into a control, past `SAFE` or past its box. Pointer: the
-        /// text cell (or the control whose label it is). Context: `lang`, `text` (the string, its measured
-        /// width, the room) and the `rects` it meets. Server text may elide and is never checked.
+        /// it is wider than its room, or it grows into a control, past `SAFE` or past its box; or a pill or
+        /// button whose label-sized rect runs past the fixed-`w` vstack it lives in. Pointer: the text cell, or
+        /// the control's item. Context: `lang`, `text` (the string, its measured width, the room) and the
+        /// `rects` it meets. Server text may elide and is never checked.
         E0601 = (Error, "HUD-E0601", "text-fit");
         /// The minimum control size: a focusable control drawn smaller than the smallest seat the app's own
         /// screens give a focus target (`lint_size::MIN_CONTROL_SIZE`, the package format's `size` paragraph;
