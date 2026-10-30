@@ -356,9 +356,9 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
         settle(&mut page, &mut engine, &fixture, 0);
         page.layout.row_y(4, 0.0) - rest
     };
-    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, show_sort_info: false });
-    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, show_sort_info: false });
-    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
+    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false });
+    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, sort_value: false });
+    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
     assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
@@ -366,29 +366,42 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
 }
 
 #[test]
-fn sort_information_mode_keeps_the_real_library_focus_and_restores_legacy_geometry() {
+fn value_mode_keeps_the_real_library_focus_and_restores_the_caption_geometry() {
     use plx_plex::plex::session::UnderPosters;
     let _guard = plx_base::testlock::serial();
-    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { show_sort_info: true, ..UnderPosters::DEFAULT })));
-    let fixture = Fixture::new();
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters::DEFAULT)));
+    let mut fixture = Fixture::new();
+    fixture.listing = fixture.listing.clone().with_sort_key("year");
     let mut page = fixture.screen();
     page.initial = false;
-    assert!(page.layout.persistent_captions());
     let mut engine = FocusEngine::new();
     let first = page.key(page.pair.detail.elem_at(0).unwrap());
     engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
     deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: first, by: By::Restore });
     settle(&mut page, &mut engine, &fixture, 0);
+    assert!(page.layout.value_line(), "Sort value On and a sort with a value: the grid shows values");
     direction(&mut page, &mut engine, &fixture, Dir::Right);
     direction(&mut page, &mut engine, &fixture, Dir::Down);
     settle(&mut page, &mut engine, &fixture, 2000);
     assert_eq!(page.grid_position(engine.current(OWNER)), Some((1, 1)));
     let focus = engine.current(OWNER);
     let pitch = page.layout.grid_pitch();
-    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters::DEFAULT)));
+    assert_eq!(pitch - page.layout.card_h(), 60.0, "rows are 60 px apart while values show");
+    // Sort value Off: the grid draws as it did before, 40 px rows and the Title/Details band.
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { sort_value: false, ..UnderPosters::DEFAULT })));
     frame(&mut page, &mut engine, &fixture, 5000);
-    assert!(!page.layout.persistent_captions());
-    assert!(page.layout.grid_pitch() < pitch);
-    assert_eq!(engine.current(OWNER), focus, "turning off captions keeps the selected poster");
+    assert!(!page.layout.value_line());
+    assert_eq!(page.layout.grid_pitch() - page.layout.card_h(), 40.0);
+    assert_eq!(engine.current(OWNER), focus, "turning values off keeps the selected poster");
+    // Back On, but sorted by Title: no value to show, so the same plain geometry.
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters::DEFAULT)));
+    fixture.listing = fixture.listing.clone().with_sort_key("titleSort");
+    frame(&mut page, &mut engine, &fixture, 8000);
+    assert!(!page.layout.value_line(), "Title and Random sorts show no value");
+    assert_eq!(page.layout.grid_pitch() - page.layout.card_h(), 40.0);
+    // And a sort a later server declares, which the table does not word, keeps the captions too.
+    fixture.listing = fixture.listing.clone().with_sort_key("futureServerSort");
+    frame(&mut page, &mut engine, &fixture, 11000);
+    assert!(!page.layout.value_line());
     crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(None));
 }

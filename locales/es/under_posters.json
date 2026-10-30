@@ -17,7 +17,7 @@
   "under_posters.sample_title": "Película",
   "under_posters.sample_genre": "Drama",
   "under_posters.sort_value": "Valor de orden",
-  "under_posters.sort_value_detail": "Sustituye la línea de detalles mientras se ordena una biblioteca.",
+  "under_posters.sort_value_detail": "Sustituye la línea de detalles al ordenar.",
   "under_posters.value_today": "Hoy",
   "under_posters.value_yesterday": "Ayer"
 }

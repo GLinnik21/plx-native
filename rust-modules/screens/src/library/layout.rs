@@ -54,14 +54,17 @@ pub(super) struct Layout {
     /// The focused grid row's band height under the Under posters setting (0 / 80 / 112; the
     /// legacy 114 until [`with_band_h`](Self::with_band_h)). A pref input, not motion: not in the canon.
     band_h: f32,
-    sort_info: bool,
+    /// The grid shows a sort value under every poster: rows keep [`plx_ui::cards::SORT_VALUE_ROW_GAP`]
+    /// instead of 40 px, and the focused row opens [`plx_ui::cards::SORT_VALUE_BAND_H`]'s share. A pref
+    /// and sort input, not motion: not in the canon.
+    value_line: bool,
 }
 
 impl Layout {
     pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,rows:u32,status:bool,episodes:bool,grid_bands:[(row:u32,expansion:f32)]}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { libraries, rows, status, episodes, grid_bands, band_h: _, sort_info: _ } = self;
+        let Self { libraries, rows, status, episodes, grid_bands, band_h: _, value_line: _ } = self;
         c.bool(*libraries).u32(*rows as u32).bool(*status).bool(*episodes);
         c.seq(grid_bands.iter().filter(|band| band.row != usize::MAX).count());
         for band in grid_bands.iter().filter(|band| band.row != usize::MAX) {
@@ -77,7 +80,7 @@ impl Layout {
             episodes: false,
             grid_bands: [GridBand::CLOSED; MAX_GRID_BANDS],
             band_h: plx_ui::cards::LEGACY_BAND_H,
-            sort_info: false,
+            value_line: false,
         }
     }
 
@@ -87,9 +90,9 @@ impl Layout {
 
     pub(super) fn with_episodes(self, episodes: bool) -> Self { Self { episodes, ..self } }
 
-    pub(super) fn with_sort_info(self, on: bool) -> Self { Self { sort_info: on, ..self } }
+    pub(super) fn with_value_line(self, on: bool) -> Self { Self { value_line: on, ..self } }
 
-    pub(super) fn persistent_captions(&self) -> bool { self.sort_info }
+    pub(super) fn value_line(&self) -> bool { self.value_line }
 
     pub(super) fn with_band_h(self, band_h: f32) -> Self { Self { band_h, ..self } }
 
@@ -110,7 +113,7 @@ impl Layout {
     }
 
     fn band_growth_before(&self, row: usize) -> f32 {
-        if self.sort_info { 0.0 } else { plx_ui::cards::grid_growth_before_for(self.band_h, row.min(self.rows), &self.grid_bands) }
+        plx_ui::cards::grid_growth_before_for(self.band_h, row.min(self.rows), &self.grid_bands)
     }
 
     fn row_top(&self, row: usize) -> f32 {
@@ -139,7 +142,7 @@ impl Layout {
     pub(super) fn card_h(&self) -> f32 { self.style().h }
 
     pub(super) fn grid_pitch(&self) -> f32 {
-        self.card_h() + if self.sort_info { plx_ui::cards::TileLabel::SORT_BAND_H }
+        self.card_h() + if self.value_line { plx_ui::cards::SORT_VALUE_ROW_GAP }
             else { plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR }
     }
 
@@ -437,15 +440,40 @@ mod tests {
 }
 
 #[cfg(test)]
-mod sort_information_layout_tests {
+mod sort_value_layout_tests {
     use super::*;
+    use plx_ui::cards::{SORT_VALUE_BAND_H, SORT_VALUE_ROW_GAP};
+
+    fn value_layout(rows: usize, on: bool) -> Layout {
+        Layout::new(true, rows).with_value_line(on).with_band_h(if on { SORT_VALUE_BAND_H } else { 80.0 })
+    }
+
     #[test]
-    fn fixed_caption_pitch_keeps_all_rows_and_last_partial_row_inside_the_document() {
-        let layout = Layout::new(true, 17).with_sort_info(true).with_grid_focus(Some(3));
-        let plain = Layout::new(true, 17).with_sort_info(true);
-        for row in 0..17 { assert_eq!(layout.row_y(row, 0.0), plain.row_y(row, 0.0)); }
-        assert_eq!(layout.card_h(), plain.card_h());
-        assert!(layout.row_y(16, layout.max_scroll()) + layout.card_h()
-            + plx_ui::cards::TileLabel::SORT_BAND_H <= SCR_H - MARGIN_Y + 0.01);
+    fn rows_are_sixty_px_apart_with_values_and_forty_without() {
+        let (with, without) = (value_layout(17, true), value_layout(17, false));
+        assert!(with.value_line() && !without.value_line());
+        assert_eq!(with.grid_pitch() - with.card_h(), 60.0);
+        assert_eq!(without.grid_pitch() - without.card_h(), 40.0);
+        assert_eq!(SORT_VALUE_ROW_GAP, 60.0);
+        // No row is focused: every row is one pitch from the next.
+        assert!((with.row_y(5, 0.0) - with.row_y(4, 0.0) - (with.card_h() + 60.0)).abs() < 0.01);
+        assert!((without.row_y(5, 0.0) - without.row_y(4, 0.0) - (without.card_h() + 40.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_focused_row_opens_twenty_six_px_with_values() {
+        let plain = value_layout(17, true);
+        let open = value_layout(17, true).with_grid_focus(Some(3));
+        assert!((open.row_y(3, 0.0) - plain.row_y(3, 0.0)).abs() < 0.01, "the focused row itself does not move");
+        assert!((open.row_y(4, 0.0) - plain.row_y(4, 0.0) - 26.0).abs() < 0.01, "the row below opens 26 px");
+        assert!((open.row_y(9, 0.0) - plain.row_y(9, 0.0) - 26.0).abs() < 0.01, "and so does every row after it");
+        assert!((open.row_y(2, 0.0) - plain.row_y(2, 0.0)).abs() < 0.01, "rows above stay");
+    }
+
+    #[test]
+    fn the_last_row_and_its_value_stay_inside_the_document() {
+        let layout = value_layout(17, true).with_grid_focus(Some(16));
+        assert!(layout.row_y(16, layout.max_scroll()) + layout.card_h() + plx_ui::cards::SORT_VALUE_REACH
+            <= SCR_H - MARGIN_Y + 0.01);
     }
 }

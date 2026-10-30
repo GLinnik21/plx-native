@@ -1,5 +1,8 @@
 //! The application's clock (restructure spec §4.1): ONE door to frame time, so a replay can drive
-//! the loop on recorded ticks. `now()` reads `SDL_GetTicks` — the only call site of it in `app/`
+//! the loop on recorded ticks. `today()` is the same door for the calendar date: the ONE place the
+//! application asks the platform what day it is (`plx_platform::i18n::local_calendar_today`, which
+//! holds the wall-clock read: the `wall` gate scans `app/`), once a minute, for the screens that word
+//! a date ("Today", "Yesterday") but read no clock. `now()` reads `SDL_GetTicks` — the only call site of it in `app/`
 //! (the §15.2 gate: `SDL_GetTicks(` only in the clock and the instruments) — unless a replay has
 //! set the frame's recorded tick, in which case every read in the frame answers that tick: the
 //! ingest stamp, each press arm, the HUD linger, a script delay.
@@ -29,7 +32,16 @@ unsafe fn SDL_GetTicks() -> u32 {
 thread_local! {
     /// The replay override: `Some(ms)` while a recorded frame is being replayed.
     static REPLAY: Cell<Option<u32>> = const { Cell::new(None) };
+    /// The date override: `Some(date)` under a replay or a test, so a recorded Library grid sorted by
+    /// a date words the same on every run and on every day.
+    static REPLAY_TODAY: Cell<Option<[i32; 3]>> = const { Cell::new(None) };
+    /// The last read of the platform's calendar date and the minute (of the frame clock) it was read in.
+    static TODAY: Cell<Option<(u32, Option<[i32; 3]>)>> = const { Cell::new(None) };
 }
+
+/// The date every replay frame answers: a recording has no calendar of its own, and a fixed one keeps
+/// a replay of a date-sorted grid identical on every run.
+pub(crate) const REPLAY_DATE: [i32; 3] = [2026, 1, 1];
 
 /// Milliseconds since SDL init — or, under a replay, the recorded tick of the frame in flight.
 pub(crate) fn now() -> u32 {
@@ -41,9 +53,29 @@ pub(crate) fn now() -> u32 {
     unsafe { SDL_GetTicks() }
 }
 
-/// The replay driver sets the frame's time before the frame reads it.
+/// The replay driver sets the frame's time before the frame reads it, and with it the date
+/// ([`REPLAY_DATE`]).
 pub(crate) fn set_replay(ms: u32) {
     REPLAY.with(|c| c.set(Some(ms)));
+    REPLAY_TODAY.with(|c| c.set(Some(REPLAY_DATE)));
+}
+
+/// **Today's calendar date** in the OS time zone, `[year, month, day]`: read from the platform at
+/// most once a minute of the frame clock ([`now`]), so a midnight is noticed within a minute and a
+/// frame pays one thread-local read. Under a replay (or a test that set one) it is the pinned date.
+/// `None` when the platform cannot say (an unrepresentable `time_t`): a date then reads as month
+/// and year. Main-thread only, like the clock.
+pub(crate) fn today() -> Option<[i32; 3]> {
+    if let Some(date) = REPLAY_TODAY.with(|c| c.get()) {
+        return Some(date);
+    }
+    let minute = now() / 60_000;
+    if let Some((at, date)) = TODAY.with(|c| c.get()) {
+        if at == minute { return date; }
+    }
+    let date = plx_platform::i18n::local_calendar_today();
+    TODAY.with(|c| c.set(Some((minute, date))));
+    date
 }
 
 #[cfg(test)]
@@ -53,5 +85,25 @@ mod tests {
         super::set_replay(4242);
         assert_eq!(super::now(), 4242);
         super::REPLAY.with(|c| c.set(None));
+        super::REPLAY_TODAY.with(|c| c.set(None));
+    }
+
+    #[test]
+    fn the_date_is_pinned_under_a_replay_and_read_once_a_minute_otherwise() {
+        super::REPLAY_TODAY.with(|c| c.set(None));
+        super::TODAY.with(|c| c.set(None));
+        // Live: the platform's date, cached for the minute (the host test's frame clock stands at 0).
+        let live = super::today();
+        assert!(live.is_some_and(|[year, month, day]| year >= 2026 && (1..=12).contains(&month) && (1..=31).contains(&day)));
+        super::TODAY.with(|c| c.set(Some((0, Some([2001, 2, 3])))));
+        assert_eq!(super::today(), Some([2001, 2, 3]), "within the minute the read is not repeated");
+        super::TODAY.with(|c| c.set(Some((7, Some([2001, 2, 3])))));
+        assert_eq!(super::today(), live, "a new minute reads again");
+        // A replay frame pins the date, whatever the wall clock says.
+        super::set_replay(100);
+        assert_eq!(super::today(), Some(super::REPLAY_DATE));
+        super::REPLAY.with(|c| c.set(None));
+        super::REPLAY_TODAY.with(|c| c.set(None));
+        super::TODAY.with(|c| c.set(None));
     }
 }

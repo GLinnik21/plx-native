@@ -12,7 +12,7 @@ fn every_value() -> Vec<UnderPosters> {
     let mut all = Vec::new();
     for title in [false, true] {
         for details in UnderPostersDetails::LADDER {
-            all.push(UnderPosters { title, details, show_sort_info: false });
+            all.push(UnderPosters { title, details, sort_value: false });
         }
     }
     all
@@ -86,14 +86,14 @@ fn the_page_has_a_title_switch_a_details_row_and_reset_with_distinct_keys() {
     let _guard = plx_base::testlock::serial();
     let _live = Live::set(UnderPosters::DEFAULT);
     let page = UnderPostersPage::new(EntryId(0));
-    let keys = [UpId::Title.key().0, UpId::Details.key().0, UpId::SortInfo.key().0, UpId::Reset.key().0];
+    let keys = [UpId::Title.key().0, UpId::Details.key().0, UpId::SortValue.key().0, UpId::Reset.key().0];
     let mut unique = keys.to_vec();
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(unique.len(), 4, "each row has its own key");
     assert!(keys.iter().all(|k| *k < crate::registry::BAND));
     let rows: Vec<usize> = keys.iter().map(|k| page.form.index_of_key(RowKey(*k)).expect("the row is in the form")).collect();
-    assert_eq!(rows, vec![0, 1, 2, 3], "Title, Details, Sort information, Reset in that order");
+    assert_eq!(rows, vec![0, 1, 2, 3], "Title, Details, Sort value, Reset in that order");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn the_title_switch_asks_the_write_door_and_waits_for_the_receipt() {
     let mut page = UnderPostersPage::new(EntryId(0));
     let before = page.state.hash();
     let (asked, reply) = write_request(activate(&mut page, UpId::Title)).expect("a title write");
-    assert_eq!(asked, UnderPosters { title: true, details: UnderPostersDetails::YearLength, show_sort_info: false });
+    assert_eq!(asked, UnderPosters { title: true, details: UnderPostersDetails::YearLength, sort_value: true });
     assert!(page.state.busy && page.state.value.title, "the row shows the pick at once");
     assert_ne!(page.state.hash(), before, "a pending write belongs to replay state");
     assert!(!page.poll(), "waiting never blocks the frame");
@@ -193,19 +193,19 @@ fn the_pickers_samples_are_worded_from_the_previews_middle_poster() {
     for d in picker_order() {
         let value = page.form.table.sections.iter().flat_map(|s| s.rows.iter())
             .find(|r| r.label == details_label(d)).and_then(|r| r.value.clone());
-        assert_eq!(value, preview_lines(UnderPosters { title: false, details: d, show_sort_info: false }, lifted_poster(&posters))[1], "{d:?}");
+        assert_eq!(value, preview_lines(UnderPosters { title: false, details: d, sort_value: false }, lifted_poster(&posters))[1], "{d:?}");
     }
 }
 
 #[test]
 fn a_pick_keeps_the_title_writes_once_and_pops_when_the_receipt_is_durable() {
     let _guard = plx_base::testlock::serial();
-    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Video, show_sort_info: false });
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Video, sort_value: false });
     let mut page = DetailsPage::new(EntryId(0));
     let effects = pick(&mut page, UnderPostersDetails::Genre);
     assert!(!pops(&effects), "the page waits for the receipt");
     let (asked, reply) = write_request(effects).expect("a write");
-    assert_eq!(asked, UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
+    assert_eq!(asked, UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
     assert_eq!(checked(&page), vec![UnderPostersDetails::Genre], "the row shows the pick at once");
     assert!(!polled(&mut page).0, "waiting never blocks the frame");
     plx_media::route::restore_under_posters(asked);
@@ -230,7 +230,7 @@ fn a_refused_pick_puts_the_checkmark_back_and_stays() {
 #[test]
 fn choosing_the_checked_line_pops_without_a_write() {
     let _guard = plx_base::testlock::serial();
-    let _live = Live::set(UnderPosters { title: false, details: UnderPostersDetails::Video, show_sort_info: false });
+    let _live = Live::set(UnderPosters { title: false, details: UnderPostersDetails::Video, sort_value: false });
     let mut page = DetailsPage::new(EntryId(0));
     let effects = pick(&mut page, UnderPostersDetails::Video);
     assert!(pops(&effects));
@@ -248,8 +248,8 @@ fn the_pickers_preview_follows_the_focused_choice() {
     assert_eq!(page.state.value.details, UnderPostersDetails::YearLength, "focus is not a pick");
 }
 
-/// Three posters whose genre and year say different things: a title/details caption words the
-/// middle one's genre ("Western"), a sort caption words its year ("2004").
+/// Three posters whose genre and length say different things: a title/details caption words the
+/// middle one's genre ("Western"), a sort value words its length ("2h 14m").
 fn captioned_posters() -> Vec<PmsMovie> {
     let minutes = |n: i64| n * 60_000_000_000;
     vec![
@@ -270,56 +270,72 @@ fn previewed_lines<S: Screen<InnerHost>>(page: &mut S) -> Vec<String> {
 }
 
 #[test]
-fn the_pickers_preview_follows_the_focused_choice_with_sort_information_on() {
+fn the_pickers_preview_follows_the_focused_choice_with_the_sort_value_on() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::YearLength, show_sort_info: true });
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::YearLength, sort_value: true });
     let mut page = DetailsPage::new(EntryId(0));
     page.state.sel = DetailsId(UnderPostersDetails::Genre).key();
     let genre = previewed_lines(&mut page);
     assert!(genre.iter().any(|l| l == "Western"), "the focused Genre choice is what the preview words: {genre:?}");
-    assert!(!genre.iter().any(|l| l == "2004"), "the sort caption is not the picker's preview: {genre:?}");
+    assert!(previewed_values(&mut page).is_empty(), "the value line is not the picker's preview");
     page.state.sel = DetailsId(UnderPostersDetails::None).key();
     let none = previewed_lines(&mut page);
-    assert!(!none.iter().any(|l| l == "Western" || l == "2004"), "the None choice words no details line: {none:?}");
+    assert!(!none.iter().any(|l| l == "Western"), "the None choice words no details line: {none:?}");
     assert!(none.iter().any(|l| l == "Bravo"), "the Title switch still shows the title: {none:?}");
 }
 
+/// The sort value lines one draw of the page puts on screen, `(text, bold)`: what the Sort value
+/// row's preview shows under the posters (the page's own rows are not at the caption rung's weight pair).
+fn previewed_values<S: Screen<InnerHost>>(page: &mut S) -> Vec<(String, bool)> {
+    let snapshot = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new()).with_sample(captioned_posters());
+    let c = cx_with(None, snapshot.view());
+    let mut f = DrawFrame::new(&c, plx_ui::Painter::recording());
+    let runs = plx_ui::draw_census::capture_runs(|| page.draw(&mut f));
+    let wanted: Vec<String> = captioned_posters().iter()
+        .map(|m| crate::registry::sort_info::label(m, "duration", None).value.unwrap().text).collect();
+    runs.into_iter().filter(|run| wanted.contains(&run.text) && run.size == plx_ui::theme::size::CAPTION && run.ink[3] > 0.5)
+        .map(|run| (run.text, run.bold)).collect()
+}
+
 #[test]
-fn the_pages_preview_shows_the_sort_caption_only_while_the_sort_row_has_focus() {
+fn the_pages_preview_shows_the_value_line_only_while_the_sort_value_row_has_focus() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: true });
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: true });
     let mut page = UnderPostersPage::new(EntryId(0));
     for row in [UpId::Title, UpId::Details, UpId::Reset] {
         page.state.sel = row.key();
         let lines = previewed_lines(&mut page);
         assert!(lines.iter().any(|l| l == "Western"), "{row:?} focused: the Title/Details caption: {lines:?}");
-        assert!(!lines.iter().any(|l| l == "2004"), "{row:?} focused: no sort caption: {lines:?}");
+        assert!(previewed_values(&mut page).is_empty(), "{row:?} focused: no value line");
     }
-    page.state.sel = UpId::SortInfo.key();
+    page.state.sel = UpId::SortValue.key();
+    let values = previewed_values(&mut page);
+    assert!(values.contains(&("2h\u{a0}14m".to_owned(), true)), "the lifted poster wears its value bold: {values:?}");
+    assert!(values.contains(&("1h\u{a0}38m".to_owned(), false)) && values.contains(&("2h\u{a0}1m".to_owned(), false)),
+        "the others wear theirs regular: {values:?}");
     let lines = previewed_lines(&mut page);
-    assert!(lines.iter().any(|l| l == "2004"), "the Sort row focused: the sort caption: {lines:?}");
-    assert!(!lines.iter().any(|l| l == "Western"), "the Sort row focused: not the Title/Details caption: {lines:?}");
+    assert!(!lines.iter().any(|l| l == "Western"), "the Sort value row focused: not the Title/Details caption: {lines:?}");
 }
 
 #[test]
-fn a_sort_row_with_the_switch_off_previews_the_title_and_details_caption() {
+fn a_sort_value_row_with_the_switch_off_previews_the_title_and_details_caption() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
     let mut page = UnderPostersPage::new(EntryId(0));
-    page.state.sel = UpId::SortInfo.key();
+    page.state.sel = UpId::SortValue.key();
     let lines = previewed_lines(&mut page);
     assert!(lines.iter().any(|l| l == "Western"), "{lines:?}");
-    assert!(!lines.iter().any(|l| l == "2004"), "{lines:?}");
+    assert!(previewed_values(&mut page).is_empty());
 }
 
 #[test]
 fn reset_restores_the_default_and_is_inert_at_the_default() {
     let _guard = plx_base::testlock::serial();
     {
-        let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
+        let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
         let mut page = UnderPostersPage::new(EntryId(0));
         let (asked, _reply) = write_request(activate(&mut page, UpId::Reset)).expect("reset writes");
         assert_eq!(asked, UnderPosters::DEFAULT);
@@ -333,7 +349,7 @@ fn reset_restores_the_default_and_is_inert_at_the_default() {
 #[test]
 fn the_picker_opens_on_the_stored_value() {
     let _guard = plx_base::testlock::serial();
-    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::AgeRatingScore, show_sort_info: false });
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::AgeRatingScore, sort_value: false });
     let page = DetailsPage::new(EntryId(0));
     assert_eq!(checked(&page), vec![UnderPostersDetails::AgeRatingScore]);
     assert_eq!(page.state.sel, DetailsId(UnderPostersDetails::AgeRatingScore).key(), "the cursor starts on the checked line");
@@ -352,14 +368,14 @@ fn the_policy_mapping_is_total_and_keeps_the_default() {
     assert_eq!(pairs.len(), UnderPostersDetails::LADDER.len());
     for (stored, kind) in pairs {
         for title in [false, true] {
-            assert_eq!(caption_policy_of(UnderPosters { title, details: stored, show_sort_info: false }), CaptionPolicy { title, details: kind });
+            assert_eq!(caption_policy_of(UnderPosters { title, details: stored, sort_value: false }), CaptionPolicy { title, details: kind });
         }
     }
 }
 
 #[test]
 fn the_band_follows_the_pick() {
-    let h = |title, details| band_h(&caption_policy_of(UnderPosters { title, details, show_sort_info: false }));
+    let h = |title, details| band_h(&caption_policy_of(UnderPosters { title, details, sort_value: false }));
     assert_eq!(h(false, UnderPostersDetails::None), 0.0);
     assert_eq!(h(false, UnderPostersDetails::YearLength), 80.0);
     assert_eq!(h(true, UnderPostersDetails::None), 80.0);
@@ -371,15 +387,15 @@ fn the_preview_is_captioned_by_the_same_policy() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let none = UnderPostersDetails::None;
-    assert_eq!(preview_lines(UnderPosters { title: false, details: none, show_sort_info: false }, None), [None, None]);
+    assert_eq!(preview_lines(UnderPosters { title: false, details: none, sort_value: false }, None), [None, None]);
     let default = preview_lines(UnderPosters::DEFAULT, None);
     assert_eq!(default[0], None, "the default shows no title");
     assert_eq!(default[1].as_deref(), Some("2019 \u{b7} 2h 14m"));
-    let both = preview_lines(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false }, None);
+    let both = preview_lines(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false }, None);
     assert_eq!(both[0].as_deref(), Some("Movie"));
     assert_eq!(both[1].as_deref(), Some("Drama"));
-    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::Video, show_sort_info: false }, None)[1].as_deref(), Some("4K \u{b7} HDR"));
-    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore, show_sort_info: false }, None)[1].as_deref(),
+    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::Video, sort_value: false }, None)[1].as_deref(), Some("4K \u{b7} HDR"));
+    assert_eq!(preview_lines(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore, sort_value: false }, None)[1].as_deref(),
         Some("PG-13 \u{b7} 7.8"));
 }
 
@@ -424,7 +440,7 @@ fn root_row_text(inputs: &RootInputs) -> (Option<String>, String) {
 fn the_root_row_reads_the_setting_and_names_the_poster_it_governs() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-    let read = |title, details| root_row_text(&RootInputs { under_posters: UnderPosters { title, details, show_sort_info: false }, ..text_fit_inputs() });
+    let read = |title, details| root_row_text(&RootInputs { under_posters: UnderPosters { title, details, sort_value: false }, ..text_fit_inputs() });
     let (value, sub) = read(false, UnderPostersDetails::YearLength);
     assert_eq!(value.as_deref(), Some("Year \u{b7} Length"), "the default reads its details line");
     assert_eq!(sub, "What shows under the poster you are on.");
@@ -447,9 +463,9 @@ fn the_root_page_reads_the_stored_setting_into_its_row() {
     let _guard = plx_base::testlock::serial();
     let _sess = seated_scratch_session("root-reads-under-posters");
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
+    let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
     let page = RootPage::new(EntryId(0), test_support::cx(None).views);
-    assert_eq!(page.state.under_posters, UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
+    assert_eq!(page.state.under_posters, UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
 }
 
 /// **Every string fits, in every shipped language**: both pages' rows, the root row beside every
@@ -524,7 +540,7 @@ fn the_preview_captions_only_the_lifted_tile_from_its_own_poster() {
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let (a, b, c) = (poster("Alpha", 1999, "Noir"), poster("Bravo", 2004, "Western"), poster("Charlie", 2011, "Comedy"));
     let runs = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false },
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false },
             &[&a, &b, &c], &ShippedMeasure);
     });
     let words: Vec<&str> = runs.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect();
@@ -534,7 +550,7 @@ fn the_preview_captions_only_the_lifted_tile_from_its_own_poster() {
     assert!(caption.at.y > lifted.y + lifted.h - 1.0, "the caption stands under the tile: {:?}", caption.at);
     // fewer posters than tiles: the lifted tile is the last real one, the rest are blank faces
     let two = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::None, show_sort_info: false }, &[&a], &ShippedMeasure);
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::None, sort_value: false }, &[&a], &ShippedMeasure);
     });
     assert_eq!(two.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect::<Vec<_>>(), vec!["Alpha"]);
     assert_eq!(lifted_tile(0), PREVIEW_LIFTED, "no posters: the middle tile");
@@ -557,12 +573,12 @@ fn a_blank_face_carries_no_word() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let runs = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false }, &[], &ShippedMeasure);
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false }, &[], &ShippedMeasure);
     });
     let words: Vec<&str> = runs.iter().filter(|r| r.ink[3] > 0.5).map(|r| r.text.as_str()).collect();
     assert_eq!(words.iter().filter(|w| **w == "Movie").count(), 1, "the title is the caption alone, never also a word on a blank face: {words:?}");
     let off = plx_ui::draw_census::capture_runs(|| {
-        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: false, details: UnderPostersDetails::None, show_sort_info: false }, &[], &ShippedMeasure);
+        draw_preview(plx_ui::Painter::recording(), UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false }, &[], &ShippedMeasure);
     });
     assert!(off.iter().all(|r| r.ink[3] <= 0.5), "with no caption chosen the preview is faces only: {:?}", off.iter().map(|r| &r.text).collect::<Vec<_>>());
 }
@@ -598,15 +614,15 @@ fn the_page_has_its_own_screen_name_and_probe() {
 }
 
 #[test]
-fn sort_information_switch_uses_the_existing_confirmed_profile_write_and_reset() {
+fn the_sort_value_switch_uses_the_existing_confirmed_profile_write_and_reset() {
     let _guard = plx_base::testlock::serial();
     let _live = Live::set(UnderPosters::DEFAULT);
     let mut page = UnderPostersPage::new(EntryId(0));
-    let (asked, reply) = write_request(activate(&mut page, UpId::SortInfo)).unwrap();
-    assert!(asked.show_sort_info);
+    let (asked, reply) = write_request(activate(&mut page, UpId::SortValue)).unwrap();
+    assert!(!asked.sort_value, "the default is On, so OK on the row asks for Off");
     assert_eq!((asked.title, asked.details), (false, UnderPostersDetails::YearLength));
     reply.send(false).unwrap(); page.poll();
-    assert_eq!(page.state.value, UnderPosters::DEFAULT, "a refused save must not enable it");
+    assert_eq!(page.state.value, UnderPosters::DEFAULT, "a refused save must not turn it off");
     plx_media::route::restore_under_posters(asked);
     page.poll();
     let (reset, _) = write_request(activate(&mut page, UpId::Reset)).unwrap();

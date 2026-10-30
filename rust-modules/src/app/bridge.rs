@@ -250,6 +250,9 @@ impl plx_screens::registry::LibraryLike for AppHost {
     fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
         super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
     }
+    fn today(_cx: &Cx<'_, Self>) -> Option<[i32; 3]> {
+        super::clock::today()
+    }
 }
 
 impl plx_screens::registry::PersonLike for AppHost {

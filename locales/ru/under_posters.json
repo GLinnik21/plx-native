@@ -13,11 +13,11 @@
   "under_posters.age_rating_score": "Возрастной рейтинг · Оценка",
   "under_posters.none": "Ничего",
   "under_posters.reset": "Сбросить настройки",
-  "under_posters.reset_detail": "Год и длительность, значение сортировки включено, без названия.",
+  "under_posters.reset_detail": "Год и длительность, значение сортировки, без названия.",
   "under_posters.sample_title": "Фильм",
   "under_posters.sample_genre": "Драма",
   "under_posters.sort_value": "Значение сортировки",
-  "under_posters.sort_value_detail": "Заменяет строку сведений, пока библиотека отсортирована.",
+  "under_posters.sort_value_detail": "Заменяет строку сведений при сортировке.",
   "under_posters.value_today": "Сегодня",
   "under_posters.value_yesterday": "Вчера"
 }

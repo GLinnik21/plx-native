@@ -148,6 +148,10 @@ pub struct LibraryScreen {
     /// `sync` like the layout's episode geometry, so not logical state of its own. The toolbar
     /// reads it: collections take no filters, so FILTER leaves the row while they are listed.
     listed: plx_data::browse::LibraryType,
+    /// The grid shows the sort value under every poster (`registry::sort_info`): a movie library's
+    /// primary grid with Sort value On, sorted by something that has a value. Read in `sync`, where
+    /// the listing is, and handed to the layout by `relayout`.
+    values: bool,
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
     /// The names on the header row (the library on view among them) and, last, `MORE` when some
@@ -270,7 +274,7 @@ impl LibraryScreen {
         let layout = Layout::new(false, 0);
         Self {
             listing: Listing::All,
-            entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), keys: KeyRegistry::default(),
+            entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), values: false, keys: KeyRegistry::default(),
             pair: MasterDetail::new(
                 RailPart::new(entry, RAIL_GROUP), GridPart::new(entry, GRID_GROUP),
                 MasterDetailLayout { master: Rect::FULL, detail: Rect::FULL },
@@ -528,6 +532,9 @@ impl LibraryScreen {
                 self.wanted_kind = None;
             }
         }
+        self.values = self.kind == SecKind::Movie && self.listed == plx_data::browse::LibraryType::Primary
+            && crate::registry::captions::sort_value()
+            && listing.sorts().get(listing.sort_index()).is_some_and(|sort| crate::registry::sort_info::shows_value(&sort.key));
         self.refresh_header(cx);
         if let Some(kind) = self.wanted_kind.filter(|kind|
             directory.current().map(|i| directory.sections()[i].kind) != Some(*kind)) {
@@ -613,14 +620,14 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
-        let persistent = self.kind == SecKind::Movie && self.listed == plx_data::browse::LibraryType::Primary
-            && crate::registry::captions::show_sort_info();
-        let band_h = self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h);
+        let values = self.values;
+        let band_h = if values { plx_ui::cards::SORT_VALUE_BAND_H }
+            else { self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h) };
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
-        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h).with_sort_info(persistent)
+        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h).with_sort_info(persistent)
+        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);

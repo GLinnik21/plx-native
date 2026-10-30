@@ -53,7 +53,7 @@
   },
   "under_posters.reset": {
     "value": "Reset to default",
-    "description": "Button on the Under posters page that restores the default (no title, year and length)."
+    "description": "Button on the Under posters page that restores the default (no title, year and length, sort value on)."
   },
   "under_posters.reset_detail": {
     "value": "Year and length, sort value on, no title.",

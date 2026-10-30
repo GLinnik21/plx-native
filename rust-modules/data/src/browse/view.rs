@@ -118,6 +118,21 @@ impl ListingSnapshot {
         self
     }
 
+    /// A fixture listing sorted by the server sort `key` (the fixture's one sort is `titleSort`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_sort_key(mut self, key: &str) -> Self {
+        if let Some(data) = &mut self.data {
+            data.sorts = Arc::new(vec![SortEntry {
+                desc_key: String::new(),
+                key: key.into(),
+                title: key.into(),
+                default_desc: false,
+            }]);
+            data.sort_idx = 0;
+        }
+        self
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn absent() -> Self {
         Self { data: None }
