@@ -87,15 +87,17 @@ fn runs_of_plain() -> (Vec<crate::draw_census::Run>, f32) {
 }
 
 /// **The ink split**: the library and the criterion in the primary ink, the count and the dot in the
-/// secondary (the board's 50%); all four BODY regular.
+/// quiet ink (50% white, the board's: `COUNT_FILTERED_INK`, the header read-out's); all four BODY
+/// regular. The plain capsule's count keeps `TEXT_SECONDARY`.
 #[test]
 fn the_library_and_the_criterion_are_primary_ink_and_the_count_and_the_dot_secondary() {
     let _g = plx_base::testlock::serial();
     let (runs, _) = sorted_runs("TV Shows", "312", "Unplayed");
     let ink = |text: &str| runs.iter().find(|r| r.text == text).map(|r| (r.size, r.bold, r.ink)).unwrap();
     assert_eq!(ink("TV Shows"), (theme::size::BODY, false, theme::TEXT_PRIMARY));
-    assert_eq!(ink("312"), (theme::size::BODY, false, theme::TEXT_SECONDARY));
-    assert_eq!(ink("\u{b7}"), (theme::size::BODY, false, theme::TEXT_SECONDARY));
+    assert_eq!(ink("312"), (theme::size::BODY, false, theme::COUNT_FILTERED_INK));
+    assert_eq!(ink("\u{b7}"), (theme::size::BODY, false, theme::COUNT_FILTERED_INK));
+    assert_eq!(theme::COUNT_FILTERED_INK, [1.0, 1.0, 1.0, 0.5], "the role is 50% white");
     assert_eq!(ink("Unplayed"), (theme::size::BODY, false, theme::TEXT_PRIMARY));
 }
 

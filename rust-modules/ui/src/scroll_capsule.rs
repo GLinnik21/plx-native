@@ -29,7 +29,9 @@
 //!
 //! **It can carry the sort** ("Films 1,284 · Date viewed", the Library's board): an optional
 //! criterion piece after the count and a dot. The library and the criterion are in the primary ink,
-//! the count and the dot in the secondary; all four are BODY regular, [`PIECE_GAP`] (12) apart
+//! the count and the dot at 50% white ([`theme::COUNT_FILTERED_INK`], the header read-out's quiet
+//! ink: the board's (165,150,144) over the warm ground, where `TEXT_SECONDARY` read cool and bright);
+//! all four are BODY regular, [`PIECE_GAP`] (12) apart
 //! inside the same [`PAD_L`] / [`PAD_R`], so the capsule's width follows its content. A page that
 //! passes no criterion draws the plain capsule exactly as before (a bold name and a CAPTION count,
 //! [`NAME_COUNT_GAP`] apart).
@@ -78,7 +80,7 @@ struct Run<'a> {
 
 /// The capsule's runs left to right, and the gap between them. Without a criterion: the name (BODY
 /// bold) and the count (CAPTION regular, secondary). With one, the board's four pieces: the name,
-/// the count, the dot and the criterion, all BODY regular, the count and the dot secondary.
+/// the count, the dot and the criterion, all BODY regular, the count and the dot at 50% white.
 fn runs<'a>(name: &'a CStr, count: &'a CStr, criterion: Option<&'a CStr>) -> (Vec<Run<'a>>, f32) {
     let run = |text, ink| Run { text, size: theme::size::BODY, bold: false, ink };
     match criterion {
@@ -92,8 +94,8 @@ fn runs<'a>(name: &'a CStr, count: &'a CStr, criterion: Option<&'a CStr>) -> (Ve
         Some(criterion) => (
             vec![
                 run(name, theme::TEXT_PRIMARY),
-                run(count, theme::TEXT_SECONDARY),
-                run(DOT, theme::TEXT_SECONDARY),
+                run(count, theme::COUNT_FILTERED_INK),
+                run(DOT, theme::COUNT_FILTERED_INK),
                 run(criterion, theme::TEXT_PRIMARY),
             ],
             PIECE_GAP,
