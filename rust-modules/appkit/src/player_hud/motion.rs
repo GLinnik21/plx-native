@@ -125,7 +125,8 @@ fn row_pops(slot: ControlSlot) -> usize {
 pub struct HudMotion {
     pub(super) pop: RowPop,
     /// An open section's own buttons' focus pop ([`super::geometry::GROUP_SECTION`]), one spring per button:
-    /// the Info card's `ctl_pop`, kept with the HUD's motion now that the card is a section of it.
+    /// the renderer's twin of `InfoPanelState::ctl_pop`. It is stepped only once the screen focuses
+    /// `GROUP_SECTION` (PR8's switch); until then the live card's pop is `info_panel.rs`'s.
     pub(super) section_pop: RowPop,
     /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
     pub(super) title_clock: plx_ui::marquee::Clock,
@@ -174,7 +175,8 @@ impl HudMotion {
     /// overlay was open, and a resume pressed with the Info card open would stamp its 2 s from the
     /// moment the card CLOSED, or never.
     ///
-    /// `focus == GROUP_ROW` is the control column; anything else closes every pop. The index is bounded by
+    /// `focus == GROUP_ROW` pops the control column's `pop` and `focus == GROUP_SECTION` pops
+    /// [`section_pop`](Self::section_pop); any other group closes both. The index is bounded by
     /// the CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a
     /// control the narrower one does not have.
     pub fn step(&mut self, slot: ControlSlot, focus: GroupId, btn: i32, dt: f32, now: u32) {

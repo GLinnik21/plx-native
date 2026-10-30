@@ -2,7 +2,10 @@
 //! `rule`, an `icon`, an `image`, a `text` of the sections' own binds, a `facts` row and a `button` draw
 //! when [`super::render::draw_state`] meets them in an open-section state. They are arms of the ONE walk
 //! over [`CompiledState::ops`](crate::hud_format::compile::CompiledState), never a second renderer, and
-//! every one is placed by the compile: the rect an op carries is where it draws, as the title's are.
+//! every one is placed by the compile: the rect an op carries is where it draws, as the title's are. The one
+//! exception is a GROUP's children ([`group`]): those are stacked again from the real wrapped heights, in cap-top
+//! coordinates and without [`line_frame`], and the rect they carry is only the worst-case box that lint, Cost
+//! and the z-census read.
 //!
 //! **Where the data comes from.** [`HudModel`](super::model::HudModel) is `Copy` ("no borrowed string and
 //! no allocation"), so the Info rows and the chapter list cannot join it as the PR7 handoff wrote; the
@@ -12,7 +15,7 @@
 //!
 //! **What a text op's `y` is.** The compile places a text's BOX top at `rect.y` (the title and the chapter
 //! names are drawn by `Painter::text` there), whereas [`TextView`] takes the CAP top. [`line_frame`] is the
-//! one conversion, so a block drawn here sits where the same box drawn by `Painter::text` would.
+//! one conversion for a lone text, so it sits where the same box drawn by `Painter::text` would.
 
 use std::ffi::CString;
 

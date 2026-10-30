@@ -394,9 +394,11 @@ ui/popover               the shared anchored placer (D9), used by the player men
   Unloadable(Meta, Unloadable), Invalid }` (`Meta` is id, name, version, format; `Unloadable` is
   `NewerFormat`, `OlderFormat` or `AppRange`). The supported format range stays with the runner, which owns the
   validator: the store is handed no range.
-- Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing, allocation or
-  hashing; all text goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each
-  text draw.
+- Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing or hashing; all text
+  goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each text draw. The one
+  deliberate exception is an open section's text group (`CompiledState::groups`, `sections::group`): it re-stacks
+  from the heights it really wraps at draw time and allocates its item list each frame, so the PR8 section ceilings
+  in "Cost" are calibrated with it in the loop.
 - Package icons are rasterized through the same `plx_gfx::svg::rasterize` (F36); their textures belong to
   the `CompiledHud` instance `App` hands the player screen and are released when the HUD changes. The
   icon draw API takes `IconRef { Builtin(Icon), Pack(PackIcon) }`; no second cache, no new global.
@@ -497,9 +499,10 @@ or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
 glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`ui/src/widgets.rs:1394`).
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
-A `toggle_section` item draws a SELECTED face while its section is open (`hud_tab_state`'s second flag,
-`player_hud.rs:1587-1590`): `pill` uses `TabPill`'s own selected face, `disc` its `solid` face; the focus face wins when
-both hold. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
+A `toggle_section` item draws a SELECTED face while its section is open: `pill` uses `TabPill`'s own selected face,
+`disc` its `solid` face; the focus face wins when both hold. The face is read from the compiled state's own open bits
+(`render::section_open`), so it holds under both policies, with the transport live or hidden; `hud_tab_state`'s second
+flag (`player_hud.rs:1587-1590`) is only the hand-written tab strip's, and the classic path ORs it in. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
 in PR5d from the narrowest seat the app's own screens place and pinned by a test, see "Unverified items"; it admits the
 reference's 52). A control has no alpha key and the palette is `#rrggbb` (D12), but an allow-list ink
 can be translucent (`HAIRLINE` is `with_a(WHITE, 0.10)`, `ui/src/theme.rs:949`), so a rest face's GLYPH ink, composited

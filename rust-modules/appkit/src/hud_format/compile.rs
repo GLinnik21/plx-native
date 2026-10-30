@@ -1,6 +1,8 @@
 //! **The HUD layout compiler** (`docs/hud-plugins.md`, "Architecture", "Package format 1.0", "Cost"):
 //! a parsed [`Package`] laid out ONCE in every state [`reach`](super::reach) enumerates, into the rects
-//! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards.
+//! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards, with one
+//! exception: a `vstack` whose content is data ([`OpGroup`]) is emitted at its worst case for the lint, the cost
+//! and the census, and the renderer stacks it again per frame from the real heights.
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork. The two things a layout needs from
 //! outside arrive as values: text measurement as the existing [`Measure`] capability (the one the
