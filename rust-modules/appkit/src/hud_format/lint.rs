@@ -36,7 +36,7 @@
 //! ([`slot_name`]) is `discs`, `up_next` or `skip`.
 
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{msg, LocaleContext, Preference};
+use plx_platform::i18n::{LocaleContext, Preference};
 use plx_ui::Rect;
 
 use super::compile::{
@@ -71,22 +71,7 @@ impl LintLang {
 
     fn of(preference: Preference) -> LintLang {
         let cx = LocaleContext::resolve(preference, None, None, None, None);
-        LintLang { tag: preference.tag(), labels: labels_in(&cx) }
-    }
-}
-
-/// The app strings a compile measures, in the language of `cx`.
-fn labels_in(cx: &LocaleContext) -> AppLabels {
-    AppLabels {
-        tab_info: msg::widgets_player_info_in(cx).to_owned(),
-        tab_chapters: msg::widgets_player_chapters_in(cx).to_owned(),
-        next_episode: msg::widgets_next_episode_in(cx).to_owned(),
-        watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
-        skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
-        skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
-        from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
-        go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
-        go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
+        LintLang { tag: preference.tag(), labels: AppLabels::in_language(&cx) }
     }
 }
 

@@ -5,7 +5,7 @@
 //! sets a pill's width, so the language is part of the plan's cache key, [`CompileKey`]), and pushes the
 //! [`Arc<Compiled>`] into the player page the way it pushes the frame's [`HudModel`](super::model::HudModel).
 //! Nothing here reads a registry on its own account: the language arrives as a [`LocaleContext`] (the
-//! OWNER passes `plx_platform::i18n::current()`), the strings are built from it ([`labels_in`]) and the
+//! OWNER passes `plx_platform::i18n::current()`), the strings are built from it ([`AppLabels::in_language`]) and the
 //! measurer is passed in. The draw ([`super::render`])
 //! walks the result and computes nothing.
 //!
@@ -16,28 +16,10 @@
 use std::sync::Arc;
 
 use plx_machine::machine::Measure;
-use plx_platform::i18n::{msg, Language, LocaleContext};
+use plx_platform::i18n::{Language, LocaleContext};
 
 use crate::hud_format::compile::{compile, AppLabels, CompileCtx, CompileKey, Compiled};
 use crate::hud_format::parse;
-
-/// **The app's own strings in the language `cx` names**: the production constructor of [`AppLabels`].
-/// The language is an ARGUMENT, so nothing here reads the process-wide current locale: the app layer
-/// passes `plx_platform::i18n::current()` when it compiles (outside the frame), a test passes the
-/// context it is grading, and the compiler receives the result as data.
-pub fn labels_in(cx: &LocaleContext) -> AppLabels {
-    AppLabels {
-        tab_info: msg::widgets_player_info_in(cx).to_owned(),
-        tab_chapters: msg::widgets_player_chapters_in(cx).to_owned(),
-        next_episode: msg::widgets_next_episode_in(cx).to_owned(),
-        watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
-        skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
-        skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
-        from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
-        go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
-        go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
-    }
-}
 
 /// Why a package did not become a [`LoadedHud`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,7 +39,7 @@ pub struct LoadedHud {
     pub compiled: Arc<Compiled>,
 }
 
-/// Parse and compile `bytes` for the language `cx` names (its labels, [`labels_in`]) and `measure`.
+/// Parse and compile `bytes` for the language `cx` names (its labels, [`AppLabels::in_language`]) and `measure`.
 pub fn load(bytes: &[u8], app_version: &str, cx: &LocaleContext, measure: &dyn Measure) -> Result<LoadedHud, LoadError> {
     let language = cx.language();
     let parsed = parse::parse(bytes);
@@ -65,7 +47,7 @@ pub fn load(bytes: &[u8], app_version: &str, cx: &LocaleContext, measure: &dyn M
         return Err(LoadError::Invalid(parsed.findings.len()));
     };
     let key = CompileKey { sha256: plx_base::sha256::sha256(bytes), app_version: app_version.to_owned(), lang: language.tag().to_owned() };
-    Ok(LoadedHud { key, language, compiled: Arc::new(compile(&package, measure, CompileCtx { labels: labels_in(cx) })) })
+    Ok(LoadedHud { key, language, compiled: Arc::new(compile(&package, measure, CompileCtx { labels: AppLabels::in_language(cx) })) })
 }
 
 /// `builtin:classic`, the embedded package ([`crate::hud_format::CLASSIC_PACKAGE`]), compiled.

@@ -54,6 +54,7 @@ use std::ffi::CString;
 
 use plx_machine::machine::Measure;
 use plx_media::player::text_style::HudBand;
+use plx_platform::i18n::{msg, LocaleContext};
 use plx_ui::consts::{SAFE, SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::vstack::{Anchor, VStack};
@@ -81,7 +82,7 @@ pub type Rgba = [f32; 4];
 // ---------------------------------------------------------------------------------------------------
 
 /// The app's own strings a layout measures, in the viewer's language. Plain data: the caller builds it
-/// (from `plx_platform::i18n` in the app), so the compiler reads no registry.
+/// ([`AppLabels::in_language`] over the language it holds), so the compiler reads no registry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppLabels {
     /// the Info tab (`widgets_player_info`), also the text of a `label.info` binding
@@ -105,6 +106,24 @@ pub struct AppLabels {
 }
 
 impl AppLabels {
+    /// **The app's own strings in the language `cx` names**: the one constructor of [`AppLabels`], over the
+    /// generated `msg::*_in(cx)` accessors. The language is an ARGUMENT, so nothing here reads the
+    /// process-wide current locale: the app layer passes `plx_platform::i18n::current()` when it compiles
+    /// (outside the frame, `player_hud::loaded`), the lint passes each shipped language's context.
+    pub fn in_language(cx: &LocaleContext) -> AppLabels {
+        AppLabels {
+            tab_info: msg::widgets_player_info_in(cx).to_owned(),
+            tab_chapters: msg::widgets_player_chapters_in(cx).to_owned(),
+            next_episode: msg::widgets_next_episode_in(cx).to_owned(),
+            watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
+            skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
+            skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
+            from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
+            go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
+            go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
+        }
+    }
+
     /// The label a `pill` or `button` carries for `command` (a `toggle_section`'s `section` picks the
     /// tab); an empty string for a command with no app string here, which measures as padding only.
     pub(super) fn of(&self, command: &str, section: Option<&str>, episode: bool) -> &str {
