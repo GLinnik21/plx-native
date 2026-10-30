@@ -115,22 +115,24 @@ impl LibraryScreen {
         // first because the fade reaches through it (`scroll_capsule::fade_reach`).
         let tuck = self.handoff.tuck();
         let capsule = self.handoff.capsule();
-        let worn = (capsule > 0.0 && self.capsule_wanted())
+        // The capsule carries the sort: the criterion the header's control shows, a queued edit
+        // included. Its strings are kept while they stand (`CapsuleText`), and it is measured once
+        // here (`Capsule::new`): the fade reads its rectangle and the capsule draws from the same
+        // measured runs.
+        let name = (capsule > 0.0 && self.capsule_wanted())
             .then(|| self.view_section(f.cx).map(|index| self.library_label(index, f.cx)))
-            .flatten()
-            // The capsule carries the sort: the criterion the header's control shows, a queued edit included.
-            .map(|name| plx_ui::scroll_chrome::capsule_parts(&name, H::listing(f.cx).total(), Some(&self.sort_value(f.cx))))
-            .map(|(name, count, criterion)| {
-                let rect = plx_ui::scroll_capsule::rect(&name, &count, criterion.as_deref(), f.measure);
-                (name, count, criterion, rect)
-            });
+            .flatten();
+        let sort = name.as_ref().map(|_| self.sort_value(f.cx));
+        let total = H::listing(f.cx).total();
+        let strings = name.as_deref().map(|name| self.capsule_text.get(name, total, sort));
+        let worn = strings.map(|(name, count, criterion)| plx_ui::scroll_capsule::Capsule::new(name, count, criterion, f.measure));
         if tuck > 0.0 {
             let ground = self.ground.sample(Rect::FULL, SCR_W * 0.5, 0.0);
-            let reach = worn.as_ref().map(|(.., rect)| (*rect, capsule));
+            let reach = worn.as_ref().map(|worn| (worn.rect(), capsule));
             plx_ui::scroll_capsule::draw_top_fade(f.painter.alpha(f.page_alpha), SCR_W, ground, tuck, reach);
         }
-        if let Some((name, count, criterion, _)) = &worn {
-            plx_ui::scroll_capsule::draw(f.painter.alpha(f.page_alpha), name, count, criterion.as_deref(), capsule, f.measure);
+        if let Some(worn) = &worn {
+            worn.draw(f.painter.alpha(f.page_alpha), capsule);
         }
         // A standing note, never a target: over the page, records no stop and no hit rect.
         self.hold_hint.draw(f.painter.alpha(f.page_alpha), f.measure);

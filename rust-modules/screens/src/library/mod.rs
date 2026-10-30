@@ -250,6 +250,9 @@ pub struct LibraryScreen {
     /// The top chrome and the capsule, as drawn: decided from `scroll_target` and run on the swap
     /// clock, in sequence (`plx_ui::scroll_chrome`). Stepped beside the scroll spring.
     handoff: plx_ui::scroll_chrome::Handoff,
+    /// The capsule's three C strings, rebuilt when the library's name, its count or the sort
+    /// differs and not on every frame the capsule is up. A render resource, not canon.
+    capsule_text: plx_ui::scroll_chrome::CapsuleText,
     restore_scroll: Option<f32>,
     viewports: Vec<LibraryViewport>,
     /// The grid key an `Enter::Fresh` names to seat, kept projected until the engine has seated it.
@@ -316,7 +319,7 @@ impl LibraryScreen {
             type_before_collections: None, unfiltered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
-            scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), restore_scroll: None,
+            scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), capsule_text: plx_ui::scroll_chrome::CapsuleText::default(), restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,

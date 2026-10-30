@@ -650,7 +650,7 @@ fn the_scrolled_capsule_carries_the_sort_the_header_shows() {
     assert_eq!(texts[2], "\u{b7}");
     assert_eq!(texts[3], sort, "the criterion is the listing's current sort label");
     let control = page.header.row().and_then(|row| row.page.spec().right.last().and_then(|item| item.value.clone()));
-    assert_eq!(control.as_deref(), Some(sort.as_str()), "and the header's control shows the same string");
+    assert_eq!(control.as_deref(), Some(sort), "and the header's control shows the same string");
     let last = capsule[3];
     assert!(last.at.x + last.at.w + plx_ui::scroll_capsule::PAD_R <= SCR_W, "the capsule stays on the screen");
 }

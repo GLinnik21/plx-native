@@ -73,7 +73,7 @@
 //!
 //! The module lives here, not in `plx_screens`, because a screen family may not name a sibling
 //! module of the crate (`ci/check-deps.sh`, "sibling").
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 use plx_machine::machine::{Canon, LogicalState};
 
@@ -258,6 +258,34 @@ pub fn capsule_parts(name: &str, total: i64, criterion: Option<&str>) -> (CStrin
         CString::new(count).unwrap_or_default(),
         criterion.map(|criterion| CString::new(criterion).unwrap_or_default()),
     )
+}
+
+/// **The capsule's strings, kept while their text stays the same.** A page asks for the three C
+/// strings ([`capsule_parts`]) on every frame the capsule is up, but the library's name, the
+/// listing's size and the sort change only when the reader does something; this holds the last
+/// answer and rebuilds it when the name, the total or the criterion differs, or the interface
+/// language does (the count is spelled in it). The page owns one beside its handoff, so a library
+/// switch builds the next library's strings once.
+#[derive(Default)]
+pub struct CapsuleText {
+    /// What `parts` was built for: the name, the total, the criterion and the language.
+    key: Option<(String, i64, Option<String>, usize)>,
+    parts: (CString, CString, Option<CString>),
+}
+
+impl CapsuleText {
+    /// The strings for `name`, `total` and the sort `criterion`: the held ones when nothing
+    /// changed, else [`capsule_parts`] of them.
+    pub fn get(&mut self, name: &str, total: i64, criterion: Option<&str>) -> (&CStr, &CStr, Option<&CStr>) {
+        let language = std::ptr::from_ref(plx_platform::i18n::current()) as usize;
+        let held = self.key.as_ref()
+            .is_some_and(|(n, t, c, l)| n == name && *t == total && c.as_deref() == criterion && *l == language);
+        if !held {
+            self.parts = capsule_parts(name, total, criterion);
+            self.key = Some((name.to_owned(), total, criterion.map(str::to_owned), language));
+        }
+        (&self.parts.0, &self.parts.1, self.parts.2.as_deref())
+    }
 }
 
 #[cfg(test)]
@@ -556,6 +584,31 @@ mod tests {
         assert!(count.to_str().unwrap().contains('1'));
         let (_, _, criterion) = capsule_parts("Films", 1284, Some("Date viewed"));
         assert_eq!(criterion.unwrap().to_str().unwrap(), "Date viewed", "the criterion as the header shows it");
+    }
+
+    /// **The capsule's strings are built when their text changes, not every frame**: asked again with
+    /// the same name, total and criterion, `CapsuleText` hands back the very same C strings (same
+    /// addresses); a different name, total or criterion (or none) builds them again, and what it
+    /// builds is what [`capsule_parts`] says.
+    #[test]
+    fn the_capsule_strings_are_kept_while_the_name_the_total_and_the_criterion_stand() {
+        let _g = plx_base::testlock::serial();
+        let mut text = CapsuleText::default();
+        let at = |parts: (&CStr, &CStr, Option<&CStr>)| (parts.0.as_ptr(), parts.1.as_ptr(), parts.2.map(CStr::as_ptr));
+        let first = at(text.get("Films", 1284, Some("Date viewed")));
+        for _ in 0..3 { assert_eq!(at(text.get("Films", 1284, Some("Date viewed"))), first, "nothing changed: nothing rebuilt"); }
+        let (name, count, criterion) = text.get("Films", 1284, Some("Date viewed"));
+        let want = capsule_parts("Films", 1284, Some("Date viewed"));
+        assert_eq!((name, count, criterion), (want.0.as_c_str(), want.1.as_c_str(), want.2.as_deref()));
+        for (label, name, total, criterion) in [("name", "Shows", 1284, Some("Date viewed")), ("total", "Films", 1285, Some("Date viewed")),
+            ("criterion", "Films", 1284, Some("Year")), ("no criterion", "Films", 1284, None)] {
+            let mut text = CapsuleText::default();
+            let before = text.get("Films", 1284, Some("Date viewed")).0.to_owned();
+            let parts = text.get(name, total, criterion);
+            let want = capsule_parts(name, total, criterion);
+            assert_eq!((parts.0, parts.1, parts.2), (want.0.as_c_str(), want.1.as_c_str(), want.2.as_deref()), "{label}: rebuilt for the new text");
+            assert_eq!(before.to_str().unwrap(), "Films");
+        }
     }
 
     /// One predicate for every page: a header that names no library (the Watchlist, a one-library

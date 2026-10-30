@@ -84,15 +84,16 @@ impl LibraryScreen {
     }
 
     /// The Sort & Filter control's value: the sort in force, a queued edit included. The scroll
-    /// capsule carries the same string.
-    pub(super) fn sort_value<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> String {
+    /// capsule carries the same string. Borrowed from the listing (or the catalogue), so the capsule,
+    /// which asks every frame it is up, allocates nothing for it.
+    pub(super) fn sort_value<'a, H: LibraryLike>(&self, cx: &Cx<'a, H>) -> &'a str {
         let listing = H::listing(cx);
         let queued = self.pending.grid().filter(|(target, _)| target.matches(listing)).map(|(_, action)| action);
         let sort = match queued {
             Some(GridAction::Sort { key, .. }) => listing.sorts().iter().find(|sort| &sort.key == key),
             _ => listing.sorts().get(listing.sort_index()),
         };
-        sort.map_or(plx_platform::i18n::msg::browse_library_title(), |sort| sort.label()).to_owned()
+        sort.map_or(plx_platform::i18n::msg::browse_library_title(), |sort| sort.label())
     }
 
     /// Is a genre or Unwatched filter in force (a queued edit included)? Only then does the row
@@ -184,7 +185,7 @@ impl LibraryScreen {
         right.push(divider());
         widest.push(divider());
         let sort = self.sort_value(cx);
-        let longest = H::listing(cx).sorts().iter().map(|sort| sort.label()).chain([sort.as_str()])
+        let longest = H::listing(cx).sorts().iter().map(|sort| sort.label()).chain([sort])
             .max_by(|a, b| page_header::cluster_width(&[sort_control("", *a)], cx.measure)
                 .total_cmp(&page_header::cluster_width(&[sort_control("", *b)], cx.measure)))
             .unwrap_or_default().to_owned();
@@ -350,7 +351,7 @@ impl LibraryScreen {
         // to the collections listing, `sorts()` is still the films' list.
         let declared = if self.listed == plx_data::browse::LibraryType::Collections { H::listing(cx).sorts().len() } else { 0 };
         let library = self.view_section(cx).map(|index| self.library_label(index, cx)).unwrap_or_default();
-        let spec = super::collections_page::header_spec(&library, self.kind, declared, &self.sort_value(cx));
+        let spec = super::collections_page::header_spec(&library, self.kind, declared, self.sort_value(cx));
         self.collections_sort = super::collections_page::sort_visible(declared);
         let page = PageHeader::new(spec, &[], cx.measure);
         let layout = page.layout(SCR_W, cx.measure);

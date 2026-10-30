@@ -7,6 +7,37 @@ impl plx_machine::machine::Measure for Fixed {
     fn line_h(&self, _: i32) -> f32 { 36.0 }
 }
 
+/// A capsule measured and painted in one go, the way a caller that has no use for its rectangle does.
+fn draw(p: Painter, name: &CStr, count: &CStr, criterion: Option<&CStr>, alpha: f32, measure: &dyn Measure) {
+    Capsule::new(name, count, criterion, measure).draw(p, alpha);
+}
+
+/// **A capsule is measured once**: the page asks for its rectangle (the top fade reaches through it)
+/// and then draws it, and both read the runs measured when the capsule was built. It measured them
+/// three times a frame (the rectangle, the draw's own rectangle, the draw's runs).
+#[test]
+fn a_capsule_measures_each_run_once_whatever_is_asked_of_it() {
+    use std::cell::Cell;
+    struct Counting(Cell<usize>);
+    impl Measure for Counting {
+        fn width(&self, s: &CStr, size: i32, bold: bool) -> f32 { self.0.set(self.0.get() + 1); Fixed.width(s, size, bold) }
+        fn cap_h(&self, size: i32) -> f32 { Fixed.cap_h(size) }
+        fn line_h(&self, size: i32) -> f32 { Fixed.line_h(size) }
+    }
+    let _g = plx_base::testlock::serial();
+    let (name, count, criterion) = (c"Films", c"1,284", c"Date viewed");
+    for (criterion, runs) in [(None, 2), (Some(criterion), 4)] {
+        let measure = Counting(Cell::new(0));
+        let capsule = Capsule::new(name, count, criterion, &measure);
+        let rect = capsule.rect();
+        capsule.draw(Painter::recording(), 1.0);
+        capsule.draw(Painter::recording(), 0.5);
+        assert_eq!(measure.0.get(), runs, "{criterion:?}: every run measured once, by the one build");
+        assert_eq!(rect, super::rect(name, count, criterion, &Fixed), "the rectangle is the free function's");
+        assert_eq!(rect.w, width(name, count, criterion, &Fixed));
+    }
+}
+
 fn runs(name: &str, count: &str) -> (Vec<crate::draw_census::Run>, f32) {
     let (n, c) = (std::ffi::CString::new(name).unwrap(), std::ffi::CString::new(count).unwrap());
     (crate::draw_census::capture_runs(|| draw(Painter::recording(), &n, &c, None, 1.0, &Fixed)), width(&n, &c, None, &Fixed))
