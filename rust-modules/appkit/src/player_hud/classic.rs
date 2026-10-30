@@ -7,6 +7,7 @@
 //! player global. The logic it draws ([`super::state`]) and the animation state it reads
 //! ([`super::motion`]) are separate modules; a layout other than this one has to answer the same
 //! [`HudGeometry`](super::geometry::HudGeometry).
+use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 use super::geometry::{HudGeometry, RowAnchor, GROUP_ROW, GROUP_SCRUB, GROUP_TABS, HUD_TABS};
 use super::model::HudModel;
 use super::motion::*;
@@ -484,11 +485,21 @@ pub struct TitleLook {
     pub x: f32,
     pub kicker_y: f32,
     pub title_y: f32,
+    /// the kicker's size (`text.size` of `title.kicker`); classic's is the caption rung
+    pub kicker_size: i32,
+    /// the title's size (`text.size` of `title.main`); classic's is [`HUD_TITLE_SZ`]
+    pub title_size: i32,
 }
 
 impl Default for TitleLook {
     fn default() -> Self {
-        Self { x: SB_X, kicker_y: SCR_H - 312.0, title_y: SCR_H - 278.0 }
+        Self {
+            x: SB_X,
+            kicker_y: SCR_H - 312.0,
+            title_y: SCR_H - 278.0,
+            kicker_size: theme::size::CAPTION,
+            title_size: HUD_TITLE_SZ,
+        }
     }
 }
 
@@ -517,7 +528,7 @@ pub(super) fn draw_player_title_at(
     paused: bool,
     clock: &plx_ui::marquee::Clock,
 ) {
-    let TitleLook { x: left, kicker_y, title_y } = look;
+    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size } = look;
     let width = (right - left).max(0.0);
     let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(left, 0.0, width, SCR_H));
     let (text, ink, bold) = match kicker {
@@ -526,8 +537,8 @@ pub(super) fn draw_player_title_at(
     };
     if !text.is_null() {
         let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-        let fitted = measure.fit_line(&label, width, theme::size::CAPTION, bold);
-        p.text(fitted.as_ptr(), left, kicker_y, theme::size::CAPTION, ink, 0, i32::from(bold));
+        let fitted = measure.fit_line(&label, width, kicker_size, bold);
+        p.text(fitted.as_ptr(), left, kicker_y, kicker_size, ink, 0, i32::from(bold));
     }
     if title.is_null() {
         clock.release();
@@ -535,7 +546,7 @@ pub(super) fn draw_player_title_at(
     }
     let full = unsafe { std::ffi::CStr::from_ptr(title) };
     let label = full.to_string_lossy();
-    let full_width = measure.width(full, HUD_TITLE_SZ, true);
+    let full_width = measure.width(full, title_size, true);
     if paused && full_width > width {
         // A show's display title can stay the same across episodes; the kicker is
         // part of the visible identity and must restart the reveal when it changes.
@@ -554,14 +565,14 @@ pub(super) fn draw_player_title_at(
             // an Arabic or Hebrew title's end is on its left: it moves right instead
             let rtl = plx_gfx::text::is_rtl_paragraph(&label);
             let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
-            p.text(title, left + x, title_y, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+            p.text(title, left + x, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
             return;
         }
     } else {
         clock.release();
     }
-    let fitted = measure.fit_line(&label, width, HUD_TITLE_SZ, true);
-    p.text(fitted.as_ptr(), left, title_y, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+    let fitted = measure.fit_line(&label, width, title_size, true);
+    p.text(fitted.as_ptr(), left, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
 }
 
 /// Reserve the same geometry used by focus placement, plus focus pop and a reading gap.
@@ -654,8 +665,8 @@ impl Playbar {
     }
 }
 
-/// What a playbar looks like where a package places it: the track's rect, the fill and track inks and
-/// the clocks' size. `Default` is classic's (`SB_*`, `TEXT_PRIMARY`, `RAIL_TRACK`, `CAPTION`), so
+/// What a playbar looks like where a package places it: the track's rect, the fill and track inks, the
+/// clocks' size, and the knob, clock and mark options. `Default` is classic's (`SB_*`, `TEXT_PRIMARY`, `RAIL_TRACK`, `CAPTION`), so
 /// [`draw_playbar`] is [`draw_playbar_look`] over it and the trailer's frame cannot move.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlaybarLook {
@@ -663,6 +674,13 @@ pub struct PlaybarLook {
     pub fill: [f32; 4],
     pub track_ink: [f32; 4],
     pub clock_size: i32,
+    /// `tick`: a thin tick at rest. `always`: the held knob at rest too.
+    pub knob: KnobMode,
+    /// `follow_head`: the elapsed clock under the playhead. `ends`: at the bar's start, with the
+    /// remaining clock at its end.
+    pub clocks: ClockMode,
+    /// `after_elapsed`: the state glyph beside the elapsed clock. `busy_only`: the spinner alone.
+    pub mark: MarkMode,
 }
 
 impl Default for PlaybarLook {
@@ -672,6 +690,9 @@ impl Default for PlaybarLook {
             fill: theme::TEXT_PRIMARY,
             track_ink: theme::RAIL_TRACK,
             clock_size: theme::size::CAPTION,
+            knob: KnobMode::Tick,
+            clocks: ClockMode::FollowHead,
+            mark: MarkMode::AfterElapsed,
         }
     }
 }
@@ -735,6 +756,8 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
             white,
             0.0,
         );
+    } else if look.knob == KnobMode::Always {
+        p.rect(Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0), 9.0, white, white, 0.0);
     } else {
         p.rect(
             Rect::new(hx - 1.5, sy - 4.0, 3.0, sh + 8.0),
@@ -753,10 +776,13 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     // laid out at its own size, never a tweened size or a scaled texture; the extents the rest of
     // the line clears are the union of the faces drawn.
     let elapsed = fmt_time(dispos, false);
+    // `ends` seats the elapsed clock at the bar's start: centring it on the bar's left edge lets the
+    // clamp inside `draw_clock` put its left edge there.
+    let clock_x = if look.clocks == ClockMode::Ends { sx } else { hx };
     let (mut el_l, mut el_r) = (f32::INFINITY, f32::NEG_INFINITY);
     for (sz, face_a) in crate::scrub_preview::clock_faces(look.clock_size, bar.clock_grow).into_iter().flatten() {
         let ety = plx_gfx::text::baseline_y(sz, 1, look.clock_size, 1, ty);
-        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, hx, ety, sz, white, sx, sx + sw, measure);
+        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, clock_x, ety, sz, white, sx, sx + sw, measure);
         el_l = el_l.min(l);
         el_r = el_r.max(r);
     }
@@ -790,7 +816,10 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
     // centred read-out was already showing, for the whole of every load AND every seek. Centered on
     // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
     // label / screen edge.
-    let mark = bar.mark;
+    let mark = match look.mark {
+        MarkMode::BusyOnly if bar.mark != TransportMark::Working => TransportMark::None,
+        _ => bar.mark,
+    };
     if mark != TransportMark::None {
         // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
         // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two

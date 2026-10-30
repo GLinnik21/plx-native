@@ -793,6 +793,11 @@ impl Compiled {
         self.assets.iter().find(|(name, _)| name == id).map(|(_, svg)| svg.as_str())
     }
 
+    /// The asset `id` as a glyph the shared icon cache can draw, keyed by its source.
+    pub fn glyph(&self, id: &str) -> Option<plx_ui::icons::Svg<'_>> {
+        self.asset(id).map(plx_ui::icons::Svg::new)
+    }
+
     pub fn findings(&self) -> &[CompileFinding] {
         &self.findings
     }

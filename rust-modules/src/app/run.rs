@@ -598,6 +598,8 @@ fn hud_model(
         controls: plx_appkit::player_hud::Controls::now(ps),
         chapters: plx_appkit::chapters_panel::has_chapters(meta),
         detail: plx_appkit::info_panel::detail_rk(meta).is_some(),
+        skip_secs: u32::try_from(plx_media::route::skip_interval().ns() / 1_000_000_000).unwrap_or(10),
+        stats: crate::app::diagnostics::enabled(),
         bitmap_key: plx_media::player::active_bitmap_key(playpos_ns),
         bitmap_by_key: plx_media::player::bitmap_by_key,
     }

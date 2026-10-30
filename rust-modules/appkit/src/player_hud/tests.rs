@@ -1551,3 +1551,77 @@ fn classic_resolved_through_the_compile_is_classics_table() {
         }
     }
 }
+
+/// The playbar's package options (`knob`, `clocks`, `mark`): extended in place, with classic's values
+/// the default, so the trailer's bar and the classic HUD's bar are the frames they were.
+mod playbar_options {
+    use super::*;
+    use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
+
+    fn bar(knob: Knob, mark: TransportMark) -> Playbar {
+        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, clock_grow: 0.0 }
+    }
+    fn census(b: Playbar, look: PlaybarLook) -> Vec<(u64, Rect)> {
+        plx_ui::draw_census::capture(|| draw_playbar_look(Painter::recording(), b, look, &FM))
+    }
+    fn runs(b: Playbar, look: PlaybarLook) -> Vec<plx_ui::draw_census::Run> {
+        plx_ui::draw_census::capture_runs(|| draw_playbar_look(Painter::recording(), b, look, &FM))
+    }
+
+    #[test]
+    fn the_default_look_is_classics() {
+        let look = PlaybarLook::default();
+        assert_eq!((look.knob, look.clocks, look.mark), (KnobMode::Tick, ClockMode::FollowHead, MarkMode::AfterElapsed));
+        for (knob, mark) in [(Knob::Tick, TransportMark::Pause), (Knob::Focused, TransportMark::Play), (Knob::Held, TransportMark::None)] {
+            let b = bar(knob, mark);
+            let classic = plx_ui::draw_census::capture(|| draw_playbar(Painter::recording(), b, &FM));
+            assert_eq!(classic, census(b, look), "{knob:?}");
+        }
+    }
+
+    #[test]
+    fn an_always_knob_replaces_the_tick_at_rest() {
+        let tick = census(bar(Knob::Tick, TransportMark::None), PlaybarLook::default());
+        let always = census(bar(Knob::Tick, TransportMark::None), PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() });
+        let thin = |v: &[(u64, Rect)]| v.iter().any(|(_, r)| (r.w - 3.0).abs() < 0.01);
+        let round = |v: &[(u64, Rect)]| v.iter().any(|(_, r)| (r.w - 18.0).abs() < 0.01 && (r.h - 18.0).abs() < 0.01);
+        assert!(thin(&tick) && !round(&tick), "classic rests as a tick: {tick:?}");
+        assert!(round(&always) && !thin(&always), "`always` rests as a knob: {always:?}");
+        // a knob already shown (focused or held) is unchanged by the option
+        for knob in [Knob::Focused, Knob::Held] {
+            let b = bar(knob, TransportMark::None);
+            assert_eq!(census(b, PlaybarLook::default()), census(b, PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() }));
+        }
+    }
+
+    #[test]
+    fn ends_clocks_sit_at_the_bars_two_ends() {
+        let look = PlaybarLook { clocks: ClockMode::Ends, ..PlaybarLook::default() };
+        let b = bar(Knob::Tick, TransportMark::None);
+        let elapsed = |look| runs(b, look).into_iter().find(|r| r.align == 1).expect("the elapsed clock");
+        let follow = elapsed(PlaybarLook::default());
+        let ends = elapsed(look);
+        let l = look.track.x;
+        assert!((follow.at.x - (l + look.track.w * 0.5)).abs() < 1.0, "classic: under the playhead, {:?}", follow.at);
+        assert!((ends.at.x - ends.at.w * 0.5 - l).abs() < 1.0, "`ends`: the clock's left edge is the bar's start, {:?}", ends.at);
+        let rem = runs(b, look).into_iter().find(|r| r.align == 2).expect("the remaining clock");
+        assert!((rem.at.x - (l + look.track.w)).abs() < 0.01, "remaining ends at the bar's end");
+        // near the end of the item the classic remaining clock gives way; `ends` keeps both apart
+        let late = Playbar { pos_ns: 1_199_000_000_000, ..b };
+        assert!(runs(late, PlaybarLook::default()).iter().all(|r| r.align != 2), "classic hides it");
+        assert!(runs(late, look).iter().any(|r| r.align == 2), "`ends` never meets it");
+    }
+
+    #[test]
+    fn a_busy_only_mark_draws_the_spinner_and_nothing_else() {
+        let glyphs = |b: Playbar, look| plx_ui::draw_census::capture_icons(|| draw_playbar_look(Painter::recording(), b, look, &FM));
+        let busy_only = PlaybarLook { mark: MarkMode::BusyOnly, ..PlaybarLook::default() };
+        for mark in [TransportMark::Pause, TransportMark::Play, TransportMark::Rewind, TransportMark::FastForward] {
+            let b = bar(Knob::Tick, mark);
+            assert_eq!(glyphs(b, PlaybarLook::default()).len(), 1, "classic draws the {mark:?} glyph");
+            assert!(glyphs(b, busy_only).is_empty(), "`busy_only` suppresses it: {mark:?}");
+        }
+        let working = bar(Knob::Tick, TransportMark::Working);
+        assert_eq!(census(working, busy_only), census(working, PlaybarLook::default()), "the spinner stays");
+    }
+}
