@@ -960,3 +960,75 @@ fn the_fold_glyph_stands_fold_gap_past_the_value() {
     // FOLD_SIZE on, so the painted value's end plus the fold item is the item's text edge.
     assert_eq!(value.at.x + value.at.w + FOLD_GAP + FOLD_SIZE, sort.text.x + sort.text.w);
 }
+
+/// **The Library's header as the approved board draws it** ("Collections · 24 ›  Recommended ›  |
+/// = Date added v"), laid out with the shipped advances. `criterion` is the sort control's visible
+/// text; its name, "Sort & Filter", is carried but never drawn.
+fn board_row(criterion: &str) -> (PageHeader, HeaderLayout) {
+    let place = |label: &str, value: Option<&str>, slot: Option<&str>| HeaderItem {
+        place: true, value_slot: slot.map(Into::into), ..item(label, value)
+    };
+    let sort = |criterion: &str| HeaderItem {
+        glyph: Some(Icon::Sort), value_only: true, fold_glyph: true, fold_quiet: true, ..item("Sort & Filter", Some(criterion))
+    };
+    let divider = HeaderItem { divider: true, ..Default::default() };
+    let spec = PageHeaderSpec {
+        right: vec![place("Collections", Some("24"), Some("999")), place("Recommended", None, None), divider.clone(), sort(criterion)],
+        ..Default::default()
+    };
+    let widest = [place("Collections", Some("999"), Some("999")), place("Recommended", None, None), divider, sort("Last episode added")];
+    let m = plx_base::fontcov::advances::ShippedMeasure;
+    let page = PageHeader::new(spec, &widest, &m);
+    let layout = page.layout(1920.0, &m);
+    (page, layout)
+}
+
+/// The text box of right item `i`.
+fn right_text(layout: &HeaderLayout, i: usize) -> Rect {
+    layout.items.iter().find(|r| r.slot == Slot::Right(i)).expect("laid out").text
+}
+
+/// **The header cluster against the native renders of the approved boards** (`SortValueDate`, and
+/// `SortValueDuration` with a shorter criterion), measured in 1920 x 1080 pixels. Board ink (x of
+/// the first and last lit column): Collections 973, "24" ends 1175, its chevron 1191..1197;
+/// Recommended 1254..1447, chevron 1463..1469; divider 1517..1518; sort icon 1554..1573, "Date
+/// added" 1591..1737, down chevron 1755..1767. Duration: Collections 1013, Recommended 1294..1487,
+/// divider 1557, icon 1594..1613, "Duration" 1630..1737, the same down chevron. Read as boxes
+/// (bearings added back): the sort control is 220 / 180 wide and ends at the text edge 1771, the
+/// divider ends 32 px (12 of margin and the 20 px plate overhang) before the icon box, the divider
+/// stands the row's gap less 8 after the last place (40 on the board, whose names stand 48 apart),
+/// and the whole cluster slides by the criterion's width difference (40) with the sort's right
+/// edge fixed.
+#[test]
+fn the_board_cluster_stands_where_the_native_renders_have_it() {
+    let (page, date) = board_row("Date added");
+    let (_, duration) = board_row("Duration");
+    let (collections, recommended, divider, sort) = (right_text(&date, 0), right_text(&date, 1), right_text(&date, 2), right_text(&date, 3));
+    let near = |got: f32, want: f32, what: &str| assert!((got - want).abs() <= 3.0, "{what}: {got} vs the board's {want}");
+    // The sort control: icon + 12 + criterion + 12 + chevron, ending at the text edge.
+    assert!((sort.x + sort.w - 1771.0).abs() < 0.01, "{sort:?}");
+    near(sort.w, 220.0, "the sort control's width on Date added");
+    near(right_text(&duration, 3).w, 180.0, "the sort control's width on Duration");
+    // The divider: 2 px wide, its right edge 32 px before the icon box (the board's 1519 to 1551).
+    assert_eq!(divider.w, DIVIDER_W);
+    assert_eq!(divider.x + divider.w + DIVIDER_LEAD, sort.x);
+    near(sort.x - divider.x, 1551.0 - 1517.0, "the divider's distance to the icon");
+    // The row's one gap: Collections to Recommended is `GAP` (the board's names stand 48 apart, ours
+    // 58 since the S9 review: a different constant, the same rule); the divider stands the gap less
+    // 8 after the last place, which is the board's 40 at the board's 48.
+    assert_eq!(recommended.x - (collections.x + collections.w), GAP);
+    assert_eq!(divider.x - (recommended.x + recommended.w), DIVIDER_TRAIL);
+    near(DIVIDER_TRAIL - (GAP - 48.0), 1517.0 - 1477.0, "the gap before the divider at the board's own gap");
+    // The widths of the places: text + 8 + the 20 px chevron (board boxes 971..1205 and 1251..1477).
+    near(collections.w, 1205.0 - 971.0, "Collections");
+    near(recommended.w, 1477.0 - 1251.0, "Recommended");
+    // Duration: the whole cluster moves right by the criterion's shorter width, the edge stays.
+    let moved = |i: usize| right_text(&duration, i).x - right_text(&date, i).x;
+    for i in 0..4 { near(moved(i), 40.0, "the cluster's slide between Date added and Duration"); }
+    for i in 1..4 { assert!((moved(i - 1) - moved(i)).abs() < 0.01, "the cluster slides as one"); }
+    let end = |l: &HeaderLayout| { let r = right_text(l, 3); r.x + r.w };
+    assert!((end(&date) - end(&duration)).abs() < 0.01);
+    // No slot for the criterion: the room the names get is sized from the widest case, whatever is on the row now.
+    assert_eq!(date.left_budget, duration.left_budget);
+    assert!(page.spec().right[3].value_only, "the name is carried, the criterion is what is drawn");
+}

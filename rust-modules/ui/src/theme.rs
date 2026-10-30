@@ -129,6 +129,12 @@ pub const CONTROL_TEXT_REST: [f32; 4] = with_a(WHITE, 0.65);
 /// The "312 of 1,284" read-out beside the header controls while a filter is on: white at 50%,
 /// quieter than [`CONTROL_TEXT_REST`] because it is not a control and takes no focus.
 pub const COUNT_FILTERED_INK: [f32; 4] = with_a(WHITE, 0.50);
+/// The chevron a header PLACE wears ("Collections · 24 ›", "Recommended ›": the control opens a
+/// page): white at 45%, a step under [`CONTROL_TEXT_REST`] so the mark reads as the control's
+/// affordance and not as part of its name.
+pub const HEADER_PLACE_INK: [f32; 4] = with_a(WHITE, 0.45);
+/// The hairline between the header's places and its sort control (2 x 32 px): white at 16%.
+pub const HEADER_DIVIDER_INK: [f32; 4] = with_a(WHITE, 0.16);
 /// The details line under a focused poster (Under posters: "2019 · 2h 6m"): white at 82%, a step
 /// below the title above it and neutral where [`TEXT_SECONDARY`] read bluish over the ground.
 pub const CAPTION_DETAIL_INK: [f32; 4] = with_a(WHITE, 0.82);

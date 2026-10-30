@@ -107,6 +107,24 @@ pub struct HeaderItem {
     /// x (a count of another digit count) leaves at the old x and arrives at the new, instead of
     /// being cut (a row for ANOTHER library shows only the controls that library has).
     pub value_slot: Option<String>,
+    /// A mark that leads the text ([`GLYPH_SIZE`] px, [`GLYPH_GAP`] before the text), inked as the
+    /// value is: the sort control's three bars.
+    pub glyph: Option<Icon>,
+    /// A PLACE (the control opens a page): a chevron trails the text, [`PLACE_SIZE`] px at
+    /// [`theme::HEADER_PLACE_INK`], [`PLACE_GAP`] after it. "Collections · 24 ›", "Recommended ›".
+    pub place: bool,
+    /// `label` is the control's NAME (what it is called aloud, the menu's title, the identity the
+    /// row's swap knows it by) and is NOT drawn: the control reads as its `value` alone. The sort
+    /// control, whose visible text is the chosen criterion and never "Sort & Filter".
+    pub value_only: bool,
+    /// With `fold_glyph`: the board's quiet down chevron ([`QUIET_FOLD_SIZE`] px at 65%, [`QUIET_FOLD_GAP`]
+    /// after the text) in place of the menu fold ([`FOLD_SIZE`] px at full ink, [`FOLD_GAP`]).
+    pub fold_quiet: bool,
+    /// A hairline between two controls ([`DIVIDER_W`] x [`DIVIDER_H`], [`theme::HEADER_DIVIDER_INK`]):
+    /// no stop, no label. It stands in the gap before the next item, [`DIVIDER_MARGIN`] clear of that
+    /// item's plate; the row keeps its one [`GAP`] between the divider's two neighbours and the
+    /// divider adds its own width and both margins to it.
+    pub divider: bool,
 }
 
 /// What the header is built from.
@@ -179,37 +197,83 @@ fn text_w(s: &str, measure: &dyn Measure) -> f32 {
     CString::new(s).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
 }
 
+/// The separator between a label and its value ("Collections · 24").
+const SEP: &str = " \u{b7} ";
+
+/// What an item is made of, left to right, as stack items with the gap each part wears before it:
+/// the leading mark, the label (not drawn when the control is [`HeaderItem::value_only`]), the
+/// separator and the value, the place chevron, the fold glyph. `budgeted`: a [`HeaderItem::value_slot`]
+/// sizes the value at its slot (the room the item is BUDGETED, [`run_w`]); otherwise at what it
+/// draws ([`ink_w`]). The one place an item's width is made, so [`run_w`], [`ink_w`] and the paint
+/// ([`PageHeader::draw_face_at`], which walks the same parts in the same order) cannot disagree.
+fn parts(item: &HeaderItem, measure: &dyn Measure, budgeted: bool) -> Vec<Item> {
+    if item.divider { return vec![Item::new(DIVIDER_W)]; }
+    let w = |s: &str| text_w(s, measure);
+    let mut parts = Vec::with_capacity(6);
+    let mut lead = 0.0;
+    if item.glyph.is_some() {
+        parts.push(Item::new(GLYPH_SIZE));
+        lead = GLYPH_GAP;
+    }
+    let mut text = |parts: &mut Vec<Item>, width: f32| parts.push(Item::new(width).before(std::mem::take(&mut lead)));
+    if !item.value_only { text(&mut parts, w(&item.label)); }
+    let value = match (&item.value_slot, &item.value) {
+        (Some(slot), value) if budgeted => Some(w(slot).max(value.as_deref().map_or(0.0, w))),
+        (_, Some(value)) => Some(w(value)),
+        _ => None,
+    };
+    if let Some(value) = value {
+        if !item.value_only { text(&mut parts, w(SEP)); }
+        text(&mut parts, value);
+    }
+    if item.place { parts.push(Item::new(PLACE_SIZE).before(PLACE_GAP)); }
+    if item.fold_glyph { parts.push(fold_item(item.fold_quiet)); }
+    parts
+}
+
 /// The room an item is BUDGETED in the row: its drawn run, or for a control with a
 /// [`HeaderItem::value_slot`] the label and the separator and the slot (the count it holds may be
 /// wider than the slot, never narrower, so the budget never changes while the count is a few
 /// digits). It sizes `cluster_w` and `left_budget`; the items are placed by [`ink_w`].
 fn run_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
-    let w = |s: &str| text_w(s, measure);
-    let (sep, value) = match (&item.value_slot, &item.value) {
-        (Some(slot), value) => (Item::new(w(" \u{b7} ")), Item::new(w(slot).max(value.as_deref().map_or(0.0, w)))),
-        (None, Some(value)) => (Item::new(w(" \u{b7} ")), Item::new(w(value))),
-        (None, None) => (Item::absent(), Item::absent()),
-    };
-    let fold = if item.fold_glyph { fold_item() } else { Item::absent() };
-    HStack::new(&[Item::new(w(&item.label)), sep, value, fold], 0.0, Align::Leading(0.0)).width()
+    HStack::new(&parts(item, measure, true), 0.0, Align::Leading(0.0)).width()
 }
 
-/// The fold glyph as a run item: [`FOLD_SIZE`] wide, [`FOLD_GAP`] after whatever precedes it. `run_w`
-/// sizes the item with it and `draw_face_at` places the glyph from it, so the two cannot disagree.
-fn fold_item() -> Item {
-    Item::new(FOLD_SIZE).before(FOLD_GAP)
+/// The fold glyph as a run item: the menu fold ([`FOLD_SIZE`] wide, [`FOLD_GAP`] after whatever
+/// precedes it) or the board's quiet one. `parts` sizes the item with it and `draw_face_at` places
+/// the glyph from it, so the two cannot disagree.
+fn fold_item(quiet: bool) -> Item {
+    if quiet { Item::new(QUIET_FOLD_SIZE).before(QUIET_FOLD_GAP) } else { Item::new(FOLD_SIZE).before(FOLD_GAP) }
 }
 
 /// The width of what an item DRAWS: [`run_w`], less the unused part of a slot. The item's text box
 /// and its plate are this wide, and the next item stands one gap past it.
 fn ink_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
     if item.value_slot.is_none() { return run_w(item, measure); }
-    let w = |s: &str| text_w(s, measure);
-    w(&item.label) + item.value.as_deref().map_or(0.0, |value| w(" \u{b7} ") + w(value))
+    HStack::new(&parts(item, measure, false), 0.0, Align::Leading(0.0)).width()
 }
 
 const FOLD_GAP: f32 = 10.0;
 const FOLD_SIZE: f32 = 22.0;
+/// The board's down chevron on the sort control: 20 px, 12 after the criterion, at 65%.
+const QUIET_FOLD_SIZE: f32 = 20.0;
+const QUIET_FOLD_GAP: f32 = 12.0;
+/// The mark that leads a control's text, and its air before the text (the sort icon).
+pub const GLYPH_SIZE: f32 = 26.0;
+pub const GLYPH_GAP: f32 = 12.0;
+/// A place's chevron, and its air after the text.
+pub const PLACE_SIZE: f32 = 20.0;
+pub const PLACE_GAP: f32 = 8.0;
+/// The divider between the places and the sort control: 2 x 32, [`DIVIDER_MARGIN`] clear of the
+/// plate on each side. The next item's plate stands [`OVERHANG`] before its text, so the divider
+/// stands [`DIVIDER_LEAD`] before that text; the row's one [`GAP`] plus the divider and both its
+/// margins is what separates the divider's two neighbours, so the part of it before the divider is
+/// [`DIVIDER_TRAIL`].
+pub const DIVIDER_W: f32 = 2.0;
+pub const DIVIDER_H: f32 = 32.0;
+pub const DIVIDER_MARGIN: f32 = 12.0;
+pub const DIVIDER_LEAD: f32 = OVERHANG + DIVIDER_MARGIN;
+pub const DIVIDER_TRAIL: f32 = GAP + 2.0 * DIVIDER_MARGIN - DIVIDER_LEAD;
 
 /// One right-cluster item as the stack sees it: it DRAWS [`ink_w`], a [`HeaderItem::value_slot`] is
 /// its [`Item::slot`] (budget [`run_w`], never air). The one place a right-cluster item becomes a stack item, so
@@ -219,9 +283,16 @@ fn stack_item(item: &HeaderItem, measure: &dyn Measure) -> Item {
     if item.value_slot.is_some() { drawn.slot(run_w(item, measure)) } else { drawn }
 }
 
-/// The right cluster as stack items, in order.
+/// The right cluster as stack items, in order. A divider takes the gap [`DIVIDER_TRAIL`] before it
+/// and the item after it [`DIVIDER_LEAD`], so the row's one gap and the divider's margins are one
+/// rule here and the cluster's budget and its placement cannot disagree.
 fn cluster_items(items: &[HeaderItem], measure: &dyn Measure) -> Vec<Item> {
-    items.iter().map(|item| stack_item(item, measure)).collect()
+    items.iter().enumerate().map(|(i, item)| {
+        let stand = stack_item(item, measure);
+        if item.divider { stand.before(DIVIDER_TRAIL) }
+        else if i > 0 && items[i - 1].divider { stand.before(DIVIDER_LEAD) }
+        else { stand }
+    }).collect()
 }
 
 /// Width of a cluster of items laid out with [`GAP`] between them, each item as wide as it is BUDGETED ([`run_w`]: a slot's full width): the stack's
@@ -297,7 +368,7 @@ impl PageHeader {
     fn face(&self, slot: Slot) -> Face<'_> {
         let of = Self::face_of;
         fn plain<'a>(label: String, selected: bool) -> Face<'a> {
-            Face { label, value: None, selected, title: false, fold: false, dimmed: false, readout: false, fade: None }
+            Face { label, value: None, selected, title: false, fold: false, dimmed: false, readout: false, look: Look::default(), fade: None }
         }
         match slot {
             Slot::Left(i) => self.spec.left.get(i).map_or_else(|| plain(String::new(), false), of),
@@ -312,7 +383,7 @@ impl PageHeader {
     fn face_of(item: &HeaderItem) -> Face<'_> {
         Face {
             label: item.label.clone(), value: item.value.as_deref(), selected: item.selected_plate, title: item.title,
-            fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout, fade: None,
+            fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout, look: Look::of(item), fade: None,
         }
     }
 
@@ -429,12 +500,26 @@ impl PageHeader {
         let to_accent = |ink: [f32; 4]| theme::cross(ink, super::ACCENT_INK, focus.clamp(0.0, 1.0));
         let fade = face.fade;
         let p = fade.map_or(p, |fade| p.alpha(fade.face));
+        let look = face.look;
+        if look.divider {
+            // A hairline, vertically centred on the row; it has no text, no plate and no stop.
+            let line = Rect::new(text.x + dx, text.y + dy + (text.h - DIVIDER_H) * 0.5, DIVIDER_W, DIVIDER_H);
+            p.rrect(line, 0.0, 0.0, theme::HEADER_DIVIDER_INK);
+            return;
+        }
         let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, text.y + dy + text.h * 0.5);
         let mut x = text.x + dx;
+        let centred = |x: f32, size: f32| Rect::new(x, text.y + dy + (text.h - size) * 0.5, size, size);
+        if let Some(glyph) = look.glyph {
+            icons::draw(p, glyph, centred(x, GLYPH_SIZE), to_accent(strong));
+            x += GLYPH_SIZE + GLYPH_GAP;
+        }
         // The label answers to both plates; what follows it (the separator, the value, the glyph)
         // only to the focus one: a value is full white whatever is selected.
         let label_ink = to_accent(theme::cross(rest, strong, selected.clamp(0.0, 1.0)));
-        if let Ok(c) = CString::new(face.label.as_str()) {
+        if look.value_only {
+            // The label is the control's name, not its look.
+        } else if let Ok(c) = CString::new(face.label.as_str()) {
             x += p.text(c.as_ptr(), x, y, theme::size::BODY, label_ink, 0, 0);
         }
         // The separator stands for whichever value is there, so it fades only when the control
@@ -448,8 +533,8 @@ impl PageHeader {
             (false, None) => 0.0,
         };
         let mut value_end = x;
-        if sep_alpha > 0.0 {
-            if let Ok(sep) = CString::new(" \u{b7} ") {
+        if sep_alpha > 0.0 && !look.value_only {
+            if let Ok(sep) = CString::new(SEP) {
                 let advance = p.alpha(sep_alpha).text(sep.as_ptr(), x, y, theme::size::BODY, to_accent(rest), 0, 0);
                 x += advance;
                 value_end = x;
@@ -464,14 +549,17 @@ impl PageHeader {
             }
         }
         x = value_end;
+        // What trails the text stands where `parts` put it: each glyph its own gap after the run.
+        let mut run = Flow::new(x, 0.0);
+        run.push(Item::new(0.0));
+        if look.place {
+            let mark = run.push(Item::new(PLACE_SIZE).before(PLACE_GAP)).expect("present");
+            icons::draw(p, Icon::Chevron, centred(mark.box_x, PLACE_SIZE), to_accent(theme::HEADER_PLACE_INK));
+        }
         if face.fold {
-            // The run ends at `x` (a zero-width stand-in for the text before it): the glyph stands
-            // where `run_w` put it, `FOLD_GAP` on.
-            let mut run = Flow::new(x, 0.0);
-            run.push(Item::new(0.0));
-            let fold = run.push(fold_item()).expect("present");
-            icons::draw(p, Icon::ChevronDown,
-                Rect::new(fold.box_x, text.y + dy + (text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
+            let fold = run.push(fold_item(look.fold_quiet)).expect("present");
+            let (size, ink) = if look.fold_quiet { (QUIET_FOLD_SIZE, rest) } else { (FOLD_SIZE, strong) };
+            icons::draw(p, Icon::ChevronDown, centred(fold.box_x, size), to_accent(ink));
         }
     }
 }
@@ -486,8 +574,26 @@ struct Face<'a> {
     fold: bool,
     dimmed: bool,
     readout: bool,
+    look: Look,
     /// Set while the item rides a [`HeaderSwap`].
     fade: Option<FaceFade<'a>>,
+}
+
+/// What an item wears beyond its text ([`HeaderItem`]'s `glyph`, `place`, `value_only`, `fold_quiet`
+/// and `divider`): the paint's copy of them, which a row's own parts (a crumb, the "+N") never have.
+#[derive(Clone, Copy, Default)]
+struct Look {
+    glyph: Option<Icon>,
+    place: bool,
+    value_only: bool,
+    fold_quiet: bool,
+    divider: bool,
+}
+
+impl Look {
+    fn of(item: &HeaderItem) -> Self {
+        Self { glyph: item.glyph, place: item.place, value_only: item.value_only, fold_quiet: item.fold_quiet, divider: item.divider }
+    }
 }
 
 /// How a [`HeaderSwap`] has an item painted this frame.
