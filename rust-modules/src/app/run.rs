@@ -366,8 +366,9 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 /// **Bring the compiled HUD up to date with the language the viewer is set to**, outside the draw: the
 /// app's layer is where the current locale is read (`plx_platform::i18n::current()`), and the compile gets
 /// it as an argument. A language change recompiles (a label's width is a pill's width); otherwise this is
-/// one comparison of two `Copy` enums. A package that does not load leaves `app.hud` `None`, and the page
-/// on the hand-written classic layout.
+/// one comparison of two `Copy` enums. Every compile is also handed to the mounter ([`adopt_hud`]), so the
+/// next player instance is constructed with the current one. `builtin:classic` always loads, so after this
+/// `app.hud` is `Some`.
 fn refresh_hud(app: &mut App) {
     use plx_appkit::player_hud::loaded::{DevHud, DevStep};
     let cx = plx_platform::i18n::current();
@@ -390,14 +391,44 @@ fn refresh_hud(app: &mut App) {
         }
         if let Some(hud) = dev.hud() {
             if app.hud.as_ref().is_none_or(|h| !std::sync::Arc::ptr_eq(&h.compiled, &hud.compiled)) {
-                app.hud = Some(hud.clone());
+                let hud = hud.clone();
+                adopt_hud(&mut app.bridge, &mut app.hud, hud);
             }
             return;
         }
     }
     if app.hud.as_ref().is_none_or(|h| h.language != cx.language()) {
-        app.hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, app.bridge.measure()).ok();
+        let hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, app.bridge.measure());
+        adopt_hud(&mut app.bridge, &mut app.hud, hud);
     }
+}
+
+/// **The app's HUD at construction, compiled outside any frame**: bridge's measurer and the viewer's
+/// language, taken into use ([`adopt_hud`]) so the first player page is constructed with it. Boot and the
+/// host test rig both build their `App` with it. A controlled replay or record run compiles nothing here:
+/// its measurer answers only the keys the recording holds, and measuring before the recorder's resources
+/// exist latches a failure; no fixture reaches the player, and [`refresh_hud`] compiles on the first player
+/// frame there.
+pub(super) fn boot_hud(bridge: &mut super::bridge::Bridge, controlled: bool) -> Option<plx_appkit::player_hud::loaded::LoadedHud> {
+    if controlled {
+        return None;
+    }
+    let loaded = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), plx_platform::i18n::current(), bridge.measure());
+    let mut hud = None;
+    adopt_hud(bridge, &mut hud, loaded);
+    hud
+}
+
+/// **The one place the app takes a compile into use**: keeps it as the app's current HUD and hands it to the
+/// mounter (`Bridge::seed_player_compiled`), so the next player page is constructed with it. Boot and
+/// [`refresh_hud`] both come through here.
+pub(super) fn adopt_hud(
+    bridge: &mut super::bridge::Bridge,
+    slot: &mut Option<plx_appkit::player_hud::loaded::LoadedHud>,
+    hud: plx_appkit::player_hud::loaded::LoadedHud,
+) {
+    bridge.seed_player_compiled(std::sync::Arc::clone(&hud.compiled));
+    *slot = Some(hud);
 }
 
 /// **The prepare window** (spec §3.3 steps 8-9, §8.1): the frame budget's own frame, the poster
@@ -441,8 +472,8 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.model = model;
             if let Some(hud) = app.hud.as_ref() {
-                if !player.compiled.as_ref().is_some_and(|c| std::sync::Arc::ptr_eq(c, &hud.compiled)) {
-                    player.compiled = Some(std::sync::Arc::clone(&hud.compiled));
+                if !std::sync::Arc::ptr_eq(&player.compiled, &hud.compiled) {
+                    player.compiled = std::sync::Arc::clone(&hud.compiled);
                 }
             }
         }
@@ -3726,7 +3757,7 @@ mod lifecycle_regression_tests {
     // No boot, renderer or device: the real App/event/frame phases with Bridge's host rig.
     fn app() -> App {
         plx_media::player::SHARED.reset_session();
-        let app = App {
+        let mut app = App {
             last_input: Default::default(),
             loop_t: Default::default(),
             iters_ct: Default::default(),
@@ -3866,6 +3897,7 @@ mod lifecycle_regression_tests {
             inputs: Default::default(),
             bridge: super::super::bridge::Bridge::for_test(|| 0),
         };
+        app.hud = boot_hud(&mut app.bridge, false);
         plx_media::route::reset_player_control_for_test(&app.player.session);
         app
     }
@@ -4313,8 +4345,8 @@ mod lifecycle_regression_tests {
         use plx_screens::registry::PlayerReq;
         let key = FocusKey { elem: plx_appkit::player_hud::ELEM_SCRUB,
             ..app.pages.focus().expect("the player has a scrub seat") };
-        // The layout's own report of the scrubber's grab band and bar, as the player's pointer stops read it.
-        let geometry = plx_appkit::player_hud::classic::frame_geometry();
+        // The compiled classic's report of the scrubber's grab band and bar, as the player's pointer stops read it.
+        let geometry = plx_appkit::player_hud::audit_geometry();
         let rect = geometry.grab;
         app.pages.input.hit.fill(vec![Stop { key, rect, rest_rect: rect, clip: Rect::FULL,
             hover: Hover::Ignore, activate: Activate::Direct }]);

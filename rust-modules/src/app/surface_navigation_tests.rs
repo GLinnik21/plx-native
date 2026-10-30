@@ -975,7 +975,7 @@ fn a_seeded_menu_anchor_is_mounted_into_the_next_menu_and_only_that_one() {
         _ => panic!("a menu"),
     };
     let seeded = plx_ui::Rect::new(333.0, 222.0, 111.0, 55.0);
-    let own_default = plx_appkit::player_hud::classic::frame_geometry().row;
+    let own_default = plx_appkit::player_hud::audit_geometry().row;
     assert_ne!(seeded, own_default);
     for (kind, tick_at) in [(OverlayKind::Tracks { tab: 1 }, 1), (OverlayKind::More { page: None }, 5)] {
         rig.seed_player_menu_anchor(Some(seeded));

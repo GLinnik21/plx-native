@@ -927,6 +927,12 @@ impl Bridge {
         self.mounter.player_hud_ms = Some(ms);
     }
 
+    /// The compiled HUD every player instance from now on is constructed with — see
+    /// [`AppMounter::player_compiled`]. Set at boot and again when the app recompiles (a language change).
+    pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
+        self.mounter.player_compiled = compiled;
+    }
+
     /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
     /// so an open that has no anchor (or retargets a panel already up) never leaves one for a later mount.
     pub(crate) fn seed_player_menu_anchor(&mut self, anchor: Option<plx_ui::Rect>) {
