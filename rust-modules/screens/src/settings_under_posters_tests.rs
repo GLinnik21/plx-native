@@ -681,6 +681,35 @@ fn a_poster_with_no_year_wears_the_dash_in_the_sort_value_preview() {
     assert!(runs.iter().any(|r| r.text == "\u{2013}"), "a missing year is the en dash: {:?}", runs.iter().map(|r| &r.text).collect::<Vec<_>>());
 }
 
+/// **The preview words each item's own year whatever kind the last listing held.** The preview
+/// illustrates a library sorted by Year, and the library the reader last opened may be a TV show
+/// library (shows), its Seasons or Episodes listing, or a Collections page: the year is the item's own
+/// fact (`PmsMovie::year`) on every one of them, not a Movie-only fact, so none of them draws the dash
+/// for data the server did send.
+#[test]
+fn the_sort_value_preview_words_the_year_of_every_kind_of_item() {
+    use plx_data::pms::{KIND_COLLECTION, KIND_SHOW};
+    let _guard = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let of_kind = |kind, year| PmsMovie { kind, ..poster("Title", year, "Noir") };
+    let value = UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: true };
+    let drawn = |posters: &[&PmsMovie]| -> Vec<String> {
+        plx_ui::draw_census::capture_runs(|| draw_preview(plx_ui::Painter::recording(), value, posters, None, &ShippedMeasure))
+            .into_iter().map(|run| run.text).collect()
+    };
+    for (kinds, years) in [([0, KIND_SHOW, 2], ["1999", "2004", "2011"]), ([3, KIND_COLLECTION, 2], ["2015", "2021", "2023"])] {
+        let items: Vec<PmsMovie> = kinds.iter().zip(years).map(|(kind, year)| of_kind(*kind, year.parse().unwrap())).collect();
+        let texts = drawn(&[&items[0], &items[1], &items[2]]);
+        for year in years {
+            assert!(texts.iter().any(|t| t == year), "kind {kinds:?}: {year} is worded from the item's own year: {texts:?}");
+        }
+        assert!(!texts.iter().any(|t| t == "\u{2013}"), "kind {kinds:?}: a year the server sent is never the dash: {texts:?}");
+    }
+    // A year the server did not send is still the dash, of any kind.
+    let nameless = of_kind(2, 0);
+    assert!(drawn(&[&nameless, &nameless, &nameless]).iter().any(|t| t == "\u{2013}"));
+}
+
 /// **The picker's preview says where its posters come from**: the focused tile's own sample line and the
 /// "The library you last opened" caption under the frame.
 #[test]

@@ -321,12 +321,15 @@ fn lifted_facts(posters: &[&PmsMovie]) -> CaptionFacts {
     caption_facts_of(lifted_poster(posters))
 }
 
+/// The year of the sample a preview with no poster behind it shows.
+const SAMPLE_YEAR: i32 = 2019;
+
 /// The sample facts a preview with no poster behind it is captioned from.
 fn sample_facts() -> CaptionFacts {
     use plx_platform::i18n::msg;
     CaptionFacts {
         title: Some(msg::under_posters_sample_title().to_string()),
-        year: Some(2019),
+        year: Some(SAMPLE_YEAR),
         duration_min: Some(134),
         genre: Some(msg::under_posters_sample_genre().to_string()),
         video_resolution: Some("4k".to_string()),
@@ -374,17 +377,15 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], foot: Option
     let tiles = (0..PREVIEW_TILES).map(|i| Art::Poster(posters.get(i).map(|m| tile_facts::of(m))));
     if v.sort_value {
         // The Sort value row has focus: the row as a library sorted by Year draws it, every poster
-        // wearing its own year (through the one value formatter), the lifted one bold.
+        // wearing its own year (through the one value formatter), the lifted one bold. The year is the
+        // item's own fact whatever kind the last-opened listing held (a TV show library, its Seasons
+        // or Episodes, a Collections page), so it is handed over as a bare Movie's: the value table
+        // words only the primary grids' kinds, and a season's year must not read as a missing fact.
         SampleRow::draw_values(p, &frame, &PREVIEW_STYLE, tiles, lifted,
             |i| {
-                let value = |item: &PmsMovie| crate::registry::sort_info::label(item, PREVIEW_SORT, None).value.unwrap_or_default();
-                match posters.get(i) {
-                    Some(item) => value(item),
-                    None => {
-                        let facts = sample_facts();
-                        value(&PmsMovie { title: facts.title.unwrap_or_default(), year: facts.year.unwrap_or(0), ..Default::default() })
-                    }
-                }
+                let year = posters.get(i).map_or(SAMPLE_YEAR, |item| item.year);
+                crate::registry::sort_info::label(&PmsMovie { year, ..Default::default() }, PREVIEW_SORT, None)
+                    .value.unwrap_or_default()
             }, measure);
     } else {
         SampleRow::draw(p, &frame, &PREVIEW_STYLE, tiles, lifted, &label, measure);
