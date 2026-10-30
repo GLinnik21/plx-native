@@ -18,21 +18,20 @@
 //! rects: the `extent` itself, the `band` (from the package's `controls_top_y` down) and the `limit` (from the
 //! minimum down). Fixing that node reveals the next-highest extent if it too is above the minimum.
 //!
-//! **Where the pointer comes from.** `CompiledState::top`, the function that computes the band, is private to
-//! `compile`, so [`highest`] scans the same extents from the state's public data and takes each one's node
-//! from the provenance accessors (`CompiledState::origin`, `control_pointer`). It decides WHICH node, never
-//! WHETHER the bound is violated: that is `Compiled::band()` alone. If the scan finds no extent at the band's
-//! top (it drifted from `CompiledState::top`) the finding falls back to `/layout`, the layout root, so the
-//! violation is still reported; a test pins that the scan and the compiled band agree on every fixture.
+//! **Where the pointer comes from.** The band is the minimum `top` of `Compiled::compact_band_extents`, the one
+//! iterator `compile` takes it from, and each extent it yields carries the node that drew it (the provenance
+//! accessors `CompiledState::origin` and `control_pointer`, and the `up_next` object for the stand-ins). So
+//! [`highest`] decides WHICH node by reading the very extents the band was taken from, never WHETHER the
+//! bound is violated: that is `Compiled::band()` alone. If no extent sits at the band's top (it cannot, but a
+//! band is a plain value) the finding falls back to `/layout`, the layout root, so the violation is still
+//! reported.
 
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::Rect;
 
-use super::compile::{CompiledState, DrawOp};
+use super::compile::BandExtent;
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
-use super::parse::Val;
 use super::{codes, Finding};
-use crate::player_hud::classic::KNOB_GLOW_R;
 use crate::player_hud::min_controls_top_y;
 #[cfg(test)]
 use super::lint::testing::{Base, InvalidCase};
@@ -55,108 +54,27 @@ fn violates(controls_top_y: f32, limit: f32) -> bool {
     controls_top_y < limit
 }
 
-/// One drawn extent that counts toward the band, and the node that drew it.
-#[derive(Clone, Debug, PartialEq)]
-struct Extent {
-    /// the top the band counts
-    top: f32,
-    /// the rect it occupies (for the finding's `extent`)
-    rect: Rect,
-    /// what it is, for the message
-    what: &'static str,
-    /// the RFC 6901 pointer of the node that drew it
-    pointer: String,
-}
-
-/// The pointer of the first op of `state` that `is` accepts, or the layout root where it has none.
-fn origin_of(state: &CompiledState, is: impl Fn(&DrawOp) -> bool) -> String {
-    state
-        .ops
-        .iter()
-        .position(is)
-        .map_or_else(|| LAYOUT_ROOT.to_owned(), |i| state.origin(i).to_owned())
-}
-
-/// The top of the scrub bar as the band counts it: the track, or the focused knob's glow around the playhead
-/// where that reaches higher, so the band does not move with focus (`CompiledState::top`'s `bar_top`).
-fn bar_top(track: Rect) -> f32 {
-    track.y.min(track.y + track.h * 0.5 - KNOB_GLOW_R)
-}
-
-/// Every extent of `state` that counts toward the band, in the order `CompiledState::top` reads them:
-/// the controls in draw order, the scrub bar, Up Next's two buttons, the Skip pill at both widths and, under
-/// `band: "block"` (`block`), Up Next's still and caption and every other drawn extent but the scrim. The two
-/// stand-ins count in EVERY state (they are where the offer or the pill would land, `CompiledState::standin`),
-/// drawn or not, so they are named by the node that owns them, `stand_in` (the `up_next` object: it owns the
-/// offer and the pill alike).
-fn extents(state: &CompiledState, block: bool, stand_in: &str) -> Vec<Extent> {
-    let mut out = Vec::new();
-    for (i, c) in state.controls.iter().enumerate() {
-        out.push(Extent { top: c.rect.y, rect: c.rect, what: "control", pointer: state.control_pointer(i).to_owned() });
-    }
-    if let Some(bar) = state.playbar {
-        let top = bar_top(bar.track);
-        let rect = Rect::new(bar.track.x, top, bar.track.w, bar.track.y + bar.track.h - top);
-        let pointer = origin_of(state, |op| matches!(op, DrawOp::Playbar { .. }));
-        out.push(Extent { top, rect, what: "scrub bar", pointer });
-    }
-    if let Some(u) = state.standin.up_next {
-        let mut parts = vec![("Up Next button", u.credits), ("Up Next button", u.next)];
-        if block {
-            parts.extend(u.still.map(|r| ("Up Next still", r)));
-            parts.extend(u.caption.map(|r| ("Up Next caption", r)));
-        }
-        out.extend(parts.into_iter().map(|(what, rect)| Extent { top: rect.y, rect, what, pointer: stand_in.to_owned() }));
-    }
-    if let Some(pills) = state.standin.skip {
-        out.extend(pills.into_iter().map(|rect| Extent { top: rect.y, rect, what: "Skip pill", pointer: stand_in.to_owned() }));
-    }
-    if block {
-        for (i, op) in state.ops.iter().enumerate() {
-            let (what, rect) = match op {
-                // counted above, from the state's own report of them
-                DrawOp::Scrim { .. } | DrawOp::UpNext { .. } | DrawOp::SkipPill { .. } | DrawOp::Control(_) | DrawOp::Playbar { .. } => {
-                    continue;
-                }
-                DrawOp::Ground { rect, .. } | DrawOp::Rule { rect, .. } => ("ground", *rect),
-                DrawOp::Text { rect, .. } | DrawOp::Facts { rect, .. } => ("text", *rect),
-                DrawOp::Image { rect, .. } => ("image", *rect),
-                DrawOp::Icon { rect, .. } => ("icon", *rect),
-                DrawOp::Strip { rect, .. } => ("strip", *rect),
-            };
-            out.push(Extent { top: rect.y, rect, what, pointer: state.origin(i).to_owned() });
-        }
-    }
-    out
-}
-
 /// The highest extent of the compact state over its slots and valuations (the first, in `Compiled::states`
-/// order and then the order of [`extents`], where several share the top), and the state it was found in.
-fn highest<'a>(cx: &LangCtx<'a>) -> Option<(Extent, StateCtx<'a>)> {
-    let block = cx.package.layout.get("band").and_then(Val::as_str) == Some("block");
-    let stand_in = cx.package.layout.get("up_next").and_then(Val::as_object).map_or(LAYOUT_ROOT, |o| o.pointer.as_str());
-    let mut best: Option<(Extent, StateCtx<'a>)> = None;
-    for state in cx.states().filter(|s| s.key.open == 0) {
-        for extent in extents(state.state, block, stand_in) {
-            if best.as_ref().is_none_or(|(b, _)| extent.top < b.top) {
-                best = Some((extent, state));
-            }
-        }
-    }
-    best
+/// order and then the order `CompiledState::band_extents` yields, where several share the top), and the state
+/// it was found in.
+fn highest<'a>(cx: &LangCtx<'a>) -> Option<(BandExtent<'a>, StateCtx<'a>)> {
+    cx.compiled
+        .compact_band_extents()
+        .min_by(|a, b| a.1.top.total_cmp(&b.1.top))
+        .map(|(state, extent)| (extent, StateCtx { key: state.key, state }))
 }
 
 /// The `HUD-E1201` finding for a band whose controls start at `band_top`, above `limit`, set by `found`
 /// (see [`highest`]). A scan that missed the band's top (`found` is `None`, or sits elsewhere) names the layout
 /// root in the first compact state instead.
-fn finding(cx: &LangCtx<'_>, band_top: f32, limit: f32, found: Option<(Extent, StateCtx<'_>)>) -> Finding {
+fn finding(cx: &LangCtx<'_>, band_top: f32, limit: f32, found: Option<(BandExtent<'_>, StateCtx<'_>)>) -> Finding {
     let found = found.filter(|(extent, _)| (extent.top - band_top).abs() < 0.01);
     let state = found
         .as_ref()
         .map(|(_, s)| *s)
         .or_else(|| cx.states().find(|s| s.key.open == 0))
         .or_else(|| cx.states().next());
-    let (pointer, what) = found.as_ref().map_or((LAYOUT_ROOT, "extent"), |(e, _)| (e.pointer.as_str(), e.what));
+    let (pointer, what) = found.as_ref().map_or((LAYOUT_ROOT, "extent"), |(e, _)| (e.pointer, e.what));
     let mut ctx = state.map(|s| ctx_for(cx, &s)).unwrap_or_default();
     if let Some((extent, _)) = &found {
         ctx.rects.push(named("extent", extent.rect));
@@ -230,7 +148,7 @@ mod tests {
     use super::super::compile::{compile, CompileCtx};
     use super::super::lint::testing::{apply, assert_case};
     use super::super::lint::{lint, LangCtx, LintLang, LintOptions};
-    use super::super::parse;
+    use super::super::parse::{self, Val};
     use super::super::reach::Slot;
     use super::super::BUILTIN_CLASSIC;
     use super::*;
@@ -301,22 +219,20 @@ mod tests {
         f(&LangCtx { package: &package, compiled: &compiled, measure: &ShippedMeasure, lang: &lang, opts: &opts })
     }
 
-    /// **The pointer scan agrees with the compiled band** on every fixture: the highest extent [`highest`] finds
-    /// IS `Compiled::band().controls_top_y`. If `CompiledState::top` ever counts an extent this scan does not (or
-    /// the reverse), this fails, and `check` would fall back to the layout root.
+    /// **Every extent names a node**, in every state of every fixture, with and without `band: "block"`: a
+    /// finding is only as good as the pointer the extent carries (the stand-ins', the bar's, a control's). An
+    /// extent whose provenance was not recorded would come out as `""`.
     #[test]
-    fn the_extent_scan_agrees_with_the_compiled_band_on_every_fixture() {
+    fn every_band_extent_names_a_node_on_every_fixture() {
         for (name, text) in FIXTURES {
             with_cx(text, |cx| {
-                let (extent, state) = highest(cx).unwrap_or_else(|| panic!("{name}: an extent"));
-                assert_eq!(state.key.open, 0, "{name}: the compact state");
-                assert!(
-                    (extent.top - cx.compiled.band().controls_top_y).abs() < 0.01,
-                    "{name}: the scan says {}, the compile {}",
-                    extent.top,
-                    cx.compiled.band().controls_top_y
-                );
-                assert!(!extent.pointer.is_empty() && extent.pointer != LAYOUT_ROOT, "{name}: names a node: {}", extent.pointer);
+                for state in cx.compiled.states() {
+                    for block in [false, true] {
+                        for extent in state.band_extents(block) {
+                            assert!(extent.pointer.starts_with("/layout"), "{name}: {block}: {extent:?}");
+                        }
+                    }
+                }
             });
         }
     }
@@ -329,15 +245,16 @@ mod tests {
             let state = |slot| {
                 cx.states().find(|s| s.key.open == 0 && s.key.slot == slot && s.key.episode && s.key.chapters).expect("state").state
             };
-            let discs = extents(state(Slot::Discs), false, "/layout/up_next");
+            let extents = |slot| state(slot).band_extents(false).collect::<Vec<_>>();
+            let discs = extents(Slot::Discs);
             let more = discs.iter().find(|e| e.pointer == "/layout/block/0/cells/1/segment/items/4").expect("More");
             assert_eq!((more.what, more.top), ("control", 792.0));
             let bar = discs.iter().find(|e| e.what == "scrub bar").expect("the bar");
             assert!(bar.pointer.starts_with("/layout/block/1/cells/0/playbar"), "{}", bar.pointer);
             assert!(bar.top < bar.rect.y + bar.rect.h);
-            let up = extents(state(Slot::UpNext), false, "/layout/up_next");
+            let up = extents(Slot::UpNext);
             assert!(up.iter().any(|e| e.what == "Up Next button" && e.pointer == "/layout/up_next"), "{up:?}");
-            let skip = extents(state(Slot::Skip), false, "/layout/up_next");
+            let skip = extents(Slot::Skip);
             assert!(skip.iter().any(|e| e.what == "Skip pill" && e.pointer == "/layout/up_next"), "{skip:?}");
         });
     }

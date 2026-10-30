@@ -390,6 +390,9 @@ pub struct CompiledState {
     control_origins: Vec<String>,
     /// `(pointer, rect)` of each `vstack` this state places ([`CompiledState::vstack_rect`])
     vstacks: Vec<(String, Rect)>,
+    /// the pointer of the `up_next` object, which owns both stand-ins (the offer and the pill); `""` where the
+    /// package places none ([`CompiledState::band_extents`])
+    standin_origin: String,
 }
 
 impl CompiledState {
@@ -485,36 +488,55 @@ impl CompiledState {
         self.controls.iter().find(|c| c.command == "toggle_section" && c.section.as_deref() == Some(section)).map(|c| c.rect)
     }
 
-    /// The top of the highest drawn extent: interactive only (a control, the bar with its knob, Up Next's
-    /// two buttons, the Skip pill at either width), or under `block` every drawn extent but the scrim,
-    /// Up Next's still and caption included.
-    fn top(&self, block: bool) -> Option<f32> {
-        let mut ys: Vec<f32> = self.controls.iter().map(|c| c.rect.y).collect();
-        ys.extend(self.playbar.map(|p| bar_top(p.track)));
+    /// **The extents the caption band counts** in this state, each with the node that drew it: interactive
+    /// ones only (a control, the bar with its focused knob, Up Next's two buttons, the Skip pill at either
+    /// width), or under `block` every drawn extent but the scrim, Up Next's still and caption included. The
+    /// band is the highest `top` of these over the compact states ([`Compiled::compact_band_extents`]).
+    ///
+    /// The two stand-ins count in EVERY state (they are where the offer or the pill would land,
+    /// [`CompiledState::standin`]), drawn or not, so they are named by the node that owns them. The bar is
+    /// `playbar` (the last playbar cell: each overwrites the one before), which also counts under `block`
+    /// for every earlier playbar cell.
+    pub(crate) fn band_extents(&self, block: bool) -> impl Iterator<Item = BandExtent<'_>> {
+        let mut out = Vec::new();
+        for (i, c) in self.controls.iter().enumerate() {
+            out.push(BandExtent { top: c.rect.y, rect: c.rect, what: "control", pointer: self.control_pointer(i) });
+        }
+        let bar_op = self.ops.iter().rposition(|op| matches!(op, DrawOp::Playbar { .. }));
+        if let Some(bar) = self.playbar {
+            out.push(bar_extent(bar.track, bar_op.map_or("", |i| self.origin(i))));
+        }
+        let owner = self.standin_origin.as_str();
+        let at = |what: &'static str, rect: Rect| BandExtent { top: rect.y, rect, what, pointer: owner };
         if let Some(u) = self.standin.up_next {
-            ys.extend([u.credits.y, u.next.y]);
+            out.extend([at("Up Next button", u.credits), at("Up Next button", u.next)]);
             if block {
-                ys.extend(u.still.map(|r| r.y));
-                ys.extend(u.caption.map(|r| r.y));
+                out.extend(u.still.map(|r| at("Up Next still", r)));
+                out.extend(u.caption.map(|r| at("Up Next caption", r)));
             }
         }
-        ys.extend(self.standin.skip.into_iter().flatten().map(|r| r.y));
+        out.extend(self.standin.skip.into_iter().flatten().map(|r| at("Skip pill", r)));
         if block {
-            for op in &self.ops {
-                match op {
-                    DrawOp::Scrim { .. } | DrawOp::UpNext { .. } | DrawOp::SkipPill { .. } | DrawOp::Control(_) => {}
-                    DrawOp::Ground { rect, .. }
-                    | DrawOp::Text { rect, .. }
-                    | DrawOp::Image { rect, .. }
-                    | DrawOp::Icon { rect, .. }
-                    | DrawOp::Rule { rect, .. }
-                    | DrawOp::Facts { rect, .. }
-                    | DrawOp::Strip { rect, .. } => ys.push(rect.y),
-                    DrawOp::Playbar { track, .. } => ys.push(bar_top(*track)),
-                }
+            for (i, op) in self.ops.iter().enumerate() {
+                let (what, rect) = match op {
+                    // counted above, from the state's own report of them
+                    DrawOp::Scrim { .. } | DrawOp::UpNext { .. } | DrawOp::SkipPill { .. } | DrawOp::Control(_) => continue,
+                    DrawOp::Playbar { track, .. } => {
+                        if Some(i) != bar_op {
+                            out.push(bar_extent(*track, self.origin(i)));
+                        }
+                        continue;
+                    }
+                    DrawOp::Ground { rect, .. } | DrawOp::Rule { rect, .. } => ("ground", *rect),
+                    DrawOp::Text { rect, .. } | DrawOp::Facts { rect, .. } => ("text", *rect),
+                    DrawOp::Image { rect, .. } => ("image", *rect),
+                    DrawOp::Icon { rect, .. } => ("icon", *rect),
+                    DrawOp::Strip { rect, .. } => ("strip", *rect),
+                };
+                out.push(BandExtent { top: rect.y, rect, what, pointer: self.origin(i) });
             }
         }
-        ys.into_iter().reduce(f32::min)
+        out.into_iter()
     }
 
     /// Set the package's one caption band on this state (and on the credits layout it carries).
@@ -533,6 +555,26 @@ fn bar_top(track: Rect) -> f32 {
     track.y.min(track.y + track.h * 0.5 - KNOB_GLOW_R)
 }
 
+/// One drawn extent that counts toward the caption band ([`CompiledState::band_extents`]), and the node that
+/// drew it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BandExtent<'a> {
+    /// the top the band counts
+    pub top: f32,
+    /// the rect it occupies
+    pub rect: Rect,
+    /// what it is, in a word, for a message
+    pub what: &'static str,
+    /// the RFC 6901 pointer of the node that drew it ([`CompiledState::origin`], `control_pointer`)
+    pub pointer: &'a str,
+}
+
+/// The scrub bar's extent: the track and the focused knob's glow above it ([`bar_top`]), drawn by `pointer`.
+fn bar_extent(track: Rect, pointer: &str) -> BandExtent<'_> {
+    let top = bar_top(track);
+    BandExtent { top, rect: Rect::new(track.x, top, track.w, track.y + track.h - top), what: "scrub bar", pointer }
+}
+
 /// A package compiled in every state `reach` enumerates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Compiled {
@@ -543,6 +585,10 @@ pub struct Compiled {
     named: Named,
     /// the one caption band, in every state
     band: HudBand,
+    /// does the package count every drawn extent toward the band (`layout.band: "block"`) rather than the
+    /// interactive ones alone? Read once, here, by [`Compiled::compact_band_extents`] for the compiler and
+    /// the lint alike
+    block: bool,
     findings: Vec<CompileFinding>,
 }
 
@@ -611,6 +657,14 @@ impl Compiled {
     pub fn band(&self) -> HudBand {
         self.band
     }
+
+    /// **Every extent that counts toward the band**, over the compact states in [`Compiled::states`] order
+    /// (the state each belongs to beside it): the one source the band is the minimum `top` of
+    /// ([`compile`]) and a lint names the node that sets it from, so neither can drift from the other.
+    pub(crate) fn compact_band_extents(&self) -> impl Iterator<Item = (&CompiledState, BandExtent<'_>)> {
+        let block = self.block;
+        self.states.iter().filter(|s| s.key.open == 0).flat_map(move |s| s.band_extents(block).map(move |extent| (s, extent)))
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -632,22 +686,23 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
             }
         }
     }
-    let block = package.layout.get("band").and_then(Val::as_str) == Some("block");
-    let band = states
-        .iter()
-        .filter(|s| s.key.open == 0)
-        .filter_map(|s| s.top(block))
-        .reduce(f32::min)
-        .map_or(HudBand::CLASSIC, HudBand::from_controls_top);
-    for state in &mut states {
-        state.set_band(band);
-    }
-    Compiled {
+    let mut compiled = Compiled {
         states,
         named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
-        band,
+        band: HudBand::CLASSIC,
+        block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
         findings: frame.findings,
+    };
+    let band = compiled
+        .compact_band_extents()
+        .map(|(_, extent)| extent.top)
+        .reduce(f32::min)
+        .map_or(HudBand::CLASSIC, HudBand::from_controls_top);
+    for state in &mut compiled.states {
+        state.set_band(band);
     }
+    compiled.band = band;
+    compiled
 }
 
 /// What a package's conditions ask of the frame, read from the typed tree.
@@ -1710,6 +1765,7 @@ impl<'e, 'p> Env<'e, 'p> {
             origins,
             control_origins: out.control_origins,
             vstacks: out.vstacks,
+            standin_origin: up.map_or_else(String::new, |u| u.pointer.clone()),
         }
     }
 
