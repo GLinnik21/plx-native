@@ -166,6 +166,10 @@ pub struct PlayerScreen {
     /// The app assigns it ONCE a frame, before `prepare` and `draw`; only those two read it.
     /// Key handling, the scrub arithmetic and the Tick keep sampling what they always did.
     pub model: HudModel,
+    /// **The compiled HUD this page draws and places from**, handed in by the application the way
+    /// [`Self::model`] is: parsed and compiled once outside any frame, and recompiled when the language
+    /// changes (`player_hud::loaded`). `None` until the app has one.
+    pub compiled: Option<std::sync::Arc<plx_appkit::hud_format::compile::Compiled>>,
 }
 
 impl PlayerScreen {
@@ -194,6 +198,7 @@ impl PlayerScreen {
             failure_up: false,
             clock_warm: Default::default(),
             model: HudModel::default(),
+            compiled: None,
         }
     }
 
@@ -255,6 +260,11 @@ impl PlayerScreen {
 
     /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
     /// pointer can hit is registered by [`Self::record_stops`], from this screen's `Focusable`.
+    ///
+    /// It draws the compiled package ([`Self::compiled`], `builtin:classic` unless a dev package was
+    /// asked for) through `player_hud::render`. `None`, or a package with no state for this frame, draws
+    /// the hand-written classic layout instead: **a stage-to-stage bridge only**, deleted together with
+    /// `classic::draw_hud` once the renderer's frames are proven identical.
     pub fn draw_hud(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
@@ -262,6 +272,25 @@ impl PlayerScreen {
         measure: &dyn plx_machine::machine::Measure,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
+        if let Some(compiled) = self.compiled.as_deref() {
+            let frame = plx_appkit::player_hud::render::Frame {
+                ps,
+                model: &self.model,
+                up: &self.up_next,
+                slot: self.slot,
+                busy: self.busy,
+                focus: self.hud.nav.focus,
+                btn: self.hud.nav.btn,
+                tab: self.hud.nav.tab,
+                now,
+                transport: self.transport,
+                measure,
+                meta,
+            };
+            if plx_appkit::player_hud::render::draw(compiled, &frame, &mut self.row, plx_ui::Painter::root()) {
+                return;
+            }
+        }
         plx_appkit::player_hud::classic::draw_hud(
             ps,
             &self.model,

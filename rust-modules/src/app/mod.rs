@@ -239,6 +239,11 @@ pub(crate) struct App {
     #[cfg(feature = "devtools")]
     fps_shown: i32,
     play_prev: Option<(i64, u32)>,
+    /// The compiled HUD the player page draws from (`player_hud::loaded`): built OUTSIDE the frame, in
+    /// the language the viewer is set to, and rebuilt when that language changes (a label's width sets
+    /// a pill's width). `None` until the first player frame, or when the package did not load, which
+    /// leaves the page on the hand-written classic layout.
+    hud: Option<plx_appkit::player_hud::loaded::LoadedHud>,
     running: bool,
     window_activity: window_activity::WindowActivity,
     #[cfg(feature = "devtools")]

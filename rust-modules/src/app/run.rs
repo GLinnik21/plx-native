@@ -363,6 +363,18 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     fr.underlay_moving = press_moving;
 }
 
+/// **Bring the compiled HUD up to date with the language the viewer is set to**, outside the draw: the
+/// app's layer is where the current locale is read (`plx_platform::i18n::current()`), and the compile gets
+/// it as an argument. A language change recompiles (a label's width is a pill's width); otherwise this is
+/// one comparison of two `Copy` enums. A package that does not load leaves `app.hud` `None`, and the page
+/// on the hand-written classic layout.
+fn refresh_hud(app: &mut App) {
+    let cx = plx_platform::i18n::current();
+    if app.hud.as_ref().is_none_or(|h| h.language != cx.language()) {
+        app.hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, &plx_gfx::text::TtfMeasure).ok();
+    }
+}
+
 /// **The prepare window** (spec §3.3 steps 8-9, §8.1): the frame budget's own frame, the poster
 /// adapter's, the player page's clock-motion report, the whole-frame present DECISION, and — on
 /// the presenting side of it — the render cache's upload.
@@ -400,8 +412,14 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // target by seconds a frame, and the clock prewarm warms only the displayed second and the next).
     if fr.player {
         let model = hud_model(&app.player.session, app.bridge.metadata_view());
+        refresh_hud(app);
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.model = model;
+            if let Some(hud) = app.hud.as_ref() {
+                if !player.compiled.as_ref().is_some_and(|c| std::sync::Arc::ptr_eq(c, &hud.compiled)) {
+                    player.compiled = Some(std::sync::Arc::clone(&hud.compiled));
+                }
+            }
         }
     }
     // ---- the player page's CLOCK-DRIVEN motion report (spec §8.3, §9) ----
@@ -3689,6 +3707,7 @@ mod lifecycle_regression_tests {
             #[cfg(feature = "devtools")]
             fps_shown: Default::default(),
             play_prev: None,
+            hud: None,
             running: Default::default(),
             window_activity: crate::app::window_activity::WindowActivity::new(),
             #[cfg(feature = "devtools")]
