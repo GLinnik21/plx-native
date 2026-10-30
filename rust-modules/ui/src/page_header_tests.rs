@@ -1320,6 +1320,38 @@ fn a_row_rebuilt_under_a_running_slide_neither_jumps_nor_moves_the_sort_control(
     judge_a_criterion_change("Date added", "Title", &[1, 9]);
 }
 
+/// **A third criterion picked mid-slide** (Title, then Date added, then Year before the first has
+/// landed): the places and the criterion on screen do not jump, the chevron never moves, every
+/// criterion ends at it, and the swap lands on the last row exactly. (The criterion the first change
+/// was still fading out is dropped; the one on screen leaves from the opacity it had reached.)
+#[test]
+fn a_third_criterion_picked_mid_slide_keeps_the_edge_and_lands_exact() {
+    let _g = plx_base::testlock::serial();
+    let (first, second, third) = (drawn_cluster("Title"), drawn_cluster("Date added"), drawn_cluster("Year"));
+    let rest = Shot::of(&third, &HeaderSwap::new());
+    let mut swap = HeaderSwap::new();
+    swap.begin(&first, &second);
+    for _ in 0..6 { swap.step(DT); }
+    let before = Shot::of(&second, &swap);
+    swap.begin(&second, &third);
+    let after = Shot::of(&third, &swap);
+    for (name, b, a) in [("Collections", before.collections, after.collections), ("Recommended", before.recommended, after.recommended),
+        ("divider", before.divider, after.divider), ("icon", before.icon.x, after.icon.x), ("Date added", before.opacity("Date added"), after.opacity("Date added"))] {
+        assert!((a - b).abs() < 1e-3, "{name} jumped when the third criterion was picked: {b} -> {a}");
+    }
+    for frame in 0..600 {
+        let now = Shot::of(&third, &swap);
+        assert_eq!(now.chevron.x, rest.chevron.x, "frame {frame}: the chevron never moves");
+        for (text, run, _) in &now.criteria {
+            assert!((run.x + run.w + QUIET_FOLD_GAP - now.chevron.x).abs() < 1e-3, "frame {frame}: {text} ends at the chevron");
+        }
+        if !swap.is_active() { break; }
+        swap.step(DT);
+    }
+    assert!(!swap.is_active());
+    assert_eq!(Shot::of(&third, &swap).numbers(), rest.numbers());
+}
+
 /// **The slide is decoration with a known end** ([`plx_machine::idle`]): it wakes the present gate
 /// on every frame it moves, never holds a page freeze (it is no layout), and a swap at rest asks for
 /// no frame at all.
