@@ -403,5 +403,31 @@ fn value_mode_keeps_the_real_library_focus_and_restores_the_caption_geometry() {
     fixture.listing = fixture.listing.clone().with_sort_key("futureServerSort");
     frame(&mut page, &mut engine, &fixture, 11000);
     assert!(!page.layout.value_line());
+    // The same switch DEEP in the grid: the rows' pitch changes (60 -> 40 px) under a scroll held in the
+    // old pitch's coordinates, so the page must seat the focused row again the way a focus move does, or
+    // the row it stands on is scrolled up under the header.
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters::DEFAULT)));
+    let mut deep = Fixture::new();
+    deep.listing = numbered(0..300).with_sort_key("year");
+    let mut page = deep.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let elem = crate::library::tests::deep(&mut page, &deep, 90);
+    let row = 90 / page.layout.cols();
+    let key = page.key(elem);
+    engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    deliver(&mut page, &mut engine, &deep, ScreenEvent::FocusMoved { from: None, to: key, by: By::Restore });
+    settle(&mut page, &mut engine, &deep, 0);
+    assert!(page.layout.value_line() && row >= 10, "values show at a deep row ({row})");
+    // Where a focus move seats a row: its poster top where the first row's is at rest.
+    let seated = |page: &LibraryScreen| page.layout.row_y(row, page.scroll.pos) - page.layout.row_y(0, 0.0);
+    assert!(seated(&page).abs() < 1.0, "with values the focused row is seated at the grid top: {}", seated(&page));
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { sort_value: false, ..UnderPosters::DEFAULT })));
+    frame(&mut page, &mut engine, &deep, 5000);
+    assert!(!page.layout.value_line());
+    assert_eq!(engine.current(OWNER), Some(key), "turning values off keeps the selected poster");
+    assert!(seated(&page).abs() < 1.0, "Off at a deep row: the focused row is seated at the grid top, not under the header: {}", seated(&page));
+    settle(&mut page, &mut engine, &deep, 5016);
+    assert!(seated(&page).abs() < 1.0, "and it stays seated once settled: {}", seated(&page));
     crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(None));
 }

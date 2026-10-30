@@ -566,8 +566,14 @@ impl LibraryScreen {
                 self.wanted_kind = None;
             }
         }
-        self.values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value(),
+        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value(),
             listing.sorts().get(listing.sort_index()).map(|sort| sort.key.as_str()));
+        // The rows' pitch changes with the value lines (60 <-> 40 px) under a grid that is already
+        // laid out and held at a scroll of its own: not a first layout, a restore still to be
+        // applied, or a grid the page is about to send back to its top.
+        let repitched = values != self.values && self.layout.rows > 0
+            && !self.grid_reset_pending && self.restore_scroll.is_none();
+        self.values = values;
         self.refresh_header(cx);
         if let Some(kind) = self.wanted_kind.filter(|kind|
             directory.current().map(|i| directory.sections()[i].kind) != Some(*kind)) {
@@ -592,6 +598,7 @@ impl LibraryScreen {
         }
         self.project_grid(cx);
         self.relayout(cx.focus.current);
+        if repitched { self.reseat_after_repitch(cx.focus.current, cx); }
         // The relayout hands the grid this frame's scroll, and with it the window it will paint:
         // a cell it can paint or step to must hold a key in the frame, so project again (a
         // no-op when the window did not move).
@@ -796,6 +803,22 @@ impl LibraryScreen {
         }
         self.relayout(Some(key));
         self.pair.master.refresh(cx, &mut self.keys);
+    }
+
+    /// The Sort value switch (or a sort) changed the rows' pitch under a held scroll, so the scroll is
+    /// in the old pitch's coordinates and the focused row stands elsewhere than it did: 20 px per
+    /// row away, which at a deep row is under the header. Seat that row again the way a focus move
+    /// does ([`reveal`](Self::reveal)'s `row_reveal`), jumping, because the rows themselves changed
+    /// pitch in the same frame; with no focus in the grid, keep the scroll inside the new document.
+    fn reseat_after_repitch<H: LibraryLike>(&mut self, focus: Option<FocusKey<u32>>, cx: &Cx<'_, H>) {
+        let row = focus.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.pair.detail.index_of(key.elem)).map(|index| index / self.layout.cols());
+        if let Some(row) = row {
+            self.scroll_target = self.target_layout.row_reveal(row) - self.pair.detail.pending_shift(cx);
+        }
+        self.scroll_target = self.scroll_target.clamp(0.0, self.target_layout.max_scroll());
+        self.scroll.jump(self.scroll_target);
+        self.relayout(focus);
     }
 
     fn follow<H: LibraryLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
