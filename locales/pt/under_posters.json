@@ -21,6 +21,12 @@
   "under_posters.sort_value_detail": "Substitui a linha de detalhes ao ordenar.",
   "under_posters.value_today": "Hoje",
   "under_posters.value_yesterday": "Ontem",
+  "under_posters.value_never": "Nunca",
+  "under_posters.value_plays": {
+    "one": "{count} reprodução",
+    "many": "{count} de reproduções",
+    "other": "{count} reproduções"
+  },
   "under_posters.sorted_by": "Ordenado por ano",
   "under_posters.last_opened": "A biblioteca que abriu por último"
 }

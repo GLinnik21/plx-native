@@ -21,6 +21,12 @@
   "under_posters.sort_value_detail": "Remplace la ligne de détails pendant le tri d’une bibliothèque.",
   "under_posters.value_today": "Aujourd’hui",
   "under_posters.value_yesterday": "Hier",
+  "under_posters.value_never": "Jamais",
+  "under_posters.value_plays": {
+    "one": "{count} lecture",
+    "many": "{count} lectures",
+    "other": "{count} lectures"
+  },
   "under_posters.sorted_by": "Trié par année",
   "under_posters.last_opened": "La dernière bibliothèque ouverte"
 }

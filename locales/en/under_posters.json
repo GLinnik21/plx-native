@@ -87,6 +87,20 @@
     "value": "Yesterday",
     "description": "Sort value in a library grid sorted by a date (Date added, Date viewed, release date): the date is yesterday. One short word."
   },
+  "under_posters.value_never": {
+    "value": "Never",
+    "description": "Sort value in a library grid sorted by Date viewed or Plays, under an item that was never played. Shown quietly (50% white), the same word for both sorts. One short word."
+  },
+  "under_posters.value_plays": {
+    "value": {
+      "one": "{count} play",
+      "other": "{count} plays"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "Sort value in a library grid sorted by Plays: how many times the item was played, always with its noun (\"14 plays\", \"1 play\"). The number and the noun are joined by a no-break space. Short: it must fit under a 250 px poster."
+  },
   "under_posters.sorted_by": {
     "value": "Sorted by Year",
     "description": "Caption under the Under posters preview while Sort value is on: the sample posters are shown as a library sorted by year, whose values are the years under them. One short phrase, whole (the sort's name is inside it, so a language can inflect it); no placeholder."

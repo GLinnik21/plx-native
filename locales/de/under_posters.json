@@ -21,6 +21,11 @@
   "under_posters.sort_value_detail": "Ersetzt die Detailzeile, solange eine Bibliothek sortiert ist.",
   "under_posters.value_today": "Heute",
   "under_posters.value_yesterday": "Gestern",
+  "under_posters.value_never": "Nie",
+  "under_posters.value_plays": {
+    "one": "{count} Wiedergabe",
+    "other": "{count} Wiedergaben"
+  },
   "under_posters.sorted_by": "Sortiert nach Jahr",
   "under_posters.last_opened": "Die zuletzt geöffnete Bibliothek"
 }

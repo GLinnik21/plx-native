@@ -21,6 +21,13 @@
   "under_posters.sort_value_detail": "Заменяет строку сведений при сортировке.",
   "under_posters.value_today": "Сегодня",
   "under_posters.value_yesterday": "Вчера",
+  "under_posters.value_never": "Никогда",
+  "under_posters.value_plays": {
+    "one": "{count} просмотр",
+    "few": "{count} просмотра",
+    "many": "{count} просмотров",
+    "other": "{count} просмотра"
+  },
   "under_posters.sorted_by": "Сортировка по году",
   "under_posters.last_opened": "Последняя открытая библиотека"
 }

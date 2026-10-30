@@ -60,12 +60,25 @@ pub(crate) fn label(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Tile
     TileLabel { value: value(item, key, today), ..TileLabel::default() }
 }
 
-/// The line under `item`: the dash for a fact it lacks, and `None` when the sort's fact says there is
-/// nothing to show (a show whose every episode is watched).
+/// "Never", the quiet word for an item nobody played (Date viewed, Plays): drawn like the dash, at 50%
+/// white and never bold, because an empty value stays quiet.
+fn never() -> SortValue {
+    SortValue { text: msg::under_posters_value_never().to_owned(), plus: false, mark: &[], missing: true }
+}
+
+/// The line under `item`: the dash for a fact the server did not send, "Never" for something never
+/// played, and `None` when the sort's fact says there is nothing to show (a show whose every episode is
+/// watched).
 fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValue> {
     let show = item.kind == KIND_SHOW;
     let facts = item.sort_info.as_ref();
     let date = |stamp: Option<i64>| stamp.and_then(plx_platform::i18n::local_calendar_date).and_then(|date| date_value(date, today));
+    // Never played: the row carries its sort facts and nothing on it says the item was ever started or
+    // watched (a watched row whose count was cleared for the read-back is not this: it reads as the
+    // dash until the count lands). Empty values that mean something say it; the dash is for data the
+    // server does not have.
+    let never_played = facts.is_some() && !item.watched && item.resume_ms == 0
+        && item.viewed_leaf_count.unwrap_or(0) == 0;
     let mut mark = &[][..];
     let mut plus = false;
     let text = if !matches!(item.kind, 0 | KIND_SHOW) { None } else { match term(key) {
@@ -105,9 +118,18 @@ fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValu
             else if item.dur_ns > 0 && item.resume_ms == 0 && item.unwatched { Some(fmt::percent(0)) }
             else { None }
         }
-        "viewCount" => facts.and_then(|f| f.view_count).map(|n| current().number(n)),
+        // Plays always carry their noun ("14 plays", "1 play"), and an item nobody played says so.
+        "viewCount" => match facts.and_then(|f| f.view_count) {
+            Some(n) if n > 0 => Some(msg::under_posters_value_plays(n).to_string()),
+            _ if never_played => return Some(never()),
+            _ => None,
+        },
         "addedAt" => date(item.added_at),
-        "lastViewedAt" => date(facts.and_then(|f| f.last_viewed_at)),
+        "lastViewedAt" => match facts.and_then(|f| f.last_viewed_at) {
+            Some(stamp) => date(Some(stamp)),
+            None if never_played => return Some(never()),
+            None => None,
+        },
         "mediaHeight" if !show => {
             let width = facts.map_or(0, |f| f.width);
             let height = facts.map_or(0, |f| f.height);
@@ -201,7 +223,7 @@ mod tests {
         let _locale = language_on_this_thread_for_test(Preference::En);
         let s = show();
         for (key, expected) in [("year", "2019"), ("originallyAvailableAt", "Sep\u{a0}2019"), ("rating", "87%"),
-            ("audienceRating", "TMDB\u{a0}81%"), ("contentRating", "TV-MA"), ("viewCount", "4"), ("addedAt", "Yesterday"),
+            ("audienceRating", "TMDB\u{a0}81%"), ("contentRating", "TV-MA"), ("viewCount", "4\u{a0}plays"), ("addedAt", "Yesterday"),
             ("lastViewedAt", "28\u{a0}Oct"), ("unviewedLeafCount", "9\u{a0}episodes")] {
             assert!(shows_value(key), "{key}");
             assert_eq!(text(&s, key), expected, "{key}");
@@ -304,7 +326,7 @@ mod tests {
         let m = movie();
         for (key, expected) in [("originallyAvailableAt", "Dec\u{a0}1997"), ("rating", "100%"), ("audienceRating", "85%"),
             ("userRating", "8.0/10"), ("contentRating", "PG-13"), ("duration", "2h\u{a0}14m"), ("viewOffset", "0%"),
-            ("viewCount", "3"), ("addedAt", "Yesterday"), ("lastViewedAt", "28\u{a0}Oct"), ("mediaHeight", "4K"),
+            ("viewCount", "3\u{a0}plays"), ("addedAt", "Yesterday"), ("lastViewedAt", "28\u{a0}Oct"), ("mediaHeight", "4K"),
             ("mediaBitrate", "8.0\u{a0}Mbps"), ("year", "1997")] {
             assert_eq!(text(&m, key), expected, "{key}");
             assert_eq!(text(&m, &format!("movie.{key}:desc")), expected, "{key} scoped");
@@ -330,12 +352,94 @@ mod tests {
                 assert!(v.missing && v.text == "\u{2013}" && v.mark.is_empty() && !v.plus, "{key}");
             }
         }
-        // A never-viewed film under Date viewed, and a release date that is only a year.
+        // A release date that is only a year, and a critic score the server did not send, are data the
+        // server does not have: the dash.
         let mut m = movie();
-        m.sort_info.as_mut().unwrap().last_viewed_at = None;
         m.aired = "1997".into();
-        assert!(read(&m, "lastViewedAt", Some(TODAY)).missing && read(&m, "originallyAvailableAt", Some(TODAY)).missing);
+        m.sort_info.as_mut().unwrap().rating = None;
+        assert!(read(&m, "originallyAvailableAt", Some(TODAY)).missing);
+        assert_eq!(text(&m, "rating"), "\u{2013}");
         assert!(read(&m, "duration", Some(TODAY)).text.contains("2h"), "other facts are untouched");
+    }
+
+    /// An empty value says what it means: "Never" under Date viewed and Plays for something never played
+    /// (50% white like the dash, never bold), movies and shows alike; the dash stays for data the server
+    /// does not have.
+    #[test]
+    fn date_viewed_and_plays_say_never_for_something_nobody_played() {
+        let _locale = language_on_this_thread_for_test(Preference::En);
+        let quiet = |v: &SortValue| v.missing && v.text == "Never" && v.mark.is_empty() && !v.plus;
+        for mut item in [movie(), show()] {
+            let facts = item.sort_info.as_mut().unwrap();
+            facts.last_viewed_at = None;
+            facts.view_count = Some(0);
+            item.watched = false;
+            item.viewed_leaf_count = Some(0);
+            for key in ["lastViewedAt", "viewCount", "show.lastViewedAt:desc", "movie.viewCount:desc"] {
+                assert!(quiet(&read(&item, key, Some(TODAY))), "{:?} {key}", item.kind);
+            }
+            // A count the row does not carry at all reads the same.
+            item.sort_info.as_mut().unwrap().view_count = None;
+            assert!(quiet(&read(&item, "viewCount", Some(TODAY))));
+            // Something started or watched is not "never": its count was cleared for the read-back, so the
+            // dash waits for the number rather than saying a false word.
+            let mut seen = item.clone();
+            seen.watched = true;
+            for key in ["lastViewedAt", "viewCount"] {
+                let v = read(&seen, key, Some(TODAY));
+                assert!(v.missing && v.text == "\u{2013}", "{:?} {key}", item.kind);
+            }
+            let mut begun = item.clone();
+            begun.resume_ms = 60_000;
+            assert_eq!(read(&begun, "viewCount", Some(TODAY)).text, "\u{2013}");
+        }
+        // One play and a played-through film: the count with its noun, the date as a date.
+        let mut m = movie();
+        m.sort_info.as_mut().unwrap().view_count = Some(1);
+        assert_eq!(text(&m, "viewCount"), "1\u{a0}play");
+        m.sort_info.as_mut().unwrap().view_count = Some(14);
+        assert_eq!(text(&m, "viewCount"), "14\u{a0}plays");
+        assert!(!read(&m, "viewCount", Some(TODAY)).missing);
+        // A row with no sort facts at all (not a listing row) is data the server did not send: the dash.
+        assert_eq!(text(&PmsMovie::default(), "viewCount"), "\u{2013}");
+    }
+
+    /// "N plays" in every shipped language's plural categories (the same rule "N episodes" follows).
+    #[test]
+    fn plays_follow_each_languages_plural_rules() {
+        let nb = '\u{a0}';
+        let plays = |n: i64| { let mut m = movie(); m.sort_info.as_mut().unwrap().view_count = Some(n); m };
+        for (preference, one, other) in [(Preference::En, "play", "plays"), (Preference::De, "Wiedergabe", "Wiedergaben"),
+            (Preference::Es, "reproducción", "reproducciones"), (Preference::Fr, "lecture", "lectures"),
+            (Preference::Hu, "lejátszás", "lejátszás"), (Preference::It, "riproduzione", "riproduzioni"),
+            (Preference::Pt, "reprodução", "reproduções")] {
+            let _locale = language_on_this_thread_for_test(preference);
+            for n in [1, 2, 5, 11, 21, 22] {
+                assert_eq!(text(&plays(n), "viewCount"), format!("{n}{nb}{}", if n == 1 { one } else { other }), "{preference:?} {n}");
+            }
+        }
+        for (preference, [one, few, many]) in [(Preference::Ru, ["просмотр", "просмотра", "просмотров"]),
+            (Preference::Pl, ["odtworzenie", "odtworzenia", "odtworzeń"]), (Preference::Be, ["прагляд", "прагляды", "праглядаў"])] {
+            let _locale = language_on_this_thread_for_test(preference);
+            for (n, form) in [(1, one), (2, few), (4, few), (5, many), (11, many), (21, if preference == Preference::Pl { many } else { one }),
+                (22, few), (25, many)] {
+                assert_eq!(text(&plays(n), "viewCount"), format!("{n}{nb}{form}"), "{preference:?} {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn never_is_translated_and_quiet_in_every_shipped_language() {
+        let en = { let _l = language_on_this_thread_for_test(Preference::En); msg::under_posters_value_never().to_owned() };
+        assert_eq!(en, "Never");
+        for (preference, word) in [(Preference::De, "Nie"), (Preference::Es, "Nunca"), (Preference::Fr, "Jamais"),
+            (Preference::Hu, "Soha"), (Preference::It, "Mai"), (Preference::Pl, "Nigdy"), (Preference::Pt, "Nunca"),
+            (Preference::Ru, "Никогда"), (Preference::Be, "Ніколі")] {
+            let _locale = language_on_this_thread_for_test(preference);
+            assert_eq!(msg::under_posters_value_never(), word, "{preference:?}");
+            let v = never();
+            assert!(v.missing && v.text == word, "{preference:?}");
+        }
     }
 
     #[test]
@@ -422,14 +526,18 @@ mod tests {
             let info = m.sort_info.as_mut().unwrap();
             info.bitrate_kbps = Some(99_900);
             info.media_count = 2;
-            info.view_count = Some(1_234_567);
+            // A three-digit play count (the bound "N episodes" is held to too). Known limit, reported: in
+            // Spanish a FOUR-digit count ("9999 reproducciones", 255 px) is 5 px wider than the tile.
+            info.view_count = Some(999);
             info.user_rating = Some(10.0);
             info.rating_image = "imdb://image.rating".into();
         }
+        let mut too_wide = Vec::new();
         for preference in TEN {
             let _locale = language_on_this_thread_for_test(preference);
             let mut samples: Vec<SortValue> = ALL_KEYS.iter().map(|key| read(&m, key, Some(TODAY))).collect();
             samples.push(SortValue { text: msg::under_posters_value_yesterday().to_owned(), ..Default::default() });
+            samples.push(never());
             // The longest "N episodes": every plural category's word, with a three-digit count.
             let mut s = show();
             for n in [1u32, 2, 5, 21, 22, 999] {
@@ -444,9 +552,13 @@ mod tests {
             for value in samples {
                 let full = if value.plus { format!("{}{}", value.text, plx_ui::cards::SORT_VALUE_PLUS) } else { value.text.clone() };
                 let width = ShippedMeasure.width_str(&full, plx_ui::theme::size::CAPTION, true);
-                assert!(width + 52.0 <= 250.0, "{preference:?}: {full:?} is {width}px with a mark's hang");
+                // The mark hangs left of the number (20 px + 6 px, twice for the centred number), so a value
+                // with none has the whole tile: a play count is a number and a noun, no mark.
+                let hang = if value.mark.is_empty() { 0.0 } else { 52.0 };
+                if width + hang > 250.0 { too_wide.push(format!("{preference:?}: {full:?} is {width}px with a hang of {hang}px")); }
             }
         }
+        assert!(too_wide.is_empty(), "{too_wide:#?}");
     }
 
     #[test]

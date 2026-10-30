@@ -21,6 +21,13 @@
   "under_posters.sort_value_detail": "Замяняе радок звестак, пакуль бібліятэка сартуецца.",
   "under_posters.value_today": "Сёння",
   "under_posters.value_yesterday": "Учора",
+  "under_posters.value_never": "Ніколі",
+  "under_posters.value_plays": {
+    "one": "{count} прагляд",
+    "few": "{count} прагляды",
+    "many": "{count} праглядаў",
+    "other": "{count} прагляду"
+  },
   "under_posters.sorted_by": "Сартаванне па годзе",
   "under_posters.last_opened": "Апошняя адкрытая бібліятэка"
 }

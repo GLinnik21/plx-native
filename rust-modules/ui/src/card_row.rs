@@ -981,8 +981,9 @@ pub struct SortValue {
     /// poster's axis; dropped, after the "+1", when the line does not fit. Empty for every sort
     /// that is not a score.
     pub mark: &'static [crate::widgets::MarkLayer],
-    /// The item has no value for the sort: the dash is drawn at [`theme::SORT_VALUE_MISSING_INK`]
-    /// and never bold.
+    /// The value is empty: the dash for data the server does not have, or the word "Never" for
+    /// something never played. Either is drawn at [`theme::SORT_VALUE_MISSING_INK`] and never bold,
+    /// because an empty value stays quiet even under the focused poster.
     pub missing: bool,
 }
 

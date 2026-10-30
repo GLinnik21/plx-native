@@ -21,6 +21,13 @@
   "under_posters.sort_value_detail": "Zastępuje wiersz szczegółów przy sortowaniu.",
   "under_posters.value_today": "Dziś",
   "under_posters.value_yesterday": "Wczoraj",
+  "under_posters.value_never": "Nigdy",
+  "under_posters.value_plays": {
+    "one": "{count} odtworzenie",
+    "few": "{count} odtworzenia",
+    "many": "{count} odtworzeń",
+    "other": "{count} odtworzenia"
+  },
   "under_posters.sorted_by": "Sortowanie: rok",
   "under_posters.last_opened": "Ostatnio otwarta biblioteka"
 }

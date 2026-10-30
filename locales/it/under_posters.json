@@ -21,6 +21,12 @@
   "under_posters.sort_value_detail": "Sostituisce la riga dei dettagli mentre una libreria è ordinata.",
   "under_posters.value_today": "Oggi",
   "under_posters.value_yesterday": "Ieri",
+  "under_posters.value_never": "Mai",
+  "under_posters.value_plays": {
+    "one": "{count} riproduzione",
+    "many": "{count} riproduzioni",
+    "other": "{count} riproduzioni"
+  },
   "under_posters.sorted_by": "Ordinato per anno",
   "under_posters.last_opened": "La libreria aperta per ultima"
 }

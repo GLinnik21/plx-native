@@ -21,6 +21,11 @@
   "under_posters.sort_value_detail": "Felváltja a részletek sorát, amíg a filmtár rendezett.",
   "under_posters.value_today": "Ma",
   "under_posters.value_yesterday": "Tegnap",
+  "under_posters.value_never": "Soha",
+  "under_posters.value_plays": {
+    "one": "{count} lejátszás",
+    "other": "{count} lejátszás"
+  },
   "under_posters.sorted_by": "Rendezés: év",
   "under_posters.last_opened": "A legutóbb megnyitott filmtár"
 }
