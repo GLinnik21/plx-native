@@ -371,7 +371,7 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 fn refresh_hud(app: &mut App) {
     let cx = plx_platform::i18n::current();
     if app.hud.as_ref().is_none_or(|h| h.language != cx.language()) {
-        app.hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, &plx_gfx::text::TtfMeasure).ok();
+        app.hud = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), cx, app.bridge.measure()).ok();
     }
 }
 

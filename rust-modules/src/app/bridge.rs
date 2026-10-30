@@ -470,6 +470,9 @@ pub(crate) struct Bridge {
 impl Bridge {
     #[cfg(test)]
     pub(crate) fn measurement_queries(&self)->Vec<plx_ui::rec::MetricKey> { self.measure.queries() }
+    /// The measurer every screen of this bridge lays out with (a host test's has no fonts): the HUD
+    /// package is compiled with it, outside the frame, so the plan's widths are the draw's.
+    pub(crate) fn measure(&self) -> &dyn Measure { &self.measure }
     pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<plx_ui::rec::MetricKey,u32>>) {
         self.measure.prepare(replay);
     }
