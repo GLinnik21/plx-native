@@ -59,7 +59,7 @@ pub struct LintLang {
 }
 
 impl LintLang {
-    /// The ten shipped languages, in the order of `locales/languages.json`.
+    /// The eleven shipped languages, in the order of `locales/languages.json`.
     pub fn shipped() -> Vec<LintLang> {
         Preference::SHIPPED.into_iter().map(LintLang::of).collect()
     }
@@ -289,7 +289,7 @@ pub(super) mod testing {
         pub base: Base,
         /// `(find, replace)` pairs, each `find` occurring exactly once in the text as it stands, applied in order
         pub edits: &'static [(&'static str, &'static str)],
-        /// the languages to lint in (tags); empty is all ten
+        /// the languages to lint in (tags); empty is all eleven
         pub langs: &'static [&'static str],
         /// `LintOptions::text_skew` for this case
         pub skew: f32,

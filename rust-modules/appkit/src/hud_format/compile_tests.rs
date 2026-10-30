@@ -91,15 +91,16 @@ fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
 }
 
 /// **The hand-written classic layout's numbers, frozen.** `fixtures/classic-geometry.golden.tsv` is what
-/// `classic::geometry(..)` reported for every case the golden below covers (10 languages x 2 measurers x
+/// `classic::geometry(..)` reported for every case the golden below covers (11 languages x 2 measurers x
 /// movie/episode x without/with chapters x Discs, Up Next, Skip at each label), written from the
 /// HAND-WRITTEN side at 70a7aa66a's layout and re-confirmed at 93fc5091d (the head the freeze commit sits
 /// on), before that layout was deleted: one line per case, `key TAB items TAB tabs`, an item or tab as
-/// `x,y,w,h` (`f32` `{:?}`, which round-trips exactly) or `-`. The facts that are the same in every case
-/// are literals in [`frozen_base`].
+/// `x,y,w,h` (`f32` `{:?}`, which round-trips exactly) or `-`. The `nl` rows were written from the same
+/// hand-written side at edd3d0da6 with the Dutch catalog applied, after the language arrived. The facts that
+/// are the same in every case are literals in [`frozen_base`].
 const FROZEN_CLASSIC_GEOMETRY: &str = include_str!("fixtures/classic-geometry.golden.tsv");
 
-/// The slot-independent facts of the hand-written layout, the same in all 320 frozen cases.
+/// The slot-independent facts of the hand-written layout, the same in all 352 frozen cases.
 fn frozen_base() -> HudGeometry {
     HudGeometry {
         grab: Rect::new(96.0, 810.0, 1728.0, 160.0),
@@ -168,7 +169,7 @@ fn compiled_classic_matches_the_hand_written_layout() {
             }
         }
     }
-    // 10 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
+    // 11 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
     // each label): a count, so a loop that quietly compares less cannot pass.
     assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
     assert_eq!(FROZEN_CLASSIC_GEOMETRY.lines().count(), compared, "the frozen file holds one line per case");
@@ -180,8 +181,9 @@ fn compiled_classic_matches_the_hand_written_layout() {
 /// HAND-WRITTEN side on 0768cf4a1 (the layout PR5c's golden held at 70a7aa66a, unchanged since), before that function was deleted:
 /// one line per case, `key TAB right edge` (`f32` `{:?}`, which round-trips exactly). Keys are
 /// `{Slot:?}/episode={..}` (the compact slots, English, `FixtureMeasure`) and
-/// `{language:?}/{measure}/episode={..}/{SkipKind:?}` (the skip pill actually shown, 10 languages x 2
-/// measurers).
+/// `{language:?}/{measure}/episode={..}/{SkipKind:?}` (the skip pill actually shown, 11 languages x 2
+/// measurers). The `nl` rows were written from the same hand-written side at edd3d0da6 with the Dutch
+/// catalog applied, after the language arrived.
 const FROZEN_CLASSIC_TITLE_RIGHT: &str = include_str!("fixtures/classic-title-right.golden.tsv");
 
 fn frozen_title_right(key: &str) -> f32 {

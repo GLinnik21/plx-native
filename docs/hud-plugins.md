@@ -169,8 +169,8 @@ Text, formatting, languages
 - F26. `ui/src/CLAUDE.md`, Localization: "App-owned text (`i18n::msg`, `plex::languages` names,
   `Quality::label`) never elides in any shipped language ... server- and user-owned text ... may", and
   "Adaptive text size or kerning is not used to make text fit"; the player HUD, `up_next` and chapters are
-  listed under "Known unchecked surfaces". `i18n::SHIPPED` is generated from `locales/languages.json`, ten
-  tags: en es be fr it pt de hu ru pl (`python3 -I -c` over the file).
+  listed under "Known unchecked surfaces". `i18n::SHIPPED` is generated from `locales/languages.json`, eleven
+  tags: en es be fr it pt de hu ru pl nl (`python3 -I -c` over the file).
 - F27. Formatting: `fmt::clock` prints `m:ss` (`h:mm:ss` past an hour) with no leading zero
   (`ui/src/fmt.rs:159-167`), so a chapter at 0 prints "0:00"; `fmt::duration` uses `core.duration_minutes`
   = "{minutes}m" in English (`locales/en/core.json:19-25`), so 56 minutes prints "56m"; the HUD's
@@ -331,7 +331,7 @@ Other subsystems the plan touches
   add a hint if the room test then needs one. Section "Menus and other HUD popovers".
 - D10. **App-owned text never elides; server text may.** A text cell bound to an app label or an
   app-formatted value hugs its measured width (it takes no `w` and no `max_lines`), lint measures it in
-  all ten shipped languages, and overlap is the z-census's job (F26). Server text (`title.main`, chapter
+  all eleven shipped languages, and overlap is the z-census's job (F26). Server text (`title.main`, chapter
   names, the synopsis) may set `w` and `max_lines`. The kicker mixes the two ("S2, E3 · " is the app's,
   the episode title the server's): only the server tail elides, and lint checks that the app prefix fits,
   as `Section::accessory_app_prefix` does for tables. The facts run drops whole chips tail first (classic's
@@ -559,7 +559,7 @@ Bindings: `title.kicker`, `title.main`, `title.is_episode`, `transport.paused`, 
 `chrome.alpha`, `chapters.present`, `slot.kind`, `focus.id`, `stats.on`, `seek.interval`; the chapter list
 `chapters` with `item.thumb`, `item.start` (`fmt::clock`), `item.title` (the server's chapter name, which may elide; when it is empty, the app's
 `widgets_chapters_number(index)`, `chapters_panel.rs:176-179`, which is APP text: drawn whole, never elided, and lint
-measures it with a 3-digit N at the cell's width in all ten languages, an error if it does not fit), `item.is_current`
+measures it with a 3-digit N at the cell's width in all eleven languages, an error if it does not fit), `item.is_current`
 (from `HudModel`), `item.focused`; `info.still`, `info.title`, `info.summary`, `info.facts`; app labels
 `label.chapters`, `label.info` (the existing tab strings); Up Next draws its own inside (below), so it has no bindings.
 
@@ -642,7 +642,7 @@ marker ends or Watch Credits dismisses the offer.
   enabled (a valuation where its predicate fails, Previous for a movie, asks nothing); a command placed under only some
   of them folds. Each command that none places is
   folded into More's root, after Quality and Speed and before Options (the More fold PR adds the rows, their
-  i18n keys in all ten catalogs and a `fit_report` over More's FormTable; the section rows reuse
+  i18n keys in all eleven catalogs and a `fit_report` over More's FormTable; the section rows reuse
   `widgets_player_chapters`/`widgets_player_info` (`player_hud.rs:1433-1434`) and the Info actions reuse
   their button strings (`info_panel.rs:566-575`), so only Previous, Next and the track-menu row need new keys). A command that already has a
   More row (`toggle_stats`, the Options switch) never folds. Reachability can therefore never fail except
@@ -693,13 +693,13 @@ three places:
 
 A package that fails on the TV does not load in that language: playback uses `builtin:classic`, one `hud: fallback`
 event-log line names the package, the language and the first finding's code, and Settings > Player HUD marks the
-package's row with the reason (a new key `settings.hud.unfit_language`, "Doesn't fit in {language}", in all ten
+package's row with the reason (a new key `settings.hud.unfit_language`, "Doesn't fit in {language}", in all eleven
 catalogs with a `fit_report`). The selection is kept, so a change back to a language it fits restores it.
 
 The gap: an app release can lengthen a translation or add a language, so a package that passed can fail later.
 - (a) Re-lint on every app release: YES. A job in `plxnative-huds`, triggered by a `repository_dispatch` from this
   repo's release workflow and also weekly as a backstop (a missed dispatch must not leave the index stale), re-lints
-  the latest version of every entry with the new release's simulator in all ten languages. Per entry it records the
+  the latest version of every entry with the new release's simulator in all eleven languages. Per entry it records the
   result in the index as `unfit: [{"from": "<app release>", "langs": [...]}]`; when every language fails, or a
   non-text invariant does, it writes `app.max` = the last release that passed, the field Versioning already defines.
   It opens an issue on the registry repo mentioning the author, with the lint JSON per language. The gallery hides an
@@ -707,16 +707,16 @@ The gap: an app release can lengthen a translation or add a language, so a packa
   passes as its update; an installed copy keeps compiling locally and falls back per (b). Why a job: the failure is
   caused by the app's release, not by the author's push, and per-PR CI never runs again on an unchanged entry. In this
   repo, every PR's CI lints `site/hud/examples/` (PR6) and `builtin:classic` (`builtin_classic_passes_every_invariant`,
-  PR5) in all ten languages, so a string change that breaks a shipped package fails before any release.
+  PR5) in all eleven languages, so a string change that breaks a shipped package fails before any release.
 - (b) The fallback is per language. A failure is a property of (package, app release, language); failing the package
-  everywhere would punish nine languages for one translation, and keeping the selection lets a later fix (a new app
+  everywhere would punish ten languages for one translation, and keeping the selection lets a later fix (a new app
   release, a package update, a language switch) restore it with no step from the viewer.
 - (c) Headroom. No margin for future translation edits: their size has no distribution to derive one from (catalog
   strings change one by one, by hand), so any figure would be arbitrary, and it would reject designs that fit every
   shipped language today; (a) and (b) turn a later change into a visible, attributed event instead of a guess. One
   margin IS derivable and is required, in registry CI only: the measurement skew between the pinned simulator and the
   TV. PR12 measures the lint's app-text corpus (every app string a package can show, at every rung lint allows it, in
-  all ten languages, `item.title`'s fallback `widgets_chapters_number(N)` up to 3 digits) through the simulator and through the TV's own `Measure` (a dev
+  all eleven languages, `item.title`'s fallback `widgets_chapters_number(N)` up to 3 digits) through the simulator and through the TV's own `Measure` (a dev
   trigger under `devtriggers` dumps the widths under `--guest --mock`, the TV lock held), and sets `CI_TEXT_SKEW`, per
   rung, to the largest observed `tv_w - sim_w` rounded up to a whole px. Registry CI then requires app text to fit with
   that many px to spare (`HUD-W0602`, a warning locally, an error in registry CI). Until it is measured the margin is 0
@@ -1095,7 +1095,7 @@ at 768 and the title at 802.
 
 The loader and compiler enforce these for EVERY source (built-in, registry, sideload), per state, per slot
 and per shipped language (measured widths change with the language: the TV compiles for its language and
-recompiles on a change; registry CI lints all ten):
+recompiles on a change; registry CI lints all eleven):
 - I1. App-owned surfaces cannot be replaced or covered: the failure read-out (never red), the repair alert,
   decision prompts, caption drawing, Up Next's and the sections' logic, the Skip pill, the scrub-preview
   still, the Tracks, More and Timing overlays. `readout_owns_frame` keeps deciding whether the HUD draws.
@@ -1443,7 +1443,7 @@ PR8. Sections.
 
 PR9. The More fold.
 - Goal: `more_menu::Action::Hud(HudCommand)` performed through PR3's performer; the folded rows from the compiled
-  package; i18n keys in all ten catalogs (`be` looked up per the repo's dictionary rule) with a `fit_report` over
+  package; i18n keys in all eleven catalogs (`be` looked up per the repo's dictionary rule) with a `fit_report` over
   More's FormTable (new keys only for Previous, Next and the track-menu row; R2); `OverlayKind::More`'s
   address becomes a `MorePage` so `page: speed` opens on Speed.
 - Verify: a package with no previous/next folds both and the rows perform them; classic folds nothing (its More
@@ -1457,7 +1457,7 @@ PR10. Store, local install, selection, drop folder.
   `Validate`, `Selection`, `Notice`), runners in `app/adapters/huds.rs` on the storage worker, `paths::hud_candidates()`,
   a `Profile` `setting!` with the install fallback, and `SettingsPage::PlayerHud`, a FormTable keyed by package id
   (not a `PickerKind`, a static vocabulary, F32) with a `fit_report`; a compile failure in the current language falls
-  back per language with the `hud: fallback` line and the Settings reason (`settings.hud.unfit_language`, ten catalogs,
+  back per language with the `hud: fallback` line and the Settings reason (`settings.hud.unfit_language`, eleven catalogs,
   `fit_report`), Text fit.
 - Files: `data/src/hudpacks.rs`, `ci/module-layers.ini`, `docs/module-layers.md`, `ci/machines.ini`, `base/src/paths.rs`,
   `plex/src/plex/session/prefs.rs`, `screens/src/family.rs`, `screens/src/preferences*`, `src/app/adapters/`.

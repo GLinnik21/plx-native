@@ -54,7 +54,7 @@ pub fn load(bytes: &[u8], app_version: &str, cx: &LocaleContext, measure: &dyn M
 
 /// `builtin:classic`, the embedded package ([`crate::hud_format::CLASSIC_PACKAGE`]), compiled. It does not
 /// return a `Result`: the bytes are `include_str!`'d and `classic_loads_with_no_findings_in_every_shipped_language`
-/// parses and compiles them in all ten languages, so a failure here is a build that no test passed.
+/// parses and compiles them in all eleven languages, so a failure here is a build that no test passed.
 pub fn load_classic(app_version: &str, cx: &LocaleContext, measure: &dyn Measure) -> LoadedHud {
     load(crate::hud_format::CLASSIC_PACKAGE.as_bytes(), app_version, cx, measure).expect("the embedded builtin:classic parses")
 }
@@ -167,7 +167,7 @@ mod tests {
     /// pill's width, so the claim is per language.
     #[test]
     fn classic_loads_with_no_findings_in_every_shipped_language() {
-        assert_eq!(SHIPPED.len(), 10, "the claim is about the ten shipped languages");
+        assert_eq!(SHIPPED.len(), 11, "the claim is about the eleven shipped languages");
         for language in SHIPPED {
             let cx = LocaleContext::resolve(language, None, None, None, None);
             let hud = load_classic("0.0.0-test", &cx, &ShippedMeasure);
@@ -205,7 +205,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(asked, SHIPPED.len() * 3 * 2 * 2 * 2, "the ten languages x every combination");
+        assert_eq!(asked, SHIPPED.len() * 3 * 2 * 2 * 2, "the eleven languages x every combination");
     }
 
     /// The key is the bytes' digest: the same bytes in the same language are the same key, other bytes

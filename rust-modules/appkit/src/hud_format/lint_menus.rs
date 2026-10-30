@@ -445,7 +445,7 @@ mod tests {
     const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
     const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
 
-    /// Every case of [`INVALID`] yields exactly its code at its pointer, in all ten languages.
+    /// Every case of [`INVALID`] yields exactly its code at its pointer, in all eleven languages.
     #[test]
     fn invalid_cases_yield_exactly_their_code() {
         assert!(!INVALID.is_empty());
@@ -456,9 +456,9 @@ mod tests {
 
     /// The goldens: classic and the reference place both menus cleanly in every shipped language.
     #[test]
-    fn classic_and_the_reference_place_both_menus_cleanly_in_all_ten_languages() {
+    fn classic_and_the_reference_place_both_menus_cleanly_in_all_eleven_languages() {
         let langs = LintLang::shipped();
-        assert_eq!(langs.len(), 10);
+        assert_eq!(langs.len(), 11);
         for (name, text) in [("classic", BUILTIN_CLASSIC), ("reference", REFERENCE)] {
             let found: Vec<_> = lint(text, &ShippedMeasure, &langs).into_iter().filter(|f| f.code.starts_with("HUD-E13")).collect();
             assert!(found.is_empty(), "{name}: {found:?}");
