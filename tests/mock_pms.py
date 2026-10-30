@@ -1066,6 +1066,10 @@ class Library:
             "viewedLeafCount": 0,
             "Genre": self._tags(rng, self.genres, 2),
             "Role": self._tags(rng, self.people, 6, role=True),
+            # The outside ids a PMS item carries (docs/pms-api.md section 4). The TMDB one is a show
+            # the Seerr stand-in holds, so a show's Detail page can ask it for its missing seasons.
+            # No draw from `rng`: every other value this library generates stays where it was.
+            "Guid": [{"id": f"tmdb://{SEERR_TV_IDS[rk % len(SEERR_TV_IDS)]}"}, {"id": f"tvdb://{700000 + rk}"}],
         })
         return it
 
@@ -2363,6 +2367,330 @@ def timeline_frame(entries):
     return out
 
 
+# ---------------------------------------------------------------- Seerr --------------------
+
+# The boot line `plex::seerr::announce` writes (a `devtriggers` build): whether this boot's Seerr
+# calls reach the stand-in. A harness that drives a request surface arms `plxnative-seerr` at this
+# mock and requires the line before it drives anything: a request write that reached a real Seerr
+# would start a download on somebody's server.
+SEERR_STAND_IN_LINE = "seerr: base=stand-in"
+
+
+def seerr_stand_in_problem(log_text):
+    """`None` when the event log shows the Seerr base is the loopback stand-in; otherwise why a run
+    against this mock must stop. Fails closed, like `discover_stand_in_problem`."""
+    lines = [ln.strip() for ln in log_text.splitlines() if "seerr: base=" in ln]
+    if not lines:
+        return ("the boot logged no `seerr: base=` line: the app is not a devtriggers build or never "
+                "reached boot, so nothing proves its Seerr calls reach the mock")
+    real = [ln for ln in lines if SEERR_STAND_IN_LINE not in ln]
+    if real:
+        return (f"Seerr is not the mock's stand-in (`{real[0]}`): arm plxnative-seerr at the mock "
+                f"before booting, or the boot calls the configured server")
+    return None
+
+
+# The TMDB ids of the stand-in's shows (`SeerrFixture`: titles 9100001.., movies and shows
+# alternating). The PMS library's shows carry them in `Guid[]`, which is how a show on the mock PMS
+# is the same title as one on the mock Seerr.
+SEERR_TV_IDS = tuple(9100001 + i for i in range(1, 12, 2))
+
+
+class SeerrFixture:
+    """A Seerr / Overseerr / Jellyseerr server (`/api/v1`), in memory, on the same listener (no PMS or
+    plex.tv path starts `/api/v1/`). Enough for the app's client (`plex/src/plex/seerr.rs`,
+    docs/seerr.md): the Plex sign-in, the session cookie, search, the discover rows, a title's detail
+    with a show's seasons, the user's requests, the Radarr / Sonarr servers a request can go to with
+    their quality profiles and root folders (`/api/v1/service/...`), and `POST /api/v1/request`, which
+    the server records as a WRITE (`MockPms.note_write`) with the server, profile and folder it named.
+
+    Synthetic data only: 12 titles from the closed alphabet with TMDB ids 9100001.., movies and
+    shows alternating, every availability represented; each show has three seasons. Every route but
+    the sign-in answers 403 without the session cookie, as Overseerr does.
+    `POST /_mock/seerr {"plex_login": "refuse"}` makes the sign-in answer 403 (a Plex account the
+    server does not let in); `{"plex_login": "allow"}` restores it. The user is an admin, who may
+    choose a request's server, profile and folder (the app's request menu); `{"advanced": false}`
+    makes it a plain requester (Seerr's Request permission alone), `{"advanced": true}` an admin again.
+    `{"manage": false}` takes Manage Requests away while keeping the request menu (Advanced Requests):
+    the request list then answers only the user's own, and approving or declining answers 403.
+
+    Two other users have requests from the start (pending, approved with a download moving, declined,
+    completed), so the request list shows everybody's; the list answers newest change first and, as
+    Seerr does, only the caller's own requests to a user without Manage Requests or View Requests.
+    `POST /api/v1/request/{id}/approve|decline` answers a pending one (409 for any other) and is a
+    WRITE like a new request.
+    """
+
+    COOKIE = "connect.sid"
+    PAGE = 20
+    # The Seerr account `POST /api/v1/auth/local` accepts (synthetic: never a real account's).
+    LOCAL_EMAIL = "viewer@example.invalid"
+    LOCAL_PASSWORD = "seerr"
+
+    def __init__(self, seed=1):
+        rng = random.Random(seed * 7919 + 17)
+        self.titles = []
+        statuses = [None, 2, 3, 4, 5, None]
+        for i in range(12):
+            kind = "movie" if i % 2 == 0 else "tv"
+            self.titles.append({
+                "id": 9100001 + i, "kind": kind, "name": swords(rng, 2),
+                "date": f"{2001 + i}-0{1 + i % 9}-1{i % 9}", "overview": swords(rng, 12),
+                "status": statuses[i % len(statuses)],
+                "seasons": {1: 5, 2: None, 3: None} if kind == "tv" and i % 4 == 1 else
+                           ({1: 4, 2: 4, 3: 4} if kind == "tv" and statuses[i % len(statuses)] == 5 else
+                            {1: None, 2: None, 3: None} if kind == "tv" else {}),
+            })
+        for i, t in enumerate(self.titles):
+            t["facts"] = {"voteAverage": round(5.5 + (i % 7) * 0.5, 1), "runtime": 90 + i * 7,
+                          "genres": [{"id": 1, "name": swords(rng, 1)}, {"id": 2, "name": swords(rng, 1)}],
+                          "studio": swords(rng, 2), "tmdbStatus": "Released" if t["kind"] == "movie" else "Ended"}
+        self.sessions = set()
+        self.refuse_login = False
+        self.user = {"id": 1, "displayName": "s5eeb0001", "plexUsername": "s5eeb0001", "username": "s5eeb0001",
+                     "permissions": self.ADMIN}
+        self.others = [{"id": 2, "displayName": "s5eeb0002"}, {"id": 3, "displayName": "s5eeb0003"}]
+        # The requests the server holds before the app asks anything: (title index, user, request
+        # status, seasons). Title 2 is processing and downloading; title 1's request waits for approval.
+        self.requests = []
+        for n, (index, who, status, seasons) in enumerate([
+                (4, self.others[1], 5, []), (8, self.others[0], 3, []), (2, self.others[1], 2, []),
+                (1, self.others[0], 1, [2]), (7, self.others[1], 1, [1, 2, 3])]):
+            t = self.titles[index]
+            self.requests.append({"id": n + 1, "kind": t["kind"], "tmdb": t["id"], "status": status,
+                                  "seasons": seasons, "by": who, "modified_by": self.user if status in (2, 3) else None,
+                                  "created": self.stamp(n), "updated": self.stamp(n), "serverId": None,
+                                  "profileId": None, "rootFolder": None})
+        # What Radarr / Sonarr is downloading: title 2 (a movie), two thirds done.
+        self.downloads = {self.titles[2]["id"]: [{"title": swords(rng, 3), "size": 6 * 1024 ** 3,
+                                                  "sizeLeft": 2 * 1024 ** 3, "status": "downloading",
+                                                  "timeLeft": "00:12:30", "mediaType": "movie"}]}
+        # Seerr's `/service/{radarr|sonarr}` rows. Movies have one ordinary server and a 4K one (never
+        # offered: the app sends no 4K request); shows have two ordinary ones, so the menu offers a
+        # server choice, and the default one has an anime profile and folder.
+        server = lambda sid, name, is4k, default, profile, folder, **extra: dict(
+            {"id": sid, "name": name, "is4k": is4k, "isDefault": default, "activeProfileId": profile,
+             "activeDirectory": folder, "activeTags": []}, **extra)
+        self.services = {
+            "radarr": [server(0, "s5eeb0101", False, True, 4, "/media/movies"),
+                       server(1, "s5eeb0102", True, True, 5, "/media/movies-4k")],
+            "sonarr": [server(0, "s5eeb0201", False, True, 4, "/media/tv",
+                              activeAnimeProfileId=6, activeAnimeDirectory="/media/anime"),
+                       server(1, "s5eeb0202", False, False, 1, "/media/tv-archive")],
+        }
+        profiles = [{"id": 1, "name": "Any"}, {"id": 4, "name": "HD-1080p"}, {"id": 5, "name": "Ultra-HD"},
+                    {"id": 6, "name": "HD - 720p/1080p"}]
+        folders = lambda *paths: [{"id": i + 1, "path": path, "freeSpace": (i + 2) * 750 * 1024 ** 3,
+                                   "totalSpace": 4 * 1024 ** 4} for i, path in enumerate(paths)]
+        self.service_options = {
+            ("radarr", 0): {"profiles": profiles[:3], "rootFolders": folders("/media/movies", "/media/kids")},
+            ("radarr", 1): {"profiles": profiles[2:3], "rootFolders": folders("/media/movies-4k")},
+            ("sonarr", 0): {"profiles": profiles, "rootFolders": folders("/media/tv", "/media/anime")},
+            ("sonarr", 1): {"profiles": profiles[:2], "rootFolders": folders("/media/tv-archive")},
+        }
+
+    ADMIN = 2
+    MANAGE_REQUESTS = 16
+    REQUEST = 32
+    REQUEST_ADVANCED = 8192
+    REQUEST_VIEW = 16384
+
+    @staticmethod
+    def stamp(n):
+        """The n-th synthetic request time, an hour apart (ISO 8601, as Seerr sends)."""
+        return f"2026-01-{1 + n // 24:02d}T{n % 24:02d}:00:00.000Z"
+
+    def may(self, *bits):
+        perms = self.user["permissions"]
+        return bool(perms & self.ADMIN) or any(perms & b for b in bits)
+
+    def configure(self, patch):
+        if "plex_login" in patch:
+            if patch["plex_login"] not in ("refuse", "allow"):
+                return 400, {"error": "plex_login is refuse|allow"}
+            self.refuse_login = patch["plex_login"] == "refuse"
+        if "advanced" in patch:
+            if not isinstance(patch["advanced"], bool):
+                return 400, {"error": "advanced is true|false"}
+            self.user["permissions"] = self.ADMIN if patch["advanced"] else self.REQUEST
+        if "manage" in patch:
+            if not isinstance(patch["manage"], bool):
+                return 400, {"error": "manage is true|false"}
+            self.user["permissions"] = self.ADMIN if patch["manage"] else self.REQUEST | self.REQUEST_ADVANCED
+        return 200, {"plex_login": "refuse" if self.refuse_login else "allow",
+                     "advanced": self.may(self.REQUEST_ADVANCED, self.MANAGE_REQUESTS),
+                     "manage": self.may(self.MANAGE_REQUESTS)}
+
+    def by_id(self, kind, tmdb):
+        return next((t for t in self.titles if t["kind"] == kind and t["id"] == tmdb), None)
+
+    def media_info(self, t):
+        if t["status"] is None and not any(v for v in t["seasons"].values()):
+            return None
+        info = {"tmdbId": t["id"], "status": t["status"] or 1,
+                "requests": [self.request_row(r, media=False)
+                             for r in self.requests if r["tmdb"] == t["id"] and r["kind"] == t["kind"]],
+                "downloadStatus": self.downloads.get(t["id"], [])}
+        if t["kind"] == "tv":
+            info["seasons"] = [{"seasonNumber": n, "status": st} for n, st in t["seasons"].items() if st]
+        return info
+
+    def request_row(self, r, media=True):
+        """One request as Seerr's list sends it; `media=False` for a detail's `mediaInfo.requests`."""
+        row = {"id": r["id"], "status": r["status"], "type": r["kind"], "createdAt": r["created"],
+               "updatedAt": r["updated"], "requestedBy": r["by"], "modifiedBy": r["modified_by"],
+               "seasons": [{"seasonNumber": n} for n in r["seasons"]]}
+        if media:
+            t = self.by_id(r["kind"], r["tmdb"])
+            row["media"] = {"tmdbId": r["tmdb"], "mediaType": r["kind"], "status": (t and t["status"]) or 1,
+                            "downloadStatus": self.downloads.get(r["tmdb"], [])}
+        return row
+
+    def detail(self, t):
+        """A title's detail record: its row and TMDB's facts."""
+        out = self.row(t)
+        f = t["facts"]
+        out.update({"voteAverage": f["voteAverage"], "genres": f["genres"], "status": f["tmdbStatus"]})
+        if t["kind"] == "movie":
+            out.update({"runtime": f["runtime"], "productionCompanies": [{"id": 1, "name": f["studio"]}]})
+        else:
+            out.update({"episodeRunTime": [f["runtime"] // 2], "networks": [{"id": 1, "name": f["studio"]}],
+                        "numberOfSeasons": len(t["seasons"]),
+                        "seasons": [{"seasonNumber": n, "episodeCount": 8} for n in t["seasons"]]})
+        return out
+
+    def row(self, t):
+        row = {"id": t["id"], "mediaType": t["kind"], "overview": t["overview"], "posterPath": None,
+               "backdropPath": None}
+        row["title" if t["kind"] == "movie" else "name"] = t["name"]
+        row["releaseDate" if t["kind"] == "movie" else "firstAirDate"] = t["date"]
+        info = self.media_info(t)
+        if info:
+            row["mediaInfo"] = info
+        return row
+
+    def page(self, titles, q):
+        page = max(1, int(q.get("page", "1") or 1))
+        pages = max(1, (len(titles) + self.PAGE - 1) // self.PAGE)
+        chunk = titles[(page - 1) * self.PAGE: page * self.PAGE]
+        return {"page": page, "totalPages": pages, "totalResults": len(titles), "results": [self.row(t) for t in chunk]}
+
+    def signed_in(self, headers):
+        cookie = (headers.get("Cookie") or "") if headers else ""
+        pairs = dict(c.strip().split("=", 1) for c in cookie.split(";") if "=" in c)
+        return pairs.get(self.COOKIE) in self.sessions
+
+    def handle(self, method, p, q, headers, body):
+        """`None` for a path that is not Seerr's; else (status, content type, bytes[, headers])."""
+        if not p.startswith("/api/v1/"):
+            return None
+        j = lambda obj, status=200, extra=None: (status, "application/json", json.dumps(obj).encode(), extra or [])
+        if p == "/api/v1/auth/plex" and method == "POST":
+            try:
+                token = json.loads(body or b"{}").get("authToken")
+            except (json.JSONDecodeError, AttributeError):
+                token = None
+            if not token or self.refuse_login:
+                return j({"message": "Access denied."}, 403)
+            sid = "s%3A" + hashlib.sha1(f"seerr-{len(self.sessions)}".encode()).hexdigest()[:16]
+            self.sessions.add(sid)
+            return j(self.user, 200, [("Set-Cookie", f"{self.COOKIE}={sid}; Path=/; HttpOnly")])
+        if p == "/api/v1/auth/local" and method == "POST":
+            # A Seerr account of the server's own: `LOCAL_EMAIL` / `LOCAL_PASSWORD` sign in as the
+            # same user a Plex sign-in does; anything else is refused, as Seerr refuses it.
+            try:
+                sent = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                sent = {}
+            if not isinstance(sent, dict) or (sent.get("email"), sent.get("password")) != (self.LOCAL_EMAIL, self.LOCAL_PASSWORD):
+                return j({"message": "Access denied."}, 403)
+            sid = "s%3A" + hashlib.sha1(f"seerr-{len(self.sessions)}".encode()).hexdigest()[:16]
+            self.sessions.add(sid)
+            return j(self.user, 200, [("Set-Cookie", f"{self.COOKIE}={sid}; Path=/; HttpOnly")])
+        if not self.signed_in(headers):
+            return j({"message": "You do not have permission to access this endpoint."}, 403)
+        segs = [s for s in p.split("/") if s][2:]
+        if segs == ["auth", "me"]:
+            return j(self.user)
+        if segs == ["search"]:
+            hits = search_matcher(q.get("query", ""))
+            return j(self.page([t for t in self.titles if hits(t["name"])], q))
+        if segs[:1] == ["discover"]:
+            pick = {("trending",): self.titles, ("movies",): [t for t in self.titles if t["kind"] == "movie"],
+                    ("tv",): [t for t in self.titles if t["kind"] == "tv"],
+                    ("movies", "upcoming"): [t for t in self.titles if t["kind"] == "movie"][::-1],
+                    ("tv", "upcoming"): [t for t in self.titles if t["kind"] == "tv"][::-1]}.get(tuple(segs[1:]))
+            return j(self.page(pick, q)) if pick is not None else j({"message": "Not found"}, 404)
+        if len(segs) == 2 and segs[0] in ("movie", "tv") and segs[1].isdigit():
+            t = self.by_id(segs[0], int(segs[1]))
+            if t is None:
+                return j({"message": "Not found"}, 404)
+            return j(self.detail(t))
+        if segs[:1] == ["service"] and len(segs) in (2, 3) and segs[1] in self.services:
+            servers = self.services[segs[1]]
+            if len(segs) == 2:
+                return j(servers)
+            server = next((s for s in servers if segs[2].isdigit() and s["id"] == int(segs[2])), None)
+            if server is None:
+                return j({"message": "Server with provided ID does not exist."}, 404)
+            return j(dict({"server": server, "tags": []}, **self.service_options[(segs[1], server["id"])]))
+        if segs == ["request"] and method == "GET":
+            take, skip = int(q.get("take", "10")), int(q.get("skip", "0"))
+            asked_for = q.get("requestedBy")
+            if not self.may(self.MANAGE_REQUESTS, self.REQUEST_VIEW):
+                if asked_for and asked_for != str(self.user["id"]):
+                    return j({"message": "You do not have permission to view this user's requests."}, 403)
+                asked_for = str(self.user["id"])
+            seen = [r for r in self.requests if not asked_for or str(r["by"]["id"]) == asked_for]
+            key = "updated" if q.get("sort") == "modified" else "created"
+            seen.sort(key=lambda r: (r[key], r["id"]), reverse=True)
+            rows = [self.request_row(r) for r in seen[skip:skip + take]]
+            return j({"pageInfo": {"pages": max(1, (len(seen) + take - 1) // take), "page": skip // take + 1,
+                                   "results": len(seen)}, "results": rows})
+        if len(segs) == 3 and segs[0] == "request" and segs[1].isdigit() and method == "POST":
+            if segs[2] not in ("approve", "decline"):
+                return j({"message": "Status must be approve or decline."}, 400)
+            if not self.may(self.MANAGE_REQUESTS):
+                return j({"message": "You do not have permission to access this endpoint."}, 403)
+            r = next((r for r in self.requests if r["id"] == int(segs[1])), None)
+            if r is None:
+                return j({"message": "Request not found."}, 404)
+            if r["status"] != 1:
+                return j({"message": "Request is not pending."}, 409)
+            r["status"] = 2 if segs[2] == "approve" else 3
+            r["modified_by"], r["updated"] = self.user, self.stamp(len(self.requests) + 24 * 7)
+            t = self.by_id(r["kind"], r["tmdb"])
+            if t is not None and r["status"] == 2 and t["status"] in (None, 1, 2):
+                t["status"] = 3
+            return j(self.request_row(r))
+        if segs == ["request"] and method == "POST":
+            try:
+                ask = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return j({"message": "bad body"}, 400)
+            t = self.by_id(ask.get("mediaType"), ask.get("mediaId"))
+            if t is None:
+                return j({"message": "Not found"}, 404)
+            seasons = ask.get("seasons") or []
+            if t["kind"] == "tv" and not seasons:
+                return j({"message": "No seasons"}, 400)
+            open_seasons = {n for r in self.requests if r["tmdb"] == t["id"] for n in r["seasons"]}
+            if (t["kind"] == "movie" and (t["status"] or any(r["tmdb"] == t["id"] for r in self.requests))) or \
+                    (t["kind"] == "tv" and all(n in open_seasons or t["seasons"].get(n) for n in seasons)):
+                return j({"message": "Request for this media already exists."}, 409)
+            n = len(self.requests) + 24 * 7
+            req = {"id": len(self.requests) + 1, "kind": t["kind"], "tmdb": t["id"], "status": 1,
+                   "seasons": [n for n in seasons if n not in open_seasons], "by": self.user, "modified_by": None,
+                   "created": self.stamp(n), "updated": self.stamp(n),
+                   "serverId": ask.get("serverId"), "profileId": ask.get("profileId"),
+                   "rootFolder": ask.get("rootFolder")}
+            self.requests.append(req)
+            if t["kind"] == "movie":
+                t["status"] = 2
+            return j({"id": req["id"], "status": 1, "type": t["kind"]}, 201)
+        return j({"message": "Not found"}, 404)
+
+
 class MockPms:
     def section_pad_hubs(self, key, kind, count, rows=12):
         """`count` synthetic hubs for `/hubs/sections/<key>` (#412), after the library's own.
@@ -2408,6 +2736,8 @@ class MockPms:
         self.lib = lib
         # The plex.tv Watchlist's Discover stand-in (see its class); held titles take library guids.
         self.discover = DiscoverFixture()
+        # The household's Seerr stand-in (see its class): `/api/v1/*` on this same listener.
+        self.seerr = SeerrFixture()
         if not isinstance(lib, CatalogLibrary):  # the demo catalog's recorded guids are pinned by fixtures
             self.discover.bind(lib)
         # `--home-hubs N` (#395): `/hubs` answers exactly N hubs; 0 keeps the library's own.
@@ -2593,7 +2923,8 @@ class MockPms:
                                    {"key": "random", "defaultDirection": "asc", "title": "Randomly"}]}]}
 
     def handle(self, method, path, body=b"", headers=None):
-        """Returns (status, content_type, bytes)."""
+        """Returns (status, content_type, bytes), or (status, content_type, bytes, [(header, value)])
+        when an answer sets headers of its own (the Seerr stand-in's session cookie)."""
         u = urllib.parse.urlsplit(path)
         p = u.path
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query, keep_blank_values=True).items()}
@@ -2732,6 +3063,20 @@ class MockPms:
                 return j({"error": "invalid JSON body"}, 400)
             status, obj = self.discover.configure(patch, self.lib)
             return j(obj, status)
+        if p == "/_mock/seerr":
+            if method != "POST":
+                return j({"error": "method not allowed"}, 405)
+            try:
+                patch = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return j({"error": "invalid JSON body"}, 400)
+            status, obj = self.seerr.configure(patch)
+            return j(obj, status)
+        answered = self.seerr.handle(method, p, q, headers, body)
+        if answered is not None:
+            if method == "POST" and (p == "/api/v1/request" or p.startswith("/api/v1/request/")):
+                self.note_write(method, path, body)
+            return answered
         answered = self.discover.handle(method, p, q, headers, lib)
         if answered is not None:
             if method == "PUT":
@@ -3392,11 +3737,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        status, ctype, data = self.server.pms.handle(method, self.path, body, self.headers)
+        status, ctype, data, *extra = self.server.pms.handle(method, self.path, body, self.headers)
         with self.server.pms.lock:
             self.server.pms.requests.append((self.path, status))
         self.send_response(status)
         self.send_header("Content-Type", ctype)
+        for name, value in (extra[0] if extra else []):
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Plex-Protocol", "1.0")
         self.end_headers()
@@ -4018,6 +4365,7 @@ def selftest():
     _selftest_library_feed()
     _selftest_paging()
     _selftest_link()
+    _selftest_seerr()
     print("mock_pms selftest: ok")
 
 
@@ -4027,6 +4375,99 @@ def _teardown(srv):
     if srv.insecure_fail_listener is not None:
         srv.insecure_fail_listener.close()
 
+
+
+def _selftest_seerr():
+    """The Seerr stand-in: 403 before the sign-in, the cookie after it, search and a show's seasons,
+    a request recorded as a write and refused twice, and a refused Plex login."""
+    import urllib.request
+    import urllib.error
+    srv, pms = serve(0, seed=3)
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def call(path, data=None, cookie=None):
+        req = urllib.request.Request(base + path, data=None if data is None else json.dumps(data).encode(),
+                                     method="POST" if data is not None else "GET")
+        if cookie:
+            req.add_header("Cookie", cookie)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read() or b"null"), r.headers.get("Set-Cookie")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"null"), None
+
+    try:
+        assert call("/api/v1/auth/me")[0] == 403
+        status, user, set_cookie = call("/api/v1/auth/plex", {"authToken": DEMO_ACCOUNT_TOKEN})
+        assert status == 200 and user["id"] == 1 and set_cookie.startswith("connect.sid="), (status, set_cookie)
+        cookie = set_cookie.split(";")[0]
+        assert call("/api/v1/auth/me", cookie=cookie)[1]["displayName"] == user["displayName"]
+        local = {"email": SeerrFixture.LOCAL_EMAIL, "password": SeerrFixture.LOCAL_PASSWORD}
+        status, _, local_cookie = call("/api/v1/auth/local", local)
+        assert status == 200 and local_cookie.startswith("connect.sid="), status
+        assert call("/api/v1/auth/me", cookie=local_cookie.split(";")[0])[0] == 200
+        assert call("/api/v1/auth/local", {**local, "password": "wrong"})[0] == 403
+        show = next(t for t in pms.seerr.titles if t["kind"] == "tv" and t["status"] is None)
+        word = show["name"].split()[0]
+        hits = call(f"/api/v1/search?query={word}&page=1", cookie=cookie)[1]["results"]
+        assert any(h["id"] == show["id"] for h in hits)
+        detail = call(f"/api/v1/tv/{show['id']}", cookie=cookie)[1]
+        assert [s["seasonNumber"] for s in detail["seasons"]] == [1, 2, 3]
+        # Every PMS show names a stand-in show by its TMDB id (`Guid[]`), so its Detail page can
+        # ask Seerr for its missing seasons.
+        tmdb_of = lambda it: next(int(g["id"][7:]) for g in it["Guid"] if g["id"].startswith("tmdb://"))
+        shows = [it for it in pms.lib.items.values() if it.get("type") == "show"]
+        assert shows and all(pms.seerr.by_id("tv", tmdb_of(it)) for it in shows)
+        before = len(pms.writes)
+        status, _, _ = call("/api/v1/request", {"mediaType": "tv", "mediaId": show["id"], "seasons": [2]}, cookie)
+        assert status == 201 and len(pms.writes) == before + 1
+        assert call("/api/v1/request", {"mediaType": "tv", "mediaId": show["id"], "seasons": [2]}, cookie)[0] == 409
+        mine = call("/api/v1/request?take=20&skip=0&filter=all&sort=added&requestedBy=1", cookie=cookie)[1]
+        assert mine["results"][0]["media"]["tmdbId"] == show["id"]
+        # The request menu's reads, and a request that names where it goes.
+        assert user["permissions"] == SeerrFixture.ADMIN
+        servers = call("/api/v1/service/sonarr", cookie=cookie)[1]
+        assert [s["id"] for s in servers] == [0, 1] and servers[0]["isDefault"]
+        options = call("/api/v1/service/sonarr/1", cookie=cookie)[1]
+        assert options["server"]["id"] == 1 and options["profiles"] and options["rootFolders"]
+        assert call("/api/v1/service/radarr/9", cookie=cookie)[0] == 404
+        status, _, _ = call("/api/v1/request", {"mediaType": "tv", "mediaId": show["id"], "seasons": [3],
+                                                "serverId": 1, "profileId": 1, "rootFolder": "/media/tv-archive"}, cookie)
+        assert status == 201 and pms.seerr.requests[-1]["rootFolder"] == "/media/tv-archive"
+        # Everybody's requests for a manager, newest change first, with who and the download.
+        everyone = call("/api/v1/request?take=20&skip=0&filter=all&sort=modified", cookie=cookie)[1]["results"]
+        assert {r["requestedBy"]["id"] for r in everyone} == {1, 2, 3}
+        assert [r["updatedAt"] for r in everyone] == sorted((r["updatedAt"] for r in everyone), reverse=True)
+        moving = next(r for r in everyone if r["media"]["downloadStatus"])
+        assert moving["media"]["downloadStatus"][0]["sizeLeft"] < moving["media"]["downloadStatus"][0]["size"]
+        movie = pms.seerr.by_id(moving["type"], moving["media"]["tmdbId"])
+        facts = call(f"/api/v1/movie/{movie['id']}", cookie=cookie)[1]
+        assert facts["runtime"] and facts["genres"] and facts["mediaInfo"]["downloadStatus"]
+        # Approving a pending request is a write; a second answer is 409, and an unknown verb 400.
+        pending = next(r for r in everyone if r["status"] == 1 and r["requestedBy"]["id"] != 1)
+        before = len(pms.writes)
+        status, answered, _ = call(f"/api/v1/request/{pending['id']}/approve", {}, cookie)
+        assert status == 200 and answered["status"] == 2 and answered["modifiedBy"]["id"] == 1
+        assert len(pms.writes) == before + 1
+        assert call(f"/api/v1/request/{pending['id']}/decline", {}, cookie)[0] == 409
+        assert call(f"/api/v1/request/{pending['id']}/retry", {}, cookie)[0] == 400
+        # Without Manage Requests: only the user's own, and no decisions.
+        pms.seerr.configure({"manage": False})
+        own = call("/api/v1/request?take=20&skip=0&filter=all&sort=modified", cookie=cookie)[1]["results"]
+        assert own and {r["requestedBy"]["id"] for r in own} == {1}
+        assert call("/api/v1/request?requestedBy=2", cookie=cookie)[0] == 403
+        other = next(r for r in pms.seerr.requests if r["status"] == 1)
+        assert call(f"/api/v1/request/{other['id']}/decline", {}, cookie)[0] == 403
+        pms.seerr.configure({"manage": True})
+        pms.seerr.configure({"advanced": False})
+        assert call("/api/v1/auth/me", cookie=cookie)[1]["permissions"] == SeerrFixture.REQUEST
+        pms.seerr.configure({"plex_login": "refuse"})
+        assert call("/api/v1/auth/plex", {"authToken": DEMO_ACCOUNT_TOKEN})[0] == 403
+        assert seerr_stand_in_problem("seerr: base=stand-in writes=open") is None
+        assert seerr_stand_in_problem("seerr: base=configured writes=refused")
+        assert seerr_stand_in_problem("")
+    finally:
+        srv.shutdown()
 
 def _selftest_audio_stream_wire():
     """An audio stream is described the way PMS does: `samplingRate` always, `bitDepth` for lossless

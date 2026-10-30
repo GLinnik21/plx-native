@@ -69,7 +69,8 @@ travels under the focus capsule with them instead of being a separate colour sto
 ### The layout is dictated by the keyboard
 
 The TV's own panel covers the bottom **324px**, MEASURED off four device captures
-(`screens/search/layout.rs`'s `KEYBOARD_H`; it was a 380px guess until 2026-08-15). The rule the
+(`plx_ui::text_field::SYSTEM_KEYBOARD_H`, which Search's `layout::KEYBOARD_H` and every other page
+that edits a field read; it was a 380px guess until 2026-08-15). The rule the
 numbers come from: **with the keyboard raised, nothing the app owns hides behind it.** The field,
 the first shelf's heading and that shelf's full row of posters are sized to land above its top edge
 — `CONTENT_TOP` 300 + `HEAD_TO_ROW` 60 + a 375-tall poster = 735, against a panel edge at 756.

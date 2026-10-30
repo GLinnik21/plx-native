@@ -1,0 +1,22 @@
+{
+  "search.request.heading": "Kérés a Seerrben",
+  "seerr.title.request": "Kérés",
+  "seerr.title.request_seasons": "Hiányzó évadok kérése",
+  "seerr.title.requesting": "Kérés folyamatban…",
+  "seerr.status.pending": "Kérve, jóváhagyásra vár",
+  "seerr.status.processing": "Kérve, úton van",
+  "seerr.status.partly": "Részben a szervereden",
+  "seerr.status.available": "A szervereden",
+  "seerr.status.blocked": "Nem kérhető",
+  "seerr.request.done": "Kérve",
+  "seerr.request.already": "Már kérték",
+  "seerr.request.forbidden": "Ezt nem kérheted ezen a szerveren",
+  "seerr.request.failed": "A kérés nem sikerült. Próbáld újra.",
+  "seerr.title.unreachable": "A Seerr nem érhető el.",
+  "seerr.menu.server": "Szerver",
+  "seerr.menu.quality": "Minőség",
+  "seerr.menu.folder": "Mappa",
+  "seerr.menu.free": "{size} szabad",
+  "seerr.menu.loading": "Betöltés…",
+  "seerr.menu.unavailable": "Nem sikerült betölteni a lehetőségeket"
+}

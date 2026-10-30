@@ -166,10 +166,10 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     let search_instance = d.nav.instance_of(search_entry).unwrap();
     assert!(d.top_screen().unwrap().as_any().unwrap()
         .is::<plx_screens::search::SearchScreen>());
-
-    super::frame(&mut d, &mut rig, tick(2), script_key(Key::Ok, tick(2)));
-    assert!(d.input.keyboard);
+    super::frame(&mut d, &mut rig, tick(2), vec![]);
+    assert!(d.input.keyboard, "arriving by the Search pill raises the keyboard without an OK");
     assert_eq!(rig.keyboard_calls, [true]);
+    assert!(owned_search_probe(&d).contains("editing=true"));
 
     let mut covered = OwnedLeaveTrace::default();
     super::nav_push(&mut d, detail_arg("search-result"));
@@ -187,6 +187,8 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
         ["will-leave-for-good", "unmount"]);
     assert_eq!(d.nav.top_page().map(|entry| entry.id), Some(search_entry));
     assert_eq!(d.nav.instance_of(search_entry), Some(search_instance));
+    assert!(!d.input.keyboard, "BACK to Search keeps the results in view: no keyboard");
+    assert_eq!(rig.keyboard_calls, [true, false]);
 
     super::frame(&mut d, &mut rig, tick(5), script_key(Key::Ok, tick(5)));
     assert!(d.input.keyboard);
@@ -750,6 +752,32 @@ fn owned_search_walks_the_shared_strip_to_the_chip_and_back_to_the_field() {
 
     frame(&mut d, &mut rig, AppArg::Search, tick(11), script_key(Key::Down, tick(11)));
     assert_eq!(d.focus(), Some(field), "▼ off the bar lands on the field, whatever pill it was on");
+}
+
+/// OK on Search's own pill, on Search, is the same ask as arriving by it: focus returns to the
+/// field and the keyboard comes up. A root mint (the boot / `--screen` path) is not a pill press
+/// and leaves the keyboard down.
+#[test]
+fn ok_on_the_search_pill_while_on_search_reopens_the_keyboard_on_the_field() {
+    let _serial = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("owned-search-pill-ok");
+    session.watching("synthetic-pill-ok");
+    plx_plex::plex::reset_servers_for_test();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
+    let field = d.focus().unwrap();
+    assert!(!d.input.keyboard, "a root mint is not a pill press");
+
+    frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Up, tick(1)));
+    assert_eq!(d.focus().map(|key| key.elem), Some(plx_ui::dispatch::STRIP_BASE + 3));
+    frame(&mut d, &mut rig, AppArg::Search, tick(2), script_key(Key::Ok, tick(2)));
+    // A pill is a pressed element: its commit lands once the press runs out, not on the next frame.
+    for i in 3..35 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
+    assert_eq!(d.focus(), Some(field), "OK on the pill goes back to the field");
+    assert!(d.input.keyboard, "…with the keyboard up");
+    assert_eq!(rig.keyboard_calls, [true]);
+    assert!(owned_search_probe(&d).contains("editing=true"));
 }
 
 /// What the `/tmp/plxnative-search[=<query>]` boot trigger now does, once the retired legacy

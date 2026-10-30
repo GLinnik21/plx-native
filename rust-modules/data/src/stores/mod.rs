@@ -75,6 +75,7 @@ pub(crate) mod deck_group;
 pub mod page_cache;
 pub mod paging;
 pub mod search;
+pub mod seerr;
 pub mod subsearch;
 pub mod tape;
 pub mod viewreconcile;
@@ -102,6 +103,8 @@ pub struct Stores {
     pub watchlist: watchlist::WatchlistStore,
     /// The catalog page's discover record (`crate::catalog`). Appended last, like its `StoreId`.
     pub catalog: catalog::CatalogStore,
+    /// The household's Seerr server (`crate::seerr`). Appended last, like its `StoreId`.
+    pub seerr: seerr::SeerrStore,
     /// The PMS notification feed's owner. Ships on for owned servers (`notify::NOTIFY_ENABLED`); no `StoreId`, no
     /// `StoreCmd`: the application pumps it and tells it the lifecycle (`Bridge::notify_*`).
     pub notify: notify::NotifyStore,
@@ -134,6 +137,7 @@ impl Default for Stores {
             reconcile: viewreconcile::ViewReconcileStore::default(),
             watchlist: watchlist::WatchlistStore::default(),
             catalog: catalog::CatalogStore::default(),
+            seerr: seerr::SeerrStore::default(),
             notify: notify::NotifyStore::default(),
             notify_map: Default::default(),
             view_ledger: Default::default(),
@@ -288,6 +292,7 @@ impl Stores {
             StoreId::Collection => self.collection.take_jobs(),
             StoreId::Person => self.person.take_jobs(),
             StoreId::Catalog => self.catalog.take_jobs(),
+            StoreId::Seerr => self.seerr.take_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
             StoreId::ViewReconcile => self.reconcile.take_jobs(),
             StoreId::Hubs => self.hubs.take_jobs(),
@@ -311,6 +316,7 @@ impl Stores {
             StoreId::Collection => self.collection.has_jobs(),
             StoreId::Person => self.person.has_jobs(),
             StoreId::Catalog => self.catalog.has_jobs(),
+            StoreId::Seerr => self.seerr.has_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
             StoreId::ViewReconcile => self.reconcile.has_jobs(),
             StoreId::Hubs => self.hubs.has_jobs(),
@@ -615,6 +621,7 @@ impl Stores {
             StoreId::ViewReconcile => self.reconcile.gen(),
             StoreId::Watchlist => self.watchlist.gen(),
             StoreId::Catalog => self.catalog.gen(),
+            StoreId::Seerr => self.seerr.gen(),
             // A landing gate slot only: the stop mailbox is not a store and has no generation.
             StoreId::ViewStop => 0,
         }
@@ -655,6 +662,9 @@ impl Stores {
         if let Some(generation) = self.catalog.take_notice() {
             notices.push((StoreId::Catalog, generation));
         }
+        if let Some(generation) = self.seerr.take_notice() {
+            notices.push((StoreId::Seerr, generation));
+        }
         notices
     }
 }
@@ -682,6 +692,8 @@ pub enum StoreId {
     Watchlist,
     /// Appended for the same reason: the catalog page's discover record (`crate::catalog`).
     Catalog,
+    /// Appended for the same reason: the household's Seerr server (`crate::seerr`).
+    Seerr,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -727,6 +739,10 @@ pub enum StoreJob {
     /// the request id. It names no server and no client: a plex.tv read as the captured identity.
     /// One is out at a time.
     Catalog(plx_machine::job::Job<catalog::CatalogReq>, catalog::CatalogPort),
+    /// One call to the household's Seerr server (a sign-in, a read or a request write), emitted by a
+    /// Seerr ask or the pump's retry and addressed by the ask's id. Several are out at once, one per
+    /// slot. It names no server and no client. Not on the tape.
+    Seerr(plx_machine::job::Job<seerr::SeerrReq>, seerr::SeerrPort),
     /// One subtitle search, download or install poll, emitted by the subtitle-search pump and
     /// addressed by the search generation. One is out at a time. Not on the tape.
     SubtitleSearch(plx_machine::job::Job<crate::subsearch::SubSearchReq>, crate::subsearch::SubSearchPort),
@@ -832,6 +848,7 @@ impl StoreJob {
             // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
             Self::BrowseDiscovery(..) => Admission::Home,
             Self::Catalog(..)
+            | Self::Seerr(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
             | Self::Search(..)
@@ -853,6 +870,7 @@ impl StoreJob {
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::Catalog(..) => StoreId::Catalog,
+            Self::Seerr(..) => StoreId::Seerr,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
@@ -864,7 +882,7 @@ impl StoreJob {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 12] = [
+    pub const ALL: [StoreId; 13] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -877,6 +895,7 @@ impl StoreId {
         StoreId::ViewStop,
         StoreId::Watchlist,
         StoreId::Catalog,
+        StoreId::Seerr,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -902,6 +921,7 @@ impl StoreId {
             StoreId::ViewStop => "viewstop",
             StoreId::Watchlist => "watchlist",
             StoreId::Catalog => "catalog",
+            StoreId::Seerr => "seerr",
         }
     }
 }
@@ -918,6 +938,8 @@ pub enum StoreCmd {
     Collection(collection::CollectionCmd),
     ViewState(viewstate::ViewStateCmd),
     SubtitleSearch(subsearch::SubSearchCmd),
+    /// An ask of the household's Seerr server (`stores::seerr`), run by the Bridge as the seated profile.
+    Seerr(seerr::SeerrCmd),
 }
 
 impl StoreCmd {
@@ -931,6 +953,7 @@ impl StoreCmd {
             StoreCmd::Collection(_) => StoreId::Collection,
             StoreCmd::ViewState(_) => StoreId::ViewState,
             StoreCmd::SubtitleSearch(_) => StoreId::SubtitleSearch,
+            StoreCmd::Seerr(_) => StoreId::Seerr,
         }
     }
 }
@@ -1393,7 +1416,7 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(12)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(13)), None);
     }
 
     /// A fan-out call that can fill an outbox names it in a `*_FILLS` list the Bridge drains. A

@@ -1,0 +1,22 @@
+{
+  "requests.row.trending": {
+    "value": "Trending",
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: titles popular right now"
+  },
+  "requests.row.popular_movies": {
+    "value": "Popular movies",
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: popular movies"
+  },
+  "requests.row.popular_tv": {
+    "value": "Popular shows",
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: popular TV shows"
+  },
+  "requests.row.upcoming_movies": {
+    "value": "Upcoming movies",
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: movies not released yet"
+  },
+  "requests.row.upcoming_tv": {
+    "value": "Upcoming shows",
+    "description": "The Seerr tab's Discover section, titles on the household's Seerr server: Row heading: TV shows not aired yet"
+  }
+}

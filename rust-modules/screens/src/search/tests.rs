@@ -640,7 +640,7 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::Deliver(_, Delivery::Screen(
         ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(key) }))) if key.elem == FIELD)),
         "a mount opens on the field, whatever the last visit left");
-    assert!(!screen.editing, "…and does NOT raise the keyboard: an arrival has nothing to type");
+    assert!(!screen.editing, "…and a mount alone does NOT raise the keyboard: that is the ENTRY's call");
 
     // A seeded entry — the boot trigger's, now a store command — puts the term in the field with
     // the caret at its live end, which is where somebody who had just typed it would be standing.
@@ -651,6 +651,73 @@ fn a_mount_seats_the_field_and_parks_every_cursor_without_replacing_the_search()
     assert!(probe.contains("caret=7"), "the caret is the LIVE string's end: {probe}");
     assert!(screen.recents.is_empty() && screen.stack.target() == 0.0, "every cursor parks");
     drop(session);
+}
+
+fn raises_keyboard(out: &[Stamped<HostFixture>]) -> bool {
+    out.iter().any(|effect| matches!(&effect.fx, Fx::Deliver(_, Delivery::Keyboard { up: true })))
+}
+
+/// The dispatcher's seat of focus onto the field, from the strip pill the user pressed.
+fn onto_field() -> ScreenEvent<HostFixture> {
+    ScreenEvent::FocusMoved { from: Some(FocusKey { entry: ENTRY, elem: plx_ui::widgets::TAB_KEY_SEARCH }),
+        to: FocusKey { entry: ENTRY, elem: FIELD }, by: By::Dir }
+}
+
+/// A press on the Search pill is a deliberate arrival: the strip's cover-and-mint
+/// (`Enter::Fresh` with `FirstInGroupAnimated`) raises the television's keyboard on the field, so
+/// nobody has to find the field before typing. A root mint (boot, `--screen`), a return
+/// (`Enter::Restored`, the results the user came back to) and the page's own re-seat of the field
+/// (`Enter::Fresh` with `Elem(FIELD)`, after Clear or a remembered term) leave it down. The raise
+/// waits for focus to land on the field: the dispatcher seats it after the `Enter` step, and a
+/// keyboard up while focus is still on the pill would be dropped by the move off the field.
+#[test]
+fn a_pill_arrival_raises_the_keyboard_and_no_other_entry_does() {
+    let _serial = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let pill = Some(FocusKey { entry: ENTRY, elem: plx_ui::widgets::TAB_KEY_SEARCH });
+    let field = Some(FocusKey { entry: ENTRY, elem: FIELD });
+    for (enter, raise) in [
+        (Enter::Fresh { focus: FocusTarget::FirstInGroupAnimated(GroupId(0)) }, true),
+        (Enter::Fresh { focus: FocusTarget::FirstInGroup(GroupId(0)) }, false),
+        (Enter::Fresh { focus: FocusTarget::Elem(FocusKey { entry: ENTRY, elem: FIELD }) }, false),
+        (Enter::Restored, false),
+    ] {
+        let mut screen = fixture.screen();
+        let (handled, out, _) = deliver(&mut screen, &fixture, pill, ScreenEvent::Enter(enter));
+        assert_eq!(handled, Handled::No, "{enter:?}: the dispatcher still seats focus");
+        assert!(!screen.editing && !raises_keyboard(&out), "{enter:?}: nothing rises before the seat");
+        let (_, out, _) = deliver(&mut screen, &fixture, field, onto_field());
+        assert_eq!((screen.editing, raises_keyboard(&out)), (raise, raise), "{enter:?}");
+        // Armed once: a later return to the field is an ordinary move, not another arrival.
+        deliver(&mut screen, &fixture, field, key_event(Key::Back, 0));
+        let (_, out, _) = deliver(&mut screen, &fixture, field, onto_field());
+        assert!(!raises_keyboard(&out), "{enter:?}: the arrival raises the keyboard once");
+    }
+    // A pill arrival that is covered before focus lands (a result opened at once) is disarmed.
+    let mut screen = fixture.screen();
+    deliver(&mut screen, &fixture, pill,
+        ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroupAnimated(GroupId(0)) }));
+    deliver(&mut screen, &fixture, pill, ScreenEvent::Cover);
+    let (_, out, _) = deliver(&mut screen, &fixture, field, onto_field());
+    assert!(!screen.editing && !raises_keyboard(&out), "a covered arrival is disarmed");
+}
+
+/// OK on Search's own pill (▲ from the field lands there) used to do nothing. It is the same ask
+/// as arriving by that pill: back onto the field, keyboard up.
+#[test]
+fn ok_on_searchs_own_pill_returns_to_the_field_and_raises_the_keyboard() {
+    let _serial = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut screen = fixture.screen();
+    let pill = plx_ui::widgets::TAB_KEY_SEARCH;
+    let (handled, out, _) = deliver(&mut screen, &fixture, Some(FocusKey { entry: ENTRY, elem: pill }),
+        ScreenEvent::Activate(pill));
+    assert_eq!(handled, Handled::Yes);
+    assert!(out.iter().any(|effect| matches!(&effect.fx, Fx::Deliver(_, Delivery::Screen(
+        ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(key) }))) if key.elem == FIELD)),
+        "focus goes back to the field the keyboard types into");
+    let (_, out, _) = deliver(&mut screen, &fixture, Some(FocusKey { entry: ENTRY, elem: FIELD }), onto_field());
+    assert!(screen.editing && raises_keyboard(&out), "…and the keyboard rises once it is there");
 }
 
 // ---- the television's own keyboard: the four keys it delegates --------------------------------

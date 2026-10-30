@@ -112,7 +112,7 @@ impl Rig<InnerHost> for SurfaceRig {
         self.stores.capture_browse(&mut self.directory);
         Split {
             mounter: &mut self.mounter,
-            views: self.directory.view(),
+            views: crate::registry::InnerViews::of_directory(self.directory.view()),
             measure: &self.measure,
         }
     }

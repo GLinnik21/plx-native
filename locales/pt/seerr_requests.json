@@ -1,0 +1,22 @@
+{
+  "search.request.heading": "Pedir com o Seerr",
+  "seerr.title.request": "Pedir",
+  "seerr.title.request_seasons": "Pedir temporadas em falta",
+  "seerr.title.requesting": "A pedir…",
+  "seerr.status.pending": "Pedido, a aguardar aprovação",
+  "seerr.status.processing": "Pedido, a caminho",
+  "seerr.status.partly": "Em parte no seu servidor",
+  "seerr.status.available": "No seu servidor",
+  "seerr.status.blocked": "Não pode ser pedido",
+  "seerr.request.done": "Pedido",
+  "seerr.request.already": "Já pedido",
+  "seerr.request.forbidden": "Não pode pedir isto no servidor",
+  "seerr.request.failed": "Não foi possível pedir. Tente novamente.",
+  "seerr.title.unreachable": "Não foi possível contactar o Seerr.",
+  "seerr.menu.server": "Servidor",
+  "seerr.menu.quality": "Qualidade",
+  "seerr.menu.folder": "Pasta",
+  "seerr.menu.free": "{size} livres",
+  "seerr.menu.loading": "A carregar…",
+  "seerr.menu.unavailable": "Não foi possível carregar as opções"
+}

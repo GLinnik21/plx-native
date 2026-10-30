@@ -93,6 +93,10 @@ pub mod discover;
 // The plex.tv Watchlist (discover provider): `impl AccountClient`, contract frozen in watchlist.rs.
 pub mod watchlist;
 
+// The household's Seerr server (Overseerr / Jellyseerr): not plex.tv, not a PMS. Its own client
+// and session, signed in with the profile's plex.tv token; docs/seerr.md.
+pub mod seerr;
+
 // The hub fetch's backoff ladder and the advisory "re-discover this server's endpoint" request —
 // shared by `grant`'s upgrade retry here and by the data layer (`pms`, `stores`), which re-export
 // them under their historical names.

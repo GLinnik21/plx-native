@@ -12,6 +12,8 @@ mod memory;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod request_tests;
+#[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 pub use memory::Memory;
 
@@ -21,7 +23,8 @@ use crate::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_data::stores::search::SearchCmd;
 use plx_ui::cards::{CardEvent, PageEdge, SectionFrame, SectionSpec, Shelf, Stack, StackEvent, StackMemory, StackPage};
-use cards::RowCards;
+use cards::{PageCards, RowCards};
+use crate::registry::seerr_cards::{RequestCard, RequestCards};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -37,6 +40,8 @@ const CLEAR: u32 = 2;
 const FIELD_GROUP: GroupId = GroupId(0x5345_4100);
 const RECENTS_GROUP: GroupId = GroupId(0x5345_4101);
 const CLEAR_GROUP: GroupId = GroupId(0x5345_4102);
+/// The Request row's group (docs/seerr.md): the titles the household's Seerr server found.
+const REQUEST_GROUP: GroupId = GroupId(0x5345_4103);
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
 /// The alpha at or under which the owner annotation is invisible: the renderer draws no run
 /// below it, and the instance swaps the word it holds only there — so a handle never changes
@@ -49,7 +54,7 @@ const BLINK_US: u32 = BLINK_MS * 1000;
 /// (`Shelf::write`), which is the L0 row's motion write unchanged, so the text, and with it
 /// `SCREEN_SHAPES_PIN` and the replay anchors, stays what it was; the type's name is split only so
 /// the `cards` gate does not read a shape string as a use of the primitive.
-pub const SHAPE: &str = concat!("SearchScreen{entry:u32,instance:u32,draft:{text:str,caret:u64,profile:u32,pending:bool},mounted:bool,editing:bool,blink_us:u32,hot:Spring,scroll:Spring,scroll_target:f32,next_elem:u32,query_gen:u32,recent_clear_pending:bool,content_dirty:bool,fade:Xfade,ground:PageGround,owner_row:Option<u64>,owner:str,owner_alpha:Spring,restored:Option<SearchMemory>,keys:[SearchKey],recents:[u32],rows:[{kind:u32,group:u32,elems:[u32],motion:Card", "Row}]}");
+pub const SHAPE: &str = concat!("SearchScreen{entry:u32,instance:u32,draft:{text:str,caret:u64,profile:u32,pending:bool},mounted:bool,editing:bool,blink_us:u32,hot:Spring,scroll:Spring,scroll_target:f32,next_elem:u32,query_gen:u32,recent_clear_pending:bool,content_dirty:bool,fade:Xfade,ground:PageGround,owner_row:Option<u64>,owner:str,owner_alpha:Spring,restored:Option<SearchMemory>,keys:[SearchKey],recents:[u32],rows:[{kind:u32,group:u32,elems:[u32],motion:Card", "Row}],request:[u32]}");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Identity {
@@ -57,6 +62,8 @@ enum Identity {
     Media(Kind, plx_plex::plex::ServerId, String),
     Tag(Kind, plx_plex::plex::ServerId, String),
     Slot(Kind, u32, usize),
+    /// A Request card: a Seerr title, by its kind and TMDB id.
+    Request(plx_data::seerr::MediaKind, i64),
 }
 #[derive(Clone, Debug)]
 struct KeyEntry { identity: Identity, elem: u32, group: GroupId, slot: usize }
@@ -68,7 +75,7 @@ struct Row { kind: Kind, group: GroupId, elems: Vec<u32> }
 /// The sections of the page, top to bottom. A result row's key carries the page's `rows_gen`: a
 /// row the page wiped and rebuilt is a new section with a new shelf, as a wiped row always was.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Sec { Head, Recents, Clear, Row(Kind, u32) }
+pub enum Sec { Head, Recents, Clear, Row(Kind, u32), /** The Request row, by its own generation. */ Request(u32) }
 
 pub struct SearchScreen {
     entry: EntryId,
@@ -109,6 +116,19 @@ pub struct SearchScreen {
     /// `PageCancel` can name its window: every ask the shelf emits is forwarded, a repeat
     /// included. The shelf paces the repeats and the store takes an identical ask idempotently.
     page_sent: [Option<(usize, bool, usize)>; 5],
+    /// The Request row (docs/seerr.md): what the household's Seerr server found for the query and
+    /// the household's servers do not hold, as cards, with their elements. Empty when Seerr is not
+    /// set up, the query is not a real one, or the answer is not this query's.
+    request: Vec<RequestCard>,
+    request_elems: Vec<u32>,
+    /// Bumped whenever the Request row is rebuilt: a new answer is a new shelf.
+    request_gen: u32,
+    /// The user asked for Search by its pill (the strip's cover-and-mint, or OK on the pill while
+    /// here): raise the keyboard once focus lands on the field. Armed rather than raised at once
+    /// because the dispatcher seats focus AFTER this step, and focus leaving the field drops the
+    /// keyboard; the `FocusMoved` onto the field is also only ever sent to the input owner, whose
+    /// keyboard request is the only one the dispatcher accepts. Not part of the state hash.
+    raise_on_field: bool,
 }
 
 impl SearchScreen {
@@ -119,7 +139,8 @@ impl SearchScreen {
             recent_clear_pending: false, publication: None, content_dirty: true,
             fade: plx_ui::xfade::Xfade::new(), ground: plx_ui::widgets::PageGround::new(),
             owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
-            notices: 0, page_sent: [None; 5] }
+            notices: 0, page_sent: [None; 5], raise_on_field: false,
+            request: Vec::new(), request_elems: Vec::new(), request_gen: 0 }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
     fn real_query(&self) -> bool { plx_data::search::terms(self.draft.query()).is_some() }
@@ -218,7 +239,7 @@ impl SearchScreen {
         let query_changed = self.query_gen != view.query_gen();
         self.query_gen = view.query_gen();
         if query_changed && restored.is_none() {
-            self.keys.retain(|key| matches!(key.identity, Identity::Recent(_)));
+            self.keys.retain(|key| matches!(key.identity, Identity::Recent(_) | Identity::Request(..)));
         }
         self.recents.clear();
         if !self.real_query() && !self.recent_clear_pending {
@@ -261,16 +282,57 @@ impl SearchScreen {
         shelves_changed
     }
 
+    /// Bring the Request row up to the Seerr store's answer: the titles found for THIS query (the
+    /// answer of an older term is not shown), less what is already on the household's servers.
+    /// Answers whether the row changed.
+    fn sync_request<H: SearchLike>(&mut self, cx: &Cx<'_, H>) -> bool {
+        use plx_data::seerr::{Availability, SeerrData, SeerrOp};
+        use plx_data::stores::seerr::{Answer, Slot};
+        let term = plx_data::search::terms(self.draft.query()).filter(|_| !self.draft.pending());
+        let found = term.and_then(|term| {
+            let seerr = H::seerr(cx)?;
+            let asked = matches!(seerr.asked(&Slot::Search), Some(SeerrOp::Search { query, .. }) if query == term);
+            match seerr.answer(&Slot::Search).filter(|_| asked)? {
+                Answer::Ready(SeerrData::Titles(page)) => Some(&page.items),
+                _ => None,
+            }
+        });
+        let cards: Vec<RequestCard> = found.into_iter().flatten()
+            .filter(|title| title.status != Availability::Available)
+            .filter_map(RequestCard::of)
+            .collect();
+        if cards == self.request {
+            return false;
+        }
+        self.request_elems = cards.iter().enumerate()
+            .map(|(slot, card)| self.intern(Identity::Request(card.kind, card.tmdb), REQUEST_GROUP, slot))
+            .collect();
+        self.request = cards;
+        self.request_gen = self.request_gen.wrapping_add(1);
+        true
+    }
+
+    /// A household server whose photo proxy fetches the Request row's TMDB posters.
+    fn request_art_server<H: SearchLike>(cx: &Cx<'_, H>) -> Option<u16> {
+        H::search(cx).scope().sources().iter().find(|source| source.household).map(|source| source.sid.raw())
+    }
+
     fn activate<H: SearchLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEERR, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
         if elem >= plx_ui::dispatch::STRIP_BASE {
             let request = match elem {
                 TAB_KEY_HOME => SearchReq::Tab(HomeTab::Home),
                 TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
                 TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
                 TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
-                // The Search mark is the page the user is already on: nothing to request.
-                TAB_KEY_SEARCH => return Handled::Yes,
+                TAB_KEY_SEERR => SearchReq::Tab(HomeTab::Seerr),
+                // The Search mark is the page the user is already on: nothing to request, but the
+                // same ask as arriving by it — back onto the field, keyboard up.
+                TAB_KEY_SEARCH => {
+                    self.raise_on_field = true;
+                    self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
+                    return Handled::Yes;
+                }
                 TAB_KEY_CHIP => SearchReq::Account,
                 _ => return Handled::No,
             };
@@ -287,6 +349,11 @@ impl SearchScreen {
             self.recent_clear_pending = true; self.recents.clear();
             self.content_dirty = true;
             self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
+            return Handled::Yes;
+        }
+        if let Some(card) = self.request_elems.iter().position(|e| *e == elem).and_then(|i| self.request.get(i)) {
+            self.remember(fx);
+            fx.push(Fx::App(AppFx::Search(SearchReq::SeerrTitle { kind: card.kind, tmdb: card.tmdb })));
             return Handled::Yes;
         }
         if self.recents.contains(&elem) {
@@ -345,6 +412,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
         if store_changed { self.notices += 1; }
         let acknowledged = matches!(ev, ScreenEvent::Mount) || store_changed;
         let mut follow = self.sync(cx, acknowledged, fx);
+        follow |= self.sync_request(cx);
         if let ScreenEvent::RestoreMemory(PageMemory::Search(memory)) = ev {
             self.restore(memory);
             follow |= self.sync(cx, true, fx);
@@ -357,7 +425,21 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 self.fade.mount();
                 self.reseat(FocusTarget::Elem(self.key(FIELD)), fx);
             }
-            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => self.keyboard(false, false, fx),
+            // A pill press is the strip's cover-and-mint, the one entry seated `FirstInGroupAnimated`
+            // (`containers::stack`'s `fresh_tab`). A root mint, a return and this page's own
+            // `reseat` leave the keyboard down. Unhandled, so the dispatcher still seats focus.
+            ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroupAnimated(_) }) => {
+                self.raise_on_field = true;
+                return Handled::No;
+            }
+            ScreenEvent::Enter(Enter::Restored) => {
+                self.raise_on_field = false;
+                return Handled::No;
+            }
+            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => {
+                self.raise_on_field = false;
+                self.keyboard(false, false, fx);
+            }
             ScreenEvent::Activate(elem) => return self.activate(*elem, false, cx, fx),
             ScreenEvent::PressCommit(_) => {
                 if let Some(CardEvent::Activate(elem)) = card { return self.activate(elem, false, cx, fx); }
@@ -425,6 +507,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
             ScreenEvent::Tick(tick) => self.tick(*tick, cx, fx),
             ScreenEvent::FocusMoved { to, .. } => {
                 if to.elem != FIELD { self.keyboard(false, true, fx); }
+                else if std::mem::take(&mut self.raise_on_field) { self.keyboard(true, false, fx); }
                 self.keep_home_while_editing();
                 fx.invalidate(Provenance::Input);
             }
@@ -565,7 +648,17 @@ impl SearchScreen {
     pub fn recents_shown(&self) -> usize { self.recents.len() }
 
     fn first_content(&self) -> Option<GroupId> {
-        if !self.recents.is_empty() { Some(RECENTS_GROUP) } else { self.rows.first().map(|row| row.group) }
+        if !self.recents.is_empty() { Some(RECENTS_GROUP) }
+        else { self.rows.first().map(|row| row.group).or_else(|| self.has_request().then_some(REQUEST_GROUP)) }
+    }
+    fn has_request(&self) -> bool { !self.request.is_empty() && self.real_query() }
+    /// The Request row's shelf, over `cx`'s page.
+    fn request_frame<H: SearchLike>(&self, cx: &Cx<'_, H>) -> Option<(SectionFrame, &Shelf)> {
+        let k = Sec::Request(self.request_gen);
+        Some((self.stack.shelf_frame(self, cx, k)?, self.stack.shelf(k)?))
+    }
+    fn request_cards<'a, H: SearchLike>(&'a self, cx: &Cx<'_, H>) -> RequestCards<'a> {
+        RequestCards { elems: &self.request_elems, cards: &self.request, art_server: Self::request_art_server(cx), more: false, epoch: 0 }
     }
     /// The stack's key of result row `row`.
     fn section(&self, row: usize) -> Sec { Sec::Row(self.rows[row].kind, self.rows_gen) }
@@ -646,7 +739,7 @@ fn new_stack(entry: EntryId) -> Stack<Sec> {
 
 impl<H: SearchLike> StackPage<H> for SearchScreen {
     type Key = Sec;
-    type Cards<'a> = RowCards<'a>;
+    type Cards<'a> = PageCards<'a>;
 
     fn revision(&self, cx: &Cx<'_, H>) -> u64 {
         let view = H::search(cx);
@@ -656,7 +749,7 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
             let shown = view.shelves().get(i).map_or(0, |shelf| shelf.items.len()).min(row.elems.len());
             h = mix(mix(h, layout::ordinal(row.kind) as u64), shown as u64);
         }
-        h
+        mix(mix(h, self.request_gen as u64), self.request.len() as u64)
     }
     fn sections(&self, _cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
         out.push(SectionSpec::new(Sec::Head, plx_ui::cards::Kind::Custom { height: layout::CONTENT_TOP, focusable: true }, FIELD_GROUP));
@@ -676,6 +769,13 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
                 .edges([EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop])
                 .of_kind(elem));
         }
+        if self.has_request() {
+            out.push(SectionSpec::new(Sec::Request(self.request_gen),
+                plx_ui::cards::Kind::Shelf { style: layout::style(Kind::Movie), heading: layout::HEAD_TO_ROW }, REQUEST_GROUP)
+                .seated(Seat::Projected)
+                .edges([EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop])
+                .of_kind(ElemKind::Card));
+        }
     }
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) { out.push(Sec::Head); }
     /// The poster rows follow the Under posters setting; the Episode still row and the Person
@@ -683,10 +783,15 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
         matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(crate::registry::captions::policy)
     }
-    fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<RowCards<'a>> {
-        let Sec::Row(kind, _) = k else { return None };
-        let row = self.rows.iter().position(|row| row.kind == kind)?;
-        self.row_cards(H::search(cx), row)
+    fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<PageCards<'a>> {
+        match k {
+            Sec::Row(kind, _) => {
+                let row = self.rows.iter().position(|row| row.kind == kind)?;
+                self.row_cards(H::search(cx), row).map(PageCards::Row)
+            }
+            Sec::Request(_) if self.has_request() => Some(PageCards::Request(self.request_cards(cx))),
+            _ => None,
+        }
     }
     /// Only a library item opens an item menu on a hold; a collection hit opens its page.
     fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
@@ -697,7 +802,7 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         match k { Sec::Head => Some(FIELD), Sec::Clear if !self.recents.is_empty() => Some(CLEAR), _ => None }
     }
     fn plain_len(&self, k: Sec) -> usize {
-        match k { Sec::Recents => self.recents.len(), Sec::Head => 1, Sec::Clear => (!self.recents.is_empty()) as usize, Sec::Row(..) => 0 }
+        match k { Sec::Recents => self.recents.len(), Sec::Head => 1, Sec::Clear => (!self.recents.is_empty()) as usize, Sec::Row(..) | Sec::Request(_) => 0 }
     }
     fn plain_elem(&self, k: Sec, n: usize) -> Option<u32> {
         match k { Sec::Recents => self.recents.get(n).copied(), _ => if n == 0 { StackPage::<H>::elem_of(self, k) } else { None } }
@@ -733,13 +838,16 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     /// Entered from the field, a group takes the card focus last left on in it, else its first.
     fn seat_override(&self, cx: &Cx<'_, H>, k: Sec, _from: Placed) -> Option<u32> {
         if !cx.focus.current.is_some_and(|key| key.elem == FIELD) { return None; }
-        let group = match k { Sec::Recents => RECENTS_GROUP, Sec::Clear => CLEAR_GROUP, Sec::Head => FIELD_GROUP, Sec::Row(kind, _) => layout::group(kind) };
+        let group = match k { Sec::Recents => RECENTS_GROUP, Sec::Clear => CLEAR_GROUP, Sec::Head => FIELD_GROUP, Sec::Row(kind, _) => layout::group(kind),
+            Sec::Request(_) => REQUEST_GROUP };
         let valid = |elem: &u32| match k {
             Sec::Row(kind, _) => self.rows.iter().any(|row| row.kind == kind && row.elems.contains(elem)),
+            Sec::Request(_) => self.request_elems.contains(elem),
             _ => (0..StackPage::<H>::plain_len(self, k)).any(|n| StackPage::<H>::plain_elem(self, k, n) == Some(*elem)),
         };
         let first = match k {
             Sec::Row(kind, _) => self.rows.iter().find(|row| row.kind == kind).and_then(|row| row.elems.first().copied()),
+            Sec::Request(_) => self.request_elems.first().copied(),
             _ => StackPage::<H>::plain_elem(self, k, 0),
         };
         Some(cx.focus.remembered(group).filter(valid).or(first).unwrap_or(FIELD))
@@ -755,6 +863,7 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         let old = self.keys.iter().find(|key| key.elem == *want);
         let elems: &[u32] = match old {
             Some(old) if old.group == RECENTS_GROUP => &self.recents,
+            Some(old) if old.group == REQUEST_GROUP => &self.request_elems,
             Some(old) => self.rows.iter().find(|row| row.group == old.group).map_or(&[], |row| &row.elems),
             None => &[],
         };
@@ -806,6 +915,12 @@ impl<H: SearchLike> Screen<H> for SearchScreen {
             out.push(Link { from: pair[0].group, dir: Dir::Down, to: pair[1].group });
             out.push(Link { from: pair[1].group, dir: Dir::Up, to: pair[0].group });
         }
+        // The Request row stands under the last result row (or under the field, when the
+        // household's servers found nothing: `first_content`).
+        if let (true, Some(last)) = (self.has_request(), self.rows.last()) {
+            out.push(Link { from: last.group, dir: Dir::Down, to: REQUEST_GROUP });
+            out.push(Link { from: REQUEST_GROUP, dir: Dir::Up, to: last.group });
+        }
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
@@ -835,6 +950,8 @@ impl LogicalState for SearchScreen {
             for elem in &row.elems { c.u32(*elem); }
             if let Some(shelf) = self.stack.shelf(Sec::Row(row.kind, self.rows_gen)) { shelf.write(c); }
         }
+        c.seq(self.request_elems.len());
+        for elem in &self.request_elems { c.u32(*elem); }
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!("search entry={} editing={} pending={} rows={} recents={} caret={} notices={}",
@@ -850,6 +967,7 @@ impl KeyEntry {
             Identity::Media(kind, sid, rk) => { c.u32(1).u32(layout::ordinal(*kind)).u32(sid.raw() as u32).str(rk); }
             Identity::Tag(kind, sid, id) => { c.u32(2).u32(layout::ordinal(*kind)).u32(sid.raw() as u32).str(id); }
             Identity::Slot(kind, generation, slot) => { c.u32(3).u32(layout::ordinal(*kind)).u32(*generation).u64(*slot as u64); }
+            Identity::Request(kind, tmdb) => { c.u32(4).bool(*kind == plx_data::seerr::MediaKind::Tv).u64(*tmdb as u64); }
         }
         c.u32(self.elem).u32(self.group.0).u64(self.slot as u64);
     }

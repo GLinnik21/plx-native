@@ -1,0 +1,146 @@
+{
+  "seerr.tab": {
+    "value": "Seerr",
+    "description": "The Seerr tab, the household's Seerr request server: Top bar tab label; Seerr is the server's product name, not translated"
+  },
+  "seerr.section.requests": {
+    "value": "Requests",
+    "description": "The Seerr tab, the household's Seerr request server: Header section pill: the list of requests made of the server"
+  },
+  "seerr.section.discover": {
+    "value": "Discover",
+    "description": "The Seerr tab, the household's Seerr request server: Header section pill: titles the server suggests requesting"
+  },
+  "seerr.requests.all": {
+    "value": "Everyone's requests",
+    "description": "The Seerr tab, the household's Seerr request server: Header read-out: the list holds every user's requests"
+  },
+  "seerr.requests.own": {
+    "value": "Your requests",
+    "description": "The Seerr tab, the household's Seerr request server: Header read-out: the server shows this user only their own requests"
+  },
+  "seerr.requests.empty": {
+    "value": "No requests yet.",
+    "description": "The Seerr tab, the household's Seerr request server: Read-out when the server holds no request"
+  },
+  "seerr.discover.available": {
+    "value": "Available",
+    "description": "The Seerr tab, the household's Seerr request server: Header control label, followed by its value: whether titles already on the server are listed"
+  },
+  "seerr.discover.hidden": {
+    "value": "Hidden",
+    "description": "The Seerr tab, the household's Seerr request server: Header control value: titles already on the server are left out"
+  },
+  "seerr.discover.shown": {
+    "value": "Shown",
+    "description": "The Seerr tab, the household's Seerr request server: Header control value: titles already on the server are listed too"
+  },
+  "seerr.discover.empty": {
+    "value": "Nothing new to discover.",
+    "description": "The Seerr tab, the household's Seerr request server: Read-out when every suggestion is already on the server"
+  },
+  "seerr.row.seasons": {
+    "value": "Seasons {list}",
+    "description": "The Seerr tab, the household's Seerr request server: Request row detail: the seasons a show's request asked for; {list} is numbers like 1, 2",
+    "args": {
+      "list": "str"
+    }
+  },
+  "seerr.row.requested_by": {
+    "value": "Requested by {name}",
+    "description": "The Seerr tab, the household's Seerr request server: Request row detail: who asked; {name} is a user's name on the server",
+    "args": {
+      "name": "str"
+    }
+  },
+  "seerr.row.approved_by": {
+    "value": "Approved by {name}",
+    "description": "The Seerr tab, the household's Seerr request server: Request row detail: who approved it; {name} is a user's name on the server",
+    "args": {
+      "name": "str"
+    }
+  },
+  "seerr.row.declined_by": {
+    "value": "Declined by {name}",
+    "description": "The Seerr tab, the household's Seerr request server: Request row detail: who declined it; {name} is a user's name on the server",
+    "args": {
+      "name": "str"
+    }
+  },
+  "seerr.row.of": {
+    "value": "{done} of {size}",
+    "description": "The Seerr tab, the household's Seerr request server: Request row download line: bytes downloaded of the whole, e.g. 1.2 GB of 4.0 GB",
+    "args": {
+      "done": "str",
+      "size": "str"
+    }
+  },
+  "seerr.chip.pending": {
+    "value": "Pending",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: waiting for an administrator's approval"
+  },
+  "seerr.chip.approved": {
+    "value": "Approved",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: approved, not yet downloading"
+  },
+  "seerr.chip.declined": {
+    "value": "Declined",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: an administrator declined it"
+  },
+  "seerr.chip.failed": {
+    "value": "Failed",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: the download service would not take it"
+  },
+  "seerr.chip.downloading": {
+    "value": "Downloading",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: being downloaded now"
+  },
+  "seerr.chip.processing": {
+    "value": "Processing",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: approved and on its way"
+  },
+  "seerr.chip.available": {
+    "value": "Available",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: on the Plex server"
+  },
+  "seerr.chip.partly": {
+    "value": "Partly available",
+    "description": "The Seerr tab, the household's Seerr request server: Request row status chip: some seasons are on the Plex server"
+  },
+  "seerr.chip.missing": {
+    "value": "Missing",
+    "description": "A title's page on the household's Seerr request server: Season chip state: the season is neither on the Plex server nor requested"
+  },
+  "seerr.chip.blocked": {
+    "value": "Blocked",
+    "description": "A title's page on the household's Seerr request server: Season chip state: the server's owner blocked it from being requested"
+  },
+  "seerr.decide.approve": {
+    "value": "Approve",
+    "description": "A title's page on the household's Seerr request server: Button: approve the pending request (administrators only)"
+  },
+  "seerr.decide.decline": {
+    "value": "Decline",
+    "description": "A title's page on the household's Seerr request server: Button: decline the pending request (administrators only)"
+  },
+  "seerr.decide.approving": {
+    "value": "Approving…",
+    "description": "A title's page on the household's Seerr request server: Button while the approval is being sent"
+  },
+  "seerr.decide.declining": {
+    "value": "Declining…",
+    "description": "A title's page on the household's Seerr request server: Button while the decline is being sent"
+  },
+  "seerr.decide.forbidden": {
+    "value": "You can't approve or decline requests on the server",
+    "description": "A title's page on the household's Seerr request server: Status line after the server refused an approval or a decline"
+  },
+  "seerr.decide.conflict": {
+    "value": "This request was already answered",
+    "description": "A title's page on the household's Seerr request server: Status line: someone answered the request first"
+  },
+  "seerr.decide.failed": {
+    "value": "Couldn't send that. Try again.",
+    "description": "A title's page on the household's Seerr request server: Status line after an approval or a decline got no answer"
+  }
+}

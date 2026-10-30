@@ -48,6 +48,9 @@ pub const ELEM_TRAILER: u32 = 5;
 pub const ELEM_WATCHLIST: u32 = 6;
 /// The Play Version disc.
 pub const ELEM_VERSION: u32 = 7;
+/// The Seerr request disc (docs/seerr.md). ONE identity for every face it wears (ask, sending,
+/// sent, refused), so focus rides through the answer to a press.
+pub const ELEM_REQUEST: u32 = 8;
 
 /// The hero's one focus group. Local to this screen — nothing outside `screens::detail` ever names
 /// it — so, like `screens::profiles`'s `ROSTER_GROUP`/`FOOTER_GROUP`, any small integer would do;
@@ -111,6 +114,10 @@ pub enum HeroCtl {
     /// the Play Version disc, present only while the loaded movie or episode has two or more
     /// versions; it opens the list of them (`screens::versions_panel`)
     Version,
+    /// the Seerr request disc, present only on a SHOW whose household Seerr server lists seasons
+    /// nobody holds or asked for (or while that request is answered); always LAST. Its face is
+    /// [`HeroSet::request`]
+    Request,
 }
 
 impl HeroCtl {
@@ -125,9 +132,10 @@ impl HeroCtl {
             HeroCtl::MarkUnwatched => ELEM_MARK_UNWATCHED,
             HeroCtl::Watchlist => ELEM_WATCHLIST,
             HeroCtl::Version => ELEM_VERSION,
+            HeroCtl::Request => ELEM_REQUEST,
         }
     }
-    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the eight identities
+    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the nine identities
     /// above, which is every elem a NON-hero group can mint (the completed sections use
     /// their own disjoint range, per the module doc).
     pub fn of_elem(e: u32) -> Option<Self> {
@@ -140,6 +148,7 @@ impl HeroCtl {
             ELEM_MARK_UNWATCHED => Some(HeroCtl::MarkUnwatched),
             ELEM_WATCHLIST => Some(HeroCtl::Watchlist),
             ELEM_VERSION => Some(HeroCtl::Version),
+            ELEM_REQUEST => Some(HeroCtl::Request),
             _ => None,
         }
     }
@@ -149,9 +158,55 @@ impl HeroCtl {
     }
 }
 
+/// The face the Seerr request disc wears: what a request of the show's missing seasons is doing
+/// (docs/seerr.md). The mark and the verb it unfurls to say it; there is no other read-out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RequestFace {
+    /// Seasons can be asked for: a press requests every one of them.
+    Ask,
+    /// The request is on its way.
+    Sending,
+    /// The server took it.
+    Sent,
+    /// Somebody asked for them first (409).
+    AlreadyAsked,
+    /// This account may not request (403: no permission, or over its limit); a press tries again.
+    Refused,
+    /// No answer, or one the client could not read; a press tries again.
+    Failed,
+}
+
+impl RequestFace {
+    /// Does a press send the request (again)?
+    pub fn presses(self) -> bool {
+        matches!(self, RequestFace::Ask | RequestFace::Refused | RequestFace::Failed)
+    }
+
+    /// The disc's mark: the plus while a press asks, the check once the server has the request.
+    pub fn icon(self) -> plx_ui::icons::Icon {
+        match self {
+            RequestFace::Sent | RequestFace::AlreadyAsked => plx_ui::icons::Icon::Check,
+            _ => plx_ui::icons::Icon::Plus,
+        }
+    }
+
+    /// The verb the disc unfurls to on focus.
+    pub fn verb(self) -> &'static CStr {
+        use plx_platform::i18n::msg;
+        match self {
+            RequestFace::Ask => msg::seerr_title_request_seasons_c(),
+            RequestFace::Sending => msg::seerr_title_requesting_c(),
+            RequestFace::Sent => msg::seerr_request_done_c(),
+            RequestFace::AlreadyAsked => msg::seerr_request_already_c(),
+            RequestFace::Refused => msg::seerr_request_forbidden_c(),
+            RequestFace::Failed => msg::seerr_request_failed_c(),
+        }
+    }
+}
+
 /// Which of the conditional controls the row is showing: the independent bits (bookmark, Play
-/// Version, restart, trailer, Also available), plus the item's watch state, which decides which
-/// FACE the watched toggle wears.
+/// Version, restart, trailer, Also available, the Seerr request), plus the item's watch state,
+/// which decides which FACE the watched toggle wears.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct HeroSet {
     /// the item carries a `plex://movie|show` guid the Watchlist takes — the bookmark disc exists only then
@@ -162,12 +217,15 @@ pub struct HeroSet {
     pub trailer: bool,
     pub alt: bool,
     pub mark: PosterMark,
+    /// the Seerr request disc and its face — `None` when the show has nothing to request (or the
+    /// item is not a show, or no Seerr server is set)
+    pub request: Option<RequestFace>,
 }
 
 /// The row's controls, in drawn order, for a given set. A fixed [`MAX_CTLS`]-slot array plus a
 /// live count, so no per-frame allocation. The bookmark disc (only when `set.watchlist`) is SECOND, after Play/Resume;
 /// whether it wears the outline or the filled face is membership ([`face`]), not presence. The Play
-/// Version disc is LAST, after the watched toggle.
+/// Version disc follows the watched toggle, and the Seerr request disc is LAST.
 pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     let mut v = [HeroCtl::Play; MAX_CTLS];
     let mut n = 1;
@@ -195,6 +253,10 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     n += 1;
     if set.version {
         v[n] = HeroCtl::Version;
+        n += 1;
+    }
+    if set.request.is_some() {
+        v[n] = HeroCtl::Request;
         n += 1;
     }
     (v, n)
@@ -328,11 +390,13 @@ pub fn watch_names_show(d: &Detail) -> bool {
     hero_episode(d).is_some()
 }
 
-/// A disc's slot (`[restart, trailer, watch, version]`) and the verb it unfurls to — `None` for the two PILLS
-/// and for the bookmark disc, which has no verb to unfurl and wears no name: it is its glyph and its
-/// focus fill.
-pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)> {
+/// A disc's slot (`[restart, trailer, watch, version, request]`) and the verb it unfurls to — `None`
+/// for the two PILLS and for the bookmark disc, which has no verb to unfurl and wears no name: it is
+/// its glyph and its focus fill. The request disc's verb is its face's ([`RequestFace::verb`]), read
+/// from `set`.
+pub fn disc_verb(ctl: HeroCtl, set: HeroSet, name_show: bool) -> Option<(usize, &'static CStr)> {
     match (ctl, name_show) {
+        (HeroCtl::Request, _) => set.request.map(|face| (4, face.verb())),
         (HeroCtl::Restart, _) => Some((0, play_from_start_label())),
         (HeroCtl::Trailer, _) => Some((1, trailer_label())),
         (HeroCtl::MarkWatched, false) => Some((2, mark_watched_label())),
@@ -414,6 +478,7 @@ pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect 
             HeroCtl::Trailer => cw.disc[1],
             HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
             HeroCtl::Version => cw.disc[3],
+            HeroCtl::Request => cw.disc[4],
         };
     }
     plx_appkit::hero_layout::row_rect(&widths[..n], i, y)
@@ -436,7 +501,7 @@ pub fn disc_caps(
     let (v, n) = hero_ctls(set);
     let mut label_w = [0.0f32; DISCS];
     for &c in &v[..n] {
-        if let Some((slot, label)) = disc_verb(c, named_show) {
+        if let Some((slot, label)) = disc_verb(c, set, named_show) {
             label_w[slot] = measure.width(label, theme::size::BODY, true);
         }
     }
@@ -873,6 +938,7 @@ mod tests {
             trailer,
             alt,
             mark,
+            request: None,
         }
     }
 
@@ -945,40 +1011,40 @@ mod tests {
     #[test]
     fn each_watch_disc_writes_its_own_verb() {
         assert_eq!(
-            disc_verb(HeroCtl::Restart, false),
+            disc_verb(HeroCtl::Restart, HeroSet::default(), false),
             Some((0, play_from_start_label()))
         );
         assert_eq!(
-            disc_verb(HeroCtl::Restart, true),
+            disc_verb(HeroCtl::Restart, HeroSet::default(), true),
             Some((0, play_from_start_label()))
         );
         assert_eq!(
-            disc_verb(HeroCtl::MarkWatched, false),
+            disc_verb(HeroCtl::MarkWatched, HeroSet::default(), false),
             Some((2, mark_watched_label()))
         );
         assert_eq!(
-            disc_verb(HeroCtl::MarkWatched, true),
+            disc_verb(HeroCtl::MarkWatched, HeroSet::default(), true),
             Some((2, mark_show_watched_label()))
         );
         assert_eq!(
-            disc_verb(HeroCtl::MarkUnwatched, false),
+            disc_verb(HeroCtl::MarkUnwatched, HeroSet::default(), false),
             Some((2, mark_unwatched_label()))
         );
         assert_eq!(
-            disc_verb(HeroCtl::MarkUnwatched, true),
+            disc_verb(HeroCtl::MarkUnwatched, HeroSet::default(), true),
             Some((2, mark_show_unwatched_label()))
         );
         assert_eq!(
-            disc_verb(HeroCtl::Trailer, false),
+            disc_verb(HeroCtl::Trailer, HeroSet::default(), false),
             Some((1, trailer_label()))
         );
-        assert_eq!(disc_verb(HeroCtl::Trailer, true), Some((1, trailer_label())));
+        assert_eq!(disc_verb(HeroCtl::Trailer, HeroSet::default(), true), Some((1, trailer_label())));
         assert_eq!(
-            disc_verb(HeroCtl::Play, false),
+            disc_verb(HeroCtl::Play, HeroSet::default(), false),
             None,
             "a pill has nothing to unfurl"
         );
-        assert_eq!(disc_verb(HeroCtl::Alt, false), None);
+        assert_eq!(disc_verb(HeroCtl::Alt, HeroSet::default(), false), None);
     }
 
     /// The watched toggle is carried by its JOB, not by either face — `watch_index` must answer
@@ -1080,41 +1146,44 @@ mod tests {
     /// move's one difference (an empty slice) is unreachable: every set has Play and a watch face.
     #[test]
     fn the_row_geometry_matches_the_pre_move_accumulation() {
-        let cw = HeroWidths { pill: 211.0, alt: 263.0, disc: [57.0, 61.0, 67.0, 71.0] };
+        let cw = HeroWidths { pill: 211.0, alt: 263.0, disc: [57.0, 61.0, 67.0, 71.0, 73.0] };
         let y = 13.0;
         for restart in [false, true] {
             for alt in [false, true] {
                 for trailer in [false, true] {
                     for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
-                        let s = set_full(restart, alt, mark, trailer);
-                        let (v, n) = hero_ctls(s);
-                        assert!(n >= 2, "{s:?}: Play and a watch face are always present, so row_rect never sees an empty slice");
-                        for i in 0..=n + 1 {
-                            // The old body, verbatim.
-                            let mut x = plx_ui::consts::MARGIN_X;
-                            let mut w = cw.pill;
-                            for (k, c) in v[..n].iter().enumerate() {
-                                w = match c {
-                                    HeroCtl::Play => cw.pill,
-                                    HeroCtl::Alt => cw.alt,
-                                    HeroCtl::Restart => cw.disc[0],
-                                    HeroCtl::Trailer => cw.disc[1],
-                                    HeroCtl::Watchlist => CD,
-                                    HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
-                                    HeroCtl::Version => cw.disc[3],
-                                };
-                                if k >= i {
-                                    break;
+                        for request in [None, Some(RequestFace::Ask)] {
+                            let s = HeroSet { request, ..set_full(restart, alt, mark, trailer) };
+                            let (v, n) = hero_ctls(s);
+                            assert!(n >= 2, "{s:?}: Play and a watch face are always present, so row_rect never sees an empty slice");
+                            for i in 0..=n + 1 {
+                                // The old body, verbatim.
+                                let mut x = plx_ui::consts::MARGIN_X;
+                                let mut w = cw.pill;
+                                for (k, c) in v[..n].iter().enumerate() {
+                                    w = match c {
+                                        HeroCtl::Play => cw.pill,
+                                        HeroCtl::Alt => cw.alt,
+                                        HeroCtl::Restart => cw.disc[0],
+                                        HeroCtl::Trailer => cw.disc[1],
+                                        HeroCtl::Watchlist => CD,
+                                        HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
+                                        HeroCtl::Version => cw.disc[3],
+                                        HeroCtl::Request => cw.disc[4],
+                                    };
+                                    if k >= i {
+                                        break;
+                                    }
+                                    x += w + CGAP;
                                 }
-                                x += w + CGAP;
+                                let want = Rect::new(x, y, w, CD);
+                                let got = hero_btn_rect_at(s, i, y, cw);
+                                assert_eq!(
+                                    [got.x, got.y, got.w, got.h].map(f32::to_bits),
+                                    [want.x, want.y, want.w, want.h].map(f32::to_bits),
+                                    "set={s:?} i={i}"
+                                );
                             }
-                            let want = Rect::new(x, y, w, CD);
-                            let got = hero_btn_rect_at(s, i, y, cw);
-                            assert_eq!(
-                                [got.x, got.y, got.w, got.h].map(f32::to_bits),
-                                [want.x, want.y, want.w, want.h].map(f32::to_bits),
-                                "set={s:?} i={i}"
-                            );
                         }
                     }
                 }
@@ -1385,6 +1454,7 @@ mod tests {
             trailer: false,
             alt: false,
             mark: PosterMark::Watched,
+            request: None,
         };
         let (controls, n) = hero_ctls(set);
         assert_eq!(
@@ -1402,6 +1472,7 @@ mod tests {
             trailer: false,
             alt: false,
             mark: PosterMark::None,
+            request: None,
         };
         let with = HeroSet {
             watchlist: true,
@@ -1424,6 +1495,7 @@ mod tests {
                     trailer,
                     alt,
                     mark: PosterMark::InProgress,
+                    request: None,
                 };
                 let (controls, n) = hero_ctls(set);
                 assert!(controls[..n].iter().all(|ctl| matches!(
@@ -1553,6 +1625,7 @@ mod tests {
             trailer: false,
             alt: false,
             mark: PosterMark::None,
+            request: None,
         };
         let wide = HeroSet {
             watchlist: true,
@@ -1561,6 +1634,7 @@ mod tests {
             trailer: false,
             alt: true,
             mark: PosterMark::None,
+            request: None,
         };
         assert_eq!(ctl_at(compact, 1), Some(HeroCtl::Watchlist));
         assert_eq!(ctl_at(compact, 2), Some(HeroCtl::MarkWatched));
@@ -1578,11 +1652,12 @@ mod tests {
             trailer: false,
             alt: true,
             mark: PosterMark::None,
+            request: None,
         };
         let widths = HeroWidths {
             pill: 210.0,
             alt: 300.0,
-            disc: [90.0, 120.0, 120.0, 150.0],
+            disc: [90.0, 120.0, 120.0, 150.0, 170.0],
         };
         let (controls, n) = hero_ctls(set);
         for i in 1..n {
@@ -1605,34 +1680,39 @@ mod tests {
                 for alt in [false, true] {
                     for trailer in [false, true] {
                         for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
-                            let set = HeroSet { version, ..set_full(restart, alt, mark, trailer) };
-                            let (_, n) = hero_ctls(set);
-                            for labels in [
-                                [10.0, 12.0, 12.0, 11.0],
-                                [201.0, 80.0, 316.0, 150.0],
-                                [400.0, 400.0, 400.0, 400.0],
-                                [900.0, 40.0, 40.0, 40.0],
-                                [40.0, 40.0, 40.0, 900.0],
-                            ] {
-                                for e in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
-                                    for unfurl in [
-                                        [e, 0.0, 1.0 - e, 0.0],
-                                        [1.0 - e, 0.0, e, 0.0],
-                                        [e, e, 0.0, 0.0],
-                                        [0.0, e, e, 0.0],
-                                        [0.0, 0.0, 1.0 - e, e],
-                                        [1.0 - e, 0.0, 0.0, e],
-                                        [e, e, e, e],
-                                    ] {
-                                        let disc = disc_caps_at(set, PW + 62.0, 340.0, unfurl, labels);
-                                        let last = hero_btn_rect_at(
-                                            set,
-                                            n - 1,
-                                            0.0,
-                                            HeroWidths { pill: PW + 62.0, alt: 340.0, disc },
-                                        );
-                                        assert!(last.x + last.w <= FACTS_R + 0.01, "{set:?} {labels:?} {unfurl:?}");
-                                        opened |= disc.iter().any(|width| *width > CD);
+                            for request in [None, Some(RequestFace::Ask), Some(RequestFace::Refused)] {
+                                let set = HeroSet { version, request, ..set_full(restart, alt, mark, trailer) };
+                                let (_, n) = hero_ctls(set);
+                                for labels in [
+                                    [10.0, 12.0, 12.0, 11.0, 11.0],
+                                    [201.0, 80.0, 316.0, 150.0, 150.0],
+                                    [400.0, 400.0, 400.0, 400.0, 400.0],
+                                    [900.0, 40.0, 40.0, 40.0, 40.0],
+                                    [40.0, 40.0, 40.0, 900.0, 900.0],
+                                ] {
+                                    for e in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+                                        for unfurl in [
+                                            [e, 0.0, 1.0 - e, 0.0, 0.0],
+                                            [1.0 - e, 0.0, e, 0.0, 0.0],
+                                            [e, e, 0.0, 0.0, 0.0],
+                                            [0.0, e, e, 0.0, 0.0],
+                                            [0.0, 0.0, 1.0 - e, e, 0.0],
+                                            [1.0 - e, 0.0, 0.0, e, 0.0],
+                                            [e, e, e, e, 0.0],
+                                            [0.0, 0.0, 0.0, 0.0, e],
+                                            [0.0, 0.0, 1.0 - e, 0.0, e],
+                                            [0.0, 0.0, 0.0, 1.0 - e, e],
+                                        ] {
+                                            let disc = disc_caps_at(set, PW + 62.0, 340.0, unfurl, labels);
+                                            let last = hero_btn_rect_at(
+                                                set,
+                                                n - 1,
+                                                0.0,
+                                                HeroWidths { pill: PW + 62.0, alt: 340.0, disc },
+                                            );
+                                            assert!(last.x + last.w <= FACTS_R + 0.01, "{set:?} {labels:?} {unfurl:?}");
+                                            opened |= disc.iter().any(|width| *width > CD);
+                                        }
                                     }
                                 }
                             }
@@ -1644,11 +1724,11 @@ mod tests {
         assert!(opened, "the sweep must exercise a real open capsule");
     }
 
-    /// **The widest row with all four discs** (bookmark, Play Version, Restart, Alt, the watch
-    /// toggle, Trailer drawn as well): every real verb, measured, either unfurls inside the People
-    /// column or the row stays circles. Never across.
+    /// **The widest row with every disc** (bookmark, Play Version, Restart, Alt, the watch toggle,
+    /// Trailer, and the Seerr request disc in each of its faces or absent): every real verb,
+    /// measured, either unfurls inside the People column or the row stays circles. Never across.
     #[test]
-    fn four_discs_never_cross_the_people_column_in_any_language() {
+    fn every_disc_never_crosses_the_people_column_in_any_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
         let wide = HeroSet {
@@ -1658,24 +1738,48 @@ mod tests {
             trailer: true,
             alt: true,
             mark: PosterMark::InProgress,
+            request: None,
         };
+        const FACES: [Option<RequestFace>; 7] = [None, Some(RequestFace::Ask), Some(RequestFace::Sending),
+            Some(RequestFace::Sent), Some(RequestFace::AlreadyAsked), Some(RequestFace::Refused), Some(RequestFace::Failed)];
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for named_show in [false, true] {
-                for focus in 0..DISCS {
-                    let mut unfurl = [0.0; DISCS];
-                    unfurl[focus] = 1.0;
-                    let caps = disc_caps(&measure, wide, unfurl, named_show);
-                    let (_, n) = hero_ctls(wide);
-                    let last = hero_btn_rect_at(
-                        wide,
-                        n - 1,
-                        0.0,
-                        HeroWidths { pill: hero_pill_w(&measure, true), alt: alt_pill_w(&measure), disc: caps },
-                    );
-                    assert!(last.x + last.w <= FACTS_R + 0.01, "{} slot {focus}", language.tag());
+                for request in FACES {
+                    let wide = HeroSet { request, ..wide };
+                    for focus in 0..DISCS {
+                        let mut unfurl = [0.0; DISCS];
+                        unfurl[focus] = 1.0;
+                        let caps = disc_caps(&measure, wide, unfurl, named_show);
+                        let (_, n) = hero_ctls(wide);
+                        let last = hero_btn_rect_at(
+                            wide,
+                            n - 1,
+                            0.0,
+                            HeroWidths { pill: hero_pill_w(&measure, true), alt: alt_pill_w(&measure), disc: caps },
+                        );
+                        assert!(last.x + last.w <= FACTS_R + 0.01, "{} {request:?} slot {focus}", language.tag());
+                    }
                 }
             }
+        }
+    }
+
+    /// **On a show's ordinary row the request disc says its verb in every shipped language**:
+    /// Resume, the bookmark, the watch toggle and the request disc, focused on its Ask face. The
+    /// row's budget keeps a disc a bare circle when its verb would cross the People column, which
+    /// is safe but leaves a plus nobody can read, so the commonest row must have room for it.
+    #[test]
+    fn the_request_verb_opens_on_a_shows_ordinary_row_in_every_language() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let measure = plx_base::fontcov::advances::ShippedMeasure;
+        let row = HeroSet { watchlist: true, mark: PosterMark::InProgress, request: Some(RequestFace::Ask), ..HeroSet::default() };
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let mut unfurl = [0.0; DISCS];
+            unfurl[4] = 1.0;
+            let caps = disc_caps(&measure, row, unfurl, true);
+            assert!(caps[4] > CD, "{}: the request verb stays a circle", language.tag());
         }
     }
 
@@ -1689,6 +1793,7 @@ mod tests {
             trailer: true,
             alt: true,
             mark: PosterMark::Watched,
+            request: None,
         };
         let caps = disc_caps(&measure, wide, [1.0; DISCS], true);
         let (_, n) = hero_ctls(wide);
@@ -1714,6 +1819,7 @@ mod tests {
             trailer: true,
             alt: false,
             mark: PosterMark::Watched,
+            request: None,
         };
         let caps = disc_caps(&measure, roomy, [1.0; DISCS], false);
         assert!(caps[1] > CD, "Trailer unfurls when the row has room");
@@ -1742,6 +1848,7 @@ mod tests {
             trailer: true,
             alt: true,
             mark: PosterMark::Watched,
+            request: None,
         };
         assert_eq!(disc_caps(&HugeMeasure, set, [1.0; DISCS], true), [CD; DISCS]);
     }
@@ -1749,7 +1856,7 @@ mod tests {
     #[test]
     fn the_unfurled_verbs_are_the_menus_own() {
         assert_eq!(
-            disc_verb(HeroCtl::Restart, false)
+            disc_verb(HeroCtl::Restart, HeroSet::default(), false)
                 .unwrap()
                 .1
                 .to_str()
@@ -1757,7 +1864,7 @@ mod tests {
             "Play from Start"
         );
         assert_eq!(
-            disc_verb(HeroCtl::MarkWatched, false)
+            disc_verb(HeroCtl::MarkWatched, HeroSet::default(), false)
                 .unwrap()
                 .1
                 .to_str()
@@ -1765,7 +1872,7 @@ mod tests {
             "Mark as Watched"
         );
         assert_eq!(
-            disc_verb(HeroCtl::MarkUnwatched, true)
+            disc_verb(HeroCtl::MarkUnwatched, HeroSet::default(), true)
                 .unwrap()
                 .1
                 .to_str()
@@ -1783,6 +1890,7 @@ mod tests {
             trailer: true,
             alt: true,
             mark: PosterMark::InProgress,
+            request: None,
         };
         let (_, n) = hero_ctls(set);
         let last = hero_btn_rect_at(

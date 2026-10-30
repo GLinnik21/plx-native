@@ -1,0 +1,22 @@
+{
+  "search.request.heading": "Zamów przez Seerr",
+  "seerr.title.request": "Zamów",
+  "seerr.title.request_seasons": "Zamów brakujące sezony",
+  "seerr.title.requesting": "Zamawianie…",
+  "seerr.status.pending": "Zamówione, czeka na akceptację",
+  "seerr.status.processing": "Zamówione, w drodze",
+  "seerr.status.partly": "Częściowo na twoim serwerze",
+  "seerr.status.available": "Na twoim serwerze",
+  "seerr.status.blocked": "Nie można zamówić",
+  "seerr.request.done": "Zamówione",
+  "seerr.request.already": "Już zamówione",
+  "seerr.request.forbidden": "Nie możesz tego zamówić na serwerze",
+  "seerr.request.failed": "Nie udało się zamówić. Spróbuj ponownie.",
+  "seerr.title.unreachable": "Nie można połączyć się z Seerr.",
+  "seerr.menu.server": "Serwer",
+  "seerr.menu.quality": "Jakość",
+  "seerr.menu.folder": "Folder",
+  "seerr.menu.free": "Wolne: {size}",
+  "seerr.menu.loading": "Wczytywanie…",
+  "seerr.menu.unavailable": "Nie udało się wczytać opcji"
+}

@@ -309,6 +309,14 @@ impl RouteSurface {
                     MachineId::Instance(self.id),
                     Delivery::Screen(ScreenEvent::Enter(e)),
                 )),
+                // an inner page raising or lowering the television's keyboard (Services > Seerr's
+                // address) — the dispatcher takes that only from the input OWNER, which is this
+                // surface, so it is re-addressed to the surface's instance like the Enter above; the
+                // text and the panel's own close come back as input, which reaches the top page
+                Fx::Deliver(_, Delivery::Keyboard { up }) => fx.push(Fx::Deliver(
+                    MachineId::Instance(self.id),
+                    Delivery::Keyboard { up },
+                )),
                 Fx::App(a) => fx.push(Fx::App(a)),
                 Fx::Log(l) => fx.push(Fx::Log(l)),
                 Fx::Press(arm) => fx.push(Fx::Press(arm)),
@@ -457,10 +465,11 @@ fn mount_page(
     fx: &mut Effects<'_, InnerHost>,
 ) -> Box<dyn Screen<InnerHost>> {
     match arg {
-        SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
+        SettingsPage::Root => Box::new(RootPage::new(entry, cx.views.directory)),
         SettingsPage::Language => Box::new(LanguagePage::new(entry)),
         SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
         SettingsPage::UnderPostersDetails => Box::new(under_posters::DetailsPage::new(entry)),
+        SettingsPage::Seerr => Box::new(seerr::SeerrPage::new(entry, cx)),
         SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
         SettingsPage::Playback => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::Playback)),
         SettingsPage::AudioSubtitles => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::AudioSubtitles)),
@@ -472,7 +481,7 @@ fn mount_page(
         SettingsPage::ConsentStage(i) => {
             Box::new(super::consent::ConsentPage::first_run(entry, i, cx, fx))
         }
-        SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
+        SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views.directory)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
     }
 }
@@ -976,6 +985,8 @@ enum RootId {
     Privacy,
     Legal,
     About,
+    /// Services > Seerr.
+    Seerr,
 }
 
 /// The first key of the per-server switches: past every fixed [`RootId`] key.
@@ -995,6 +1006,7 @@ impl FormId for RootId {
             RootId::About => 9,
             RootId::Resolution => 10,
             RootId::UnderPosters => 11,
+            RootId::Seerr => 12,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1114,6 +1126,8 @@ struct RootInputs {
     /// Unencrypted-connection switches, in row order — empty when signed out or when nobody has
     /// an answered/offered plaintext question.
     plaintext: Vec<PlaintextRowInput>,
+    /// The household's Seerr address as stored (the Services row says whether one is set).
+    seerr_address: String,
 }
 
 /// The Settings root as a [`Form`], built from plain arguments rather than `&self` — see
@@ -1208,6 +1222,19 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
                 .value(super::preferences::resolution_label(inputs.resolution))
                 .chevron(true),
         );
+    // Services: the outside services this television can use on the household's behalf. Signed in
+    // only, like Libraries: a request is made as the profile that is watching.
+    let services = FormSection::new(plx_platform::i18n::msg::settings_services_section())
+        .visible(signed_in)
+        .item(
+            RootId::Seerr,
+            RowKind::Nav(SettingsPage::Seerr),
+            Action::Door,
+            Row::new(plx_platform::i18n::msg::settings_seerr_title())
+                .detail(plx_platform::i18n::msg::settings_seerr_detail())
+                .value(seerr::summary(&inputs.seerr_address))
+                .chevron(true),
+        );
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
     if has_plaintext {
@@ -1254,6 +1281,7 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
         .section(libraries)
         .section(playback)
         .section(system)
+        .section(services)
         .section(plaintext)
         .section(privacy)
         .section(about)
@@ -1301,6 +1329,7 @@ impl RootPage {
         let resolution = sess.ui_resolution();
         let resolution_offered = plx_platform::tv::device::ui_resolution_offered();
         let multi_user = sess.home_users.len() > 1;
+        let seerr_address = sess.prefs.seerr_address.clone();
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
         self.state.language = plx_platform::i18n::saved_preference();
@@ -1309,7 +1338,7 @@ impl RootPage {
         let form = root_form(&RootInputs {
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
             auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language,
-            under_posters: self.state.under_posters, plaintext,
+            under_posters: self.state.under_posters, plaintext, seerr_address,
         });
         let keep = self.form.selected_id().cloned();
         self.form.table.compact = false;
@@ -1472,14 +1501,14 @@ impl Machine<InnerHost> for RootPage {
             AlertStep::Pass => {}
             AlertStep::Done(handled) => return handled,
             AlertStep::Answer(cmd) => {
-                self.alert_answer(cmd, cx.views, fx);
+                self.alert_answer(cmd, cx.views.directory, fx);
                 return Handled::Yes;
             }
         }
         match ev {
             ScreenEvent::Enter(_) => {
                 // a return from a child: the favourite count may have changed
-                self.rebuild(cx.views);
+                self.rebuild(cx.views.directory);
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
@@ -1518,7 +1547,7 @@ impl Machine<InnerHost> for RootPage {
                     self.alert.withdraw();
                 }
                 self.alert.update(t.dt());
-                if landed { self.rebuild(cx.views); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
+                if landed { self.rebuild(cx.views.directory); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
 
                 self.form.table
                     .update(t.dt(), RouteLayout::screen().sectioned_table().h);
@@ -1532,7 +1561,7 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
-                self.activate(*e, cx.views, fx);
+                self.activate(*e, cx.views.directory, fx);
                 Handled::Yes
             }
             ScreenEvent::Input(plx_machine::machine::InputEvent {
@@ -1546,7 +1575,7 @@ impl Machine<InnerHost> for RootPage {
             }) => {
                 // rule 8: RIGHT on a row that opens nested content enters it, exactly as OK does
                 if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
-                    self.activate(key, cx.views, fx);
+                    self.activate(key, cx.views.directory, fx);
                 }
                 Handled::Yes
             }
@@ -1627,6 +1656,9 @@ impl Screen<InnerHost> for RootPage {
 
 #[path = "settings_under_posters.rs"]
 mod under_posters;
+
+#[path = "settings_seerr.rs"]
+mod seerr;
 pub use under_posters::caption_policy_of;
 
 #[cfg(test)]

@@ -2680,8 +2680,14 @@ mod fixture_preflight_tests {
         for name in ["1-boot-home-chip-grid", "6-settings-family", "12-filmography-detail-return"] {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
-            let segment = std::fs::read(dir.join("rec-0000.jsonl")).unwrap();
-            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], state_fp()).unwrap();
+            // every segment in order, as the replay loader reads them: a long recording rotates at 2 MiB
+            let segments: Vec<Vec<u8>> = (0..)
+                .map(|i| dir.join(format!("rec-{i:04}.jsonl")))
+                .take_while(|path| path.exists())
+                .map(|path| std::fs::read(path).unwrap())
+                .collect();
+            let segments: Vec<&[u8]> = segments.iter().map(Vec::as_slice).collect();
+            let mut recording = Recording::parse(&manifest, &segments, state_fp()).unwrap_or_else(|e| panic!("{name}: {e:?}"));
             let initial = super::super::bootstrap::Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)
                 .expect("recorded initial state must retain its canonical hash");
             // Host unit tests omit the simulator feature; this check covers the wire preflight.

@@ -104,7 +104,9 @@ def apply_patches(dep, source_dir, root=ROOT):
     sits inside this work tree (gitignored), so without GIT_CEILING_DIRECTORIES git resolves the
     patch paths against the enclosing repository and skips what that repository ignores. The ceiling
     stops discovery at `source_dir`; GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE (set by a hook or a
-    wrapper) would defeat it, so they are removed. `patch(1)` is not used: it accepts fuzz.
+    wrapper) would defeat it, so they are removed. A user's `core.autocrlf=true` (Git for Windows'
+    default, often copied into a WSL ~/.gitconfig) still applies outside a repository and writes the
+    patched hunks with CRLF, so it is overridden on the command line. `patch(1)` is not used: it accepts fuzz.
     The result hashes are checked independently of git, so a patch that silently skipped fails."""
     source_dir = Path(source_dir).resolve()
     patches = patch_pins(dep, root)
@@ -119,7 +121,7 @@ def apply_patches(dep, source_dir, root=ROOT):
     for patch in patches:
         path = (root / patch['path']).resolve()
         for check in (['--check'], []):
-            result = subprocess.run(['git', 'apply', *check, str(path)], cwd=source_dir, env=env,
+            result = subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', *check, str(path)], cwd=source_dir, env=env,
                                     capture_output=True, text=True)
             if result.returncode != 0:
                 raise ValueError('libass patch does not apply: ' + patch['path'] + ': ' + result.stderr.strip())

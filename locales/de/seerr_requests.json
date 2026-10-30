@@ -1,0 +1,22 @@
+{
+  "search.request.heading": "Mit Seerr anfragen",
+  "seerr.title.request": "Anfragen",
+  "seerr.title.request_seasons": "Fehlende Staffeln anfragen",
+  "seerr.title.requesting": "Wird angefragt …",
+  "seerr.status.pending": "Angefragt, wartet auf Freigabe",
+  "seerr.status.processing": "Angefragt, ist unterwegs",
+  "seerr.status.partly": "Teilweise auf deinem Server",
+  "seerr.status.available": "Auf deinem Server",
+  "seerr.status.blocked": "Kann nicht angefragt werden",
+  "seerr.request.done": "Angefragt",
+  "seerr.request.already": "Bereits angefragt",
+  "seerr.request.forbidden": "Du darfst das auf dem Server nicht anfragen",
+  "seerr.request.failed": "Anfrage fehlgeschlagen. Versuch es noch einmal.",
+  "seerr.title.unreachable": "Seerr ist nicht erreichbar.",
+  "seerr.menu.server": "Server",
+  "seerr.menu.quality": "Qualität",
+  "seerr.menu.folder": "Ordner",
+  "seerr.menu.free": "{size} frei",
+  "seerr.menu.loading": "Wird geladen…",
+  "seerr.menu.unavailable": "Optionen konnten nicht geladen werden"
+}

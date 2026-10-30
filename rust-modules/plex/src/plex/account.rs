@@ -58,8 +58,9 @@ pub fn plex_tv() -> &'static str {
     })
 }
 
-/// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`.
-fn loopback_http(v: &str) -> bool {
+/// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`. The one
+/// rule for every dev stand-in that would carry a credential (plex.tv, Discover, Seerr).
+pub(super) fn loopback_http(v: &str) -> bool {
     let port = v
         .strip_prefix("http://127.0.0.1:")
         .or_else(|| v.strip_prefix("http://localhost:"))
@@ -884,13 +885,13 @@ mod evidence_tests {
     #[test]
     fn complete_response_policy_and_provider_decoding_are_unchanged() {
         let _serial = plx_base::testlock::serial();
-        let malformed = Ok(Resp { status: 200, body: b"not json".to_vec(), peer_pin: None, etag: None });
+        let malformed = Ok(Resp { status: 200, body: b"not json".to_vec(), peer_pin: None, etag: None, cookies: Vec::new() });
         note_response_contact(SWITCH, &malformed);
         assert!(plex_tv_recently_reachable());
         assert!(matches!(switch_response(SWITCH, malformed), Ok(SwitchOutcome::Unreachable)));
-        assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None, etag: None })), Ok(SwitchOutcome::Switched(_))));
-        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec(), peer_pin: None, etag: None })), Ok(PinPoll::Pending)));
-        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None, etag: None })), Ok(PinPoll::Authorized(_))));
+        assert!(matches!(switch_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None, etag: None, cookies: Vec::new() })), Ok(SwitchOutcome::Switched(_))));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":null}"#.to_vec(), peer_pin: None, etag: None, cookies: Vec::new() })), Ok(PinPoll::Pending)));
+        assert!(matches!(poll_response(SWITCH, Ok(Resp { status: 200, body: br#"{"authToken":"synthetic-token"}"#.to_vec(), peer_pin: None, etag: None, cookies: Vec::new() })), Ok(PinPoll::Authorized(_))));
         assert!(plx_net::net::global_init());
         for body in [br#"[{"provides":"server","connections":null}]"#.as_slice(), br#"{"users":[]}"#.as_slice()] {
             let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();

@@ -19,6 +19,7 @@ guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
 T = "/tmp/com.beb.plxnative.debug/plxnative-watchlist-live"
+S = "/tmp/com.beb.plxnative.debug/plxnative-seerr-live"
 BLOCK, ALLOW = True, False
 CASES = [
     # --- must be blocked: every way of creating the file -------------------------
@@ -48,6 +49,15 @@ CASES = [
     (ALLOW, "git commit -m 'watchlist: the plxnative-watchlist-live switch'"),
     # --- the owner's prefix ------------------------------------------------------
     (ALLOW, f"PLX_WATCHLIST_LIVE_OWNER=1 tools/tv-ssh ssh tv \"touch {T}\""),
+    # --- the Seerr switch: the same rules ------------------------------------------
+    (BLOCK, f"touch {S}"),
+    (BLOCK, f"echo 1 > {S}"),
+    (BLOCK, f"python3 -c \"open('{S}', 'w').close()\""),
+    (BLOCK, "tools/tv-session.sh up --arm seerr-live"),
+    (ALLOW, f"rm -f {S}"),
+    (ALLOW, "grep -rn plxnative-seerr-live rust-modules docs"),
+    (ALLOW, "printf http://127.0.0.1:32499 > /tmp/plxnative-seerr"),
+    (ALLOW, f"PLX_SEERR_LIVE_OWNER=1 touch {S}"),
 ]
 
 

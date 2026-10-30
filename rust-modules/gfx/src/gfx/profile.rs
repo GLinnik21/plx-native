@@ -120,6 +120,7 @@ mod imp {
         "dt.bio",
         "dt.tracks",
         "dt.versions",
+        "dt.seerr_request",
         "hm.backdrop",
         "hm.grid",
         "hm.hero",

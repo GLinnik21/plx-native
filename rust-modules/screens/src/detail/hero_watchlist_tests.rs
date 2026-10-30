@@ -14,7 +14,7 @@ fn sets() -> Vec<HeroSet> {
             for restart in [false, true] {
                 for trailer in [false, true] {
                     for alt in [false, true] {
-                        v.push(HeroSet { watchlist: true, version, restart, trailer, alt, mark });
+                        v.push(HeroSet { watchlist: true, version, restart, trailer, alt, mark, request: None });
                     }
                 }
             }
@@ -47,7 +47,7 @@ fn the_disc_is_second_after_play_in_every_row() {
 /// membership flip because it is one elem for both faces.
 #[test]
 fn focus_walks_play_then_disc_then_the_rest() {
-    let s = HeroSet { watchlist: true, version: false, restart: true, trailer: false, alt: false, mark: PosterMark::None };
+    let s = HeroSet { watchlist: true, version: false, restart: true, trailer: false, alt: false, mark: PosterMark::None, request: None };
     assert_eq!(ctl_at(s, 0), Some(HeroCtl::Play));
     assert_eq!(ctl_at(s, 1), Some(HeroCtl::Watchlist));
     assert_eq!(ctl_at(s, 2), Some(HeroCtl::Restart));
@@ -88,10 +88,10 @@ fn full_trailer_mode_drops_the_disc_from_the_focus_extent() {
 #[test]
 fn the_disc_has_no_label_and_never_widens() {
     for named in [false, true] {
-        assert!(disc_verb(HeroCtl::Watchlist, named).is_none());
+        assert!(disc_verb(HeroCtl::Watchlist, HeroSet::default(), named).is_none());
     }
-    let s = HeroSet { watchlist: true, version: false, restart: true, trailer: true, alt: true, mark: PosterMark::None };
-    let widths = HeroWidths { pill: 236.0, alt: 300.0, disc: [CD + 90.0, CD + 60.0, CD + 120.0, CD + 70.0] };
+    let s = HeroSet { watchlist: true, version: false, restart: true, trailer: true, alt: true, mark: PosterMark::None, request: None };
+    let widths = HeroWidths { pill: 236.0, alt: 300.0, disc: [CD + 90.0, CD + 60.0, CD + 120.0, CD + 70.0, CD + 80.0] };
     let r = hero_btn_rect_at(s, 1, 0.0, widths);
     assert_eq!((r.w, r.h), (CD, CD));
     let play = hero_btn_rect_at(s, 0, 0.0, widths);
