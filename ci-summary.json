@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-30T01:15:39Z",
+ "generated": "2026-10-30T01:24:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -103,17 +103,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 27.8,
+   "change7_pct": 25.7,
    "d30": null,
    "delta30": null,
-   "delta7": 40.0,
+   "delta7": 37,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 69,
-   "now": 184.0,
+   "now": 181,
    "prev7": 144,
    "shown": true,
    "state": "worse",
@@ -148,15 +148,15 @@
    "change7_pct": 13.2,
    "d30": 910.5,
    "delta30": -533.5,
-   "delta7": 44.0,
+   "delta7": 44,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 234,
-   "n_prev": 146,
-   "now": 377.0,
-   "prev7": 333.0,
+   "n_now": 233,
+   "n_prev": 147,
+   "now": 377,
+   "prev7": 333,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -169,14 +169,14 @@
    "change7_pct": 11.2,
    "d30": 916.5,
    "delta30": -549.5,
-   "delta7": 37,
+   "delta7": 37.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 95,
+   "n_now": 96,
    "n_prev": 75,
-   "now": 367,
+   "now": 367.0,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -390,15 +390,15 @@
    "change30_pct": 49.4,
    "change7_pct": 3.5,
    "d30": 178,
-   "delta30": 88.0,
-   "delta7": 9.0,
+   "delta30": 88,
+   "delta7": 9,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 69,
-   "now": 266.0,
+   "now": 266,
    "prev7": 257,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -71.1,
-   "change7_pct": 3.7,
+   "change30_pct": -70.8,
+   "change7_pct": 4.7,
    "d30": 726,
-   "delta30": -516.0,
-   "delta7": 7.5,
+   "delta30": -514,
+   "delta7": 9.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 68,
-   "now": 210.0,
+   "now": 212,
    "prev7": 202.5,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 12.5,
    "change7_pct": -5.3,
    "d30": 16,
-   "delta30": 2.0,
-   "delta7": -1.0,
+   "delta30": 2,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 69,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 69.6,
    "commits": [
     {
-     "pr": 1139,
-     "sha": "2623e4560",
-     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
-    },
-    {
      "pr": 1141,
      "sha": "9986d528c",
      "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
@@ -715,6 +710,11 @@
      "pr": 1152,
      "sha": "f03cf3e0a",
      "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
+    },
+    {
+     "pr": 1151,
+     "sha": "70a7aa66a",
+     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
     }
    ],
    "from": 177.5,
@@ -728,11 +728,6 @@
    "change_pct": 28.6,
    "commits": [
     {
-     "pr": 1139,
-     "sha": "2623e4560",
-     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
-    },
-    {
      "pr": 1141,
      "sha": "9986d528c",
      "title": "Player menus: one shared anchored placer, and the menus anchor to their opener"
@@ -776,6 +771,11 @@
      "pr": 1152,
      "sha": "f03cf3e0a",
      "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
+    },
+    {
+     "pr": 1151,
+     "sha": "70a7aa66a",
+     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
     }
    ],
    "from": 120.3,
@@ -786,13 +786,8 @@
    "to": 154.8
   },
   {
-   "change_pct": 27.8,
+   "change_pct": 25.7,
    "commits": [
-    {
-     "pr": 1139,
-     "sha": "2623e4560",
-     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
-    },
     {
      "pr": 1141,
      "sha": "9986d528c",
@@ -837,6 +832,11 @@
      "pr": 1152,
      "sha": "f03cf3e0a",
      "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
+    },
+    {
+     "pr": 1151,
+     "sha": "70a7aa66a",
+     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
     }
    ],
    "from": 144,
@@ -844,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-30",
    "threshold_pct": 20.0,
-   "to": 184.0
+   "to": 181
   },
   {
    "change_pct": 21.3,
    "commits": [
-    {
-     "pr": 1139,
-     "sha": "2623e4560",
-     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
-    },
     {
      "pr": 1141,
      "sha": "9986d528c",
@@ -898,6 +893,11 @@
      "pr": 1152,
      "sha": "f03cf3e0a",
      "title": "HUD plugins: the package store as a pure machine (HudStore), and paths::hud_candidates()"
+    },
+    {
+     "pr": 1151,
+     "sha": "70a7aa66a",
+     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
     }
    ],
    "from": 258,
