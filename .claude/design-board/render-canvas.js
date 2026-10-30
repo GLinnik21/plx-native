@@ -4,6 +4,8 @@
 // usage: node .claude/design-board/render-canvas.js <artifact-files-dir> <out-dir> [Board.dc.html ...]
 //   <artifact-files-dir> is the folder the Artifact tool's `read` saved the canvas into: it must
 //   hold project/*.dc.html, project/ds/** and artifact-type/dc-runtime.js (read those paths first).
+//   Uploaded assets (`/_blob/<id>`) are served from $PLX_BLOB_DIR/<id> when that is set: save each
+//   asset there under its id (Artifact `read` with the id as `path`), else they render missing.
 // Each artboard is served next to the runtime as ./support.js and shot at 1920x1080, full page.
 const { chromium } = require('playwright');
 const http = require('http');
@@ -19,6 +21,19 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
 const server = http.createServer((req, res) => {
   const rel = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '');
   if (rel === 'support.js') { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(runtime); return; }
+  if (rel.startsWith('_blob/') && process.env.PLX_BLOB_DIR) {
+    const id = path.basename(rel);
+    const dir = process.env.PLX_BLOB_DIR;
+    const hit = fs.readdirSync(dir).find(f => f === id || f.startsWith(id + '.'));
+    if (!hit) { res.writeHead(404); res.end(); return; }
+    fs.readFile(path.join(dir, hit), (err, body) => {
+      if (err) { res.writeHead(404); res.end(); return; }
+      const head = body.subarray(0, 4).toString('hex');
+      const type = head.startsWith('ffd8') ? 'image/jpeg' : head.startsWith('89504e47') ? 'image/png' : 'application/octet-stream';
+      res.writeHead(200, { 'content-type': type }); res.end(body);
+    });
+    return;
+  }
   const file = path.resolve(project, rel);
   if (!file.startsWith(path.resolve(project))) { res.writeHead(403); res.end(); return; }
   fs.readFile(file, (err, body) => {
@@ -36,7 +51,9 @@ server.listen(0, '127.0.0.1', async () => {
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
-  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
+  // A template hole (`src="{{ x }}"`) is fetched once before the runtime fills it; that is not an error.
+  page.on('response', r => { if (r.status() >= 400 && !decodeURIComponent(r.url()).includes('{{')) errors.push(r.status() + ' ' + r.url()); });
   let failed = 0;
   for (const board of boards) {
     errors.length = 0;
