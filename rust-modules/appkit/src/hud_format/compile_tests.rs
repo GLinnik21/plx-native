@@ -122,7 +122,9 @@ fn compiled_classic_matches_the_hand_written_layout() {
             }
         }
     }
-    assert!(compared >= 2 * 2 * 2 * 4, "the golden must compare something: {compared}");
+    // 10 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
+    // each label): a count, so a loop that quietly compares less cannot pass.
+    assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
 }
 
