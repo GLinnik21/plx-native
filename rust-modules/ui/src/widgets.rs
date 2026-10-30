@@ -7361,9 +7361,10 @@ pub const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
 /// the glass for 4 px. The bar gains entries and its labels vary by language, so its width must
 /// never decide its material, and the clearance moved to the one party whose width is user data
 /// anyway. A 676 px track leaves 396 px of room, so the shipped bar keeps the whole 320; the
-/// budget bites once the room falls under `CHIP_NAME_MAX` and is `0` under `CHIP_NAME_MIN`, both
-/// well short of [`TAB_VIEW_MAX`]: one more library pill on today's widest strip is already in
-/// that range, so a change to the strip can shorten the name.
+/// budget bites once the room falls under `CHIP_NAME_MAX`, past an 828 px track, and is `0` under
+/// `CHIP_NAME_MIN`, past 1300 px, both short of [`TAB_VIEW_MAX`]: one more pill wider than 136 px
+/// on today's widest strip is already in that range, so a change to the strip can shorten the
+/// name.
 ///
 /// The owner of the chip's text re-asks when either input changes (`app::chrome::ChromeSnapshot`:
 /// the strip's widths with `tabs_generation`, the label with the profile), because the elision
