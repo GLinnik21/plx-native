@@ -1,0 +1,3484 @@
+{
+  "$defs": {
+    "actions": {
+      "additionalProperties": false,
+      "description": "Controls inside a section, in a row or a column.",
+      "properties": {
+        "axis": {
+          "default": "row",
+          "description": "The direction the controls run.",
+          "enum": [
+            "row",
+            "column"
+          ],
+          "type": "string"
+        },
+        "gap": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap between the controls: a spacing token or px."
+        },
+        "item_h": {
+          "$ref": "#/$defs/keyed_int_1_400",
+          "description": "A control's height in px."
+        },
+        "items": {
+          "description": "The controls, shaped as a segment's.",
+          "items": {
+            "$ref": "#/$defs/item"
+          },
+          "type": "array"
+        },
+        "min_w": {
+          "$ref": "#/$defs/keyed_int_0_1920",
+          "default": 0,
+          "description": "The floor of the one width every `button` takes: the widest label over every variant, at least this."
+        }
+      },
+      "required": [
+        "item_h",
+        "items"
+      ],
+      "type": "object"
+    },
+    "app": {
+      "additionalProperties": false,
+      "description": "An app-release range.",
+      "properties": {
+        "max": {
+          "description": "The newest app release this package renders correctly on.",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "type": "string"
+        },
+        "min": {
+          "description": "The oldest app release this package renders correctly on.",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "band": {
+      "additionalProperties": false,
+      "description": "One band of the HUD block.",
+      "properties": {
+        "cells": {
+          "description": "The band's cells; cells of one alignment pack left to right in array order.",
+          "items": {
+            "$ref": "#/$defs/cell"
+          },
+          "type": "array"
+        },
+        "chrome": {
+          "default": "fades",
+          "description": "While a scrub is live a `fades` band draws on the chrome alpha and a `steady` one at full alpha. The band holding the `playbar` must be `steady`.",
+          "enum": [
+            "fades",
+            "steady"
+          ],
+          "type": "string"
+        },
+        "gap": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap between the band's packed cells: a spacing token or px."
+        },
+        "gap_before": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+        },
+        "id": {
+          "description": "The band's name, unique in the package: `up_next.band` and lint findings name it.",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "type": "string"
+        },
+        "when": {
+          "$ref": "#/$defs/when",
+          "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+        },
+        "z": {
+          "description": "Draw and hit-test order among bands: a higher band is above a lower one.",
+          "maximum": 16,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "cells"
+      ],
+      "type": "object"
+    },
+    "bool": {
+      "type": "boolean"
+    },
+    "card": {
+      "additionalProperties": false,
+      "description": "A strip card: its art, what is drawn over it and what stands under it. `item.*` bindings and conditions are legal only inside it.",
+      "properties": {
+        "art": {
+          "$ref": "#/$defs/card_art",
+          "description": "The card's picture."
+        },
+        "below": {
+          "description": "Cells stacked under the art.",
+          "items": {
+            "$ref": "#/$defs/cell"
+          },
+          "type": "array"
+        },
+        "below_gap": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap between the art and the cells below: a spacing token or px."
+        },
+        "overlay": {
+          "description": "Cells drawn over the art, positioned by their `align` and `valign`.",
+          "items": {
+            "$ref": "#/$defs/cell"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "art"
+      ],
+      "type": "object"
+    },
+    "card_art": {
+      "additionalProperties": false,
+      "description": "A strip card's art.",
+      "properties": {
+        "bind": {
+          "description": "Which image.",
+          "enum": [
+            "item.thumb"
+          ],
+          "type": "string"
+        },
+        "crop": {
+          "default": "cover",
+          "description": "How the image fills the card.",
+          "enum": [
+            "cover"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "bind"
+      ],
+      "type": "object"
+    },
+    "cell": {
+      "additionalProperties": false,
+      "description": "A cell of a band (or of a vstack, a rect or a strip card): its position keys and exactly one of the twelve cell kinds. The scrub group, segments, the strip and actions are focus stops, so the compiler refuses them inside a strip card.",
+      "oneOf": [
+        {
+          "required": [
+            "text"
+          ]
+        },
+        {
+          "required": [
+            "image"
+          ]
+        },
+        {
+          "required": [
+            "icon"
+          ]
+        },
+        {
+          "required": [
+            "rule"
+          ]
+        },
+        {
+          "required": [
+            "rect"
+          ]
+        },
+        {
+          "required": [
+            "facts"
+          ]
+        },
+        {
+          "required": [
+            "vstack"
+          ]
+        },
+        {
+          "required": [
+            "spacer"
+          ]
+        },
+        {
+          "required": [
+            "playbar"
+          ]
+        },
+        {
+          "required": [
+            "segment"
+          ]
+        },
+        {
+          "required": [
+            "strip"
+          ]
+        },
+        {
+          "required": [
+            "actions"
+          ]
+        }
+      ],
+      "properties": {
+        "actions": {
+          "$ref": "#/$defs/actions",
+          "description": "Controls inside a section, in a row or a column."
+        },
+        "align": {
+          "default": "start",
+          "description": "Which edge the cell packs against in its band (a strip card's cells omit it).",
+          "enum": [
+            "start",
+            "center",
+            "end"
+          ],
+          "type": "string"
+        },
+        "facts": {
+          "$ref": "#/$defs/facts",
+          "description": "The facts run: duration, year, genres, rating and badges, fitted as chips."
+        },
+        "gap_after": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+        },
+        "gap_before": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+        },
+        "icon": {
+          "$ref": "#/$defs/icon",
+          "description": "An asset glyph tinted by an ink."
+        },
+        "image": {
+          "$ref": "#/$defs/image",
+          "description": "A bound image through the image cache."
+        },
+        "playbar": {
+          "$ref": "#/$defs/playbar",
+          "description": "The scrub bar with its clocks and knob: exactly one per package."
+        },
+        "rect": {
+          "$ref": "#/$defs/rect",
+          "description": "A filled panel holding cells."
+        },
+        "rule": {
+          "$ref": "#/$defs/rule",
+          "description": "A hairline."
+        },
+        "segment": {
+          "$ref": "#/$defs/segment",
+          "description": "One row of controls: a focus group."
+        },
+        "spacer": {
+          "$ref": "#/$defs/spacer",
+          "description": "Empty width."
+        },
+        "strip": {
+          "$ref": "#/$defs/strip",
+          "description": "The chapters strip."
+        },
+        "text": {
+          "$ref": "#/$defs/text",
+          "description": "A line of bound text."
+        },
+        "valign": {
+          "description": "Where the cell stands against the band's height. Absent: the compiler's choice.",
+          "enum": [
+            "top",
+            "center",
+            "bottom"
+          ],
+          "type": "string"
+        },
+        "vstack": {
+          "$ref": "#/$defs/vstack",
+          "description": "A vertical stack of cells."
+        },
+        "when": {
+          "$ref": "#/$defs/when",
+          "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+        }
+      },
+      "type": "object"
+    },
+    "face_name": {
+      "oneOf": [
+        {
+          "enum": [
+            "builtin:previous",
+            "builtin:restart",
+            "builtin:pause",
+            "builtin:play",
+            "builtin:next",
+            "builtin:info",
+            "builtin:more",
+            "builtin:cc",
+            "builtin:audio",
+            "builtin:close",
+            "builtin:check"
+          ],
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "type": "string"
+        }
+      ]
+    },
+    "facts": {
+      "additionalProperties": false,
+      "description": "The facts run. All of it is fitted as chips that drop whole chips tail first, so it never elides.",
+      "properties": {
+        "badges": {
+          "default": [],
+          "description": "The badge chips, in order: an ordered subset. `content_rating` is in `order` or `badges`, never both.",
+          "items": {
+            "enum": [
+              "content_rating",
+              "audio_format",
+              "cc",
+              "sdh",
+              "ad"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bind": {
+          "description": "The facts run.",
+          "enum": [
+            "info.facts"
+          ],
+          "type": "string"
+        },
+        "bold": {
+          "$ref": "#/$defs/keyed_bool",
+          "default": false,
+          "description": "The bold weight."
+        },
+        "genres_max": {
+          "$ref": "#/$defs/keyed_int_1_16",
+          "description": "How many genres the run shows at most."
+        },
+        "ink": {
+          "$ref": "#/$defs/keyed_ink",
+          "description": "A theme token or a palette name."
+        },
+        "order": {
+          "description": "The plain facts, in order: an ordered subset.",
+          "items": {
+            "enum": [
+              "duration",
+              "year",
+              "genres",
+              "content_rating"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "playback_fact": {
+          "default": false,
+          "description": "Whether the playback fact is drawn, regular in `TEXT_TERTIARY`.",
+          "type": "boolean"
+        },
+        "size": {
+          "description": "A type-scale rung name.",
+          "enum": [
+            "HERO",
+            "DISPLAY",
+            "TITLE",
+            "HEADLINE",
+            "BODY",
+            "LABEL",
+            "CAPTION",
+            "MICRO"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "bind",
+        "order",
+        "ink",
+        "size"
+      ],
+      "type": "object"
+    },
+    "gap": {
+      "oneOf": [
+        {
+          "enum": [
+            "XS",
+            "SM",
+            "MD",
+            "LG",
+            "XL"
+          ],
+          "type": "string"
+        },
+        {
+          "maximum": 1080,
+          "minimum": 0,
+          "type": "integer"
+        }
+      ]
+    },
+    "grab": {
+      "additionalProperties": false,
+      "description": "The playbar's pointer grab band, registered as the lowest stop.",
+      "properties": {
+        "above": {
+          "$ref": "#/$defs/keyed_int_0_540",
+          "default": 72,
+          "description": "Px of grab area above the track's top edge."
+        },
+        "below": {
+          "$ref": "#/$defs/keyed_int_0_540",
+          "default": 80,
+          "description": "Px of grab area below the track's bottom edge."
+        }
+      },
+      "type": "object"
+    },
+    "icon": {
+      "additionalProperties": false,
+      "description": "An asset glyph: a mask tinted by one ink.",
+      "properties": {
+        "asset": {
+          "description": "An id declared in `assets`.",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "type": "string"
+        },
+        "ink": {
+          "$ref": "#/$defs/keyed_ink",
+          "description": "The mask's tint: a theme token or a palette name."
+        },
+        "size": {
+          "$ref": "#/$defs/keyed_int_1_512",
+          "description": "Side in px."
+        }
+      },
+      "required": [
+        "asset",
+        "size",
+        "ink"
+      ],
+      "type": "object"
+    },
+    "image": {
+      "additionalProperties": false,
+      "description": "A bound image through the image cache.",
+      "properties": {
+        "bind": {
+          "description": "Which image.",
+          "enum": [
+            "info.still"
+          ],
+          "type": "string"
+        },
+        "crop": {
+          "default": "cover",
+          "description": "How the image fills its box.",
+          "enum": [
+            "cover"
+          ],
+          "type": "string"
+        },
+        "h": {
+          "$ref": "#/$defs/keyed_int_1_1080",
+          "description": "Height in px."
+        },
+        "radius": {
+          "$ref": "#/$defs/keyed_int_0_540",
+          "description": "Corner radius in px."
+        },
+        "w": {
+          "$ref": "#/$defs/keyed_int_1_1920",
+          "description": "Width in px."
+        }
+      },
+      "required": [
+        "bind",
+        "w",
+        "h"
+      ],
+      "type": "object"
+    },
+    "ink": {
+      "oneOf": [
+        {
+          "enum": [
+            "TEXT_PRIMARY",
+            "TEXT_SECONDARY",
+            "TEXT_TERTIARY",
+            "ACCENT",
+            "ACCENT_INK",
+            "RAIL_TRACK",
+            "HAIRLINE",
+            "RESUME_FILL",
+            "PANEL_TOP",
+            "INK_DISABLED",
+            "CONTROL_RIM_FOCUS_UNKEYED"
+          ],
+          "type": "string"
+        },
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        }
+      ]
+    },
+    "int_0_1920": {
+      "maximum": 1920,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "int_0_470": {
+      "maximum": 470,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "int_0_540": {
+      "maximum": 540,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "int_1_1080": {
+      "maximum": 1080,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "int_1_16": {
+      "maximum": 16,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "int_1_1920": {
+      "maximum": 1920,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "int_1_400": {
+      "maximum": 400,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "int_1_512": {
+      "maximum": 512,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "int_1_64": {
+      "maximum": 64,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "int_1_8": {
+      "maximum": 8,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "item": {
+      "description": "A control: an `id`, a `command` with its parameters as sibling keys, and how it looks. The legal sibling keys are those of the named command (`Cmd::params`).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Play or pause; also the Play, Pause and PlayPause keys and OK on the picture.",
+          "properties": {
+            "command": {
+              "const": "toggle_play",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph.",
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/face_name"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "paused": {
+                      "$ref": "#/$defs/face_name"
+                    },
+                    "playing": {
+                      "$ref": "#/$defs/face_name"
+                    }
+                  },
+                  "required": [
+                    "playing",
+                    "paused"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Jump the playhead; also Left/Right, FF/REW and the held scrub.",
+          "properties": {
+            "by": {
+              "description": "A nonzero number of seconds, its sign the direction (then `dir` is forbidden), or \"setting\": the viewer's Skip interval (then `dir` is required). A literal is not capped: the target clamps to the content.",
+              "oneOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": -2147483648,
+                  "type": "integer"
+                },
+                {
+                  "enum": [
+                    "setting"
+                  ],
+                  "type": "string"
+                }
+              ]
+            },
+            "command": {
+              "const": "seek",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "dir": {
+              "description": "The direction of a `by: \"setting\"` seek.",
+              "enum": [
+                "back",
+                "forward"
+              ],
+              "type": "string"
+            },
+            "face": {
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph.",
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/face_name"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "by_interval": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/face_name"
+                      },
+                      "type": "object"
+                    },
+                    "default": {
+                      "$ref": "#/$defs/face_name"
+                    }
+                  },
+                  "required": [
+                    "default"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size",
+            "by"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The previous episode (or a restart of this one). Absent for an item with no neighbour.",
+          "properties": {
+            "command": {
+              "const": "previous",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph.",
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/face_name"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "default": {
+                      "$ref": "#/$defs/face_name"
+                    },
+                    "restart": {
+                      "$ref": "#/$defs/face_name"
+                    }
+                  },
+                  "required": [
+                    "default",
+                    "restart"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The next episode. Absent for an item with no neighbour.",
+          "properties": {
+            "command": {
+              "const": "next",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "$ref": "#/$defs/face_name",
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph."
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The subtitle and audio track menu.",
+          "properties": {
+            "command": {
+              "const": "open_tracks",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "$ref": "#/$defs/face_name",
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph."
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "tab": {
+              "description": "Which tab of the track menu opens first.",
+              "enum": [
+                "subtitles",
+                "audio"
+              ],
+              "type": "string"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size",
+            "tab"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The More menu (Stats for nerds, Quality, Speed and every folded command). The one required control.",
+          "properties": {
+            "command": {
+              "const": "open_more",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "$ref": "#/$defs/face_name",
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph."
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "page": {
+              "default": "root",
+              "description": "Which page of the More menu opens.",
+              "enum": [
+                "root",
+                "quality",
+                "speed"
+              ],
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open or close the chapters or the info section.",
+          "properties": {
+            "command": {
+              "const": "toggle_section",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "$ref": "#/$defs/face_name",
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph."
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "section": {
+              "description": "Which section opens or closes.",
+              "enum": [
+                "chapters",
+                "info"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size",
+            "section"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The Info card's From the Beginning action.",
+          "properties": {
+            "command": {
+              "const": "from_beginning",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "$ref": "#/$defs/face_name",
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph."
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Leave playback for the playing item's own page.",
+          "properties": {
+            "command": {
+              "const": "go_to_detail",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "$ref": "#/$defs/face_name",
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph."
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stats for nerds, on or off for this session.",
+          "properties": {
+            "command": {
+              "const": "toggle_stats",
+              "description": "The app-owned command the control fires (D4)."
+            },
+            "face": {
+              "description": "The glyph: an asset id, `builtin:<icon>`, or a per-state map for a command that has states. Absent: the command's classic glyph.",
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/face_name"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "off": {
+                      "$ref": "#/$defs/face_name"
+                    },
+                    "on": {
+                      "$ref": "#/$defs/face_name"
+                    }
+                  },
+                  "required": [
+                    "on",
+                    "off"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "focus": {
+              "default": "accent",
+              "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+              "enum": [
+                "accent",
+                "ring"
+              ],
+              "type": "string"
+            },
+            "gap_after": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the next PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "gap_before": {
+              "$ref": "#/$defs/keyed_gap",
+              "description": "The gap to the previous PRESENT neighbour, in place of the stack's own: a spacing token or px."
+            },
+            "id": {
+              "description": "The control's identity, unique in the package: focus and the pointer stops key on it.",
+              "pattern": "^[a-z][a-z0-9_-]*$",
+              "type": "string"
+            },
+            "rest": {
+              "default": "film",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "enum": [
+                "film",
+                "bare",
+                "solid",
+                "custom"
+              ],
+              "type": "string"
+            },
+            "size": {
+              "description": "The control's size in px: a plain number, never state-keyed. Its floor, `MIN_CONTROL_SIZE`, is the compiler's lint, not a parse bound.",
+              "maximum": 480,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "when": {
+              "$ref": "#/$defs/when",
+              "description": "Present only while the condition(s) hold: a condition name, or an array that must all hold, each optionally prefixed `!`. An absent element collapses as an absent control does."
+            },
+            "widget": {
+              "description": "`disc` a round transport button, `pill` a tab pill labelled by the command's app string, `button` a labelled button. No default: each reads differently.",
+              "enum": [
+                "disc",
+                "pill",
+                "button"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "command",
+            "widget",
+            "size"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_bool": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bool"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/bool"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/bool"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/bool"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/bool"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/bool"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/bool"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/bool"
+                },
+                "sections": {
+                  "$ref": "#/$defs/bool"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/bool"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/bool"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/bool"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/bool"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/bool"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/bool"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_gap": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/gap"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/gap"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/gap"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/gap"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/gap"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/gap"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/gap"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/gap"
+                },
+                "sections": {
+                  "$ref": "#/$defs/gap"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/gap"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/gap"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/gap"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/gap"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/gap"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/gap"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_ink": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ink"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/ink"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/ink"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/ink"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/ink"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/ink"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/ink"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/ink"
+                },
+                "sections": {
+                  "$ref": "#/$defs/ink"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/ink"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/ink"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/ink"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/ink"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/ink"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/ink"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_0_1920": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_0_1920"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_0_1920"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_0_1920"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_0_1920"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_0_470": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_0_470"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_0_470"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_0_470"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_0_470"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_0_540": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_0_540"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_0_540"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_0_540"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_0_540"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_1_1080": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_1_1080"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_1_1080"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_1_1080"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_1_1080"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_1_16": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_1_16"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_1_16"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_1_16"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_1_16"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_1_1920": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_1_1920"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_1_1920"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_1_1920"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_1_1920"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_1_400": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_1_400"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_1_400"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_1_400"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_1_400"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_1_512": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_1_512"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_1_512"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_1_512"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_1_512"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_1_64": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_1_64"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_1_64"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_1_64"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_1_64"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_int_1_8": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/int_1_8"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "sections": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/int_1_8"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/int_1_8"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/int_1_8"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "keyed_num_0_1": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/num_0_1"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "if": {
+              "additionalProperties": false,
+              "properties": {
+                "!chapters.present": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!item.focused": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!item.is_current": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!panel.chapters": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!panel.info": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!sections": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!slot.discs": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!slot.skip": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!slot.up_next": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!title.is_episode": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "!transport.paused": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "chapters.present": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "item.focused": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "item.is_current": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "panel.chapters": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "panel.info": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "sections": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "slot.discs": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "slot.skip": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "slot.up_next": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "title.is_episode": {
+                  "$ref": "#/$defs/num_0_1"
+                },
+                "transport.paused": {
+                  "$ref": "#/$defs/num_0_1"
+                }
+              },
+              "type": "object"
+            },
+            "value": {
+              "$ref": "#/$defs/num_0_1"
+            }
+          },
+          "required": [
+            "value",
+            "if"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "layout": {
+      "additionalProperties": false,
+      "description": "Where the HUD sits and what it holds.",
+      "properties": {
+        "anchor": {
+          "description": "Where the HUD is anchored. Only `bottom` in 1.0 (D13): a top HUD needs a caption keep-out the media layer lacks.",
+          "enum": [
+            "bottom"
+          ],
+          "type": "string"
+        },
+        "band": {
+          "description": "What lifted captions keep clear of (D8): the control row only, or the whole compact block.",
+          "enum": [
+            "controls",
+            "block"
+          ],
+          "type": "string"
+        },
+        "block": {
+          "description": "The bands, top to bottom, in one bottom-anchored stack.",
+          "items": {
+            "$ref": "#/$defs/band"
+          },
+          "type": "array"
+        },
+        "inset": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The block's distance above the bottom edge of the safe area: a spacing token or px."
+        },
+        "scrim": {
+          "$ref": "#/$defs/scrim",
+          "description": "The darkening behind the HUD. Absent: none."
+        },
+        "sections": {
+          "description": "How the chapters and info sections open (D6): `modal` one at a time, hiding the row; `inline` any subset beside the row.",
+          "enum": [
+            "modal",
+            "inline"
+          ],
+          "type": "string"
+        },
+        "up_next": {
+          "$ref": "#/$defs/up_next",
+          "description": "How the Up Next offer and the Skip pill replace segments of the row (R4: both buttons are placed here)."
+        },
+        "x_inset": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The block's distance from the safe area's sides: a spacing token or px."
+        }
+      },
+      "required": [
+        "anchor",
+        "inset",
+        "x_inset",
+        "band",
+        "sections",
+        "block",
+        "up_next"
+      ],
+      "type": "object"
+    },
+    "num_0_1": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "type": "number"
+    },
+    "playbar": {
+      "additionalProperties": false,
+      "description": "The scrub bar. Exactly one per package: the scrub group.",
+      "properties": {
+        "clock_size": {
+          "description": "The clocks' type-scale rung.",
+          "enum": [
+            "HERO",
+            "DISPLAY",
+            "TITLE",
+            "HEADLINE",
+            "BODY",
+            "LABEL",
+            "CAPTION",
+            "MICRO"
+          ],
+          "type": "string"
+        },
+        "clocks": {
+          "default": "follow_head",
+          "description": "`follow_head` classic's clocks that follow the playhead, `ends` clocks at the bar's two ends.",
+          "enum": [
+            "follow_head",
+            "ends"
+          ],
+          "type": "string"
+        },
+        "fill": {
+          "$ref": "#/$defs/keyed_ink",
+          "description": "The elapsed part's ink: a theme token or a palette name."
+        },
+        "grab": {
+          "$ref": "#/$defs/grab",
+          "description": "The pointer grab band around the track."
+        },
+        "knob": {
+          "default": "tick",
+          "description": "`tick` classic's knob, `always` a permanent one.",
+          "enum": [
+            "tick",
+            "always"
+          ],
+          "type": "string"
+        },
+        "mark": {
+          "default": "after_elapsed",
+          "description": "The transport mark: `after_elapsed` beside the elapsed clock, `busy_only` the spinner alone (the paused glyph may go when a `toggle_play` control is placed).",
+          "enum": [
+            "after_elapsed",
+            "busy_only"
+          ],
+          "type": "string"
+        },
+        "thickness": {
+          "$ref": "#/$defs/keyed_int_1_64",
+          "description": "The track's height in px. The bar's box is the track and the line the clocks are drawn on under it, or this if taller; the knob and the mark overhang the track."
+        },
+        "track": {
+          "$ref": "#/$defs/keyed_ink",
+          "description": "The track's ink: a theme token or a palette name."
+        },
+        "w": {
+          "description": "The bar's width in px, or `fill`.",
+          "oneOf": [
+            {
+              "maximum": 1920,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "fill"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "w",
+        "fill",
+        "track",
+        "thickness",
+        "clock_size"
+      ],
+      "type": "object"
+    },
+    "rect": {
+      "additionalProperties": false,
+      "description": "A filled panel. Its content box is the ground inset by `pad` and lies inside the safe area; the ground may bleed past it.",
+      "properties": {
+        "bleed": {
+          "default": 0,
+          "description": "Px the ground extends past the safe area, never past the screen. At most `pad`; needs `pad`.",
+          "maximum": 540,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cells": {
+          "description": "The panel's cells.",
+          "items": {
+            "$ref": "#/$defs/cell"
+          },
+          "type": "array"
+        },
+        "gap": {
+          "$ref": "#/$defs/keyed_gap",
+          "default": 0,
+          "description": "The gap between the panel's cells: a spacing token or px."
+        },
+        "h": {
+          "$ref": "#/$defs/keyed_int_1_1080",
+          "description": "A fixed panel height in px, its cells centred in it."
+        },
+        "ink": {
+          "$ref": "#/$defs/keyed_ink",
+          "description": "The panel's fill: a theme token or a palette name."
+        },
+        "pad": {
+          "default": 0,
+          "description": "Px between the ground's edge and its content box, which must lie inside the safe area. A plain number: `bleed` is compared with it.",
+          "maximum": 540,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "radius": {
+          "$ref": "#/$defs/keyed_int_0_540",
+          "default": 0,
+          "description": "Corner radius in px."
+        }
+      },
+      "required": [
+        "ink",
+        "cells"
+      ],
+      "type": "object"
+    },
+    "rule": {
+      "additionalProperties": false,
+      "description": "A hairline.",
+      "properties": {
+        "axis": {
+          "description": "`h` horizontal, `v` vertical.",
+          "enum": [
+            "h",
+            "v"
+          ],
+          "type": "string"
+        },
+        "ink": {
+          "$ref": "#/$defs/keyed_ink",
+          "description": "A theme token or a palette name."
+        },
+        "length": {
+          "description": "Length in px, or `fill`.",
+          "oneOf": [
+            {
+              "maximum": 1920,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "fill"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "axis",
+        "length",
+        "ink"
+      ],
+      "type": "object"
+    },
+    "scrim": {
+      "additionalProperties": false,
+      "description": "The scrim: `{\"cover\": \"block\", \"extra\": px}` or `{\"cover\": \"fixed\", \"height\": px}`.",
+      "properties": {
+        "cover": {
+          "description": "`block`: the scrim's top follows the compiled block top per state, `extra` px above it. `fixed`: one `height` from the screen bottom in every state, drawn before any band.",
+          "enum": [
+            "block",
+            "fixed"
+          ],
+          "type": "string"
+        },
+        "extra": {
+          "$ref": "#/$defs/keyed_int_0_470",
+          "description": "With `cover: \"block\"`: px of scrim above the block's top. At most classic's whole scrim height."
+        },
+        "height": {
+          "$ref": "#/$defs/keyed_int_0_470",
+          "description": "With `cover: \"fixed\"`: the scrim's height from the screen bottom. At most classic's whole scrim height."
+        }
+      },
+      "required": [
+        "cover"
+      ],
+      "type": "object"
+    },
+    "segment": {
+      "additionalProperties": false,
+      "description": "One row of controls. The segments of one band form one focus group.",
+      "properties": {
+        "gap": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap between the controls: a spacing token or px."
+        },
+        "id": {
+          "description": "The segment's name, unique in the package: `up_next.replaces` names it.",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "type": "string"
+        },
+        "items": {
+          "description": "The controls, in order.",
+          "items": {
+            "$ref": "#/$defs/item"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "items"
+      ],
+      "type": "object"
+    },
+    "size": {
+      "enum": [
+        "HERO",
+        "DISPLAY",
+        "TITLE",
+        "HEADLINE",
+        "BODY",
+        "LABEL",
+        "CAPTION",
+        "MICRO",
+        "HUD_TITLE"
+      ],
+      "type": "string"
+    },
+    "spacer": {
+      "additionalProperties": false,
+      "description": "Empty width.",
+      "properties": {
+        "w": {
+          "$ref": "#/$defs/keyed_int_1_1920",
+          "description": "Width in px."
+        }
+      },
+      "required": [
+        "w"
+      ],
+      "type": "object"
+    },
+    "strip": {
+      "additionalProperties": false,
+      "description": "The chapters strip: a shelf of cards. Scrolling and seating are app-owned.",
+      "properties": {
+        "bind": {
+          "description": "The chapter list.",
+          "enum": [
+            "chapters"
+          ],
+          "type": "string"
+        },
+        "card": {
+          "$ref": "#/$defs/card",
+          "description": "What a card holds."
+        },
+        "card_h": {
+          "$ref": "#/$defs/keyed_int_1_1080",
+          "description": "A card's height in px."
+        },
+        "card_w": {
+          "$ref": "#/$defs/keyed_int_1_1920",
+          "description": "A card's width in px."
+        },
+        "focus": {
+          "default": "ring",
+          "description": "The focus face of a card.",
+          "enum": [
+            "ring"
+          ],
+          "type": "string"
+        },
+        "gap": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap between cards: a spacing token or px."
+        },
+        "label_align": {
+          "default": "centre",
+          "description": "How a card's labels align: `centre` the shelf's default, or `leading`.",
+          "enum": [
+            "centre",
+            "leading"
+          ],
+          "type": "string"
+        },
+        "radius": {
+          "$ref": "#/$defs/keyed_int_0_540",
+          "description": "A card's corner radius in px."
+        },
+        "w": {
+          "description": "The strip's width in px, or `fill`.",
+          "oneOf": [
+            {
+              "maximum": 1920,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "fill"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "bind",
+        "w",
+        "card_w",
+        "card_h",
+        "card"
+      ],
+      "type": "object"
+    },
+    "text": {
+      "additionalProperties": false,
+      "description": "A line of bound text. App-owned text (`label.*`, `item.start`) takes no `w` and no `max_lines`.",
+      "properties": {
+        "alpha": {
+          "$ref": "#/$defs/keyed_num_0_1",
+          "default": 1.0,
+          "description": "Opacity of the ink."
+        },
+        "bind": {
+          "description": "What the text shows.",
+          "enum": [
+            "title.kicker",
+            "title.main",
+            "info.title",
+            "info.summary",
+            "label.chapters",
+            "label.info",
+            "item.start",
+            "item.title"
+          ],
+          "type": "string"
+        },
+        "bold": {
+          "$ref": "#/$defs/keyed_bool",
+          "default": false,
+          "description": "The bold weight; the app ships two weights."
+        },
+        "ink": {
+          "$ref": "#/$defs/keyed_ink",
+          "description": "A theme token (upper case) or a palette name (lower case)."
+        },
+        "leading": {
+          "$ref": "#/$defs/keyed_int_1_400",
+          "description": "The line pitch in px, and a one-line text's box height. Absent: the rung's line height."
+        },
+        "max_lines": {
+          "$ref": "#/$defs/keyed_int_1_8",
+          "description": "1 elides; more wraps. Server text only (D10)."
+        },
+        "size": {
+          "$ref": "#/$defs/size",
+          "description": "A type-scale rung name. `HUD_TITLE` (54 px) is legal only on a text bound to `title.main`."
+        },
+        "w": {
+          "description": "The text's width in px, or `fill`. Server text only (D10): app text hugs its measured width.",
+          "oneOf": [
+            {
+              "maximum": 1920,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "fill"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "bind",
+        "size",
+        "ink"
+      ],
+      "type": "object"
+    },
+    "up_next": {
+      "additionalProperties": false,
+      "description": "The Up Next offer. Its inside is app-owned; a package chooses what it replaces, where it stands and how its two buttons look.",
+      "properties": {
+        "align": {
+          "description": "Where the offer's column stands against the replaced segments: `end` at their end edge, `center` on their centre, `start` on their start edge.",
+          "enum": [
+            "start",
+            "center",
+            "end"
+          ],
+          "type": "string"
+        },
+        "band": {
+          "description": "The id of the band the offer is drawn in.",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "type": "string"
+        },
+        "caption": {
+          "description": "Whether the offer draws its caption.",
+          "type": "boolean"
+        },
+        "countdown": {
+          "description": "How the auto-advance countdown shows on or in the Play Next button; never absent while running.",
+          "enum": [
+            "fill_sweep",
+            "ring",
+            "bar",
+            "numeric"
+          ],
+          "type": "string"
+        },
+        "play_next": {
+          "$ref": "#/$defs/up_next_button",
+          "description": "The Play Next button's looks."
+        },
+        "replaces": {
+          "description": "The segment ids that leave the frame and the focus map while the offer or the Skip pill shows.",
+          "items": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "still": {
+          "description": "Whether the offer draws the next episode's still.",
+          "type": "boolean"
+        },
+        "watch_credits": {
+          "$ref": "#/$defs/up_next_button",
+          "description": "The Watch Credits button's looks."
+        }
+      },
+      "required": [
+        "replaces",
+        "band",
+        "align",
+        "still",
+        "caption",
+        "watch_credits",
+        "play_next",
+        "countdown"
+      ],
+      "type": "object"
+    },
+    "up_next_button": {
+      "additionalProperties": false,
+      "description": "An Up Next button's looks. Its command is fixed by the app.",
+      "properties": {
+        "focus": {
+          "default": "accent",
+          "description": "The focus face: `accent` today's, `ring` the rest face plus the white focus ring. `solid` rest with `accent` focus draws one face twice and is rejected.",
+          "enum": [
+            "accent",
+            "ring"
+          ],
+          "type": "string"
+        },
+        "rest": {
+          "default": "film",
+          "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+          "enum": [
+            "film",
+            "bare",
+            "solid",
+            "custom"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "vstack": {
+      "additionalProperties": false,
+      "description": "A vertical stack of cells.",
+      "properties": {
+        "cells": {
+          "description": "The stacked cells.",
+          "items": {
+            "$ref": "#/$defs/cell"
+          },
+          "type": "array"
+        },
+        "gap": {
+          "$ref": "#/$defs/keyed_gap",
+          "description": "The gap between the cells: a spacing token or px."
+        },
+        "w": {
+          "description": "Width in px, or `fill`. Absent: the widest cell.",
+          "oneOf": [
+            {
+              "maximum": 1920,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "enum": [
+                "fill"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "cells"
+      ],
+      "type": "object"
+    },
+    "when": {
+      "oneOf": [
+        {
+          "enum": [
+            "panel.chapters",
+            "!panel.chapters",
+            "panel.info",
+            "!panel.info",
+            "sections",
+            "!sections",
+            "chapters.present",
+            "!chapters.present",
+            "title.is_episode",
+            "!title.is_episode",
+            "transport.paused",
+            "!transport.paused",
+            "slot.discs",
+            "!slot.discs",
+            "slot.up_next",
+            "!slot.up_next",
+            "slot.skip",
+            "!slot.skip",
+            "item.is_current",
+            "!item.is_current",
+            "item.focused",
+            "!item.focused"
+          ],
+          "type": "string"
+        },
+        {
+          "items": {
+            "enum": [
+              "panel.chapters",
+              "!panel.chapters",
+              "panel.info",
+              "!panel.info",
+              "sections",
+              "!sections",
+              "chapters.present",
+              "!chapters.present",
+              "title.is_episode",
+              "!title.is_episode",
+              "transport.paused",
+              "!transport.paused",
+              "slot.discs",
+              "!slot.discs",
+              "slot.up_next",
+              "!slot.up_next",
+              "slot.skip",
+              "!slot.skip",
+              "item.is_current",
+              "!item.is_current",
+              "item.focused",
+              "!item.focused"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ]
+    }
+  },
+  "$id": "https://plxnative.com/hud/schema/1.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A HUD package: one UTF-8 JSON file, `*.plxhud.json`, assets inline.",
+  "properties": {
+    "$schema": {
+      "description": "The schema URL, for editors: accepted and ignored by the app; lint checks its major.minor equals `format`.",
+      "pattern": "^https://[!-~]+$",
+      "type": "string"
+    },
+    "app": {
+      "$ref": "#/$defs/app",
+      "description": "The app releases this package renders correctly on."
+    },
+    "assets": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Inline SVG masks, by id.",
+      "type": "object"
+    },
+    "author": {
+      "description": "The author.",
+      "type": "string"
+    },
+    "format": {
+      "description": "MAJOR.MINOR of the schema, bindings and command vocabulary.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    },
+    "id": {
+      "description": "The package's reverse-DNS identity (the built-in HUD's reserved `builtin:classic` is the one other id that parses).",
+      "pattern": "^(builtin:classic|[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+)$",
+      "type": "string"
+    },
+    "layout": {
+      "$ref": "#/$defs/layout",
+      "description": "Where the HUD sits and what it holds."
+    },
+    "license": {
+      "description": "An SPDX license identifier.",
+      "type": "string"
+    },
+    "name": {
+      "description": "The display name.",
+      "type": "string"
+    },
+    "palette": {
+      "additionalProperties": {
+        "pattern": "^#[0-9a-f]{6}$",
+        "type": "string"
+      },
+      "description": "Named colours: lower-case name -> \"#rrggbb\". Every entry must be used.",
+      "type": "object"
+    },
+    "version": {
+      "description": "The package's own semver; it only orders updates of one id.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "format",
+    "id",
+    "version",
+    "name",
+    "author",
+    "license",
+    "layout"
+  ],
+  "title": "PlxNative HUD package, format 1.0",
+  "type": "object"
+}

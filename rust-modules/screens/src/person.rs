@@ -1366,6 +1366,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str {
         // Filmography deliberately returns the same word: the manifest records that opaque modal
         // as the Person route with a separate `filmography=1` state bit.

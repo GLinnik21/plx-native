@@ -828,7 +828,7 @@ The needed captures are all reachable on the bench with the boot triggers docume
 
 - Key codes: LG's evdev→scancode table in the television's own `libSDL2-2.0.so.0.4.1`, plus 336
   captured key lines. Settled 2026-08-22.
-- Transport state-mark rule: `rust-modules/src/ui/player_hud.rs::transport_mark`.
+- Transport state-mark rule: `rust-modules/appkit/src/player_hud/state.rs::transport_mark`.
 - Key dispatch: `rust-modules/src/ui/consts.rs::classify` and `rust-modules/src/app.rs`'s ladder.
 - Screen map: the `Route` enum in `rust-modules/src/app.rs` and `ui::trail`.
 - Audio: `Makefile` `LIBS_REAL`, and `SDL_Init(SDL_INIT_VIDEO)` in `rust-modules/src/app.rs`.

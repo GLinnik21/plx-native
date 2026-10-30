@@ -1402,6 +1402,20 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     true
 }
 
+/// `/tmp/plxnative-hud=<path>` — draw the package at that path instead of classic. Read ONCE, on the first
+/// player frame (`run::refresh_hud`); the file is read here, the bytes are compiled by the owner, and a
+/// file that does not read or compile is remembered ([`DevPackage`]), so it is neither re-read nor
+/// recompiled every frame. Without the `devtriggers` feature the trigger reads as absent.
+pub(crate) fn hud_trigger() -> plx_appkit::player_hud::loaded::DevHud {
+    use plx_appkit::player_hud::loaded::{dev_package_path, DevHud, DevPackage};
+    let Some(value) = plx_base::devtrig::read("hud") else { return DevHud::Off };
+    let Some(path) = dev_package_path(&value) else { return DevHud::Off };
+    let bytes = std::fs::read(path).map_err(|e| e.to_string());
+    #[cfg(feature = "devtriggers")]
+    plx_base::eventlog::log(&format!("plxnative-hud: path={path} read={}", bytes.as_ref().map_or_else(|e| e.clone(), |b| format!("{} bytes", b.len()))));
+    DevHud::Package(DevPackage::new(path.to_owned(), bytes))
+}
+
 /// `/tmp/plxnative-play=<rk>` — fetch that item and play its leaf, headless. TWO frames at least,
 /// since phase 11: the request goes off-thread on the arming frame and the play is dispatched on
 /// the frame its landing arrives.
@@ -1642,7 +1656,7 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
             pin_headless_hud(app, fr.now, None);
         }
         if plx_base::devtrig::flag("more") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { quality: false });
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { page: None });
             pin_headless_hud(app, fr.now, None);
         }
         if plx_base::devtrig::flag("info") {
@@ -1826,7 +1840,7 @@ fn moreosc_arm(app: &mut App, fr: &mut Frame) {
     app.scenarios.more_osc.last = fr.now;
     let Some(depth) = crate::app::bridge::player_overlay_mut(&mut app.pages).and_then(|s| s.more_probe()) else {
         if !crate::app::bridge::player_overlay_up(&app.pages) {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { quality: false });
+            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::More { page: None });
             pin_headless_hud(app, fr.now, None);
         }
         return;

@@ -404,23 +404,23 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 | icu_decimal | 2.1.1 |
 | icu_decimal_data | 2.1.1 |
 | icu_locale | 2.1.1 |
-| icu_locale_core | 2.3.0 |
+| icu_locale_core | 2.4.0 |
 | icu_locale_data | 2.1.2 |
 | icu_pattern | 0.4.2 |
 | icu_plurals | 2.1.1 |
 | icu_plurals_data | 2.1.1 |
-| icu_provider | 2.3.1 |
+| icu_provider | 2.4.0 |
 | icu_time | 2.1.1 |
 | icu_time_data | 2.1.1 |
 | ixdtf | 0.6.6 |
 | litemap | 0.8.3 |
 | potential_utf | 0.1.6 |
-| tinystr | 0.8.4 |
+| tinystr | 0.8.5 |
 | writeable | 0.6.4 |
-| yoke | 0.8.3 |
+| yoke | 0.8.4 |
 | zerofrom | 0.1.8 |
 | zerotrie | 0.2.5 |
-| zerovec | 0.11.8 |
+| zerovec | 0.11.9 |
 
 <!-- END GENERATED notices:icu -->
 

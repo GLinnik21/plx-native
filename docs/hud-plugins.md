@@ -259,7 +259,7 @@ Other subsystems the plan touches
 - D2. **One renderer.** The built-in HUD becomes the package `builtin:classic`, JSON embedded in the
   binary. When its captures are pixel-identical to today's, `draw_hud`'s hard-coded ARRANGEMENT is
   deleted; the widgets it arranges stay as the shared primitives the renderer composes (`draw_scrim`,
-  `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw`). The trailer
+  `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw_at`). The trailer
   keeps drawing through those primitives at classic geometry (F35); a user HUD does not restyle trailers.
 - D3. **The contract has two halves, versioned together**: `HudModel`, a per-frame read-only snapshot of
   exactly the values presentation reads (every F3 global becomes a field `src/app/run.rs` fills once a frame and
@@ -375,25 +375,28 @@ Other subsystems the plan touches
 ```
 app (src/)               runners: HudStore effects -> net fetch / storage worker / dir scan (app/adapters/huds.rs);
                          one command performer shared by placed controls and folded More rows
-screens/player           Focusable and pointer stops read HudGeometry; draw calls HudRenderer::draw(model)
+screens/player           Focusable and pointer stops read HudGeometry; the page draws through player_hud::render::draw(&Compiled, &Frame, ..)
 appkit/player_hud/       state.rs (F4 logic, unchanged), model.rs (HudModel), motion.rs (HudMotion),
                          render.rs (compiled draw list -> shared widgets), geometry.rs (HudGeometry),
-                         command.rs (HudCommand, enabled predicates), builtin/classic.json (include_str)
+                         command.rs (HudCommand, enabled predicates); builtin:classic is hud_format/fixtures/classic.plxhud.json,
+                         embedded as hud_format::BUILTIN_CLASSIC
 appkit/hud_format        schema descriptor table, strict parser, validator, SVG-subset checker, layout compiler
-data/hudpacks            HudStore machine (new [data] member): installed set, selection, index cache; pure; never parses
+data/hudpacks            HudStore machine (new [data] member): installed set, selection (the index cache joins in PR13); pure; never parses
 media/player/text_style  HudBand value type replaces the two constants as the caption ceiling input
 ui/popover               the shared anchored placer (D9), used by the player menus and the four existing callers
 ```
 
 - Layers (F30): `hud_format` is in appkit because the vocabulary (`ControlSlot`, the Up Next pair, the
   commands) is defined there and a ui copy would be a second definition. `data::hudpacks` is added to
-  `[data] members` with a `docs/module-layers.md` line. It never parses: the runner calls
-  `plx_appkit::hud_format::{parse, compile}` and returns `HudEvent::Validated(PackFacts { id, version,
-  format, sha256, bytes, verdict })`, with `Verdict { Loadable, FormatTooNew, FormatTooOld, AppOutOfRange,
-  Invalid(InvalidClass) }` data-owned. The supported format range is a value handed to `HudStore::new`.
+  `[data] members` with a `docs/module-layers.md` line. It never parses: it hashes the bytes itself and asks
+  for the verdict with a `HudEffect::Validate`; the runner calls `plx_appkit::hud_format::{parse, compile}`
+  and answers `HudEvent::Validated { tag, sha, verdict }`, with the data-owned `Verdict { Loadable(Meta),
+  Unloadable(Meta, Unloadable), Invalid }` (`Meta` is id, name, version, format; `Unloadable` is
+  `NewerFormat`, `OlderFormat` or `AppRange`). The supported format range stays with the runner, which owns the
+  validator: the store is handed no range.
 - Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing, allocation or
-  hashing; all text goes through `measure` (`draw_tabs`' doc: "measures none" when not drawn,
-  `player_hud.rs:2160-2162`).
+  hashing; all text goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each
+  text draw.
 - Package icons are rasterized through the same `plx_gfx::svg::rasterize` (F36); their textures belong to
   the `CompiledHud` instance `App` hands the player screen and are released when the HUD changes. The
   icon draw API takes `IconRef { Builtin(Icon), Pack(PackIcon) }`; no second cache, no new global.
@@ -405,7 +408,7 @@ input). Parsed strictly: unknown keys and duplicate keys are errors, through the
 reader of F41, made a shared `pub` module of `plx_ui`. Coordinates are on the logical 1920x1080 canvas
 (`base/src/surface.rs:47-48`); the existing scaling to the drawable size applies unchanged.
 
-Top level: `format`, `id` (reverse-DNS, `[a-z0-9.-]`), `version` (semver), `name`, `author`, `license`,
+Top level: `format`, `id` (reverse-DNS, `[a-z0-9.-]`; the built-in's own file is the one other id that parses, `builtin:classic`, which proves nothing about where a file came from: a store that takes files from outside refuses it), `version` (semver), `name`, `author`, `license`,
 optional `app` (`min`/`max`), optional `$schema` (the schema URL, for editors; accepted, its value ignored), optional
 `palette`, `assets`, `layout`.
 
@@ -451,7 +454,13 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
   bottom edges, default 72 and 80: classic's grab band `(SB_X, SCR_H - 270, sb_w, 160)` around the track at
   `SB_Y = SCR_H - 198`, 8 tall, `player_hud.rs:474-475`, `:1405-1407`; registered as the lowest stop, #162)}: exactly one,
-  the scrub group. Its band's box is the track (`thickness`); the knob, clocks and mark overhang it;
+  the scrub group. Its cell is the track plus the line the clocks are drawn on: as tall as `CLOCK_TOP` (30 px, the
+  clocks' line top below the track's top, the one constant `draw_playbar_look` draws at) plus `clock_size` x
+  `CLOCK_LINE` (1.25, a ratio so a measurer cannot move a band), or `thickness` if that is taller, so no band under
+  the bar lands on the clocks. The compile also emits the two clocks as rects on the line (the widest string the app
+  can print, `H:MM:SS`, in the weight each is drawn in; under `follow_head` the elapsed clock travels the track, so
+  its rect is the track's width), which I4 reads as decor and I10 judges as app text. The knob and mark overhang the
+  track;
 - `segment` {`id`, `gap`, `items`}: one `HStack` of controls (below);
 - `strip` {`bind`: `chapters`, `w`, `card_w`, `card_h`, `gap`, `radius`, `focus`: `"ring"`, `label_align` (`centre`,
   the Shelf's default, or `leading`, D11), `card`: {`art`, `overlay`, `below`, `below_gap`}}: the chapters
@@ -484,9 +493,9 @@ glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`u
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
 A `toggle_section` item draws a SELECTED face while its section is open (`hud_tab_state`'s second flag,
 `player_hud.rs:1587-1590`): `pill` uses `TabPill`'s own selected face, `disc` its `solid` face; the focus face wins when
-both hold. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (UNVERIFIED value:
-the repo has no such floor today; the PR derives it from the smallest control the app's own screens place, pins it, and
-it must admit the reference's 52). A control has no alpha key and the palette is `#rrggbb` (D12), but an allow-list ink
+both hold. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
+in PR5d from the narrowest seat the app's own screens place and pinned by a test, see "Unverified items"; it admits the
+reference's 52). A control has no alpha key and the palette is `#rrggbb` (D12), but an allow-list ink
 can be translucent (`HAIRLINE` is `with_a(WHITE, 0.10)`, `ui/src/theme.rs:949`), so a rest face's GLYPH ink, composited
 at its alpha, must reach 3:1 contrast against black (relative luminance at least 0.10), the darkest ground a scrim over a
 dark frame gives it, or, on an opaque ground of its own (`solid`), 3:1 against that ground; lint error otherwise. Classic's
@@ -507,7 +516,7 @@ Each maps to an action the app already performs; the performer is shared with th
 | `seek` | `by`: a nonzero integer of seconds, whose sign is the direction (then `dir` is forbidden), or `"setting"`, which requires `dir`: `back` or `forward` | `commit_jump`'s `SeekBurst` and `CommitSeek`, extracted with the signed step in ns as a parameter (today `signed_step(forward)` = `scrub_step_ns() x +-1`, `seek_jump.rs:16-18`; a literal `by` passes `by x 10^9`) and a keep-HUD flag (today `self.hud.hide(false)`, `:43`): a control press keeps the HUD up and extends its linger, the hidden-HUD tap still hides it (F14) | duration known (`seek_jump.rs:39-40`) | Left/Right, FF/REW, hold |
 | `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous || restart` (a restart target counts), Next by `next` (F6) | none |
 | `open_tracks` | `tab`: `subtitles`, `audio` | `OverlayKind::Tracks { tab: 1 | 0 }` (F15) | always (F6) | none |
-| `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More`; `quality` is today's `More { quality: true }` (F18); `speed` extends that address in place to a `MorePage` (F16) | always | none |
+| `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More { page }`; `quality` is what was `More { quality: true }` (F18); `speed` is the address PR3 added by turning that bool into `page: Option<MorePage>` (F16) | always | none |
 | `toggle_section` | `section`: `chapters`, `info` | opens or closes the section (D6) | chapters: the playing item has chapters (`chapters_panel::has_chapters`) | none |
 | `from_beginning` | - | `InfoAction::FromBeginning` (F17) | always | none |
 | `go_to_detail` | - | `InfoAction::GoToDetail(rk)`: leaves playback, opens the item's page (F17) | the playing item has a ratingKey | none |
@@ -564,22 +573,22 @@ Up Next (`layout.up_next`): `replaces` (segment ids), `band`, `align`, `still` (
 `widgets::progress_bar` (`ui/src/widgets.rs:1478`), `numeric` through the new i18n key
 `player.up_next.seconds_left` with a `fit_report`). While `slot.kind` is UpNext or Skip in the compact
 state, the named segments leave the frame and the focus map; the others stay. The block's INSIDE is app-owned and
-drawn by `up_next::draw` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
+drawn by `up_next::draw_over` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
 `TEXT_PRIMARY`, in a 460 box, elided; `up_next.rs:290-298`, `:320-330`), the still a 16:9 `draw_card` at the primary's
 width, radius 10, the caption `CAP_GAP` 8 above the still's foot and `BTN_GAP` 24 above the buttons, the pills `PILL_GAP`
 apart (`up_next.rs:194-200`, `:226-258`), the primary floored at the floor width (below), Watch Credits at its own
 label's width (`:259-266`). The column overhangs its band upward from the replaced segment and adds nothing to the band's
 height; I4 refuses an overhang over any drawn interactive rect, and under `band: "block"` it counts as the compact
 block's decor (Captions). `align` places it: `end` at the replaced segments' end edge (classic, `CTRL_RIGHT`), `center` on their centre,
-`start` on their start edge, and the caption's text alignment follows (right, centre, left): `layout_of` gains that
-`Align` in place. A package chooses whether the still and the caption draw, never their inside. The FLOOR exists where it
+`start` on their start edge, and the caption's text alignment follows (right, centre, left): the compile applies
+`align` (`standin` in `hud_format/compile.rs`) over `up_next::layout_at`. A package chooses whether the still and the caption draw, never their inside. The FLOOR exists where it
 means what it does today, "never narrower than the pair it replaces, so the row does not visibly shrink"
 (`up_next.rs:252-259`): when `replaces` names ONE start- or end-aligned segment, the floor is that segment's width with
 every item that CAN be absent collapsed (a Previous/Next member, an item with `when`), whatever the current item holds;
 for classic that is `disc_row()` over `disc_items(false)`, the three always-present discs, `ctrl_row_w` = 3 x 64 + 2 x 20 =
 232 (`player_hud.rs:672-683`, `:717-719`). A centred or multi-segment replace has no floor: the primary takes its own
-label's width (`ctrl_slot`'s measure without the `.max`). The Skip pill is `ctrl_slot` of ITS OWN label
-(`skip_pill.rs:75-77`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
+label's width (`classic::stand_in_w` with no floor). The Skip pill is `classic::stand_in_w` of ITS OWN label
+(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
 timing and cancel rules (`up_next.rs:105-125`, production sites `src/app/run.rs:2001`, `:2026-2045`,
 `src/app/playback.rs:939`), what the buttons do.
 
@@ -623,7 +632,8 @@ changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot
 marker ends or Watch Credits dismisses the offer.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
-  of the content conditions the package names (`chapters.present`, `title.is_episode`); `transport.paused` counts as
+  of the content conditions the package names (`chapters.present`, `title.is_episode`; a placed `previous` or `next`
+  names `title.is_episode`, because the app drops that pair for a non-episode); `transport.paused` counts as
   holding either way, because `toggle_play`'s keys flip it (F13). The compiler enumerates the valuations (two per
   content condition, so at most four today). The only hard requirement: a More cell with `when: "title.is_episode"`
   fails, since every movie would lose More and with it Stats for nerds, the bug-report path (F16).
@@ -779,7 +789,7 @@ opener, through ONE shared placer.
   The anchor is latched when the menu opens: a stand-in that takes the row while the menu is up, or a
   language change, does not move an open panel. A menu opened by something that is not a HUD control has
   no HUD anchor, and takes the root state's `open_more` rest rect as its anchor: the failure read-out's
-  `More { quality: true }` (F18) therefore opens where classic opens it today, `CTRL_RIGHT - pw`, bottom 764, and a
+  `More { page: Some(Quality) }` (F18, formerly `More { quality: true }`) therefore opens where classic opens it today, `CTRL_RIGHT - pw`, bottom 764, and a
   headless trigger is the same `Opener::NONE` case (`popover.rs:321`).
 - The gap. `theme::layout::PLAYER_MENU_GAP = 28.0`, named (it is 792 - 764 today, F20, and `PANEL_GAP` is
   24), replaces `PLAYER_MENU_BOTTOM`; classic's bottom edge stays 764.
@@ -857,8 +867,8 @@ image's proportions rounded to tokens and are approximate.
     "list": "<svg viewBox='0 0 24 24'><path d='M4 6h16v2H4zM4 11h16v2H4zM4 16h16v2H4z'/></svg>",
     "gear": "<svg viewBox='0 0 24 24'><path d='M10 2h4l1 3 3-1 2 3-2 2v2l2 2-2 3-3-1-1 3h-4l-1-3-3 1-2-3 2-2v-2L4 7l2-3 3 1z'/></svg>",
     "eq": "<svg viewBox='0 0 24 24'><path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/></svg>",
-    "back10": "<svg viewBox='0 0 24 24'><path d='M12 3v3a7 7 0 1 1-7 7H3a9 9 0 1 0 9-9V1L8 5zM9 10h1v6H9zM12 10h3v6h-3z'/></svg>",
-    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM9 10h2v6H9zM12 10h3v6h-3z'/></svg>"
+    "back10": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7v3l-4-4zM9 8h1.5v8h-1.5v-6.5l-1.5 1.5v-1.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
+    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM8 8h2l1 1v6l-1 1h-2l-1-1v-0.5h2.5v-2h-2v-1.5h2v-1.5h-2.5v-0.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>"
   },
   "layout": {
     "anchor": "bottom",
@@ -1013,8 +1023,9 @@ binds `builtin:classic`, which keeps it; a package's transport row is the owner'
 a package is never the default.
 
 Classic's compact state, tabs, scrim and Up Next, as the `layout` of `classic.plxhud.json` (every number is a constant
-cited in the table below; faces are omitted, so each control draws its command's classic glyph; PR8 adds the two section
-bands of the table and keys the tabs band's `gap_before` on them, and PR6's `--hud-export builtin:classic` prints the
+cited in the table below; faces are omitted, so each control draws its command's classic glyph; the file in the repo
+(`appkit/src/hud_format/fixtures/classic.plxhud.json`) already has the two section bands of the table and the tabs
+band's keyed `gap_before` (its chapters value is a placeholder, below), and PR6's `--hud-export builtin:classic` prints the
 whole file):
 
 ```json
@@ -1039,9 +1050,9 @@ whole file):
       ] } }
     ] },
     { "id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26, "cells": [
-      { "align": "start", "playbar": { "w": "fill" } }
+      { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION" } }
     ] },
-    { "id": "tabs", "gap_before": 59, "cells": [
+    { "id": "tabs", "gap_before": 7, "cells": [
       { "align": "start", "segment": { "id": "tabs", "gap": "SM", "items": [
         { "id": "tab_info", "command": "toggle_section", "section": "info", "widget": "pill", "size": 64 },
         { "id": "tab_chapters", "command": "toggle_section", "section": "chapters", "when": "chapters.present", "widget": "pill", "size": 64 }
@@ -1070,13 +1081,13 @@ at 768 and the title at 802.
 | Row | five 64 discs at `CTRL_Y` 792, ending at `CTRL_RIGHT` = `SAFE`'s right (`:476-491`) | end-aligned segment, `x_inset: 0` |
 | Scrim | fixed `SCRIM_H` 470 in every state, before `if transport` (`:941`, `:1678-1686`, `:2074`) | `scrim {cover: fixed, height: 470}` |
 | Chrome fade | title, row and tabs on `pc = p.alpha(chrome_a)`; bar, clocks and preview on `p` (`:2075-2081`, `:2146-2160`) | bands `top` and `tabs` default `fades`; `bar` `steady` |
-| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` at its defaults, which are classic's |
+| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and the rest at its defaults, which are classic's |
 | Grab band | `scrub_hit_rect` = `(SB_X, SCR_H - 270, sb_w, 160)` (`:1405-1407`) | `playbar.grab` defaults 72 / 80 |
-| Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 59`; `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
+| Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 7` (`tab_y()` 949 less the bar cell's foot, 882 + 60: the cell holds the clocks' line); `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
 | Skip | `ctrl_slot` of its own label (`skip_pill.rs:75-77`) | the Skip rule (Package format) |
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |
-| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left (`chapters_panel.rs:27-40`); cards past `SAFE` culled at the screen edge (`:140-147`); an empty name draws "Chapter N" (`:176-179`) | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (PR8 computes it from the strip's box); scroll and marquee per D11 |
+| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left (`chapters_panel.rs:27-40`); cards past `SAFE` culled at the screen edge (`:140-147`); an empty name draws "Chapter N" (`:176-179`) | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 43 = 949 - 684 - (162 + 26 + 34), takes the `item.start` line as zero-height as `chapters_panel::label_ys` does; a one-line text's box is its rung's line height, so PR8 recomputes it from the compiled strip box and the fixture's number is a placeholder until then); scroll and marquee per D11 |
 | Info card | ground x 80, w 1760, h 236, top `SCR_H - 176 - 236` = 668, pad 28 (`info_panel.rs:581-588`); still radius 16 (`:216`); text 34 from the still and from the buttons (`:252-255`); title to synopsis 6, tags `before(12)` (`:436-446`); synopsis `leading(29)` (`:386-389`); buttons a column 70 tall, 16 apart, centred, width max(352, widest of all three labels) (`:594-608`), right edge 1812 inside `SAFE`'s 1824 | band `info`, `when: panel.info`: `rect {bleed: 16, pad: 28, h: 236, gap: 34, ink: PANEL_TOP, radius: 28}` holding `image info.still` 320 x 180 radius 16; a `vstack {gap: 6, w: fill, valign: center}` of the title (`max_lines: 1`), the synopsis (`leading: 29`, `max_lines: 2`) and `facts` with `gap_before: 12` (`order: [genres, year, duration]`, `genres_max: 2`, `bold: true`, `ink: TEXT_PRIMARY`, `playback_fact: true`, `badges: [content_rating, audio_format, cc, sdh, ad]`); `actions {axis: column, gap: 16, item_h: 70, min_w: 352, items: [from_beginning, go_to_detail]}`, `align: end`, `valign: center`; the tabs band's `gap_before` 45 under `panel.info` (949 - 904) |
 | Captions | ceiling 780 whenever the HUD is up (F28) | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
 
@@ -1090,7 +1101,8 @@ recompiles on a change; registry CI lints all ten):
   still, the Tracks, More and Timing overlays. `readout_owns_frame` keeps deciding whether the HUD draws.
 - I2. Reachability R1-R4 under every valuation of the content conditions (`open_more` in the root; folds computed;
   openers imply sections; Up Next whole).
-- I3. Identity: every `id` unique; an unknown command, parameter, binding or condition is an error; order
+- I3. Identity: every `id` unique among the bands, among the segments and among the controls (three namespaces, because
+  `up_next.band` and `up_next.replaces` name different kinds and classic's own `tabs` is both a band and a segment); an unknown command, parameter, binding or condition is an error; order
   is free.
 - I4. z-order census: same-z interactive rects never overlap; every item hit-tests back to itself (the
   census `every_disc_hit_tests_back_to_itself`, `player_hud.rs:2500`, generalised); a lower-z group (the
@@ -1157,8 +1169,9 @@ jails by prefix (F39's table does not say); if so, the same order works.
   `https_get_public`: the same headerless, redirect-following request with `Some(max_body)` through
   `request`'s existing argument; no new curl option, but a curl-path change, so `fw-compat-reviewer`.
   UNVERIFIED: whether the TV's CA set accepts `objects.githubusercontent.com`, where release redirects land.
-- (b) CHOSEN, Dev Mode and rooted: copy the file into `<root>/drop/` over ssh; it is validated and installed
-  when HUD settings open. No network.
+- (b) CHOSEN, Dev Mode and rooted: copy the file into `<root>/drop/` over ssh; it is validated and listed when
+  HUD settings open, and installed only when the user confirms it on the TV (`InstallDrop`, which re-reads the
+  file and refuses it if it changed since the list). No network.
 - (c) QR to a web page: rejected; the site is static (F40) and cannot hand a file back.
 - (d) LAN page served by the app: rejected; a listening socket plus a worker (ledger growth, F31), and
   inbound reachability through the TV's firewall is UNVERIFIED.
@@ -1193,7 +1206,7 @@ this session, no network).
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
   playback, with backoff. The 24 h rule lives in the HudStore machine, which reads no clock (F31): the runner
-  hands `now` in on `SettingsOpened`. A package is fetched by hash and checked with `plx_base::sha256` before
+  hands `now` in on the event that opens HUD settings (PR13 adds the field to `Refresh`). A package is fetched by hash and checked with `plx_base::sha256` before
   it is written. Offline, installed HUDs keep working; the gallery shows the cached index with its date.
 - Why: TVs reading GitHub directly hit API rate limits (UNVERIFIED figure: 60 unauthenticated requests per
   hour per IP) and need tree walks; a bespoke backend means hosting and moderation for no gain over static
@@ -1247,7 +1260,10 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
   a sound over-approximation: duplicate keys and the compile invariants are lint's.
 - Draft 2020-12, emitted with keywords whose meaning has not changed since draft-07 (`type`, `properties`,
   `required`, `additionalProperties`, `enum`, `const`, `pattern`, `minimum`, `maximum`, single-schema `items`,
-  `oneOf`). No validator runs on the TV: it would be a second parser of attacker input and a new dependency.
+  `oneOf`), plus local `$ref` into `$defs` (the format is recursive: a `cell` holds a `vstack` or `rect` that holds
+  `cell`s, which a schema cannot say without a reference) and the annotations `description`, `default` and `title`,
+  which a validator ignores. No validator runs on the TV: it would be a second parser of attacker input and a new
+  dependency.
 
 2. Lint.
 - `plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>]`; exit 0 clean, 1 findings, 2 usage.
@@ -1434,15 +1450,19 @@ PR9. The More fold.
   root unchanged, pixel-identical); `fit_report` clean in every shipped language.
 
 PR10. Store, local install, selection, drop folder.
-- Goal: `data::hudpacks::HudStore` (pure; events `Scanned`, `Validated`, `Selected`, `Removed`; effects `ScanDir`,
-  `ReadFile`, `WriteFile`, `Delete`), runners in `app/adapters/huds.rs` on the storage worker, `paths::hud_candidates()`,
+- Goal: refuse the id `builtin:classic` from every source that is not compiled in (the format accepts that one
+  literal so the built-in's own file parses; a sideloaded or registry file claiming it must never collide with the
+  built-in's Settings entry or the fallback target). `data::hudpacks::HudStore` (pure; events `Refresh`, `Install`, `InstallDrop`, `Selected`, `Removed` in and
+  the answers `Scanned`, `Read`, `Validated`, `Written`; effects `ScanDir`, `ReadFile`, `WriteFile`, `Delete`,
+  `Validate`, `Selection`, `Notice`), runners in `app/adapters/huds.rs` on the storage worker, `paths::hud_candidates()`,
   a `Profile` `setting!` with the install fallback, and `SettingsPage::PlayerHud`, a FormTable keyed by package id
   (not a `PickerKind`, a static vocabulary, F32) with a `fit_report`; a compile failure in the current language falls
   back per language with the `hud: fallback` line and the Settings reason (`settings.hud.unfit_language`, ten catalogs,
   `fit_report`), Text fit.
 - Files: `data/src/hudpacks.rs`, `ci/module-layers.ini`, `docs/module-layers.md`, `ci/machines.ini`, `base/src/paths.rs`,
   `plex/src/plex/session/prefs.rs`, `screens/src/family.rs`, `screens/src/preferences*`, `src/app/adapters/`.
-- Verify: machine tests (event in, effect out), `ci/check-machine-shape.py`, ledgers not grown, the sim with a fixture
+- Verify: a dropped or fetched file with id `builtin:classic` is refused and the built-in stays selectable; machine
+  tests (event in, effect out), `ci/check-machine-shape.py`, ledgers not grown, the sim with a fixture
   pack in the drop folder, the TV under the Dev Mode install.
 
 PR11. Install from address: the bounded fetch in `net/src/net.rs` (`fw-compat-reviewer`), the Fetch effect, the
@@ -1502,7 +1522,7 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 ## Unverified items
 
 - Rough caption and block arithmetic (Captions, the reference estimates); the 0.871 crop scale.
-- `MIN_CONTROL_SIZE`'s value (Package format).
+- `MIN_CONTROL_SIZE`'s value: 26 px, derived and not tried on the set: the narrowest seat the app's own screens place (a Library jump-rail letter at `RAIL_MIN_PITCH`, `screens/src/library/layout.rs:33`); the smallest control face is 56 (`ui/src/page_header.rs:56`), which would reject the reference's 52 (Package format).
 - Whether `p.text`'s y is the glyph top or a baseline (changes no offset; Package format, `leading`).
 - Whether the strict reader exposes an object's pairs in document order (state-keyed values).
 - Whether `card_row`'s tile paint can draw the over-video rim in place of the shader ring (D11).

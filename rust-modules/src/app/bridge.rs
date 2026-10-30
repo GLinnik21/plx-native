@@ -56,7 +56,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, FocusSource, ReturnState, Screen, ScreenEvent,
+    At, Enter, FocusSource, FocusTarget, ReturnState, Screen, ScreenEvent,
 };
 
 
@@ -470,6 +470,9 @@ pub(crate) struct Bridge {
 impl Bridge {
     #[cfg(test)]
     pub(crate) fn measurement_queries(&self)->Vec<plx_ui::rec::MetricKey> { self.measure.queries() }
+    /// The measurer every screen of this bridge lays out with (a host test's has no fonts): the HUD
+    /// package is compiled with it, outside the draw, so the plan's widths are the draw's.
+    pub(crate) fn measure(&self) -> &dyn Measure { &self.measure }
     pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<plx_ui::rec::MetricKey,u32>>) {
         self.measure.prepare(replay);
     }
@@ -922,6 +925,18 @@ impl Bridge {
     /// [`AppMounter::player_hud_ms`]. Set by `start_playback` and consumed by the mount.
     pub(crate) fn seed_player_hud(&mut self, ms: u32) {
         self.mounter.player_hud_ms = Some(ms);
+    }
+
+    /// The compiled HUD every player instance from now on is constructed with — see
+    /// [`AppMounter::player_compiled`]. Set at boot and again by `run::refresh_hud` when a controlled run or a dev package compiles on the first player frame.
+    pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
+        self.mounter.player_compiled = compiled;
+    }
+
+    /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
+    /// so an open that has no anchor (or retargets a panel already up) never leaves one for a later mount.
+    pub(crate) fn seed_player_menu_anchor(&mut self, anchor: Option<plx_ui::Rect>) {
+        self.mounter.player_menu_anchor = anchor;
     }
 
     fn home_focus(d: &Dispatcher<AppHost>) -> Option<FocusKey<u32>> {
@@ -3963,6 +3978,35 @@ pub(crate) fn player_mut(
         .downcast_mut::<plx_screens::player::PlayerScreen>()
 }
 
+/// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half
+/// of an APP-SIDE write to `hud.nav.focus`.
+///
+/// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
+/// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in five
+/// places — a Chapters / Info panel handing the ring back to the tabs (`PlayerReq::FocusTabs`), the
+/// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, the auto-hide
+/// park (in `run::update`) and the Skip / Up Next stand-in's departure (`run::follow_control_row`: the
+/// ring goes back to the scrubber, `standin_left_the_ring`'s contract) — and a bare write would leave
+/// the engine on the group it was on, so the next Up, Down or OK travelled from there. Each such
+/// write is followed by this, which hands the page
+/// the same `Enter::Fresh { ContainerGroup }` the screen's own `repair_focus` delivers. It rides
+/// the dispatcher's queue from outside a step and drains in the next frame, ahead of its input.
+///
+/// A no-op when no player page is mounted. The engine acts on an `Enter` only for the page that owns
+/// input at the moment it drains; for a page under a panel it only reaches the screen, which mirrors it.
+pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
+    let Some(instance) = d.top_page() else { return };
+    let Some(group) = player(d).map(|player| player.hud.nav.focus) else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(
+        page,
+        Fx::Deliver(
+            page,
+            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(group) })),
+        ),
+    );
+}
+
 /// **The top page answers its own keys** — the engine owns the input for it.
 ///
 /// The `route: Route` parameter these three took is gone with the fold (D1): `owns_input` already
@@ -3978,6 +4022,12 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
     !d.surface_up()
         && d.top_screen().and_then(|screen| screen.as_any())
             .is_some_and(|screen| screen.is::<plx_screens::search::SearchScreen>())
+}
+
+/// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
+/// page scrolls itself by a wheel (`Screen::glides`): the pointer's edge glide is offered to it.
+pub(crate) fn page_glides(d: &Dispatcher<AppHost>) -> bool {
+    !d.surface_up() && d.owns_input() && d.top_screen().is_some_and(|screen| screen.glides())
 }
 
 pub(crate) fn owns_input(d: &Dispatcher<AppHost>) -> bool {

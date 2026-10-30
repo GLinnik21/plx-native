@@ -137,11 +137,11 @@ fn reference(from: &str, to: &str) -> String {
 /// One invalid-corpus row: a package (as bytes, since some rows are not UTF-8), and the finding it must
 /// produce: its code, its pointer, optionally a name that must be among the nearest, optionally the
 /// exact message, and whether it is the ONLY finding.
-struct Row {
-    label: &'static str,
-    bytes: Vec<u8>,
-    code: &'static Code,
-    pointer: String,
+pub(in crate::hud_format) struct Row {
+    pub(in crate::hud_format) label: &'static str,
+    pub(in crate::hud_format) bytes: Vec<u8>,
+    pub(in crate::hud_format) code: &'static Code,
+    pub(in crate::hud_format) pointer: String,
     near: Option<&'static str>,
     message: Option<&'static str>,
     only: bool,
@@ -218,7 +218,7 @@ impl Row {
 // Valid fixtures
 // ---------------------------------------------------------------------------------------------------
 
-mod valid {
+pub(in crate::hud_format) mod valid {
     use super::*;
 
     #[test]
@@ -314,7 +314,7 @@ mod valid {
 
     /// Edits of the reference that must still parse with no finding: the boundary values, every
     /// condition form, and the choices a package may make.
-    fn accepted() -> Vec<(&'static str, String)> {
+    pub(in crate::hud_format) fn accepted() -> Vec<(&'static str, String)> {
         let mut out: Vec<(&'static str, String)> = vec![
             (
                 "when_and_array",
@@ -483,7 +483,7 @@ fn format_row(label: &'static str, value: &str, code: &'static Code) -> Row {
 }
 
 /// Every row of the corpus. One row per parse rule at least (see `corpus_covers_every_code`).
-fn corpus() -> Vec<Row> {
+pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     let r = reference;
     let mut rows: Vec<Row> = Vec::new();
     let mut add = |row: Row| rows.push(row);
@@ -1652,7 +1652,14 @@ mod coverage {
         for code in codes::ALL {
             // E0107 (a key newer than the declared format) cannot be written in a package that parses:
             // 1.0 is the first minor. `parse::tests` reaches it with a hand-built node.
-            if code.id == "HUD-E0107" || command_codes.contains(&code.id) {
+            // The E08xx/E09xx/W09xx codes are `check`'s, not the parser's: `reach_tests` has their rows.
+            // The E06xx/W06xx and E10xx-E13xx codes are the lint's (they need a compiled package, a
+            // language and a state): `lint_tests` holds their rows, one invalid case per code.
+            let check_code = ["HUD-E08", "HUD-E09", "HUD-W09"].iter().any(|p| code.id.starts_with(p));
+            let lint_code = ["HUD-E06", "HUD-W06", "HUD-E10", "HUD-E11", "HUD-E12", "HUD-E13"]
+                .iter()
+                .any(|p| code.id.starts_with(p));
+            if code.id == "HUD-E0107" || check_code || lint_code || command_codes.contains(&code.id) {
                 continue;
             }
             assert!(covered.contains(code.id), "{} has no corpus row", code.id);
@@ -2273,7 +2280,7 @@ mod drift {
     /// Strings of a pattern, valid and (for the refusals) not.
     fn pattern_valid(pattern: Pattern) -> Vec<String> {
         match pattern {
-            Pattern::ReverseDns => vec!["com.example.hud".into(), "a.b".into()],
+            Pattern::ReverseDns => vec!["com.example.hud".into(), "a.b".into(), schema::BUILTIN_CLASSIC_ID.into()],
             Pattern::Semver => vec!["1.2.3".into(), "0.0.0".into()],
             Pattern::FormatVersion => vec!["1.0".into(), "12.34".into()],
             Pattern::SchemaUrl => vec!["https://plxnative.com/hud/schema/1.0.json".into()],
@@ -2284,7 +2291,17 @@ mod drift {
     fn pattern_invalid(pattern: Pattern) -> Vec<String> {
         let common = String::new();
         match pattern {
-            Pattern::ReverseDns => vec![common, "nodots".into(), "Com.Bad".into(), "a.1b".into()],
+            Pattern::ReverseDns => vec![
+                common,
+                "nodots".into(),
+                "Com.Bad".into(),
+                "a.1b".into(),
+                "builtin:Classic".into(),
+                "builtin:other".into(),
+                "builtin:".into(),
+                "xbuiltin:classic".into(),
+                "builtin:classic ".into(),
+            ],
             Pattern::Semver => vec![common, "1.0".into(), "1.0.0-beta".into(), "01.0.0".into()],
             Pattern::FormatVersion => vec![common, "1".into(), "v1.0".into(), "1.0.0".into()],
             Pattern::SchemaUrl => vec![common, "http://plxnative.com/x".into(), "plxnative.com".into()],

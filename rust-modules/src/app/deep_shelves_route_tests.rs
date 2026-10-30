@@ -3,7 +3,8 @@
 //! and a Home card's Detail returns onto that card at rest.
 
 use super::*;
-use super::test_support::World;
+use super::test_support::{tick, DipImage, ImageHeld, World};
+use plx_ui::containers::transition::{PageDip, PagePaint};
 
 /// **A publication that adds a shelf leaves the focused card where it is, and the new shelf is
 /// reachable.** The Recommended page rebuilds only the rows whose basis changed (`RowSeats`), so the
@@ -144,4 +145,65 @@ fn home_back_from_detail_lands_on_the_card_it_left_at_rest() {
     assert!(w.on(&AppArg::Home), "Home is on top again");
     assert_eq!(w.home_card(), (at, rk), "BACK lands on the card it left");
     w.sole_card_off_rest("after the return");
+}
+
+/// **A dived Home comes back from a Detail with its focused card lifted and every word where it
+/// stood, from the first frame of the BACK, under the dip's image.** Home's shelves are dormant only
+/// while its hero is up (`snap.pos <= 0.5`), never for the route dip's image, so the seat a Detail
+/// covered is the seat the page returns with and no band reopens under the shelf below it. That is
+/// the rule `Shelf::dormant` gives the Recommended page's shelves, which follow the image: this pins
+/// that Home needs none of it, and fails if the two ever come apart. Every text run the page draws is
+/// compared with the words it drew before the Detail (`World::drawn`), so a heading or a caption
+/// that moved by a band's height shows.
+#[test]
+fn home_back_from_detail_returns_its_focused_card_lifted_and_every_word_where_it_stood() {
+    let _held = ImageHeld;
+    let mut w = World::home_grid("route-home-return-lifted", 5, 8);
+    w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
+    for _ in 0..3 { w.tap(Key::Down, 2); }
+    for _ in 0..4 { w.tap(Key::Right, 2); }
+    w.frames(60);
+    let (at, rk) = w.home_card();
+    let (shelf, card) = at.expect("premise: the walk ended on a card");
+    let lift = plx_ui::cards::RowStyle::HOME.focus_scale;
+    let words = |w: &mut World| {
+        let mut runs: Vec<(String, f32)> = w.drawn().runs.into_iter().map(|run| (run.text, run.at.y)).collect();
+        runs.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        runs
+    };
+    let stood = words(&mut w);
+    assert!((w.card_pops()[shelf][card] - lift).abs() < 1e-4, "premise: the card stands in its full lift");
+
+    let (sid, detail_rk) = w.home_focused_item().expect("premise: a card holds focus");
+    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+        sid, rk: detail_rk.clone(), kind: "movie".into(), ..Default::default() }));
+    let mut dip = DipImage::default();
+    let mut frame = |w: &mut World, inputs: Vec<InputEvent<u32>>| {
+        let paint = w.step_dip(&mut dip, inputs).expect("a page is on top");
+        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
+    };
+    let t = tick(w.frame + 1);
+    frame(&mut w, script_key(Key::Ok, t));
+    for _ in 0..90 { frame(&mut w, vec![]); }
+    assert!(w.on(&AppArg::Content(ContentArg::Detail { sid, rk: detail_rk })), "premise: Detail is on top of Home");
+
+    let t = tick(w.frame + 1);
+    frame(&mut w, script_key(Key::Back, t));
+    let mut home = 0;
+    // the dip, its image and the settle after it (the hold hint, which teaches after a dwell, is later)
+    for n in 0..60 {
+        if n > 0 { frame(&mut w, vec![]); }
+        if !w.on(&AppArg::Home) { continue; }
+        home += 1;
+        let pops = w.card_pops();
+        assert!((pops[shelf][card] - lift).abs() < 1e-4, "frame {n}: the card is drawn at {:.4}, not in its full lift", pops[shelf][card]);
+        let drawn = words(&mut w);
+        plx_ui::containers::transition::set_page_image_held(!matches!(w.d.nav.tabs.stack.transition.phase_word(), "live"));
+        // the bar's own words fade with the dip, so it is every word DRAWN that must have stood
+        let moved: Vec<&(String, f32)> = drawn.iter()
+            .filter(|(text, y)| !stood.iter().any(|(was, at)| was == text && (at - y).abs() < 0.5)).collect();
+        assert!(moved.is_empty(), "frame {n}: words not where they stood: {moved:?}");
+    }
+    assert!(home > 30, "premise: Home was on top for most of the BACK ({home} frames)");
+    assert_eq!(w.home_card(), (at, rk), "BACK lands on the card it left");
 }

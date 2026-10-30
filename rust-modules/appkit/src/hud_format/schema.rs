@@ -1,8 +1,8 @@
 //! **The descriptor table of HUD package format 1.0.** One static table names every key, cell kind,
 //! widget, rest and focus style, command (with its typed parameters), condition and theme token: its
 //! type, allowed values, default and the format minor it arrived in. The strict parser
-//! ([`super::parse`]) is a generic walker over this table and wave B's schema emitter
-//! (`plxnative-sim --hud-schema`) serializes it, so nothing is listed twice and the two cannot drift
+//! ([`super::parse`]) is a generic walker over this table and the schema emitter
+//! ([`super::schema_emit`], which `plxnative-sim --hud-schema` will print) serializes it, so nothing is listed twice and the two cannot drift
 //! (a test walks the table, proves every entry is accepted, and proves an unlisted name is refused).
 //!
 //! The table is `'static` data: plain `&'static` slices and `Copy` types, no `Vec`, no `Box`, no
@@ -117,6 +117,8 @@
 use plx_ui::icons::Icon;
 use plx_ui::theme;
 
+use crate::player_hud::classic::{HUD_TITLE_SZ, SCRIM_H};
+
 /// A format version: `(major, minor)`.
 pub type Since = (u8, u8);
 
@@ -128,10 +130,17 @@ pub const SUPPORTED: &[(u8, u8)] = &[(1, 0)];
 /// The version every 1.0 entry arrived in.
 pub const V1_0: Since = (1, 0);
 
+/// The one `id` that is not reverse-DNS: the built-in HUD (D2). [`Pattern::ReverseDns`] accepts exactly this
+/// string besides reverse-DNS names, so the built-in's own file parses like any package. That the id parses
+/// does not make a file the built-in: whether a package IS the built-in comes from where it was loaded
+/// from (compiled in), never from this string, and a store that takes files from outside refuses it.
+pub const BUILTIN_CLASSIC_ID: &str = "builtin:classic";
+
 /// A string shape a [`Ty::Pattern`] checks. Each is a closed grammar, never a regular expression.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pattern {
     /// `[a-z0-9.-]`, at least two dot-separated labels, each starting with a letter: `com.plxnative.x`.
+    /// The one other string it accepts is [`BUILTIN_CLASSIC_ID`].
     ReverseDns,
     /// `MAJOR.MINOR.PATCH` numeric semver (no pre-release, no build metadata).
     Semver,
@@ -142,6 +151,34 @@ pub enum Pattern {
     /// An author-chosen identifier: lower-case `[a-z][a-z0-9_-]*`, at most 40 chars.
     Id,
 }
+
+impl Pattern {
+    /// The shape as an ECMA-262 regular expression, for the published JSON Schema. The strict parser does not
+    /// run it (a pattern is a closed grammar there, so no untrusted input reaches a regex engine); a test
+    /// pins the two to the same answer. A length bound is the parser's, so a regex may accept a longer string.
+    pub const fn regex(self) -> &'static str {
+        match self {
+            // The first alternative is [`BUILTIN_CLASSIC_ID`], the one string the parser accepts besides a
+            // reverse-DNS name; a test pins the regex to the parser on it.
+            Pattern::ReverseDns => r"^(builtin:classic|[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+)$",
+            Pattern::Semver => r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$",
+            Pattern::FormatVersion => r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$",
+            Pattern::SchemaUrl => r"^https://[!-~]+$",
+            Pattern::Id => r"^[a-z][a-z0-9_-]*$",
+        }
+    }
+}
+
+/// The shape of a palette name, and of an ink that refers to one: lower-case `[a-z][a-z0-9_]*`. As
+/// [`Pattern::regex`]: the parser's own check is `parse::is_palette_name`, and a test pins the two.
+pub const PALETTE_NAME_REGEX: &str = r"^[a-z][a-z0-9_]*$";
+
+/// The shape of a palette value: `#` and six lower-case hex digits. As [`Pattern::regex`].
+pub const HEX_COLOUR_REGEX: &str = r"^#[0-9a-f]{6}$";
+
+/// The most px a [`Ty::Gap`] number may be: the canvas height, the 1080-tall logical screen. The parser reads
+/// it from here, and a test pins its boundary.
+pub const GAP_TOP_PX: i64 = 1080;
 
 /// What a value is. Exhaustively matchable: a walker and the schema emitter each `match` it in full, so a
 /// new variant is a compile error in both. The table above says what each accepts.
@@ -582,14 +619,10 @@ pub static INK_TOKENS: &[(&str, [f32; 4])] = &[
     ),
 ];
 
-/// The pixel size of the `HUD_TITLE` rung: the existing carve-out of the now-playing title, 54 px. It
-/// mirrors `player_hud`'s private `HUD_TITLE_SZ`; wave B, which has `player_hud` in scope, makes that one
-/// const the source and a test pin the two together.
-pub const HUD_TITLE_PX: i32 = 54;
-
 /// The type-scale rungs a text cell may name: `theme::size` but for `DIAGNOSTIC` (the diagnostics
-/// instrument's own rung, below the couch floor), plus `HUD_TITLE`, the existing 54 px carve-out, legal
-/// only on a text cell bound to `title.main` (a [`Rule::NameOnlyWith`]).
+/// instrument's own rung, below the couch floor), plus `HUD_TITLE`, the existing 54 px carve-out (the
+/// now-playing title's own `classic::HUD_TITLE_SZ`, the one source), legal only on a text cell bound to
+/// `title.main` (a [`Rule::NameOnlyWith`]).
 pub static SIZE_RUNGS: &[(&str, i32)] = &[
     ("HERO", theme::size::HERO),
     ("DISPLAY", theme::size::DISPLAY),
@@ -599,7 +632,7 @@ pub static SIZE_RUNGS: &[(&str, i32)] = &[
     ("LABEL", theme::size::LABEL),
     ("CAPTION", theme::size::CAPTION),
     ("MICRO", theme::size::MICRO),
-    ("HUD_TITLE", HUD_TITLE_PX),
+    ("HUD_TITLE", HUD_TITLE_SZ),
 ];
 
 /// The spacing rungs (`theme::space`) a gap may name.
@@ -630,6 +663,9 @@ pub static BUILTIN_ICONS: &[(&str, Icon)] = &[
     ("close", Icon::Close),
     ("check", Icon::Check),
 ];
+
+/// What precedes a built-in glyph's name in a face: `builtin:play`. The parser reads it from here.
+pub const BUILTIN_FACE_PREFIX: &str = "builtin:";
 
 /// An allow-listed theme token's colour (straight, not premultiplied, RGBA: `theme`'s own value), or `None`.
 pub fn ink_token(name: &str) -> Option<[f32; 4]> {
@@ -739,11 +775,6 @@ pub fn binding(name: &str) -> Option<&'static Binding> {
 // Nodes: the package, `layout` and everything under it
 // ---------------------------------------------------------------------------------------------------
 
-/// The pixel height of classic's whole scrim over the screen bottom, which bounds a package scrim's
-/// `extra` and `height`. It mirrors `player_hud`'s private `SCRIM_H` (470); wave B, which has
-/// `player_hud` in scope, makes that one const the source and a test pin the two together.
-pub const SCRIM_H_PX: i64 = 470;
-
 /// A width on the 1920-wide canvas.
 const PX_W: Ty = Ty::Int { min: 1, max: 1920 };
 /// A height on the 1080-tall canvas.
@@ -820,7 +851,7 @@ pub static ROOT: Node = Node {
             "The schema URL, for editors: accepted and ignored by the app; lint checks its major.minor equals `format`.",
         ),
         Field::req("format", Ty::Pattern(Pattern::FormatVersion), "MAJOR.MINOR of the schema, bindings and command vocabulary."),
-        Field::req("id", Ty::Pattern(Pattern::ReverseDns), "The package's reverse-DNS identity."),
+        Field::req("id", Ty::Pattern(Pattern::ReverseDns), "The package's reverse-DNS identity (the built-in HUD's reserved `builtin:classic` is the one other id that parses)."),
         Field::req("version", Ty::Pattern(Pattern::Semver), "The package's own semver; it only orders updates of one id."),
         Field::req("name", Ty::Text { max_len: 64 }, "The display name."),
         Field::req("author", Ty::Text { max_len: 64 }, "The author."),
@@ -918,13 +949,13 @@ pub static SCRIM: Node = Node {
         ),
         Field::opt(
             "extra",
-            Ty::Int { min: 0, max: SCRIM_H_PX },
+            Ty::Int { min: 0, max: SCRIM_H as i64 },
             "With `cover: \"block\"`: px of scrim above the block's top. At most classic's whole scrim height.",
         )
         .keyable(),
         Field::opt(
             "height",
-            Ty::Int { min: 0, max: SCRIM_H_PX },
+            Ty::Int { min: 0, max: SCRIM_H as i64 },
             "With `cover: \"fixed\"`: the scrim's height from the screen bottom. At most classic's whole scrim height.",
         )
         .keyable(),
@@ -1261,6 +1292,10 @@ pub static CELL_SPACER: Node = Node {
     doc: "Empty width.",
 };
 
+/// The most controls one `segment` holds. The player's row is a segment, and
+/// [`crate::player_hud::geometry::MAX_ROW_ITEMS`], the width of the geometry report's `items`, is this.
+pub const MAX_SEGMENT_ITEMS: usize = 24;
+
 pub static CELL_PLAYBAR: Node = Node {
     name: "playbar",
     kind: NodeKind::Plain,
@@ -1271,7 +1306,7 @@ pub static CELL_PLAYBAR: Node = Node {
         Field::req(
             "thickness",
             Ty::Int { min: 1, max: 64 },
-            "The track's height in px: the band's box. The knob, the clocks and the mark overhang it.",
+            "The track's height in px. The bar's box is the track and the line the clocks are drawn on under it, or this if taller; the knob and the mark overhang the track.",
         )
         .keyable(),
         Field::opt(
@@ -1341,7 +1376,7 @@ pub static CELL_SEGMENT: Node = Node {
             "items",
             Ty::List {
                 of: &Ty::Object("item"),
-                max_len: 24,
+                max_len: MAX_SEGMENT_ITEMS,
             },
             "The controls, in order.",
         ),
@@ -2273,7 +2308,7 @@ mod tests {
             from_rungs.as_slice(),
             "BODY_SIZES is SIZE_RUNGS but for HUD_TITLE"
         );
-        assert!(size_rung("HUD_TITLE") == Some(HUD_TITLE_PX));
+        assert!(size_rung("HUD_TITLE") == Some(HUD_TITLE_SZ));
         // Every Ty::Size sits in a node whose rule restricts HUD_TITLE; every other size key excludes it.
         for n in all_nodes() {
             for f in n.fields {
@@ -2357,7 +2392,7 @@ mod tests {
             field(&SCRIM, "extra").unwrap().ty,
             Ty::Int {
                 min: 0,
-                max: SCRIM_H_PX
+                max: SCRIM_H as i64
             },
             "extra is at most classic's scrim"
         );

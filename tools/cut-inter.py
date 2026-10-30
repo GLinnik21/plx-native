@@ -24,7 +24,7 @@ two Inter faces.
      at 3 m has a small angular size regardless of the px number.
 
   2. **Tabular figures, frozen into cmap.** Inter defaults to PROPORTIONAL digits ('1' = 0.397 em,
-     '4' = 0.640 em — a 1.61:1 spread) where Arial was flat 0.5562. `player_hud.rs::draw_clock`
+     '4' = 0.640 em — a 1.61:1 spread) where Arial was flat 0.5562. `player_hud/classic.rs::draw_clock`
      measures a template with every digit replaced by '0' and centres the real string on that box;
      its own doc comment says this keeps the box "stable while digits tick instead of wobbling with
      proportional digit widths". That identity is ONLY true for tabular figures — with Inter as-cut
