@@ -68,15 +68,17 @@ impl SampleRow {
             if i == focused {
                 lifted = Some(art);
             } else {
-                let rect = Self::tile(sty, n, i, area);
-                card_row::draw_sort_value(p, rect, 1.0, sty, &value(i), measure, false);
-                card_row::draw_tile(p, art, rect, 1.0, sty, None);
+                card_row::draw_tile(p, art, Self::tile(sty, n, i, area), 1.0, sty, None);
             }
         }
         if let Some(art) = lifted {
-            let rect = Self::lifted(sty, n, focused, area);
-            card_row::draw_sort_value(p, rect, sty.focus_scale, sty, &value(focused), measure, true);
-            card_row::draw_focused(p, art, rect, sty.focus_scale, sty, None, &TileLabel::default(), measure);
+            card_row::draw_focused(p, art, Self::lifted(sty, n, focused, area), sty.focus_scale, sty, None,
+                &TileLabel::default(), measure);
+        }
+        // Over every tile, as the grid draws them: the lifted card's shadow reaches the value line.
+        for i in 0..n {
+            let (rect, s) = if i == focused { (Self::lifted(sty, n, i, area), sty.focus_scale) } else { (Self::tile(sty, n, i, area), 1.0) };
+            card_row::draw_sort_value(p, rect, s, sty, &value(i), measure, i == focused);
         }
     }
 }

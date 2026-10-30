@@ -882,9 +882,19 @@ impl Grid {
                 self.draw_caption(f, src, *i, paint, *s, *focused);
             }
         }
-        for (i, s, focused, paint) in paints {
+        for (i, s, focused, paint) in &paints {
             if let Some(paint) = paint {
-                self.draw_card(f, src, i, s, focused, paint, lead.filter(|_| focused));
+                self.draw_card(f, src, *i, *s, *focused, paint, lead.filter(|_| *focused));
+            }
+        }
+        // A value line is the OPPOSITE of a band: it has a fixed place under its poster (never over
+        // the row below: `SORT_VALUE_REACH` is inside the 60 px row gap), so it goes ABOVE every
+        // tile. The lifted card's drop shadow is folded into its composite quad, which reaches 64 px
+        // past the poster: a value drawn before the tiles sat UNDER that shadow and read at 86% of
+        // its ink.
+        for (i, s, focused, paint) in &paints {
+            if let Some(paint) = paint {
+                self.draw_value(f, src, *i, paint, *s, *focused);
             }
         }
         self.record_stops(f, p, src);
@@ -980,7 +990,8 @@ impl Grid {
         let s = super::press_scale(self.pop_in(cards, src, i, Some(i)), i, pressed, f.cx);
         let Some(paint) = self.card_paint(f, p, src, cards, i, s, true, &self.bands.geometry()) else { return };
         self.draw_caption(f, src, i, &paint, s, true);
-        self.draw_card(f, src, i, s, true, paint, None);
+        self.draw_card(f, src, i, s, true, &paint, None);
+        self.draw_value(f, src, i, &paint, s, true);
     }
 
     /// What card `i` is painted with, decided apart from the GL calls so that [`draw_card`](Self::draw_card)
@@ -1047,19 +1058,30 @@ impl Grid {
 
     /// The caption block under card `paint` ([`with_caption`](Self::with_caption)'s label), painted
     /// ahead of every tile ([`draw`](Self::draw)). `focused` marks the lifted card: it opens the
-    /// `devtriggers` card probe, and with value lines it is the card whose value is drawn bold.
+    /// `devtriggers` card probe. A grid in value-line mode paints no block here
+    /// ([`draw_value`](Self::draw_value) paints its line after the tiles).
     fn draw_caption<H: Host, S: CardSource<H>>(
         &self, f: &DrawFrame<'_, '_, H>, src: &S, i: usize, paint: &CardPaint, s: f32, focused: bool,
     ) {
+        #[cfg(feature = "devtriggers")]
+        if focused { crate::card_probe::begin_card(); }
+        #[cfg(not(feature = "devtriggers"))]
+        let _ = focused;
+        if self.spec.value_line { return; }
         self.with_caption(src, i, paint, |label| {
-            #[cfg(feature = "devtriggers")]
-            if focused { crate::card_probe::begin_card(); }
-            if self.spec.value_line {
-                if let Some(value) = &label.value {
-                    card_row::draw_sort_value(paint.p, paint.rect, s, &self.spec.style, value, f.measure, focused);
-                }
-            } else {
-                card_row::draw_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure);
+            card_row::draw_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure);
+        });
+    }
+
+    /// The sort value line under card `paint` (the source's cached label), painted AFTER every
+    /// tile ([`draw`](Self::draw)): `focused` marks the lifted card, whose value is drawn bold.
+    fn draw_value<H: Host, S: CardSource<H>>(
+        &self, f: &DrawFrame<'_, '_, H>, src: &S, i: usize, paint: &CardPaint, s: f32, focused: bool,
+    ) {
+        if !self.spec.value_line { return; }
+        src.with_label(i, |label| {
+            if let Some(value) = &label.value {
+                card_row::draw_sort_value(paint.p, paint.rect, s, &self.spec.style, value, f.measure, focused);
             }
         });
     }
@@ -1074,10 +1096,10 @@ impl Grid {
         i: usize,
         s: f32,
         focused: bool,
-        paint: CardPaint,
+        paint: &CardPaint,
         led: Option<crate::widgets::ArtImage>,
     ) {
-        let CardPaint { rect, p, .. } = paint;
+        let (rect, p) = (paint.rect, paint.p);
         if focused {
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_art();

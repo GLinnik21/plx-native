@@ -5488,6 +5488,43 @@ fn value_lines_draw_on_every_visible_card_and_space_the_rows_for_them() {
         "turning values off restores the focused-only caption band");
 }
 
+/// The simulator measured the settled focused value at 217/255 where TEXT_PRIMARY is 247: the grid
+/// drew every value BEFORE every tile, and the lifted card's drop shadow (folded into its composite
+/// quad, 64 px past the poster) fell over the line. A value is painted over every tile.
+#[test]
+fn every_value_is_painted_after_every_tile_so_no_shadow_falls_on_it() {
+    let _guard = plx_base::testlock::serial();
+    let mut r = Rig::<Grid>::new(30);
+    r.src.sort_caption = true;
+    r.sect.set_value_line(true);
+    r.land_focus(112, By::Dir); r.run(120);
+    let cx = r.cx();
+    let draw = || {
+        let mut frame = DrawFrame::new(&cx, Painter::recording());
+        let p = frame.painter;
+        r.sect.draw(&mut frame, p, &r.src);
+    };
+    let census = crate::draw_census::capture(draw);
+    let last_tile = census.iter().rposition(|(tag, _)| *tag == TILE_PAINTED).expect("tiles are painted");
+    let first_value = census.iter().position(|(tag, _)| *tag == 100).expect("values are painted");
+    assert!(first_value > last_tile, "a value line goes over every tile (tile {last_tile}, value {first_value})");
+    // and the settled focused card's value is the whole of TEXT_PRIMARY, bold
+    let runs = crate::draw_census::capture_runs(draw);
+    let bold: Vec<_> = runs.iter().filter(|run| run.bold && run.ink[0] > 0.0).collect();
+    assert_eq!(bold.len(), 1, "exactly the lifted card's value is bold");
+    // (the pop spring settles within a millionth of its target: an alpha well inside one 8-bit step)
+    let ink = bold[0].ink;
+    assert_eq!(ink[..3], crate::theme::TEXT_PRIMARY[..3]);
+    assert!((ink[3] - 1.0).abs() < 0.5 / 255.0, "{ink:?}");
+    // the opener's redraw of the lifted card keeps the same order
+    let hold = crate::draw_census::capture(|| {
+        let mut frame = DrawFrame::new(&cx, Painter::recording());
+        r.sect.redraw(&mut frame, &r.src, Some(r.key(112)));
+    });
+    let tile = hold.iter().position(|(tag, _)| *tag == TILE_PAINTED).expect("the lifted tile");
+    assert!(hold.iter().position(|(tag, _)| *tag == 100).is_some_and(|value| value > tile), "{hold:?}");
+}
+
 #[test]
 fn a_value_line_drops_its_plus_then_its_mark_and_never_elides() {
     let _guard = plx_base::testlock::serial();

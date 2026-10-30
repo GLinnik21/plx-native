@@ -295,6 +295,20 @@ pub const fn band(id: Icon) -> f32 {
     }
 }
 
+/// How far a review-score mark is drawn PAST the box its caller gives it, about the box's centre, so
+/// the mark's body fills the box the way the Library board draws it. The tomato's body is a disc of
+/// 15.2 units in a 26-unit viewBox (58% of the box: the viewBox leaves room for the stem above it),
+/// where the board's disc is 15 px in a 20 px box (75%): a tomato handed a 20 px box is enlarged by
+/// 0.75 / 0.585 so its body is the board's 15 px, the stem rising past the box. The art itself is
+/// unchanged; every layer of one mark takes the same zoom (they share a viewBox and register).
+/// 1.0 for every other glyph.
+pub const fn mark_zoom(id: Icon) -> f32 {
+    match id {
+        Icon::Tomato | Icon::TomatoCalyx | Icon::TomatoHollow => (15.0 / 20.0) / (15.2 / 26.0),
+        _ => 1.0,
+    }
+}
+
 fn src(id: Icon) -> &'static str {
     match id {
         Icon::Agreement => include_str!("../../../assets/icons/agreement.svg"),
@@ -759,6 +773,26 @@ mod ink_tests {
                 }
             }
         }
+    }
+
+    /// [`mark_zoom`] is derived from the tomato asset's own disc and viewBox, so a re-drawn body
+    /// (a different `r`, a different viewBox) fails here instead of drifting from the board's 15 px.
+    #[test]
+    fn the_tomato_zoom_puts_its_body_at_the_boards_15_px_in_a_20_px_box() {
+        let number_after = |svg: &str, key: &str| -> Vec<f32> {
+            let at = svg.find(key).expect(key) + key.len();
+            svg[at..].split('"').next().unwrap().split_whitespace().map(|n| n.parse().unwrap()).collect()
+        };
+        let svg = src(Icon::Tomato);
+        let (view, r) = (number_after(svg, "viewBox=\""), number_after(svg, " r=\"")[0]);
+        assert_eq!(view[2], view[3], "a square viewBox");
+        for id in [Icon::Tomato, Icon::TomatoCalyx, Icon::TomatoHollow] {
+            assert_eq!(src(id).split("viewBox=\"").nth(1).unwrap().split('"').next(), svg.split("viewBox=\"").nth(1).unwrap().split('"').next(),
+                "the layers of one mark share a viewBox and a zoom");
+            let body = 20.0 * mark_zoom(id) * (2.0 * r) / view[2];
+            assert!((body - 15.0).abs() < 0.05, "{id:?}: the body of a 20 px tomato box is {body} px");
+        }
+        assert_eq!(mark_zoom(Icon::Crowd), 1.0);
     }
 
     /// The Watchlist marks' `ink_x` and `band` entries are the bounds of their own assets, not

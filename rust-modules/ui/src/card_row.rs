@@ -1231,8 +1231,9 @@ pub const SORT_VALUE_BAND_H: f32 = COLLAPSED_GAP + SORT_VALUE_OPEN;
 /// Room under an UNSCALED poster bottom a value line can reach (the lifted card's shift, the focused
 /// gap and the box), what the grid culls and reveals with.
 pub const SORT_VALUE_REACH: f32 = 56.0;
-/// The rating mark beside a value: 20 px, the board's size, hung [`SORT_VALUE_MARK_GAP`] to the
-/// left of the number.
+/// The rating mark beside a value: a 20 px box, the board's size, hung [`SORT_VALUE_MARK_GAP`] to the
+/// left of the number. A tomato is drawn past its box by `icons::mark_zoom` so its body is the board's
+/// 15 px disc (its viewBox leaves room for the stem), centred in the same box.
 const SORT_VALUE_MARK_D: f32 = 20.0;
 /// A budget no line reaches: asking the memoised fit for it yields the run's natural width.
 const SORT_VALUE_NATURAL: f32 = 1.0e5;
@@ -1291,7 +1292,8 @@ pub(crate) fn draw_sort_value(
     if mark.is_empty() { return; }
     let mark_rect = Rect::new(rect.cx() - width * 0.5 - SORT_VALUE_MARK_GAP - SORT_VALUE_MARK_D, cy - SORT_VALUE_MARK_D * 0.5,
         SORT_VALUE_MARK_D, SORT_VALUE_MARK_D);
-    for (mask, tint) in mark { crate::icons::draw(p, *mask, mark_rect, *tint); }
+    // The art's own zoom puts a tomato's body at the board's 15 px in the 20 px box (`icons::mark_zoom`).
+    for (mask, tint) in mark { crate::icons::draw(p, *mask, mark_rect.scaled(crate::icons::mark_zoom(*mask)), *tint); }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3761,6 +3763,90 @@ mod sort_caption_review_tests {
         let focused_cold = measure.widths.get();
         draw(style.focus_scale, true);
         assert_eq!(measure.widths.get(), focused_cold);
+    }
+
+    /// The ink a value line is drawn with at lift factor `t` (the card's scale on the way from rest to
+    /// `focus_scale`): the `(regular, bold)` effective alphas of the runs, the shadow's runs left out,
+    /// and the bold run's colour.
+    fn value_inks(t: f32, focused: bool, value: &SortValue) -> (f32, f32, Option<[f32; 4]>) {
+        let style = RowStyle { w: 250.0, ..crate::poster_grid::STYLE };
+        let rect = Rect::new(100.0, 100.0, 250.0, 375.0);
+        // a settled lift IS `focus_scale` (the spring lands on it), not 1 + 1 * (focus_scale - 1)
+        let s = if t >= 1.0 { style.focus_scale } else { 1.0 + t * (style.focus_scale - 1.0) };
+        let runs = crate::draw_census::capture_runs(|| draw_sort_value(
+            Painter::recording(), rect, s, &style, value, &crate::fixture::FixtureMeasure, focused));
+        // each texture is a shadow run (black) then an ink run; the ink is the run whose colour is not black
+        let ink = |bold: bool| runs.iter().filter(|run| run.bold == bold && run.ink[0] > 0.0).map(|run| run.ink).next();
+        (ink(false).map_or(0.0, |c| c[3]), ink(true).map_or(0.0, |c| c[3]), ink(true))
+    }
+
+    #[test]
+    fn a_focused_settled_value_is_drawn_at_the_full_ink_of_text_primary() {
+        let _guard = plx_base::testlock::serial();
+        let value = SortValue { text: "98%".into(), ..Default::default() };
+        // Settled and focused: the bold texture alone, at TEXT_PRIMARY's colour and an alpha of exactly 1.
+        let (regular, bold, colour) = value_inks(1.0, true, &value);
+        assert_eq!(regular, 0.0, "no regular texture left under the bold one");
+        assert_eq!(colour, Some(theme::TEXT_PRIMARY), "the peak channel IS #F7FAFC");
+        assert_eq!(bold, 1.0);
+        // Rest: the regular texture alone at 80% white.
+        let (regular, bold, _) = value_inks(0.0, false, &value);
+        assert!((regular - 0.8).abs() < 1e-6 && bold == 0.0, "rest is 80% white regular: {regular} {bold}");
+        // A missing value stays a regular 50% white dash, lifted or not (absence does not brighten).
+        let dash = SortValue { text: "\u{2013}".into(), missing: true, ..Default::default() };
+        for (t, focused) in [(0.0, false), (1.0, true)] {
+            let (regular, bold, _) = value_inks(t, focused, &dash);
+            assert!((regular - 0.5).abs() < 1e-6 && bold == 0.0, "dash t={t}: {regular} {bold}");
+        }
+    }
+
+    #[test]
+    fn a_tomato_mark_is_drawn_at_the_boards_15_px_body_hung_6_px_left_of_the_number() {
+        let _guard = plx_base::testlock::serial();
+        use crate::icons::Icon;
+        let mark: &'static [crate::widgets::MarkLayer] =
+            &[(Icon::Tomato, theme::RATING_FRESH), (Icon::TomatoCalyx, theme::RATING_LEAF)];
+        let value = SortValue { text: "98%".into(), mark, ..Default::default() };
+        let style = RowStyle { w: 250.0, ..crate::poster_grid::STYLE };
+        let rect = Rect::new(100.0, 100.0, 250.0, 375.0);
+        let (runs, icons) = {
+            let mut icons = Vec::new();
+            let runs = crate::draw_census::capture_runs(|| {
+                icons = crate::draw_census::capture_icons(|| draw_sort_value(
+                    Painter::recording(), rect, 1.0, &style, &value, &crate::fixture::FixtureMeasure, false));
+            });
+            (runs, icons)
+        };
+        assert!(runs.iter().any(|run| run.text == "98%"), "the number");
+        let number_left = rect.cx() - crate::fixture::FixtureMeasure.width_str("98%", theme::size::CAPTION, false) * 0.5;
+        assert_eq!(icons.len(), 2, "both layers of the mark");
+        let line_cy = rect.y + rect.h + SORT_VALUE_GAP + SORT_VALUE_H * 0.5;
+        for (id, at) in &icons {
+            // every layer shares one box, centred on the line and the board's 20 px box
+            let zoom = crate::icons::mark_zoom(*id);
+            assert!((at.w - SORT_VALUE_MARK_D * zoom).abs() < 0.01 && (at.cy() - line_cy).abs() < 0.01, "{id:?} {at:?}");
+            assert!((at.cx() + SORT_VALUE_MARK_D * 0.5 - (number_left - SORT_VALUE_MARK_GAP)).abs() < 0.01,
+                "the 20 px box hangs 6 px left of the number: {at:?} vs {number_left}");
+        }
+        let body = icons[0].1.w * 15.2 / 26.0;
+        assert!((body - 15.0).abs() < 0.05, "the body is the board's 15 px disc, not {body}");
+    }
+
+    #[test]
+    fn the_lift_crossfade_is_monotone_in_both_directions() {
+        let _guard = plx_base::testlock::serial();
+        let value = SortValue { text: "98%".into(), ..Default::default() };
+        for focused in [true, false] {
+            let steps: Vec<(f32, f32)> = (0..=20).map(|i| {
+                let (regular, bold, _) = value_inks(i as f32 / 20.0, focused, &value);
+                (regular, bold)
+            }).collect();
+            assert!(steps.windows(2).all(|w| w[1].1 >= w[0].1), "the bold ink only rises with the lift: {steps:?}");
+            assert!(steps.windows(2).all(|w| w[1].0 <= w[0].0), "the regular ink only falls with the lift: {steps:?}");
+            assert_eq!((steps[0], steps[20]), ((0.8, 0.0), (0.0, 1.0)), "exact ends (focused={focused})");
+            // the value never goes dimmer than the dimmer end part-way: the two textures together keep it readable
+            assert!(steps.iter().all(|&(regular, bold)| regular + bold >= 0.5), "{steps:?}");
+        }
     }
 
     #[test]
