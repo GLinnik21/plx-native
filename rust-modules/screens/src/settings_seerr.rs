@@ -1,8 +1,8 @@
 //! **Settings > Services > Seerr** (docs/seerr.md): the household's Seerr server (Overseerr,
 //! Jellyseerr), which the request surfaces ask on behalf of whoever is watching.
 //!
-//! Three rows: the server address (OK opens the television's keyboard on the address field drawn in
-//! the page's panel, which stands above the raised keyboard), Connect (its sub-line is the live connection: connecting, connected as whom,
+//! Three rows: the server address (OK opens the television's keyboard and the address is typed in
+//! the row itself, which stands above the raised keyboard), Connect (its sub-line is the live connection: connecting, connected as whom,
 //! refused, unreachable) and Remove server. The page reads the stored address and the connection
 //! from the Seerr store's view (`cx.views.seerr`), never from the session: the store is handed the
 //! stored address every frame (`Bridge::seerr_pump`) and signs the seated profile in there.
@@ -125,22 +125,16 @@ impl LogicalState for SeerrState {
 
 /// The caret's blink period, Search's.
 const BLINK_US: u32 = 530_000;
-/// The panel the address field stands in, in the narrative column under the copy, its foot a
-/// [`theme::space::LG`] above the television's raised keyboard (`text_field::SYSTEM_KEYBOARD_TOP`):
-/// the field is typed into while the keyboard is up, and the keyboard cannot be moved. It stands
-/// there whether or not the keyboard is up, so nothing jumps when it rises.
-const PANEL_H: f32 = 136.0;
-const PANEL_PAD: f32 = 32.0;
+/// The field's inset inside the Address row while it is typed into.
+const FIELD_PAD: f32 = 24.0;
 
-fn panel() -> Rect {
-    let narrative = RouteLayout::screen().narrative;
-    let bottom = plx_ui::text_field::SYSTEM_KEYBOARD_TOP - theme::space::LG;
-    Rect::new(narrative.x, bottom - PANEL_H, narrative.w, PANEL_H)
-}
-
-fn field_rect() -> Rect {
-    let p = panel();
-    Rect::new(p.x + PANEL_PAD, p.y + PANEL_PAD, p.w - 2.0 * PANEL_PAD, p.h - 2.0 * PANEL_PAD)
+/// Where the address is typed: over the Address row itself, which stands near the top of the
+/// content column, well above the television's raised keyboard (`text_field::SYSTEM_KEYBOARD_TOP`),
+/// which cannot be moved. `None` while the row is scrolled out of the table's frame.
+fn field_rect(form: &FormTable<SeerrId, SeerrAction, SettingsPage>) -> Option<Rect> {
+    let i = form.index_of(&SeerrId::Address)? as i32;
+    let row = form.table.row_rect(RouteLayout::screen().sectioned_table(), i)?;
+    Some(Rect::new(row.x + FIELD_PAD, row.y, row.w - 2.0 * FIELD_PAD, row.h))
 }
 
 impl SeerrPage {
@@ -373,17 +367,15 @@ impl Screen<InnerHost> for SeerrPage {
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
+        if !self.state.editing {
+            return;
+        }
+        let Some(field) = field_rect(&self.form) else { return };
         let p = f.painter;
-        let frame = panel();
-        p.rect(frame, theme::CARD_RING_RAD, theme::scrim_black(0.30), theme::scrim_black(0.30), 0.0);
-        let ink = if self.field.blank() {
-            theme::TEXT_TERTIARY
-        } else if self.state.editing {
-            theme::FIELD_EDITING_INK
-        } else {
-            theme::TEXT_SECONDARY
-        };
-        text_field::draw(f, p, field_rect(), &self.field, ink, theme::TEXT_PRIMARY, self.state.editing, self.blink_us < BLINK_US);
+        let row = Rect::new(field.x - FIELD_PAD, field.y, field.w + 2.0 * FIELD_PAD, field.h);
+        p.rect(row, theme::CARD_RING_RAD, theme::SURFACE_PANEL, theme::SURFACE_PANEL, 0.0);
+        let ink = if self.field.blank() { theme::TEXT_TERTIARY } else { theme::FIELD_EDITING_INK };
+        text_field::draw(f, p, field, &self.field, ink, theme::TEXT_PRIMARY, true, self.blink_us < BLINK_US);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }

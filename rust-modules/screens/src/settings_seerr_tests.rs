@@ -180,32 +180,17 @@ fn the_rows_follow_the_stored_address_and_the_connection() {
 }
 
 #[test]
-fn the_address_field_stands_above_the_raised_keyboard() {
-    let keyboard = plx_ui::text_field::SYSTEM_KEYBOARD_TOP;
-    assert!(panel().y + panel().h <= keyboard, "the panel ends at {} and the keyboard starts at {keyboard}",
-        panel().y + panel().h);
-    assert!(field_rect().y + field_rect().h <= keyboard, "the field is typed into while the keyboard is up");
-}
-
-#[test]
-fn the_copy_ends_above_the_address_panel_in_every_language() {
-    use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_ui::text_view::TextView;
-    let _g = plx_base::testlock::serial();
-    let layout = RouteLayout::screen();
-    let mut out = Vec::new();
-    for language in plx_platform::i18n::SHIPPED {
-        let _lang = plx_platform::i18n::language_on_this_thread_for_test(language);
-        let tag = language.tag();
-        let frame = layout.narrative_copy_frame(true, msg::settings_seerr_title(), layout.action.y, &ShippedMeasure);
-        let copy_h = TextView::new(msg::settings_seerr_copy(), theme::size::LABEL, theme::TEXT_READING)
-            .leading(theme::size::LABEL as f32 + theme::space::XS)
-            .max_lines(12)
-            .with_measure(&ShippedMeasure)
-            .measure_h(layout.narrative.w);
-        if frame.y + copy_h + theme::space::MD > panel().y {
-            out.push(format!("{tag}: the copy ends at {:.0}, under the address panel at {:.0}", frame.y + copy_h, panel().y));
-        }
+fn the_address_is_typed_in_its_own_row_above_the_raised_keyboard() {
+    for address in ["", "http://192.168.1.20:5055"] {
+        let store = store(address);
+        let page = SeerrPage::new(EntryId(0), &cx(&store));
+        let field = field_rect(&page.form).expect("the Address row is on screen");
+        let i = page.form.index_of(&SeerrId::Address).unwrap() as i32;
+        let row = page.form.table.row_rect(RouteLayout::screen().sectioned_table(), i).unwrap();
+        assert!(field.y >= row.y && field.y + field.h <= row.y + row.h, "the field is drawn in the row");
+        let keyboard = plx_ui::text_field::SYSTEM_KEYBOARD_TOP;
+        assert!(field.y + field.h <= keyboard, "the field ends at {} and the keyboard starts at {keyboard}",
+            field.y + field.h);
+        assert!(field.h >= theme::size::TITLE as f32, "the row is tall enough for the field's run");
     }
-    assert!(out.is_empty(), "{out:#?}");
 }
