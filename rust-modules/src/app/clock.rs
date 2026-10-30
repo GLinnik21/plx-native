@@ -89,6 +89,36 @@ mod tests {
     }
 
     #[test]
+    fn a_published_date_reaches_a_screen_through_its_views_and_no_clock() {
+        use crate::app::bridge::{AppHost, Bridge};
+        use plx_machine::machine::{EntryId, InputOwner, Tick};
+        use plx_screens::registry::LibraryLike;
+        use plx_ui::dispatch::CxParts;
+        let mut bridge = Bridge::for_test(|| 0);
+        let parts = CxParts { tick: Tick::default(), press: Default::default(), focus: Default::default(),
+            owner: InputOwner::Entry(EntryId(0)) };
+        // What a screen sees: a `Cx` over the Bridge's views, asked through the Library's host trait.
+        let seen = |bridge: &Bridge| {
+            let cx = parts.cx::<AppHost>(
+                bridge.views_with(plx_media::route::idle_session_for_test()), &plx_ui::fixture::FixtureMeasure);
+            <AppHost as LibraryLike>::today(&cx)
+        };
+        assert_eq!(bridge.views().today, None);
+        assert_eq!(seen(&bridge), None, "before the loop's first publication the host has no date");
+        bridge.publish_today(Some([2001, 2, 3]));
+        assert_eq!(bridge.views().today, Some([2001, 2, 3]));
+        assert_eq!(seen(&bridge), Some([2001, 2, 3]), "a screen receives the published date");
+        // The host reads no clock for it: a replay pinning another date changes nothing it answers.
+        super::set_replay(100);
+        assert_ne!(super::today(), Some([2001, 2, 3]));
+        assert_eq!(seen(&bridge), Some([2001, 2, 3]), "the answer is the publication, not `today()`");
+        bridge.publish_today(None);
+        assert_eq!(seen(&bridge), None, "a publication of nothing is nothing");
+        super::REPLAY.with(|c| c.set(None));
+        super::REPLAY_TODAY.with(|c| c.set(None));
+    }
+
+    #[test]
     fn the_date_is_pinned_under_a_replay_and_read_once_a_minute_otherwise() {
         super::REPLAY_TODAY.with(|c| c.set(None));
         super::TODAY.with(|c| c.set(None));

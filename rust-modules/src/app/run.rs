@@ -204,9 +204,10 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the tree and the loop's route mirror ("the tree still says player, the route already
         // says home"); with one authority it is an EDGE, read either side of the frame.
         let was_player = super::bridge::player(&app.pages).is_some();
-        // **Publish the playback session into the tree** (spec §2.3) before the dispatcher's frame
+        // **Publish the frame's inputs into the tree** (spec §2.3) before the dispatcher's frame
         // and the draw that follows it, so every owned screen in one frame reads one consistent
-        // picture. Only while something that reads it is mounted — see `Bridge::publish_playback`.
+        // picture: the playback session (only while something that reads it is mounted — see
+        // `Bridge::publish_playback`) and the calendar date (`publish_frame`, below).
         if app.adapters.player.poll_repair(&mut app.player.repair) {
             plx_machine::idle::invalidate();
         }
@@ -217,7 +218,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
         plx_media::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
-        app.bridge.publish_playback(&app.player.session, was_player);
+        publish_frame(&mut app.bridge, &app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
@@ -303,6 +304,17 @@ pub(crate) unsafe fn run(app: &mut App) {
         report(app, fr);
         heartbeat(app, fr);
     }
+}
+
+/// **What the loop publishes into the Bridge once per iteration**, ahead of the dispatcher frame and
+/// the draw: the playback session ([`super::bridge::Bridge::publish_playback`]) and today's
+/// calendar date ([`super::bridge::Bridge::publish_today`]). The date comes from [`clock::today`],
+/// which this call is the one caller of: it answers [`clock::REPLAY_DATE`] under a replay (the
+/// recorded tick is set at the top of the iteration) and the platform's date, read at most once a
+/// minute, otherwise. A screen then receives the date through `AppViews::today` and reads no clock.
+fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route::PlaybackSession, was_player: bool) {
+    bridge.publish_playback(session, was_player);
+    bridge.publish_today(clock::today());
 }
 
 /// **The frame's clock and the click's spring** (spec §3.3 step 3's head).
@@ -8933,6 +8945,53 @@ mod pump_wiring_tests {
             "pump_detail() and pump_season() must be pumped from the same function — found what \
              looks like an intervening function boundary between them"
         );
+    }
+}
+
+#[cfg(test)]
+mod frame_publication_tests {
+    //! **The loop publishes the calendar date once per iteration** (`Bridge::publish_today`), so a
+    //! screen receives it through `AppViews::today` and reads no clock. `App` has no host fixture
+    //! (it needs a real SDL/GL context), so the behaviour is graded on [`publish_frame`] — the one
+    //! call the loop makes — and the loop's own text is pinned for that call, the idiom of
+    //! `pump_wiring_tests`.
+    use super::{clock, publish_frame};
+    use crate::app::bridge::Bridge;
+
+    #[test]
+    fn an_iteration_publishes_the_replay_pinned_date_and_a_new_one_replaces_it() {
+        let mut bridge = Bridge::for_test(|| 0);
+        let session = plx_media::route::idle_session_for_test();
+        assert_eq!(bridge.views().today, None, "nothing is published before the first iteration");
+        // A replay frame runs on the recorded tick, and with it the pinned date: the same on every
+        // run and every day, whatever the wall clock says.
+        clock::set_replay(100);
+        publish_frame(&mut bridge, session, false);
+        assert_eq!(bridge.views().today, Some(clock::REPLAY_DATE));
+        // The publication is the frame's: the next iteration replaces it, so a midnight is carried.
+        bridge.publish_today(Some([2001, 2, 3]));
+        assert_eq!(bridge.views().today, Some([2001, 2, 3]));
+        publish_frame(&mut bridge, session, false);
+        assert_eq!(bridge.views().today, Some(clock::REPLAY_DATE), "every iteration publishes anew");
+    }
+
+    #[test]
+    fn the_loop_publishes_the_frame_before_the_dispatcher_frame_and_the_draw() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player);";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`publish_frame` must be called exactly once, at the loop body's own depth: unnested, \
+             so no route skips the date",
+        );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let frame = src.find("let supplied = match app.rec.replay_results(").expect("the dispatcher's frame");
+        let draw = src.find("let (_vx, _vy, _vw, _vh) = draw(app, fr);").expect("the loop's draw");
+        assert!(call < frame && call < draw, "the date is published before the frame that reads it");
     }
 }
 
