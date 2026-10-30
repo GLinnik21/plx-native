@@ -4,6 +4,7 @@
 //! An early render-thread read never initializes the cache: the port's worker is the only
 //! publisher, and a failed or late answer cannot be mistaken for an affirmative capability.
 
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,9 +96,26 @@ impl DvCache {
 }
 
 static RESULT: DvCache = DvCache::new();
+static DISABLED_BY_PREF: AtomicBool = AtomicBool::new(false);
+
+/// Update whether the seated profile's `DolbyVisionMode` preference has disabled Dolby Vision.
+pub fn set_disabled_by_pref(disabled: bool) {
+    DISABLED_BY_PREF.store(disabled, Relaxed);
+}
+
+pub fn is_disabled_by_pref() -> bool {
+    DISABLED_BY_PREF.load(Relaxed)
+}
 
 /// Cached result only. This performs no registration, filesystem access, wait or initialization.
 pub fn probe() -> DvProbe {
+    if is_disabled_by_pref() {
+        return DvProbe {
+            capability: DvCapability::Unsupported,
+            source: ProbeSource::Override,
+            reason: "pref",
+        };
+    }
     RESULT.get()
 }
 

@@ -14,5 +14,13 @@
   "settings.playback.instant_dpad_seeking.on": {
     "value": "On",
     "description": "Choice for the Instant D-pad seeking setting."
+  },
+  "settings.playback.dolby_vision": {
+    "value": "Dolby Vision",
+    "description": "Playback setting title. Controls whether Dolby Vision is used or bypassed for HDR10 fallback; default Auto."
+  },
+  "settings.playback.dolby_vision.copy": {
+    "value": "Auto uses Dolby Vision when supported by the TV. Off falls back to HDR10 or server transcoding.",
+    "description": "Explanation of the Dolby Vision playback setting."
   }
 }
