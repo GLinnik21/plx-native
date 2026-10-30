@@ -1653,8 +1653,13 @@ mod coverage {
             // E0107 (a key newer than the declared format) cannot be written in a package that parses:
             // 1.0 is the first minor. `parse::tests` reaches it with a hand-built node.
             // The E08xx/E09xx/W09xx codes are `check`'s, not the parser's: `reach_tests` has their rows.
+            // The E06xx/W06xx and E10xx-E13xx codes are the lint's (they need a compiled package, a
+            // language and a state): `lint_tests` holds their rows, one invalid case per code.
             let check_code = ["HUD-E08", "HUD-E09", "HUD-W09"].iter().any(|p| code.id.starts_with(p));
-            if code.id == "HUD-E0107" || check_code || command_codes.contains(&code.id) {
+            let lint_code = ["HUD-E06", "HUD-W06", "HUD-E10", "HUD-E11", "HUD-E12", "HUD-E13"]
+                .iter()
+                .any(|p| code.id.starts_with(p));
+            if code.id == "HUD-E0107" || check_code || lint_code || command_codes.contains(&code.id) {
                 continue;
             }
             assert!(covered.contains(code.id), "{} has no corpus row", code.id);

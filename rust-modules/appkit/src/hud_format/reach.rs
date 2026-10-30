@@ -43,8 +43,8 @@ pub struct Fold {
     pub section: Option<&'static str>,
 }
 
-/// What [`check`] reports.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What [`check`] reports. (Not `Eq`: a [`Finding`] carries a context of `f32` rects.)
+#[derive(Clone, Debug, PartialEq)]
 pub struct Checked {
     /// Reachability errors R1, R3 and R4 in that order, then the invariants of [`super::validate`]; each
     /// group in document order. No fold is a finding.

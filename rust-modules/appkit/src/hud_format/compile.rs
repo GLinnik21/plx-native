@@ -317,6 +317,9 @@ pub enum DrawOp {
 pub struct CardOp {
     pub op: DrawOp,
     pub present: Live<bool>,
+    /// the RFC 6901 pointer into the package of the node that produced `op` (the strip's `card.art`, an
+    /// overlay or below cell's content): the same provenance [`CompiledState::origin`] gives a state's ops
+    pub origin: String,
 }
 
 /// One op's share of the cost terms.
@@ -378,6 +381,11 @@ pub struct CompiledState {
     /// A Skip state only, and only when the credits pill changes anything: the whole state as laid out
     /// when the pill is the CREDITS one (see [`CompiledState::skip_variant`]).
     pub skip_alt: Option<Box<CompiledState>>,
+    /// `origins[i]` is the pointer of the node that produced `ops[i]` ([`CompiledState::origin`])
+    origins: Vec<String>,
+    /// `control_origins[i]` is the pointer of the item that produced `controls[i]`
+    /// ([`CompiledState::control_pointer`])
+    control_origins: Vec<String>,
 }
 
 impl CompiledState {
@@ -390,6 +398,21 @@ impl CompiledState {
             (SkipKind::Credits, Some(alt)) => alt,
             _ => self,
         }
+    }
+
+    /// **Provenance of a draw op:** the RFC 6901 pointer, into the package, of the node that produced
+    /// `ops[op]` (a text cell's `text` object, a `rect` cell's object, a control's item, the strip, the
+    /// scrim object for the scrim, the `up_next` object for the Up Next offer and the Skip pill). A synthetic
+    /// op names the node that owns it, so the pointer is never empty for an index in range. This is what a
+    /// geometric lint finding points at. An index out of range answers `""`.
+    pub fn origin(&self, op: usize) -> &str {
+        self.origins.get(op).map_or("", String::as_str)
+    }
+
+    /// The RFC 6901 pointer of the item that produced `controls[control]` (the same item the control's
+    /// `DrawOp::Control` was pushed for). An index out of range answers `""`.
+    pub fn control_pointer(&self, control: usize) -> &str {
+        self.control_origins.get(control).map_or("", String::as_str)
     }
 
     /// The control called `id`.
@@ -750,9 +773,13 @@ struct Out {
     ops: Vec<DrawOp>,
     /// `ops[i]`'s presence under the `item.*` terms in force when it was pushed (a strip card's)
     present: Vec<Live<bool>>,
+    /// `ops[i]`'s provenance: the pointer of the node that produced it
+    origins: Vec<String>,
     /// the `item.*` terms of the `when`s around what is being emitted
     gate: Vec<CondTerm>,
     controls: Vec<ControlRect>,
+    /// `controls[i]`'s provenance: the pointer of the item
+    control_origins: Vec<String>,
     /// the rects of the replaced segments
     replaced: Vec<Rect>,
     title: Option<Rect>,
@@ -761,9 +788,10 @@ struct Out {
 }
 
 impl Out {
-    /// Append `op`, present when every `item.*` term in force holds.
-    fn push(&mut self, op: DrawOp) {
+    /// Append `op` that the node at `origin` produced, present when every `item.*` term in force holds.
+    fn push(&mut self, origin: &str, op: DrawOp) {
         self.present.push(presence(&self.gate));
+        self.origins.push(origin.to_owned());
         self.ops.push(op);
     }
 }
@@ -1328,7 +1356,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 if bind.starts_with("title.") && out.title.is_none() {
                     out.title = Some(Rect::new(r.x, r.y, 0.0, 0.0));
                 }
-                out.push(DrawOp::Text {
+                out.push(&o.pointer, DrawOp::Text {
                     rect: r,
                     bind,
                     size: self.size_px(o, "size"),
@@ -1339,18 +1367,18 @@ impl<'e, 'p> Env<'e, 'p> {
                     leading: self.num(o, "leading").unwrap_or_else(|| self.measure.line_h(self.size_px(o, "size"))),
                 });
             }
-            "image" => out.push(DrawOp::Image {
+            "image" => out.push(&o.pointer, DrawOp::Image {
                 rect: r,
                 bind: o.get("bind").and_then(Val::as_str).unwrap_or("").to_owned(),
                 radius: self.num(o, "radius").unwrap_or(0.0),
             }),
-            "icon" => out.push(DrawOp::Icon {
+            "icon" => out.push(&o.pointer, DrawOp::Icon {
                 rect: r,
                 asset: o.get("asset").and_then(Val::as_str).unwrap_or("").to_owned(),
                 ink: self.live_ink(o, "ink"),
             }),
-            "rule" => out.push(DrawOp::Rule { rect: r, ink: self.live_ink(o, "ink") }),
-            "facts" => out.push(DrawOp::Facts {
+            "rule" => out.push(&o.pointer, DrawOp::Rule { rect: r, ink: self.live_ink(o, "ink") }),
+            "facts" => out.push(&o.pointer, DrawOp::Facts {
                 rect: r,
                 size: self.size_px(o, "size"),
                 bold: self.live_bold(o),
@@ -1368,7 +1396,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 let below = self.num_or_default(o, "grab", "below");
                 let grab = Rect::new(r.x, r.y - above, r.w, above + r.h + below);
                 out.playbar = Some(PlaybarRects { track: r, grab });
-                out.push(DrawOp::Playbar {
+                out.push(&o.pointer, DrawOp::Playbar {
                     track: r,
                     grab,
                     fill: self.live_ink(o, "fill"),
@@ -1410,7 +1438,8 @@ impl<'e, 'p> Env<'e, 'p> {
             section: ctl.o.get("section").and_then(Val::as_str).map(str::to_owned),
         };
         out.controls.push(c.clone());
-        out.push(DrawOp::Control(c));
+        out.control_origins.push(ctl.o.pointer.clone());
+        out.push(&ctl.o.pointer, DrawOp::Control(c));
     }
 
     fn emit_rect(&self, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
@@ -1418,7 +1447,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let left = (r.x - bleed).max(0.0);
         let right = (r.x + r.w + bleed).min(SCR_W);
         let ground = Rect::new(left, r.y, right - left, r.h);
-        out.push(DrawOp::Ground { rect: ground, ink: self.live_ink(o, "ink"), radius: self.num(o, "radius").unwrap_or(0.0) });
+        out.push(&o.pointer, DrawOp::Ground { rect: ground, ink: self.live_ink(o, "ink"), radius: self.num(o, "radius").unwrap_or(0.0) });
         let inner = Rect::new(ground.x + pad, ground.y + pad, ground.w - 2.0 * pad, ground.h - 2.0 * pad);
         let cells = self.objects(o, "cells");
         self.place_row(&cells, self.gap(o, "gap").unwrap_or(0.0), inner, mode, out);
@@ -1457,11 +1486,16 @@ impl<'e, 'p> Env<'e, 'p> {
         let visible = if pitch > 0.0 { (r.w / pitch).floor() as usize + 1 } else { 0 };
         let art = Rect::new(r.x, r.y, card_w, card_h);
         let mut tmp = Out::default();
-        tmp.push(DrawOp::Image {
-            rect: art,
-            bind: card.get("art").and_then(Val::as_object).and_then(|a| a.get("bind")).and_then(Val::as_str).unwrap_or("").to_owned(),
-            radius: self.num(o, "radius").unwrap_or(0.0),
-        });
+        let art_node = card.get("art").and_then(Val::as_object);
+        let art_origin = art_node.map_or(&card.pointer, |a| &a.pointer);
+        tmp.push(
+            art_origin,
+            DrawOp::Image {
+                rect: art,
+                bind: art_node.and_then(|a| a.get("bind")).and_then(Val::as_str).unwrap_or("").to_owned(),
+                radius: self.num(o, "radius").unwrap_or(0.0),
+            },
+        );
         let overlay = self.objects(card, "overlay");
         self.place_row(&overlay, 0.0, art, &Mode { replaces: &[], hide: false, standin_left: None, host: "" }, &mut tmp);
         let mut y = art.y + card_h + self.gap(card, "below_gap").unwrap_or(0.0);
@@ -1477,8 +1511,14 @@ impl<'e, 'p> Env<'e, 'p> {
             tmp.gate.clear();
             y += h;
         }
-        let template = tmp.ops.into_iter().zip(tmp.present).map(|(op, present)| CardOp { op, present }).collect();
-        out.push(DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
+        let template = tmp
+            .ops
+            .into_iter()
+            .zip(tmp.present)
+            .zip(tmp.origins)
+            .map(|((op, present), origin)| CardOp { op, present, origin })
+            .collect();
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
@@ -1603,18 +1643,22 @@ impl<'e, 'p> Env<'e, 'p> {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
                     let rest = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Rest::Film, Self::rest);
-                    out.push(DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") });
+                    out.push(
+                        up.map_or("", |u| u.pointer.as_str()),
+                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") },
+                    );
                 }
             }
             Slot::Skip => {
                 if let Some(rects) = standin.skip {
-                    out.push(DrawOp::SkipPill { rects });
+                    out.push(up.map_or("", |u| u.pointer.as_str()), DrawOp::SkipPill { rects });
                 }
             }
             Slot::Discs => {}
         }
         let block_top = boxes.iter().map(|b| b.y).reduce(f32::min).unwrap_or(SCR_H);
-        let scrim = layout.get("scrim").and_then(Val::as_object).and_then(|s| {
+        let scrim_node = layout.get("scrim").and_then(Val::as_object);
+        let scrim = scrim_node.and_then(|s| {
             let top = match self.name(s, "cover")? {
                 "fixed" => SCR_H - self.num(s, "height").unwrap_or(0.0),
                 _ => (block_top - self.num(s, "extra").unwrap_or(0.0)).max(0.0),
@@ -1623,6 +1667,10 @@ impl<'e, 'p> Env<'e, 'p> {
         });
         let mut ops: Vec<DrawOp> = scrim.map(|rect| DrawOp::Scrim { rect }).into_iter().collect();
         ops.append(&mut out.ops);
+        // the scrim op is the node `layout.scrim` (its owner is the layout when there is none to name)
+        let mut origins: Vec<String> =
+            scrim.map(|_| scrim_node.map_or(&layout.pointer, |s| &s.pointer).clone()).into_iter().collect();
+        origins.append(&mut out.origins);
 
         let row_ids = self.row_ids(host, &replaces);
         let cost = cost_of(&ops);
@@ -1643,6 +1691,8 @@ impl<'e, 'p> Env<'e, 'p> {
             cost,
             band: HudBand::CLASSIC,
             skip_alt: None,
+            origins,
+            control_origins: out.control_origins,
         }
     }
 
