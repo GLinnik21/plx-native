@@ -2873,7 +2873,7 @@
         },
         "thickness": {
           "$ref": "#/$defs/keyed_int_1_64",
-          "description": "The track's height in px: the band's box. The knob, the clocks and the mark overhang it."
+          "description": "The track's height in px. The bar's box is the track and the line the clocks are drawn on under it, or this if taller; the knob and the mark overhang the track."
         },
         "track": {
           "$ref": "#/$defs/keyed_ink",

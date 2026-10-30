@@ -75,7 +75,7 @@ pub enum Icon {
     Pause,
     /// The transport pair — two filled triangles, pointing back and forward. Worn by ONE surface:
     /// the player HUD's transport state read-out beside the elapsed clock
-    /// (`player_hud::classic::draw_hud`, via `plx_appkit::player_hud::transport_mark`), where
+    /// (`player_hud::render`, via `plx_appkit::player_hud::transport_mark`), where
     /// `Rewind` marks the playhead travelling
     /// BACKWARDS and `FastForward` marks it travelling forwards — a scrub, a chapter/marker hop and
     /// a rapid-seek burst alike. They are a read-out, never a control: there is no rewind BUTTON in
@@ -358,9 +358,35 @@ fn src(id: Icon) -> &'static str {
 // uploaded them: the render thread, the only one that draws. (The entries have no destructor, so
 // nothing runs GL at thread exit; the textures live for the process, as `CACHE` never evicts.)
 struct Entry {
-    id: Icon,
+    key: Key,
     px: i32,
     tex: c_uint,
+}
+
+/// WHICH glyph a cache entry rasterizes: one of the app's own [`Icon`]s, or an [`Svg`] a package
+/// supplied (keyed by the hash of its source, so a changed asset is a new entry, never a stale one).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Key {
+    Builtin(Icon),
+    Package(u64),
+}
+
+/// A glyph drawn from SVG SOURCE the app does not ship — a HUD package's asset. `key` identifies
+/// the source in the texture cache ([`Svg::new`] derives it from the text); the mask is rasterized
+/// and cached exactly as a built-in icon's is, at the size it is drawn, and (like every entry) lives
+/// for the process: the cache grows by one entry per distinct (asset, size) a package draws.
+#[derive(Clone, Copy)]
+pub struct Svg<'a> {
+    pub key: u64,
+    pub src: &'a str,
+}
+impl<'a> Svg<'a> {
+    pub fn new(src: &'a str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        src.hash(&mut h);
+        Self { key: h.finish(), src }
+    }
 }
 thread_local! {
     static CACHE: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
@@ -395,7 +421,7 @@ pub fn icon_raster_px(px: i32) -> i32 {
     px.clamp(8, MAX_ICON_PX)
 }
 
-fn tex_for(id: Icon, px: i32) -> c_uint {
+fn tex_for(key: Key, svg: &str, px: i32) -> c_uint {
     // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
     // land on the same `icon_raster_px` result rasterize identically, so they share one
     // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
@@ -406,7 +432,7 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
     // The cell is borrowed only for the lookup and, below, for the push: the rasteriser and the
     // upload run with no borrow held, so nothing they call can meet one.
     if let Some(tex) = CACHE.with(|cache| {
-        cache.borrow().iter().find(|e| e.id == id && e.px == raster_px).map(|e| e.tex)
+        cache.borrow().iter().find(|e| e.key == key && e.px == raster_px).map(|e| e.tex)
     }) {
         return tex;
     }
@@ -414,14 +440,14 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
     // rasterised at physical size and still drawn into the same logical rect.
     let target = raster_px * plx_base::surface::render_scale();
     let hi = target * SS;
-    let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
+    let tex = match plx_gfx::svg::rasterize(svg, hi, hi) {
         Some(rgba) => {
             let small = downsample_alpha(&rgba, hi, SS);
             upload(target, &small)
         }
         None => 0,
     };
-    CACHE.with(|cache| cache.borrow_mut().push(Entry { id, px: raster_px, tex }));
+    CACHE.with(|cache| cache.borrow_mut().push(Entry { key, px: raster_px, tex }));
     tex
 }
 
@@ -496,7 +522,28 @@ pub fn draw_raster(p: Painter, id: Icon, r: Rect, raster_px: i32, tint: [f32; 4]
         }
         return;
     }
-    let tex = tex_for(id, px);
+    blit(p, tex_for(Key::Builtin(id), src(id), px), r, tint);
+}
+
+/// [`draw`] for a package's [`Svg`]: the same mask, cache and 1:1 snap, a different source.
+pub fn draw_svg(p: Painter, svg: Svg<'_>, r: Rect, tint: [f32; 4]) {
+    draw_svg_raster(p, svg, r, r.w.max(r.h).round() as i32, tint);
+}
+
+/// [`draw_svg`] with the raster size chosen by the caller — [`draw_raster`]'s contract for a glyph
+/// whose box moves on a spring.
+pub fn draw_svg_raster(p: Painter, svg: Svg<'_>, r: Rect, raster_px: i32, tint: [f32; 4]) {
+    if raster_px <= 0 || p.is_recording() {
+        #[cfg(any(test, feature = "test-support"))]
+        if p.is_recording() {
+            crate::draw_census::note_svg(svg.key, p.place(r));
+        }
+        return;
+    }
+    blit(p, tex_for(Key::Package(svg.key), svg.src, raster_px), r, tint);
+}
+
+fn blit(p: Painter, tex: c_uint, r: Rect, tint: [f32; 4]) {
     if tex != 0 {
         // 1:1 mask — snap the COMPOSITED origin (fold the painter translate, snap, unfold),
         // same contract as text; see gfx::snap.

@@ -1607,11 +1607,11 @@ mod tests {
         ),
         (
             "back10",
-            "<svg viewBox='0 0 24 24'><path d='M12 3v3a7 7 0 1 1-7 7H3a9 9 0 1 0 9-9V1L8 5zM9 10h1v6H9zM12 10h3v6h-3z'/></svg>",
+            "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7v3l-4-4zM9 8h1.5v8h-1.5v-6.5l-1.5 1.5v-1.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
         ),
         (
             "fwd30",
-            "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM9 10h2v6H9zM12 10h3v6h-3z'/></svg>",
+            "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM8 8h2l1 1v6l-1 1h-2l-1-1v-0.5h2.5v-2h-2v-1.5h2v-1.5h-2.5v-0.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
         ),
     ];
 
@@ -1627,6 +1627,143 @@ mod tests {
             assert_eq!(info.view_box, [0.0, 0.0, 24.0, 24.0], "{id}");
             assert_eq!(info.paths, 1, "{id}");
         }
+    }
+
+    /// The numbers of a path's argument text (`"1.5-1.5"` is two), in order.
+    fn path_numbers(text: &str) -> Vec<f32> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        for c in text.chars().chain(std::iter::once(' ')) {
+            if (c == '-' || c.is_whitespace() || c == ',') && !cur.is_empty() {
+                out.push(cur.parse().expect("a number"));
+                cur.clear();
+            }
+            if c == '-' || c.is_ascii_digit() || c == '.' {
+                cur.push(c);
+            }
+        }
+        out
+    }
+
+    /// The vertices of one straight-sided sub-path: an absolute `M x y`, then relative `h`, `v`, `l` and a
+    /// closing `z`, the only commands the numerals use.
+    fn polygon(sub: &str) -> Vec<(f32, f32)> {
+        let body = sub.strip_prefix('M').expect("a sub-path starts with M");
+        let (start, mut rest) = body.split_at(body.find(|c: char| c.is_ascii_alphabetic()).expect("a command"));
+        let at = path_numbers(start);
+        let mut pts = vec![(at[0], at[1])];
+        while !rest.is_empty() {
+            let cmd = rest.chars().next().expect("a command");
+            let end = rest[1..].find(|c: char| c.is_ascii_alphabetic()).map_or(rest.len(), |i| i + 1);
+            let args = path_numbers(&rest[1..end]);
+            let (x, y) = *pts.last().expect("a vertex");
+            match (cmd, args.as_slice()) {
+                ('h', [dx]) => pts.push((x + dx, y)),
+                ('v', [dy]) => pts.push((x, y + dy)),
+                ('l', [dx, dy]) => pts.push((x + dx, y + dy)),
+                ('z', []) => {}
+                _ => panic!("a numeral uses only h, v, l and z, got `{cmd}` with {args:?}"),
+            }
+            rest = &rest[end..];
+        }
+        pts
+    }
+
+    /// Twice the signed area (shoelace): positive for the turn the outer outlines take on screen.
+    fn signed_area(p: &[(f32, f32)]) -> f32 {
+        (0..p.len())
+            .map(|i| {
+                let (a, b) = (p[i], p[(i + 1) % p.len()]);
+                a.0 * b.1 - b.0 * a.1
+            })
+            .sum()
+    }
+
+    /// The box around a sub-path's vertices, as `(min x, min y, max x, max y)`.
+    fn bounds(p: &[(f32, f32)]) -> (f32, f32, f32, f32) {
+        p.iter().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |(x0, y0, x1, y1), &(x, y)| {
+            (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+        })
+    }
+
+    /// **The 10 and 30 faces carry numerals, not bars.** The reference's two skip buttons once drew their
+    /// digits as bare rectangles, which the TV showed as two vertical bars inside the ring. Each asset is
+    /// the ring (its first sub-path, with curves) and then the numeral's own straight-sided outlines: no
+    /// digit is a four-vertex rectangle, the 0's counter winds against its outline and lies inside it (the
+    /// fill rule is nonzero, so a same-way sub-path would fill the hole), and every digit vertex stands a
+    /// full unit inside the ring's inner edge (radius 7 around (12, 12), where both rings are centred), and the
+    /// digit pair is centred on the ring's centre line.
+    #[test]
+    fn the_ten_and_thirty_faces_draw_numerals_clear_of_the_ring() {
+        for (id, svg) in EXAMPLE_ASSETS.iter().filter(|(id, _)| matches!(*id, "back10" | "fwd30")) {
+            let d = svg.split("d='").nth(1).and_then(|t| t.split('\'').next()).expect("a d attribute");
+            let digits: Vec<Vec<(f32, f32)>> = d.split_inclusive('z').skip(1).map(polygon).collect();
+            assert_eq!(digits.len(), 3, "{id}: the first digit, the 0's outline and the 0's counter");
+            for (i, poly) in digits.iter().enumerate() {
+                assert!(poly.len() > 4, "{id}: sub-path {i} is a bare rectangle: {poly:?}");
+                for &(x, y) in poly {
+                    let (dx, dy) = (x - 12.0, y - 12.0);
+                    let r2 = dx * dx + dy * dy;
+                    assert!(r2 <= 36.0, "{id}: ({x}, {y}) is {r2} (squared) from the ring's centre; its inner edge is 7, so 49");
+                }
+            }
+            let (x0, y0, x1, y1) = digits.iter().map(|p| bounds(p)).fold(
+                (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
+                |(a, b, c, d), (e, f, g, h)| (a.min(e), b.min(f), c.max(g), d.max(h)),
+            );
+            assert!((y0 + y1 - 24.0).abs() < 1e-3, "{id}: the digits span y {y0}..{y1}, not centred on the ring's 12");
+            assert!((x0 + x1 - 24.0).abs() <= 0.5, "{id}: the digits span x {x0}..{x1}, not centred on the ring's 12");
+            let (outline, counter) = (signed_area(&digits[1]), signed_area(&digits[2]));
+            assert!(outline > 0.0 && counter < 0.0, "{id}: the counter winds against the outline ({outline}, {counter})");
+            let (o, c) = (bounds(&digits[1]), bounds(&digits[2]));
+            assert!(c.0 > o.0 && c.1 > o.1 && c.2 < o.2 && c.3 < o.3, "{id}: the counter lies inside the 0: {c:?} in {o:?}");
+        }
+    }
+
+    /// One sub-path's commands with their numbers: `("a", [9, 9, 0, 1, 0, 9, 9])`.
+    fn commands(sub: &str) -> Vec<(char, Vec<f32>)> {
+        let mut out = Vec::new();
+        let mut rest = sub;
+        while let Some(cmd) = rest.chars().next() {
+            let end = rest[1..].find(|c: char| c.is_ascii_alphabetic()).map_or(rest.len(), |i| i + 1);
+            out.push((cmd, path_numbers(&rest[1..end])));
+            rest = &rest[end..];
+        }
+        out
+    }
+
+    /// The ring-and-arrow sub-path of an example icon, as its commands.
+    fn ring_of(id: &str) -> (String, Vec<(char, Vec<f32>)>) {
+        let (_, svg) = EXAMPLE_ASSETS.iter().find(|(i, _)| *i == id).expect("an example asset");
+        let d = svg.split("d='").nth(1).and_then(|t| t.split('\'').next()).expect("a d attribute");
+        let ring = d.split_inclusive('z').next().expect("a ring");
+        (ring.to_owned(), commands(ring))
+    }
+
+    /// **The back-10 arrow is the forward-30 arrow turned about the vertical centre line.** The owner saw
+    /// `back10`'s outline close at the wrong point, so its arrowhead collapsed into a sliver, and its ring sat on
+    /// (12, 13) while `fwd30`'s sat on (12, 12). Both rings now sit on (12, 12) with the outer radius 9 and the
+    /// inner 7, and `back10`'s command list is `fwd30`'s mirrored about x = 12: the start point's x becomes
+    /// 24 - x, every horizontal step changes sign and each arc's sweep flips.
+    #[test]
+    fn the_ten_arrow_mirrors_the_thirty_arrow() {
+        let (fwd_text, fwd) = ring_of("fwd30");
+        let (back_text, back) = ring_of("back10");
+        assert_eq!(fwd_text, "M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4z", "fwd30's ring and arrow");
+        assert_eq!(back_text, "M12 1v2a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7v3l-4-4z", "back10's ring and arrow");
+        let mirrored: Vec<(char, Vec<f32>)> = fwd
+            .iter()
+            .map(|(cmd, n)| match (*cmd, n.as_slice()) {
+                ('M', [x, y]) => ('M', vec![24.0 - x, *y]),
+                ('a', [rx, ry, rot, large, sweep, dx, dy]) => ('a', vec![*rx, *ry, *rot, *large, 1.0 - sweep, -dx, *dy]),
+                ('h', [dx]) => ('h', vec![-dx]),
+                ('l', [dx, dy]) => ('l', vec![-dx, *dy]),
+                ('v', [dy]) => ('v', vec![*dy]),
+                ('z', []) => ('z', vec![]),
+                _ => panic!("fwd30's ring uses only M, a, h, l, v and z, got `{cmd}` with {n:?}"),
+            })
+            .collect();
+        assert_eq!(back, mirrored, "back10's ring and arrow are not fwd30's mirror image");
     }
 
     // ---- seeded mutation -------------------------------------------------------------------------------

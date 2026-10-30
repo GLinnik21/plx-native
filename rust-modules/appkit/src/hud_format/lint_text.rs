@@ -32,8 +32,15 @@
 //! from the label whatever room the cell has, so it draws past the `vstack`'s end with nothing beside it to
 //! collide with). That last one is this module's: each pill or button is judged by its drawn rect against the
 //! enclosing `vstack`'s right edge ([`Scan::control`]), as `HUD-E0601` at the control's item, with the label
-//! it shows as the string. A disc has a fixed face and is no label. The playbar's two clocks have no compiled
-//! rect (the playbar places them) and are not checked here.
+//! it shows as the string. A disc has a fixed face and is no label.
+//!
+//! **The playbar's two clocks** are app text the playbar draws itself, and the compiler gives each a rect
+//! (`DrawOp::Playbar::clock_rects`, [`clocks`]): the widest string the app can print, on the clock line under
+//! the track. Each is judged as that string in the weight it is drawn in ([`Scan::clocks`]): the elapsed one
+//! grows right from the bar's start, the remaining one left from the bar's end, and the room each has is the
+//! controls on the clock line on the side it grows towards and, under `clocks: ends`, the other clock. `SAFE`
+//! is not a limit here (the rect is the string, I5 reads it). Under `follow_head` the elapsed clock travels
+//! the whole bar and has no room of its own to judge. The findings point at the playbar.
 //!
 //! **The room** is the smallest of the limits below, measured from the text's own `x` (it draws left to
 //! right from there):
@@ -74,7 +81,8 @@ use plx_ui::consts::SAFE;
 use plx_ui::fmt::KICKER_SEPARATOR;
 use plx_ui::Rect;
 
-use super::compile::{AppLabels, CompiledState, ControlRect, DrawOp, Live, SkipKind, Widget};
+use super::clocks::{self, ClockRects};
+use super::compile::{AppLabels, ClockMode, CompiledState, ControlRect, DrawOp, SkipKind, Widget};
 #[cfg(test)]
 use super::lint::testing::{Base, InvalidCase};
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
@@ -224,27 +232,15 @@ impl<'a> Texts<'a> {
         widest_of(self.measure, candidates, size, bolds)
     }
 
-    /// `HH:MM:SS` with each position's widest digit at `size` and `bold`.
+    /// `HH:MM:SS` with each position's widest digit at `size` and `bold`: the playbar's clock string
+    /// ([`clocks::widest_clock`]), whose elapsed form is `fmt::clock`.
     fn widest_clock(&self, size: i32, bold: bool) -> String {
-        let tens_of_hours = self.widest_digit(size, bold, 1..=9);
-        let tens_of_minutes = self.widest_digit(size, bold, 0..=5);
-        let ones = self.widest_digit(size, bold, 0..=9);
-        let hours = i64::from(tens_of_hours * 10 + ones);
-        let minutes = i64::from(tens_of_minutes * 10 + ones);
-        let seconds = minutes;
-        plx_ui::fmt::clock(((hours * 60 + minutes) * 60 + seconds) * 1000)
+        clocks::widest_clock(self.measure, size, bold, false)
     }
 
     /// The digit of `digits` that is widest at `size` and `bold`; the lowest of equals.
     fn widest_digit(&self, size: i32, bold: bool, digits: RangeInclusive<u32>) -> u32 {
-        let mut widest = (*digits.start(), f32::NEG_INFINITY);
-        for digit in digits {
-            let width = self.measure.width_str(&digit.to_string(), size, bold);
-            if width > widest.1 {
-                widest = (digit, width);
-            }
-        }
-        widest.0
+        clocks::widest_digit(self.measure, size, bold, digits)
     }
 }
 
@@ -297,6 +293,8 @@ enum Bound {
     Control(String, Rect),
     /// the right edge of an enclosing `vstack` of a fixed `w`
     Vstack,
+    /// the playbar's other clock, by name and rect: the two share the clock line
+    Clock(&'static str, Rect),
 }
 
 /// One limit on a text's room: the width it leaves from the text's own `x`, and what sets it.
@@ -352,6 +350,49 @@ fn limits(
             room: right - rect.x,
             bound: Bound::Vstack,
         });
+    }
+    limits
+}
+
+/// Which way a playbar clock grows when its string gets wider.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grows {
+    /// the elapsed clock stands at the bar's start
+    Right,
+    /// the remaining clock ends at the bar's end
+    Left,
+}
+
+/// Every limit on the room of a playbar clock at `rect`, measured from the edge it is anchored to: the controls
+/// on its clock line that lie on the side it grows towards (as I4 reads them, at their rest rects), and the
+/// other clock, `neighbour`, which shares the line. `SAFE` is I5's: the clock's rect is its widest string.
+fn clock_limits(
+    rect: Rect,
+    grows: Grows,
+    obstacles: &[(String, Rect)],
+    neighbour: Option<(&'static str, Rect)>,
+) -> Vec<Limit> {
+    let room = |other: Rect| match grows {
+        Grows::Right => (other.x >= rect.x).then(|| other.x - rect.x),
+        Grows::Left => (other.x + other.w <= rect.x + rect.w).then(|| rect.x + rect.w - (other.x + other.w)),
+    };
+    let mut limits = Vec::new();
+    for (id, control) in obstacles {
+        let on_the_line = control.y < rect.y + rect.h && control.y + control.h > rect.y;
+        if let Some(room) = room(*control).filter(|_| on_the_line) {
+            limits.push(Limit {
+                room,
+                bound: Bound::Control(id.clone(), *control),
+            });
+        }
+    }
+    if let Some((name, other)) = neighbour {
+        if let Some(room) = room(other) {
+            limits.push(Limit {
+                room,
+                bound: Bound::Clock(name, other),
+            });
+        }
     }
     limits
 }
@@ -444,7 +485,6 @@ struct TextOp<'a> {
     rect: Rect,
     bind: &'a str,
     size: i32,
-    bold: &'a Live<bool>,
     site: Site,
 }
 
@@ -484,10 +524,10 @@ impl Scan<'_, '_> {
                         rect: *rect,
                         bind,
                         size: *size,
-                        bold,
                         site: Site::Band,
                     };
-                    self.text(&text, layout, skip, &obstacles, found);
+                    let bolds: Vec<bool> = bold.each().copied().collect();
+                    self.text(&text, &bolds, layout, skip, &obstacles, found);
                 }
                 DrawOp::Strip { template, .. } => {
                     for card in template {
@@ -504,13 +544,28 @@ impl Scan<'_, '_> {
                                 rect: *rect,
                                 bind,
                                 size: *size,
-                                bold,
                                 site: Site::Card,
                             };
-                            self.text(&text, layout, skip, &obstacles, found);
+                            let bolds: Vec<bool> = bold.each().copied().collect();
+                            self.text(&text, &bolds, layout, skip, &obstacles, found);
                         }
                     }
                 }
+                // The playbar's two clocks are app text it draws itself.
+                DrawOp::Playbar {
+                    clock_rects,
+                    clock_size,
+                    clocks: mode,
+                    ..
+                } => self.clocks(
+                    layout.origin(i),
+                    clock_rects,
+                    *clock_size,
+                    *mode,
+                    &obstacles,
+                    skip,
+                    found,
+                ),
                 _ => {}
             }
         }
@@ -606,6 +661,7 @@ impl Scan<'_, '_> {
     fn text(
         &self,
         op: &TextOp<'_>,
+        bolds: &[bool],
         layout: &CompiledState,
         skip: SkipKind,
         obstacles: &[(String, Rect)],
@@ -618,8 +674,7 @@ impl Scan<'_, '_> {
         if kind == AppText::KickerPrefix && !layout.key.episode {
             return;
         }
-        let bolds: Vec<bool> = op.bold.each().copied().collect();
-        let Some((string, measured)) = self.texts.widest(kind, op.bind, op.size, &bolds) else {
+        let Some((string, measured)) = self.texts.widest(kind, op.bind, op.size, bolds) else {
             return;
         };
         let hugs = kind == AppText::Label
@@ -634,6 +689,60 @@ impl Scan<'_, '_> {
             None
         };
         let limits = limits(op.rect, op.site, hugs, obstacles, vstack_right);
+        self.judge_text(op, string, measured, limits, skip, found);
+    }
+
+    /// The playbar's two clocks. Each is the widest string the app can print in the weight it is drawn in
+    /// ([`clocks::widest_clock`]), judged against the room on the clock line: the elapsed clock grows right
+    /// from the bar's start, the remaining one grows left from its end, and under `ends` each is also held
+    /// short of the other. Under `follow_head` the elapsed clock travels the whole bar, so it has no room of
+    /// its own to judge (I4 reads its lane as decor); the remaining clock is still judged against the
+    /// controls beside it.
+    #[allow(clippy::too_many_arguments)]
+    fn clocks(
+        &self,
+        pointer: &str,
+        rects: &ClockRects,
+        size: i32,
+        mode: ClockMode,
+        obstacles: &[(String, Rect)],
+        skip: SkipKind,
+        found: &mut Vec<Finding>,
+    ) {
+        let ends = mode == ClockMode::Ends;
+        let (elapsed, remaining) = ("playbar elapsed clock", "playbar remaining clock");
+        for (bind, rect, bold, is_remaining, grows, other) in [
+            (elapsed, rects.elapsed, clocks::ELAPSED_BOLD, false, Grows::Right, (remaining, rects.remaining)),
+            (remaining, rects.remaining, clocks::REMAINING_BOLD, true, Grows::Left, (elapsed, rects.elapsed)),
+        ] {
+            if !ends && !is_remaining {
+                continue;
+            }
+            let string = clocks::widest_clock(self.cx.measure, size, bold, is_remaining);
+            let measured = self.cx.measure.width_str(&string, size, bold);
+            let limits = clock_limits(rect, grows, obstacles, ends.then_some(other));
+            let op = TextOp {
+                pointer,
+                rect,
+                bind,
+                size,
+                site: Site::Band,
+            };
+            self.judge_text(&op, string, measured, limits, skip, found);
+        }
+    }
+
+    /// Judge `string`, `measured` wide, against the tightest of `limits` and push its finding if it does not
+    /// fit.
+    fn judge_text(
+        &self,
+        op: &TextOp<'_>,
+        string: String,
+        measured: f32,
+        limits: Vec<Limit>,
+        skip: SkipKind,
+        found: &mut Vec<Finding>,
+    ) {
         let Some(tightest) = binding(&limits) else {
             return;
         };
@@ -691,12 +800,14 @@ impl Scan<'_, '_> {
                     "vstack",
                     Rect::new(op.rect.x, op.rect.y, limit.room, op.rect.h),
                 )),
+                Bound::Clock(name, rect) => ctx.rects.push(named(name, *rect)),
             }
         }
         let before = match binding(limits).map(|l| &l.bound) {
             Some(Bound::Safe) => "the right edge of SAFE".to_owned(),
             Some(Bound::Control(id, _)) => format!("the control `{id}`"),
             Some(Bound::Vstack) => "the end of its vstack".to_owned(),
+            Some(Bound::Clock(name, _)) => format!("the {name}"),
             _ => "the end of its box".to_owned(),
         };
         match verdict {
@@ -861,6 +972,8 @@ mod tests {
     const CLOCK: &str = "/layout/block/4/cells/0/strip/card/below/0/text";
     const FALLBACK: &str = "/layout/block/4/cells/0/strip/card/below/1/text";
     const CHAPTERS_LABEL: &str = "/layout/block/3/cells/0/text";
+    /// the playbar's two clocks, app text drawn by the playbar and judged at its pointer
+    const PLAYBAR_CLOCKS: &str = "/layout/block/1/cells/0/playbar";
 
     /// A measurer with chosen metrics: `7` is the widest glyph (16 px), every other glyph 10 px, and bold
     /// adds 4 px a glyph, so what the check picks is visible.
@@ -1007,14 +1120,14 @@ mod tests {
         let found = text_findings(REFERENCE, 1e9);
         assert!(found.iter().all(|f| f.code == "HUD-W0602"));
         let pointers = pointers(&found);
-        for expected in [CHAPTERS_LABEL, CLOCK, FALLBACK, KICKER, INFO_KICKER] {
+        for expected in [CHAPTERS_LABEL, CLOCK, FALLBACK, KICKER, INFO_KICKER, PLAYBAR_CLOCKS] {
             assert!(
                 pointers.contains(expected),
                 "{expected} was not checked: {pointers:?}"
             );
         }
         // ... and nothing else: no server text, no control label.
-        assert_eq!(pointers.len(), 5, "{pointers:?}");
+        assert_eq!(pointers.len(), 6, "{pointers:?}");
         // the languages differ in the strings the app writes ...
         let tags: BTreeSet<_> = found
             .iter()

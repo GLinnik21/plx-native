@@ -18,7 +18,7 @@
 //! will see; instead the memo asks for the position under the knob, waits for that one to settle,
 //! and then asks for wherever the knob has got to. Until a new still lands, the last one stays up.
 //!
-//! The memo is a RENDER memo, like [`crate::player_hud::motion::HudMotion`]'s label widths: what it
+//! The memo is a RENDER memo, like the rest of [`crate::player_hud::motion::HudMotion`]'s render state: what it
 //! holds is which still the draw can show, and it is stepped where the art is probed — in the draw.
 
 use plx_ui::{theme, Painter, Rect};

@@ -170,7 +170,7 @@ impl Mounter<TestHost> for PinMounter {
         _fx: &mut Effects<'_, TestHost>,
     ) -> Box<dyn Screen<TestHost>> {
         let InputOwner::Entry(entry) = cx.owner else { panic!("the page owns its own input") };
-        Box::new(PlayerScreen::new(entry))
+        Box::new(PlayerScreen::new(entry, plx_appkit::player_hud::loaded::classic_for_test()))
     }
 }
 
@@ -492,7 +492,7 @@ struct Census {
 }
 
 fn census_screen(occupant: Occupant, failed: bool) -> PlayerScreen {
-    let mut screen = PlayerScreen::new(ENTRY);
+    let mut screen = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
     screen.slot = slot_of(occupant);
     if failed {
         screen.busy = Busy::Readout(
@@ -603,6 +603,36 @@ fn the_hit_census_of_every_occupant() {
     let _g = plx_base::testlock::serial();
     for case in CENSUSES {
         check_census(case);
+    }
+}
+
+/// **The caption band is the package's one value in every state a page can be in.** The draw used to take it
+/// from the frame's state report (`geometry_for(chapters).band()`); it now reads `Compiled::band` itself. For
+/// classic, in every occupant of the row, with and without chapters, paused and playing, the two answer alike,
+/// and both are `HudBand::CLASSIC`.
+#[test]
+fn the_caption_band_is_classics_in_every_state_the_pins_cover() {
+    let _g = plx_base::testlock::serial();
+    let occupants = [
+        Occupant::Plain,
+        Occupant::Episode,
+        Occupant::NextOnly,
+        Occupant::PreviousOnly,
+        Occupant::SkipIntro,
+        Occupant::SkipCredits,
+        Occupant::UpNext,
+    ];
+    for occupant in occupants {
+        for (chapters, paused) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut screen = census_screen(occupant, false);
+            screen.model.paused = paused;
+            assert_eq!(
+                screen.caption_band(),
+                screen.geometry_for(chapters).band(),
+                "{occupant:?}, chapters {chapters}, paused {paused}: the band is not the state report's"
+            );
+            assert_eq!(screen.caption_band(), plx_media::player::text_style::HudBand::CLASSIC, "{occupant:?}");
+        }
     }
 }
 
