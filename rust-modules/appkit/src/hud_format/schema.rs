@@ -1306,7 +1306,7 @@ pub static CELL_PLAYBAR: Node = Node {
         Field::req(
             "thickness",
             Ty::Int { min: 1, max: 64 },
-            "The track's height in px: the band's box. The knob, the clocks and the mark overhang it.",
+            "The track's height in px. The bar's box is the track and the line the clocks are drawn on under it, or this if taller; the knob and the mark overhang the track.",
         )
         .keyable(),
         Field::opt(

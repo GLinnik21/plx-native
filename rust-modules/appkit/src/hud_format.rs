@@ -29,6 +29,7 @@
 //! * the version gate: `/format`;
 //! * an SVG asset: the asset string's pointer, `/assets/<id>`.
 
+pub mod clocks; // the playbar's two clocks as app text: their widest strings and the rects the layout and the lint see
 pub mod compile; // `compile`: a parsed package laid out in every reachable state: the rects the player reads and the draw list (docs/hud-plugins.md, "Architecture")
 pub mod lint; // `lint`: the whole pipeline over a package's text, per language: parse, reach, compile, then the geometric checks below
 mod lint_band; // I6: the caption band respects the player's minimum controls top

@@ -20,8 +20,10 @@
 //!   the tabs may stand over it); Up Next's two buttons and the Skip pill (at the `z` of the band the
 //!   stand-in lives in); the chapters strip's card row (its viewport by the card's height: a card past the
 //!   viewport is culled, so it is not a rect).
-//! - [`Content`], the decor: ground, text, image, icon, rule and facts ops, Up Next's still and caption,
-//!   and every op of a strip card's template (each remembers the strip it belongs to).
+//! - [`Content`], the decor: ground, text, image, icon, rule and facts ops, the playbar's two clocks (app
+//!   text the playbar draws on the clock line under the track, from `DrawOp::Playbar::clock_rects`; under
+//!   `follow_head` the elapsed clock's rect is the whole track, as it can be anywhere along it), Up Next's
+//!   still and caption, and every op of a strip card's template (each remembers the strip it belongs to).
 //!
 //! A control's `z` is its band's (`z`, default 0). The scrim is NOT decor here: it is the ground behind
 //! the whole HUD and lies under every control by construction (I4 lists as decor text, images, icons,
@@ -291,17 +293,24 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                 control += 1;
                 s.targets.push(Target::flat(TargetKind::Control, c.id.clone(), pointer, c.rect, bands.z_of(pointer)));
             }
-            DrawOp::Playbar { track, grab, .. } => s.targets.push(Target {
-                kind: TargetKind::Scrub,
-                name: "scrub bar".to_owned(),
-                hit_name: "scrub grab".to_owned(),
-                pointer: origin.to_owned(),
-                drawn: *track,
-                hit: *grab,
-                z: bands.z_of(origin),
-                hit_z: i64::MIN,
-                standing_in: Vec::new(),
-            }),
+            DrawOp::Playbar { track, grab, clock_rects, .. } => {
+                s.targets.push(Target {
+                    kind: TargetKind::Scrub,
+                    name: "scrub bar".to_owned(),
+                    hit_name: "scrub grab".to_owned(),
+                    pointer: origin.to_owned(),
+                    drawn: *track,
+                    hit: *grab,
+                    z: bands.z_of(origin),
+                    hit_z: i64::MIN,
+                    standing_in: Vec::new(),
+                });
+                // The two clocks are app text the playbar draws itself (`clocks`): decor like any text, so a
+                // control under the bar cannot be drawn over them.
+                for (name, rect) in [("playbar elapsed clock", clock_rects.elapsed), ("playbar remaining clock", clock_rects.remaining)] {
+                    s.content.push(Content { kind: Kind::Text, name: name.to_owned(), pointer: origin.to_owned(), rect, card: None });
+                }
+            }
             DrawOp::UpNext { rects, .. } => {
                 let z = bands.standin_z();
                 let stand = |name, rect| Target::flat(TargetKind::UpNext, name, origin, rect, z).replacing(&bands.replaced);
@@ -569,6 +578,32 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         langs: &["en", "ru"],
         skew: 0.0,
         also: &[],
+    },
+    // The reference's bar band given a second cell, and the playbar a fixed `w` of 1648 so the two overlay (a
+    // `fill` playbar would take the room left of the new cell): a 40 px disc, end-aligned and seated on the
+    // band's foot. The bar's cell is 60 px (the track's top to the foot of its clock line), so the disc stands
+    // on the clock line at the end of the track, where the remaining clock is drawn: the stage 1e defect, where
+    // the reference's More disc was drawn over `-52:33`. The clock is app text (I4 decor), so the disc is drawn
+    // over it (E1003), and the disc leaves it none of its room (I10, E0601).
+    InvalidCase {
+        name: "decor-overlap: a disc stands on the playbar's remaining clock",
+        code: "HUD-E1003",
+        pointer: "/layout/block/1/cells/0/playbar",
+        base: Base::Reference,
+        edits: &[
+            (r#""playbar": { "w": "fill", "fill": "gold""#, r#""playbar": { "w": 1648, "fill": "gold""#),
+            (
+                r#""knob": "always", "clocks": "ends", "clock_size": "CAPTION", "mark": "busy_only" } }"#,
+                r#""knob": "always", "clocks": "ends", "clock_size": "CAPTION", "mark": "busy_only" } },
+        { "align": "end", "valign": "bottom", "segment": { "id": "tail", "gap": "MD", "items": [
+          { "id": "tail_skip", "command": "seek", "by": 60, "widget": "disc", "size": 40,
+            "rest": "bare", "focus": "accent", "face": "fwd30" }
+        ] } }"#,
+            ),
+        ],
+        langs: &["en", "ru"],
+        skew: 0.0,
+        also: &[("HUD-E0601", "/layout/block/1/cells/0/playbar")],
     },
 ];
 

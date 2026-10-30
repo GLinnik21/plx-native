@@ -37,7 +37,7 @@ pub(super) fn hud_env() -> Env {
 pub(crate) const HUD_TITLE_SZ: i32 = 54;
 
 /// the shared playback clock ([`plx_ui::fmt::clock`]) with the HUD's leading '-' for remaining
-pub(super) fn fmt_time(ns: i64, neg: bool) -> String {
+pub(crate) fn fmt_time(ns: i64, neg: bool) -> String {
     let c = plx_ui::fmt::clock(ns / 1_000_000);
     if neg {
         format!("-{c}")
@@ -58,6 +58,20 @@ pub(super) const SB_H: f32 = 8.0;
 /// The radius of the largest thing the bar draws around the playhead, the focused knob's glow (a 34 px
 /// disc centred on the track). The caption band counts it as part of the bar: `hud_format::compile`.
 pub const KNOB_GLOW_R: f32 = 17.0;
+/// Where the clocks' line stands: its top is this far below the TRACK's top edge. [`draw_playbar_look`] draws
+/// both clocks there, and `hud_format::compile` reserves the line under the bar from it (`clock_line_h`), so
+/// the two cannot drift: a band under the bar starts below the clocks, not on them.
+pub const CLOCK_TOP: f32 = 30.0;
+/// A clock line's height as a multiple of its rung's size: the room the compiler reserves for it. Inter's
+/// ascender plus descender is 1.21 em (`ShippedMeasure::line_h`), and SDL_ttf rounds each to whole pixels, which
+/// is 30 px at the clocks' CAPTION rung (24 px; a pinned test holds the ratio above every measure's line).
+/// It is a ratio and not the `Measure`'s line height on purpose: the reserved room moves every band above the
+/// bar, and classic's rows must not move with the font the host measures with.
+pub const CLOCK_LINE: f32 = 1.25;
+/// The height the playbar reserves for its clocks' line at rung `size`: [`CLOCK_LINE`] of it.
+pub fn clock_line_h(size: i32) -> f32 {
+    size as f32 * CLOCK_LINE
+}
 pub(super) const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
 pub(super) const BTN_Y: f32 = HudBand::CLASSIC.controls_top_y;
 
@@ -770,7 +784,7 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
 
     // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
     // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
-    let ty = sy + 30.0;
+    let ty = sy + CLOCK_TOP;
     // A grown knob clock keeps its BASELINE, so it grows upward and never into the remaining clock's
     // line. It is a CROSSFADE of two ladder rungs (the resting CAPTION and the one above it), each
     // laid out at its own size, never a tweened size or a scaled texture; the extents the rest of

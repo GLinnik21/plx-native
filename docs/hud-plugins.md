@@ -453,7 +453,13 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
   bottom edges, default 72 and 80: classic's grab band `(SB_X, SCR_H - 270, sb_w, 160)` around the track at
   `SB_Y = SCR_H - 198`, 8 tall, `player_hud.rs:474-475`, `:1405-1407`; registered as the lowest stop, #162)}: exactly one,
-  the scrub group. Its band's box is the track (`thickness`); the knob, clocks and mark overhang it;
+  the scrub group. Its cell is the track plus the line the clocks are drawn on: as tall as `CLOCK_TOP` (30 px, the
+  clocks' line top below the track's top, the one constant `draw_playbar_look` draws at) plus `clock_size` x
+  `CLOCK_LINE` (1.25, a ratio so a measurer cannot move a band), or `thickness` if that is taller, so no band under
+  the bar lands on the clocks. The compile also emits the two clocks as rects on the line (the widest string the app
+  can print, `H:MM:SS`, in the weight each is drawn in; under `follow_head` the elapsed clock travels the track, so
+  its rect is the track's width), which I4 reads as decor and I10 judges as app text. The knob and mark overhang the
+  track;
 - `segment` {`id`, `gap`, `items`}: one `HStack` of controls (below);
 - `strip` {`bind`: `chapters`, `w`, `card_w`, `card_h`, `gap`, `radius`, `focus`: `"ring"`, `label_align` (`centre`,
   the Shelf's default, or `leading`, D11), `card`: {`art`, `overlay`, `below`, `below_gap`}}: the chapters
@@ -1045,7 +1051,7 @@ whole file):
     { "id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26, "cells": [
       { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION" } }
     ] },
-    { "id": "tabs", "gap_before": 59, "cells": [
+    { "id": "tabs", "gap_before": 7, "cells": [
       { "align": "start", "segment": { "id": "tabs", "gap": "SM", "items": [
         { "id": "tab_info", "command": "toggle_section", "section": "info", "widget": "pill", "size": 64 },
         { "id": "tab_chapters", "command": "toggle_section", "section": "chapters", "when": "chapters.present", "widget": "pill", "size": 64 }
@@ -1076,7 +1082,7 @@ at 768 and the title at 802.
 | Chrome fade | title, row and tabs on `pc = p.alpha(chrome_a)`; bar, clocks and preview on `p` (`:2075-2081`, `:2146-2160`) | bands `top` and `tabs` default `fades`; `bar` `steady` |
 | Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and the rest at its defaults, which are classic's |
 | Grab band | `scrub_hit_rect` = `(SB_X, SCR_H - 270, sb_w, 160)` (`:1405-1407`) | `playbar.grab` defaults 72 / 80 |
-| Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 59`; `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
+| Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 7` (`tab_y()` 949 less the bar cell's foot, 882 + 60: the cell holds the clocks' line); `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
 | Skip | `ctrl_slot` of its own label (`skip_pill.rs:75-77`) | the Skip rule (Package format) |
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |

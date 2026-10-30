@@ -923,3 +923,124 @@ fn a_ladder_face_picks_the_viewers_interval_then_its_default() {
     assert_eq!(face.pick_interval(30), Some(&FaceRef::Asset("d".to_owned())));
     assert_eq!(Face::default().pick_interval(10), None);
 }
+
+// ---------------------------------------------------------------------------------------------------
+// The playbar's clocks: app text the layout reserves room for
+// ---------------------------------------------------------------------------------------------------
+
+/// The playbar of `state`: its track, clock rects, the mode its clocks stand in and the rung they are drawn at.
+fn bar_of(state: &CompiledState) -> (Rect, super::clocks::ClockRects, ClockMode, i32) {
+    match state.ops.iter().find(|o| matches!(o, DrawOp::Playbar { .. })) {
+        Some(DrawOp::Playbar { track, clock_rects, clocks, clock_size, .. }) => (*track, *clock_rects, *clocks, *clock_size),
+        _ => panic!("no playbar"),
+    }
+}
+
+/// The widest width any clock the app can print has at `size` in `bold`: every `H:MM:SS` of up to two hour
+/// digits printed through `fmt_time` and measured one by one, so the claim that each position takes its widest
+/// digit is checked against the strings themselves and not assumed.
+fn widest_printed(measure: &dyn Measure, size: i32, bold: bool, remaining: bool) -> f32 {
+    let mut widest = 0.0f32;
+    for hours in 0..=99i64 {
+        for minutes in 0..60i64 {
+            for seconds in (0..60i64).step_by(3) {
+                let ns = ((hours * 60 + minutes) * 60 + seconds) * 1_000_000_000;
+                widest = widest.max(measure.width_str(&classic::fmt_time(ns, remaining), size, bold));
+            }
+        }
+    }
+    widest
+}
+
+/// **The clocks have rects, and they are where `draw_playbar_look` puts the clocks**: on the line `CLOCK_TOP`
+/// under the track's top, as tall as the measurer's line at the clock's rung. Under `ends` the elapsed clock
+/// starts at the bar's start, the remaining one ends at its end, and each is as wide as the widest string the
+/// app can print in its drawn weight (the elapsed bold, the remaining regular and minus-led). Under
+/// `follow_head` the elapsed clock travels the whole bar, so its rect is the track's width.
+#[test]
+fn the_playbars_clocks_stand_where_the_playbar_draws_them_as_wide_as_the_widest_clock() {
+    let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
+    for (measure_name, measure) in measures {
+        let size = theme::size::CAPTION;
+        let elapsed_w = widest_printed(measure, size, super::clocks::ELAPSED_BOLD, false);
+        let remaining_w = widest_printed(measure, size, super::clocks::REMAINING_BOLD, true);
+        for (name, text, mode) in [("reference", REFERENCE, ClockMode::Ends), ("classic", CLASSIC, ClockMode::FollowHead)] {
+            let c = build(text, measure);
+            let (track, clocks, got_mode, got_size) = bar_of(compact(&c, Slot::Discs));
+            let at = format!("{name} under {measure_name}");
+            assert_eq!((got_mode, got_size), (mode, size), "{at}");
+            let y = track.y + classic::CLOCK_TOP;
+            for rect in [clocks.elapsed, clocks.remaining] {
+                assert_eq!((rect.y, rect.h), (y, measure.line_h(size)), "{at}: the clock line");
+            }
+            assert_eq!(clocks.remaining.x + clocks.remaining.w, track.x + track.w, "{at}: the remaining clock ends at the bar's end");
+            assert_eq!(clocks.remaining.w, remaining_w, "{at}: the widest remaining clock");
+            assert_eq!(clocks.elapsed.x, track.x, "{at}: the elapsed lane starts at the bar's start");
+            match mode {
+                ClockMode::Ends => assert_eq!(clocks.elapsed.w, elapsed_w, "{at}: the widest elapsed clock"),
+                ClockMode::FollowHead => assert_eq!(clocks.elapsed.w, track.w, "{at}: the elapsed clock travels the bar"),
+            }
+        }
+    }
+}
+
+/// **The bar's cell holds the clocks' line, so no band under it starts on it.** Every control of every state of
+/// every fixture that stands under a track, over the track's own columns, starts below the bottom of that
+/// track's clock line (`CLOCK_TOP` plus `clock_line_h(clock rung)` from the track's top), and the reserved
+/// line is at least as tall as the line either test measurer reports for any rung.
+#[test]
+fn no_band_under_the_bar_starts_on_the_clocks_line() {
+    for rung in super::schema::SIZE_RUNGS.iter().map(|&(_, px)| px) {
+        for measure in [&FM as &dyn Measure, &ShippedMeasure] {
+            assert!(classic::clock_line_h(rung) >= measure.line_h(rung), "the reserved line at {rung} px is shorter than the font's");
+        }
+    }
+    let fixtures = [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE)];
+    for (measure_name, measure) in [("FixtureMeasure", &FM as &dyn Measure), ("ShippedMeasure", &ShippedMeasure)] {
+        let mut checked = std::collections::BTreeMap::new();
+        for (name, text) in fixtures {
+            let c = build(text, measure);
+            for state in c.states() {
+                let Some(DrawOp::Playbar { track, clock_size, .. }) = state.ops.iter().find(|o| matches!(o, DrawOp::Playbar { .. })) else {
+                    continue;
+                };
+                let line_bottom = track.y + classic::CLOCK_TOP + classic::clock_line_h(*clock_size);
+                let columns = track.x..track.x + track.w;
+                for control in state.controls.iter().filter(|c| c.rect.y >= track.y + track.h && columns.contains(&c.rect.x)) {
+                    *checked.entry(name).or_insert(0) += 1;
+                    assert!(
+                        control.rect.y >= line_bottom - plx_ui::consts::EDGE_TOL,
+                        "{name} under {measure_name} {:?}: `{}` at y {} starts on the clocks' line, which ends at {line_bottom}",
+                        state.key,
+                        control.id,
+                        control.rect.y
+                    );
+                }
+            }
+        }
+        for name in ["classic", "reference"] {
+            assert!(checked.contains_key(name), "{name} under {measure_name}: the census found no control under the bar ({checked:?})");
+        }
+    }
+}
+
+/// **Classic's tabs did not move.** The bar's cell now holds the clocks' line (`CLOCK_TOP` plus
+/// `clock_line_h(CAPTION)`, 60 px from the track's top), so the `tabs` band's `gap_before` in
+/// `classic.plxhud.json` is the distance from the cell's foot to the tabs' top, `tab_y`: 949 less 882 + 60. The
+/// literal in the fixture is that arithmetic, spelt here from the constants.
+#[test]
+fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
+    let geometry = classic::geometry(ControlSlot::Discs(Controls::NONE), &HudMotion::new(), 1, &FM);
+    let cell_foot = geometry.playbar.y + classic::CLOCK_TOP + classic::clock_line_h(theme::size::CAPTION);
+    let gap = geometry.tab_row.y - cell_foot;
+    assert_eq!(gap, 7.0, "the tabs sit 7 px under the bar's cell");
+    let parsed = package(CLASSIC);
+    let bands = parsed.layout.get("block").and_then(parse::Val::as_list).expect("the bands");
+    let tabs = bands
+        .iter()
+        .filter_map(parse::Val::as_object)
+        .find(|band| band.get("id").and_then(parse::Val::as_str) == Some("tabs"))
+        .expect("the tabs band");
+    let Some(parse::Val::Keyed(gap_before)) = tabs.get("gap_before") else { panic!("the tabs' gap is keyed on the open section") };
+    assert_eq!(gap_before.base.as_f64(), Some(f64::from(gap)), "the fixture's literal");
+}

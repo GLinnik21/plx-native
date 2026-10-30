@@ -61,11 +61,12 @@ use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{Button, TabPill, CTRL_FOCUS_SCALE, HAIRLINE_H};
 use plx_ui::{theme, Rect};
 
+use super::clocks::{self, ClockRects};
 use super::parse::{Cond, CondTerm, Object, Package, Val};
 use super::reach::{Layout, Slot, State, Valuation};
 use super::schema;
 use super::{pointer_push, validate::each_object};
-use crate::player_hud::classic::{stand_in_w, KNOB_GLOW_R};
+use crate::player_hud::classic::{self, stand_in_w, CLOCK_TOP, KNOB_GLOW_R};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor, MAX_ROW_ITEMS};
 use crate::up_next;
 
@@ -400,6 +401,8 @@ pub enum DrawOp {
         clock_size: i32,
         knob: KnobMode,
         clocks: ClockMode,
+        /// where the two clocks stand on the clock line under the track (decor: I4, I5, I10)
+        clock_rects: ClockRects,
         mark: MarkMode,
     },
     /// The chapters strip: `visible` cards at `pitch`, each laid out as `template` is at card 0.
@@ -1432,7 +1435,12 @@ impl<'e, 'p> Env<'e, 'p> {
                 Size::new(w, h)
             }
             "spacer" => Size::new(Dim::Px(self.num(o, "w").unwrap_or(0.0)), 0.0),
-            "playbar" => Size::new(self.dim(o, "w").unwrap_or(Dim::Fill), self.num(o, "thickness").unwrap_or(0.0)),
+            // The cell is the track AND the clocks' line under it: the playbar draws both clocks itself, on a line
+            // `CLOCK_TOP` below the track's top, and a band under the bar must start below them (I4, I10).
+            "playbar" => {
+                let line = CLOCK_TOP + classic::clock_line_h(self.size_px(o, "clock_size"));
+                Size::new(self.dim(o, "w").unwrap_or(Dim::Fill), self.num(o, "thickness").unwrap_or(0.0).max(line))
+            }
             "segment" => {
                 let c = self.controls(o, self.gap(o, "gap").unwrap_or(0.0), false);
                 let w = HStack::new(&c.items, c.gap, Align::Leading(0.0)).width();
@@ -1708,18 +1716,23 @@ impl<'e, 'p> Env<'e, 'p> {
             "rect" => self.emit_rect(o, r, mode, out),
             "vstack" => self.emit_vstack(o, r, mode, out),
             "playbar" => {
+                // the cell holds the track at its top and the clocks' line under it (`size_of`)
+                let track = Rect::new(r.x, r.y, r.w, self.num(o, "thickness").unwrap_or(0.0));
                 let above = self.num_or_default(o, "grab", "above");
                 let below = self.num_or_default(o, "grab", "below");
-                let grab = Rect::new(r.x, r.y - above, r.w, above + r.h + below);
-                out.playbar = Some(PlaybarRects { track: r, grab });
+                let grab = Rect::new(track.x, track.y - above, track.w, above + track.h + below);
+                out.playbar = Some(PlaybarRects { track, grab });
+                let clock_size = self.size_px(o, "clock_size");
+                let clock_mode = if self.name(o, "clocks") == Some("ends") { ClockMode::Ends } else { ClockMode::FollowHead };
                 out.push(&o.pointer, DrawOp::Playbar {
-                    track: r,
+                    track,
                     grab,
                     fill: self.live_ink(o, "fill"),
                     track_ink: self.live_ink(o, "track"),
-                    clock_size: self.size_px(o, "clock_size"),
+                    clock_size,
                     knob: if self.name(o, "knob") == Some("always") { KnobMode::Always } else { KnobMode::Tick },
-                    clocks: if self.name(o, "clocks") == Some("ends") { ClockMode::Ends } else { ClockMode::FollowHead },
+                    clocks: clock_mode,
+                    clock_rects: clocks::rects(track, clock_size, clock_mode, self.measure),
                     mark: if self.name(o, "mark") == Some("busy_only") { MarkMode::BusyOnly } else { MarkMode::AfterElapsed },
                 });
             }
