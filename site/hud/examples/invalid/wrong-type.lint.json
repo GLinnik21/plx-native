@@ -1,0 +1,15 @@
+{
+  "file": "wrong-type.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0104",
+      "hint": "write an integer from 1 to 64 here",
+      "message": "expected an integer from 1 to 64, found string",
+      "nearest": [],
+      "path": "/layout/block/0/cells/0/playbar/thickness",
+      "rule": "type-matches",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}

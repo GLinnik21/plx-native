@@ -1658,9 +1658,9 @@ impl HeaderLayout {
 /// Two consequences, and both REMOVE code rather than adding it. The video stays visible around it,
 /// which is the point of a stats overlay you watch playback under — the first version was a
 /// full-screen opaque card that made "is anything on screen?" unanswerable while the panel was up.
-/// And it sits entirely ABOVE the transport (`player_hud::CTRL_Y`), so a pointer click can never
-/// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
-/// needed a close-on-click arm at all.
+/// And it sits entirely ABOVE the transport (the row's top, `HudGeometry::row_anchor.top`), so a
+/// pointer click can never land on the scrubber's rects THROUGH an opaque card — which was the only
+/// reason the click path needed a close-on-click arm at all.
 impl Diagnostics {
 fn panel_width(&self) -> f32 {
     if self.idle { FIELD_COL_W + 2.0 * PAD } else { PANEL_W }
@@ -1951,6 +1951,12 @@ mod tests {
     use super::*;
     use plx_media::route::{reset_player_control_for_test, EnhTestFixture};
 
+    /// The top of the transport's control row, as the layout reports it (`HudGeometry`): the line the
+    /// panel must stay above.
+    fn transport_top() -> f32 {
+        plx_appkit::player_hud::classic::frame_geometry().row_anchor.top
+    }
+
     /// The Audio row's speed suffix says nothing at 1x, names the speed and the pipeline's verdict
     /// on the PCM during a speed session, and says so once the safety net has turned speed off.
     #[test]
@@ -2098,7 +2104,7 @@ mod tests {
                     + panel.head_lines[1].len().max(1) as f32 * HEAD_LINE_H);
                 assert!(layout.fields_y >= layout.sections_y + HEAD_LINE_H);
                 assert!(plx_ui::consts::inside_safe(frame));
-                assert!(frame.y + frame.h < plx_appkit::player_hud::CTRL_Y);
+                assert!(frame.y + frame.h < transport_top());
             }
         }
     }
@@ -2116,7 +2122,7 @@ mod tests {
         for panel in [&short, &long] {
             let chart_top = panel.header_layout().fields_y + FieldList::height(RIGHT_ROWS);
             assert_eq!(panel.panel_rect().h - PAD - chart_top, FieldList::height(CHART_ROWS));
-            assert!(panel.panel_rect().y + panel.panel_rect().h < plx_appkit::player_hud::CTRL_Y);
+            assert!(panel.panel_rect().y + panel.panel_rect().h < transport_top());
         }
         assert_eq!(long.head_lines[0].concat(), long.head[0], "opaque build IDs must never lose a suffix");
     }
@@ -2671,9 +2677,9 @@ mod tests {
     fn the_panel_clears_the_transport() {
         let bottom = MARGIN + HEAD_H + FieldList::height(LEFT_ROWS) + PAD;
         assert!(
-            bottom < plx_appkit::player_hud::CTRL_Y,
+            bottom < transport_top(),
             "panel bottom {bottom} overlaps the control row at {}",
-            plx_appkit::player_hud::CTRL_Y
+            transport_top()
         );
         // through `panel_rect` itself, not a restatement of its arithmetic: its x is `MARGIN_X`
         // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept

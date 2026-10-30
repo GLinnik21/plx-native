@@ -15,5 +15,8 @@
   "under_posters.reset": "Przywróć domyślne",
   "under_posters.reset_detail": "Rok i czas trwania, bez tytułu.",
   "under_posters.sample_title": "Film",
-  "under_posters.sample_genre": "Dramat"
+  "under_posters.sample_genre": "Dramat",
+  "under_posters.show_sort_info": "Pokaż informacje o sortowaniu",
+  "under_posters.sort_info_detail": "Tytuł, rok i sortowanie w bibliotece filmów.",
+  "under_posters.default_version": "Domyślna"
 }

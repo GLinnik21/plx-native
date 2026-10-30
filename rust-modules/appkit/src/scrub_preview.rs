@@ -18,7 +18,7 @@
 //! will see; instead the memo asks for the position under the knob, waits for that one to settle,
 //! and then asks for wherever the knob has got to. Until a new still lands, the last one stays up.
 //!
-//! The memo is a RENDER memo, like [`crate::player_hud::TransportRow`]'s label widths: what it
+//! The memo is a RENDER memo, like [`crate::player_hud::motion::HudMotion`]'s label widths: what it
 //! holds is which still the draw can show, and it is stepped where the art is probed — in the draw.
 
 use plx_ui::{theme, Painter, Rect};
@@ -58,7 +58,7 @@ pub enum Look {
     Waiting,
 }
 
-/// The scrub preview's memo. Owned by the player's [`crate::player_hud::TransportRow`].
+/// The scrub preview's memo. Owned by the player's [`crate::player_hud::motion::HudMotion`].
 #[derive(Default)]
 pub struct ScrubPreview {
     /// The playback the memo describes: `(part id, playback generation)`. Any change resets it, so
@@ -222,7 +222,7 @@ pub fn draw(p: Painter, r: Rect, tex: u32, tw: f32, th: f32, prev: Option<(u32, 
 // ---- motion ---------------------------------------------------------------------------------
 //
 // Everything below is PURE: a value of time in, a number out, so the choreography is tested
-// without a GL context. `TransportRow::step` feeds [`Motion::step_live`] once per frame (the
+// without a GL context. `HudMotion::step` feeds [`Motion::step_live`] once per frame (the
 // scrub's edges, the chrome and the knob clock); the draw feeds [`Motion::observe`] (the card).
 
 /// The chrome (title block, control row, tabs) fades out over this when a scrub starts…

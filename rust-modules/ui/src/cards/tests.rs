@@ -65,6 +65,7 @@ struct Cards {
     first: usize,
     /// Every card carries a two-line caption (the Under posters setting's title over its details).
     captioned: bool,
+    sort_caption: bool,
     /// ...with the title alone (the 80 px Under posters band, no details line).
     title_only: bool,
     /// ...with the details line alone (the stored default: title off, Year · Length).
@@ -79,7 +80,7 @@ const TILE_PAINTED: u64 = 9999;
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, title_only: false, details_only: false, elem_calls: Default::default() }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, sort_caption: false, title_only: false, details_only: false, elem_calls: Default::default() }
     }
 }
 
@@ -101,14 +102,16 @@ impl CardSource<FixtureHost> for Cards {
         Art::Poster(None)
     }
     fn label(&self, i: usize) -> TileLabel {
-        if self.captioned {
+        let mut label = if self.captioned {
             TileLabel::from_lines([
                 (!self.details_only).then(|| format!("Title {}", self.elems[i])),
                 (!self.title_only).then(|| "2005 \u{b7} 1h 40m".into()),
             ])
         } else {
             TileLabel::default()
-        }
+        };
+        if self.sort_caption { label.sort_info = std::ffi::CString::new("100%").ok(); }
+        label
     }
     fn more(&self) -> bool {
         self.more
@@ -2896,6 +2899,63 @@ mod stack {
         assert!(r.stack.scroll().abs() < 0.5, "focus on the header brings the page home: {}", r.stack.scroll());
     }
 
+    /// The pointer's sideways glide (`InputKind::Pan`) moves the stack's shelf under the pointer,
+    /// and only that shelf; a `Pan` over the grid below moves nothing.
+    #[test]
+    fn a_sideways_glide_moves_the_shelf_under_the_pointer() {
+        let pan = |y: f32| ScreenEvent::Input(plx_machine::machine::InputEvent {
+            at: Default::default(),
+            source: plx_machine::machine::Source::Script,
+            kind: plx_machine::machine::InputKind::Pan { dx: 30.0, x: 1900.0, y },
+        });
+        let mut r = rig(24, 60);
+        r.go(100, By::Restore);
+        r.run(2);
+        let before = r.place(100).unwrap().rect;
+        let grid_card = r.place(1000).unwrap().rect;
+        for _ in 0..10 { r.feed(pan(before.cy())); }
+        r.run(60);
+        let after = r.place(100).unwrap().rect;
+        assert!((before.x - after.x - 300.0).abs() < 0.5, "the shelf under the pointer glides 300 px: {before:?} -> {after:?}");
+        r.feed(pan(grid_card.cy()));
+        assert_eq!(r.place(1000).unwrap().rect.x, grid_card.x, "the grid does not move sideways");
+    }
+
+    /// The pointer's edge glide (a fractional wheel every frame) moves a stack page itself: the
+    /// page follows the wheel and stays where it put it instead of the tick pulling it back to the
+    /// focused row; a hover moves focus and not the page, and a key's move brings it back.
+    #[test]
+    fn a_wheel_glides_the_page_and_it_stays_until_focus_moves() {
+        let wheel = |dy: f32| ScreenEvent::Input(plx_machine::machine::InputEvent {
+            at: Default::default(),
+            source: plx_machine::machine::Source::Script,
+            kind: plx_machine::machine::InputKind::Wheel { dy },
+        });
+        let mut r = rig(6, 60);
+        r.go(1000, By::Restore);
+        r.run(2);
+        r.go(1042, By::Dir);
+        r.run(120);
+        let deep = r.stack.scroll();
+        assert!(deep > 400.0, "the page followed the focused row: {deep}");
+        let mut last = deep;
+        for _ in 0..30 {
+            r.feed(wheel(0.04));
+            r.run(1);
+            assert!(r.stack.scroll() < last, "every frame of the glide moves the page up");
+            last = r.stack.scroll();
+        }
+        r.run(120);
+        let glided = r.stack.scroll();
+        assert!((glided - (deep - 1.2 * crate::consts::ROW_PITCH)).abs() < 1.0, "1.2 rows up: {deep} -> {glided}");
+        r.go(1043, By::Pointer);
+        r.run(120);
+        assert!((r.stack.scroll() - glided).abs() < 0.5, "a hover moves focus, not the page: {}", r.stack.scroll());
+        r.go(1042, By::Dir);
+        r.run(120);
+        assert!((r.stack.scroll() - deep).abs() < 1.0, "a key's move reveals the focused row again: {}", r.stack.scroll());
+    }
+
     #[test]
     fn a_page_stays_put_when_focus_leaves_it_unless_it_asks_to_go_home() {
         let scrolled = |home: bool| {
@@ -5394,4 +5454,97 @@ fn the_rows_in_view_and_their_hold_reach_fit_the_rows_the_store_keeps() {
     // and the premise of ROWS_IN_VIEW_MAX: the fixed pitch of a row, whole rows that fit, plus two cut
     let pitch = crate::card_row::ROW_PITCH_FIXED;
     assert!(ROWS_IN_VIEW_MAX as f32 * pitch >= crate::consts::SCR_H + pitch, "{ROWS_IN_VIEW_MAX} rows of {pitch}px");
+}
+
+#[test]
+fn persistent_grid_captions_draw_every_visible_card_and_keep_focus_and_next_row_clear() {
+    let _guard = plx_base::testlock::serial();
+    let mut r = Rig::<Grid>::new(30);
+    r.src.captioned = true; r.src.sort_caption = true;
+    r.sect.set_persistent_captions(true);
+    r.land_focus(100, By::Dir); r.run(120);
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    let lines = r.sect.caption_lines_probe(&f, f.painter, &r.src);
+    for i in 0..6 {
+        assert_eq!(lines.iter().filter(|(index, ..)| *index == i).count(), 3,
+            "each poster is captioned, not just the focused one: {i}");
+    }
+    let runs = crate::draw_census::capture_runs(|| {
+        let mut frame = DrawFrame::new(&cx, Painter::recording());
+        let p = frame.painter;
+        r.sect.draw(&mut frame, p, &r.src);
+    });
+    assert!(runs.iter().any(|run| run.text == "100%"), "a fitting sort value has no ellipsis");
+    assert!(runs.iter().any(|run| run.text == "Title 101"), "an unfocused fitting title has no ellipsis");
+    let c0 = r.sect.place(&cx, &r.src, &100, At::SpringTarget).unwrap();
+    let c6 = r.sect.place(&cx, &r.src, &106, At::SpringTarget).unwrap();
+    let last = lines.iter().filter(|(i, ..)| *i == 0).map(|(_, _, bottom, _)| *bottom).fold(0.0, f32::max);
+    let next_lifted_top = c6.rest_rect.y;
+    assert!(last < next_lifted_top, "last caption stays above even a popped next row");
+    assert!((c0.rest_rect.w / GRID.style.focus_scale - GRID.style.w).abs() < 0.01);
+    assert!((c0.rest_rect.h / GRID.style.focus_scale - GRID.style.h).abs() < 0.01);
+    let first_top = c0.rest_rect.y;
+    r.land_focus(101, By::Dir); r.run(120);
+    assert_eq!(r.focus, Some(r.key(101)));
+    assert_eq!(r.sect.place(&r.cx(), &r.src, &100, At::SpringTarget).unwrap().rest_rect.y, first_top,
+        "moving horizontally cannot change the permanent row pitch");
+    r.sect.set_persistent_captions(false);
+    r.run(120);
+    let cx = r.cx(); let f = DrawFrame::new(&cx, Painter::recording());
+    assert!(r.sect.caption_probe(&f, f.painter, &r.src).iter().all(|(index, _)| *index == 1),
+        "turning the mode off restores focused-only captions");
+}
+
+#[test]
+fn plain_sort_caption_uses_the_regular_details_face() {
+    let _guard = plx_base::testlock::serial();
+    for (value, bold) in [("25 июн. 2026", false), ("2 ч 14 мин", false), ("64%", true)] {
+        let label = TileLabel { sort_info: Some(std::ffi::CString::new(value).unwrap()),
+            sort_bold: bold,
+            ..TileLabel::from_lines([Some("Film".into()), Some("2026".into())]) };
+        let runs = crate::draw_census::capture_runs(|| crate::card_row::draw_label(
+            Painter::recording(), Rect::new(100.0, 100.0, GRID.style.w, GRID.style.h),
+            1.0, &GRID.style, &label, &FixtureMeasure));
+        let value_run = runs.iter().find(|run| run.text == value).unwrap();
+        assert_eq!(value_run.bold, bold, "only ratings have emphasis");
+        assert_eq!(value_run.size, if bold { crate::theme::size::LABEL } else { crate::theme::size::CAPTION });
+    }
+}
+
+#[test]
+fn review_persistent_grid_borrows_labels_only_after_culling() {
+    struct CachedCards {
+        cards: Cards,
+        label: TileLabel,
+        reads: std::cell::RefCell<Vec<usize>>,
+    }
+    impl CardSource<FixtureHost> for CachedCards {
+        fn len(&self) -> usize { self.cards.len() }
+        fn elem(&self, i: usize) -> u32 { self.cards.elem(i) }
+        fn index_of(&self, e: &u32) -> Option<usize> { self.cards.index_of(e) }
+        fn art(&self, _: usize) -> Art<'_> { Art::Poster(None) }
+        fn label(&self, _: usize) -> TileLabel { panic!("persistent painting must borrow the cached label") }
+        fn with_label<R>(&self, i: usize, read: impl FnOnce(&TileLabel) -> R) -> R {
+            self.reads.borrow_mut().push(i);
+            read(&self.label)
+        }
+    }
+    let _guard = plx_base::testlock::serial();
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    let _discovery = crate::frame::backdrop::discover(sources);
+    let view = FixtureView::default();
+    let cx = cx9(&view, 0, 1.0, None);
+    let painter = Painter::root();
+    let frame = DrawFrame::new(&cx, painter);
+    let mut grid = Grid::new(ENTRY, GRID.columns(GRID.cols, GRID.style, 5000.0));
+    grid.set_persistent_captions(true);
+    let src = CachedCards { cards: Cards::new((100..130).collect(), false),
+        label: TileLabel::titled("Cached", "1997"), reads: Default::default() };
+    assert!(grid.caption_probe(&frame, painter, &src).is_empty());
+    assert!(src.reads.borrow().is_empty(), "culled tiles must not ask for words");
+    grid.set_columns(GRID.cols, GRID.style, crate::consts::MARGIN_X);
+    assert!(!grid.caption_probe(&frame, painter, &src).is_empty());
+    assert!(!src.reads.borrow().is_empty(), "visible captions use the borrowed path");
 }

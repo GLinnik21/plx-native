@@ -116,6 +116,7 @@ pub(crate) fn input(event: &plx_machine::machine::InputEvent<u32>) -> Result<Val
             json!({"kind":match event.kind { InputKind::Pointer {..} => "pointer", InputKind::Click {..} => "click", _ => "drag" },
                 "x_bits":x.to_bits(),"y_bits":y.to_bits(),"hit":hit}),
         InputKind::Wheel { dy } => json!({"wheel_bits":dy.to_bits()}),
+        InputKind::Pan { dx, x, y } => json!({"pan_bits":[dx.to_bits(),x.to_bits(),y.to_bits()]}),
         InputKind::PointerHidden => json!({"pointer_hidden":true}),
         InputKind::SystemKeyboard(up) => json!({"keyboard":up}),
         InputKind::Text(_) => return Err("unsupported Home text input"),

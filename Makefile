@@ -846,8 +846,9 @@ RUST_TARGET = armv7-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnative_modules.a
 
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
-# ass.c and ass_fonts.c belong to the privately bundled renderer, never the application ELF.
-SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c,$(wildcard src/*.c)) src/compat/getauxval.c
+# ass.c, ass_fonts.c and ass_text.c belong to the privately bundled renderer, never the application
+# ELF (ci/test_renderer_sources.py holds this list to ci/build-libass.py's).
+SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c,$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative pkg/plxnative-storage
@@ -919,7 +920,7 @@ LIBASS_STAGED = pkg/libass-plx.so.0
 LIBASS_INPUTS = ci/build-libass.sh ci/build-libass.py ci/deps.py ci/dependencies.json \
                 ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py \
                 ci/patches/libass-0001-grow-font-faces.patch \
-                src/ass.c src/ass_fonts.c src/ass_internal.h src/ass_composite.h include/ass.h
+                src/ass.c src/ass_fonts.c src/ass_text.c src/ass_internal.h src/ass_composite.h include/ass.h
 $(LIBASS_STAGED): $(LIBASS_INPUTS)
 	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-libass.sh
 
@@ -1182,6 +1183,7 @@ ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,$(ICO
 LAB_FILES = $(if $(LAB),pkg/lab.json,)
 APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/appfont-emoji.ttf pkg/OFL.txt \
+            pkg/appfont-arabic.ttf pkg/appfont-arabic-bold.ttf pkg/appfont-hebrew.ttf pkg/appfont-hebrew-bold.ttf \
             pkg/le-roots.pem \
             THIRD-PARTY-NOTICES.md LICENSING.md \
             $(LAB_FILES) \
@@ -2313,6 +2315,9 @@ libass-host: $(LIBASS_HOST_STAGED)
 check-ass: $(LIBASS_HOST_STAGED)
 	cd rust-modules && CARGO_INCREMENTAL=0 PLXNATIVE_APP_DIR="$(CURDIR)/pkg" PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_media player::ass::tests -- --include-ignored
+	# The same library's UI text surface (ABI 4): Arabic and Hebrew runs, gfx/src/rtl.rs.
+	cd rust-modules && CARGO_INCREMENTAL=0 PLXNATIVE_APP_DIR="$(CURDIR)/pkg" PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_gfx rtl:: -- --include-ignored
 
 $(FFMPEG_HOST_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh ci/deps.py ci/dependencies.json
 	HOST=1 ./ci/build-ffmpeg.sh

@@ -80,7 +80,7 @@ def main():
     # The private ASS library statically contains the whole libass stack: its recipe is the facade
     # and the build configuration, which is not a download of any one of the five.
     libass_recipe = ['ci/build-libass.sh', 'ci/build-libass.py', 'src/ass.c', 'src/ass_fonts.c',
-                     'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h']
+                     'src/ass_text.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h']
     for dep in manifest:
         if not dep.get('bundled'):
             continue

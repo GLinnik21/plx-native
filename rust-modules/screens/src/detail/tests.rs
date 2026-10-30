@@ -138,6 +138,8 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         withdrawn: false,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
+        free: false,
+        episode_free: false,
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),
@@ -1006,6 +1008,104 @@ fn a_vanished_credit_falls_to_the_same_place_in_the_shelf() {
         },
         cast::elem,
     );
+}
+
+/// A focused episode that vanishes from the landed list (a re-read, another season's page) lands on
+/// the same place in the strip, not on the hero: the hero fallback scrolls the page to the top
+/// (the jump seen on the television after RIGHT on the season strip, then DOWN).
+#[test]
+fn a_vanished_episode_falls_to_the_same_place_in_the_strip() {
+    let sid = ServerId::UNSET;
+    let names = ["a", "b", "c", "d", "e"];
+    let season = |names: &[&str]| {
+        let mut d = detail(sid, "show");
+        d.episodes = names.iter().enumerate().map(|(i, rk)| episode(rk, i as i64 + 1)).collect::<Vec<_>>().into();
+        d
+    };
+    let _guard = install(season(&names));
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let at = |screen: &DetailScreen, i: usize, row| episode_key(screen, i, row).unwrap();
+    for row in [episodes::Row::Still, episodes::Row::Text] {
+        let want = FocusKey { entry: EntryId(7), elem: at(&screen, 3, row) };
+        let publish = |screen: &mut DetailScreen, d: Detail| {
+            plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+            screen.sync_keys(test_store().view());
+        };
+        let recovered = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, None)).elem;
+        publish(&mut screen, season(&["d", "a"]));
+        assert_eq!(recovered(&screen), want.elem, "an episode still in the list keeps focus when its index moves");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&["a", "b", "c"]));
+        assert_eq!(recovered(&screen), at(&screen, 2, row), "the same row of the last episode");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&["a", "b", "c", "x", "e"]));
+        assert_eq!(recovered(&screen), at(&screen, 3, row), "the same index, whoever now stands there");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&[]));
+        assert_eq!(recovered(&screen), hero::ELEM_PLAY, "an emptied season falls to the hero");
+        publish(&mut screen, season(&names));
+    }
+    clear();
+}
+
+/// Back from a cast member's page: the covered body is live and still scrolled to the Cast row.
+/// `restore_memory` must not send it to the top while the re-read is owed (`reveal_focus` skips a
+/// waiting return, so the page would run to 0 and back once the refetch lands).
+#[test]
+fn a_restore_memory_keeps_the_scroll_of_a_live_body_while_the_re_read_is_owed() {
+    let sid = ServerId::UNSET;
+    let guard = install(detail(sid, "show"));
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    screen.scroll_target = 839.0;
+    screen.scroll.pos = 839.0;
+    screen.refresh = DetailRefreshPhase::Deferred;
+    let memory = crate::registry::DetailMemory {
+        spot: plx_data::metadata::Spot { section: 4, col: 0, ..Default::default() },
+        keys: screen.keys.clone(),
+        next_elem: screen.next_elem,
+    };
+    screen.restore_memory(&memory, test_store().view());
+    assert!(screen.return_pending && screen.restore_intent.is_some(), "the return still waits for its card");
+    assert_eq!(screen.scroll_target, 839.0, "the live body stays where it was");
+    clear();
+}
+
+/// The same return, but the store holds one detail at a time and closing a film opened from the
+/// cast member's list emptied it: the body comes back with no detail, keeps its scroll while the
+/// re-read is owed, and the re-read then FAILS. Nothing moves the scroll after that (`reveal_focus`
+/// returns early without a detail) and the hero, the only thing drawn without one, is faded out past
+/// `HERO_FADE`, so the page must go back to the top where the hero is.
+#[test]
+fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
+    let guard = plx_base::testlock::serial();
+    let sid = ServerId::UNSET;
+    test_store().run(MetadataCmd::Clear);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    screen.scroll_target = 839.0;
+    screen.scroll.pos = 839.0;
+    screen.refresh = DetailRefreshPhase::Requested;
+    let memory = crate::registry::DetailMemory {
+        spot: plx_data::metadata::Spot { section: 4, col: 0, ..Default::default() },
+        keys: screen.keys.clone(),
+        next_elem: screen.next_elem,
+    };
+    screen.restore_memory(&memory, test_store().view());
+    assert_eq!(screen.scroll_target, 839.0, "the return waits for its re-read where the body was left");
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+    {
+        let (state, adapter) = test_store().split_for_test();
+        assert!(!plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, None));
+    }
+    assert!(screen.detail(test_store().view()).is_none());
+    pump_restore(&mut screen);
+    assert!(screen.restore_intent.is_none() && !screen.return_pending, "the return gave up");
+    assert_eq!(screen.scroll_target, 0.0, "a page with no detail shows only the hero, so it goes back to it");
+    test_store().run(MetadataCmd::Clear);
+    clear();
 }
 
 /// Every section's element block is its own, wide, and below the engine keys: no two overlap, and
@@ -5293,6 +5393,149 @@ fn the_hold_hint_over_an_episode_still_waits_while_the_season_loads() {
     assert!(!hinted(&screen), "no hint while the season loads: the hold would open nothing");
     plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), false);
     assert!(hinted(&screen), "the hint is back once the season has landed");
+    clear();
+}
+
+/// The pointer's edge glide (a fractional wheel every frame) scrolls the detail page itself: a
+/// page resting on a lower section glides up continuously, never past the top, and down no further
+/// than the last section's reveal.
+#[test]
+fn a_wheel_glides_the_detail_page_within_its_range() {
+    let sid = ServerId::UNSET;
+    let mut page = detail(sid, "show");
+    page.related = (1..=12).map(|i| collection_member(sid, &format!("r{i}"))).collect();
+    let _guard = install(page);
+    let mut screen = bare(&_guard, sid, "show");
+    let wheel = |dy: f32| ScreenEvent::Input(InputEvent {
+        at: Default::default(),
+        source: plx_machine::machine::Source::Script,
+        kind: InputKind::Wheel { dy },
+    });
+    let max = {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let d = screen.detail(test_store().view()).unwrap();
+        let (sections, n) = screen.sections(Some(d));
+        screen.reveal_target(sections[n - 1], d, &measure)
+    };
+    assert!(max > 300.0, "the fixture scrolls: {max}");
+    screen.scroll.jump(max);
+    screen.scroll_target = max;
+    let mut last = max;
+    for _ in 0..10 {
+        assert_eq!(step(&mut screen, &wheel(0.05), None).0, Handled::Yes);
+        assert!(screen.scroll_target < last, "every frame of the glide moves the page up");
+        last = screen.scroll_target;
+    }
+    assert!((max - last - 0.5 * plx_ui::consts::ROW_PITCH).abs() < 0.5, "half a row: {max} -> {last}");
+    for _ in 0..200 { step(&mut screen, &wheel(0.1), None); }
+    assert_eq!(screen.scroll_target, 0.0, "never past the top");
+    for _ in 0..400 { step(&mut screen, &wheel(-0.1), None); }
+    assert_eq!(screen.scroll_target, max, "down no further than the last section's reveal");
+    clear();
+}
+
+/// **A hover moves focus, never the detail page; a click brings the page to what it clicked**; a
+/// key still brings its section into reading position. Before, a Magic Remote hover yanked the
+/// section it touched up to the title band, so every hover moved the page and undid a glide.
+#[test]
+fn a_hover_moves_no_detail_page_and_a_click_brings_it_to_its_element() {
+    let sid = ServerId::UNSET;
+    let mut page = detail(sid, "show");
+    page.related = (1..=12).map(|i| collection_member(sid, &format!("r{i}"))).collect();
+    page.extras = (1..=12).map(|i| plx_data::metadata::Extra { rk: format!("x{i}"), ..Default::default() }).collect();
+    let _guard = install(page);
+    let mut screen = bare(&_guard, sid, "show");
+    let related = screen.engine_key(related::elem(0).unwrap()).unwrap();
+    let moved = |screen: &mut DetailScreen, from: u32, to: u32, by: By| {
+        let ev = ScreenEvent::FocusMoved { from: Some(FocusKey { entry: screen.entry, elem: from }),
+            to: FocusKey { entry: screen.entry, elem: to }, by };
+        step(screen, &ev, Some(to));
+    };
+    moved(&mut screen, hero::ELEM_PLAY, related, By::Dir);
+    let seated = screen.scroll_target;
+    assert!(seated > 0.0, "a key brings Related into reading position");
+    moved(&mut screen, related, hero::ELEM_PLAY, By::Pointer);
+    assert_eq!(screen.scroll_target, seated, "a hover moves focus, not the page");
+    screen.scroll_target = 0.0;
+    screen.scroll.jump(0.0);
+    moved(&mut screen, hero::ELEM_PLAY, related, By::Pointer);
+    assert_eq!(screen.scroll_target, 0.0, "nor after a glide");
+    let click = ScreenEvent::Input(InputEvent { at: Default::default(), source: plx_machine::machine::Source::Script,
+        kind: InputKind::Click { x: 0.0, y: 0.0, hit: Some(related) } });
+    step(&mut screen, &click, Some(related));
+    assert_eq!(screen.scroll_target, seated, "a click brings the page to what it clicked");
+    clear();
+}
+
+/// **A landing does not pull a glided detail page back.** A series page would jump
+/// around while the pointer's edge glide scrolled it, because every landing (a season's episodes,
+/// the next page of a shelf as the glide reached it, the cast, the ratings) brought the page back
+/// to the focused section. Now a page the pointer moved stays where it is; a key's move still
+/// brings it to the focus, and a landing after that follows the focus again.
+#[test]
+fn a_landing_does_not_pull_a_glided_detail_page_back() {
+    let sid = ServerId::UNSET;
+    let mut page = detail(sid, "show");
+    page.related = (1..=12).map(|i| collection_member(sid, &format!("r{i}"))).collect();
+    page.extras = (1..=12).map(|i| plx_data::metadata::Extra { rk: format!("x{i}"), ..Default::default() }).collect();
+    let _guard = install(page);
+    let mut screen = bare(&_guard, sid, "show");
+    let wheel = |dy: f32| ScreenEvent::Input(InputEvent { at: Default::default(),
+        source: plx_machine::machine::Source::Script, kind: InputKind::Wheel { dy } });
+    let landing = ScreenEvent::StoreChanged(StoreId::Metadata.ord(), 1);
+    let play = hero::ELEM_PLAY;
+    // focus on the hero, glided well down the page
+    for _ in 0..40 { step(&mut screen, &wheel(-0.05), Some(play)); }
+    let glided = screen.scroll_target;
+    assert!(glided > 300.0, "premise: the glide moved the page: {glided}");
+    step(&mut screen, &landing, Some(play));
+    assert_eq!(screen.scroll_target, glided, "a landing leaves the glided page where it is");
+    // a key's move brings the page to the focus, and a landing then follows the focus again
+    let related = screen.engine_key(related::elem(0).unwrap()).unwrap();
+    let entry = screen.entry;
+    step(&mut screen, &ScreenEvent::FocusMoved { from: Some(FocusKey { entry, elem: play }),
+        to: FocusKey { entry, elem: related }, by: By::Dir }, Some(related));
+    let seated = screen.scroll_target;
+    screen.scroll_target = seated + 50.0;
+    step(&mut screen, &landing, Some(related));
+    assert_eq!(screen.scroll_target, seated, "with no glide, a landing keeps the focused section in reading position");
+    clear();
+}
+
+/// **The pointer's sideways glide moves the row under it on a detail page**: the Related shelf, and
+/// the episode strip, which then stays where the glide put it although an episode holds focus,
+/// until a key moves focus.
+#[test]
+fn the_sideways_glide_moves_the_related_shelf_and_the_episode_strip() {
+    let sid = ServerId::UNSET;
+    let mut page = detail(sid, "show");
+    page.episodes = (1..=12).map(|i| episode(&format!("e{i}"), i)).collect();
+    page.related = (1..=12).map(|i| collection_member(sid, &format!("r{i}"))).collect();
+    let _guard = install(page);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let row_y = |screen: &DetailScreen, sec: section::SectionId| {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.section_top(sec.raw(), d, &measure) - screen.scroll.pos + screen.block_h(sec.raw(), d, &measure) / 2.0
+    };
+    let pan = |y: f32| ScreenEvent::Input(InputEvent { at: Default::default(),
+        source: plx_machine::machine::Source::Script, kind: InputKind::Pan { dx: 20.0, x: 1900.0, y } });
+    let y = row_y(&screen, section::SectionId::Related);
+    for _ in 0..10 { step(&mut screen, &pan(y), None); }
+    assert_eq!(screen.related.scroll(), 200.0, "the Related shelf glides");
+    assert_eq!(screen.episode_scroll.pos, 0.0, "the episode strip stays");
+    let y = row_y(&screen, section::SectionId::Episode);
+    let ep = screen.engine_key(episodes::elem(0, episodes::Row::Still).unwrap()).unwrap();
+    for _ in 0..10 { step(&mut screen, &pan(y), Some(ep)); }
+    assert_eq!(screen.episode_scroll.pos, 200.0, "the episode strip glides");
+    for i in 1..=60 { step(&mut screen, &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }), Some(ep)); }
+    assert_eq!(screen.episode_scroll.pos, 200.0, "its focused episode does not pull it back");
+    let entry = screen.entry;
+    // a key's move to the first episode (off screen to the left now) brings the strip back to it
+    step(&mut screen, &ScreenEvent::FocusMoved { from: Some(FocusKey { entry, elem: ep }),
+        to: FocusKey { entry, elem: ep }, by: By::Dir }, Some(ep));
+    for i in 61..=200 { step(&mut screen, &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }), Some(ep)); }
+    assert!(screen.episode_scroll.pos < 1.0, "a key's move brings the strip back to its focus: {}", screen.episode_scroll.pos);
     clear();
 }
 

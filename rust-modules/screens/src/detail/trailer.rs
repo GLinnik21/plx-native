@@ -5,7 +5,7 @@
 //! transport in its place: the `Trailer` kicker over a title ([`transport_title`] — the item's
 //! own by default, the trailer extra's when THAT says something the kicker doesn't), the playbar,
 //! the clocks and the state read-out. Those are the player HUD's own pieces drawn through
-//! `appkit::player_hud::{draw_scrim, draw_title, draw_playbar}`, so the two transports cannot drift;
+//! `appkit::player_hud::{classic::draw_scrim, classic::draw_title, classic::draw_playbar}`, so the two transports cannot drift;
 //! what a trailer does NOT get is the rest of the HUD — no quality, subtitle, audio or Info
 //! control, no tabs and no track menus. A preview session has no PlayQueue, no timeline reporter
 //! and no watch state, and a control that writes one has no business on it.
@@ -16,7 +16,7 @@
 
 use plx_appkit::held_key::HeldKey;
 use plx_ui::icons::Icon;
-use plx_appkit::player_hud::{Knob, Playbar, TransportMark};
+use plx_appkit::player_hud::{classic::Knob, classic::Playbar, TransportMark};
 use plx_ui::widgets::KeyHint;
 use plx_ui::{consts, theme, Painter};
 use std::ffi::CString;
@@ -165,7 +165,7 @@ pub(super) struct Transport {
     /// long it has been continuously up. `None` while it is down.
     hint_since: Option<u32>,
     /// When the last paused→playing edge happened, so the read-out can wear
-    /// [`TransportMark::Play`] for [`PLAY_MARK_MS`], exactly as the HUD's `TransportRow::play_at`
+    /// [`TransportMark::Play`] for [`PLAY_MARK_MS`], exactly as the HUD's `HudMotion::play_at`
     /// makes it.
     play_at: Option<u32>,
     /// last tick's pause state, which is the only way to see that edge
@@ -455,19 +455,19 @@ impl Transport {
             return;
         }
         let p = p.alpha(self.alpha);
-        plx_appkit::player_hud::draw_scrim(p);
+        plx_appkit::player_hud::classic::draw_scrim(p);
         // `if let Ok`, not `.unwrap_or_default()` — the player HUD's own rule (5a221a54): a title
         // with an interior NUL skips the title block rather than drawing an empty line under the
         // kicker. The transport below it still draws; only the unprintable text is dropped.
         if let Ok(title) = CString::new(transport_title(film_title, extra_title)) {
-            plx_appkit::player_hud::draw_title(
+            plx_appkit::player_hud::classic::draw_title(
                 p,
-                plx_appkit::player_hud::Kicker::Context(plx_platform::i18n::msg::browse_detail_trailer_c().as_ptr()),
+                plx_appkit::player_hud::classic::Kicker::Context(plx_platform::i18n::msg::browse_detail_trailer_c().as_ptr()),
                 title.as_ptr(),
             );
         }
         let live_ns = plx_media::player::playpos_ns();
-        plx_appkit::player_hud::draw_playbar(
+        plx_appkit::player_hud::classic::draw_playbar(
             p,
             Playbar {
                 pos_ns: if self.scrubbing() { self.scrub_ns } else { live_ns },

@@ -4,7 +4,7 @@
 //! bottom-anchored regions rise clear of it (plan `libass-text-subs` §2.4).
 use plx_media::player::{
     ass, ass_source, sidecar,
-    text_style,
+    text_style::{self, HudBand},
     video_geometry::Viewport,
 };
 use plx_ui::{
@@ -34,7 +34,7 @@ pub struct AssSubtitles {
 }
 
 /// Every class present: the rule for a frame whose own classes are not known. It never lifts a
-/// top or middle cue and still lifts a normal bottom block by the full `HUD_LIFT`.
+/// top or middle cue and still lifts a normal bottom block by the band's full `lift`.
 const UNKNOWN_ALIGNS: ass::AlignSet = ass::AlignSet { bottom: true, middle: true, top: true };
 
 impl AssSubtitles {
@@ -101,9 +101,11 @@ impl AssSubtitles {
         }));
     }
 
-    /// `lift` is the transport HUD being up. It moves a text subtitle's bottom regions and nothing
-    /// else: an authored script keeps its own placement.
-    pub fn draw(&mut self, lift: bool) {
+    /// `lift` is the transport HUD being up, and `band` the HUD's, as its layout reports it: the
+    /// distance a bottom region moves is the band's `lift`. It moves a text subtitle's bottom regions
+    /// and nothing else: an authored script keeps its own placement. `model` is the frame's HUD
+    /// snapshot, which the caption ink's tone is read from.
+    pub fn draw(&mut self, lift: bool, band: HudBand, model: &plx_appkit::player_hud::model::HudModel) {
         let Some(frame) = self.frame.clone() else {
             if self.source == 0 {
                 clear_textures(&mut self.textures);
@@ -157,8 +159,8 @@ impl AssSubtitles {
         };
         self.spans.clear();
         self.spans.extend(frame.rects.iter().map(|r| (r.y, r.height)));
-        lift_dys(origin, lift, &self.spans, aligns, &mut self.dys);
-        let ink = plx_appkit::player_hud::subtitle_ink();
+        lift_dys(origin, lift, band, &self.spans, aligns, &mut self.dys);
+        let ink = plx_appkit::player_hud::subtitle_ink(model);
         for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
             let dy = self.dys[i];
             Painter::root().tex(
@@ -214,7 +216,7 @@ fn frame_geometry(
 
 /// How far (vertical px, negative is up) each region of a Text-origin frame moves while the HUD is
 /// up (`lift`); an authored frame never moves. `regions` are `(y, height)` in frame pixels. Plan §2.4:
-/// - every active cue bottom-aligned: all regions move by the fixed `HUD_LIFT`;
+/// - every active cue bottom-aligned: all regions move by the band's fixed `lift`;
 /// - no bottom cue: nothing moves;
 /// - mixed: a region moves when its bottom edge is at or below `anchor - pitch / 2`, unless such a
 ///   region also starts above the frame's midline (a merged top+bottom region), in which case
@@ -225,6 +227,7 @@ fn frame_geometry(
 fn lift_dys(
     origin: ass::Origin,
     lift: bool,
+    band: HudBand,
     regions: &[(i32, i32)],
     aligns: ass::AlignSet,
     dys: &mut Vec<f32>,
@@ -238,10 +241,10 @@ fn lift_dys(
     let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
     // `dys` doubles as the "moves" mark (-1) until the lift is known.
     if aligns.middle || aligns.top {
-        let band = text_style::bottom_anchor_y(style.position) - pitch / 2.0;
+        let bottom_edge = text_style::bottom_anchor_y(style.position) - pitch / 2.0;
         let mut merged = false;
         for (dy, &(y, h)) in dys.iter_mut().zip(regions) {
-            if (y + h) as f32 >= band {
+            if (y + h) as f32 >= bottom_edge {
                 *dy = -1.0;
                 merged |= (y as f32) < text_style::SCR_H / 2.0;
             }
@@ -268,7 +271,7 @@ fn lift_dys(
         dys.fill(-1.0);
     }
     let Some(top) = moving_top(regions, dys) else { return };
-    let lift = text_style::HUD_LIFT.min(top.max(0) as f32);
+    let lift = band.lift.min(top.max(0) as f32);
     for dy in dys.iter_mut().filter(|d| **d != 0.0) {
         *dy = -lift;
     }
@@ -344,15 +347,25 @@ mod tests {
     const BOTTOM: ass::AlignSet = ass::AlignSet { bottom: true, middle: false, top: false };
     const TOP_AND_BOTTOM: ass::AlignSet = ass::AlignSet { bottom: true, middle: false, top: true };
 
-    fn dys_of(
+    fn dys_in(
+        band: HudBand,
         origin: ass::Origin,
         lift: bool,
         regions: &[(i32, i32)],
         aligns: ass::AlignSet,
     ) -> Vec<f32> {
         let mut dys = Vec::new();
-        lift_dys(origin, lift, regions, aligns, &mut dys);
+        lift_dys(origin, lift, band, regions, aligns, &mut dys);
         dys
+    }
+
+    fn dys_of(
+        origin: ass::Origin,
+        lift: bool,
+        regions: &[(i32, i32)],
+        aligns: ass::AlignSet,
+    ) -> Vec<f32> {
+        dys_in(HudBand::CLASSIC, origin, lift, regions, aligns)
     }
 
     fn text(style: TextStyle) -> ass::Origin {
@@ -395,9 +408,58 @@ mod tests {
                 let deep = line_at(style, 12);
                 let dys = dys_of(ass::Origin::Text(style), true, &[plain, deep], BOTTOM);
                 assert_eq!(dys, [-200.0, -200.0], "{position:?} {size:?}");
-                assert_eq!(text_style::HUD_LIFT, 200.0);
+                assert_eq!(HudBand::CLASSIC.lift, 200.0);
             }
         }
+    }
+
+    /// A band that is not classic's lifts a bottom block by ITS lift: exactly the band's
+    /// difference more than classic's, at every position and size.
+    #[test]
+    fn bottom_cues_rise_exactly_the_bands_lift_for_a_non_classic_band() {
+        let band = HudBand::from_controls_top(700.0);
+        let shift = HudBand::CLASSIC.controls_top_y - band.controls_top_y;
+        for position in SubtitlePosition::LADDER {
+            for size in SubtitleSize::LADDER {
+                let style = style(size, position);
+                let regions = [line_at(style, 0), line_at(style, 12)];
+                let classic = dys_in(HudBand::CLASSIC, text(style), true, &regions, BOTTOM);
+                let moved = dys_in(band, text(style), true, &regions, BOTTOM);
+                assert_eq!(moved, [-band.lift, -band.lift], "{position:?} {size:?}");
+                assert_eq!(classic[0] - moved[0], shift, "{position:?} {size:?}");
+            }
+        }
+    }
+
+    /// The largest block at the highest position, three lines, as libass places it, lifted by the
+    /// band's `lift`: where its top starts and where it ends up.
+    fn lifted_libass_top(band: HudBand) -> (f32, f32) {
+        let style = style(SubtitleSize::Huge, SubtitlePosition::High);
+        let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
+        let height = text_style::CAPTION_ANCHOR_LINES as f32 * pitch;
+        let top = text_style::bottom_anchor_y(style.position) - height;
+        let dys = dys_in(band, text(style), true, &[(top as i32, height as i32)], BOTTOM);
+        (top, top + dys[0])
+    }
+
+    /// `min_controls_top_y` through the libass lift. Two claims, kept apart:
+    /// - the lift IS the band's (the block rises by exactly `band.lift`, not a fixed 200), which is
+    ///   what makes the largest block's lifted top depend on the band at the bound;
+    /// - the block is then inside `SAFE` at the bound and one pixel past it (the libass block sits
+    ///   `INK_TRIM` below the bespoke one, so the bound is set by the stricter bespoke draw), and a
+    ///   band far past the bound clamps the lift so the block stays on the screen.
+    #[test]
+    fn the_libass_lift_keeps_the_largest_block_on_screen_at_the_bound() {
+        let bound = plx_appkit::player_hud::min_controls_top_y();
+        for band in [HudBand::from_controls_top(bound), HudBand::from_controls_top(bound - 1.0)] {
+            let (top, lifted) = lifted_libass_top(band);
+            assert_eq!(lifted, top - band.lift, "{band:?}: the rise is the band's lift");
+            assert_ne!(band.lift, HudBand::CLASSIC.lift);
+            assert!(lifted >= plx_ui::consts::SAFE.y, "{band:?}: lifted top {lifted}");
+        }
+        // The clamp, not the bound: far past it the lift is cut to keep the block on the screen.
+        let (_, lifted) = lifted_libass_top(HudBand::from_controls_top(300.0));
+        assert!(lifted >= 0.0);
     }
 
     #[test]

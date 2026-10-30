@@ -1,0 +1,15 @@
+{
+  "file": "duplicate-key.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0101",
+      "hint": "keep one; the first is the one the app would read",
+      "message": "`thickness` is written more than once",
+      "nearest": [],
+      "path": "/layout/block/0/cells/0/playbar/thickness",
+      "rule": "key-unique",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}

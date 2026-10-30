@@ -280,23 +280,195 @@ pub const PANEL_GAP: f32 = crate::theme::space::MD;
 pub const PANEL_EDGE: f32 = crate::theme::space::XL;
 pub const PANEL_EDGE_X: f32 = crate::consts::MARGIN_X;
 
+/// A side of an anchor a panel can open on. `Below`/`Above` are the anchor's vertical neighbours;
+/// `Start`/`End` its left and right in a left-to-right frame (the screen is never mirrored).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Below,
+    Above,
+    Start,
+    End,
+}
+
+impl Side {
+    /// The unit step from a panel on this side TO its anchor: where the panel's rise starts from
+    /// (a panel above its opener rises up from below it, so its entry is displaced toward +y).
+    pub const fn toward_opener(self) -> (f32, f32) {
+        match self {
+            Side::Above => (0.0, 1.0),
+            Side::Below => (0.0, -1.0),
+            Side::Start => (1.0, 0.0),
+            Side::End => (-1.0, 0.0),
+        }
+    }
+}
+
+/// The order [`anchor_panel`] tries sides in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SideOrder {
+    /// The caller's own list, tried in order.
+    Fixed(&'static [Side]),
+    /// Toward the middle of `keep`: the vertical side facing it (`Above` for an anchor in the lower
+    /// half), the other vertical side, then the horizontal side facing it (`Start` for an anchor in
+    /// the right half), then the other.
+    Facing,
+}
+
+/// Where a panel placed `Above`/`Below` starts across.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cross {
+    /// The anchor's left edge, pulled inside `keep` (`under_or_above`'s rule).
+    Leading,
+    /// [`hang_x`]'s rule: the anchor's outer edge by screen half, pulled inside `keep`.
+    Hang,
+}
+
+/// What a panel taller than every side's room does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Overflow {
+    /// The LAST listed side, its top held at `keep`'s: the panel keeps its height and may cover a
+    /// tall list's opener (`under_or_above`'s `.max(PANEL_EDGE)`).
+    ClampTop,
+    /// The vertical side with the most room, the height cut to that room: never over the opener.
+    ClampToRoom,
+}
+
+/// How one caller wants its panel placed by [`anchor_panel`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    pub order: SideOrder,
+    pub cross: Cross,
+    pub overflow: Overflow,
+    /// The frame the panel must stay inside.
+    pub keep: Rect,
+}
+
+impl Placement {
+    /// [`under_or_above`]'s: below, else above, from the control's left edge, inside the
+    /// `PANEL_EDGE` frame.
+    pub const UNDER_OR_ABOVE: Placement = Placement {
+        order: SideOrder::Fixed(&[Side::Below, Side::Above]),
+        cross: Cross::Leading,
+        overflow: Overflow::ClampTop,
+        keep: Rect::new(
+            PANEL_EDGE_X,
+            PANEL_EDGE,
+            crate::consts::SCR_W - 2.0 * PANEL_EDGE_X,
+            crate::consts::SCR_H - 2.0 * PANEL_EDGE,
+        ),
+    };
+
+    /// The in-player menus' (Tracks, More): toward the centre, hung from the opener's outer edge,
+    /// never over the opener, inside the safe frame.
+    pub const PLAYER_MENU: Placement = Placement {
+        order: SideOrder::Facing,
+        cross: Cross::Hang,
+        overflow: Overflow::ClampToRoom,
+        keep: crate::consts::SAFE,
+    };
+}
+
+/// [`anchor_panel`]'s answer: the panel's rect and the side of the anchor it took (which is where
+/// its rise comes from, [`Popover::rise_offset`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Anchored {
+    pub rect: Rect,
+    pub side: Side,
+}
+
+/// **The one placer of a panel beside the control that opened it.** `size` is the panel's own
+/// `(w, h)`; `need_h` is the height it must be able to show, which alone decides the SIDE (a menu
+/// whose pages differ in height passes the tallest, so the side does not change between pages); the
+/// height drawn is `size.1` cut to the chosen side's room only where `how.overflow` says so. `gap`
+/// is the air between anchor and panel.
+///
+/// A side HOLDS the panel when, for `Above`/`Below`, the height between the anchor's edge plus
+/// `gap` and `keep`'s edge reaches `need_h`; for `Start`/`End`, when the width likewise reaches
+/// `size.0` (the panel is then centred on the anchor vertically, held inside `keep`). The first
+/// side in `how.order` that holds it wins; if none does, `how.overflow` decides.
+///
+/// Pure: the same anchor and size always give the same rect, so a caller that keeps the anchor it
+/// was opened with keeps its panel still.
+pub fn anchor_panel(anchor: Rect, size: (f32, f32), need_h: f32, gap: f32, how: Placement) -> Anchored {
+    let (w, h) = size;
+    let keep = how.keep;
+    let (keep_r, keep_b) = (keep.x + keep.w, keep.y + keep.h);
+    let (anchor_r, anchor_b) = (anchor.x + anchor.w, anchor.y + anchor.h);
+    let room = |side: Side| match side {
+        Side::Above => anchor.y - gap - keep.y,
+        Side::Below => keep_b - (anchor_b + gap),
+        Side::Start => anchor.x - gap - keep.x,
+        Side::End => keep_r - (anchor_r + gap),
+    };
+    // written as the sum the original `under_or_above` compared, so a rect on the boundary falls
+    // the same way
+    let holds = |side: Side| match side {
+        Side::Above => keep.y + need_h <= anchor.y - gap,
+        Side::Below => anchor_b + gap + need_h <= keep_b,
+        Side::Start => w <= room(Side::Start),
+        Side::End => w <= room(Side::End),
+    };
+    let facing = [
+        if anchor.cy() > keep.cy() { Side::Above } else { Side::Below },
+        if anchor.cy() > keep.cy() { Side::Below } else { Side::Above },
+        if anchor.cx() > keep.cx() { Side::Start } else { Side::End },
+        if anchor.cx() > keep.cx() { Side::End } else { Side::Start },
+    ];
+    let order: &[Side] = match how.order {
+        SideOrder::Fixed(list) => list,
+        SideOrder::Facing => &facing,
+    };
+    let side = order.iter().copied().find(|&s| holds(s)).unwrap_or_else(|| match how.overflow {
+        Overflow::ClampTop => order.last().copied().unwrap_or(Side::Below),
+        Overflow::ClampToRoom => {
+            let vertical = |s: Side| matches!(s, Side::Above | Side::Below);
+            let any_vertical = order.iter().any(|&s| vertical(s));
+            order
+                .iter()
+                .copied()
+                .filter(|&s| !any_vertical || vertical(s))
+                .reduce(|best, s| if room(s) > room(best) { s } else { best })
+                .unwrap_or(Side::Below)
+        }
+    });
+    let rect = match side {
+        Side::Above | Side::Below => {
+            let h = match how.overflow {
+                Overflow::ClampTop => h,
+                Overflow::ClampToRoom => h.min(room(side).max(0.0)),
+            };
+            let y = match (side, how.overflow) {
+                (Side::Below, _) => anchor_b + gap,
+                (_, Overflow::ClampTop) => (anchor.y - gap - h).max(keep.y),
+                _ => anchor.y - gap - h,
+            };
+            let x = match how.cross {
+                Cross::Leading => anchor.x.clamp(keep.x, (keep_r - w).max(keep.x)),
+                Cross::Hang => hang_x(anchor, w, keep),
+            };
+            Rect::new(x, y, w, h)
+        }
+        Side::Start | Side::End => {
+            let h = h.min(keep.h);
+            let x = if side == Side::Start { anchor.x - gap - w } else { anchor_r + gap };
+            let y = (anchor.cy() - h * 0.5).clamp(keep.y, (keep_b - h).max(keep.y));
+            Rect::new(x.clamp(keep.x, (keep_r - w).max(keep.x)), y, w, h)
+        }
+    };
+    Anchored { rect, side }
+}
+
 /// **A menu panel anchored to the control that opened it** (the Detail hero's *Also available*
 /// pill and Play Version disc): under the control when there is room, above it when there is not,
 /// never over it, so the control stays readable beside its own list. Horizontally it hangs off the
 /// control's left edge (the list and the label it came from share a margin), pulled inside the
-/// screen's keep-out. Pure (anchor + measured size in, rect out).
+/// screen's keep-out. Pure (anchor + measured size in, rect out). A call of [`anchor_panel`] with
+/// [`Placement::UNDER_OR_ABOVE`], after the width and height clamps that are this caller's own.
 pub fn under_or_above(a: Rect, content_w: f32, content_h: f32) -> Rect {
-    use crate::consts::{SCR_H, SCR_W};
+    use crate::consts::SCR_H;
     let width = content_w.clamp(crate::table::MENU_MIN_W, crate::table::MENU_MAX_W);
     let h = content_h.clamp(120.0, SCR_H - 2.0 * PANEL_EDGE);
-    let below = a.y + a.h + PANEL_GAP;
-    let y = if below + h <= SCR_H - PANEL_EDGE {
-        below
-    } else {
-        (a.y - PANEL_GAP - h).max(PANEL_EDGE)
-    };
-    let x = a.x.clamp(PANEL_EDGE_X, (SCR_W - PANEL_EDGE_X - width).max(PANEL_EDGE_X));
-    Rect::new(x, y, width, h)
+    anchor_panel(a, (width, h), h, PANEL_GAP, Placement::UNDER_OR_ABOVE).rect
 }
 
 /// **Where a header menu's panel of width `w` starts across, hung under its opener `pill`** (the
@@ -618,6 +790,12 @@ impl Popover {
     /// [`content_painter`](Self::content_painter) on `base` rather than a fresh root: a surface's
     /// own frame painter, so a held surface's walk (the text recorder) reaches it like any other.
     pub fn content_painter_on(&self, base: Painter, rise: f32) -> Painter {
+        self.content_painter_from(base, rise, Side::Above)
+    }
+    /// [`content_painter_on`](Self::content_painter_on) with the rise coming from `side`'s opener
+    /// ([`rise_offset`](Self::rise_offset)); the plain call is `Side::Above`, the vertical rise
+    /// every panel had before a rise had a direction.
+    pub fn content_painter_from(&self, base: Painter, rise: f32, side: Side) -> Painter {
         if self.style == OpenStyle::Morph {
             // The morph owns the panel's arrival, part by part: the ground (`panel`) and the rows
             // (`morph_rows`) each take their own alpha from the one morph clock (the header menus'
@@ -631,7 +809,17 @@ impl Popover {
         if rise == 0.0 {
             return p;
         }
-        p.translate(0.0, rise * (1.0 - a))
+        let (dx, dy) = Self::rise_offset(side, rise, a);
+        p.translate(dx, dy)
+    }
+    /// **Where a panel's entry slide has it at appear fraction `appear`**, for a panel on `side` of
+    /// its opener: displaced `rise` px toward the opener and arriving at rest, so the panel grows
+    /// away from the control it came from. `Side::Above` is the vertical rise every caller drew
+    /// before a rise had a direction (a negative `rise` there is the drop-down it always was).
+    pub fn rise_offset(side: Side, rise: f32, appear: f32) -> (f32, f32) {
+        let (ux, uy) = side.toward_opener();
+        let d = rise * (1.0 - appear);
+        (ux * d, uy * d)
     }
     /// **The app's entry-slide distance** — how far a panel rises into place on open, in px, for
     /// [`painter`](Self::painter) and [`content_painter`](Self::content_painter).
@@ -1610,6 +1798,11 @@ pub mod host {
             assert!(unchanged,"a source is not the visible ground draw and cannot discard it");
         }
     }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    include!("popover_anchor_tests.rs");
 }
 
 #[cfg(test)]

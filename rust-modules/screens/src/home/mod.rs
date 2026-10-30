@@ -626,6 +626,15 @@ pub struct HomeScreen {
     covered: bool,
 
     snap_target: f32,
+    /// **The page is where the pointer put it, not where focus would rest it.** Set by a wheel (the
+    /// pointer's edge glide, `app::input::EdgeScroll`) and by a hover, which moves focus but never
+    /// the page; cleared by a key's move and by a click, which bring the page back to the focused
+    /// shelf. While set, the tick does not pull `grid.scroll_target` to the focused row.
+    free: bool,
+    /// **A click that only brings a card into view.** A click on a shelf card the screen shows only
+    /// part of (the shelf peeking under the hero, a shelf cut by the bottom edge) scrolls the page to
+    /// it and does not open it: its press is dropped when it commits. Cleared by any key.
+    reveal_press: Option<u32>,
     /// Stable element still visible while the engine has already crossed the hero/grid door.
     /// This is a press landing policy, not current focus, and retires at the visual midpoint.
     visible_activation: Option<u32>,
@@ -686,6 +695,8 @@ impl HomeScreen {
             hero_pinned: false,
             covered: false,
             snap_target: 0.0,
+            free: false,
+            reveal_press: None,
             visible_activation: None,
             cta_available: false,
             strip_chosen: false,
@@ -1603,7 +1614,7 @@ impl HomeScreen {
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
             }
         }
-        if let Some(row) = self.rest_row(engine).filter(|row| *row < self.rows.len()) {
+        if let Some(row) = self.rest_row(engine).filter(|row| *row < self.rows.len() && !self.free) {
             self.grid.scroll_target = rest_scroll(row, self.rows.len(), self.band_open_at(self.rows.len().checked_sub(1)));
         }
         self.grid
@@ -2347,8 +2358,12 @@ impl HomeScreen {
                 );
             }
         }
-        if self.snap.pos >= 0.5 {
-            let focused_row = self.focused_grid(focus).map(|(row, _)| row);
+        // The shelves have stops under the hero too: the first one peeks under it, and a click on
+        // a peeking card brings the page down to it (`reveal_press`). A hover there takes no focus
+        // from the hero (`OnlyIfFocused`, `pointable` is false while the hero is up).
+        {
+            let hero_up = self.snap.pos < 0.5;
+            let focused_row = self.focused_grid(focus).map(|(row, _)| row).filter(|_| !hero_up);
             for (row_index, row) in self.rows.iter().enumerate() {
                 // Keep the whole focused row hoverable while vertical reveal is in flight.
                 // Other partially visible rows must not steal focus as they pass the pointer.
@@ -2363,7 +2378,7 @@ impl HomeScreen {
                 // below the focused one is at rest.
                 let rest = Rect::new(0.0, self.grid.base_y(row_index) + CARD_DY, CARD_W, CARD_H)
                     .scaled(RowStyle::HOME.focus_scale);
-                let pointable = rest.y >= 40.0 && rest.y + rest.h * POINTER_REACH <= SCR_H - 20.0;
+                let pointable = !hero_up && rest.y >= 40.0 && rest.y + rest.h * POINTER_REACH <= SCR_H - 20.0;
                 let src = HomeCards {
                     hover: if pointable || row_focused { Hover::Focus } else { Hover::OnlyIfFocused },
                     ..self.cards(view, row_index)
@@ -2506,6 +2521,13 @@ impl LogicalState for HomeScreen {
             rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold: _, since_prune: _, #[cfg(test)] cost: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
+            // Whether the tick pulls the scroll to the focused shelf. What it decides is
+            // `grid.scroll_target`, encoded below, and it is a hand-off from the pointer's events
+            // (a wheel, a hover, a click) to the next `Tick`, like a shelf's `seen`.
+            free: _,
+            // A press hand-off from a click to its commit, like `free`: what it decides (whether
+            // the commit opens the card) is an effect, and the page it moves is `snap_target`.
+            reveal_press: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
             hero_pop: _, backdrop: _, grid: _,
             // The disc's membership is the Watchlist store's (the application feeds it); the flip
@@ -3011,7 +3033,68 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
         if let ScreenEvent::Input(InputEvent { at, kind: InputKind::Key { key, edge, .. }, .. }) = ev {
             self.backdrop.note_key(*key, *edge, at.ms);
         }
+        if let ScreenEvent::Input(InputEvent { kind: InputKind::Key { .. }, .. }) = ev {
+            self.reveal_press = None;
+        }
+        // A click brings the page to what it clicked, the way a key's move does; a click on a
+        // card the screen shows only part of does only that (`reveal_press`).
+        if let ScreenEvent::Input(InputEvent { kind: InputKind::Click { hit: Some(elem), .. }, .. }) = ev {
+            if let Some(loc) = self.locate(*elem) {
+                self.reveal_press = matches!(loc, Located::Item(..))
+                    .then(|| Focusable::<H>::place(self, elem, cx, At::Drawn))
+                    .flatten()
+                    .filter(|placed| placed.rect.y < 0.0 || placed.rect.y + placed.rect.h > SCR_H)
+                    .map(|_| *elem);
+                self.free = false;
+                self.snap_target = if loc.on_grid() { 1.0 } else { 0.0 };
+                if let Located::Item(row, _) = loc {
+                    if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.unfree(); }
+                }
+                fx.invalidate(Provenance::Input);
+            }
+        }
         match ev {
+            // The pointer's sideways glide moves the shelf under it, which stays where it put it
+            // until a key moves along it or a click lands on one of its cards (`Shelf::glide`).
+            ScreenEvent::Input(InputEvent { kind: InputKind::Pan { dx, y, .. }, .. }) => {
+                if dx.is_finite() {
+                    let under = (0..self.grid.shelves.len()).find(|&row| {
+                        let top = self.grid.base_y(row);
+                        self.shelf_on_screen(row) && *y >= top && *y < top + CARD_DY + CARD_H + self.grid.under_band(row)
+                    });
+                    if let (Some(row), Some(n)) = (under, under.and_then(|row| self.rows.get(row)).map(|hub| hub.elems.len())) {
+                        if let Some(shelf) = self.grid.shelves.get_mut(row) {
+                            shelf.glide(*dx, n);
+                            fx.invalidate(Provenance::Input);
+                        }
+                    }
+                }
+                Handled::Yes
+            }
+            // A wheel (the pointer's edge glide, a fractional one every frame) moves the page
+            // itself, focus staying where it is: down from the hero into the shelves, then through
+            // them by `ROW_PITCH` a row; up through the shelves, then back to the hero.
+            ScreenEvent::Input(InputEvent { kind: InputKind::Wheel { dy }, .. }) => {
+                if !dy.is_finite() || self.rows.is_empty() {
+                    return Handled::Yes;
+                }
+                self.free = true;
+                let max = grid_max_scroll(self.rows.len(), self.band_open_at(self.rows.len().checked_sub(1)));
+                let to = self.grid.scroll_target - dy * ROW_PITCH;
+                if *dy > 0.0 {
+                    if self.snap_target >= 0.5 && self.grid.scroll_target > 0.0 {
+                        self.grid.scroll_target = to.max(0.0);
+                    } else {
+                        self.snap_target = 0.0;
+                    }
+                } else if self.snap_target < 0.5 {
+                    self.snap_target = 1.0;
+                } else {
+                    self.grid.scroll_target = to.min(max.max(self.grid.scroll_target));
+                }
+                fx.invalidate(Provenance::Input);
+                Handled::Yes
+            }
             ScreenEvent::Mount => {
                 self.sync_catalog(cx);
                 Handled::Yes
@@ -3071,10 +3154,17 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                         self.visible_activation = from.map(|key| key.elem);
                     }
                 }
-                match to_loc {
-                    Some(Located::Hero(_)) => self.snap_target = 0.0,
-                    Some(Located::Item(_, _) | Located::Heading(_)) => self.snap_target = 1.0,
-                    None => {}
+                // A hover moves focus, never the page: the pointer scrolls by the screen's edges
+                // (and a click by what it clicked). Every other move brings the page to the focus.
+                if *by == By::Pointer {
+                    self.free = true;
+                } else {
+                    self.free = false;
+                    match to_loc {
+                        Some(Located::Hero(_)) => self.snap_target = 0.0,
+                        Some(Located::Item(_, _) | Located::Heading(_)) => self.snap_target = 1.0,
+                        None => {}
+                    }
                 }
                 if matches!(by, By::Restore) && self.restore_reveal {
                     // A restored page opens at its saved region, rather than replaying the
@@ -3117,7 +3207,10 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     .filter(|k| k.entry == self.entry)
                     .map(|k| k.elem)
                 {
-                    self.activate(elem, cx, fx);
+                    // the click that brought a partly shown card into view does not open it
+                    if self.reveal_press.take() != Some(elem) {
+                        self.activate(elem, cx, fx);
+                    }
                 }
                 Handled::Yes
             }
@@ -3199,6 +3292,7 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         HomeScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str {
         super::registry::word::HOME
     }

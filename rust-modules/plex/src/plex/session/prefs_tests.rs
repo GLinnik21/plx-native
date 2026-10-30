@@ -112,7 +112,7 @@ fn every_marker_names_its_own_field() {
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
     check_row::<InstantDpadSeekingPref>(InstantDpadSeeking::On);
     check_row::<DeckPressPref>(DeckPress::Play);
-    check_row::<UnderPostersPref>(UnderPosters { title: true, details: UnderPostersDetails::Genre });
+    check_row::<UnderPostersPref>(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });
     // A5: the remaining `Copy` rows.
     check_row::<AutoSignInPref>(true);
@@ -485,10 +485,10 @@ fn under_posters_is_soft_per_field_and_omitted_at_the_default() {
     }
     // A later build's spelling of `details` keeps the title the viewer chose.
     let kept = under_posters_session(json!({ "title": true, "details": "future_kind" }));
-    assert_eq!(kept.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::YearLength });
+    assert_eq!(kept.under_posters(), UnderPosters { title: true, details: UnderPostersDetails::YearLength, show_sort_info: false });
     // And a bad title keeps the details.
     let kept = under_posters_session(json!({ "title": "yes", "details": "genre" }));
-    assert_eq!(kept.under_posters(), UnderPosters { title: false, details: UnderPostersDetails::Genre });
+    assert_eq!(kept.under_posters(), UnderPosters { title: false, details: UnderPostersDetails::Genre, show_sort_info: false });
     // The default is not written, so a session predating the field serializes as it did.
     let json = serde_json::to_string(&Session::default()).unwrap();
     assert!(!json.contains("under_posters"), "{json}");
@@ -499,7 +499,7 @@ fn under_posters_is_soft_per_field_and_omitted_at_the_default() {
 fn under_posters_round_trips_and_packs_into_one_byte() {
     for details in UnderPostersDetails::LADDER {
         for title in [false, true] {
-            let v = UnderPosters { title, details };
+            let v = UnderPosters { title, details, show_sort_info: false };
             let session = Session::default().with_pref::<UnderPostersPref>(v);
             assert_eq!(serde_json::to_string(&session).unwrap().contains("under_posters"), v != UnderPosters::DEFAULT);
             let back: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
@@ -512,4 +512,21 @@ fn under_posters_round_trips_and_packs_into_one_byte() {
     for d in UnderPostersDetails::LADDER {
         assert_eq!(UnderPostersDetails::from_index(d.index()), d);
     }
+}
+
+#[test]
+fn sort_information_is_opt_in_soft_parsed_and_preserved_by_the_packed_cell() {
+    for details in UnderPostersDetails::LADDER {
+        for title in [false, true] {
+            let value = UnderPosters { title, details, show_sort_info: true };
+            assert_eq!(UnderPosters::unpack(value.pack()), value);
+            let session = Session::default().with_pref::<UnderPostersPref>(value);
+            let restored: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+            assert_eq!(restored.under_posters(), value);
+        }
+    }
+    let old = under_posters_session(json!({"title":true,"details":"genre"}));
+    assert!(!old.under_posters().show_sort_info);
+    let bad = under_posters_session(json!({"title":true,"details":"genre","show_sort_info":"yes"}));
+    assert_eq!(bad.under_posters(), old.under_posters());
 }

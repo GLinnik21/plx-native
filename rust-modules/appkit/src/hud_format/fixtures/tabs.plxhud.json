@@ -1,0 +1,55 @@
+{
+  "$schema": "https://plxnative.com/hud/schema/1.0.json",
+  "format": "1.0",
+  "id": "com.plxnative.examples.tabs",
+  "version": "1.0.0",
+  "name": "Tabs",
+  "author": "PlxNative",
+  "license": "CC0-1.0",
+  "layout": {
+    "anchor": "bottom",
+    "inset": "MD",
+    "x_inset": "LG",
+    "band": "controls",
+    "sections": "inline",
+    "block": [
+      { "id": "bar", "cells": [
+        { "align": "start", "playbar": { "w": "fill", "fill": "ACCENT", "track": "RAIL_TRACK", "thickness": 6, "clock_size": "CAPTION" } }
+      ] },
+      { "id": "row", "gap_before": "SM", "cells": [
+        { "align": "start", "segment": { "id": "tabs", "gap": "MD", "items": [
+          { "id": "open_chapters", "command": "toggle_section", "section": "chapters", "widget": "pill", "size": 52, "when": "chapters.present" },
+          { "id": "open_info", "command": "toggle_section", "section": "info", "widget": "pill", "size": 52 }
+        ] } },
+        { "align": "end", "segment": { "id": "right", "items": [
+          { "id": "more", "command": "open_more", "widget": "disc", "size": 52 }
+        ] } }
+      ] },
+      { "id": "chapters", "when": "panel.chapters", "gap_before": "SM", "cells": [
+        { "align": "start", "strip": { "bind": "chapters", "w": "fill", "card_w": 192, "card_h": 108, "gap": "SM", "radius": 8, "focus": "ring",
+          "card": {
+            "art": { "bind": "item.thumb", "crop": "cover" },
+            "below_gap": "XS",
+            "below": [
+              { "text": { "bind": "item.title", "size": "CAPTION", "ink": "TEXT_SECONDARY", "max_lines": 1, "w": "fill" } }
+            ] } } }
+      ] },
+      { "id": "info", "when": "panel.info", "gap_before": "SM", "cells": [
+        { "align": "start", "vstack": { "gap": "XS", "w": "fill", "cells": [
+          { "text": { "bind": "info.title", "size": "HEADLINE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } },
+          { "text": { "bind": "info.summary", "size": "CAPTION", "ink": "TEXT_SECONDARY", "max_lines": 3, "w": "fill" } }
+        ] } }
+      ] }
+    ],
+    "up_next": {
+      "replaces": [ "tabs", "right" ],
+      "band": "row",
+      "align": "end",
+      "still": false,
+      "caption": false,
+      "watch_credits": {},
+      "play_next": {},
+      "countdown": "fill_sweep"
+    }
+  }
+}

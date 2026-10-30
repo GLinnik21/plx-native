@@ -15,6 +15,7 @@ on:
       - 'src/ass.c'
       - 'src/ass_composite.h'
       - 'src/ass_fonts.c'
+      - 'src/ass_text.c'
       - 'src/ass_internal.h'
       - 'include/ass.h'
       - 'assets/icons/**'
@@ -77,10 +78,10 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_text.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
       - name: Cache the pinned downloads
         uses: ./.github/actions/deps-cache
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: rust-modules -> target-sim-ci
           key: simulator-linux
@@ -177,7 +178,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_text.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
       - name: Cache the pinned downloads
         # The libass script verifies and fetches its archives BEFORE it looks at its stamp, so
         # without this a prefix hit still downloaded ~25 MB from five hosts. The entry is keyed on
@@ -185,7 +186,7 @@ jobs:
         # miss, so no job freezes a partial set), is re-checked by ci/deps.py against each sha256,
         # and is shared by every OS and job.
         uses: ./.github/actions/deps-cache
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: rust-modules -> target-sim-ci
           key: simulator-macos
@@ -269,7 +270,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_text.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
       - name: Cache the pinned downloads
         uses: ./.github/actions/deps-cache
       - name: Install the pinned Rust toolchain
