@@ -1,11 +1,12 @@
 //! **The layout compiler's tests** (`compile.rs`).
 //!
 //! The headline is `compiled_classic_matches_the_hand_written_layout`: the shipped classic package,
-//! compiled, reports the SAME rects as the hand-written layout (`classic::geometry`), field for field and
+//! compiled, reports the SAME rects as the hand-written layout (`classic::geometry`, since deleted) reported, field for field and
 //! to the exact `f32`, in every compact slot, for a movie and an episode, with and without chapters, in
 //! every shipped language and under both measurers (`FixtureMeasure`, whose advances are arithmetic, and
 //! `ShippedMeasure`, the real fonts' advances, which is headless here). A mismatch means the compiler or
-//! the fixture is wrong, never the hand-written layout. Then every fixture compiles in every state
+//! the fixture is wrong, never the frozen numbers. (The deleted layout's numbers are pinned as literals:
+//! see `frozen_classic_geometry`.) Then every fixture compiles in every state
 //! `reach` enumerates, the cost of classic's compact state is pinned, and the section states are held
 //! against the panels' own constants.
 
@@ -21,13 +22,11 @@ use plx_ui::{theme, Rect};
 use super::compile::*;
 use super::parse::{self, Package};
 use super::{check, Slot};
-use crate::player_hud::geometry::HudGeometry;
-use crate::player_hud::motion::HudMotion;
-use crate::player_hud::{classic, ControlSlot, Controls};
-use crate::skip_pill::prompt_for;
+use crate::player_hud::geometry::{HudGeometry, RowAnchor};
+use crate::player_hud::{classic, Controls};
 use crate::{chapters_panel, info_panel};
 
-const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
+const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
 const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
 const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
@@ -91,6 +90,52 @@ fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
     out
 }
 
+/// **The hand-written classic layout's numbers, frozen.** `fixtures/classic-geometry.golden.tsv` is what
+/// `classic::geometry(..)` reported for every case the golden below covers (10 languages x 2 measurers x
+/// movie/episode x without/with chapters x Discs, Up Next, Skip at each label), written from the
+/// HAND-WRITTEN side at 70a7aa66a's layout and re-confirmed at 93fc5091d (the head the freeze commit sits
+/// on), before that layout was deleted: one line per case, `key TAB items TAB tabs`, an item or tab as
+/// `x,y,w,h` (`f32` `{:?}`, which round-trips exactly) or `-`. The facts that are the same in every case
+/// are literals in [`frozen_base`].
+const FROZEN_CLASSIC_GEOMETRY: &str = include_str!("fixtures/classic-geometry.golden.tsv");
+
+/// The slot-independent facts of the hand-written layout, the same in all 320 frozen cases.
+fn frozen_base() -> HudGeometry {
+    HudGeometry {
+        grab: Rect::new(96.0, 810.0, 1728.0, 160.0),
+        playbar: Rect::new(96.0, 882.0, 1728.0, 8.0),
+        row: Rect::new(1592.0, 792.0, 232.0, 64.0),
+        row_anchor: RowAnchor { right: 1824.0, top: 792.0, h: 64.0 },
+        items: [None; crate::player_hud::geometry::MAX_ROW_ITEMS],
+        tab_row: Rect::new(96.0, 949.0, 0.0, 64.0),
+        title: Rect::new(96.0, 768.0, 0.0, 0.0),
+        tabs: [None; 2],
+        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0 },
+    }
+}
+
+fn frozen_rect(s: &str) -> Option<Rect> {
+    if s == "-" {
+        return None;
+    }
+    let v: Vec<f32> = s.split(',').map(|n| n.parse().expect("a frozen number")).collect();
+    Some(Rect::new(v[0], v[1], v[2], v[3]))
+}
+
+/// The frozen hand-written geometry of the case `key` (`{language:?}/{measure}/episode=../chapters=../{slot:?}/{skip:?}`).
+fn frozen_classic_geometry(key: &str) -> HudGeometry {
+    let line = FROZEN_CLASSIC_GEOMETRY.lines().find(|l| l.split('\t').next() == Some(key)).unwrap_or_else(|| panic!("no frozen case {key}"));
+    let mut cols = line.split('\t').skip(1);
+    let mut g = frozen_base();
+    for (i, item) in cols.next().expect("items").split('|').enumerate() {
+        g.items[i] = frozen_rect(item);
+    }
+    for (i, tab) in cols.next().expect("tabs").split('|').enumerate() {
+        g.tabs[i] = frozen_rect(tab);
+    }
+    g
+}
+
 #[test]
 fn compiled_classic_matches_the_hand_written_layout() {
     let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
@@ -100,20 +145,20 @@ fn compiled_classic_matches_the_hand_written_layout() {
         let _language = language_on_this_thread_for_test(language);
         for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
-            for (episode, controls) in [(false, Controls::NONE), (true, PAIR)] {
-                for (chapters, tabs) in [(false, 1), (true, 2)] {
+            for episode in [false, true] {
+                for chapters in [false, true] {
                     let slots = [
-                        (ControlSlot::Discs(controls), Slot::Discs, SkipKind::Intro),
-                        (ControlSlot::UpNext(marker(MarkerKind::Credits, true)), Slot::UpNext, SkipKind::Intro),
-                        (ControlSlot::Skip(prompt_for(marker(MarkerKind::Intro, false))), Slot::Skip, SkipKind::Intro),
-                        (ControlSlot::Skip(prompt_for(marker(MarkerKind::Credits, false))), Slot::Skip, SkipKind::Credits),
+                        (Slot::Discs, SkipKind::Intro),
+                        (Slot::UpNext, SkipKind::Intro),
+                        (Slot::Skip, SkipKind::Intro),
+                        (Slot::Skip, SkipKind::Credits),
                     ];
-                    for (slot, kind, skip) in slots {
-                        let want = classic::geometry(slot, &HudMotion::new(), tabs, measure);
+                    for (kind, skip) in slots {
                         let key = StateKey { open: 0, slot: kind, chapters, episode, paused: false };
                         let got = compiled.geometry(key, skip).expect("the compact state exists");
                         compared += 1;
-                        for line in diff(&got, &want) {
+                        let frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode={episode}/chapters={chapters}/{kind:?}/{skip:?}"));
+                        for line in diff(&got, &frozen) {
                             mismatches.push(format!(
                                 "[{language:?} {measure_name} episode={episode} chapters={chapters} {kind:?}/{skip:?}] {line}"
                             ));
@@ -126,7 +171,22 @@ fn compiled_classic_matches_the_hand_written_layout() {
     // 10 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
     // each label): a count, so a loop that quietly compares less cannot pass.
     assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
+    assert_eq!(FROZEN_CLASSIC_GEOMETRY.lines().count(), compared, "the frozen file holds one line per case");
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
+}
+
+/// **The hand-written title's right edge, frozen.** `fixtures/classic-title-right.golden.tsv` is what
+/// `classic::title_right(..)` reported for the cases the two tests below cover, written from the
+/// HAND-WRITTEN side on 0768cf4a1 (the layout PR5c's golden held at 70a7aa66a, unchanged since), before that function was deleted:
+/// one line per case, `key TAB right edge` (`f32` `{:?}`, which round-trips exactly). Keys are
+/// `{Slot:?}/episode={..}` (the compact slots, English, `FixtureMeasure`) and
+/// `{language:?}/{measure}/episode={..}/{SkipKind:?}` (the skip pill actually shown, 10 languages x 2
+/// measurers).
+const FROZEN_CLASSIC_TITLE_RIGHT: &str = include_str!("fixtures/classic-title-right.golden.tsv");
+
+fn frozen_title_right(key: &str) -> f32 {
+    let line = FROZEN_CLASSIC_TITLE_RIGHT.lines().find(|l| l.split('\t').next() == Some(key)).unwrap_or_else(|| panic!("no frozen title case {key}"));
+    line.split('\t').nth(1).expect("a value").parse().expect("a frozen number")
 }
 
 #[test]
@@ -138,16 +198,14 @@ fn compiled_classic_title_stops_where_the_hand_written_title_does() {
             _ => None,
         })
     };
-    for (episode, controls) in [(false, Controls::NONE), (true, PAIR)] {
-        for (kind, slot) in [
-            (Slot::Discs, ControlSlot::Discs(controls)),
-            (Slot::UpNext, ControlSlot::UpNext(marker(MarkerKind::Credits, true))),
-        ] {
+    for episode in [false, true] {
+        for kind in [Slot::Discs, Slot::UpNext] {
             let state = compiled.lookup(0, kind, true, episode, false).unwrap();
-            let want = classic::title_right(slot, &HudMotion::new(), &FM);
-            assert_eq!(title_right(state), Some(want), "{kind:?} episode={episode}");
+            let frozen = frozen_title_right(&format!("{kind:?}/episode={episode}"));
+            assert_eq!(title_right(state), Some(frozen), "{kind:?} episode={episode}");
         }
     }
+    assert_eq!(FROZEN_CLASSIC_TITLE_RIGHT.lines().filter(|l| !l.contains("/Intro") && !l.contains("/Credits")).count(), 4, "the frozen file holds the four compact cases");
 }
 
 #[test]
@@ -160,24 +218,29 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
             _ => None,
         })
     };
+    let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
     let mut differing = 0;
+    let mut compared = 0;
     for language in SHIPPED {
         let _language = language_on_this_thread_for_test(language);
-        for measure in [&FM as &dyn Measure, &ShippedMeasure] {
+        for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
             for episode in [false, true] {
                 let state = compiled.lookup(0, Slot::Skip, true, episode, false).unwrap();
                 let mut rights = Vec::new();
-                for (skip, kind) in [(SkipKind::Intro, MarkerKind::Intro), (SkipKind::Credits, MarkerKind::Credits)] {
-                    let want = classic::title_right(ControlSlot::Skip(prompt_for(marker(kind, false))), &HudMotion::new(), measure);
+                for skip in [SkipKind::Intro, SkipKind::Credits] {
+                    let frozen = frozen_title_right(&format!("{language:?}/{measure_name}/episode={episode}/{skip:?}"));
                     let got = title_right(state.skip_variant(skip));
-                    assert_eq!(got, Some(want), "{language:?} episode={episode} {skip:?}");
+                    assert_eq!(got, Some(frozen), "{language:?} {measure_name} episode={episode} {skip:?}");
                     rights.extend(got);
+                    compared += 1;
                 }
                 differing += usize::from(rights[0] != rights[1]);
             }
         }
     }
+    assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2, "the comparisons");
+    assert_eq!(FROZEN_CLASSIC_TITLE_RIGHT.lines().count(), compared + 4, "the frozen file holds one line per case");
     assert!(differing > 0, "the two pills must differ somewhere, or this test pins nothing");
 }
 
@@ -348,7 +411,7 @@ fn classic_compact_cost_is_pinned() {
         (11, 6, 81_920, 953_088),
         "classic's compact cost: the scrim, the two title lines, five discs, the bar and two tabs"
     );
-    let top: Vec<(&str, u64)> = c.top.iter().map(|t| (kind_of(&state.ops[t.op]), t.blended_px)).collect();
+    let top: Vec<(&str, u64)> = state.top_contributors().iter().map(|t| (kind_of(&state.ops[t.op]), t.blended_px)).collect();
     assert_eq!(top, [("scrim", 902_400), ("playbar", 13_824), ("control", 9_984)], "the three largest contributors");
     // the report is a sum of its parts, and deterministic
     assert_eq!(c.draw_ops, state.ops.len(), "no strip or Up Next offer in the compact Discs state");
@@ -759,8 +822,9 @@ fn the_references_movie_form_drops_previous_and_next_and_its_episode_form_keeps_
 
 #[test]
 fn a_row_wider_than_the_report_keeps_every_control() {
-    // `HudGeometry::items` has `BTN_N` = 5 slots (classic's row); the reference's row has nine and R1
-    // guarantees More. The compiler drops none; widening the report is PR7's (see `geometry`).
+    // The reference's row has nine controls and R1 guarantees More. The compiler drops none, and since PR7
+    // the report (`HudGeometry::items`, `MAX_ROW_ITEMS` wide) holds them all; before it held the first
+    // `BTN_N` = 5, classic's row.
     let compiled = build(REFERENCE, &FM);
     let state = compiled.lookup(0, Slot::Discs, true, true, false).unwrap();
     let ids: Vec<&str> = state.controls.iter().map(|c| c.id.as_str()).collect();
@@ -770,5 +834,326 @@ fn a_row_wider_than_the_report_keeps_every_control() {
     let nine: Vec<_> = state.row_ids.iter().flatten().collect();
     assert_eq!(nine.len(), 9, "all nine stay addressable by index in `row_ids`");
     let g = state.geometry(SkipKind::Intro);
-    assert_eq!(g.items.iter().flatten().count(), crate::player_hud::BTN_N as usize, "the report holds the first BTN_N");
+    assert_eq!(g.items.iter().flatten().count(), 9, "the widened report holds the whole row");
+}
+
+// ---------------------------------------------------------------------------------------------------
+// PR7: what the renderer reads besides the rects
+// ---------------------------------------------------------------------------------------------------
+
+fn compact(c: &Compiled, slot: Slot) -> &CompiledState {
+    c.states().iter().find(|s| s.key.open == 0 && s.key.slot == slot).expect("a compact state")
+}
+
+/// **Every op belongs to exactly one band's span**, the spans tile `ops` in draw order, and a Skip
+/// state's credits layout is tiled too: the renderer picks the chrome alpha per span.
+#[test]
+fn every_state_tiles_its_ops_with_band_spans() {
+    for package in [CLASSIC, REFERENCE, HERO, TABS, PALETTE, MINIMAL] {
+        let c = build(package, &FM);
+        for state in c.states() {
+            for s in std::iter::once(state).chain(state.skip_alt.as_deref()) {
+                let mut next = 0;
+                for span in &s.spans {
+                    assert_eq!(span.ops.start, next, "{:?}: spans are contiguous", s.key);
+                    next = span.ops.end;
+                }
+                assert_eq!(next, s.ops.len(), "{:?}: spans cover every op", s.key);
+            }
+        }
+    }
+}
+
+/// **Classic's chrome split**: while a scrub is live the title block, the row and the tabs fade and the
+/// bar stays at full alpha (`draw_hud`'s `pc` and `p`); the scrim never fades. The Up Next offer and the
+/// Skip pill take their host band's chrome (`top`: they fade with the row they replace).
+#[test]
+fn classic_fades_the_title_the_row_and_the_tabs_and_keeps_the_bar_and_the_scrim() {
+    let c = build(CLASSIC, &FM);
+    for slot in [Slot::Discs, Slot::UpNext, Slot::Skip] {
+        let state = compact(&c, slot);
+        for span in &state.spans {
+            let want = match span.band.as_str() {
+                "bar" | "" => Chrome::Steady,
+                "top" | "tabs" => Chrome::Fades,
+                other => panic!("an unexpected band {other:?}"),
+            };
+            assert_eq!(span.chrome, want, "{slot:?} band {:?}", span.band);
+        }
+        assert_eq!(state.spans.first().map(|s| s.band.as_str()), Some(""), "the scrim is the first span");
+    }
+    let up = compact(&c, Slot::UpNext);
+    let last = up.spans.last().expect("a span");
+    assert_eq!(last.band, "top");
+    assert!(matches!(up.ops[last.ops.start], DrawOp::UpNext { .. }), "the offer is the host band's last span");
+    let skip = compact(&c, Slot::Skip);
+    assert!(matches!(skip.ops[skip.spans.last().unwrap().ops.start], DrawOp::SkipPill { .. }));
+}
+
+/// The faces and knobs a package picks reach the draw list: classic's are the defaults; the reference
+/// asks for the permanent knob, end clocks, the busy-only mark, a ring on the play disc and bare discs.
+#[test]
+fn the_focus_face_and_the_playbar_looks_reach_the_draw_list() {
+    let bar = |c: &Compiled| match compact(c, Slot::Discs).ops.iter().find(|o| matches!(o, DrawOp::Playbar { .. })) {
+        Some(DrawOp::Playbar { knob, clocks, mark, .. }) => (*knob, *clocks, *mark),
+        _ => panic!("no playbar"),
+    };
+    let classic = build(CLASSIC, &FM);
+    assert_eq!(bar(&classic), (KnobMode::Tick, ClockMode::FollowHead, MarkMode::AfterElapsed));
+    assert!(compact(&classic, Slot::Discs).controls.iter().all(|c| c.focus == Focus::Accent && c.rest == Rest::Film));
+    let reference = build(REFERENCE, &FM);
+    assert_eq!(bar(&reference), (KnobMode::Always, ClockMode::Ends, MarkMode::BusyOnly));
+    let play = compact(&reference, Slot::Discs).control("play").expect("the play disc").clone();
+    assert_eq!((play.focus, play.rest), (Focus::Ring, Rest::Solid));
+}
+
+/// **The report holds the whole row.** `HudGeometry::items` was five stops wide (classic's row) and the
+/// zip dropped every control past the fifth; the reference places nine in a row (forward, chapters, info
+/// and More among them) and each must have the rect it is drawn at, so the focus group and the pointer
+/// stops can take it.
+#[test]
+fn the_geometry_reports_every_item_of_the_references_row() {
+    let c = build(REFERENCE, &FM);
+    let state = compact(&c, Slot::Discs);
+    let placed: Vec<&str> = state.row_ids.iter().flatten().map(String::as_str).collect();
+    assert!(placed.len() > crate::player_hud::BTN_N as usize, "the reference's row is wider than classic's: {placed:?}");
+    let g = state.geometry(SkipKind::Intro);
+    for (i, id) in state.row_ids.iter().enumerate() {
+        let want = id.as_deref().and_then(|id| state.control(id)).map(|c| c.rect);
+        assert_eq!(g.items[i], want, "row item {i} ({id:?})");
+    }
+    assert!(state.row_ids.len() <= crate::player_hud::geometry::MAX_ROW_ITEMS);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// PR7 stage 1d: a control carries its face and the command it performs
+// ---------------------------------------------------------------------------------------------------
+
+fn ctl<'a>(state: &'a CompiledState, id: &str) -> &'a ControlRect {
+    state.control(id).unwrap_or_else(|| panic!("no control `{id}`"))
+}
+
+/// **A control's command comes out typed, with its parameters**, ready for the app's one performer: a
+/// literal `seek by` keeps its sign, `open_tracks` its tab, `toggle_section` its section.
+#[test]
+fn a_control_carries_the_command_with_its_parameters() {
+    use crate::player_hud::command::{HudCommand, MorePage, SeekBy, Section, TrackTab};
+    use std::num::NonZeroI32;
+    let c = build(REFERENCE, &FM);
+    let state = c.lookup(0, Slot::Discs, true, true, false).unwrap();
+    let secs = |n| HudCommand::Seek(SeekBy::Secs(NonZeroI32::new(n).unwrap()));
+    assert_eq!(ctl(state, "play").act, Some(HudCommand::TogglePlay));
+    assert_eq!(ctl(state, "back").act, Some(secs(-10)));
+    assert_eq!(ctl(state, "fwd").act, Some(secs(30)));
+    assert_eq!(ctl(state, "prev").act, Some(HudCommand::Previous));
+    assert_eq!(ctl(state, "next").act, Some(HudCommand::Next));
+    assert_eq!(ctl(state, "subs").act, Some(HudCommand::OpenTracks(TrackTab::Subtitles)));
+    assert_eq!(ctl(state, "more").act, Some(HudCommand::OpenMore(MorePage::Root)));
+    assert_eq!(ctl(state, "chapters").act, Some(HudCommand::ToggleSection(Section::Chapters)));
+    assert_eq!(ctl(state, "info").act, Some(HudCommand::ToggleSection(Section::Info)));
+}
+
+/// **A control carries its face**: a declared asset, a built-in icon, or the per-state map, and classic's
+/// controls (which write none) carry none.
+#[test]
+fn a_control_carries_its_face() {
+    use plx_ui::icons::Icon;
+    let c = build(REFERENCE, &FM);
+    let state = c.lookup(0, Slot::Discs, true, true, false).unwrap();
+    let subs = &ctl(state, "subs").face;
+    assert_eq!(subs.pick("any"), Some(&FaceRef::Asset("subs-bubble".to_owned())));
+    assert!(c.asset("subs-bubble").is_some_and(|svg| svg.starts_with("<svg")), "the asset's source travels with the compile");
+    assert_eq!(c.asset("nope"), None);
+    assert_eq!(ctl(state, "next").face.pick("any"), Some(&FaceRef::Builtin(Icon::Next)));
+    let play = &ctl(state, "play").face;
+    assert_eq!(play.pick("playing"), Some(&FaceRef::Builtin(Icon::Pause)));
+    assert_eq!(play.pick("paused"), Some(&FaceRef::Builtin(Icon::Play)));
+    let prev = &ctl(state, "prev").face;
+    assert_eq!(prev.pick("default"), Some(&FaceRef::Builtin(Icon::Previous)));
+    assert_eq!(prev.pick("restart"), Some(&FaceRef::Builtin(Icon::Restart)));
+    let classic = build(CLASSIC, &FM);
+    let state = classic.lookup(0, Slot::Discs, true, true, false).unwrap();
+    assert!(state.controls.iter().filter(|c| c.widget == Widget::Disc).all(|c| c.face == Face::default()), "classic writes no face");
+}
+
+/// A `seek by: setting` face picks the viewer's rung of its ladder, else its `default`.
+#[test]
+fn a_ladder_face_picks_the_viewers_interval_then_its_default() {
+    let mut face = Face::default();
+    face.states.push(("default".to_owned(), FaceRef::Asset("d".to_owned())));
+    face.ladder.push((10, FaceRef::Asset("ten".to_owned())));
+    assert_eq!(face.pick_interval(10), Some(&FaceRef::Asset("ten".to_owned())));
+    assert_eq!(face.pick_interval(30), Some(&FaceRef::Asset("d".to_owned())));
+    assert_eq!(Face::default().pick_interval(10), None);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The playbar's clocks: app text the layout reserves room for
+// ---------------------------------------------------------------------------------------------------
+
+/// The playbar of `state`: its track, clock rects, the mode its clocks stand in and the rung they are drawn at.
+fn bar_of(state: &CompiledState) -> (Rect, super::clocks::ClockRects, ClockMode, i32) {
+    match state.ops.iter().find(|o| matches!(o, DrawOp::Playbar { .. })) {
+        Some(DrawOp::Playbar { track, clock_rects, clocks, clock_size, .. }) => (*track, *clock_rects, *clocks, *clock_size),
+        _ => panic!("no playbar"),
+    }
+}
+
+/// The widest width any clock the app can print has at `size` in `bold`: every `H:MM:SS` of up to two hour
+/// digits printed through `fmt_time` and measured one by one, so the claim that each position takes its widest
+/// digit is checked against the strings themselves and not assumed.
+fn widest_printed(measure: &dyn Measure, size: i32, bold: bool, remaining: bool) -> f32 {
+    let mut widest = 0.0f32;
+    for hours in 0..=99i64 {
+        for minutes in 0..60i64 {
+            for seconds in (0..60i64).step_by(3) {
+                let ns = ((hours * 60 + minutes) * 60 + seconds) * 1_000_000_000;
+                widest = widest.max(measure.width_str(&classic::fmt_time(ns, remaining), size, bold));
+            }
+        }
+    }
+    widest
+}
+
+/// **The clocks have rects, and they are where `draw_playbar_look` puts the clocks**: on the line `CLOCK_TOP`
+/// under the track's top, as tall as the measurer's line at the clock's rung. Under `ends` the elapsed clock
+/// starts at the bar's start, the remaining one ends at its end, and each is as wide as the widest string the
+/// app can print in its drawn weight (the elapsed bold, the remaining regular and minus-led). Under
+/// `follow_head` the elapsed clock travels the whole bar, so its rect is the track's width.
+#[test]
+fn the_playbars_clocks_stand_where_the_playbar_draws_them_as_wide_as_the_widest_clock() {
+    let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
+    for (measure_name, measure) in measures {
+        let size = theme::size::CAPTION;
+        let elapsed_w = widest_printed(measure, size, super::clocks::ELAPSED_BOLD, false);
+        let remaining_w = widest_printed(measure, size, super::clocks::REMAINING_BOLD, true);
+        for (name, text, mode) in [("reference", REFERENCE, ClockMode::Ends), ("classic", CLASSIC, ClockMode::FollowHead)] {
+            let c = build(text, measure);
+            let (track, clocks, got_mode, got_size) = bar_of(compact(&c, Slot::Discs));
+            let at = format!("{name} under {measure_name}");
+            assert_eq!((got_mode, got_size), (mode, size), "{at}");
+            let y = track.y + classic::CLOCK_TOP;
+            for rect in [clocks.elapsed, clocks.remaining] {
+                assert_eq!((rect.y, rect.h), (y, measure.line_h(size)), "{at}: the clock line");
+            }
+            assert_eq!(clocks.remaining.x + clocks.remaining.w, track.x + track.w, "{at}: the remaining clock ends at the bar's end");
+            assert_eq!(clocks.remaining.w, remaining_w, "{at}: the widest remaining clock");
+            assert_eq!(clocks.elapsed.x, track.x, "{at}: the elapsed lane starts at the bar's start");
+            match mode {
+                ClockMode::Ends => assert_eq!(clocks.elapsed.w, elapsed_w, "{at}: the widest elapsed clock"),
+                ClockMode::FollowHead => assert_eq!(clocks.elapsed.w, track.w, "{at}: the elapsed clock travels the bar"),
+            }
+        }
+    }
+}
+
+/// **The bands are placed in `z` order, equal `z` in declared order.** `z_order` replaced a stable sort by key;
+/// every sequence of up to five bands over three `z` values (duplicates included) comes out the same.
+#[test]
+fn bands_fill_in_z_order_and_equal_z_keep_their_declared_order() {
+    let mut seen = 0;
+    for n in 0..=5usize {
+        for code in 0..3usize.pow(n as u32) {
+            let z: Vec<i64> = (0..n).map(|i| (code / 3usize.pow(i as u32) % 3) as i64 - 1).collect();
+            let mut want: Vec<usize> = (0..n).collect();
+            want.sort_by_key(|&i| z[i]);
+            assert_eq!(z_order(n, |i| z[i]), want, "z {z:?}");
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 1 + 3 + 9 + 27 + 81 + 243);
+}
+
+/// **A Skip state carries a credits layout exactly when its two pill rects differ.** The kind reaches the layout
+/// only through the pill's rect, so equal rects mean one layout, and the compile does not work the second out.
+#[test]
+fn a_skip_state_carries_a_credits_layout_exactly_when_its_pill_rects_differ() {
+    let mut alt = 0;
+    for text in [CLASSIC, REFERENCE] {
+        let compiled = build(text, &FM);
+        for state in compiled.states().iter().filter(|s| s.key.slot == Slot::Skip) {
+            let [intro, credits] = state.standin.skip.expect("a Skip state places the pill");
+            assert_eq!(state.skip_alt.is_some(), intro != credits, "{:?}", state.key);
+            alt += usize::from(state.skip_alt.is_some());
+        }
+    }
+    assert!(alt > 0, "no Skip state differs between the two labels: the test saw nothing");
+}
+
+/// **The clocks' reserved line is a whole number of pixels at every rung.** `CLOCK_LINE` is a ratio, and 1.25 of
+/// LABEL (26) is 32.5 and of MICRO (22) is 27.5: a half pixel under the bar that moves every band beneath it
+/// onto a half-pixel edge. The reserve rounds up to whole pixels, never below the ratio, and CAPTION (24), the
+/// rung classic's clocks are drawn at, stays at its 30.
+#[test]
+fn the_clocks_reserved_line_is_a_whole_number_of_pixels_at_every_rung() {
+    for rung in super::schema::SIZE_RUNGS.iter().map(|&(_, px)| px) {
+        let line = classic::clock_line_h(rung);
+        assert_eq!(line, line.ceil(), "the reserved line at {rung} px is {line}, a fraction of a pixel");
+        assert!(line >= rung as f32 * classic::CLOCK_LINE, "the reserved line at {rung} px is {line}, under the ratio");
+    }
+    assert_eq!(classic::clock_line_h(theme::size::CAPTION), 30.0, "classic's clock line moved");
+    assert_eq!(classic::clock_line_h(theme::size::LABEL), 33.0);
+    assert_eq!(classic::clock_line_h(theme::size::MICRO), 28.0);
+}
+
+/// **The bar's cell holds the clocks' line, so no band under it starts on it.** Every control of every state of
+/// every fixture that stands under a track, over the track's own columns, starts below the bottom of that
+/// track's clock line (`CLOCK_TOP` plus `clock_line_h(clock rung)` from the track's top), and the reserved
+/// line is at least as tall as the line either test measurer reports for any rung.
+#[test]
+fn no_band_under_the_bar_starts_on_the_clocks_line() {
+    for rung in super::schema::SIZE_RUNGS.iter().map(|&(_, px)| px) {
+        for measure in [&FM as &dyn Measure, &ShippedMeasure] {
+            assert!(classic::clock_line_h(rung) >= measure.line_h(rung), "the reserved line at {rung} px is shorter than the font's");
+        }
+    }
+    let fixtures = [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero-center", HERO), ("tabs", TABS), ("palette", PALETTE)];
+    for (measure_name, measure) in [("FixtureMeasure", &FM as &dyn Measure), ("ShippedMeasure", &ShippedMeasure)] {
+        let mut checked = std::collections::BTreeMap::new();
+        for (name, text) in fixtures {
+            let c = build(text, measure);
+            for state in c.states() {
+                let Some(DrawOp::Playbar { track, clock_size, .. }) = state.ops.iter().find(|o| matches!(o, DrawOp::Playbar { .. })) else {
+                    continue;
+                };
+                let line_bottom = track.y + classic::CLOCK_TOP + classic::clock_line_h(*clock_size);
+                let columns = track.x..track.x + track.w;
+                for control in state.controls.iter().filter(|c| c.rect.y >= track.y + track.h && columns.contains(&c.rect.x)) {
+                    *checked.entry(name).or_insert(0) += 1;
+                    assert!(
+                        control.rect.y >= line_bottom - plx_ui::consts::EDGE_TOL,
+                        "{name} under {measure_name} {:?}: `{}` at y {} starts on the clocks' line, which ends at {line_bottom}",
+                        state.key,
+                        control.id,
+                        control.rect.y
+                    );
+                }
+            }
+        }
+        for name in ["classic", "reference"] {
+            assert!(checked.contains_key(name), "{name} under {measure_name}: the census found no control under the bar ({checked:?})");
+        }
+    }
+}
+
+/// **Classic's tabs did not move.** The bar's cell now holds the clocks' line (`CLOCK_TOP` plus
+/// `clock_line_h(CAPTION)`, 60 px from the track's top), so the `tabs` band's `gap_before` in
+/// `classic.plxhud.json` is the distance from the cell's foot to the tabs' top, `tab_y`: 949 less 882 + 60. The
+/// literal in the fixture is that arithmetic, spelt here from the constants.
+#[test]
+fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
+    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false };
+    let geometry = build(CLASSIC, &FM).geometry(key, SkipKind::Intro).expect("the compact state exists");
+    let cell_foot = geometry.playbar.y + classic::CLOCK_TOP + classic::clock_line_h(theme::size::CAPTION);
+    let gap = geometry.tab_row.y - cell_foot;
+    assert_eq!(gap, 7.0, "the tabs sit 7 px under the bar's cell");
+    let parsed = package(CLASSIC);
+    let bands = parsed.layout.get("block").and_then(parse::Val::as_list).expect("the bands");
+    let tabs = bands
+        .iter()
+        .filter_map(parse::Val::as_object)
+        .find(|band| band.get("id").and_then(parse::Val::as_str) == Some("tabs"))
+        .expect("the tabs band");
+    let Some(parse::Val::Keyed(gap_before)) = tabs.get("gap_before") else { panic!("the tabs' gap is keyed on the open section") };
+    assert_eq!(gap_before.base.as_f64(), Some(f64::from(gap)), "the fixture's literal");
 }

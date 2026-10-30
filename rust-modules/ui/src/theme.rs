@@ -384,6 +384,14 @@ pub const CONTROL_RIM_FOCUS_UNKEYED_W: f32 = 1.25;
 /// express and a CSS spread cannot be transcribed into.
 pub const CONTROL_RIM_FOCUS_UNKEYED_GLOW: [f32; 4] = [5.0, 1.0, 2.5, 0.55];
 
+/// **The `ring` focus face** (`TransportButton::focus_face`): a white stroke standing just OUTSIDE
+/// the disc, which keeps its rest face (the accent fill is the other focus face). White for the
+/// reason [`CONTROL_RIM_FOCUS_UNKEYED`] is: it is the one colour the two polarities of an unknown
+/// frame agree on. `W` is the stroke, `GAP` the clear band between it and the disc's edge.
+pub const CONTROL_FOCUS_RING: [f32; 4] = WHITE;
+pub const CONTROL_FOCUS_RING_W: f32 = 2.5;
+pub const CONTROL_FOCUS_RING_GAP: f32 = 3.0;
+
 /// **THE FOCUS CAST** — what a control face casts once the remote is on it, as two stops of
 /// `(dy, blur, alpha)` over [`CARD_SHADOW`]'s black.
 ///

@@ -470,6 +470,9 @@ pub(crate) struct Bridge {
 impl Bridge {
     #[cfg(test)]
     pub(crate) fn measurement_queries(&self)->Vec<plx_ui::rec::MetricKey> { self.measure.queries() }
+    /// The measurer every screen of this bridge lays out with (a host test's has no fonts): the HUD
+    /// package is compiled with it, outside the draw, so the plan's widths are the draw's.
+    pub(crate) fn measure(&self) -> &dyn Measure { &self.measure }
     pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<plx_ui::rec::MetricKey,u32>>) {
         self.measure.prepare(replay);
     }
@@ -922,6 +925,18 @@ impl Bridge {
     /// [`AppMounter::player_hud_ms`]. Set by `start_playback` and consumed by the mount.
     pub(crate) fn seed_player_hud(&mut self, ms: u32) {
         self.mounter.player_hud_ms = Some(ms);
+    }
+
+    /// The compiled HUD every player instance from now on is constructed with — see
+    /// [`AppMounter::player_compiled`]. Set at boot and again by `run::refresh_hud` when a controlled run or a dev package compiles on the first player frame.
+    pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
+        self.mounter.player_compiled = compiled;
+    }
+
+    /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
+    /// so an open that has no anchor (or retargets a panel already up) never leaves one for a later mount.
+    pub(crate) fn seed_player_menu_anchor(&mut self, anchor: Option<plx_ui::Rect>) {
+        self.mounter.player_menu_anchor = anchor;
     }
 
     fn home_focus(d: &Dispatcher<AppHost>) -> Option<FocusKey<u32>> {

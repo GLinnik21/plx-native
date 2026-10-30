@@ -6,7 +6,8 @@
 //! audit and this lint all call it, so none can drift from another). This module asks it, for every opener
 //! of every compiled state, where the menu would open, and holds the answer to four invariants.
 //!
-//! **The anchor** is the spec's: the opener's REST rect (`ControlRect::rect`, not its popped one, so a focus
+//! **The anchor** (`CompiledState::menu_anchor`, the one derivation the player screen also hands to the menu it
+//! mounts) is the spec's: the opener's REST rect (`ControlRect::rect`, not its popped one, so a focus
 //! pop never moves a panel), widened across to its SEGMENT's outer edge when the segment's cell is start- or
 //! end-aligned (`align` defaults to `start`): an end-aligned segment's anchor runs from the opener's left edge to
 //! the right edge of the segment's last control, a start-aligned one's from the left edge of the segment's first
@@ -51,10 +52,8 @@ use plx_ui::table::MENU_MAX_W;
 use plx_ui::widgets::CTRL_FOCUS_SCALE;
 use plx_ui::Rect;
 
-use super::compile::{CompiledState, ControlRect};
+use super::compile::{segment_of, CompiledState, ControlRect, SegmentAlign};
 use super::lint::{ctx_for, named, slot_name, state_name, LangCtx, StateCtx};
-use super::parse::Val;
-use super::validate::each_object;
 use super::{codes, Finding};
 use crate::{more_menu, track_menu};
 #[cfg(test)]
@@ -63,12 +62,11 @@ use super::lint::testing::{Base, InvalidCase};
 /// Report this module's findings for the language of `cx`: each violation once per (code, opener), in the
 /// first state that has it (see the module doc).
 pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
-    let segments = segments(cx);
     for state in cx.states() {
         // a Skip state whose credits pill changes the layout is a second layout of the same state
         for variant in std::iter::once(state.state).chain(state.state.skip_alt.as_deref()) {
             let here = StateCtx { key: state.key, state: variant };
-            for finding in findings(cx, &here, &segments) {
+            for finding in findings(cx, &here) {
                 if !out.iter().any(|f| f.code == finding.code && f.pointer == finding.pointer) {
                     out.push(finding);
                 }
@@ -80,14 +78,6 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
 // ---------------------------------------------------------------------------------------------------
 // The openers and where their menus go
 // ---------------------------------------------------------------------------------------------------
-
-/// Which edge of its band a segment's cell packs against (`cell.align`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SegmentAlign {
-    Start,
-    Center,
-    End,
-}
 
 /// The two menus a control can open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,58 +138,15 @@ struct Opener<'a> {
     placed: Anchored,
 }
 
-/// The pointer of the segment holding the control item at `pointer` (`<segment>/items/<n>`).
-fn segment_of(pointer: &str) -> &str {
-    pointer.rsplit_once("/items/").map_or(pointer, |(segment, _)| segment)
-}
-
-/// Every segment of the layout as `(its pointer, the align of the cell holding it)`.
-fn segments(cx: &LangCtx<'_>) -> Vec<(String, SegmentAlign)> {
-    let mut out = Vec::new();
-    each_object(&cx.package.layout, &mut |cell| {
-        let Some(segment) = cell.get("segment").and_then(Val::as_object) else { return };
-        let align = match cell.get("align").and_then(Val::as_str) {
-            Some("center") => SegmentAlign::Center,
-            Some("end") => SegmentAlign::End,
-            _ => SegmentAlign::Start,
-        };
-        out.push((segment.pointer.clone(), align));
-    });
-    out
-}
-
-/// The left and right edges of the controls of `segment` that `state` draws.
-fn segment_extent(state: &CompiledState, segment: &str) -> (f32, f32) {
-    state
-        .controls
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| segment_of(state.control_pointer(*i)) == segment)
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (_, c)| (lo.min(c.rect.x), hi.max(c.rect.x + c.rect.w)))
-}
-
-/// The anchor of an opener drawn at `rest`: widened to the outer edge of its segment `extent` (see the module
-/// doc).
-fn widen(rest: Rect, align: SegmentAlign, extent: (f32, f32)) -> Rect {
-    match align {
-        SegmentAlign::End => Rect::new(rest.x, rest.y, extent.1.max(rest.x + rest.w) - rest.x, rest.h),
-        SegmentAlign::Start => {
-            let left = extent.0.min(rest.x);
-            Rect::new(left, rest.y, rest.x + rest.w - left, rest.h)
-        }
-        SegmentAlign::Center => rest,
-    }
-}
-
 /// Every control of `state` that opens a menu, with its menu placed.
-fn openers<'a>(state: &'a CompiledState, segments: &[(String, SegmentAlign)]) -> Vec<Opener<'a>> {
+fn openers(state: &CompiledState) -> Vec<Opener<'_>> {
     let mut out = Vec::new();
     for (index, control) in state.controls.iter().enumerate() {
         let Some(menu) = Menu::opened_by(&control.command) else { continue };
         let pointer = state.control_pointer(index);
         let segment = segment_of(pointer);
-        let align = segments.iter().find(|(p, _)| p == segment).map_or(SegmentAlign::Center, |(_, a)| *a);
-        let anchor = widen(control.rect, align, segment_extent(state, segment));
+        let align = state.segment_align(segment);
+        let anchor = state.menu_anchor(index).expect("an index of `controls`");
         let placed = menu.place(anchor, (MENU_MAX_W, menu.need_h()));
         out.push(Opener { index, control, pointer, segment, menu, align, anchor, placed });
     }
@@ -285,8 +232,8 @@ fn where_(state: &StateCtx<'_>) -> String {
 }
 
 /// Every finding of the openers of `state`.
-fn findings(cx: &LangCtx<'_>, state: &StateCtx<'_>, segments: &[(String, SegmentAlign)]) -> Vec<Finding> {
-    let found = openers(state.state, segments);
+fn findings(cx: &LangCtx<'_>, state: &StateCtx<'_>) -> Vec<Finding> {
+    let found = openers(state.state);
     let mut out = Vec::new();
     for o in &found {
         out.extend(m1(cx, state, o));
@@ -483,7 +430,7 @@ mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_ui::consts::SCR_H;
 
-    use super::super::compile::{compile, CompileCtx};
+    use super::super::compile::{compile, widen, CompileCtx};
     use super::super::lint::testing::assert_case;
     use super::super::lint::{lint, LintLang, LintOptions};
     use super::super::parse;
@@ -550,9 +497,8 @@ mod tests {
     #[test]
     fn classic_places_both_menus_where_the_constants_did() {
         with_cx(BUILTIN_CLASSIC, |cx| {
-            let segments = segments(cx);
             let state = state_of(cx, 0, Slot::Discs);
-            let found = openers(state.state, &segments);
+            let found = openers(state.state);
             assert_eq!(found.iter().map(|o| o.control.id.as_str()).collect::<Vec<_>>(), ["subs", "audio", "more"]);
             // (opener, the panel sizes of its menu's pins): (width, height)
             let pins: [(&str, &[(f32, f32)]); 3] = [
@@ -592,9 +538,8 @@ mod tests {
     #[test]
     fn the_reference_opens_more_beside_the_gear_when_the_sections_are_up() {
         with_cx(REFERENCE, |cx| {
-            let segments = segments(cx);
             let state = state_of(cx, super::super::compile::OPEN_CHAPTERS | super::super::compile::OPEN_INFO, Slot::Discs);
-            let found = openers(state.state, &segments);
+            let found = openers(state.state);
             let more = found.iter().find(|o| o.menu == Menu::More).expect("the gear");
             assert_eq!(more.placed.side, Side::Start, "{:?}", more.placed);
             assert!(found.iter().all(|o| m1(cx, &state, o).is_none() && m2(cx, &state, o).is_none() && m3(cx, &state, o).is_none()));
@@ -699,9 +644,8 @@ mod tests {
     /// A classic opener placed by hand where the placer never would: `rect` over `o.control`.
     fn with_placement<R>(rect: Rect, side: Side, f: impl FnOnce(&LangCtx<'_>, &StateCtx<'_>, &Opener<'_>) -> R) -> R {
         with_cx(BUILTIN_CLASSIC, |cx| {
-            let segments = segments(cx);
             let state = state_of(cx, 0, Slot::Discs);
-            let mut found = openers(state.state, &segments);
+            let mut found = openers(state.state);
             let mut more = found.pop().expect("the gear");
             more.placed = Anchored { rect, side };
             f(cx, &state, &more)

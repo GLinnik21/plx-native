@@ -3,8 +3,8 @@
 //! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards.
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork. The two things a layout needs from
-//! outside arrive as values: text measurement as the existing [`Measure`] capability (the one
-//! `classic::geometry` takes, so both sides measure identically), and the app's own strings as
+//! outside arrive as values: text measurement as the existing [`Measure`] capability (the one the
+//! lint and the draw share, so every side measures identically), and the app's own strings as
 //! [`AppLabels`] in [`CompileCtx`] (a pill is labelled by its command's app string; the caller builds
 //! the labels from the viewer's language and a different language is a different compile).
 //!
@@ -32,12 +32,13 @@
 //! to the band above it, an absent band gives and takes none). A band's cells pack per alignment group
 //! in `plx_ui::hstack::HStack` runs, `gap` apart, with `gap_before`/`gap_after` as `Item::before` /
 //! `Item::after`; a segment is one `HStack` of controls; a `vstack` is a `VStack`. Widths come from the
-//! same widget functions the hand-written layout calls (`TabPill::width_measured`,
+//! same widget functions the draw calls (`TabPill::width_measured`,
 //! `Button::pill_w_measured`, `classic::stand_in_w`, `up_next::layout_at`), never a re-derived padding.
 //!
 //! **Fill.** A start-aligned `w: fill` cell runs to the nearest edge of the next present cell of a
 //! later group (a control's rect scaled by `CTRL_FOCUS_SCALE`, a slot stand-in's leftmost rect), minus
-//! the band's `gap`: `classic::title_right` made the rule. A fill in a centre or end group takes the
+//! the band's `gap`: the hand-written `title_right` (since deleted; its values are frozen in
+//! `classic-title-right.golden.tsv`) made the rule. A fill in a centre or end group takes the
 //! row's free room, shared equally. A `facts`, `rect`, `playbar` or `strip` cell with no `w` is a fill
 //! cell; server text with no `w` is too.
 //!
@@ -54,19 +55,20 @@ use std::ffi::CString;
 
 use plx_machine::machine::Measure;
 use plx_media::player::text_style::HudBand;
+use plx_platform::i18n::{msg, LocaleContext};
 use plx_ui::consts::{SAFE, SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{Button, TabPill, CTRL_FOCUS_SCALE, HAIRLINE_H};
 use plx_ui::{theme, Rect};
 
+use super::clocks::{self, ClockRects};
 use super::parse::{Cond, CondTerm, Object, Package, Val};
 use super::reach::{Layout, Slot, State, Valuation};
 use super::schema;
 use super::{pointer_push, validate::each_object};
-use crate::player_hud::classic::{stand_in_w, KNOB_GLOW_R};
-use crate::player_hud::geometry::{HudGeometry, RowAnchor};
-use crate::player_hud::BTN_N;
+use crate::player_hud::classic::{self, stand_in_w, CLOCK_TOP, KNOB_GLOW_R};
+use crate::player_hud::geometry::{HudGeometry, RowAnchor, MAX_ROW_ITEMS};
 use crate::up_next;
 
 /// `StateKey::open` bit for the chapters section.
@@ -82,7 +84,7 @@ pub type Rgba = [f32; 4];
 // ---------------------------------------------------------------------------------------------------
 
 /// The app's own strings a layout measures, in the viewer's language. Plain data: the caller builds it
-/// (from `plx_platform::i18n` in the app), so the compiler reads no registry.
+/// ([`AppLabels::in_language`] over the language it holds), so the compiler reads no registry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppLabels {
     /// the Info tab (`widgets_player_info`), also the text of a `label.info` binding
@@ -106,6 +108,24 @@ pub struct AppLabels {
 }
 
 impl AppLabels {
+    /// **The app's own strings in the language `cx` names**: the one constructor of [`AppLabels`], over the
+    /// generated `msg::*_in(cx)` accessors. The language is an ARGUMENT, so nothing here reads the
+    /// process-wide current locale: the app layer passes `plx_platform::i18n::current()` when it compiles
+    /// (outside the draw, `player_hud::loaded`), the lint passes each shipped language's context.
+    pub fn in_language(cx: &LocaleContext) -> AppLabels {
+        AppLabels {
+            tab_info: msg::widgets_player_info_in(cx).to_owned(),
+            tab_chapters: msg::widgets_player_chapters_in(cx).to_owned(),
+            next_episode: msg::widgets_next_episode_in(cx).to_owned(),
+            watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
+            skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
+            skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
+            from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
+            go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
+            go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
+        }
+    }
+
     /// The label a `pill` or `button` carries for `command` (a `toggle_section`'s `section` picks the
     /// tab); an empty string for a command with no app string here, which measures as padding only.
     pub(super) fn of(&self, command: &str, section: Option<&str>, episode: bool) -> &str {
@@ -188,6 +208,50 @@ pub enum Rest {
     Custom,
 }
 
+/// A control's focus face (`item.focus`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    /// the flat accent fill with a dark glyph: classic's
+    Accent,
+    /// a ring round the control; its rest face stays
+    Ring,
+}
+
+/// How a band draws while a scrub is live (`band.chrome`): a `fades` band on the chrome alpha, a
+/// `steady` one at full alpha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chrome {
+    Fades,
+    Steady,
+}
+
+/// A playbar's knob (`playbar.knob`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnobMode {
+    /// classic's: a thin tick at rest, a knob while scrubbing or focused
+    Tick,
+    /// a permanent knob
+    Always,
+}
+
+/// Where a playbar's clocks sit (`playbar.clocks`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockMode {
+    /// classic's: elapsed under the playhead, remaining at the right
+    FollowHead,
+    /// elapsed at the bar's start, remaining at its end
+    Ends,
+}
+
+/// The transport mark (`playbar.mark`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkMode {
+    /// classic's: the state glyph beside the elapsed clock
+    AfterElapsed,
+    /// the busy spinner alone
+    BusyOnly,
+}
+
 /// A value that depends on something only the frame knows (`transport.paused`, `item.*`): the value
 /// when no case holds, and the cases in document order, the first holding one winning.
 #[derive(Clone, Debug, PartialEq)]
@@ -217,13 +281,53 @@ impl<T: Copy> Live<T> {
     }
 }
 
+/// One glyph of a control's face: a built-in icon, or an asset the package declares (looked up through
+/// [`Compiled::asset`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FaceRef {
+    Builtin(plx_ui::icons::Icon),
+    Asset(String),
+}
+
+/// A control's `face` as the package wrote it: absent (the command's classic glyph), one glyph, or one per
+/// state of the command (`playing`/`paused`, `default`/`restart`, `on`/`off`, and a `seek by: setting`'s
+/// `default` plus its ladder keyed by seconds).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Face {
+    pub single: Option<FaceRef>,
+    pub states: Vec<(String, FaceRef)>,
+    /// `by_interval`: `(seconds, glyph)` rungs
+    pub ladder: Vec<(u32, FaceRef)>,
+}
+
+impl Face {
+    /// The glyph for `state` (one of the command's state keys): the single face, else that state's, else
+    /// `default`'s. `None` when the package wrote no face, and for a state the map lacks with no default.
+    pub fn pick(&self, state: &str) -> Option<&FaceRef> {
+        self.single.as_ref().or_else(|| {
+            let find = |key: &str| self.states.iter().find(|(k, _)| k == key).map(|(_, f)| f);
+            find(state).or_else(|| find("default"))
+        })
+    }
+
+    /// A `seek by: setting` control's glyph for the viewer's Skip interval: its rung, else the face's own pick.
+    pub fn pick_interval(&self, seconds: u32) -> Option<&FaceRef> {
+        self.ladder.iter().find(|(s, _)| *s == seconds).map(|(_, f)| f).or_else(|| self.pick("default"))
+    }
+}
+
 /// One control, placed: its id, its command, the widget it is and the rect it is DRAWN at.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ControlRect {
     pub id: String,
     pub command: String,
+    /// the command with its parameters, ready for the app's one performer; `None` where the package named
+    /// something outside the vocabulary
+    pub act: Option<crate::player_hud::command::HudCommand>,
+    pub face: Face,
     pub widget: Widget,
     pub rest: Rest,
+    pub focus: Focus,
     pub rect: Rect,
     /// the band holding it
     pub band: String,
@@ -296,6 +400,11 @@ pub enum DrawOp {
         fill: Live<Rgba>,
         track_ink: Live<Rgba>,
         clock_size: i32,
+        knob: KnobMode,
+        clocks: ClockMode,
+        /// where the two clocks stand on the clock line under the track (decor: I4, I5, I10)
+        clock_rects: ClockRects,
+        mark: MarkMode,
     },
     /// The chapters strip: `visible` cards at `pitch`, each laid out as `template` is at card 0.
     Strip {
@@ -347,14 +456,24 @@ pub struct Contributor {
 /// - `blended_px`: the area, rounded per rect, of every translucent fill: the scrim, a ground or rule
 ///   whose ink is translucent, the playbar's track, a control's plate unless its rest face is `solid` or
 ///   `bare`. A rounded corner is not subtracted: it is an upper bound.
-/// - `top`: the three ops that contribute most, by blended area, then texture bytes, then glyph runs.
+///
+/// The four sums are what a state stores. The ops that contribute most are NOT stored: nothing on the television
+/// reads them, so [`CompiledState::top_contributors`] weighs and sorts the ops when a report asks.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Cost {
     pub draw_ops: usize,
     pub glyph_runs: usize,
     pub texture_bytes: u64,
     pub blended_px: u64,
-    pub top: Vec<Contributor>,
+}
+
+/// The ops of one band (`ops[ops.clone()]` of its state) and how the band draws while a scrub is live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    /// the band's id; empty for the scrim
+    pub band: String,
+    pub chrome: Chrome,
+    pub ops: std::ops::Range<usize>,
 }
 
 /// One state, laid out.
@@ -378,6 +497,11 @@ pub struct CompiledState {
     /// absent in this valuation: the stable item indices of [`HudGeometry::items`]
     pub row_ids: Vec<Option<String>>,
     pub cost: Cost,
+    /// **Which band each op belongs to and how that band draws under a live scrub**, over `ops` in draw
+    /// order: contiguous, covering every op once. The scrim and the stand-in's ops have entries of their
+    /// own (the scrim is `Steady`; the stand-in takes its host band's chrome). Additive to `ops`: no op
+    /// index moves.
+    pub spans: Vec<Span>,
     /// The package's caption band ([`Compiled::band`]): the same in every state.
     pub band: HudBand,
     /// A Skip state only, and only when the credits pill changes anything: the whole state as laid out
@@ -390,16 +514,34 @@ pub struct CompiledState {
     control_origins: Vec<String>,
     /// `(pointer, rect)` of each `vstack` this state places ([`CompiledState::vstack_rect`])
     vstacks: Vec<(String, Rect)>,
+    /// `(pointer, align)` of each `segment` this state packs in a row ([`CompiledState::segment_align`])
+    segment_aligns: Vec<(String, SegmentAlign)>,
     /// the pointer of the `up_next` object, which owns both stand-ins (the offer and the pill); `""` where the
     /// package places none ([`CompiledState::band_extents`])
     standin_origin: String,
 }
 
 impl CompiledState {
+    /// **The three ops that contribute most to [`CompiledState::cost`]**, by blended area, then texture bytes,
+    /// then glyph runs, then draw order. Worked out on the call (a report's, a test's), never at compile time:
+    /// the television reads only the sums.
+    pub fn top_contributors(&self) -> Vec<Contributor> {
+        let mut parts: Vec<Contributor> = self.ops.iter().enumerate().map(|(i, op)| Contributor { op: i, ..weigh(op) }).collect();
+        parts.sort_by(|a, b| {
+            b.blended_px
+                .cmp(&a.blended_px)
+                .then(b.texture_bytes.cmp(&a.texture_bytes))
+                .then(b.glyph_runs.cmp(&a.glyph_runs))
+                .then(a.op.cmp(&b.op))
+        });
+        parts.truncate(3);
+        parts
+    }
+
     /// The state as it draws under `skip`: the Skip pill's two labels have two widths, and a start-aligned
     /// fill in the pill's band (a title) stops short of the one actually shown. `self` is the
-    /// [`SkipKind::Intro`] layout and every non-Skip state's; a Skip state whose credits layout differs
-    /// carries it in [`CompiledState::skip_alt`].
+    /// [`SkipKind::Intro`] layout and every non-Skip state's; a Skip state whose two pill rects differ (the
+    /// kind's only way into the layout) carries the credits layout in [`CompiledState::skip_alt`].
     pub fn skip_variant(&self, skip: SkipKind) -> &CompiledState {
         match (skip, &self.skip_alt) {
             (SkipKind::Credits, Some(alt)) => alt,
@@ -429,6 +571,34 @@ impl CompiledState {
         self.vstacks.iter().find(|(p, _)| p == pointer).map(|&(_, r)| r)
     }
 
+    /// **The rect a menu opened from `controls[control]` hangs from** (`docs/hud-plugins.md`, "Menus and other
+    /// HUD popovers"): the opener's REST rect (`ControlRect::rect`, never its popped one, so a focus pop
+    /// never moves a panel), widened across to its SEGMENT's outer edge when the segment's cell is start- or
+    /// end-aligned (`align` defaults to `start`). An end-aligned segment's anchor runs from the opener's
+    /// left edge to the right edge of the segment's last control, a start-aligned one's from the left edge
+    /// of the segment's first control to the opener's right edge, a centred one's is the rest rect itself.
+    /// So the openers that sit together share an edge, and classic, whose one end-aligned segment ends at
+    /// `CTRL_RIGHT`, places both menus at `CTRL_RIGHT - pw` and bottom 764. The ONE derivation: the lint
+    /// (`lint_menus`) and the player screen (which hands it to the menu it mounts) both call it.
+    /// `None` for an index out of range.
+    pub fn menu_anchor(&self, control: usize) -> Option<Rect> {
+        let rest = self.controls.get(control)?.rect;
+        let segment = segment_of(self.control_pointer(control));
+        let extent = self
+            .controls
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| segment_of(self.control_pointer(*i)) == segment)
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), (_, c)| (lo.min(c.rect.x), hi.max(c.rect.x + c.rect.w)));
+        Some(widen(rest, self.segment_align(segment), extent))
+    }
+
+    /// The align of the cell holding the segment at `segment` (an RFC 6901 pointer, [`segment_of`]); `Start`
+    /// for a segment a row did not pack (one a `vstack` cell holds), which is the cell default.
+    pub fn segment_align(&self, segment: &str) -> SegmentAlign {
+        self.segment_aligns.iter().find(|(p, _)| p == segment).map_or(SegmentAlign::Start, |&(_, a)| a)
+    }
+
     /// The control called `id`.
     pub fn control(&self, id: &str) -> Option<&ControlRect> {
         self.controls.iter().find(|c| c.id == id)
@@ -451,7 +621,7 @@ impl CompiledState {
             playbar: Rect::default(),
             row: self.standin.row,
             row_anchor: self.standin.anchor,
-            items: [None; BTN_N as usize],
+            items: [None; crate::player_hud::geometry::MAX_ROW_ITEMS],
             tab_row: self.tab_row,
             title: shown.title,
             tabs: [self.tab("info"), self.tab("chapters")],
@@ -463,11 +633,9 @@ impl CompiledState {
         }
         match self.key.slot {
             Slot::Discs => {
-                // PR7 OBLIGATION: `HudGeometry::items` holds `BTN_N` = 5 stops (classic's row), so this zip
-                // drops every row item past the fifth. The reference has nine (forward, chapters, info and
-                // More among them) and R1 guarantees More: they stay in `controls` and in `row_ids`, whole,
-                // and widening `items` to the longest row a package can place is PR7's change to the
-                // report and its consumers (the focus group, the pointer stops), not this compiler's.
+                // `items` is `MAX_ROW_ITEMS` wide (one segment's bound in the format), so every placed
+                // control of the row has its stop; a row wider than that is a finding (`compile`), and
+                // the tail stays whole in `controls` and `row_ids`.
                 for (cell, id) in g.items.iter_mut().zip(&self.row_ids) {
                     *cell = id.as_deref().and_then(|id| self.control(id)).map(|c| c.rect);
                 }
@@ -591,6 +759,8 @@ pub struct Compiled {
     /// the lint alike
     block: bool,
     findings: Vec<CompileFinding>,
+    /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
+    assets: Vec<(String, String)>,
 }
 
 /// Which dimensions of a compile the package names.
@@ -599,6 +769,23 @@ struct Named {
     chapters: bool,
     episode: bool,
     paused: bool,
+}
+
+/// **A compile with no state at all**: every frame is one the package has no state for, so nothing is drawn
+/// from it and its geometry is the empty report ([`HudGeometry::empty`]) at classic's caption band. It is
+/// what a mounter that was never seeded hands a page (a controlled replay or record run compiles nothing
+/// outside a frame and never reaches the player) and what the tests grade the no-state arm with.
+impl Default for Compiled {
+    fn default() -> Self {
+        Self {
+            states: Vec::new(),
+            named: Named { chapters: false, episode: false, paused: false },
+            band: HudBand::CLASSIC,
+            block: false,
+            findings: Vec::new(),
+            assets: Vec::new(),
+        }
+    }
 }
 
 /// A value the compiler could not carry as the package wrote it. Not a registered finding code: PR5d
@@ -639,6 +826,16 @@ impl Compiled {
 
     /// What the compiler could not carry as written (see [`CompileFinding`]); empty for a package that
     /// keys no number or gap on a strip card's `item.*` term.
+    /// The SVG source of the asset `id` the package declares.
+    pub fn asset(&self, id: &str) -> Option<&str> {
+        self.assets.iter().find(|(name, _)| name == id).map(|(_, svg)| svg.as_str())
+    }
+
+    /// The asset `id` as a glyph the shared icon cache can draw, keyed by its source.
+    pub fn glyph(&self, id: &str) -> Option<plx_ui::icons::Svg<'_>> {
+        self.asset(id).map(plx_ui::icons::Svg::new)
+    }
+
     pub fn findings(&self) -> &[CompileFinding] {
         &self.findings
     }
@@ -687,12 +884,21 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
             }
         }
     }
+    let mut findings = frame.findings;
+    if let Some(wide) = states.iter().map(|s| s.row_ids.len()).filter(|&n| n > MAX_ROW_ITEMS).max() {
+        findings.push(CompileFinding {
+            pointer: "/layout/up_next/replaces".to_owned(),
+            term: String::new(),
+            message: format!("the replaced row places {wide} controls, but the geometry report holds {MAX_ROW_ITEMS}, so the tail has no stop"),
+        });
+    }
     let mut compiled = Compiled {
         states,
         named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
-        findings: frame.findings,
+        findings,
+        assets: package.assets.clone(),
     };
     let band = compiled
         .compact_band_extents()
@@ -754,13 +960,34 @@ const CELL_KINDS: [&str; 12] = [
     "text", "image", "icon", "rule", "rect", "facts", "vstack", "spacer", "playbar", "segment", "strip", "actions",
 ];
 
+/// The pointer of the segment holding the control item at `pointer` (`<segment>/items/<n>`).
+pub fn segment_of(pointer: &str) -> &str {
+    pointer.rsplit_once("/items/").map_or(pointer, |(segment, _)| segment)
+}
+
+/// The anchor of an opener drawn at `rest` in a segment whose controls span `extent` (their left and right
+/// edges): widened toward the segment's OUTER edge only ([`CompiledState::menu_anchor`]).
+pub fn widen(rest: Rect, align: SegmentAlign, extent: (f32, f32)) -> Rect {
+    match align {
+        SegmentAlign::End => Rect::new(rest.x, rest.y, extent.1.max(rest.x + rest.w) - rest.x, rest.h),
+        SegmentAlign::Start => {
+            let left = extent.0.min(rest.x);
+            Rect::new(left, rest.y, rest.x + rest.w - left, rest.h)
+        }
+        SegmentAlign::Center => rest,
+    }
+}
+
 /// The cell's one content key and its object.
 fn content(cell: &Object) -> Option<(&'static str, &Object)> {
     CELL_KINDS.iter().find_map(|&k| cell.get(k).and_then(Val::as_object).map(|o| (k, o)))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Grp {
+/// **Which edge of its band a cell packs against** (`cell.align`, `start` unless the package says
+/// otherwise). A segment's controls pack with their cell, so this is also the edge a menu opened from one
+/// of them is anchored to ([`CompiledState::menu_anchor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentAlign {
     Start,
     Center,
     End,
@@ -797,7 +1024,7 @@ impl Size {
 struct CellIn<'p> {
     kind: &'static str,
     o: &'p Object,
-    grp: Grp,
+    grp: SegmentAlign,
     valign: VAlign,
     size: Size,
     before: Option<f32>,
@@ -821,6 +1048,7 @@ struct Ctl<'p> {
     command: &'p str,
     widget: Widget,
     rest: Rest,
+    focus: Focus,
     size: f32,
 }
 
@@ -847,10 +1075,14 @@ struct Out {
     /// the `item.*` terms of the `when`s around what is being emitted
     gate: Vec<CondTerm>,
     controls: Vec<ControlRect>,
+    /// each band's ops, as ranges of `ops`, in the order the bands were filled
+    spans: Vec<Span>,
     /// `controls[i]`'s provenance: the pointer of the item
     control_origins: Vec<String>,
     /// `(pointer, rect)` of each `vstack` placed
     vstacks: Vec<(String, Rect)>,
+    /// `(pointer, align)` of each `segment` a row packs
+    segment_aligns: Vec<(String, SegmentAlign)>,
     /// the rects of the replaced segments
     replaced: Vec<Rect>,
     title: Option<Rect>,
@@ -869,6 +1101,7 @@ impl Out {
 
 struct Band<'p> {
     id: &'p str,
+    chrome: Chrome,
     before: Option<f32>,
     gap: f32,
     z: i64,
@@ -1044,12 +1277,58 @@ impl<'e, 'p> Env<'e, 'p> {
         }
     }
 
+    /// The item's command with its parameters: its sibling keys (`by`, `dir`, `tab`, `page`, `section`).
+    fn act(item: &Object, command: &str) -> Option<crate::player_hud::command::HudCommand> {
+        use crate::player_hud::command::{ByParam, HudCommand, Params};
+        let by = match item.get("by") {
+            Some(Val::Int(n)) => Some(ByParam::Secs(*n)),
+            Some(v) => v.as_str().map(ByParam::Name),
+            None => None,
+        };
+        let name = |key: &str| item.get(key).and_then(Val::as_str);
+        HudCommand::from_item(command, &Params { by, dir: name("dir"), tab: name("tab"), page: name("page"), section: name("section") })
+    }
+
+    /// The item's `face`: one glyph, or the map of them.
+    fn face(item: &Object) -> Face {
+        let glyph = |v: &Val| {
+            let id = v.as_str()?;
+            Some(match id.strip_prefix(schema::BUILTIN_FACE_PREFIX) {
+                Some(icon) => FaceRef::Builtin(schema::builtin_icon(icon)?),
+                None => FaceRef::Asset(id.to_owned()),
+            })
+        };
+        let mut face = Face::default();
+        match item.get("face") {
+            Some(Val::Object(map)) => {
+                for (key, v) in &map.fields {
+                    match v {
+                        Val::Object(rungs) if key == "by_interval" => {
+                            face.ladder.extend(rungs.fields.iter().filter_map(|(s, v)| Some((s.parse().ok()?, glyph(v)?))));
+                        }
+                        v => face.states.extend(glyph(v).map(|g| (key.clone(), g))),
+                    }
+                }
+            }
+            Some(v) => face.single = glyph(v),
+            None => {}
+        }
+        face
+    }
+
     fn rest(o: &Object) -> Rest {
         match o.get("rest").and_then(Val::as_str).unwrap_or_else(|| default_name("item", "rest")) {
             "bare" => Rest::Bare,
             "solid" => Rest::Solid,
             "custom" => Rest::Custom,
             _ => Rest::Film,
+        }
+    }
+
+    fn focus(o: &Object) -> Focus {
+        match o.get("focus").and_then(Val::as_str).unwrap_or_else(|| default_name("item", "focus")) {
+            "ring" => Focus::Ring,
+            _ => Focus::Accent,
         }
     }
 
@@ -1105,6 +1384,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 command: item.get("command").and_then(Val::as_str).unwrap_or(""),
                 widget,
                 rest: Self::rest(item),
+                focus: Self::focus(item),
                 size,
             }));
         }
@@ -1190,7 +1470,12 @@ impl<'e, 'p> Env<'e, 'p> {
                 Size::new(w, h)
             }
             "spacer" => Size::new(Dim::Px(self.num(o, "w").unwrap_or(0.0)), 0.0),
-            "playbar" => Size::new(self.dim(o, "w").unwrap_or(Dim::Fill), self.num(o, "thickness").unwrap_or(0.0)),
+            // The cell is the track AND the clocks' line under it: the playbar draws both clocks itself, on a line
+            // `CLOCK_TOP` below the track's top, and a band under the bar must start below them (I4, I10).
+            "playbar" => {
+                let line = CLOCK_TOP + classic::clock_line_h(self.size_px(o, "clock_size"));
+                Size::new(self.dim(o, "w").unwrap_or(Dim::Fill), self.num(o, "thickness").unwrap_or(0.0).max(line))
+            }
             "segment" => {
                 let c = self.controls(o, self.gap(o, "gap").unwrap_or(0.0), false);
                 let w = HStack::new(&c.items, c.gap, Align::Leading(0.0)).width();
@@ -1280,9 +1565,9 @@ impl<'e, 'p> Env<'e, 'p> {
             kind,
             o,
             grp: match cell.get("align").and_then(Val::as_str) {
-                Some("center") => Grp::Center,
-                Some("end") => Grp::End,
-                _ => Grp::Start,
+                Some("center") => SegmentAlign::Center,
+                Some("end") => SegmentAlign::End,
+                _ => SegmentAlign::Start,
             },
             valign: match cell.get("valign").and_then(Val::as_str) {
                 Some("top") => VAlign::Top,
@@ -1302,9 +1587,9 @@ impl<'e, 'p> Env<'e, 'p> {
     fn pack(&self, row: &[CellIn<'p>], widths: &[f32], gap: f32, boxr: Rect) -> Vec<(f32, f32)> {
         let mut out = vec![(0.0, 0.0); row.len()];
         for (grp, align) in [
-            (Grp::Start, Align::Leading(boxr.x)),
-            (Grp::Center, Align::Centre(boxr.x + boxr.w * 0.5)),
-            (Grp::End, Align::Trailing(boxr.x + boxr.w)),
+            (SegmentAlign::Start, Align::Leading(boxr.x)),
+            (SegmentAlign::Center, Align::Centre(boxr.x + boxr.w * 0.5)),
+            (SegmentAlign::End, Align::Trailing(boxr.x + boxr.w)),
         ] {
             let idx: Vec<usize> = (0..row.len()).filter(|&i| row[i].grp == grp).collect();
             let items: Vec<Item> = idx
@@ -1349,7 +1634,7 @@ impl<'e, 'p> Env<'e, 'p> {
         }
         let mut widths: Vec<f32> = row.iter().map(|c| if let Dim::Px(w) = c.size.w { w } else { 0.0 }).collect();
         let fills = |grp_start: bool| -> Vec<usize> {
-            (0..row.len()).filter(|&i| row[i].size.w == Dim::Fill && (row[i].grp == Grp::Start) == grp_start).collect()
+            (0..row.len()).filter(|&i| row[i].size.w == Dim::Fill && (row[i].grp == SegmentAlign::Start) == grp_start).collect()
         };
 
         // a fill in the centre or the end takes the row's free room, shared equally
@@ -1357,7 +1642,7 @@ impl<'e, 'p> Env<'e, 'p> {
         if !loose.is_empty() {
             let mut packed = 0.0;
             let mut groups = 0;
-            for grp in [Grp::Start, Grp::Center, Grp::End] {
+            for grp in [SegmentAlign::Start, SegmentAlign::Center, SegmentAlign::End] {
                 let items: Vec<Item> = (0..row.len())
                     .filter(|&i| row[i].grp == grp)
                     .map(|i| {
@@ -1383,11 +1668,11 @@ impl<'e, 'p> Env<'e, 'p> {
             let at = self.pack(&row, &widths, gap, boxr);
             let (x, _) = at[f];
             let group_end = (0..row.len())
-                .filter(|&i| row[i].grp == Grp::Start)
+                .filter(|&i| row[i].grp == SegmentAlign::Start)
                 .map(|i| at[i].0 + at[i].1)
                 .fold(x, f32::max);
             let later = (0..row.len())
-                .filter(|&i| row[i].grp != Grp::Start && !(mode.hide && row[i].replaced))
+                .filter(|&i| row[i].grp != SegmentAlign::Start && !(mode.hide && row[i].replaced))
                 .flat_map(|i| self.left_edges(&row[i], at[i].0, at[i].1))
                 .chain(mode.standin_left)
                 .reduce(f32::min);
@@ -1410,6 +1695,9 @@ impl<'e, 'p> Env<'e, 'p> {
                 if mode.hide {
                     continue;
                 }
+            }
+            if cell.kind == "segment" {
+                out.segment_aligns.push((cell.o.pointer.clone(), cell.grp));
             }
             let mark = out.gate.len();
             out.gate.extend(cell.gate.iter().cloned());
@@ -1463,16 +1751,24 @@ impl<'e, 'p> Env<'e, 'p> {
             "rect" => self.emit_rect(o, r, mode, out),
             "vstack" => self.emit_vstack(o, r, mode, out),
             "playbar" => {
+                // the cell holds the track at its top and the clocks' line under it (`size_of`)
+                let track = Rect::new(r.x, r.y, r.w, self.num(o, "thickness").unwrap_or(0.0));
                 let above = self.num_or_default(o, "grab", "above");
                 let below = self.num_or_default(o, "grab", "below");
-                let grab = Rect::new(r.x, r.y - above, r.w, above + r.h + below);
-                out.playbar = Some(PlaybarRects { track: r, grab });
+                let grab = Rect::new(track.x, track.y - above, track.w, above + track.h + below);
+                out.playbar = Some(PlaybarRects { track, grab });
+                let clock_size = self.size_px(o, "clock_size");
+                let clock_mode = if self.name(o, "clocks") == Some("ends") { ClockMode::Ends } else { ClockMode::FollowHead };
                 out.push(&o.pointer, DrawOp::Playbar {
-                    track: r,
+                    track,
                     grab,
                     fill: self.live_ink(o, "fill"),
                     track_ink: self.live_ink(o, "track"),
-                    clock_size: self.size_px(o, "clock_size"),
+                    clock_size,
+                    knob: if self.name(o, "knob") == Some("always") { KnobMode::Always } else { KnobMode::Tick },
+                    clocks: clock_mode,
+                    clock_rects: clocks::rects(track, clock_size, clock_mode, self.measure),
+                    mark: if self.name(o, "mark") == Some("busy_only") { MarkMode::BusyOnly } else { MarkMode::AfterElapsed },
                 });
             }
             "segment" => {
@@ -1502,8 +1798,11 @@ impl<'e, 'p> Env<'e, 'p> {
         let c = ControlRect {
             id: ctl.id.to_owned(),
             command: ctl.command.to_owned(),
+            act: Self::act(ctl.o, ctl.command),
+            face: Self::face(ctl.o),
             widget: ctl.widget,
             rest: ctl.rest,
+            focus: ctl.focus,
             rect,
             band: out.band.clone(),
             section: ctl.o.get("section").and_then(Val::as_str).map(str::to_owned),
@@ -1620,6 +1919,7 @@ impl<'e, 'p> Env<'e, 'p> {
             .filter(|b| self.when(b))
             .map(|b| Band {
                 id: b.get("id").and_then(Val::as_str).unwrap_or(""),
+                chrome: if b.get("chrome").and_then(Val::as_str) == Some("steady") { Chrome::Steady } else { Chrome::Fades },
                 before: self.gap(b, "gap_before"),
                 gap: self.gap(b, "gap").unwrap_or(0.0),
                 z: b.get("z").and_then(Val::as_i64).unwrap_or(0),
@@ -1631,9 +1931,7 @@ impl<'e, 'p> Env<'e, 'p> {
     /// One pass over the present bands, in `z` order, each in its box.
     fn fill_bands(&self, bands: &[Band<'p>], boxes: &[Rect], mode: &Mode<'_>) -> Out {
         let mut out = Out::default();
-        let mut order: Vec<usize> = (0..bands.len()).collect();
-        order.sort_by_key(|&i| bands[i].z);
-        for i in order {
+        for i in z_order(bands.len(), |i| bands[i].z) {
             out.band = bands[i].id.to_owned();
             let band_mode = Mode {
                 replaces: mode.replaces,
@@ -1641,7 +1939,10 @@ impl<'e, 'p> Env<'e, 'p> {
                 standin_left: if bands[i].id == mode.host { mode.standin_left } else { None },
                 host: mode.host,
             };
+            let start = out.ops.len();
             self.place_row(&bands[i].cells, bands[i].gap, boxes[i], &band_mode, &mut out);
+            let span = Span { band: bands[i].id.to_owned(), chrome: bands[i].chrome, ops: start..out.ops.len() };
+            out.spans.push(span);
         }
         out
     }
@@ -1650,11 +1951,11 @@ impl<'e, 'p> Env<'e, 'p> {
     /// changes anything (see [`CompiledState::skip_variant`]).
     fn compile_state(&self) -> CompiledState {
         let mut state = self.compile_for(SkipKind::Intro);
-        if self.state.slot == Slot::Skip {
-            let credits = self.compile_for(SkipKind::Credits);
-            if credits != state {
-                state.skip_alt = Some(Box::new(credits));
-            }
+        // The kind reaches the layout through ONE input: the pill's own rect, whose left edge a start-aligned
+        // fill stops at (`compile_for`). The state carries both rects, so equal rects mean the two layouts are
+        // the same and the credits one is not worked out.
+        if self.state.slot == Slot::Skip && state.standin.skip.is_some_and(|[intro, credits]| intro != credits) {
+            state.skip_alt = Some(Box::new(self.compile_for(SkipKind::Credits)));
         }
         state
     }
@@ -1704,13 +2005,14 @@ impl<'e, 'p> Env<'e, 'p> {
                         .flatten()
                         .fold(f32::MAX, f32::min)
                 }),
-                // the pill actually shown: a start-aligned fill stops at ITS edge, as `classic::title_right` does
+                // the pill actually shown: a start-aligned fill stops at ITS edge, as the hand-written `title_right` did
                 _ => standin.skip.map(|s| s[skip as usize].scaled(CTRL_FOCUS_SCALE).x),
             };
             self.fill_bands(&bands, &boxes, &Mode { replaces: &replaces, hide: true, standin_left: left, host })
         };
 
         // the stand-in's ops, then the scrim in front of everything
+        let band_ops = out.ops.len();
         match slot {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
@@ -1738,6 +2040,18 @@ impl<'e, 'p> Env<'e, 'p> {
             Some(Rect::new(0.0, top, SCR_W, SCR_H - top))
         });
         let mut ops: Vec<DrawOp> = scrim.map(|rect| DrawOp::Scrim { rect }).into_iter().collect();
+        // the spans: the scrim's own (it never fades), every band's, and the stand-in's, which takes the
+        // chrome of the band that hosts it
+        let shift = ops.len();
+        let mut spans: Vec<Span> = Vec::new();
+        if shift > 0 {
+            spans.push(Span { band: String::new(), chrome: Chrome::Steady, ops: 0..shift });
+        }
+        spans.extend(out.spans.iter().map(|s| Span { ops: s.ops.start + shift..s.ops.end + shift, ..s.clone() }));
+        if out.ops.len() > band_ops {
+            let chrome = bands.iter().find(|b| b.id == host).map_or(Chrome::Fades, |b| b.chrome);
+            spans.push(Span { band: host.to_owned(), chrome, ops: band_ops + shift..out.ops.len() + shift });
+        }
         ops.append(&mut out.ops);
         // the scrim op is the node `layout.scrim` (its owner is the layout when there is none to name)
         let mut origins: Vec<String> =
@@ -1761,11 +2075,13 @@ impl<'e, 'p> Env<'e, 'p> {
             tab_row: boxes.last().map_or_else(Rect::default, |b| Rect::new(b.x, b.y, 0.0, b.h)),
             row_ids,
             cost,
+            spans,
             band: HudBand::CLASSIC,
             skip_alt: None,
             origins,
             control_origins: out.control_origins,
             vstacks: out.vstacks,
+            segment_aligns: out.segment_aligns,
             standin_origin: up.map_or_else(String::new, |u| u.pointer.clone()),
         }
     }
@@ -1874,6 +2190,17 @@ fn cstring(label: &str) -> CString {
     CString::new(label).unwrap_or_default()
 }
 
+/// The indices `0..n` in ascending `z`, equal `z` in index order (a stable sort without a sort routine): each
+/// index goes in after every one whose `z` is not greater.
+pub(super) fn z_order(n: usize, z: impl Fn(usize) -> i64) -> Vec<usize> {
+    let mut order: Vec<usize> = Vec::with_capacity(n);
+    for i in 0..n {
+        let at = order.partition_point(|&j| z(j) <= z(i));
+        order.insert(at, i);
+    }
+    order
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Cost
 // ---------------------------------------------------------------------------------------------------
@@ -1954,21 +2281,10 @@ fn weigh(op: &DrawOp) -> Contributor {
 }
 
 fn cost_of(ops: &[DrawOp]) -> Cost {
-    let mut parts: Vec<Contributor> = ops.iter().enumerate().map(|(i, op)| Contributor { op: i, ..weigh(op) }).collect();
-    let mut cost = Cost {
-        draw_ops: parts.iter().map(|p| p.draw_ops).sum(),
-        glyph_runs: parts.iter().map(|p| p.glyph_runs).sum(),
-        texture_bytes: parts.iter().map(|p| p.texture_bytes).sum(),
-        blended_px: parts.iter().map(|p| p.blended_px).sum(),
-        top: Vec::new(),
-    };
-    parts.sort_by(|a, b| {
-        b.blended_px
-            .cmp(&a.blended_px)
-            .then(b.texture_bytes.cmp(&a.texture_bytes))
-            .then(b.glyph_runs.cmp(&a.glyph_runs))
-            .then(a.op.cmp(&b.op))
-    });
-    cost.top = parts.into_iter().take(3).collect();
-    cost
+    ops.iter().map(weigh).fold(Cost::default(), |cost, part| Cost {
+        draw_ops: cost.draw_ops + part.draw_ops,
+        glyph_runs: cost.glyph_runs + part.glyph_runs,
+        texture_bytes: cost.texture_bytes + part.texture_bytes,
+        blended_px: cost.blended_px + part.blended_px,
+    })
 }

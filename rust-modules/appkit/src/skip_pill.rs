@@ -70,17 +70,9 @@ pub fn prompt_for(m: metadata::Marker) -> Prompt {
     }
 }
 
-/// The button's rect — the SHARED control-row slot, so it and Up Next cannot drift apart.
-///
-/// `row` is the player instance's own [`crate::player_hud::motion::HudMotion`] (restructure phase
-/// 9): it carries both the label-width memo this measurement is cached in and the control row's
-/// focus springs. It was a module `static mut` on the other side of `ctrl_slot` until then.
-pub fn rect(row: &mut crate::player_hud::motion::HudMotion, pr: Prompt, measure: &dyn plx_machine::machine::Measure) -> Rect {
-    crate::player_hud::classic::ctrl_slot(row, pr.label(), measure)
-}
-
-/// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.
-pub fn draw(row: &mut crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, focused: bool, measure: &dyn plx_machine::machine::Measure) {
+/// **Draw the button** at a rect the caller already has: the compiled package's pill (`Standin::skip`,
+/// one per label width), placed at compile time, in the control row's place.
+pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, slot: Rect, focused: bool) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };
@@ -88,7 +80,6 @@ pub fn draw(row: &mut crate::player_hud::motion::HudMotion, p: Painter, pr: Prom
     // navigate anywhere was reading as "more" rather than "skip".
     // Its slot's only item, so index 0 — the pop is the control ROW's (`HudMotion::scale`),
     // shared with the transport discs this pill stands in for.
-    let slot = rect(row, pr, measure);
     let pop = row.scale(0);
     Button::new(label.as_ptr(), theme::size::BODY, slot)
         .scale(pop)

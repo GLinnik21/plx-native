@@ -43,6 +43,37 @@ use plx_ui::widgets::{StatusKind, StatusOverlay};
 use super::classic::*;
 use super::geometry::*;
 use super::motion::*;
+
+/// The title at the default look (the cell classic and the trailer draw it in), `right` the cell's right edge.
+fn draw_player_title(
+    p: Painter,
+    kicker: Kicker,
+    title: *const std::os::raw::c_char,
+    right: f32,
+    measure: &dyn plx_machine::machine::Measure,
+    paused: bool,
+    clock: &plx_ui::marquee::Clock,
+) {
+    draw_player_title_at(p, TitleLook::default(), kicker, title, right, measure, paused, clock);
+}
+
+/// **The right edge of the title's cell in the compiled classic** for a frame's slot: where the compile's
+/// `title.main` text ends (`w: fill` up to the control row's occupant). The value the hand-written
+/// `title_right` reported, frozen in `classic-title-right.golden.tsv`.
+fn compiled_title_right(compiled: &crate::hud_format::compile::Compiled, slot: ControlSlot) -> f32 {
+    use crate::hud_format::compile::DrawOp;
+    let (state, skip) = frame_state(compiled, slot, true, false).expect("classic has a state for every slot");
+    state
+        .skip_variant(skip)
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            DrawOp::Text { bind, rect, .. } if bind == "title.main" => Some(rect.x + rect.w),
+            _ => None,
+        })
+        .expect("the compact states carry the title")
+}
+
 #[test]
 fn long_hud_titles_fit_before_every_control_slot() {
     use plx_base::fontcov::advances::ShippedMeasure;
@@ -51,6 +82,7 @@ fn long_hud_titles_fit_before_every_control_slot() {
     let clock = plx_ui::marquee::Clock::new();
     for language in plx_platform::i18n::SHIPPED {
         let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
+        let compiled = super::loaded::load_classic("test", plx_platform::i18n::current(), measure).compiled;
         let slots = [
             ControlSlot::Discs(Controls::NONE),
             ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
@@ -58,13 +90,14 @@ fn long_hud_titles_fit_before_every_control_slot() {
             slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
         ];
         for slot in slots {
+            let right = compiled_title_right(&compiled, slot);
+            let items = geometry(&compiled, slot, true, false).items;
             let mut row = HudMotion::new();
             for focused in 0..slot.items() {
                 for _ in 0..30 {
                     row.pop.step(Some(focused as usize), 1.0 / 60.0);
-                    let right = title_right(slot, &row, measure);
                     for i in 0..slot.items() {
-                        let Some(rect) = slot.item_rect(&row, i, measure) else { continue };
+                        let Some(rect) = items[i as usize] else { continue };
                         assert!(right + theme::space::MD <= rect.scaled(row.scale(i)).x + 0.001);
                     }
                     for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
@@ -96,7 +129,7 @@ fn short_hud_titles_keep_the_original_position_typography_and_ink() {
         for paused in [false, true] {
             let bounded = plx_ui::draw_census::capture_runs(|| {
                 draw_player_title(Painter::recording(), kicker, c"Short title".as_ptr(),
-                    title_right(ControlSlot::Discs(Controls::NONE), &HudMotion::new(), &FM), &FM, paused, &clock);
+                    compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE)), &FM, paused, &clock);
             });
             assert_eq!(original, bounded);
         }
@@ -107,7 +140,7 @@ fn short_hud_titles_keep_the_original_position_typography_and_ink() {
 fn paused_title_reveals_once_and_resume_restores_ellipsis() {
     let clock = plx_ui::marquee::Clock::new();
     let long = c"A very long movie title that should slowly reveal its final words after pausing";
-    let right = title_right(ControlSlot::Discs(Controls::NONE), &HudMotion::new(), &FM);
+    let right = compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE));
     let paint = |paused| plx_ui::draw_census::capture_runs(|| {
         draw_player_title(Painter::recording(), Kicker::Context(c"Movie".as_ptr()),
             long.as_ptr(), right, &FM, paused, &clock);
@@ -132,7 +165,7 @@ fn a_paused_right_to_left_title_reveals_its_end_to_the_left() {
     let _g = plx_base::testlock::serial();
     let clock = plx_ui::marquee::Clock::new();
     let long = c"فيلم طويل جدا يجب أن يكشف كلماته الأخيرة ببطء بعد الإيقاف المؤقت للتشغيل";
-    let right = title_right(ControlSlot::Discs(Controls::NONE), &HudMotion::new(), &FM);
+    let right = compiled_title_right(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE));
     let (full, window) = (FM.width(long, HUD_TITLE_SZ, true), right - SB_X);
     assert!(full > window, "the fixture title overflows");
     let paint = |paused| plx_ui::draw_census::capture_runs(|| {
@@ -150,19 +183,17 @@ fn a_paused_right_to_left_title_reveals_its_end_to_the_left() {
     assert_eq!(paint(true)[1].at.x, SB_X, "and stay");
 }
 
-/// **`frame_geometry` reports what the classic draw is built from, and measures nothing**; the
-/// overscan audit reads it, so the four rects it grades are exactly these.
+/// **The overscan audit grades the compiled classic's own rects**, and the report carries what the page
+/// places from: the occupant's items (an enabled disc has a rect, an absent one none) and the bar's
+/// x-to-fraction map. (Was `frame_geometry_is_the_classic_layouts_own_rects` and
+/// `geometry_fills_the_items_and_tabs_it_was_asked_for`, whose subjects were the hand-written
+/// `frame_geometry`/`geometry`; the values they held are `classic-geometry.golden.tsv`'s.)
 #[test]
-fn frame_geometry_is_the_classic_layouts_own_rects() {
-    let g = classic::frame_geometry();
+fn the_overscan_audit_grades_the_compiled_classic_rects() {
+    let g = audit_geometry();
     assert_eq!(g.playbar, Rect::new(SB_X, SB_Y, sb_w(), SB_H));
-    assert_eq!(g.grab, scrub_hit_rect());
     assert_eq!(g.row, ctrl_row_hit_rect());
     assert_eq!(g.row_anchor, RowAnchor { right: CTRL_RIGHT, top: CTRL_Y, h: CTRL_H });
-    assert_eq!(g.tab_row, Rect::new(SB_X, (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5, 0.0, BTN_S));
-    assert_eq!(g.title, Rect::new(SB_X, SCR_H - 312.0, 0.0, 0.0));
-    assert!(g.items.iter().all(Option::is_none), "the slot-independent half names no item");
-    assert!(g.tabs.iter().all(Option::is_none), "…and no tab");
     let mut audited = Vec::new();
     overscan_rects(&mut audited);
     assert_eq!(
@@ -174,28 +205,8 @@ fn frame_geometry_is_the_classic_layouts_own_rects() {
             ("player title / elapsed clock", g.title),
         ]
     );
-}
-
-/// **`geometry` adds the occupant's items at the rects they are DRAWN at, and the tabs asked for.**
-#[test]
-fn geometry_fills_the_items_and_tabs_it_was_asked_for() {
-    let row = HudMotion::new();
-    let slot = ControlSlot::Discs(Controls::NONE);
-    let g = classic::geometry(slot, &row, 2, &FM);
-    for i in 0..BTN_N {
-        assert_eq!(g.items[i as usize], slot.item_rect(&row, i, &FM), "disc {i}");
-    }
     assert!(g.items[BTN_SUBTITLES as usize].is_some(), "an enabled disc has a rect");
     assert!(g.items[BTN_PREVIOUS as usize].is_none(), "an absent disc has none");
-    assert_eq!(g.tabs[0], tab_hit_rect(0, true, &FM));
-    assert_eq!(g.tabs[1], tab_hit_rect(1, true, &FM));
-    let one = classic::geometry(slot, &row, 1, &FM);
-    assert_eq!(one.tabs[0], tab_hit_rect(0, false, &FM));
-    assert_eq!(one.tabs[1], None, "a tab the row does not carry has no pill");
-    assert_eq!(classic::geometry(slot, &row, 0, &FM).tabs, [None; HUD_TABS]);
-    // everything else is the frame's
-    let f = classic::frame_geometry();
-    assert_eq!((g.grab, g.playbar, g.row, g.row_anchor, g.tab_row, g.title), (f.grab, f.playbar, f.row, f.row_anchor, f.tab_row, f.title));
     // the bar maps an x to a fraction of ITS width, clamped
     assert_eq!(g.scrub_frac(g.playbar.x - 50.0), 0.0);
     assert_eq!(g.scrub_frac(g.playbar.x + g.playbar.w * 0.5), 0.5);
@@ -305,154 +316,60 @@ const SX: f32 = 100.0;
 const SW: f32 = 1000.0;
 const DUR: i64 = 1_000;
 
-/// The disc row's geometry and its hit-test are ONE definition (`icon_hit` is documented as the
-/// single source of the rects, shared with the draw), so the property worth asserting is that
-/// they agree: every disc's own centre must hit-test back to that disc. Added when the row grew
-/// a third disc — the `…` overflow — because the previous shape hard-coded two positions and a
-/// `(0..2)` scan, and a third button that draws but cannot be clicked is exactly the kind of
-/// half-wired control this file's `ControlSlot` note exists to prevent.
-#[test]
-fn every_disc_hit_tests_back_to_itself() {
-    let cy = BTN_Y + BTN_S * 0.5;
-    for i in BTN_SUBTITLES..BTN_N {
-        let cx = btn_x(i) + BTN_S * 0.5;
-        assert_eq!(
-            icon_hit(ControlSlot::Discs(Controls::NONE), cx, cy),
-            Some(i),
-            "disc {i} centre"
-        );
-    }
+/// The classic discs' rects, as the compile reports them (what the page places and hit-tests from).
+fn disc_rects() -> [Option<Rect>; MAX_ROW_ITEMS] {
+    geometry(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE), false, false).items
 }
 
-/// **Q5: the discs stand `CONTROL_GAP` (20) apart, not the old 22**, and the row's width — the
-/// floor a stand-in (Skip pill, Up Next) may not shrink below — is the three discs and two of
-/// those gaps.
+/// **Q5: the discs stand `CONTROL_GAP` (20) apart, not the old 22**, and the row's width is the three discs
+/// and two of those gaps.
 #[test]
 fn the_control_row_gap_is_the_shared_control_gap() {
+    let discs = disc_rects();
+    let at = |i: i32| discs[i as usize].expect("a present disc");
     assert_eq!(plx_ui::widgets::CONTROL_GAP, 20.0);
-    assert_eq!(btn_x(BTN_AUDIO) - (btn_x(BTN_SUBTITLES) + BTN_S), 20.0);
+    assert_eq!(at(BTN_AUDIO).x - (at(BTN_SUBTITLES).x + BTN_S), 20.0);
     assert_eq!(ctrl_row_w(), 3.0 * BTN_S + 2.0 * 20.0);
-    assert_eq!(ctrl_slot_floor_for_test(), ctrl_row_w());
 }
 
-/// The failure-free floor `ctrl_slot` gives a stand-in whose label measures nothing.
-fn ctrl_slot_floor_for_test() -> f32 {
-    ctrl_slot_measure("", &plx_ui::fixture::FixtureMeasure)
-}
-
-/// **The bottom tabs are one run `space::SM` apart**, and the hit rects and the painted pills
-/// agree. Read off the PAINTED labels (each pill's label is centred on its plate, so the label
-/// runs' centres stand `half + SM + half` apart), against `tab_hit_rect`.
+/// **The bottom tabs are one run `space::SM` apart**, read off the compile's tab pills; with no chapters
+/// there is one pill, at the same place, and no second.
 #[test]
 fn the_bottom_tabs_stand_one_sm_apart_and_are_drawn_where_they_are_hit() {
-    use plx_machine::machine::Measure as _;
-    let m = plx_ui::fixture::FixtureMeasure;
-    let hit: Vec<Rect> = (0..2).map(|i| tab_hit_rect(i, true, &m).unwrap()).collect();
-    assert_eq!(hit[0].x, SB_X);
-    assert_eq!(hit[1].x - (hit[0].x + hit[0].w), theme::space::SM);
-    // the same pills, painted
-    let runs = plx_ui::draw_census::capture_runs(|| {
-        draw_tabs(&hud_env(), Painter::recording(), true, true, |_| (false, false), &m);
-    });
-    let labels: Vec<_> = runs.iter().filter(|r| [plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()].contains(&r.text.as_str())).collect();
-    assert_eq!(labels.len(), 2, "{runs:?}");
-    for (run, rect) in labels.iter().zip(&hit) {
-        let centre = match run.align { 1 => run.at.x, _ => run.at.x + m.width_str(&run.text, run.size, run.bold) * 0.5 };
-        assert!((centre - rect.cx()).abs() < 0.5, "{} is drawn on its hit rect: {run:?} vs {rect:?}", run.text);
-    }
-    assert!(((labels[1].at.x - labels[0].at.x) - (hit[1].cx() - hit[0].cx())).abs() < 0.5);
-    // Hidden case: with no chapters there is one pill, at the same place, and no second hit rect
-    // (no double gap and no stray trailing one).
-    assert_eq!(tab_hit_rect(0, false, &m), Some(hit[0]));
-    assert_eq!(tab_hit_rect(1, false, &m), None);
-    assert_eq!(tab_hit_rect(-1, true, &m), None);
-    let one = plx_ui::draw_census::capture_runs(|| {
-        draw_tabs(&hud_env(), Painter::recording(), false, true, |_| (false, false), &m);
-    });
-    assert_eq!(one.iter().filter(|r| r.text == plx_platform::i18n::msg::widgets_player_chapters()).count(), 0);
-    // chrome off draws (and measures) nothing
-    let none = plx_ui::draw_census::capture_runs(|| {
-        draw_tabs(&hud_env(), Painter::recording(), true, false, |_| (false, false), &m);
-    });
-    assert!(none.is_empty());
+    let compiled = super::loaded::classic_for_test();
+    let two = geometry(&compiled, ControlSlot::Discs(Controls::NONE), true, false).tabs;
+    let (info, chapters) = (two[0].expect("Info"), two[1].expect("Chapters"));
+    assert_eq!(info.x, SB_X);
+    assert_eq!(chapters.x - (info.x + info.w), theme::space::SM);
+    let one = geometry(&compiled, ControlSlot::Discs(Controls::NONE), false, false).tabs;
+    assert_eq!(one[0], Some(info), "with no chapters there is one pill, at the same place");
+    assert_eq!(one[1], None, "…and no second");
 }
 
 /// The row is right-anchored and does not overlap itself: the LAST disc ends exactly at
 /// `CTRL_RIGHT`, each disc sits a full `CONTROL_GAP` clear of its neighbour, and the whole span is
-/// `ctrl_row_w` — which is the floor `ctrl_slot` gives a stand-in, so a drifting span would
-/// silently let the Skip pill shrink the row.
+/// `ctrl_row_w`.
 #[test]
 fn the_disc_row_is_right_anchored_and_spans_ctrl_row_w() {
+    let discs = disc_rects();
+    let at = |i: i32| discs[i as usize].expect("a present disc");
     assert_eq!(
-        btn_x(BTN_N - 1) + BTN_S,
+        at(BTN_N - 1).x + BTN_S,
         CTRL_RIGHT,
         "last disc must end at the row's edge"
     );
     for i in (BTN_SUBTITLES + 1)..BTN_N {
         assert_eq!(
-            btn_x(i) - (btn_x(i - 1) + BTN_S),
+            at(i).x - (at(i - 1).x + BTN_S),
             plx_ui::widgets::CONTROL_GAP,
             "gap before disc {i}"
         );
     }
     assert_eq!(
-        CTRL_RIGHT - btn_x(BTN_SUBTITLES),
+        CTRL_RIGHT - at(BTN_SUBTITLES).x,
         ctrl_row_w(),
-        "drawn span vs the stand-in floor"
+        "drawn span vs the row's floor width"
     );
-}
-
-/// A point in the row's band but in a GAP, or past either end, belongs to no disc — the click
-/// path falls through to the scrubber there, so a gap that answered `Some` would open a track
-/// menu from a press on empty chrome.
-#[test]
-fn gaps_and_the_row_ends_belong_to_no_disc() {
-    let cy = BTN_Y + BTN_S * 0.5;
-    assert_eq!(
-        icon_hit(ControlSlot::Discs(Controls::NONE), btn_x(BTN_SUBTITLES) - 1.0, cy),
-        None,
-        "left of the row"
-    );
-    assert_eq!(
-        icon_hit(ControlSlot::Discs(Controls::NONE), CTRL_RIGHT + 1.0, cy),
-        None,
-        "right of the row"
-    );
-    for i in (BTN_SUBTITLES + 1)..BTN_N {
-        let mid = btn_x(i) - plx_ui::widgets::CONTROL_GAP * 0.5;
-        assert_eq!(
-            icon_hit(ControlSlot::Discs(Controls::NONE), mid, cy),
-            None,
-            "gap before disc {i}"
-        );
-    }
-    // and the band itself is bounded vertically
-    let cx = btn_x(BTN_SUBTITLES) + BTN_S * 0.5;
-    assert_eq!(
-        icon_hit(ControlSlot::Discs(Controls::NONE), cx, BTN_Y - 1.0),
-        None,
-        "above the row"
-    );
-    assert_eq!(
-        icon_hit(ControlSlot::Discs(Controls::NONE), cx, BTN_Y + BTN_S + 1.0),
-        None,
-        "below the row"
-    );
-}
-
-/// While a stand-in owns the row the discs are not on screen, so nothing in that band may
-/// report a disc — the rule `icon_hit`'s `slot` parameter exists for.
-#[test]
-fn a_stand_in_owning_the_row_hides_every_disc_from_the_hit_test() {
-    let cy = BTN_Y + BTN_S * 0.5;
-    let slot = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown);
-    for i in 0..BTN_N {
-        assert_eq!(
-            icon_hit(slot, btn_x(i) + BTN_S * 0.5, cy),
-            None,
-            "disc {i} under a stand-in"
-        );
-    }
 }
 
 /// The control row's precedence, which used to live in the ORDER of five separate if-chains
@@ -1408,8 +1325,8 @@ fn min_controls_top_y_is_where_the_largest_block_just_fits() {
 /// `HudBand::CLASSIC`, from the slot-independent half and from the whole geometry alike.
 #[test]
 fn the_layouts_band_is_classics_in_every_slot() {
-    assert_eq!(classic::frame_geometry().band(), HudBand::CLASSIC);
-    let row = HudMotion::new();
+    assert_eq!(audit_geometry().band(), HudBand::CLASSIC);
+    let compiled = super::loaded::classic_for_test();
     let slots = [
         ControlSlot::Discs(Controls::NONE),
         ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
@@ -1417,7 +1334,7 @@ fn the_layouts_band_is_classics_in_every_slot() {
         slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
     ];
     for slot in slots {
-        assert_eq!(classic::geometry(slot, &row, 2, &FM).band(), HudBand::CLASSIC);
+        assert_eq!(geometry(&compiled, slot, true, false).band(), HudBand::CLASSIC);
     }
     assert_eq!(
         HudBand::CLASSIC,
@@ -1485,20 +1402,21 @@ mod playback_navigation_tests {
 
     #[test]
     fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
+        let compiled = super::super::loaded::classic_for_test();
         let pair = Controls::for_item(true, false, true, false);
+        let rects = |c: Controls| geometry(&compiled, ControlSlot::Discs(c), false, false).items;
+        let (pair_rects, none_rects) = (rects(pair), rects(Controls::NONE));
         for i in BTN_SUBTITLES..=BTN_MORE {
-            assert_eq!(pair.rect(i), Controls::NONE.rect(i));
-            let rect = pair.rect(i).unwrap();
-            assert_eq!(icon_hit(ControlSlot::Discs(pair), rect.cx(), rect.cy()), Some(i));
+            assert_eq!(pair_rects[i as usize], none_rects[i as usize]);
+            assert!(pair_rects[i as usize].is_some());
         }
-        let previous = pair.rect(BTN_PREVIOUS).unwrap();
-        let next = pair.rect(BTN_NEXT).unwrap();
-        let subtitles = pair.rect(BTN_SUBTITLES).unwrap();
+        let previous = pair_rects[BTN_PREVIOUS as usize].unwrap();
+        let next = pair_rects[BTN_NEXT as usize].unwrap();
+        let subtitles = pair_rects[BTN_SUBTITLES as usize].unwrap();
         assert_eq!(next.x - previous.x - previous.w, plx_ui::widgets::CONTROL_GAP);
         assert_eq!(subtitles.x - next.x - next.w, 2.0 * plx_ui::widgets::CONTROL_GAP);
-        assert!(Controls::NONE.rect(BTN_PREVIOUS).is_none());
-        assert!(Controls::NONE.rect(BTN_NEXT).is_none());
-        assert_eq!(icon_hit(ControlSlot::Discs(pair), previous.cx(), previous.cy()), None);
+        assert!(none_rects[BTN_PREVIOUS as usize].is_none());
+        assert!(none_rects[BTN_NEXT as usize].is_none());
         assert_eq!(pair.primary(), BTN_NEXT);
         assert_eq!(pair.action(BTN_PREVIOUS), None);
         assert_eq!(pair.icon(BTN_PREVIOUS), Icon::Previous);
@@ -1517,5 +1435,109 @@ mod playback_navigation_tests {
         let last = Controls::for_item(true, true, false, false);
         assert_eq!(last.primary(), BTN_PREVIOUS);
         assert_eq!(last.action(BTN_NEXT), None);
+    }
+}
+
+/// **Under `builtin:classic`, the row resolved through the compile is the row resolved through `Controls`.**
+/// The page now asks the package's control at an index what a press performs and whether it has a stop;
+/// for classic's five discs that must be exactly classic's table, for every valuation of the pair and of
+/// Previous's restart target, and the cursor parks where `Controls::primary` parks it.
+#[test]
+fn classic_resolved_through_the_compile_is_classics_table() {
+    use super::command::HudCommand;
+    use super::model::HudModel;
+    use plx_base::fontcov::advances::ShippedMeasure;
+    let hud = super::loaded::load_classic("test", plx_platform::i18n::english(), &ShippedMeasure);
+    let compiled = &*hud.compiled;
+    let model = HudModel::default();
+    for episode in [false, true] {
+        for previous in [false, true] {
+            for next in [false, true] {
+                for restart in [false, true] {
+                    let controls = Controls::for_item(episode, previous, next, restart);
+                    let slot = ControlSlot::Discs(controls);
+                    for i in -1..=BTN_N + 2 {
+                        let want: Option<HudCommand> = controls.command(i);
+                        assert_eq!(row_command(compiled, slot, &model, i), want, "{controls:?} item {i}");
+                        assert_eq!(row_enabled(compiled, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
+                    }
+                    assert_eq!(row_primary(compiled, slot, &model), controls.primary(), "{controls:?}");
+                }
+            }
+        }
+    }
+}
+
+/// The playbar's package options (`knob`, `clocks`, `mark`): extended in place, with classic's values
+/// the default, so the trailer's bar and the classic HUD's bar are the frames they were.
+mod playbar_options {
+    use super::*;
+    use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
+
+    fn bar(knob: Knob, mark: TransportMark) -> Playbar {
+        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, clock_grow: 0.0 }
+    }
+    fn census(b: Playbar, look: PlaybarLook) -> Vec<(u64, Rect)> {
+        plx_ui::draw_census::capture(|| draw_playbar_look(Painter::recording(), b, look, &FM))
+    }
+    fn runs(b: Playbar, look: PlaybarLook) -> Vec<plx_ui::draw_census::Run> {
+        plx_ui::draw_census::capture_runs(|| draw_playbar_look(Painter::recording(), b, look, &FM))
+    }
+
+    #[test]
+    fn the_default_look_is_classics() {
+        let look = PlaybarLook::default();
+        assert_eq!((look.knob, look.clocks, look.mark), (KnobMode::Tick, ClockMode::FollowHead, MarkMode::AfterElapsed));
+        for (knob, mark) in [(Knob::Tick, TransportMark::Pause), (Knob::Focused, TransportMark::Play), (Knob::Held, TransportMark::None)] {
+            let b = bar(knob, mark);
+            let classic = plx_ui::draw_census::capture(|| draw_playbar(Painter::recording(), b, &FM));
+            assert_eq!(classic, census(b, look), "{knob:?}");
+        }
+    }
+
+    #[test]
+    fn an_always_knob_replaces_the_tick_at_rest() {
+        let tick = census(bar(Knob::Tick, TransportMark::None), PlaybarLook::default());
+        let always = census(bar(Knob::Tick, TransportMark::None), PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() });
+        let thin = |v: &[(u64, Rect)]| v.iter().any(|(_, r)| (r.w - 3.0).abs() < 0.01);
+        let round = |v: &[(u64, Rect)]| v.iter().any(|(_, r)| (r.w - 18.0).abs() < 0.01 && (r.h - 18.0).abs() < 0.01);
+        assert!(thin(&tick) && !round(&tick), "classic rests as a tick: {tick:?}");
+        assert!(round(&always) && !thin(&always), "`always` rests as a knob: {always:?}");
+        // a knob already shown (focused or held) is unchanged by the option
+        for knob in [Knob::Focused, Knob::Held] {
+            let b = bar(knob, TransportMark::None);
+            assert_eq!(census(b, PlaybarLook::default()), census(b, PlaybarLook { knob: KnobMode::Always, ..PlaybarLook::default() }));
+        }
+    }
+
+    #[test]
+    fn ends_clocks_sit_at_the_bars_two_ends() {
+        let look = PlaybarLook { clocks: ClockMode::Ends, ..PlaybarLook::default() };
+        let b = bar(Knob::Tick, TransportMark::None);
+        let elapsed = |look| runs(b, look).into_iter().find(|r| r.align == 1).expect("the elapsed clock");
+        let follow = elapsed(PlaybarLook::default());
+        let ends = elapsed(look);
+        let l = look.track.x;
+        assert!((follow.at.x - (l + look.track.w * 0.5)).abs() < 1.0, "classic: under the playhead, {:?}", follow.at);
+        assert!((ends.at.x - ends.at.w * 0.5 - l).abs() < 1.0, "`ends`: the clock's left edge is the bar's start, {:?}", ends.at);
+        let rem = runs(b, look).into_iter().find(|r| r.align == 2).expect("the remaining clock");
+        assert!((rem.at.x - (l + look.track.w)).abs() < 0.01, "remaining ends at the bar's end");
+        // near the end of the item the classic remaining clock gives way; `ends` keeps both apart
+        let late = Playbar { pos_ns: 1_199_000_000_000, ..b };
+        assert!(runs(late, PlaybarLook::default()).iter().all(|r| r.align != 2), "classic hides it");
+        assert!(runs(late, look).iter().any(|r| r.align == 2), "`ends` never meets it");
+    }
+
+    #[test]
+    fn a_busy_only_mark_draws_the_spinner_and_nothing_else() {
+        let glyphs = |b: Playbar, look| plx_ui::draw_census::capture_icons(|| draw_playbar_look(Painter::recording(), b, look, &FM));
+        let busy_only = PlaybarLook { mark: MarkMode::BusyOnly, ..PlaybarLook::default() };
+        for mark in [TransportMark::Pause, TransportMark::Play, TransportMark::Rewind, TransportMark::FastForward] {
+            let b = bar(Knob::Tick, mark);
+            assert_eq!(glyphs(b, PlaybarLook::default()).len(), 1, "classic draws the {mark:?} glyph");
+            assert!(glyphs(b, busy_only).is_empty(), "`busy_only` suppresses it: {mark:?}");
+        }
+        let working = bar(Knob::Tick, TransportMark::Working);
+        assert_eq!(census(working, busy_only), census(working, PlaybarLook::default()), "the spinner stays");
     }
 }

@@ -4881,11 +4881,56 @@ impl View for StatusOverlay<'_> {
 // ---- TransportButton: circular control button with a runtime-rasterized SVG glyph
 // (0 = subtitles/CC, 1 = audio, 2 = more/overflow). The player supplies Unkeyed, so focused is a
 // flat accent + dark icon and idle is a light film + white icon. ----
-pub struct TransportButton {
+/// A [`TransportButton`]'s RESTING face — what the disc wears while the remote is elsewhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransportRest {
+    /// the idle film plate and white glyph every caller had
+    #[default]
+    Film,
+    /// the glyph alone: no plate, no rim (focus still arrives with its own face)
+    Bare,
+    /// the focused colours at rest: the accent plate under the dark glyph, with no cast (the cast
+    /// is what FOCUS adds)
+    Solid,
+}
+
+/// A [`TransportButton`]'s FOCUS face — what the remote's arrival changes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TransportFocus {
+    /// the flat accent plate with a dark glyph, lifted by its cast
+    #[default]
+    Accent,
+    /// the rest face stays and a white ring stands just outside it
+    /// ([`theme::CONTROL_FOCUS_RING`])
+    Ring,
+}
+
+/// Which plate a [`TransportButton`] paints under its glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Plate {
+    None,
+    /// the idle film
+    Film,
+    /// the flat accent plate with its dark glyph
+    Accent,
+}
+
+/// What a [`TransportButton`] paints, decided once: the plate, whether that plate casts (focus's
+/// elevation, never a resting colour's) and whether the `ring` stroke stands outside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TransportLook {
+    plate: Plate,
+    cast: bool,
+    ring: bool,
+}
+
+pub struct TransportButton<'a> {
     pub frame: Rect,
     pub which: i32,
     /// Optional glyph for additional transport actions; the three original indices stay valid.
     pub icon: Option<crate::icons::Icon>,
+    /// A glyph from SVG source the app does not ship (a HUD package's asset); wins over `icon`.
+    pub svg: Option<crate::icons::Svg<'a>>,
     pub enabled: bool,
     pub focused: bool,
     /// WHICH GROUND this disc stands on — see [`ControlGround`]. It defaults to
@@ -4898,21 +4943,27 @@ pub struct TransportButton {
     /// The FOCUS POP, as a factor on the frame — see [`CircleButton::scale`], whose contract this
     /// shares (these discs are that same face at 64px).
     pub scale: f32,
+    pub rest: TransportRest,
+    pub focus: TransportFocus,
 }
-impl TransportButton {
+impl<'a> TransportButton<'a> {
     pub fn new(which: i32, frame: Rect) -> Self {
         Self {
             frame,
             which,
             icon: None,
+            svg: None,
             enabled: true,
             focused: false,
             ground: ControlGround::Keyed,
             palette: ControlPalette::default(),
             scale: 1.0,
+            rest: TransportRest::Film,
+            focus: TransportFocus::Accent,
         }
     }
     pub fn icon(mut self, icon: crate::icons::Icon) -> Self { self.icon = Some(icon); self }
+    pub fn svg(mut self, svg: crate::icons::Svg<'a>) -> Self { self.svg = Some(svg); self }
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
@@ -4936,17 +4987,41 @@ impl TransportButton {
         self.scale = s;
         self
     }
+    /// The face the disc wears at rest — [`TransportRest`].
+    pub fn rest_face(mut self, rest: TransportRest) -> Self {
+        self.rest = rest;
+        self
+    }
+    /// The face the remote's arrival gives it — [`TransportFocus`].
+    pub fn focus_face(mut self, focus: TransportFocus) -> Self {
+        self.focus = focus;
+        self
+    }
+    /// The one place the rest face, the focus face and the disabled rule meet. A disabled disc is
+    /// never focused, whatever order the builder ran in.
+    fn look(&self) -> TransportLook {
+        let focused = self.enabled && self.focused;
+        let accent = focused && self.focus == TransportFocus::Accent;
+        let plate = if accent || (self.rest == TransportRest::Solid) {
+            Plate::Accent
+        } else if self.rest == TransportRest::Bare {
+            Plate::None
+        } else {
+            Plate::Film
+        };
+        TransportLook { plate, cast: accent, ring: focused && self.focus == TransportFocus::Ring }
+    }
 }
-impl View for TransportButton {
+impl View for TransportButton<'_> {
     fn draw(&self, _e: &Env, p: Painter) {
         use crate::icons::Icon;
         let r = self.frame.scaled(self.scale);
         // The design system builds this disc AS a `CircleButton` at 64px, so it takes the shared
         // control face rather than spelling one of its own: the two used to be the same three
         // tokens written twice, which is how a ground (or a palette) reaches one and not the other.
-        // A disabled disc is never focused, however the builder was called.
-        let focused = self.enabled && self.focused;
-        let face = ControlStyle::Accent.face(focused, self.ground, self.palette);
+        // A disabled disc is never focused, however the builder was called ([`Self::look`]).
+        let look = self.look();
+        let face = ControlStyle::Accent.face(look.plate == Plate::Accent, self.ground, self.palette);
         let ink = if self.enabled { face.ink } else { theme::INK_DISABLED };
         // **The same edge every other control wears** — [`control_rim`], not a bare `rect`. This was
         // the one control family the rim missed: `Button` and `CircleButton` both took it and these
@@ -4961,25 +5036,28 @@ impl View for TransportButton {
         // in the picture. `ControlGround::Unkeyed` is the answer the HUD passes in, and it holds
         // because the HUD's own ramp is under the disc — the glyph's contrast comes from the ramp
         // plus the film, not from the plate alone.
-        if focused {
+        if look.cast {
             control_cast(p, r, r.w * 0.5);
         }
-        control_rim(
-            p,
-            r,
-            r.w * 0.5,
-            face.top,
-            face.body,
-            focused,
-            self.ground,
-        );
+        if look.plate != Plate::None {
+            control_rim(p, r, r.w * 0.5, face.top, face.body, look.plate == Plate::Accent, self.ground);
+        }
+        if look.ring {
+            let o = theme::CONTROL_FOCUS_RING_GAP + theme::CONTROL_FOCUS_RING_W * 0.5;
+            let ring = Rect::new(r.x - o, r.y - o, r.w + o * 2.0, r.h + o * 2.0);
+            p.rring(ring, ring.w * 0.5, theme::CONTROL_FOCUS_RING_W, theme::CONTROL_FOCUS_RING);
+        }
+        let s = (r.w * DISC_ICON_RATIO).round();
+        let ir = Rect::new(r.x + (r.w - s) * 0.5, r.y + (r.h - s) * 0.5, s, s);
+        if let Some(svg) = self.svg {
+            crate::icons::draw_svg(p, svg, ir, ink);
+            return;
+        }
         let id = self.icon.unwrap_or(match self.which {
             1 => Icon::Audio,
             2 => Icon::More,
             _ => Icon::Cc,
         });
-        let s = (r.w * DISC_ICON_RATIO).round();
-        let ir = Rect::new(r.x + (r.w - s) * 0.5, r.y + (r.h - s) * 0.5, s, s);
         crate::icons::draw(p, id, ir, ink);
     }
 }
@@ -9266,6 +9344,124 @@ fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_glyphs_ink() {
         still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", false, false, &m);
     });
     assert_eq!(bare.iter().find(|r| r.text == "S1 E2").unwrap().at.x, card.x + STILL_LINE_INSET);
+}
+
+#[cfg(test)]
+mod transport_faces_tests {
+    use super::*;
+    use crate::draw_census;
+
+    const R: Rect = Rect { x: 100.0, y: 100.0, w: 64.0, h: 64.0 };
+    /// `Painter::rring`'s command tag.
+    const RING_TAG: u64 = 3;
+    /// `Painter::face_rimmed`'s.
+    const PLATE_TAG: u64 = 10;
+    fn draw(b: TransportButton<'_>) -> Vec<(u64, Rect)> {
+        draw_census::capture(|| b.draw(&Env::inert(), Painter::recording()))
+    }
+
+    /// The default faces are the ones every caller had: `film` at rest, `accent` on focus. Naming
+    /// them changes no frame.
+    #[test]
+    fn the_default_faces_are_the_films_and_the_accent() {
+        for focused in [false, true] {
+            let plain = TransportButton::new(0, R).ground(ControlGround::Unkeyed).focused(focused);
+            let named = TransportButton::new(0, R)
+                .ground(ControlGround::Unkeyed)
+                .focused(focused)
+                .rest_face(TransportRest::Film)
+                .focus_face(TransportFocus::Accent);
+            assert_eq!(draw(plain), draw(named), "focused={focused}");
+        }
+    }
+
+    /// `bare`: a glyph and no plate. At rest the disc paints no plate and no rim, only the glyph.
+    #[test]
+    fn a_bare_disc_at_rest_paints_no_plate() {
+        let film = draw(TransportButton::new(0, R).ground(ControlGround::Unkeyed));
+        let bare = draw(
+            TransportButton::new(0, R).ground(ControlGround::Unkeyed).rest_face(TransportRest::Bare),
+        );
+        assert!(film.iter().any(|(t, _)| *t == PLATE_TAG), "the film paints a plate: {film:?}");
+        assert!(bare.is_empty(), "a bare disc paints none: {bare:?}");
+        let icons = draw_census::capture_icons(|| {
+            TransportButton::new(0, R)
+                .ground(ControlGround::Unkeyed)
+                .rest_face(TransportRest::Bare)
+                .icon(crate::icons::Icon::More)
+                .draw(&Env::inert(), Painter::recording())
+        });
+        assert_eq!(icons.len(), 1, "its glyph still draws");
+        assert_eq!(icons[0].0, crate::icons::Icon::More);
+    }
+
+    /// A bare disc given the REMOTE takes the focus face (`accent`): the plate arrives with the focus.
+    #[test]
+    fn a_bare_disc_takes_the_accent_plate_on_focus() {
+        let focused = TransportButton::new(0, R)
+            .ground(ControlGround::Unkeyed)
+            .rest_face(TransportRest::Bare)
+            .focused(true);
+        assert_eq!(focused.look().plate, Plate::Accent);
+        assert!(focused.look().cast, "the accent focus lifts");
+        let same = |b: TransportButton<'_>| draw(b);
+        assert_eq!(
+            same(focused),
+            same(TransportButton::new(0, R).ground(ControlGround::Unkeyed).focused(true)),
+            "the focused face does not depend on the rest face"
+        );
+    }
+
+    /// `solid`: the focused colours at rest, so the plate at rest IS the accent plate, without the
+    /// cast that focus adds.
+    #[test]
+    fn a_solid_disc_rests_in_the_focused_colours() {
+        let solid = TransportButton::new(0, R).ground(ControlGround::Unkeyed).rest_face(TransportRest::Solid);
+        assert_eq!(solid.look(), TransportLook { plate: Plate::Accent, cast: false, ring: false });
+        let tags = draw(solid);
+        assert!(tags.iter().any(|(t, _)| *t == PLATE_TAG));
+        assert!(!tags.iter().any(|(t, _)| *t == 4 || *t == 5), "a solid disc at rest casts nothing: {tags:?}");
+        assert_eq!(
+            TransportButton::new(0, R).look(),
+            TransportLook { plate: Plate::Film, cast: false, ring: false },
+            "the default is the film"
+        );
+    }
+
+    /// `ring`: the rest face stays and a ring stands outside it. Disabled discs never wear it.
+    #[test]
+    fn a_ring_focus_keeps_the_rest_face_and_adds_a_ring() {
+        let ring = |b: TransportButton<'static>| b.ground(ControlGround::Unkeyed).focus_face(TransportFocus::Ring);
+        let at_rest = draw(ring(TransportButton::new(0, R)));
+        let focused = draw(ring(TransportButton::new(0, R).focused(true)));
+        let rings = |v: &[(u64, Rect)]| v.iter().filter(|(t, _)| *t == RING_TAG).count();
+        assert_eq!(rings(&focused), rings(&at_rest) + 1, "exactly one ring arrives with the focus");
+        let l = ring(TransportButton::new(0, R).focused(true)).look();
+        assert_eq!(l, TransportLook { plate: Plate::Film, cast: false, ring: true }, "the rest plate stays, uncast");
+        let outer = focused.iter().rev().find(|(t, _)| *t == RING_TAG).unwrap().1;
+        assert!(outer.x < R.x && outer.y < R.y && outer.w > R.w, "the ring stands outside the disc: {outer:?}");
+        assert_eq!(
+            draw(ring(TransportButton::new(0, R).focused(true).enabled(false))),
+            draw(ring(TransportButton::new(0, R).enabled(false))),
+            "a disabled disc wears no ring"
+        );
+    }
+
+    /// A package glyph draws through the same disc: the glyph box is the shared DISC_ICON_RATIO one.
+    #[test]
+    fn a_package_glyph_draws_in_the_discs_glyph_box() {
+        let svg = crate::icons::Svg::new("<svg viewBox='0 0 24 24'><path d='M3 4h18v12H3z'/></svg>");
+        let seen = draw_census::capture_svgs(|| {
+            TransportButton::new(0, R).svg(svg).draw(&Env::inert(), Painter::recording())
+        });
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, svg.key);
+        let builtin = draw_census::capture_icons(|| {
+            TransportButton::new(0, R).icon(crate::icons::Icon::More).draw(&Env::inert(), Painter::recording())
+        });
+        assert_eq!(seen[0].1, builtin[0].1, "the same box a built-in glyph has");
+        assert_ne!(crate::icons::Svg::new("<svg/>").key, svg.key, "the key follows the source");
+    }
 }
 
 #[cfg(test)]
