@@ -20,6 +20,7 @@
 //!
 //! What stays here is the caption drawing (`draw_subtitle_message`, `draw_subtitle_bitmap`), which
 //! composites over the video plane and belongs to no layout, and `overscan_rects`.
+#![allow(dead_code)]
 pub mod classic;
 pub mod command;
 pub mod geometry;

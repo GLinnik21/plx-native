@@ -39,7 +39,7 @@ Its main files are:
 | `screens/src/player/seek_jump.rs` | FF/REW tap policy and optional D-pad jumps |
 | `appkit/src/player_hud/seek_jump.rs` | Short-burst requested-target accumulation |
 | `appkit/src/player_hud/state.rs` | One default disc row and its availability |
-| `appkit/src/player_hud/classic.rs` | The row's icons and shared HStack geometry |
+| `appkit/src/player_hud/classic.rs` | The baseline row's shared HStack geometry (width and band); `render.rs` draws the row and its icons from the compiled `builtin:classic` |
 | `media/src/route/queue_navigation.rs` | Queue neighbors, continuation and five-second rule |
 | `plex/src/plex/session/playback_options.rs` | Independent preference types and defaults |
 | `plex/src/plex/queue_window.rs` | Read the existing PlayQueue around a target item |
