@@ -431,7 +431,10 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
     // the same lift with the row's gap opened to 440: Subtitles' anchor then runs from x 752 to CTRL_RIGHT, so
     // the Start side (628 px of room) and the End side (none) both fail to hold the 650-wide panel, and the
     // Above side's 580 px cuts it. Audio and More still open on the Start side, so their panels no longer hang
-    // from the edge Subtitles' cut one does (M4): the two `also`
+    // from the edge Subtitles' cut one does (M4): the first two `also`. The same edit is seen by two other checks,
+    // which is correct (found when the packages were woven): the wide row leaves the title column too narrow for
+    // the kicker's "S11, E111 · " (I10, HUD-E0601), and Up Next, which replaces the row, takes the wide gap with it
+    // and its still leaves SAFE (I5, HUD-E1102): the last two `also`
     InvalidCase {
         name: "classic lifted with a wide row: no side holds the Subtitles menu",
         code: "HUD-E1302",
@@ -443,6 +446,8 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         also: &[
             ("HUD-E1303", "/layout/block/0/cells/1/segment/items/3"),
             ("HUD-E1303", "/layout/block/0/cells/1/segment/items/4"),
+            ("HUD-E0601", "/layout/block/0/cells/0/vstack/cells/0/text"),
+            ("HUD-E1102", "/layout/up_next"),
         ],
     },
 ];
