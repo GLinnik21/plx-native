@@ -77,6 +77,12 @@ impl Controls {
         match i { BTN_PREVIOUS => Some(Action::Previous), BTN_NEXT => Some(Action::Next),
             BTN_SUBTITLES => Some(Action::Subtitles), BTN_AUDIO => Some(Action::Audio), BTN_MORE => Some(Action::More), _ => None }
     }
+    /// What a press of control `i` asks the app to do: its entry of [`super::command::CLASSIC_COMMANDS`],
+    /// `None` for a control that is absent or disabled (it has no stop to press).
+    pub fn command(self, i: i32) -> Option<super::command::HudCommand> {
+        if !self.enabled(i) { return None; }
+        super::command::CLASSIC_COMMANDS.get(usize::try_from(i).ok()?).copied()
+    }
     pub fn icon(self, i: i32) -> plx_ui::icons::Icon {
         use plx_ui::icons::Icon;
         match i { BTN_PREVIOUS if self.restart => Icon::Restart, BTN_PREVIOUS => Icon::Previous,
@@ -125,6 +131,12 @@ impl ControlSlot {
     }
     pub fn enabled(self, idx: i32) -> bool {
         match self { Self::Discs(controls) => controls.enabled(idx), _ => (0..self.items()).contains(&idx) }
+    }
+    /// The command a press of item `idx` performs, when the row holds the discs. A stand-in's
+    /// items (the Skip pill, the Up Next pair) are app-owned and carry no [`HudCommand`](super::command::HudCommand): what
+    /// they do depends on the segment they offer.
+    pub fn command(self, idx: i32) -> Option<super::command::HudCommand> {
+        match self { Self::Discs(controls) => controls.command(idx), _ => None }
     }
     /// whether the Subtitles/Audio discs are the current occupant
     pub fn is_discs(self) -> bool {
@@ -577,12 +589,27 @@ impl FailureReadout {
 pub const ELEM_SCRUB: u32 = 0;
 /// `+ 0..items()` for whatever occupies the row — the discs, the Skip pill, or both Up Next
 /// buttons, each at its own rect ([`ControlSlot::item_rect`]).
-pub const ELEM_ROW_BASE: u32 = 10;
+///
+/// **A control's element is `ELEM_CONTROL_BASE + ordinal`, in an open-ended range**: the ordinal
+/// is the control's place in its layout (classic's five discs are 0..5), and there is no upper
+/// bound short of [`ELEM_CHAPTER_BASE`]. The base sits above every other fixed element (the tabs
+/// at 20, the failure row at 30, the repair card at 40 000 in `screens::player`), so the range
+/// can grow without meeting one of them. `hud.nav.btn` holds the ordinal; [`control_elem`] and
+/// [`row_index`] are the two directions of the mapping.
+pub const ELEM_CONTROL_BASE: u32 = 0x1_0000;
+/// The first element of the chapter strip's own range, at the top of `u32` (the strip's cards
+/// are addressed `ELEM_CHAPTER_BASE + index`, a later change of this plan). Reserved here so the
+/// open-ended control range ends before it and the two can never collide.
+pub const ELEM_CHAPTER_BASE: u32 = 0xFFFF_0000;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub const ELEM_TAB_BASE: u32 = 20;
+/// The element of the control with this ordinal.
+pub const fn control_elem(ordinal: i32) -> u32 {
+    ELEM_CONTROL_BASE + ordinal as u32
+}
 /// The control-row item index an element addresses, `None` for any element off the row.
 pub fn row_index(elem: u32) -> Option<i32> {
-    (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&elem).then(|| (elem - ELEM_ROW_BASE) as i32)
+    (ELEM_CONTROL_BASE..ELEM_CHAPTER_BASE).contains(&elem).then(|| (elem - ELEM_CONTROL_BASE) as i32)
 }
 /// `+ 0..actions().len()` — the failure read-out's row, one element per
 /// [`plx_media::player::FailureAction`] in [`FailureReadout::actions`] order: the only controls a

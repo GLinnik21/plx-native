@@ -507,7 +507,7 @@ Each maps to an action the app already performs; the performer is shared with th
 | `seek` | `by`: a nonzero integer of seconds, whose sign is the direction (then `dir` is forbidden), or `"setting"`, which requires `dir`: `back` or `forward` | `commit_jump`'s `SeekBurst` and `CommitSeek`, extracted with the signed step in ns as a parameter (today `signed_step(forward)` = `scrub_step_ns() x +-1`, `seek_jump.rs:16-18`; a literal `by` passes `by x 10^9`) and a keep-HUD flag (today `self.hud.hide(false)`, `:43`): a control press keeps the HUD up and extends its linger, the hidden-HUD tap still hides it (F14) | duration known (`seek_jump.rs:39-40`) | Left/Right, FF/REW, hold |
 | `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous || restart` (a restart target counts), Next by `next` (F6) | none |
 | `open_tracks` | `tab`: `subtitles`, `audio` | `OverlayKind::Tracks { tab: 1 | 0 }` (F15) | always (F6) | none |
-| `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More`; `quality` is today's `More { quality: true }` (F18); `speed` extends that address in place to a `MorePage` (F16) | always | none |
+| `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More { page }`; `quality` is what was `More { quality: true }` (F18); `speed` is the address PR3 added by turning that bool into `page: Option<MorePage>` (F16) | always | none |
 | `toggle_section` | `section`: `chapters`, `info` | opens or closes the section (D6) | chapters: the playing item has chapters (`chapters_panel::has_chapters`) | none |
 | `from_beginning` | - | `InfoAction::FromBeginning` (F17) | always | none |
 | `go_to_detail` | - | `InfoAction::GoToDetail(rk)`: leaves playback, opens the item's page (F17) | the playing item has a ratingKey | none |
@@ -779,7 +779,7 @@ opener, through ONE shared placer.
   The anchor is latched when the menu opens: a stand-in that takes the row while the menu is up, or a
   language change, does not move an open panel. A menu opened by something that is not a HUD control has
   no HUD anchor, and takes the root state's `open_more` rest rect as its anchor: the failure read-out's
-  `More { quality: true }` (F18) therefore opens where classic opens it today, `CTRL_RIGHT - pw`, bottom 764, and a
+  `More { page: Some(Quality) }` (F18, formerly `More { quality: true }`) therefore opens where classic opens it today, `CTRL_RIGHT - pw`, bottom 764, and a
   headless trigger is the same `Opener::NONE` case (`popover.rs:321`).
 - The gap. `theme::layout::PLAYER_MENU_GAP = 28.0`, named (it is 792 - 764 today, F20, and `PANEL_GAP` is
   24), replaces `PLAYER_MENU_BOTTOM`; classic's bottom edge stays 764.

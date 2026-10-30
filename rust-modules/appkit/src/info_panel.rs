@@ -47,6 +47,17 @@ pub struct InfoPanelState {
     ctl_pop: plx_ui::widgets::CtlPop<2>,
 }
 
+/// The ratingKey of the page the playing item belongs to: the show for an episode, the movie
+/// itself otherwise. What the Info card's second action opens, and what the `go_to_detail`
+/// command opens and is enabled by. `None` when nothing playing has one.
+pub fn detail_rk<'a>(meta: metadata::MetadataView<'a>) -> Option<&'a str> {
+    meta.now_playing()
+        .map(|n| n.detail_rk.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| meta.current().map(|d| d.rk.as_str()))
+        .filter(|s| !s.is_empty())
+}
+
 impl InfoPanelState {
     pub fn new() -> Self {
         InfoPanelState {
@@ -84,17 +95,7 @@ impl InfoPanelState {
             return InfoAction::FromBeginning;
         }
         // second action opens the show (episode) or the movie
-        let rk = meta
-            .now_playing()
-            .map(|n| n.detail_rk.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| meta.current().map(|d| d.rk.clone()))
-            .unwrap_or_default();
-        if rk.is_empty() {
-            InfoAction::None
-        } else {
-            InfoAction::GoToDetail(rk)
-        }
+        detail_rk(meta).map_or(InfoAction::None, |rk| InfoAction::GoToDetail(rk.to_owned()))
     }
 
     /// **Which action button `focus` is on, if it is in the column at all** — asked by

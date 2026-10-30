@@ -36,13 +36,31 @@ impl PlayerScreen {
 
     fn commit_jump<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
         forward: bool, now: u32, fx: &mut Effects<'_, H>) {
+        if let Some(target) = self.jump_by(ps, signed_step(forward), false, now) {
+            Self::ask(fx, PlayerReq::CommitSeek(target));
+        }
+    }
+
+    /// **One relative jump of `step_ns` from where the viewer is**, the target to commit
+    /// ([`PlayerReq::CommitSeek`], or `commit_seek` in the app's performer). `None` when the
+    /// duration is not known: a jump has nothing to clamp against.
+    ///
+    /// `keep_hud` is the one difference between the two callers. A jump KEY on a hidden transport
+    /// is a tap that dismisses it again (`hide`), and a seek CONTROL pressed on a visible one keeps
+    /// it up and extends its linger. Both share the burst: presses inside
+    /// [`BURST_GAP_MS`](plx_appkit::player_hud::seek_jump::BURST_GAP_MS) accumulate into one target, so keyframe rounding never eats the requested travel.
+    pub fn jump_by(&mut self, ps: &plx_media::route::PlaybackSession, step_ns: i64, keep_hud: bool, now: u32) -> Option<i64> {
         let duration = plx_media::player::duration_ns();
-        if duration <= 0 { return; }
-        let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), signed_step(forward), duration);
+        if duration <= 0 { return None; }
+        let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), step_ns, duration);
         self.scrub.cancel();
-        self.hud.hide(false);
-        Self::ask(fx, PlayerReq::CommitSeek(target));
+        if keep_hud {
+            self.hud.extend(now, input::HUD_LINGER_MS);
+        } else {
+            self.hud.hide(false);
+        }
         self.publish();
+        Some(target)
     }
 
     pub(super) fn jump_key<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
@@ -275,12 +293,12 @@ mod tests {
             let mut engine = FocusEngine::new();
             let start = <PlayerScreen as Focusable<TestHost>>::seat(&page, GROUP_ROW,
                 Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None }, &cx);
-            assert_eq!(start.elem, player_hud::ELEM_ROW_BASE + primary as u32);
+            assert_eq!(start.elem, player_hud::ELEM_CONTROL_BASE + primary as u32);
             engine.set(cx.owner, start, Some(GROUP_ROW), By::Restore);
             for (dir, expected) in [(Dir::Right, right), (Dir::Left, left)] {
                 let outcome = engine.move_dir(cx.owner, &page, &[], dir, &cx);
                 let Outcome::Moved { from, to, by } = outcome else { panic!("{outcome:?}") };
-                assert_eq!(to.elem, player_hud::ELEM_ROW_BASE + expected as u32);
+                assert_eq!(to.elem, player_hud::ELEM_CONTROL_BASE + expected as u32);
                 let mut out = Vec::new();
                 let mut present = plx_machine::present::Present::new();
                 page.step(&ScreenEvent::FocusMoved { from, to, by }, &cx,
@@ -289,7 +307,7 @@ mod tests {
             }
             for i in 0..page.slot.items() {
                 assert_eq!(<PlayerScreen as Focusable<TestHost>>::place(&page,
-                    &(player_hud::ELEM_ROW_BASE + i as u32), &cx, At::Drawn).is_some(), controls.enabled(i));
+                    &(player_hud::ELEM_CONTROL_BASE + i as u32), &cx, At::Drawn).is_some(), controls.enabled(i));
             }
         }
     }
@@ -477,5 +495,90 @@ mod tests {
             assert!(key(&mut page, sym, Edge::Up, 1_080).is_empty());
             assert!(!page.scrub.is_live());
         }
+    }
+
+    #[test]
+    fn a_seek_control_press_keeps_the_hud_up_where_a_hidden_tap_takes_it_down() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut page = PlayerScreen::new(EntryId(9));
+        assert_eq!(page.jump_by(&ps, 10_000_000_000, true, 1_000), Some(50_000_000_000));
+        assert!(!page.hud.dismissed, "a control pressed on a visible transport does not hide it");
+        assert!(page.hud.until > 1_000, "and extends its linger");
+        let mut page = PlayerScreen::new(EntryId(9));
+        assert_eq!(page.jump_by(&ps, 10_000_000_000, false, 1_000), Some(50_000_000_000));
+        assert!(page.hud.dismissed, "a jump key on a hidden transport dismisses it again");
+        assert_eq!(page.hud.until, 0);
+    }
+
+    #[test]
+    fn seek_control_presses_and_jump_keys_share_one_burst() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut page = PlayerScreen::new(EntryId(9));
+        let step = 10_000_000_000;
+        assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
+        assert_eq!(page.jump_by(&ps, step, true, 1_300), Some(60_000_000_000), "a second press inside the gap accumulates");
+        assert_eq!(page.jump_by(&ps, -step, false, 1_500), Some(50_000_000_000), "a key joins the same burst");
+        assert_eq!(page.jump_by(&ps, step, true, 9_000), Some(50_000_000_000), "a press after the gap restarts from the playhead");
+    }
+
+    #[test]
+    fn a_jump_with_no_known_duration_has_no_target() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        plx_media::player::SHARED.duration_ns.store(0, Relaxed);
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut page = PlayerScreen::new(EntryId(9));
+        assert_eq!(page.jump_by(&ps, 10_000_000_000, true, 1_000), None);
+        assert!(page.hud.until == 0, "nothing to clamp against: the HUD is left alone");
+    }
+
+    /// **OK on a seek control continues the burst through `handle_key`**: the guard that keeps the
+    /// burst alive is in the key path, so two OK key-downs on a seek control inside the gap, each
+    /// followed by the performer's `jump_by` (what `PressCommit` leads to), give ONE accumulated
+    /// target, and an OK on any other control restarts it. No slot holds a seek control yet, so the
+    /// control's command is handed to `handle_key` as the page resolves it.
+    #[test]
+    fn two_ok_presses_on_a_seek_control_inside_one_burst_give_one_target() {
+        use player_hud::command::{HudCommand, SeekBy, SeekDir};
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let step = 10_000_000_000;
+        let seek = Some(HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)));
+        let ok_down = |page: &mut PlayerScreen, command: Option<HudCommand>, now: u32| {
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            page.hud.visible_at_press = true;
+            page.handle_key::<TestHost>(
+                &ps,
+                consts::Key::Ok,
+                Edge::Down,
+                false,
+                now,
+                Some(player_hud::control_elem(player_hud::BTN_MORE)),
+                command,
+                &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present),
+                plx_data::stores::metadata::MetadataStore::default().view(),
+            )
+        };
+        let mut page = PlayerScreen::new(EntryId(9));
+        ok_down(&mut page, seek, 1_000);
+        assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
+        ok_down(&mut page, seek, 1_300);
+        assert_eq!(page.jump_by(&ps, step, true, 1_300), Some(60_000_000_000), "the second press accumulates");
+
+        let mut page = PlayerScreen::new(EntryId(9));
+        ok_down(&mut page, seek, 1_000);
+        assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
+        ok_down(&mut page, Some(HudCommand::Next), 1_300);
+        assert_eq!(
+            page.jump_by(&ps, step, true, 1_300),
+            Some(50_000_000_000),
+            "an OK on another control ends the gesture, so the next jump starts from the playhead"
+        );
     }
 }
