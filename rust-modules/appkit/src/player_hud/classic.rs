@@ -295,11 +295,21 @@ pub fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn plx_machine::mac
 
 /// The bottom tab pills' labels: Info always, Chapters only when the item has any; `None` is a
 /// tab the row does not carry.
-fn tab_labels(has_chapters: bool) -> [Option<&'static str>; HUD_TABS] {
+pub(super) fn tab_labels(has_chapters: bool) -> [Option<&'static str>; HUD_TABS] {
     [
         Some(plx_platform::i18n::msg::widgets_player_info()),
         has_chapters.then(plx_platform::i18n::msg::widgets_player_chapters),
     ]
+}
+
+/// The tab a `toggle_section`'s section is: the index into [`tab_labels`], the tab cursor and the tab
+/// elements. `None` for a section the HUD has no tab for.
+pub(super) fn tab_of_section(section: &str) -> Option<i32> {
+    match section {
+        "info" => Some(0),
+        "chapters" => Some(1),
+        _ => None,
+    }
 }
 
 /// The tabs' top: BTN_S tall, centred between the play bar (scrubber, at `SB_Y`) and the bottom edge.
@@ -605,7 +615,7 @@ pub struct Playbar {
 impl Playbar {
     /// The player route's bar: the live scrub preview and seek target over the published
     /// playhead, the knob from the HUD's own focus ring, and the four-state read-out.
-    fn live(
+    pub(super) fn live(
         model: &HudModel,
         busy: Busy,
         focus: GroupId,
@@ -1013,7 +1023,7 @@ fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
 /// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
 /// at the knob's position, floated above the knob; after it, the same still fading out. Draws
 /// nothing for a part with no BIF index, and nothing until the first still lands.
-fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
+pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
     use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, still_path, Look, REQ_H, REQ_W};
     let part = plx_media::route::cur_part_id(ps);
     let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw();

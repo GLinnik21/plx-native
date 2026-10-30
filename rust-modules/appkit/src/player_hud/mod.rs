@@ -14,6 +14,8 @@
 //! | [`geometry`] | the focus GROUPS ([`geometry::GROUP_SCRUB`] ..), [`geometry::HudGeometry`] and [`geometry::RowAnchor`]: what a layout reports back to focus, the pointer, the overscan audit and the stand-ins |
 //! | [`command`] | [`command::HudCommand`], the closed vocabulary of things a control asks the app to do, with its app-owned enabled predicates, and classic's five discs as controls |
 //! | [`classic`] | the classic layout: its constants, hit rects, and every draw of the transport (scrim, title, playbar, control row, tabs, the failure read-out) |
+//! | [`loaded`] | a package parsed and compiled once, outside the frame ([`loaded::LoadedHud`]), and the production [`AppLabels`](crate::hud_format::compile::AppLabels) constructor over a passed-in locale |
+//! | [`render`] | the renderer: it draws a [`Compiled`](crate::hud_format::compile::Compiled) package's state through the shared widgets, `builtin:classic` identically to [`classic`]'s hand-written draw |
 //! | [`seek_jump`] | the long-seek jump chord |
 //!
 //! What stays here is the caption drawing (`draw_subtitle_message`, `draw_subtitle_bitmap`), which
@@ -25,6 +27,7 @@ pub mod geometry;
 pub mod loaded;
 pub mod model;
 pub mod motion;
+pub mod render;
 pub mod seek_jump;
 pub mod state;
 use plx_gfx::gfx::{delete_tex, upload_rgba};
