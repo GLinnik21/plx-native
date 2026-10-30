@@ -527,7 +527,7 @@ pub(crate) fn libswitch_armed() -> bool {
 pub(crate) fn searchosc_armed() -> bool {
     plx_base::devtrig::flag("searchosc")
 }
-/// `/tmp/plxnative-settings=<root|home|privacy|legal|playback|picker-quality|…>`.
+/// `/tmp/plxnative-settings=<root|home|privacy|legal|playback|seerr|picker-quality|…>`.
 pub(crate) fn settings_boot_value() -> Option<String> {
     plx_base::devtrig::read("settings")
 }
@@ -1247,6 +1247,7 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
                 "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
                 "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
+                "seerr" => plx_screens::family::SettingsPage::Seerr,
                 _other => {
                     #[cfg(feature = "devtriggers")]
                     plx_base::eventlog::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));
@@ -2292,7 +2293,7 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
             }
             AppArg::Library => {
                 let origin = crate::app::chrome::pill_at(
-                    app.bridge.browse_directory(), 1);
+                    app.bridge.strip_source(), 1);
                 crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge,
                     HomeTab::Home, Some(origin), None);
             }
@@ -2532,7 +2533,7 @@ fn push_bench_close(app: &mut App, opened: bench::PushTarget) {
             crate::app::bridge::nav_pop(&mut app.pages);
         }
         bench::PushTarget::Library => {
-            let origin = crate::app::chrome::pill_at(app.bridge.browse_directory(), 1);
+            let origin = crate::app::chrome::pill_at(app.bridge.strip_source(), 1);
             crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, Some(origin), None);
         }
     }

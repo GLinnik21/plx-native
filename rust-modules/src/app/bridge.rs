@@ -86,12 +86,12 @@ fn is_first_run_consent(a: &AppArg) -> bool {
 fn refresh_chrome(
     chrome: &mut super::chrome::ChromeSnapshot,
     measure: &dyn Measure,
-    directory: plx_data::stores::browse::DirectoryView<'_>,
+    source: super::chrome::StripSource<'_>,
     captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>,
 ) {
     match captured {
-        Some(captured) => chrome.refresh_with_profile(measure, directory, Some(captured)),
-        None => chrome.refresh(measure, directory),
+        Some(captured) => chrome.refresh_with_profile(measure, source, Some(captured)),
+        None => chrome.refresh(measure, source),
     }
 }
 
@@ -122,6 +122,9 @@ pub(crate) struct AppViews<'a> {
     /// every context that is not a page's own. What a page that names where BACK goes reads
     /// ([`super::page_title`]).
     pub(crate) beneath: Option<plx_machine::machine::ScreenId>,
+    /// The household's Seerr store, read-only (`plx_data::stores::seerr`): the Settings family reads its
+    /// connection, the request surfaces its answers. A screen changes it only through an effect.
+    pub(crate) seerr: &'a plx_data::stores::seerr::SeerrStore,
 }
 
 impl Bridge {
@@ -137,7 +140,7 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None, seerr: &self.stores.seerr }
     }
 }
 
@@ -241,12 +244,14 @@ impl plx_screens::registry::PlayerLike for AppHost {
 
 impl plx_screens::registry::SearchLike for AppHost {
     fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a> { cx.views.search }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> { Some(cx.views.seerr) }
 }
 
 impl plx_screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> { Some(cx.views.seerr) }
     fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
         super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
     }
@@ -261,6 +266,7 @@ impl plx_screens::registry::MetadataLike for AppHost {
     fn subtitle_search<'a>(cx: &Cx<'a, Self>) -> Option<plx_data::subsearch::SubSearchView<'a>> {
         Some(cx.views.subtitle_search)
     }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> { Some(cx.views.seerr) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1013,16 +1019,17 @@ impl Bridge {
             d.nav.tabs.strip_fallback = Some(match route {
                 AppArg::Search => plx_ui::widgets::TAB_KEY_SEARCH,
                 AppArg::Watchlist => plx_ui::widgets::TAB_KEY_WATCHLIST,
+                AppArg::Seerr => plx_ui::widgets::TAB_KEY_SEERR,
                 _ => plx_screens::home::STRIP_HOME_ELEM,
             });
+            let source = super::chrome::StripSource { directory: self.directory.view(), seerr: self.stores.seerr.configured() };
             if let Some(io) = &self.home_io {
-                refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
-                    Some((&io.profile, &io.preferences)));
+                refresh_chrome(&mut self.chrome, &self.measure, source, Some((&io.profile, &io.preferences)));
             } else {
-                refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(), None);
+                refresh_chrome(&mut self.chrome, &self.measure, source, None);
             }
             // The page's own pill: Home's is the first, and a library page's is its library's type.
-            self.chrome_selection = pill_of_arg(route, self.directory.view()).unwrap_or(0) as u32;
+            self.chrome_selection = pill_of_arg(route, source).unwrap_or(0) as u32;
             let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
             self.publish_strip(d, selected);
         } else {
@@ -1350,6 +1357,82 @@ impl Bridge {
         self.stores.catalog.reset();
     }
 
+    /// The Seerr store's frame pass, once a frame and route-unconditional: hand it the stored
+    /// address (a new one forgets the old server's answers), take its landings (a refused call asked
+    /// again, a landing for a switched profile dropped), sign the seated profile in once when an
+    /// address is set, and start every job those emitted, in this call. `session::peek` is a read of
+    /// memory, and the identity is read only when a sign-in is owed.
+    pub(crate) fn seerr_pump(&mut self) {
+        let address = plx_plex::plex::session::peek().prefs.seerr_address.clone();
+        self.stores.seerr.set_address(&address);
+        self.stores.seerr.set_account(Self::seerr_account(&address));
+        let profile = Self::seated_profile();
+        let mut changed = self.stores.seerr.pump(&profile);
+        if let Some(session) = self.stores.seerr.take_session_to_keep() {
+            super::preferences::keep_seerr_session(session);
+        }
+        if self.stores.seerr.needs_connect(&profile) {
+            self.stores.seerr.connect(&Self::watchlist_input());
+            changed = true;
+        }
+        // The Search page's Request row follows the query the Search store holds: a real term is
+        // asked once it has settled, anything else forgets the row.
+        if self.stores.seerr.configured() {
+            use plx_data::stores::seerr::Slot;
+            let query = self.search.view().query();
+            match plx_data::search::terms(query) {
+                Some(term) => self.stores.seerr.want(Slot::Search,
+                    plx_data::seerr::SeerrOp::Search { query: term.to_string(), page: 1 }),
+                None => self.stores.seerr.unwant(&Slot::Search),
+            }
+            if let Some((slot, op)) = self.stores.seerr.take_due() {
+                self.stores.seerr.ask(slot, op, &Self::watchlist_input());
+                changed = true;
+            }
+        }
+        self.start_store_jobs_of(StoreId::Seerr);
+        if changed {
+            plx_machine::idle::invalidate();
+        }
+    }
+
+    /// How the seated profile signs in to Seerr at `address`, from its stored record: a Seerr account
+    /// (with its kept session when that was signed in at this address), else its Plex account.
+    fn seerr_account(address: &str) -> plx_data::stores::seerr::SeerrAccount {
+        use plx_data::stores::seerr::SeerrAccount;
+        let user = plx_plex::plex::session::current_profile_key();
+        let current = plx_plex::plex::session::peek();
+        match current.prefs.seerr_sign_ins.iter().find(|s| s.user == user) {
+            Some(mine) => SeerrAccount::Account {
+                email: mine.email.clone(),
+                kept: (!mine.cookie.is_empty() && mine.address == address)
+                    .then(|| plx_plex::plex::seerr::SeerrSession::from_cookie(&mine.cookie)),
+            },
+            None => SeerrAccount::Plex,
+        }
+    }
+
+    /// Settings > Services > Seerr's Sign in for a Seerr account: the password goes to the store's
+    /// one sign-in job, started in this call.
+    pub(crate) fn seerr_sign_in(&mut self, email: &str, password: &str) {
+        self.stores.seerr.sign_in_account(email.trim(), password, &Self::watchlist_input());
+        self.start_store_jobs_of(StoreId::Seerr);
+    }
+
+    /// A screen's ask of the Seerr store (`StoreCmd::Seerr`), as the seated profile; the call it
+    /// emitted is started in this call.
+    pub(crate) fn seerr_run(&mut self, cmd: plx_data::stores::seerr::SeerrCmd) {
+        self.stores.seerr.run(cmd, &Self::watchlist_input());
+        self.start_store_jobs_of(StoreId::Seerr);
+    }
+
+    /// Settings > Services > Seerr's Connect: sign the seated profile in afresh at the stored
+    /// address, the call started in this call.
+    pub(crate) fn seerr_connect(&mut self) {
+        self.stores.seerr.connect(&Self::watchlist_input());
+        self.start_store_jobs_of(StoreId::Seerr);
+    }
+
     /// Run one subtitle-search command. A command decides from the model alone (the request is the
     /// pump's, which is where the registry's answer is read), so it emits no job; the drain stays
     /// so that a command which one day does is started in the call that ran it.
@@ -1446,7 +1529,7 @@ impl Bridge {
         }
         self.late_store_jobs += late;
         plx_base::eventlog::log(&format!(
-            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)",
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / seerr_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)",
             self.late_store_jobs
         ));
     }
@@ -1491,7 +1574,7 @@ impl Bridge {
 
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
     /// matter: a job still on an outbox is a sender that neither went through its store's Bridge
-    /// method ([`Bridge::metadata_run`], [`Bridge::person_pump`], [`Bridge::collection_pump`], [`Bridge::catalog_open`], [`Bridge::catalog_pump`], [`Bridge::subsearch_pump`], [`Bridge::search_run`], [`Bridge::search_pump`], [`Bridge::reconcile_pump`], [`Bridge::browse_run`], [`Bridge::browse_discover_pump`], [`Bridge::hubs_run`], [`Bridge::viewstate_run`], [`Bridge::viewstate_pump`], [`Bridge::notify_pump`]) nor drained with
+    /// method ([`Bridge::metadata_run`], [`Bridge::person_pump`], [`Bridge::collection_pump`], [`Bridge::catalog_open`], [`Bridge::catalog_pump`], [`Bridge::seerr_pump`], [`Bridge::subsearch_pump`], [`Bridge::search_run`], [`Bridge::search_pump`], [`Bridge::reconcile_pump`], [`Bridge::browse_run`], [`Bridge::browse_discover_pump`], [`Bridge::hubs_run`], [`Bridge::viewstate_run`], [`Bridge::viewstate_pump`], [`Bridge::notify_pump`]) nor drained with
     /// [`Bridge::start_store_jobs`] (the detail pump's
     /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
     /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
@@ -1499,9 +1582,9 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
         assert!(!self.stores.has_jobs(),
-            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
+            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / seerr_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
         assert_eq!(self.late_store_jobs, 0,
-            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)");
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / seerr_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -1749,6 +1832,12 @@ impl Bridge {
 
     pub(crate) fn browse_directory(&self) -> plx_data::stores::browse::DirectoryView<'_> {
         self.directory.view()
+    }
+
+    /// What the strip's destinations are read from: the directory, and whether a Seerr address is
+    /// set (the Seerr pill, docs/seerr.md).
+    pub(crate) fn strip_source(&self) -> super::chrome::StripSource<'_> {
+        super::chrome::StripSource { directory: self.directory.view(), seerr: self.stores.seerr.configured() }
     }
 
     /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
@@ -2055,7 +2144,7 @@ impl Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None, seerr: &self.stores.seerr,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -2131,6 +2220,10 @@ impl Bridge {
             }
             AppMsg::Store(StoreCmd::SubtitleSearch(command)) => {
                 self.subsearch_run(command.clone());
+                return Handled::Yes;
+            }
+            AppMsg::Store(StoreCmd::Seerr(command)) => {
+                self.seerr_run(command.clone());
                 return Handled::Yes;
             }
             AppMsg::Store(StoreCmd::ViewState(command)) => {
@@ -2253,7 +2346,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None, seerr: &self.stores.seerr,
             },
             measure: &self.measure,
         }
@@ -2340,7 +2433,13 @@ impl Bridge {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
-            AppFx::Preferences(command) => super::preferences::execute(command),
+            // Signing in to Seerr steps the Seerr store, which this Bridge owns; every other
+            // preference is the executor's.
+            AppFx::Preferences(command) => match command {
+                plx_screens::registry::PreferenceCmd::SeerrConnect => self.seerr_connect(),
+                plx_screens::registry::PreferenceCmd::SeerrSignIn { email, password } => self.seerr_sign_in(&email, &password),
+                command => super::preferences::execute(command),
+            },
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
@@ -2489,6 +2588,7 @@ fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHo
         StoreCmd::Collection(_) => unreachable!("Collection is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
         StoreCmd::SubtitleSearch(_) => unreachable!("SubtitleSearch is stepped by Bridge's owned store"),
+        StoreCmd::Seerr(_) => unreachable!("Seerr is stepped by Bridge's owned store"),
     }
 }
 
@@ -2662,6 +2762,9 @@ fn frame_ingest(
     // landing began from the old ones (a snap, then a jump back).
     rig.watchlist_pump();
     rig.watchlist_feed(d);
+    // The household's Seerr: its answers land ahead of the tick too, and a seated profile with an
+    // address set is signed in here, whatever page is up.
+    rig.seerr_pump();
     // Library used to be the only route that pumped Browse. Onboard schedules the roster-only
     // owner work from its Tick, but Tick runs after views are captured; land the roster first so
     // a discovery result and the directory publication are observed in one frame. Controlled
@@ -2742,7 +2845,7 @@ fn frame_ingest(
     // settled test, the navblur prototype). One writer, immediately after the container's own
     // frame, from the container's own transition — see `ui::nav`'s module doc.
     let tab = d.nav.tabs.stack.pending_dest()
-        .and_then(|arg| pill_of_arg(arg, rig.directory.view()));
+        .and_then(|arg| pill_of_arg(arg, rig.strip_source()));
     plx_ui::nav::publish(d.nav.tabs.stack.page_alpha(), d.nav.tabs.stack.chrome_alpha(), tab);
     // **The heartbeat's `route=` word IS the top page's own name** (§15.2). It used to be
     // `route_word(app.route)` with this line asserting the two agreed every frame; there is one
@@ -3597,17 +3700,19 @@ pub(crate) fn wears_tab_bar(arg: &AppArg) -> bool {
 /// The Library's pill is its TYPE, and the argument carries none (which library the grid shows is
 /// the `browse` store's business): the answer is the section the store is pointing at, which
 /// `nav_tab`'s `LibraryCmd::Enter` has already aimed.
-fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<'_>) -> Option<usize> {
+fn pill_of_arg(arg: &AppArg, source: crate::app::chrome::StripSource<'_>) -> Option<usize> {
     use crate::app::chrome::{pill_of, Pill};
+    let directory = source.directory;
     match arg {
-        AppArg::Home => pill_of(directory, Pill::Home),
-        AppArg::Search => pill_of(directory, Pill::Search),
-        AppArg::Watchlist => pill_of(directory, Pill::Watchlist),
+        AppArg::Home => pill_of(source, Pill::Home),
+        AppArg::Search => pill_of(source, Pill::Search),
+        AppArg::Watchlist => pill_of(source, Pill::Watchlist),
+        AppArg::Seerr => pill_of(source, Pill::Seerr),
         // The grid and the two pages its header pushes (Collections, Recommended) are all the
         // library's: they select its type's pill, the pill they were opened from.
         arg if arg.is_library_family() => {
             let kind = directory.current().map(|i| directory.sections()[i].kind)?;
-            pill_of(directory, Pill::Section(kind))
+            pill_of(source, Pill::Section(kind))
         }
         _ => None,
     }
@@ -3638,11 +3743,12 @@ pub(crate) fn nav_tab(
             // Keep the pill the user was standing on under focus. An IDENTITY, not an index: a
             // pill can appear or disappear while the dip runs, and `HomeCmd::FocusStrip` is
             // delivered when Home MOUNTS, not now.
-            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(rig.directory.view(), *pill).is_some()) {
+            if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(rig.strip_source(), *pill).is_some()) {
                 let want = match pill {
                     Pill::Home => HomeTab::Home,
                     Pill::Search => HomeTab::Search,
                     Pill::Watchlist => HomeTab::Watchlist,
+                    Pill::Seerr => HomeTab::Seerr,
                     Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
                     Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
                 };
@@ -3658,6 +3764,7 @@ pub(crate) fn nav_tab(
         }
         HomeTab::Search => AppArg::Search,
         HomeTab::Watchlist => AppArg::Watchlist,
+        HomeTab::Seerr => AppArg::Seerr,
     };
     nav_peer(d, arg, ret);
 }
@@ -4022,6 +4129,15 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
     !d.surface_up()
         && d.top_screen().and_then(|screen| screen.as_any())
             .is_some_and(|screen| screen.is::<plx_screens::search::SearchScreen>())
+}
+
+/// Does typed text have a recipient? The Search page (its field takes text with or without the
+/// panel, a desktop keyboard included), or whichever screen raised the television's keyboard — a
+/// Settings page's field included (Services > Seerr's address), which the dispatcher records as
+/// `input.keyboard`. The loop turns SDL text into input only while this holds; otherwise it is
+/// queued for nobody (`textinput::on_event`).
+pub(crate) fn keyboard_takes_text(d: &Dispatcher<AppHost>) -> bool {
+    search_owns_input(d) || d.input.keyboard
 }
 
 /// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
@@ -4439,6 +4555,9 @@ mod detail_panel_tests;
 #[path = "detail_related_landing_tests.rs"]
 mod detail_related_landing_tests;
 
+#[cfg(test)]
+#[path = "seerr_settings_tests.rs"]
+mod seerr_settings_tests;
 #[cfg(test)]
 #[path = "surface_navigation_tests.rs"]
 mod surface_navigation_tests;

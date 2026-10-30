@@ -28,7 +28,7 @@ fn base_root_inputs() -> RootInputs {
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
         language: plx_platform::i18n::Preference::System,
-        under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
+        under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(), seerr_address: String::new(),
     }
 }
 
@@ -47,7 +47,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views).form.table, &mut out);
+        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views.directory).form.table, &mut out);
         overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).form.table, &mut out);
 
         overflowing_root(&format!("{tag} root (signed in)"), &base_root_inputs(), &mut out);
@@ -93,6 +93,28 @@ fn every_settings_row_fits_its_column_in_every_language() {
                                   else { plx_platform::i18n::msg::settings_plaintext_server().into() },
                             named, on, connected,
                         }], ..base_root_inputs() }, &mut out);
+                }
+            }
+        }
+        overflowing_root(&format!("{tag} seerr set"),
+            &RootInputs { seerr_address: "http://192.0.2.10:5055".into(), ..base_root_inputs() }, &mut out);
+        // Services > Seerr: every connection line, unset and set. A Seerr user name and the typed
+        // address are user text (exempt); the rest is the app's.
+        use plx_data::stores::seerr::Connection;
+        let connections = [None, Some(Connection::Idle), Some(Connection::Connecting),
+            Some(Connection::Connected { name: "s00000004".into() }), Some(Connection::NotAllowed),
+            Some(Connection::Unreachable), Some(Connection::BadAddress), Some(Connection::SignedOut),
+            Some(Connection::BadCredentials)];
+        // Signing in with Plex, and with a Seerr account (no email yet, and one), password typed or not.
+        let ways = [(None, false), (Some(""), false), (Some("viewer@example.invalid"), true)];
+        for address in ["", "http://192.0.2.10:5055"] {
+            for connection in &connections {
+                for (account, password) in ways {
+                    let mut table = FormTable::new(super::super::registry::BAND);
+                    table.table.compact = false;
+                    let status = seerr::status_text(address, connection.as_ref());
+                    table.set(seerr::seerr_form(address, &status, account, password), None);
+                    overflowing(&format!("{tag} seerr address={address:?} {connection:?} {account:?}"), &table.table, &mut out);
                 }
             }
         }

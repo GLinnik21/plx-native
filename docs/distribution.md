@@ -706,7 +706,8 @@ world-readable `/tmp` on the TV across many runs.
   the closed TV libraries (libplayerAPIs, libAcbAPI, libpf) write to fd 2.
 
 **Verified clean, no action:** the only outbound hosts are the user's PMS, plex.tv and
-`discover.provider.plex.tv` — plus, since the telemetry work, Sentry and PostHog in the EU, and
+`discover.provider.plex.tv` — plus the household's own Seerr server, only at an address the user
+typed in Settings → Services → Seerr (docs/seerr.md), and, since the telemetry work, Sentry and PostHog in the EU, and
 those two only after an explicit first-run Share choice or a later Done in Account → Settings →
 Privacy & data. First run asks about the two purposes separately and offers the exact payload
 preview before either answer: the first choice remains a draft, the second records both, and BACK

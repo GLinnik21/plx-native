@@ -306,7 +306,7 @@ def apply_patch(source, patch):
     env = {k: v for k, v in os.environ.items() if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE')}
     env['GIT_CEILING_DIRECTORIES'] = str(source.parent)
     for check in (['--check'], []):
-        result = subprocess.run(['git', 'apply', *check, str(patch)], cwd=source, env=env,
+        result = subprocess.run(['git', '-c', 'core.autocrlf=false', 'apply', *check, str(patch)], cwd=source, env=env,
                                 capture_output=True, text=True)
         if result.returncode != 0:
             raise ValueError(patch.name + ' does not apply exactly: ' + (result.stdout + result.stderr).strip())

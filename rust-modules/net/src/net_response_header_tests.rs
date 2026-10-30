@@ -1,7 +1,8 @@
-//! The one response header the easy path keeps: `ETag` (plan item NET1). The header callback is
-//! graded on its own (case, CRLF, a weak validator, a header that is absent, a redirect hop's
-//! validator not leaking into the final answer) and then through the real libcurl against a
-//! loopback double, including the `If-None-Match` round trip that answers 304 with no body.
+//! The response headers the easy path keeps: `ETag` (plan item NET1) and each `Set-Cookie`'s
+//! `name=value` (a Seerr session, docs/seerr.md). The header callback is graded on its own (case,
+//! CRLF, a weak validator, a header that is absent, a redirect hop's validator or cookie not leaking
+//! into the final answer) and then through the real libcurl against a loopback double, including the
+//! `If-None-Match` round trip that answers 304 with no body.
 
 use super::*;
 
@@ -62,6 +63,49 @@ fn a_null_sink_or_a_non_utf8_line_is_taken_without_a_panic() {
     let n = header_cb(line.as_ptr() as *mut c_char, 1, line.len(), (&mut sink as *mut BodySink) as *mut c_void);
     assert_eq!(n, line.len());
     assert_eq!(sink.etag, None, "a validator that is not text is no validator");
+}
+
+#[test]
+fn a_set_cookie_keeps_only_its_name_and_value() {
+    let sink = fed(&["HTTP/1.1 200 OK\r\n",
+        "Set-Cookie: connect.sid=s%3Aabc.def; Path=/; Expires=Wed, 01 Jan 2031 00:00:00 GMT; HttpOnly\r\n"]);
+    assert_eq!(sink.cookies, ["connect.sid=s%3Aabc.def"]);
+    assert_eq!(fed(&["set-cookie:  a=1  \r\n"]).cookies, ["a=1"], "any case, padding dropped");
+    assert_eq!(fed(&["Set-Cookie: flag=\r\n"]).cookies, ["flag="], "an empty value is still a cookie");
+}
+
+#[test]
+fn every_set_cookie_is_kept_in_order_and_nothing_else_reads_as_one() {
+    let sink = fed(&["HTTP/1.1 200 OK\r\n", "Set-Cookie: a=1; Path=/\r\n", "X-Set-Cookie: no=1\r\n",
+        "Set-Cookie: =nameless\r\n", "Set-Cookie: novalue\r\n", "Set-Cookie: b=2\r\n"]);
+    assert_eq!(sink.cookies, ["a=1", "b=2"]);
+    assert!(fed(&["HTTP/1.1 200 OK\r\n", "\r\n"]).cookies.is_empty());
+}
+
+#[test]
+fn a_new_status_line_forgets_the_cookies_of_the_hop_before() {
+    let sink = fed(&["HTTP/1.1 302 Found\r\n", "Set-Cookie: hop=1\r\n", "\r\n", "HTTP/1.1 200 OK\r\n",
+        "Set-Cookie: final=2\r\n"]);
+    assert_eq!(sink.cookies, ["final=2"]);
+}
+
+#[test]
+fn the_cookies_kept_are_bounded() {
+    let lines: Vec<String> = (0..COOKIES_KEPT + 3).map(|i| format!("Set-Cookie: c{i}=v\r\n")).collect();
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let sink = fed(&lines);
+    assert_eq!(sink.cookies.len(), COOKIES_KEPT);
+    assert_eq!(sink.cookies.first().map(String::as_str), Some("c0=v"), "the first ones are kept");
+}
+
+#[test]
+fn a_real_response_carries_its_cookies_in_resp() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    let (got, _) = served(
+        "HTTP/1.1 200 OK\r\nSet-Cookie: connect.sid=s%3Ax; Path=/; HttpOnly\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+        &["Cookie: connect.sid=s%3Aold".to_string()]);
+    assert_eq!(got.expect("answered").cookies, ["connect.sid=s%3Ax"]);
 }
 
 /// One request to a loopback double that answers `reply` verbatim; returns the request head it saw.

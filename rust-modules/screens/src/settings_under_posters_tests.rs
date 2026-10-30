@@ -401,7 +401,7 @@ fn text_fit_inputs() -> RootInputs {
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: false,
         language: plx_platform::i18n::Preference::System,
-        under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
+        under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(), seerr_address: String::new(),
     }
 }
 
@@ -448,7 +448,7 @@ fn the_root_page_reads_the_stored_setting_into_its_row() {
     let _sess = seated_scratch_session("root-reads-under-posters");
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
-    let page = RootPage::new(EntryId(0), test_support::cx(None).views);
+    let page = RootPage::new(EntryId(0), test_support::cx(None).views.directory);
     assert_eq!(page.state.under_posters, UnderPosters { title: true, details: UnderPostersDetails::Genre, show_sort_info: false });
 }
 

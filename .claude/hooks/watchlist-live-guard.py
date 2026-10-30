@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: an agent may not turn on the owner's live Watchlist switch.
+"""PreToolUse guard: an agent may not turn on the owner's live Watchlist or Seerr switch.
 
 `plxnative-watchlist-live` in a debug install's runtime root (on the television
 `/tmp/com.beb.plxnative.debug/`) lets a `devtriggers` build send Watchlist add/remove to the REAL
@@ -8,6 +8,11 @@ refuses every write (the Q11 failsafe), which is what keeps an agent's TV run fr
 household's Watchlist. The owner creates the file by hand, from their own terminal, when they want to
 check real writes; AGENTS.md: no agent creates it unless the owner asks for it in that same session.
 
+`plxnative-seerr-live` is the same switch for the household's Seerr server
+(`rust-modules/plex/src/plex/seerr.rs`, docs/seerr.md): with it a debug build sends every `POST` under
+`/api/v1/request` (a request, an approval, a decline), which starts or stops a real download on the
+owner's server. It is guarded the same way.
+
 What is refused is a Bash command that would CREATE the file: `touch`, `tee`, `cp`/`mv`/`install`/
 `ln`/`dd`/`rsync`/`scp`, a `>`/`>>` redirection onto it, a script that opens it for writing, or
 `tools/tv-session.sh up --arm watchlist-live`, also when the command is wrapped in
@@ -15,7 +20,8 @@ What is refused is a Bash command that would CREATE the file: `touch`, `tee`, `c
 line). Reading, grepping, listing, testing for and REMOVING it stay allowed, and so does an Edit or
 Write of source or docs that merely name it (this hook sees Bash only).
 
-THE ESCAPE HATCH is a prefix on the command itself — `PLX_WATCHLIST_LIVE_OWNER=1 …` — for the
+THE ESCAPE HATCH is a prefix on the command itself — `PLX_WATCHLIST_LIVE_OWNER=1 …` (or
+`PLX_SEERR_LIVE_OWNER=1 …`, the same hatch by the Seerr switch's name) — for the
 owner, or for an agent the owner told IN THAT SESSION to turn the switch on. An agent reaching for it
 on its own is deciding, on the household's behalf, to let a test build write to their real account.
 
@@ -26,17 +32,17 @@ import json
 import re
 import sys
 
-NAME = re.compile(r"plxnative-watchlist-live\b")
-BYPASS = re.compile(r"\bPLX_WATCHLIST_LIVE_OWNER=1\b")
+NAME = re.compile(r"plxnative-(?:watchlist|seerr)-live\b")
+BYPASS = re.compile(r"\bPLX_(?:WATCHLIST|SEERR)_LIVE_OWNER=1\b")
 # `--arm watchlist-live` / `--arm=watchlist-live[=…]` on tv-session.sh writes plxnative-<name>.
-ARM = re.compile(r"--arm(?:=|\s+)['\"]?watchlist-live\b")
+ARM = re.compile(r"--arm(?:=|\s+)['\"]?(?:watchlist|seerr)-live\b")
 # Commands that write a file named among their arguments.
 WRITERS = re.compile(r"(?:^|[\s;&|('\"`])(?:touch|tee|cp|mv|install|ln|dd|rsync|scp|truncate)(?=\s)")
 # A redirection whose target is the trigger: `> …plxnative-watchlist-live`, `>>`, `>|`, `&>`.
-REDIRECT = re.compile(r"(?:\d?>>?|>\||&>)\s*['\"]?[^\s;&|'\"]*plxnative-watchlist-live\b")
+REDIRECT = re.compile(r"(?:\d?>>?|>\||&>)\s*['\"]?[^\s;&|'\"]*plxnative-(?:watchlist|seerr)-live\b")
 # A script that opens it for writing: python `open(…, 'w'|'a'|'x')`, `.write_text(`, `.touch(`.
-SCRIPTED = re.compile(r"open\([^)]*plxnative-watchlist-live[^)]*,\s*['\"][wax]|"
-                      r"plxnative-watchlist-live[^;\n]*\.(?:write_text|write_bytes|touch)\(")
+SCRIPTED = re.compile(r"open\([^)]*plxnative-(?:watchlist|seerr)-live[^)]*,\s*['\"][wax]|"
+                      r"plxnative-(?:watchlist|seerr)-live[^;\n]*\.(?:write_text|write_bytes|touch)\(")
 # Statement separators. A pipe stays inside the segment on purpose: `echo 1 | tee <path>`.
 SPLIT = re.compile(r"&&|\|\||;|\n")
 
@@ -73,13 +79,15 @@ def main():
     if seg is None:
         return 0
     sys.stderr.write(
-        "BLOCKED: this command would turn on the owner's live Watchlist switch "
-        "(plxnative-watchlist-live).\n"
+        "BLOCKED: this command would turn on one of the owner's live switches "
+        "(plxnative-watchlist-live or plxnative-seerr-live).\n"
         "  the command: %s\n\n"
-        "With that file present a debug build writes Watchlist add/remove to the REAL plex.tv account.\n"
+        "With the Watchlist switch a debug build writes add/remove to the REAL plex.tv account; with\n"
+        "the Seerr switch it sends real requests that start downloads on the owner's server.\n"
         "AGENTS.md: no agent creates it unless the owner asks for it in this same session. Test writes\n"
         "against the mock instead (`tools/tv-session.sh up --mock-plextv=PORT` arms the discover\n"
-        "stand-in). If the owner did ask, prefix the command with PLX_WATCHLIST_LIVE_OWNER=1.\n"
+        "stand-in; plxnative-seerr=http://127.0.0.1:PORT arms tests/mock_pms.py's Seerr). If the owner\n"
+        "did ask, prefix the command with PLX_WATCHLIST_LIVE_OWNER=1 (or PLX_SEERR_LIVE_OWNER=1).\n"
         % seg[:160])
     return 2
 

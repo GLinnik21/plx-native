@@ -44,6 +44,9 @@ pub mod tile_facts;
 /// The Under posters setting read once, and the one builder of a focused poster's caption.
 pub mod captions;
 
+/// The card of a Seerr title, shared by Search's Request row and the Seerr tab's Discover section.
+pub mod seerr_cards;
+
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub enum AppFx {
     Session(plx_session::auth::SessionCmd),
@@ -100,6 +103,19 @@ pub enum PreferenceCmd {
     /// The Interface resolution picked in its picker: install-wide, applied at the next launch. The
     /// app writes it through the session; `reply` learns whether the write was durable.
     UiResolution { mode: plx_plex::plex::session::UiResolution, reply: std::sync::mpsc::Sender<bool> },
+    /// Settings > Services > Seerr: the household's Seerr address as typed (`""` removes it). The
+    /// app writes it through the session; `reply` learns whether the write was durable. The Seerr
+    /// store reads the stored address on its next frame pass and signs in there.
+    SeerrAddress { address: String, reply: std::sync::mpsc::Sender<bool> },
+    /// Settings > Services > Seerr's Connect: sign the seated profile in at the stored address again.
+    SeerrConnect,
+    /// Settings > Services > Seerr's "Sign in with": `Some(email)` signs the seated profile in with
+    /// that Seerr account from now on (a new email signs it out), `None` with its Plex account. The
+    /// app writes it through the session; `reply` learns whether the write was durable.
+    SeerrMethod { email: Option<String>, reply: std::sync::mpsc::Sender<bool> },
+    /// Settings > Services > Seerr's Sign in for a Seerr account. The password goes to the Seerr
+    /// store's one sign-in job and is held nowhere else; the Bridge answers this itself.
+    SeerrSignIn { email: String, password: String },
 }
 
 /// Whether an item has a context menu to open (`item_menu::has_actions`): the one predicate the
@@ -110,6 +126,9 @@ pub use crate::item_menu::has_actions as item_has_menu;
 pub use crate::item_menu::Action as ItemMenuAction;
 /// Re-exported so a screen's test host names its init through the registry.
 pub use crate::family::NoInit;
+/// What the Settings family's pages read (the directory and the Seerr store), named by the family's
+/// fixtures and pages through the shared vocabulary.
+pub use crate::family::InnerViews;
 /// The panels a sibling screen's host test reads through the shared vocabulary (the `sibling` gate
 /// admits only `crate::registry`): the Detail page's tests drive the real About panel and compare
 /// the audio summary against the tracks panel's full list.
@@ -250,6 +269,8 @@ pub enum SearchReq {
     /// hit from a server that ignored `includeCollections`), `tag` its tag id; both are checked
     /// against the retained selection before the route is built from it.
     Collection { sid: plx_plex::plex::ServerId, rk: String, tag: i64 },
+    /// OK on a card of the Request row: the Seerr title page of that title (docs/seerr.md).
+    SeerrTitle { kind: plx_data::seerr::MediaKind, tmdb: i64 },
     Tab(HomeTab),
     Account,
 }
@@ -275,6 +296,8 @@ pub enum HomeTab {
     /// The Watchlist mark, before Search (docs/watchlist-plan.md §2.4 W45).
     Watchlist,
     Search,
+    /// The Seerr tab (docs/seerr.md): on the strip only while a Seerr address is set.
+    Seerr,
 }
 
 /// Addressed bootstrap/diagnostic intentions. They use the same owned step and focus engine as
@@ -1089,6 +1112,13 @@ pub enum ContentReq {
     Push(ContentArg),
     Present(ContentArg),
     Back,
+    /// A press on the shared strip from a page that wears it and has no lane of its own (the
+    /// Seerr tab): the destination's tab.
+    Tab(HomeTab),
+    /// A press on the strip's profile chip, from such a page.
+    Account,
+    /// BACK from the top of such a page: Home, as the Watchlist's BACK goes.
+    ToHome,
     Play { play: PlayIntent, resume_ns: i64 },
     /// Start a hero preview. Does not push the player route.
     PreviewStart {
@@ -1159,6 +1189,10 @@ pub enum ContentPanel {
     /// About sheet (`screens::about_panel`) reading the collection store's current collection; it
     /// carries nothing, for `Bio`'s reason.
     CollectionAbout,
+    /// The **request menu** (`screens::seerr_request`, docs/seerr.md): where a Seerr request for the
+    /// title goes, anchored to the control that opened it (the Seerr title page's pill, the Detail
+    /// page's request disc). It names its own title, so it takes no subject.
+    SeerrRequest { kind: plx_data::seerr::MediaKind, tmdb: i64, anchor: [u32; 4] },
 }
 
 impl ContentPanel {
@@ -1214,6 +1248,10 @@ impl ContentPanel {
             Self::About => (Style::Alert, AppArg::AboutPanel),
             Self::Bio => (Style::Alert, AppArg::PersonBio),
             Self::CollectionAbout => (Style::Alert, AppArg::CollectionAbout),
+            Self::SeerrRequest { kind, tmdb, anchor } => (
+                Style::Compact,
+                AppArg::SeerrRequest(crate::seerr_request::SeerrRequestArg { kind, tmdb, anchor }),
+            ),
         })
     }
 }
@@ -1281,6 +1319,12 @@ pub trait MetadataLike: AppLike + Sized {
     fn subtitle_search<'a>(_cx: &Cx<'a, Self>) -> Option<plx_data::subsearch::SubSearchView<'a>> {
         None
     }
+    /// The household's Seerr store (docs/seerr.md): a show's Detail page reads which of its seasons
+    /// can be requested. PROVIDED, `None` for a host that publishes none (the test hosts); the
+    /// production host publishes it.
+    fn seerr<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        None
+    }
 }
 
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
@@ -1299,6 +1343,11 @@ pub trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
 
 pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {
     fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a>;
+    /// The household's Seerr store (docs/seerr.md): Search's Request row and the Seerr title page
+    /// read its answers. A provided method, `None` for a host that publishes none (a fixture).
+    fn seerr<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        None
+    }
 }
 
 /// A host that publishes all three retained Library views captured at the frame split.
@@ -1319,6 +1368,11 @@ pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn collections_count(_cx: &Cx<'_, Self>, _section: usize) -> Option<Result<u32, Forbidden>> {
         None
     }
+    /// The household's Seerr store, read-only (docs/seerr.md): its connection and its answers.
+    /// A provided method, `None` for a host that publishes none (a fixture); `AppHost` publishes it.
+    fn seerr<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        None
+    }
 }
 
 /// The server refused the collections listing (HTTP 401/403): the answer is final for the identity
@@ -1332,11 +1386,17 @@ pub struct Forbidden;
 /// one publication so its Onboard child never falls back to the compatibility selector.
 pub trait DirectoryLike: AppLike + Sized {
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
+    /// The household's Seerr store (Settings > Services > Seerr reads its connection), carried down
+    /// to the Settings family like the directory; `None` where the host publishes none.
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore>;
 }
 
 impl<H: LibraryLike> DirectoryLike for H {
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         LibraryLike::directory(cx)
+    }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        LibraryLike::seerr(cx)
     }
 }
 
@@ -1766,6 +1826,8 @@ pub mod page_id {
     pub const WATCHLIST: ScreenId = ScreenId(25);
     pub const LIBRARY_COLLECTIONS: ScreenId = ScreenId(28);
     pub const LIBRARY_RECOMMENDED: ScreenId = ScreenId(29);
+    /// 32, forward of the Seerr title page's 31.
+    pub const SEERR: ScreenId = ScreenId(32);
 }
 
 /// **A screen argument: everything the container needs to mount one screen, and nothing else.**
@@ -1815,6 +1877,9 @@ pub enum AppArg {
     /// The Detail page's *Play Version* list (§6.2's page-owned panels), anchored to the hero disc
     /// that opened it, [`Self::AltSources`]'s shape.
     VersionsPanel(crate::versions_panel::VersionsArg),
+    /// The request menu of a Seerr title (`screens::seerr_request`, docs/seerr.md), anchored to the
+    /// control that opened it; the title it is for travels on the argument.
+    SeerrRequest(crate::seerr_request::SeerrRequestArg),
     /// The Detail page's *Track information* sheet (§6.2's page-owned panels). It carries only the
     /// 1-based PAGE the sheet opens at — a boot address like `Settings`'s root, not an identity —
     /// because the sheet describes `metadata::current()` and the host it is presented over is the
@@ -1865,6 +1930,9 @@ pub enum AppArg {
     /// from the bookmark mark. It carries nothing — the list is the store's, the order is the
     /// store's sort and filter.
     Watchlist,
+    /// The Seerr tab (`screens::seerr_tab`, docs/seerr.md): a PEER of Home and the Watchlist on the
+    /// strip. It carries nothing — the rows are the Seerr store's.
+    Seerr,
     /// Playback. Its panels are NOT here — they are entries on the player page's own
     /// `ModalStack` ([`Self::PlayerOverlay`]), and the container owns which one is up.
     Player,
@@ -1888,14 +1956,15 @@ impl AppArg {
     }
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Seerr,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str},SeerrTitle{tv:bool,tmdb:u64}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(page:u8)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
      ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32}},\
      host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool,catalog:Option<{guid:str}>},\
-     WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]}}";
+     WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]},\
+     SeerrRequest{tv:bool,tmdb:u64,anchor:[u32;4]}}";
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
@@ -1920,6 +1989,8 @@ impl LogicalState for AppArg {
             Self::WatchlistMenu(arg) => { c.u32(13); arg.write(c); }
             // 14, forward of the Watchlist menu's 13.
             Self::VersionsPanel(arg) => { c.u32(14); arg.write(c); }
+            // 15, forward of Play Version's 14.
+            Self::SeerrRequest(arg) => { c.u32(15); arg.write(c); }
             // The seven PAGE variants keep the canon bytes `Legacy(Route)` wrote — a `0` tag and
             // then the route's own — so a recording taken before the fold and one taken after are
             // byte-comparable at every page frame. Only the SHAPE STRING moved, which is what the
@@ -1936,6 +2007,8 @@ impl LogicalState for AppArg {
             // 12 and 13, forward of Watchlist's 11 (both are in `ARG_SHAPE`).
             Self::LibraryCollections { section } => { c.u32(0).u32(12).u32(*section); }
             Self::LibraryRecommended { section } => { c.u32(0).u32(13).u32(*section); }
+            // 14, forward of LibraryRecommended's 13.
+            Self::Seerr => { c.u32(0).u32(14); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
             Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
@@ -1952,7 +2025,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
     /// them fade the bar with the page.
     fn chrome(&self) -> Chrome {
         match self {
-            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist => Chrome::TabBar,
+            AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist | AppArg::Seerr => Chrome::TabBar,
             // The two sub-pages of a library keep the bar, as the Library they are pushed over.
             AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => Chrome::TabBar,
             AppArg::Login
@@ -1969,6 +2042,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             | AppArg::PlayerOverlay(_)
             | AppArg::AltSources(_)
             | AppArg::VersionsPanel(_)
+            | AppArg::SeerrRequest(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
             | AppArg::PersonBio
@@ -2000,6 +2074,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::ItemMenu(_) => 20,
             // 25 and 26, forward of Collection's 24: the Watchlist page and its Sort & Filter menu.
             AppArg::Watchlist => page_id::WATCHLIST.0,
+            AppArg::Seerr => page_id::SEERR.0,
             AppArg::WatchlistMenu(_) => 26,
             // The seven page ids are the ones `Legacy(Route)` computed, unchanged: an id is a
             // screen's identity in a recorded state and in `same_instance`, so they are allocated
@@ -2025,8 +2100,12 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Collection(_)) => page_id::COLLECTION.0,
             // 27, forward of the Watchlist menu's 26: the catalog page (plan W6).
             AppArg::Content(ContentArg::Catalog { .. }) => 27,
+            // 31, the Seerr title page (docs/seerr.md).
+            AppArg::Content(ContentArg::SeerrTitle { .. }) => 31,
             // 30, forward of the Recommended page's 29.
             AppArg::VersionsPanel(_) => 30,
+            // 33, forward of the Seerr tab's 32.
+            AppArg::SeerrRequest(_) => 33,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -2156,6 +2235,7 @@ where
                     .map_or(&[][..], crate::detail::hero_versions);
                 Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
             }
+            AppArg::SeerrRequest(arg) => Box::new(crate::seerr_request::SeerrRequestScreen::new(entry, *arg)),
             AppArg::TracksPanel(arg) => Box::new(
                 crate::tracks_panel::TracksPanelScreen::new(entry, *arg),
             ),
@@ -2202,6 +2282,7 @@ where
                 Box::new(page)
             }
             AppArg::Content(ContentArg::Catalog { hex }) => Box::new(crate::catalog::CatalogScreen::new(entry, *hex)),
+            AppArg::Content(ContentArg::SeerrTitle { kind, tmdb }) => Box::new(crate::seerr_title::SeerrTitleScreen::new(entry, *kind, *tmdb)),
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::onboard::OnboardScreen::first_run(
@@ -2256,6 +2337,7 @@ where
             // The list is the store's: the page mounts on "loading" and the application feeds it
             // the rows, the options and the matched facts (`WatchlistIn`) on its first frames.
             AppArg::Watchlist => Box::new(crate::watchlist::page::WatchlistScreen::loading(entry)),
+            AppArg::Seerr => Box::new(crate::seerr_tab::SeerrScreen::new(entry)),
             // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
             // gesture, the held-key timer, the control row's springs and the Up Next countdown,
             // and that answers `RenderStrategy::VideoPlane`. Its transport is pinned from the
@@ -2354,6 +2436,11 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             rk: "1".into(),
             anchor: [0; 4],
         }),
+        AppArg::SeerrRequest(crate::seerr_request::SeerrRequestArg {
+            kind: plx_data::seerr::MediaKind::Tv,
+            tmdb: 1,
+            anchor: [0; 4],
+        }),
         AppArg::TracksPanel(crate::tracks_panel::TracksPanelArg { page: 1 }),
         AppArg::AboutPanel,
         AppArg::PersonBio,
@@ -2371,6 +2458,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::WatchlistMenu(_)
             | AppArg::AltSources(_)
             | AppArg::VersionsPanel(_)
+            | AppArg::SeerrRequest(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
             | AppArg::PersonBio
@@ -2389,6 +2477,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::LibraryRecommended { .. }
             | AppArg::Search
             | AppArg::Watchlist
+            | AppArg::Seerr
             | AppArg::Player
             | AppArg::Content(_) => {
                 panic!("a page argument is not a surface: its word is `route=`")
@@ -2454,7 +2543,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::watchlist::page::WatchlistScreen::SHAPE,
     crate::watchlist::menu::SHAPE,
     crate::catalog::CatalogScreen::SHAPE,
+    crate::seerr_title::SeerrTitleScreen::SHAPE,
+    crate::seerr_tab::SeerrScreen::SHAPE,
     crate::versions_panel::SHAPE,
+    crate::seerr_request::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -2640,11 +2732,24 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Immediate jump state adds SeekBurst target/time and the pending FF/REW tap flag.
 // The independent settings also update the Preferences and Picker state versions.
 // Previous pin: 0x3cf2_5b06_5ed9_8faa. Re-record the incompatible anchors through plxnative-rec.
-// HUD commands (PR3): `PlayerOverlay::More` names the page it opens on, `More(page:u8)` (0 the
-// root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`, so the Speed page can be
-// addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
-// 0x9425_f33f_3f53_6aa5.
-const SCREEN_SHAPES_PIN: u64 = 0xb633_b65b_ed93_ca93;
+// Seerr (docs/seerr.md): `ARG_SHAPE` gains `Content::SeerrTitle{tv,tmdb}`, `SCREEN_SHAPES` gains
+// `SeerrTitleScreen::SHAPE`, and the Search page's shape gains `request:[u32]` (its Request row);
+// the previous pin was 0x9425_f33f_3f53_6aa5. Replay fixtures need `tools/plxnative-rec rerecord`.
+// The Requests tab (docs/seerr.md): `ARG_SHAPE` gains `Requests` and `SCREEN_SHAPES` gains
+// `RequestsScreen::SHAPE`; the previous pin was 0x8023_3869_e2e9_13dd.
+// A show's missing seasons (docs/seerr.md): the Detail page's shape gains `seerr_asked:opt<u64>`
+// (the show it asked Seerr about); the previous pin was 0x996c_f958_8b43_8bcb.
+// The request menu (docs/seerr.md): `ARG_SHAPE` gains `SeerrRequest{tv,tmdb,anchor}` and
+// `SCREEN_SHAPES` gains `seerr_request::SHAPE`; the previous pin was 0xc7ee_9398_b737_249e.
+// The Seerr tab (docs/seerr.md): `ARG_SHAPE`'s `Requests` becomes `Seerr`, and `RequestsScreen::SHAPE`
+// in `SCREEN_SHAPES` becomes `SeerrScreen::SHAPE` (two sections under a header row, the request
+// rows); the previous pin was 0x5234_18a3_2b35_8218.
+// Approve and decline on the Seerr title page (docs/seerr.md): `SeerrTitleScreen::SHAPE` gains
+// `deciding:opt<i64>` and `decided:bool`; the previous pin was 0xdb97_2b53_a03a_e324.
+// Merging main's HUD commands (PR3): `PlayerOverlay::More` names the page it opens on,
+// `More(page:u8)` (0 the root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`; main's own
+// pin for that was 0xb633_b65b_ed93_ca93 and this branch's was 0xa2c7_ae3a_69f0_4fce.
+const SCREEN_SHAPES_PIN: u64 = 0xbcfa_7fdf_498b_7520;
 
 #[cfg(test)]
 mod arg_tests {

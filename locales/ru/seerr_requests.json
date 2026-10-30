@@ -1,0 +1,22 @@
+{
+  "search.request.heading": "Запросить через Seerr",
+  "seerr.title.request": "Запросить",
+  "seerr.title.request_seasons": "Запросить недостающие сезоны",
+  "seerr.title.requesting": "Запрос…",
+  "seerr.status.pending": "Запрошено, ждёт одобрения",
+  "seerr.status.processing": "Запрошено, скоро будет",
+  "seerr.status.partly": "Частично на вашем сервере",
+  "seerr.status.available": "На вашем сервере",
+  "seerr.status.blocked": "Нельзя запросить",
+  "seerr.request.done": "Запрошено",
+  "seerr.request.already": "Уже запрошено",
+  "seerr.request.forbidden": "Вам нельзя запросить это на сервере",
+  "seerr.request.failed": "Не удалось запросить. Попробуйте ещё раз.",
+  "seerr.title.unreachable": "Не удаётся связаться с Seerr.",
+  "seerr.menu.server": "Сервер",
+  "seerr.menu.quality": "Качество",
+  "seerr.menu.folder": "Папка",
+  "seerr.menu.free": "Свободно {size}",
+  "seerr.menu.loading": "Загрузка…",
+  "seerr.menu.unavailable": "Не удалось загрузить варианты"
+}

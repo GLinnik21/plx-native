@@ -26,6 +26,29 @@ fn choose_setting(choice: Choice, reply: Sender<bool>) {
     }
 }
 
+/// Write `user`'s way of signing in to Seerr (`None` is its Plex account): the record replaces the
+/// stored one whole, session included.
+fn keep_seerr_sign_in(user: &str, sign_in: Option<plx_plex::plex::session::SeerrSignIn>) -> bool {
+    plx_plex::plex::session::set_seerr_sign_in(user, sign_in)
+}
+
+/// The Seerr store's changed session for the seated profile's Seerr account (`None` forgets it),
+/// written on the storage worker. Nothing waits on it: the store already holds what it says.
+pub(super) fn keep_seerr_session(session: Option<plx_plex::plex::seerr::SeerrSession>) {
+    let current = plx_plex::plex::session::peek();
+    let user = plx_plex::plex::session::current_profile_key();
+    let Some(mine) = current.prefs.seerr_sign_ins.iter().find(|s| s.user == user).cloned() else { return };
+    let address = current.prefs.seerr_address.clone();
+    let next = plx_plex::plex::session::SeerrSignIn {
+        address,
+        cookie: session.map(|s| s.cookie().to_string()).unwrap_or_default(),
+        ..mine
+    };
+    let _ = plx_base::storage_worker::submit_retained(move || {
+        let _ = keep_seerr_sign_in(&user, Some(next));
+    });
+}
+
 pub(super) fn execute(command: PreferenceCmd) {
     match command {
         PreferenceCmd::Load { reply } => {
@@ -65,5 +88,27 @@ pub(super) fn execute(command: PreferenceCmd) {
                 plx_machine::idle::invalidate();
             });
         }
+        PreferenceCmd::SeerrAddress { address, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let _ = reply.send(plx_plex::plex::session::set_seerr_address(address.trim()));
+                plx_machine::idle::invalidate();
+            });
+        }
+        PreferenceCmd::SeerrMethod { email, reply } => {
+            let sign_in = email.map(|email| plx_plex::plex::session::SeerrSignIn {
+                address: plx_plex::plex::session::peek().prefs.seerr_address.clone(),
+                email: email.trim().to_string(),
+                ..Default::default()
+            });
+            let user = plx_plex::plex::session::current_profile_key();
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                let _ = reply.send(keep_seerr_sign_in(&user, sign_in));
+                plx_machine::idle::invalidate();
+            });
+        }
+        // Signing in steps the Seerr store, which the Bridge owns: it answers these itself
+        // (`Bridge::app_effect`) and never hands them here.
+        PreferenceCmd::SeerrConnect | PreferenceCmd::SeerrSignIn { .. } =>
+            debug_assert!(false, "signing in to Seerr is the Bridge's"),
     }
 }

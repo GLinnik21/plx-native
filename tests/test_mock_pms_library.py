@@ -170,10 +170,12 @@ class LibraryRail(unittest.TestCase):
     def test_default_generated_data_is_stable(self):
         # #266 added canNormalizeLoudness to every generated audio stream and five fixed
         # enhancement fixture movies (own section id, invisible to sections 1/2) to every
-        # Library — both hashes moved when that landed.
+        # Library — both hashes moved when that landed. Seerr 7/n gave every generated show a
+        # Guid[] (tmdb/tvdb ids, no rng draw): with those keys removed the data still hashes to
+        # the previous pins (c900e01d…, e59fb64f…).
         hashes = {
-            1: "c900e01d9e26ead0c63f0e2cfbf5bfad1cf410ba9a047ca701f41806246e2564",
-            7: "e59fb64f00c787449263070404aed8060e07bcf644ebcc3a2184626e416d6616",
+            1: "1b72cfae072d1a6357b5a76b3246edc5cbebb3b09df3931b563cf84a5f1f6c07",
+            7: "a22114149bfbb4b81b107d99f81ea60ba98a562a034bd58d52cbf98761ac4a4b",
         }
         for seed, expected in hashes.items():
             payload = json.dumps(Library(seed=seed).__dict__, sort_keys=True).encode()

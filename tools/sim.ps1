@@ -43,7 +43,16 @@ function Invoke-WslShell {
 
     # Feed the program on stdin. Passing a multiline `bash -lc` argument through Windows causes
     # wsl.exe to reconstruct quoting and can expand shell variables before bash receives it.
-    (($Script -replace "`r", "") + "`n# sim.ps1 end") | & wsl.exe @arguments
+    # Windows PowerShell 5.1 encodes a native command's stdin with [Console]::InputEncoding; on a
+    # console set to UTF-8 that encoding carries a BOM, which bash reads as part of the first word
+    # ("\xEF\xBB\xBFset: command not found"). Pipe BOM-less UTF-8 and restore the console after.
+    $consoleInput = [Console]::InputEncoding
+    try {
+        [Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false
+        (($Script -replace "`r", "") + "`n# sim.ps1 end") | & wsl.exe @arguments
+    } finally {
+        [Console]::InputEncoding = $consoleInput
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "WSL command failed with exit code $LASTEXITCODE."
     }

@@ -1,0 +1,22 @@
+{
+  "search.request.heading": "Запытаць праз Seerr",
+  "seerr.title.request": "Запытаць",
+  "seerr.title.request_seasons": "Запытаць адсутныя сезоны",
+  "seerr.title.requesting": "Запыт…",
+  "seerr.status.pending": "Запытана, чакае адабрэння",
+  "seerr.status.processing": "Запытана, хутка будзе",
+  "seerr.status.partly": "Часткова на вашым серверы",
+  "seerr.status.available": "На вашым серверы",
+  "seerr.status.blocked": "Нельга запытаць",
+  "seerr.request.done": "Запытана",
+  "seerr.request.already": "Ужо запытана",
+  "seerr.request.forbidden": "Вам нельга запытаць гэта на серверы",
+  "seerr.request.failed": "Не атрымалася запытаць. Паспрабуйце яшчэ раз.",
+  "seerr.title.unreachable": "Не ўдаецца звязацца з Seerr.",
+  "seerr.menu.server": "Сервер",
+  "seerr.menu.quality": "Якасць",
+  "seerr.menu.folder": "Папка",
+  "seerr.menu.free": "Вольна {size}",
+  "seerr.menu.loading": "Загрузка…",
+  "seerr.menu.unavailable": "Не ўдалося загрузіць варыянты"
+}

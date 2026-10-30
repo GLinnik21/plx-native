@@ -1,6 +1,7 @@
 //! One result row's cards, for `plx_ui::cards::Shelf`: the row's items read over the page's
 //! element interning and the roster of sources the results came from.
 use super::*;
+use crate::registry::seerr_cards::RequestCards;
 use crate::registry::tile_facts;
 use plx_data::search::scope::ScopeSource;
 use plx_machine::machine::Measure;
@@ -79,4 +80,42 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(media), tile.rect, tile.radius, false, measure);
         }
     }
+}
+
+/// The cards of any section of the page: a result row's, or the Request row's.
+pub enum PageCards<'a> {
+    Row(RowCards<'a>),
+    Request(RequestCards<'a>),
+}
+
+macro_rules! each {
+    ($self:ident, $c:ident => $e:expr) => {
+        match $self {
+            PageCards::Row($c) => $e,
+            PageCards::Request($c) => $e,
+        }
+    };
+}
+
+impl<H: SearchLike> CardSource<H> for PageCards<'_> {
+    fn len(&self) -> usize { each!(self, c => CardSource::<H>::len(c)) }
+    fn elem(&self, i: usize) -> u32 { each!(self, c => CardSource::<H>::elem(c, i)) }
+    fn index_of(&self, e: &u32) -> Option<usize> { each!(self, c => CardSource::<H>::index_of(c, e)) }
+    fn art(&self, i: usize) -> Art<'_> { each!(self, c => CardSource::<H>::art(c, i)) }
+    fn label(&self, i: usize) -> TileLabel { each!(self, c => CardSource::<H>::label(c, i)) }
+    fn progress(&self, i: usize) -> Option<f32> { each!(self, c => CardSource::<H>::progress(c, i)) }
+    fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
+        each!(self, c => CardSource::<H>::overlay(c, p, i, tile, measure))
+    }
+    fn loaded(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::loaded(c, i)) }
+    fn unread(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::unread(c, i)) }
+    fn focus_index(&self, e: &u32) -> Option<usize> { each!(self, c => CardSource::<H>::focus_index(c, e)) }
+    fn hover(&self, i: usize) -> plx_ui::screen::Hover { each!(self, c => CardSource::<H>::hover(c, i)) }
+    fn gap_before(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::gap_before(c, i)) }
+    fn global(&self, i: usize) -> usize { each!(self, c => CardSource::<H>::global(c, i)) }
+    fn holdable(&self, i: usize) -> bool { each!(self, c => CardSource::<H>::holdable(c, i)) }
+    fn more(&self) -> bool { each!(self, c => CardSource::<H>::more(c)) }
+    fn more_before(&self) -> bool { each!(self, c => CardSource::<H>::more_before(c)) }
+    fn page_epoch(&self) -> u32 { each!(self, c => CardSource::<H>::page_epoch(c)) }
+    fn revision(&self) -> Option<u64> { each!(self, c => CardSource::<H>::revision(c)) }
 }

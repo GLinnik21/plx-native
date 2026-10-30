@@ -21,6 +21,16 @@ To browse and play media, update watch progress and use server features, PlxNati
 directly with the Plex Media Servers you select. Those requests are handled by the selected server
 and its operator. PlxNative’s developer does not receive them.
 
+## Your Seerr server (optional)
+
+If you enter the address of a Seerr, Overseerr or Jellyseerr server under Settings → Services →
+Seerr, PlxNative communicates directly with that server, which you or your household run. To sign
+in there it sends the server the Plex account token of the profile that is watching (the server
+checks it with Plex and answers with a session); afterwards it sends your searches, the titles you
+open and the requests you make. The address is stored on this television; the session is kept only
+in memory. Nothing is sent to a Seerr server unless you enter its address, and PlxNative's developer
+does not receive any of it.
+
 ## Data stored on this television
 
 PlxNative has a developer-only input/frame recorder used to reproduce and test bugs. It is not

@@ -180,7 +180,7 @@ pub struct AuthContext {
 /// the account whose profile it was: `subtitle_offsets` (the timing correction a profile tuned for
 /// one item, naming a `machineIdentifier` and a ratingKey), `library_sorts` (how each library was
 /// last browsed) and `last_library` (the library each top tab opened in), the last two naming a
-/// server and a section.
+/// server and a section. `seerr_sign_ins` holds each profile's Seerr account session, a credential.
 pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &[
     "server_key_pins",
     "plaintext_consent",
@@ -189,6 +189,7 @@ pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &[
     "subtitle_offsets",
     "library_sorts",
     "last_library",
+    "seerr_sign_ins",
 ];
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]

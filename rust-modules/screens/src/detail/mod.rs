@@ -33,6 +33,8 @@ use crate::registry::{key_cap, unlive_excess, EvictOrder, PlayIntent};
 use plx_plex::plex::ServerId;
 use plx_data::stores::metadata::MetadataCmd;
 use plx_data::stores::viewstate::ViewStateCmd;
+use plx_data::seerr::{MediaKind, SeerrData, SeerrError, SeerrOp};
+use plx_data::stores::seerr::{offer, Answer, Offer, SeerrCmd, SeerrStore, Slot};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::hstack::{Flow, Item};
 use plx_ui::cards as ui_cards;
@@ -96,7 +98,7 @@ const K_STRIP_SCROLL: f32 = 240.0;
 /// of the spring.
 const PILL_PAGE_PX: f32 = 24.0;
 
-pub const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
+pub const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>,seerr_asked:opt<u64>}";
 
 // The blocks packed end to end: each section starts where the one before it ends, so the chain
 // proves they are disjoint. The episodes come last, at 2^30, and end where the engine keys begin.
@@ -319,6 +321,13 @@ pub struct DetailScreen {
     watchlist: plx_appkit::watchlist_disc::Disc,
     /// The loaded item's catalog id (movie or show guid, decoded once), mirrored for the app's feed.
     watchlist_hex: Option<[u8; 12]>,
+    /// The show's TMDB id this page has asked the household's Seerr store about (docs/seerr.md):
+    /// once per page, so returning to a show reads its seasons afresh. Hashed: it decides an ask.
+    seerr_asked: Option<i64>,
+    /// The Seerr request disc's face, read from the store once a tick ([`Self::read_request`]) so
+    /// every reader of [`Self::hero_set`] in a frame sees one answer. Render state, not hashed:
+    /// it is the store's, and the store's revision moves with it.
+    request_face: Option<hero::RequestFace>,
     season_metrics: season::Metrics,
     about_rows: about::Rows,
     /// The page's own keyed ground. Deliberately a bare [`AmbientWash`] and not the shared
@@ -596,6 +605,8 @@ impl DetailScreen {
             disc_unfurl: [Spring::at(0.0); hero::DISCS],
             watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown),
             watchlist_hex: None,
+            seerr_asked: None,
+            request_face: None,
             season_metrics: season::Metrics::new(),
             about_rows: about::Rows::new(),
             ground,
@@ -3107,6 +3118,7 @@ impl DetailScreen {
                         // At either rest the plain face; only a flip in flight layers the fill.
                         hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist.pos()).0,
                         hero::HeroCtl::Version => hero::VERSION_ICON,
+                        hero::HeroCtl::Request => set.request.map_or(plx_ui::icons::Icon::Plus, hero::RequestFace::icon),
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -3116,7 +3128,7 @@ impl DetailScreen {
                         .palette(palette)
                         .ground(ground)
                         .scale(scale);
-                    if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show(meta)) {
+                    if let Some((slot, label)) = hero::disc_verb(ctl, set, self.named_show(meta)) {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
                     }
                     if ctl == hero::HeroCtl::Watchlist {
@@ -3442,6 +3454,25 @@ impl Located {
     }
 }
 
+/// The Seerr request disc's face for the show `tmdb`, from the store's two answers about it: its
+/// detail (which seasons the server neither holds nor was asked for) and the request this page or
+/// the title page made. `None`, no disc: the detail has not landed or failed, or nothing is left to
+/// ask for and no request of it was answered.
+pub(crate) fn request_face(store: &SeerrStore, tmdb: i64) -> Option<hero::RequestFace> {
+    use hero::RequestFace as Face;
+    let detail = store.title_detail(MediaKind::Tv, tmdb)?;
+    let request = store.answer(&Slot::Request(MediaKind::Tv, tmdb));
+    match (offer(detail, request), request) {
+        (Offer::Sending, _) => Some(Face::Sending),
+        (Offer::Nothing, Some(Answer::Ready(SeerrData::Requested))) => Some(Face::Sent),
+        (Offer::Nothing, _) => None,
+        (Offer::Request(_), Some(Answer::Failed(SeerrError::AlreadyRequested))) => Some(Face::AlreadyAsked),
+        (Offer::Request(_), Some(Answer::Failed(SeerrError::Forbidden))) => Some(Face::Refused),
+        (Offer::Request(_), Some(Answer::Failed(_))) => Some(Face::Failed),
+        (Offer::Request(_), _) => Some(Face::Ask),
+    }
+}
+
 impl LogicalState for DetailScreen {
     fn write(&self, w: &mut Canon) {
         debug_assert!(!SHAPE.is_empty());
@@ -3491,6 +3522,14 @@ impl LogicalState for DetailScreen {
             }
             None => {
                 w.bool(false);
+            }
+        }
+        match self.seerr_asked {
+            Some(tmdb) => {
+                w.bool(true).u64(tmdb as u64);
+            }
+            None => {
+                w.bool(false).u64(0);
             }
         }
         // **No panel byte at all any more.** All three of this page's panels are `ModalStack`
@@ -3810,12 +3849,13 @@ impl DetailScreen {
         self.season_pop
             .step(matches!(focused, Some(Located::Season(_))).then_some(0), dt);
         let disc = match focused {
-            Some(Located::Hero(c)) => hero::disc_verb(c, self.named_show(meta)).map(|(i, _)| i),
+            Some(Located::Hero(c)) => hero::disc_verb(c, hero_set, self.named_show(meta)).map(|(i, _)| i),
             _ => None,
         };
         // The bookmark disc's flip, and the identity the app's feed reads. Decorative: it moves
         // no layout, so it never holds a page image.
         self.watchlist_hex = self.detail(meta).and_then(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid));
+        self.read_request(H::seerr(cx), meta, fx);
         let watchlist_moving = self.watchlist.step(dt);
         for (i, spring) in self.disc_unfurl.iter_mut().enumerate() {
             spring.step(
@@ -4297,6 +4337,36 @@ impl DetailScreen {
         true
     }
 
+    /// The show's TMDB id, the one this page's Seerr asks are about: only a SHOW's page (a season,
+    /// an episode or a movie has no seasons to request), and only one whose server sent the id.
+    fn seerr_tmdb(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<i64> {
+        self.detail(meta).filter(|d| d.kind == "show").and_then(|d| d.tmdb)
+    }
+
+    /// One tick of the Seerr request disc (docs/seerr.md): ask the household's Seerr server about
+    /// the show once per page, and read the disc's face from the store's answers. A store with no
+    /// address asks nothing and shows no disc; so does a show the server has no season missing of.
+    fn read_request<H: ContentLike>(
+        &mut self,
+        seerr: Option<&SeerrStore>,
+        meta: plx_data::metadata::MetadataView<'_>,
+        fx: &mut Effects<'_, H>,
+    ) {
+        let tmdb = self.seerr_tmdb(meta).filter(|_| seerr.is_some_and(SeerrStore::configured));
+        if let Some(tmdb) = tmdb.filter(|&t| self.seerr_asked != Some(t)) {
+            self.seerr_asked = Some(tmdb);
+            let (kind, slot) = (MediaKind::Tv, Slot::Detail(MediaKind::Tv, tmdb));
+            fx.push(Fx::App(AppFx::Store(StoreId::Seerr, StoreCmd::Seerr(SeerrCmd::Ask {
+                slot, op: SeerrOp::Detail { kind, tmdb },
+            }))));
+        }
+        let face = tmdb.zip(seerr).and_then(|(tmdb, store)| request_face(store, tmdb));
+        if face != self.request_face {
+            self.request_face = face;
+            fx.invalidate(Provenance::Nav);
+        }
+    }
+
     fn hero_set(&self, meta: plx_data::metadata::MetadataView<'_>) -> hero::HeroSet {
         let (restart, mark) = self
             .detail(meta)
@@ -4319,6 +4389,7 @@ impl DetailScreen {
             alt: self.alt_available(meta),
             mark,
             watchlist: self.detail(meta).is_some_and(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid).is_some()),
+            request: self.request_face,
         }
     }
 
@@ -4446,7 +4517,7 @@ impl DetailScreen {
         fx.invalidate(Provenance::Input);
     }
 
-    fn activate_hero<H: ContentLike>(
+    fn activate_hero<H: ContentLike + crate::registry::MetadataLike>(
         &mut self,
         ctl: hero::HeroCtl,
         cx: &Cx<'_, H>,
@@ -4515,6 +4586,37 @@ impl DetailScreen {
                             act, sid: d.sid, item: None, season: None, loaded_episode: false, from_home: false,
                         })));
                     }
+                }
+            }
+            // The Seerr request disc: every season the server neither holds nor was asked for, as
+            // one request (the title page's pill, `plx_data::stores::seerr::offer`). A user Seerr
+            // lets choose where it goes gets the request menu (`screens::seerr_request`), anchored
+            // to the disc; anyone else's press sends it. The store's answer turns the face; a
+            // refused or failed request is pressed again.
+            hero::HeroCtl::Request => {
+                let Some(tmdb) = self.seerr_tmdb(meta) else { return };
+                let Some(store) = H::seerr(cx) else { return };
+                if !self.request_face.is_some_and(hero::RequestFace::presses) {
+                    return;
+                }
+                let Some(detail) = store.title_detail(MediaKind::Tv, tmdb) else { return };
+                let Offer::Request(seasons) = offer(detail, store.answer(&Slot::Request(MediaKind::Tv, tmdb))) else {
+                    return;
+                };
+                if store.may_choose_options() {
+                    let set = self.hero_set(meta);
+                    let Some(i) = hero::index_of(set, ctl) else { return };
+                    let widths = hero::hero_widths(cx.measure, set, set.restart, self.disc_unfurl.map(|s| s.pos),
+                        self.named_show(meta));
+                    let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y, widths);
+                    rect.y -= self.scroll.pos;
+                    let anchor = [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits);
+                    self.content(fx, ContentReq::Panel(ContentPanel::SeerrRequest { kind: MediaKind::Tv, tmdb, anchor }));
+                } else {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Seerr, StoreCmd::Seerr(SeerrCmd::Ask {
+                        slot: Slot::Request(MediaKind::Tv, tmdb),
+                        op: SeerrOp::Request { kind: MediaKind::Tv, tmdb, seasons, options: Default::default() },
+                    }))));
                 }
             }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
