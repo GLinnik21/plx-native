@@ -51,7 +51,8 @@ pub(super) fn note_focused<H: Host, S: CardSource<H>>(pr: Painter, rect: Rect, i
 
 pub struct Shelf {
     entry: EntryId,
-    style: &'static RowStyle,
+    /// By value ([`RowStyle`] is `Copy`): a strip's cards may be sized at runtime, by a HUD package.
+    style: RowStyle,
     row: CardRow,
     /// What the `FocusMoved`s since the last tick said: a deliberate move (`By::Dir` /
     /// `By::Pointer`) grows its cell from rest, any other arrival is adopted at full pop, and none
@@ -123,7 +124,7 @@ struct WalkKey {
 }
 
 impl Shelf {
-    pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
+    pub const fn new(entry: EntryId, style: RowStyle) -> Self {
         Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), epoch: 0, head: 0, anchor: None,
             margin: 0.0, dormant: false, slept: false, returning: false, pool: RowPool::new(),
             warm: Warm { last: None, forward: true, walk: None }, landing: Landing::new() }
@@ -230,8 +231,8 @@ impl Shelf {
         self.dormant && !(self.returning && seated.is_some())
     }
 
-    pub fn style(&self) -> &'static RowStyle {
-        self.style
+    pub fn style(&self) -> &RowStyle {
+        &self.style
     }
 
     /// The y the screen last laid the shelf out at (kept in the motion canon).
@@ -245,7 +246,7 @@ impl Shelf {
 
     /// How far card `i`'s caption block still trails the scroll (`n` cards in the shelf).
     pub fn settle_lag(&self, n: usize, i: usize) -> f32 {
-        self.row.settle_lag(n, i, self.style)
+        self.row.settle_lag(n, i, &self.style)
     }
 
     /// The one entry: feed it every event the screen receives.
@@ -288,7 +289,7 @@ impl Shelf {
                         // now, so the layout the owner reads on this very event (the page drawn this
                         // frame is the one the dip captures) already has them, not a tick after, and
                         // no glide plays on under the image.
-                        self.row.settle_seat(a, src.len(), self.style);
+                        self.row.settle_seat(a, src.len(), &self.style);
                     }
                 }
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| here(&k.elem));
@@ -357,7 +358,7 @@ impl Shelf {
                     // past its dissolve), so what was lifted is at rest now
                     self.row.snap_to_rest();
                 } else {
-                    self.row.update(src.len(), None, self.style, dt);
+                    self.row.update(src.len(), None, &self.style, dt);
                     self.row.park();
                 }
             }
@@ -384,7 +385,7 @@ impl Shelf {
             } else {
                 self.row.relocate(p, q, dx);
             }
-            self.row.clamp_scroll(src.len(), self.style);
+            self.row.clamp_scroll(src.len(), &self.style);
             self.row.refocus(q);
             self.landed = Some(Landed { from: p, to: q });
             // a deliberate move was announced by the index it had in whichever window stood then
@@ -405,7 +406,7 @@ impl Shelf {
                     } else {
                         self.row.relocate(p, i, dx);
                     }
-                    self.row.clamp_scroll(src.len(), self.style);
+                    self.row.clamp_scroll(src.len(), &self.style);
                     self.landed = Some(Landed { from: p, to: i });
                 }
                 // a restore, a reconcile, a seat: adopted whole, the old tile straight to rest
@@ -413,7 +414,7 @@ impl Shelf {
                     if let Some(p) = prev {
                         self.row.rest(p);
                     }
-                    self.row.adopt(i, self.style);
+                    self.row.adopt(i, &self.style);
                 }
                 _ => {}
             }
@@ -439,7 +440,7 @@ impl Shelf {
             self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
         }
         if focus.is_some() || !self.row.at_exact_rest() {
-            self.row.update(src.len(), focus, self.style, dt);
+            self.row.update(src.len(), focus, &self.style, dt);
             if focus.is_none() {
                 self.row.park();
             }
@@ -829,7 +830,7 @@ impl Shelf {
         let cell = |index: f32| {
             let rect = Rect::new(self.style.margin_x + index * pitch, y, self.style.w, self.style.h);
             if crate::on_axis(rect.x - sx, rect.w, SCR_W, self.margin) {
-                card_row::draw_tile(pr, Art::Poster(None), rect, 1.0, self.style, None);
+                card_row::draw_tile(pr, Art::Poster(None), rect, 1.0, &self.style, None);
             }
         };
         if trailing {
@@ -863,7 +864,7 @@ impl Shelf {
             let s = g.lift.pos;
             let pr = pr.alpha(a);
             let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
-            card_row::draw_tile(pr, ghosts.art(j), rect, s, self.style, ghosts.progress(j));
+            card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.style, ghosts.progress(j));
             let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused };
             ghosts.overlay(pr, j, &tile, f.measure);
         }
@@ -951,13 +952,13 @@ impl Shelf {
             let label = self.focused_label(src, i, at);
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
-            card_row::draw_focused(pr, src.art(i), rect, s, self.style, src.progress(i), &label, f.measure);
+            card_row::draw_focused(pr, src.art(i), rect, s, &self.style, src.progress(i), &label, f.measure);
             #[cfg(feature = "devtriggers")]
             if !pr.is_recording() {
                 note_focused(pr, rect, i, src);
             }
         } else {
-            card_row::draw_tile(pr, src.art(i), rect, s, self.style, src.progress(i));
+            card_row::draw_tile(pr, src.art(i), rect, s, &self.style, src.progress(i));
         }
         let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused };
         src.overlay(pr, i, &tile, f.measure);
@@ -970,7 +971,7 @@ impl Shelf {
     /// reads, so a test sees the ink the frame carries.
     fn focused_label<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, at: SectionFrame) -> TileLabel {
         self.row.reveal(src.label(i), at.below_rise)
-            .settling(self.row.settle_lag(src.len(), i, self.style))
+            .settling(self.row.settle_lag(src.len(), i, &self.style))
     }
 
     /// Test support: every caption LINE [`draw`](Self::draw) puts on screen now for the focused card,
@@ -1054,7 +1055,7 @@ impl Shelf {
     /// to its `n` cards, and leave it there until a key moves along it or a click lands on one of
     /// its cards ([`CardRow::glide`]).
     pub fn glide(&mut self, dx: f32, n: usize) {
-        self.row.glide(dx, n, self.style);
+        self.row.glide(dx, n, &self.style);
     }
 
     /// Release a row the pointer's glide holds: it follows its focused card again.
@@ -1064,7 +1065,7 @@ impl Shelf {
 
     /// Restore a saved viewport (`n` is the current card count).
     pub fn restore_scroll(&mut self, scroll: f32, n: usize) {
-        self.row.restore_scroll(scroll, n, self.style);
+        self.row.restore_scroll(scroll, n, &self.style);
     }
 
     /// How far the shelf's heading must rise, live, to clear the focused tile.

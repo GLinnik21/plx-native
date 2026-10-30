@@ -49,6 +49,32 @@ pub struct RowStyle {
     /// A reserve from the physical edge, intersected with the shared safe area;
     /// [`RowStyle::with_right_reserve`] is how a screen declares one.
     pub right_reserve: f32,
+    /// **Where a focused tile's label block starts**: centred on the card whenever the block sits
+    /// inside the panel (every row but the HUD's chapter strip), or at the card's own leading edge
+    /// ([`LabelStart::Leading`]). See [`anchor_label`].
+    pub label_start: LabelStart,
+    /// **A rim drawn over the focused tile** ([`Rim`]), `None` for every row but a strip of tiles
+    /// laid over the video plane (the HUD's chapters, `docs/hud-plugins.md` D11), where the tile's
+    /// own sheen does not read against moving picture.
+    pub rim: Option<Rim>,
+}
+
+/// Where a label block starts under its tile: [`RowStyle::label_start`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelStart {
+    /// Centred on the card when the block fits the panel there ([`anchor_label`]'s first case): the
+    /// default every shelf keeps.
+    Centre,
+    /// From the card's own leading edge: [`anchor_label`]'s centred case is skipped, so the name
+    /// and the time under a chapter card stand at its left as the card's own text does.
+    Leading,
+}
+
+/// A ring painted over the focused tile at its popped rect ([`RowStyle::rim`]): `width` px of `ink`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rim {
+    pub width: f32,
+    pub ink: [f32; 4],
 }
 impl RowStyle {
     /// The furthest a row of `n` cells scrolls: the content past the viewport, 0 for a row that
@@ -56,6 +82,16 @@ impl RowStyle {
     pub fn max_scroll(&self, n: usize) -> f32 {
         let viewport = SCR_W - 2.0 * self.margin_x;
         (n as f32 * (self.w + self.gap) - self.gap - viewport).max(0.0)
+    }
+
+    /// This style with its focused tile ringed by `rim` ([`RowStyle::rim`]).
+    pub const fn with_rim(self, rim: Rim) -> RowStyle {
+        RowStyle { rim: Some(rim), ..self }
+    }
+
+    /// This style with its label blocks started at the card's leading edge ([`LabelStart::Leading`]).
+    pub const fn with_leading_labels(self) -> RowStyle {
+        RowStyle { label_start: LabelStart::Leading, ..self }
     }
 
     /// This style with `r` px of the panel's right edge reserved — see [`RowStyle::right_reserve`].
@@ -82,6 +118,8 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: false,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
     /// the scroll, the glow ring and the heading lift are all one vocabulary — and a different
@@ -108,6 +146,8 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: false,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
     };
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
     /// magnification + scroll), so cast animates like the poster shelves.
@@ -129,6 +169,8 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: true,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -149,6 +191,8 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: true,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop.
@@ -1179,6 +1223,10 @@ pub fn draw_focused_tile_led(
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }
+    // over the video plane the tile's sheen is not a mark: the rim is, at full strength on the popped rect
+    if let Some(rim) = sty.rim {
+        p.rring(rect, rad, rim.width, rim.ink);
+    }
 }
 
 /// The bottom edge of the card drawn at `rect` (scale `s`) at its UNSCALED size, about the same
@@ -1593,9 +1641,16 @@ pub struct LabelRoom {
 /// The trailing edge is the card's, but never past `hi`: a card whose right edge is inside a
 /// reserved band (the Library's rail) ends its block where the band starts.
 pub fn anchor_label(lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -> LabelPlace {
+    anchor_label_from(LabelStart::Centre, lead, trail, w, want, room)
+}
+
+/// [`anchor_label`] for a row whose [`RowStyle::label_start`] is `start`: [`LabelStart::Leading`] skips
+/// the centred first case and so starts the block at the card's leading edge, still keeping the
+/// trailing and gliding cases for a card with no room to its right.
+pub fn anchor_label_from(start: LabelStart, lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -> LabelPlace {
     let cx = (lead + trail) * 0.5;
     let x = cx - w * 0.5;
-    if x >= room.lo && x + w <= room.hi {
+    if start == LabelStart::Centre && x >= room.lo && x + w <= room.hi {
         return LabelPlace { x, w, align: LabelAlign::Centre };
     }
     // Whole pixels: the room left before the panel edge is what the runs marquee against, and a
@@ -1721,7 +1776,7 @@ pub fn place_label_wide(p: Painter, rect: Rect, sty: &RowStyle, w: f32, want: f3
         floor: sty.margin_x - settled_dx,
     };
     let lead = rect.cx() - sty.w * 0.5;
-    anchor_label(lead, lead + sty.w, w, want, room)
+    anchor_label_from(sty.label_start, lead, lead + sty.w, w, want, room)
 }
 
 /// The focused tile's single-line title, drawn in the block `at`: plain whenever the run fits the
@@ -2403,6 +2458,47 @@ mod tests {
 
     /// A 1920 panel with the usual air at both edges and the 96px content margin.
     const ROOM: LabelRoom = LabelRoom { lo: EDGE_PAD, hi: SCR_W - EDGE_PAD, floor: MARGIN_X };
+
+    /// **`RowStyle::label_start`** (`docs/hud-plugins.md` D11): `Leading` skips the centred first case,
+    /// so a block that WOULD sit centred under its card starts at the card's own leading edge instead;
+    /// `Centre`, the default every row keeps, is `anchor_label` itself.
+    #[test]
+    fn a_leading_label_start_skips_the_centred_case_and_the_default_is_unchanged() {
+        // 288 wide card at x 700, a 200 wide block: centred it would start at 744
+        let (lead, trail) = (700.0, 988.0);
+        let centred = anchor_label(lead, trail, 200.0, 200.0, ROOM);
+        assert_eq!((centred.x, centred.align), (744.0, LabelAlign::Centre));
+        assert_eq!(anchor_label_from(LabelStart::Centre, lead, trail, 200.0, 200.0, ROOM), centred, "the default is the old function");
+        let leading = anchor_label_from(LabelStart::Leading, lead, trail, 200.0, 200.0, ROOM);
+        assert_eq!((leading.x, leading.w, leading.align), (lead, 200.0, LabelAlign::Leading));
+        // every shipped style keeps the centred case, and none carries a rim
+        for sty in [RowStyle::HOME, RowStyle::EPISODE, RowStyle::CAST] {
+            assert_eq!((sty.label_start, sty.rim), (LabelStart::Centre, None));
+        }
+        let strip = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME }.with_leading_labels();
+        let p = Painter::root();
+        let rect = Rect::new(lead, 700.0, 288.0, 162.0);
+        assert_eq!(place_label(p, rect, &strip, 200.0, 0.0).align, LabelAlign::Leading);
+        assert_eq!(place_label(p, rect, &RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME }, 200.0, 0.0).align, LabelAlign::Centre);
+    }
+
+    /// **`RowStyle::rim`**: a focused tile of a style with a rim paints one `rring` over its popped
+    /// rect; the same tile of any other style paints none (so no other Shelf's frame changes).
+    #[test]
+    fn a_rim_rings_the_focused_tile_only_when_the_style_asks() {
+        let rings = |sty: &RowStyle| {
+            crate::draw_census::capture(|| {
+                draw_focused_tile_led(Painter::recording(), Art::Poster(None), Rect::new(100.0, 100.0, 288.0, 162.0), 1.07, sty, None, None)
+            })
+            .iter()
+            .filter(|(tag, _)| *tag == 3)
+            .count()
+        };
+        let plain = RowStyle { w: 288.0, h: 162.0, ..RowStyle::HOME };
+        assert_eq!(rings(&plain), 0, "no style but the HUD strip's rings its tile");
+        let rimmed = plain.with_rim(Rim { width: 2.5, ink: theme::CONTROL_RIM_FOCUS_UNKEYED });
+        assert_eq!(rings(&rimmed), 1, "one rim over the popped rect");
+    }
 
     /// A block that fits centred under its card is exactly where it always was: nothing is
     /// clipped, so nothing moves.

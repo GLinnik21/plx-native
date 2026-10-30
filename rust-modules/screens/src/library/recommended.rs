@@ -296,7 +296,7 @@ fn row_style(row: &Row) -> &'static RowStyle { hub_style(row.landscape) }
 /// A hub row's card section. Cards a screen's width off to either side still paint: a popped
 /// card's shadow reaches onto the screen from beyond its edge.
 fn hub_cards(entry: EntryId, landscape: bool) -> ui_cards::Shelf {
-    ui_cards::Shelf::new(entry, hub_style(landscape)).cull_margin(32.0)
+    ui_cards::Shelf::new(entry, *hub_style(landscape)).cull_margin(32.0)
 }
 
 /// The panel the rows' cards are placed and hit-tested in: everything under the top bar.
