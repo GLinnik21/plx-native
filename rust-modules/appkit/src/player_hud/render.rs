@@ -734,6 +734,34 @@ mod tests {
             (a - b).abs() < 0.01
         }
 
+        /// A chapter the server named nothing draws "Chapter N" on both sides, in the same place.
+        #[test]
+        fn an_unnamed_chapter_is_named_by_its_number_as_the_strip_names_it() {
+            let (new, old) = both(chapters(&["Opening", "", "The Chase"]), 0);
+            let named = |s: &Side| s.runs.iter().find(|r| r.text == "Chapter 2").map(|r| (r.size, r.ink, r.bold, r.at.x, r.at.y));
+            assert!(named(&old).is_some(), "the strip draws `Chapter 2`: {:?}", old.runs);
+            assert_eq!(named(&new), named(&old));
+        }
+
+        /// **D11's marquee, the one visible difference on a chapter at rest.** The hand-written strip elides a
+        /// name wider than the card (288) wherever it stands; the Shelf elides an UNFOCUSED name the same way
+        /// (still) and sets the FOCUSED one in its block, which is as wide as the Shelf's label window
+        /// (`under_budget`: two cards and two gaps) and glides past that. The unfocused names are equal.
+        #[test]
+        fn a_long_focused_name_shows_whole_where_the_strip_elides_it() {
+            let long = "The Very Long Chapter Name That Does Not Fit A Card";
+            let (new, old) = both(chapters(&[long, "Dinner", long]), 0);
+            let name = |s: &Side, at: f32| s.runs.iter().find(|r| r.size == theme::size::LABEL && (r.at.x - at).abs() < 1.0).map(|r| (r.text.clone(), r.at.w));
+            let (focused_new, focused_old) = (name(&new, 96.0).expect("the focused name"), name(&old, 96.0).expect("the strip's"));
+            assert!(focused_old.1 <= 288.0 && focused_old.0.ends_with('\u{2026}'), "the strip elides it to the card: {focused_old:?}");
+            assert_eq!(focused_new.0, long, "the Shelf sets the whole name in its window");
+            assert!(focused_new.1 > 288.0, "…wider than the card: {focused_new:?}");
+            let third = 96.0 + 2.0 * (288.0 + 24.0);
+            assert_eq!(name(&new, third), name(&old, third), "an unfocused name elides as it did");
+            let times = |s: &Side| s.runs.iter().filter(|r| r.size == theme::size::CAPTION).map(|r| (r.text.clone(), r.at.x.round(), r.at.y.round())).collect::<Vec<_>>();
+            assert_eq!(times(&new), times(&old), "…and every time stands as it did");
+        }
+
         /// The strip draws what the hand-written strip draws: the same runs (the words, their size, ink, weight and
         /// alignment, where each stands and how wide it is) and the same ring (rect and corner), on the first and the
         /// second chapter (the two seats both scroll rules leave at 0).
