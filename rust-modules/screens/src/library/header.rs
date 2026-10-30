@@ -48,6 +48,27 @@ fn item(label: impl Into<String>) -> HeaderItem {
     HeaderItem { label: label.into(), focusable: true, ..Default::default() }
 }
 
+/// A control that opens a page (Collections, Recommended): the row draws a chevron after it.
+fn place(label: impl Into<String>) -> HeaderItem {
+    HeaderItem { place: true, ..item(label) }
+}
+
+/// **The sort control** (the board's "= Date added v"): the sort icon, the chosen criterion and a
+/// quiet down chevron. `name` is what the control is called ("Sort & Filter": its menu's title and
+/// its identity in the row), carried by the item and not drawn; `value` is the criterion, the only
+/// text it shows. The Library's row and the Collections page's wear this one declaration.
+pub(super) fn sort_control(name: impl Into<String>, value: impl Into<String>) -> HeaderItem {
+    HeaderItem {
+        value: Some(value.into()), glyph: Some(plx_ui::icons::Icon::Sort), value_only: true, fold_glyph: true,
+        fold_quiet: true, ..item(name)
+    }
+}
+
+/// The hairline between the places and the sort control. Not a stop.
+fn divider() -> HeaderItem {
+    HeaderItem { divider: true, ..Default::default() }
+}
+
 impl LibraryScreen {
     /// Every focusable element of the header row in focus order: the library names, "+N", then
     /// the controls (on the Collections page, the crumb's root, then Sort).
@@ -137,7 +158,7 @@ impl LibraryScreen {
         // must not repack between the two (the room they pack into is measured once and never
         // moves).
         let slot_of = |count: u32| Some(locale.number(i64::from(count.max(999))));
-        let control = |value, slot| HeaderItem { value, value_slot: slot, ..item(msg::library_header_collections()) };
+        let control = |value, slot| HeaderItem { value, value_slot: slot, ..place(msg::library_header_collections()) };
         match self.collections {
             CollectionsControl::Count(count) => {
                 let slot = slot_of(count);
@@ -151,15 +172,20 @@ impl LibraryScreen {
             }
         }
         right.push(HeaderItem { selected_plate: self.listing == Listing::Recommended,
-            ..item(msg::library_header_recommended()) });
-        widest.push(item(msg::library_header_recommended()));
+            ..place(msg::library_header_recommended()) });
+        widest.push(place(msg::library_header_recommended()));
+        // The divider and the sort control draw what the criterion says, with no slot for it: the
+        // control ends at the row's edge and the places slide as the criterion's width changes. The
+        // widest criterion only sizes the room the library names may use.
+        right.push(divider());
+        widest.push(divider());
         let sort = self.sort_value(cx);
         let longest = H::listing(cx).sorts().iter().map(|sort| sort.label()).chain([sort.as_str()])
-            .max_by(|a, b| page_header::cluster_width(&[item(*a)], cx.measure)
-                .total_cmp(&page_header::cluster_width(&[item(*b)], cx.measure)))
+            .max_by(|a, b| page_header::cluster_width(&[sort_control("", *a)], cx.measure)
+                .total_cmp(&page_header::cluster_width(&[sort_control("", *b)], cx.measure)))
             .unwrap_or_default().to_owned();
-        right.push(HeaderItem { value: Some(sort), fold_glyph: true, ..item(msg::library_header_sort_filter()) });
-        widest.push(HeaderItem { value: Some(longest), fold_glyph: true, ..item(msg::library_header_sort_filter()) });
+        right.push(sort_control(msg::library_header_sort_filter(), sort));
+        widest.push(sort_control(msg::library_header_sort_filter(), longest));
         (right, widest)
     }
 
@@ -294,12 +320,16 @@ impl LibraryScreen {
     /// its page name, the title, is none.
     fn header_row(&self, page: PageHeader, layout: page_header::HeaderLayout) -> HeaderRow {
         let controls = self.toolbar_elems();
-        let first_control = page.spec().right.iter().position(|it| it.focusable).unwrap_or(0);
         let stops = layout.items.iter().enumerate().filter(|(_, rect)| rect.focusable).filter_map(|(index, rect)| {
             let elem = match rect.slot {
                 Slot::Left(i) => self.libraries.get(i).map(|(elem, _)| *elem),
                 Slot::Overflow => Some(MORE),
-                Slot::Right(i) => i.checked_sub(first_control).and_then(|i| controls.get(i).copied()),
+                // The n-th FOCUSABLE right item is the n-th control: a read-out before them and the
+                // divider among them are no stops.
+                Slot::Right(i) => {
+                    let rank = page.spec().right[..i].iter().filter(|it| it.focusable).count();
+                    controls.get(rank).copied()
+                }
                 Slot::CrumbRoot => Some(CRUMB_ROOT),
                 Slot::CrumbPage => None,
             };

@@ -87,27 +87,97 @@ fn the_collections_control_is_on_the_row_only_with_a_known_count_for_this_librar
 
 /// **One rule spaces the right cluster** (the owner's photo: `Collections · 4` and `Recommended`
 /// stood a wide gap apart and `Recommended` and `Sort & Filter` a narrow one). Every adjacent pair
-/// of the cluster's items stands exactly one `GAP` apart on the drawn text, whatever the count
-/// is, or whether the control is there at all. (The slot the count is placed for sizes only the
-/// budget the names pack into.)
+/// of the cluster's controls stands exactly one `GAP` apart on the drawn text, whatever the count
+/// is, or whether the control is there at all; the divider before the sort control adds its own
+/// width and both its margins to the gap it stands in, and the controls it separates stay that
+/// gap apart plus exactly that. (The slot the count is placed for sizes only the budget the names
+/// pack into.)
 #[test]
 fn every_gap_of_the_right_cluster_is_one_gap_whatever_the_collections_count_is() {
-    use plx_ui::page_header::{Slot, GAP};
+    use plx_ui::page_header::{Slot, DIVIDER_MARGIN, DIVIDER_W, GAP};
     let _guard = plx_base::testlock::serial();
     for answer in [Ok(4), Ok(6), Ok(123), Ok(1_234), Ok(0)] {
         knows_collections(&[(1, answer)]);
         let (_, page, _) = grid_page(2);
         let row = page.header.row().unwrap();
         let cluster: Vec<_> = row.layout.items.iter()
-            .filter_map(|rect| match rect.slot { Slot::Right(i) => Some((rect, &row.page.spec().right[i])), _ => None }).collect();
+            .filter_map(|rect| match rect.slot { Slot::Right(i) => Some((rect, &row.page.spec().right[i])), _ => None })
+            .filter(|(_, item)| !item.divider).collect();
         assert_eq!(cluster.len(), if answer == Ok(0) { 2 } else { 3 }, "{answer:?}: the controls on the row");
         for pair in cluster.windows(2) {
             let gap = pair[1].0.text.x - (pair[0].0.text.x + pair[0].0.text.w);
-            assert!((gap - GAP).abs() < 0.01, "{answer:?}: {} -> {} is {gap} apart, not {GAP}", pair[0].1.label, pair[1].1.label);
+            // The sort control is the one a divider stands before.
+            let want = GAP + if pair[1].1.glyph.is_some() { DIVIDER_W + 2.0 * DIVIDER_MARGIN } else { 0.0 };
+            assert!((gap - want).abs() < 0.01, "{answer:?}: {} -> {} is {gap} apart, not {want}", pair[0].1.label, pair[1].1.label);
         }
         let last = cluster.last().unwrap().0.text;
         assert!((last.x + last.w - plx_ui::page_header::TEXT_X1).abs() < 0.01, "{answer:?}: the cluster ends at the right text edge");
     }
+}
+
+/// **The board's cluster, declared**: Collections and Recommended are places (a chevron), the
+/// divider is no stop, and the sort control is its icon + the criterion + a down chevron whose
+/// name ("Sort & Filter") is carried and not drawn. The stops are exactly the old three, in order.
+#[test]
+fn the_cluster_declares_places_a_divider_and_a_value_only_sort_control() {
+    use plx_ui::page_header::Slot;
+    let _guard = plx_base::testlock::serial();
+    knows_collections(&[(1, Ok(4))]);
+    let (_, page, _) = grid_page(2);
+    let row = page.header.row().unwrap();
+    let right = &row.page.spec().right;
+    assert_eq!(right.iter().map(|it| (it.place, it.divider)).collect::<Vec<_>>(),
+        [(true, false), (true, false), (false, true), (false, false)], "Collections, Recommended, divider, sort");
+    let divider = row.layout.items.iter().find(|r| r.slot == Slot::Right(2)).unwrap();
+    assert!(!divider.focusable && !right[2].focusable, "the divider is no stop");
+    let sort = &right[3];
+    assert_eq!(sort.label, plx_platform::i18n::msg::library_header_sort_filter(), "its name stays 'Sort & Filter'");
+    assert!(sort.value_only && sort.fold_glyph && sort.fold_quiet && sort.glyph == Some(plx_ui::icons::Icon::Sort));
+    assert!(sort.value.is_some());
+    let elems: Vec<u32> = row.stops.iter().map(|(elem, _)| *elem).collect();
+    assert_eq!(&elems[elems.len() - 3..], [COLLECTIONS, RECOMMENDED, SORTFILTER]);
+    assert_eq!(&elems[elems.len() - 3..], page.toolbar_elems());
+    knows_collections(&[]);
+}
+
+/// **No reserved slot for the criterion, in any shipped language**: the longest criterion every
+/// language has neither truncates nor moves the library names, which are packed against the room
+/// the WIDEST criterion leaves, so a short value ("Year") beside them leaves no hole and a long one
+/// ("Last episode added" in Russian) does not push them.
+#[test]
+fn a_criterion_in_every_language_takes_its_own_width_and_never_moves_the_names() {
+    use plx_ui::page_header::{Slot, TEXT_X1};
+    let _guard = plx_base::testlock::serial();
+    knows_collections(&[(1, Ok(4))]);
+    let (fixture, page, engine) = grid_page(2);
+    let cx = fixture.cx(&engine);
+    let criteria = ["Year", "Date added", "Последняя добавленная серия", "Zuletzt hinzugefügte Folge", "Aggiunti di recente al catalogo"];
+    let (right, mut widest) = page.header_right(&cx);
+    // The page's own widest case holds the longest of the LISTING's sorts; these criteria are the
+    // longest a language has, so the widest case is rebuilt around the longest of them, as it is
+    // for a listing that declares them.
+    let width = |text: &str| plx_ui::page_header::cluster_width(&[super::header::sort_control("", text)], cx.measure);
+    let longest = criteria.iter().copied().max_by(|a, b| width(a).total_cmp(&width(b))).unwrap();
+    let last_widest = widest.len() - 1;
+    widest[last_widest] = super::header::sort_control(widest[last_widest].label.clone(), longest);
+    let names_budget = |items: &[plx_ui::page_header::HeaderItem]| {
+        plx_ui::page_header::PageHeader::new(
+            plx_ui::page_header::PageHeaderSpec { right: items.to_vec(), ..Default::default() }, &widest, cx.measure)
+            .layout(plx_ui::consts::SCR_W, cx.measure)
+    };
+    let base = names_budget(&right);
+    for criterion in criteria {
+        let mut items = right.clone();
+        let last = items.len() - 1;
+        items[last] = super::header::sort_control(items[last].label.clone(), criterion);
+        let placed = names_budget(&items);
+        assert_eq!(placed.left_budget, base.left_budget, "{criterion}: the names' room does not move");
+        let sort = placed.items.iter().find(|r| r.slot == Slot::Right(last)).unwrap().text;
+        assert!((sort.x + sort.w - TEXT_X1).abs() < 0.01, "{criterion}: the control ends at the text edge");
+        let width = plx_ui::page_header::cluster_width(&[items[last].clone()], cx.measure);
+        assert!((sort.w - width).abs() < 0.01, "{criterion}: the control is as wide as what it draws, with no slot");
+    }
+    knows_collections(&[]);
 }
 
 #[test]

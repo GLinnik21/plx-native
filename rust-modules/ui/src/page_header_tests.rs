@@ -983,6 +983,26 @@ fn board_row(criterion: &str) -> (PageHeader, HeaderLayout) {
     (page, layout)
 }
 
+/// **The sort control draws its criterion and nothing else**: the item's name ("Sort & Filter") is
+/// carried for the row's identity and the menu, and is never painted; the criterion starts one
+/// [`GLYPH_GAP`] past the icon's box and ends [`QUIET_FOLD_GAP`] short of the chevron's.
+#[test]
+fn the_sort_control_paints_the_criterion_only_after_its_icon() {
+    let _g = plx_base::testlock::serial();
+    let m = crate::widgets::LegacyMeasure;
+    let sort = HeaderItem {
+        glyph: Some(Icon::Sort), value_only: true, fold_glyph: true, fold_quiet: true, ..item("Sort & Filter", Some("Date added"))
+    };
+    let page = PageHeader::new(PageHeaderSpec { right: vec![sort.clone()], ..Default::default() }, &[sort], &m);
+    let layout = page.layout(1920.0, &m);
+    let at = layout.items.last().unwrap().text;
+    let runs = crate::draw_census::capture_runs(|| page.draw(Painter::recording(), &layout, &TabStrip::new(), 1.0, None));
+    assert_eq!(runs.len(), 1, "one run, the criterion: {:?}", runs.iter().map(|r| r.text.clone()).collect::<Vec<_>>());
+    assert_eq!(runs[0].text, "Date added");
+    assert_eq!(runs[0].at.x, at.x + GLYPH_SIZE + GLYPH_GAP);
+    assert_eq!(runs[0].at.x + runs[0].at.w + QUIET_FOLD_GAP + QUIET_FOLD_SIZE, at.x + at.w);
+}
+
 /// The text box of right item `i`.
 fn right_text(layout: &HeaderLayout, i: usize) -> Rect {
     layout.items.iter().find(|r| r.slot == Slot::Right(i)).expect("laid out").text
