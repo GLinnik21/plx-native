@@ -551,13 +551,19 @@ impl PageHeader {
         }
         x += value_slide - lead;
         for (value, opacity) in leaving.into_iter().chain(face.value.map(|value| (value, arriving))) {
-            if opacity <= 0.0 { continue; }
-            let leaving_value = face.value != Some(value);
+            let own = face.value == Some(value);
+            if opacity <= 0.0 && !own { continue; }
             if let Ok(v) = CString::new(value) {
-                let at = if leaving_value { x + from_dx } else { x };
-                let advance = p.alpha(opacity).text(v.as_ptr(), at, y, theme::size::BODY, to_accent(strong), 0, 0);
-                // The fold glyph follows the value the face wears, not the one leaving.
-                if face.value == Some(value) { value_end = x + advance; }
+                let at = if own { x } else { x + from_dx };
+                // The fold glyph follows the value the face wears, not the one leaving, and it stands
+                // where that value ENDS whether or not any of it is visible yet: a criterion that has
+                // not begun to arrive (frame zero of a slide) is not drawn, but still has its width.
+                let advance = if opacity > 0.0 {
+                    p.alpha(opacity).text(v.as_ptr(), at, y, theme::size::BODY, to_accent(strong), 0, 0)
+                } else {
+                    p.text_width_tracked(v.as_ptr(), theme::size::BODY, 0, 0.0)
+                };
+                if own { value_end = x + advance; }
             }
         }
         x = value_end;
@@ -773,9 +779,11 @@ fn carried(item: &HeaderItem) -> bool { item.value_slot.is_some() || item.readou
 /// Recommended and the divider stand where the row before had them and travel to the new row's
 /// places, the sort control's mark with them, on the swap's slide: the tab bar's own spring,
 /// critically damped, so with no overshoot; every drawn x is a function of its progress, so a landed
-/// or [`HeaderSwap::settle`]d spring is the new layout). The criterion itself cross-fades in place
-/// on the same progress and the control keeps its right edge. A switch ([`HeaderSwap::begin_switch`])
-/// slides nothing.
+/// or [`HeaderSwap::settle`]d spring is the new layout). The control itself keeps its right edge
+/// and its chevron: the criterion it replaces fades out at its own place and the new one fades in
+/// at its own, each ending at that edge ([`Criterion`]), on the same progress. A row built twice for
+/// one press (the queued sort, then the listing under it) carries that slide on, nothing jumping.
+/// A switch ([`HeaderSwap::begin_switch`]) slides nothing.
 ///
 /// **Held by the SCREEN beside the row's capsules**, for the same reason they are: the row is
 /// replaced whole on every rebuild, and the swap must outlive the row it began on. It is
@@ -803,11 +811,37 @@ pub struct HeaderSwap {
 }
 
 /// One right-cluster item a [`HeaderSwap`]'s slide carries: the item as the row before had it (its
-/// identity and its old value) and where its text stood, `from`, and stands now, `to`.
+/// identity and the value it is leaving, if it has a [`Criterion`]) and where its text stood,
+/// `from`, and stands now, `to`.
 struct Glide {
     item: HeaderItem,
     from: f32,
     to: f32,
+    /// Set for a control whose criterion changed: it keeps its right edge, so only what leads the
+    /// criterion (the mark) slides, and the criterion cross-fades.
+    criterion: Option<Criterion>,
+}
+
+/// **How a control that keeps its right edge swaps its criterion** while its mark slides: the
+/// criterion it replaces is drawn at ITS OWN rest x (`dx` px from where the new one rests, both
+/// ending at the control's one right edge) and fades out from the opacity it had when the slide
+/// began, `out0`; the new one is drawn at its own rest x and fades in from `in0`. The chevron after
+/// them is the new layout's and never moves. A slide begun from rest has `(1, 0)`; one picked up
+/// while another runs (a second build of the row, the listing that lands under the queued sort)
+/// starts from what the first has reached, so nothing jumps and the pair still sums to one.
+#[derive(Clone, Copy)]
+struct Criterion {
+    dx: f32,
+    out0: f32,
+    in0: f32,
+}
+
+impl Criterion {
+    /// The opacity of the criterion leaving, at slide progress `s`.
+    fn leaving(self, s: f32) -> f32 { self.out0 * (1.0 - s) }
+
+    /// The opacity of the criterion arriving, at slide progress `s`.
+    fn arriving(self, s: f32) -> f32 { self.in0 + (1.0 - self.in0) * s }
 }
 
 /// Is `a` the same control as `b`? A read-out is the read-out, a divider the divider, any other item
@@ -862,18 +896,33 @@ impl HeaderSwap {
     /// The right-cluster items that stand elsewhere on `new` than on `old` (or say another value
     /// while they do not dissolve): each where it is DRAWN now (a slide still running is picked up
     /// where it is, so a second change never jumps) and where it will stand.
+    ///
+    /// **A criterion that changed carries on a slide that already runs to it**: the row is built
+    /// twice for one press (the queued sort, then the listing that lands under it), and the second
+    /// build says the criterion the first already shows. That one is no new change: the criterion
+    /// it replaced keeps fading out from where it had got to, and the control's face stays what
+    /// it was (its mark sliding, the criterion and the chevron where the layout has them).
     fn glides_between(&self, old: &HeaderRow, new: &HeaderRow) -> Vec<Glide> {
         let spot = |row: &HeaderRow, i: usize| row.layout.items.iter().find(|r| r.slot == Slot::Right(i)).map(|r| r.text.x);
-        let shown = |item: &HeaderItem, x: f32| {
-            self.glides.iter().find(|g| same_item(&g.item, item)).map_or(x, |g| g.to + (g.from - g.to) * (1.0 - self.slide_progress()))
-        };
+        let s = self.slide_progress();
         let (before, after) = (&old.page.spec().right, &new.page.spec().right);
         after.iter().enumerate().filter(|(_, item)| !item.readout).filter_map(|(i, item)| {
             let (j, was) = before.iter().enumerate().find(|(_, was)| same_item(was, item))?;
-            let (to, from) = (spot(new, i)?, shown(was, spot(old, j)?));
+            let (rest, to) = (spot(old, j)?, spot(new, i)?);
+            let changed = was.value != item.value;
             // A slotted control whose value changed is the dissolve's (it leaves and arrives).
-            let dissolves = carried(item) && was.value != item.value;
-            (!dissolves && ((from - to).abs() >= SAME_X || was.value != item.value)).then(|| Glide { item: was.clone(), from, to })
+            if carried(item) && changed { return None; }
+            // Where it is drawn now: a slide still running is picked up there, so a second change never jumps.
+            let live = self.glides.iter().find(|g| same_item(&g.item, item));
+            let from = live.map_or(rest, |g| g.to + (g.from - g.to) * (1.0 - s));
+            let running = live.and_then(|g| g.criterion.map(|c| (c, g.item.value.clone())));
+            let (value, criterion) = match (changed, running) {
+                (false, Some((c, leaving))) => (leaving, Some(Criterion { dx: c.dx, out0: c.leaving(s), in0: c.arriving(s) })),
+                (true, running) => (was.value.clone(),
+                    Some(Criterion { dx: rest - to, out0: running.map_or(1.0, |(c, _)| c.arriving(s)), in0: 0.0 })),
+                (false, None) => (was.value.clone(), None),
+            };
+            ((from - to).abs() >= SAME_X || changed).then(|| Glide { item: HeaderItem { value, ..was.clone() }, from, to, criterion })
         }).collect()
     }
 
@@ -991,17 +1040,18 @@ impl HeaderSwap {
     }
 
     /// The slide's say about `item`: it stands `(from - to) * (1 - progress)` px from its place, the
-    /// whole face together. When its value changed too (the sort control's criterion) the face's
-    /// width changed with it and its right edge stays: the mark before the value slides, the value
-    /// and the chevron do not move, and the criterion it replaces cross-fades out where it stood
-    /// (`from - to` px from the new one's place, ending at the same edge). Both opacities come from
-    /// the slide's one progress, so they sum to 1 and end exact.
+    /// whole face together. A control whose criterion changed (the sort control's) changed width
+    /// with it and keeps its right edge: the mark before the criterion slides, the new criterion
+    /// stands at its own rest x and the chevron after it where the layout has it, so nothing of
+    /// the face is ever drawn right of that edge, and the criterion it replaces cross-fades out at
+    /// ITS rest x, ending at the same edge ([`Criterion`]). Both opacities come from the slide's one
+    /// progress, so they sum to 1 and end exact.
     fn glide_of<'a>(&'a self, item: &'a HeaderItem) -> Option<FaceFade<'a>> {
         let g = self.glides.iter().find(|g| same_item(&g.item, item))?;
         let (s, shift) = (self.slide_progress(), (g.from - g.to) * (1.0 - self.slide_progress()));
-        if g.item.value == item.value { return Some(FaceFade { lead: shift, value_slide: shift, ..FaceFade::fade(1.0, None, 1.0) }); }
-        let from_value = g.item.value.as_deref().map(|value| (value, 1.0 - s));
-        Some(FaceFade { lead: shift, value_slide: 0.0, from_dx: g.from - g.to, ..FaceFade::fade(1.0, from_value, if item.value.is_some() { s } else { 0.0 }) })
+        let Some(c) = g.criterion else { return Some(FaceFade { lead: shift, value_slide: shift, ..FaceFade::fade(1.0, None, 1.0) }); };
+        let leaving = g.item.value.as_deref().map(|value| (value, c.leaving(s)));
+        Some(FaceFade { lead: shift, value_slide: 0.0, from_dx: c.dx, ..FaceFade::fade(1.0, leaving, if item.value.is_some() { c.arriving(s) } else { 0.0 }) })
     }
 
     /// The faces of the row before that leave: a slotted control the new row (`right`, placed as

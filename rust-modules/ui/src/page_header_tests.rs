@@ -1167,3 +1167,169 @@ fn a_settled_slide_snaps_and_a_library_switch_slides_nothing() {
     running.begin_switch(&new, &old);
     assert!(!running.is_sliding(), "a switch ends a slide of the row it left");
 }
+
+/// The Library's right cluster laid out with the DRAW's own advances (`LegacyMeasure`), so the
+/// layout's widths and the painted runs' are the same numbers and a drawn edge can be compared with
+/// the layout's: Collections (a slotted count) and Recommended as places, the divider, and the sort
+/// control, whose criterion is `criterion`.
+fn drawn_cluster(criterion: &str) -> HeaderRow {
+    let m = crate::widgets::LegacyMeasure;
+    let place = |label: &str| HeaderItem { place: true, ..item(label, None) };
+    let collections = HeaderItem { value: Some("24".into()), value_slot: Some("999".into()), ..place("Collections") };
+    let sort = HeaderItem {
+        glyph: Some(Icon::Sort), value_only: true, fold_glyph: true, fold_quiet: true, ..item("Sort & Filter", Some(criterion))
+    };
+    let divider = HeaderItem { divider: true, ..Default::default() };
+    let spec = PageHeaderSpec { right: vec![collections, place("Recommended"), divider, sort], ..Default::default() };
+    let widest = spec.right.clone();
+    let page = PageHeader::new(spec, &widest, &m);
+    let layout = page.layout(1920.0, &m);
+    row_of(page, layout, &[(1, 0), (2, 1), (3, 3)])
+}
+
+/// What one frame of the cluster DRAWS: where each place, the divider, the sort control's icon and
+/// its chevron stand (boxes, as painted), and each criterion text as `(text, run, opacity)`.
+#[derive(Clone, Debug)]
+struct Shot { collections: f32, recommended: f32, divider: f32, icon: Rect, chevron: Rect, criteria: Vec<(String, Rect, f32)> }
+
+impl Shot {
+    fn of(row: &HeaderRow, swap: &HeaderSwap) -> Self {
+        let paint = || row.draw_with(Painter::recording(), 0.0, &TabStrip::new(), 1.0, None, swap);
+        let runs = crate::draw_census::capture_runs(paint);
+        let icon = |wanted: Icon| crate::draw_census::capture_icons(paint).into_iter().find(|(icon, _)| *icon == wanted).map(|(_, r)| r).expect("drawn");
+        let at = |name: &str| runs.iter().find(|run| run.text == name).map(|run| run.at.x).expect("drawn");
+        let divider = crate::draw_census::capture(paint).into_iter().find(|(tag, rect)| *tag == 2 && rect.w == DIVIDER_W).map(|(_, rect)| rect.x).expect("drawn");
+        let criteria = runs.iter().filter(|run| ["Title", "Date added", "Year"].contains(&run.text.as_str()))
+            .map(|run| (run.text.clone(), run.at, run.ink[3])).collect();
+        Self { collections: at("Collections"), recommended: at("Recommended"), divider, icon: icon(Icon::Sort), chevron: icon(Icon::ChevronDown), criteria }
+    }
+
+    /// The opacity the criterion `text` is drawn at (0 when it is not drawn).
+    fn opacity(&self, text: &str) -> f32 { self.criteria.iter().find(|(t, ..)| t == text).map_or(0.0, |c| c.2) }
+
+    /// Every number the shot holds that can move, in a fixed order.
+    fn numbers(&self) -> Vec<f32> {
+        let mut all = vec![self.collections, self.recommended, self.divider, self.icon.x, self.chevron.x];
+        for text in ["Title", "Date added", "Year"] { all.push(self.opacity(text)); }
+        all
+    }
+}
+
+/// **A criterion change, judged on what is DRAWN** (the first slide's tests judged the target layout
+/// and let the sort control swing 50 px past its right edge): `from` becomes `to` on the swap, with
+/// the row rebuilt unchanged at each frame in `rebuilds` (the Library's row is keyed on the queued
+/// sort AND on the listing that lands under it, so one press builds the row twice). On EVERY frame,
+/// the first before any step included:
+/// - the sort control's chevron stands where the new layout has it, exactly, and nothing of the
+///   control is drawn right of the text edge;
+/// - each criterion ends at the chevron's left (the old one at its own x, the new one at its own),
+///   and their opacities sum to one, the old falling and the new rising;
+/// - the places and the divider move monotonically from the old layout to the new one, never past
+///   it, and the icon travels with them;
+/// - a rebuild moves nothing that is on screen;
+///
+/// and the swap ends by itself with every piece at rest, exactly.
+fn judge_a_criterion_change(from: &str, to: &str, rebuilds: &[usize]) {
+    let (old, mut new) = (drawn_cluster(from), drawn_cluster(to));
+    let (was, rest) = (Shot::of(&old, &HeaderSwap::new()), Shot::of(&new, &HeaderSwap::new()));
+    assert_eq!(was.chevron.x, rest.chevron.x, "premise: both layouts end at the text edge");
+    assert_eq!(rest.chevron.x + rest.chevron.w, TEXT_X1, "premise: the chevron ends the row");
+    let dir = (rest.recommended - was.recommended).signum();
+    assert!(dir != 0.0, "premise: the places move");
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_sliding());
+    let mut last: Option<Shot> = None;
+    for frame in 0..600 {
+        if rebuilds.contains(&frame) {
+            let before = Shot::of(&new, &swap);
+            let again = drawn_cluster(to);
+            swap.begin(&new, &again);
+            new = again;
+            for (b, a) in before.numbers().into_iter().zip(Shot::of(&new, &swap).numbers()) {
+                assert!((a - b).abs() < 1e-3, "frame {frame}: the rebuild moved something on screen: {before:?} -> {a}");
+            }
+        }
+        let now = Shot::of(&new, &swap);
+        let label = format!("{from} -> {to}, frame {frame}");
+        assert_eq!(now.chevron.x, rest.chevron.x, "{label}: the chevron never moves");
+        assert!(now.chevron.x + now.chevron.w <= TEXT_X1 + 1e-3, "{label}: nothing of the control is drawn past the text edge");
+        assert!(now.icon.x + now.icon.w <= TEXT_X1 + 1e-3, "{label}: nor its icon");
+        for (text, run, _) in &now.criteria {
+            assert!((run.x + run.w + QUIET_FOLD_GAP - now.chevron.x).abs() < 1e-3, "{label}: {text} ends at {}, not at the chevron", run.x + run.w);
+        }
+        let (out, arriving) = (now.opacity(from), now.opacity(to));
+        assert!((out + arriving - 1.0).abs() < 1e-3, "{label}: the criteria's opacities {out} + {arriving} sum to one");
+        if frame == 0 { assert_eq!((out, arriving), (1.0, 0.0), "{label}: frame zero is the old criterion alone"); }
+        let between = |x: f32, a: f32, b: f32| x >= a.min(b) - 1e-3 && x <= a.max(b) + 1e-3;
+        assert!(between(now.icon.x, was.icon.x, rest.icon.x), "{label}: the icon stays between its two places: {}", now.icon.x);
+        if let Some(last) = &last {
+            for (name, before, after) in [("Collections", last.collections, now.collections), ("Recommended", last.recommended, now.recommended),
+                ("divider", last.divider, now.divider), ("icon", last.icon.x, now.icon.x)] {
+                assert!((after - before) * dir >= -1e-3, "{label}: {name} moved back: {before} -> {after}");
+            }
+            assert!(now.opacity(from) <= last.opacity(from) + 1e-3 && now.opacity(to) >= last.opacity(to) - 1e-3, "{label}: the cross-fade runs one way");
+        }
+        for (name, x, a, b) in [("Collections", now.collections, was.collections, rest.collections), ("Recommended", now.recommended, was.recommended, rest.recommended),
+            ("divider", now.divider, was.divider, rest.divider)] {
+            assert!(between(x, a, b), "{label}: {name} at {x} left the span {a}..{b}");
+        }
+        last = Some(now);
+        if !swap.is_active() { break; }
+        swap.step(DT);
+    }
+    assert!(!swap.is_active(), "{from} -> {to}: the spring landed");
+    let end = Shot::of(&new, &swap);
+    assert_eq!(end.numbers(), rest.numbers(), "{from} -> {to}: every piece ends at the new layout, exactly");
+    assert_eq!(end.criteria.iter().map(|(t, _, a)| (t.as_str(), *a)).collect::<Vec<_>>(), [(to, 1.0)], "the old criterion is gone and the new one whole");
+}
+
+/// **The sort control keeps its right edge through a criterion change in either direction** (the
+/// chevron never moves, the text cross-fades each at its own place ending at it, the places and the
+/// divider glide to their new places without overshoot), judged on drawn positions.
+#[test]
+fn a_changed_criterion_keeps_the_sort_controls_right_edge_on_every_drawn_frame() {
+    let _g = plx_base::testlock::serial();
+    judge_a_criterion_change("Title", "Date added", &[]);
+    judge_a_criterion_change("Date added", "Title", &[]);
+}
+
+/// **The same press builds the row twice** (the queued sort, then the listing that lands under it):
+/// the second build, with the criterion the first already shows, moves nothing, restarts nothing
+/// and leaves the sort control's face where the first slide has it. It was the whole control
+/// sliding by the places' offset (the chevron 56 px past the edge), then back.
+#[test]
+fn a_row_rebuilt_under_a_running_slide_neither_jumps_nor_moves_the_sort_control() {
+    let _g = plx_base::testlock::serial();
+    judge_a_criterion_change("Title", "Date added", &[4]);
+    judge_a_criterion_change("Date added", "Title", &[1, 9]);
+}
+
+/// **The slide is decoration with a known end** ([`plx_machine::idle`]): it wakes the present gate
+/// on every frame it moves, never holds a page freeze (it is no layout), and a swap at rest asks for
+/// no frame at all.
+#[test]
+fn the_slide_wakes_the_gate_while_it_runs_and_goes_quiet_at_rest() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (drawn_cluster("Title"), drawn_cluster("Date added"));
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    let (mut frames, mut moving, mut layout_moved) = (0, 0, false);
+    while swap.is_active() && frames < 600 {
+        plx_machine::idle::frame_begin(DT);
+        swap.step(DT);
+        layout_moved |= plx_machine::idle::page_layout_moving();
+        if plx_machine::idle::page_moving() {
+            moving += 1;
+            assert!(frames == moving - 1, "frame {frames}: the slide stopped asking for frames before it landed");
+        }
+        frames += 1;
+    }
+    assert!(!swap.is_active() && moving > 5, "the slide ran ({moving} frames asked for, {frames} stepped) and landed");
+    assert!(!layout_moved, "it is decoration: it never holds a page freeze");
+    for frame in 0..120 {
+        plx_machine::idle::frame_begin(DT);
+        swap.step(DT);
+        assert!(!plx_machine::idle::page_moving() && !swap.is_active(), "frame {frame} after landing: a settled swap asks for nothing");
+    }
+}
