@@ -4,7 +4,7 @@
 use super::*;
 use crate::registry::{AppMsg, PageMemory};
 use plx_data::search::view::SearchView;
-use plx_data::seerr::{Availability, MyRequest, Page as Listing, RequestStatus, SeerrError, SeerrIo, SeerrSession,
+use plx_data::seerr::{Availability, MediaRequest, Page as Listing, RequestStatus, SeerrError, SeerrIo, SeerrSession,
     SeerrUser, Title, TitleDetail};
 use plx_data::stores::StoreJob;
 use plx_data::watchlist::WatchlistInput;
@@ -49,16 +49,16 @@ fn title(kind: MediaKind, tmdb: i64) -> Title {
     Title { kind: Some(kind), tmdb, title: format!("s{tmdb:08x}"), poster: Some("/p.jpg".into()), ..Default::default() }
 }
 
-fn request(kind: MediaKind, tmdb: i64) -> MyRequest {
-    MyRequest { id: tmdb, kind, tmdb, status: RequestStatus::PendingApproval, availability: Availability::Pending,
-        seasons: Vec::new() }
+fn request(kind: MediaKind, tmdb: i64) -> MediaRequest {
+    MediaRequest { id: tmdb, kind, tmdb, status: RequestStatus::PendingApproval, availability: Availability::Pending,
+        seasons: Vec::new(), requested_by: None, modified_by: None, created: None, updated: None, downloads: Vec::new() }
 }
 
 /// Signs in, and answers each op from what it was built with; `fail` fails every one.
 #[derive(Default)]
 struct Script {
     trending: Vec<Title>,
-    mine: Vec<MyRequest>,
+    mine: Vec<MediaRequest>,
     fail: bool,
 }
 impl SeerrIo for Script {
@@ -73,7 +73,7 @@ impl SeerrIo for Script {
         Ok(match op {
             SeerrOp::Discover { row: DiscoverRow::Trending, .. } => page(self.trending.clone()),
             SeerrOp::Discover { .. } => page(Vec::new()),
-            SeerrOp::MyRequests { .. } => SeerrData::Requests(Listing { items: self.mine.clone(), page: 1, pages: 1 }),
+            SeerrOp::Requests { .. } => SeerrData::Requests(Listing { items: self.mine.clone(), page: 1, pages: 1 }),
             SeerrOp::Detail { kind, tmdb } => SeerrData::Detail(TitleDetail { title: title(*kind, *tmdb), ..Default::default() }),
             other => panic!("the Requests page asked for {other:?}"),
         })
@@ -286,5 +286,5 @@ fn coming_back_reads_my_requests_again() {
     let mut fixture = Fixture::new(Script { mine: vec![request(MediaKind::Movie, 32)], ..Default::default() });
     let mut screen = fixture.mounted();
     let out = fixture.step(&mut screen, ScreenEvent::Uncover);
-    assert_eq!(fixture.serve(&out), [Slot::MyRequests], "a request made on a title page shows on the way back");
+    assert_eq!(fixture.serve(&out), [Slot::Requests], "a request made on a title page shows on the way back");
 }

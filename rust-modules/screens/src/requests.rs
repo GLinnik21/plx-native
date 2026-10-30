@@ -71,14 +71,14 @@ impl Row {
 
     fn slot(self) -> Slot {
         match self {
-            Row::Mine => Slot::MyRequests,
-            Row::Discover(row) => Slot::Discover(row),
+            Row::Mine => Slot::Requests,
+            Row::Discover(row) => Slot::Discover(row, 1),
         }
     }
 
     fn op(self) -> SeerrOp {
         match self {
-            Row::Mine => SeerrOp::MyRequests { page: 1 },
+            Row::Mine => SeerrOp::Requests { page: 1 },
             Row::Discover(row) => SeerrOp::Discover { row, page: 1 },
         }
     }
@@ -144,7 +144,7 @@ struct Shelf {
 fn row_cards(row: Row, seerr: &SeerrStore) -> Vec<RequestCard> {
     let answer = |slot: &Slot| seerr.answer(slot);
     match row {
-        Row::Mine => match answer(&Slot::MyRequests) {
+        Row::Mine => match answer(&Slot::Requests) {
             Some(Answer::Ready(SeerrData::Requests(page))) => page
                 .items
                 .iter()
@@ -165,7 +165,7 @@ fn row_cards(row: Row, seerr: &SeerrStore) -> Vec<RequestCard> {
 
 /// The requests "My requests" shows whose titles have not been asked for yet.
 fn titles_owed(seerr: &SeerrStore, asked: &[(MediaKind, i64)]) -> Vec<(MediaKind, i64)> {
-    let Some(Answer::Ready(SeerrData::Requests(page))) = seerr.answer(&Slot::MyRequests) else { return Vec::new() };
+    let Some(Answer::Ready(SeerrData::Requests(page))) = seerr.answer(&Slot::Requests) else { return Vec::new() };
     page.items
         .iter()
         .take(MINE_SHOWN)
@@ -248,7 +248,7 @@ impl Page {
 
     /// A title "My requests" waits for is still on its way.
     fn titles_pending(&self, seerr: &SeerrStore) -> bool {
-        let Some(Answer::Ready(SeerrData::Requests(page))) = seerr.answer(&Slot::MyRequests) else { return false };
+        let Some(Answer::Ready(SeerrData::Requests(page))) = seerr.answer(&Slot::Requests) else { return false };
         page.items.iter().take(MINE_SHOWN).any(|r| !matches!(seerr.answer(&Slot::Detail(r.kind, r.tmdb)),
             Some(Answer::Ready(_) | Answer::Failed(_))))
     }

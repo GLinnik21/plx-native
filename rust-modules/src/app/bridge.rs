@@ -1380,10 +1380,7 @@ impl Bridge {
     /// A screen's ask of the Seerr store (`StoreCmd::Seerr`), as the seated profile; the call it
     /// emitted is started in this call.
     pub(crate) fn seerr_run(&mut self, cmd: plx_data::stores::seerr::SeerrCmd) {
-        match cmd {
-            plx_data::stores::seerr::SeerrCmd::Ask { slot, op } =>
-                self.stores.seerr.ask(slot, op, &Self::watchlist_input()),
-        }
+        self.stores.seerr.run(cmd, &Self::watchlist_input());
         self.start_store_jobs_of(StoreId::Seerr);
     }
 

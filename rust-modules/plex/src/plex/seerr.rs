@@ -8,8 +8,9 @@
 //! [`live_transport`]), and logs only the method, the PATH shape and the status — never the host
 //! (it is a household address), a query (a search term), a title, the token or the cookie.
 //!
-//! **The dev-build failsafe.** A `devtriggers` build refuses `POST /api/v1/request` — the one call
-//! that starts a download on somebody's server — unless the loopback stand-in is armed
+//! **The dev-build failsafe.** A `devtriggers` build refuses the calls that start a download on
+//! somebody's server — `POST /api/v1/request` and every POST under it (an approval or a decline,
+//! `/request/{id}/approve|decline`, and Seerr's retry) — unless the loopback stand-in is armed
 //! (`plxnative-seerr=http://127.0.0.1:<port>`, `tests/mock_pms.py`) or the owner created
 //! `plxnative-seerr-live` (`.claude/hooks/watchlist-live-guard.py` refuses a command that would).
 //! Release builds always send.
@@ -18,8 +19,14 @@
 //! `{page, totalPages, results}` with `mediaType` `movie`/`tv`/`person` rows (a title is `title` on
 //! a movie and `name` on a show); a title's availability is `mediaInfo.status`, 1 unknown, 2
 //! pending, 3 processing, 4 partly available, 5 available (6 blocklisted and 7 deleted are the newer
-//! servers'); a request is 1 pending approval, 2 approved, 3 declined. A missing `mediaInfo` is a
-//! title nobody has asked for.
+//! servers'); a request is 1 pending approval, 2 approved, 3 declined, 4 failed, 5 completed
+//! (Seerr's `server/constants/media.ts`). A missing `mediaInfo` is a title nobody has asked for.
+//!
+//! The request list (`GET /api/v1/request`) answers everybody's requests to a user with Manage
+//! Requests or View Requests (an admin has both) and only the caller's own to anyone else: the
+//! server decides, and this client never names `requestedBy`. Each row carries its `requestedBy` and
+//! `modifiedBy` users, its dates and its `media`, whose `downloadStatus` is what Radarr / Sonarr's
+//! queue says about it right now (Seerr's `server/lib/downloadtracker.ts`).
 //!
 //! A request can name where it goes (`serverId`, `profileId`, `rootFolder`): the Radarr / Sonarr
 //! servers the Seerr server sends to are read with `GET /api/v1/service/{radarr|sonarr}` and one
@@ -105,7 +112,11 @@ pub enum RequestStatus {
     PendingApproval,
     Approved,
     Declined,
-    /// Any later code (Seerr's failed / completed): shown by the title's availability instead.
+    /// Radarr / Sonarr would not take it (4).
+    Failed,
+    /// The title arrived (5).
+    Completed,
+    /// A code this client does not know: shown by the title's availability instead.
     Other,
 }
 
@@ -115,9 +126,84 @@ impl RequestStatus {
             1 => RequestStatus::PendingApproval,
             2 => RequestStatus::Approved,
             3 => RequestStatus::Declined,
+            4 => RequestStatus::Failed,
+            5 => RequestStatus::Completed,
             _ => RequestStatus::Other,
         }
     }
+}
+
+/// What Radarr / Sonarr's queue says one download is doing (its `status`, passed through by Seerr).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DownloadState {
+    Downloading,
+    /// Queued, or held back by a delay profile.
+    Queued,
+    Paused,
+    /// Downloaded, waiting to be imported.
+    Completed,
+    /// The download client reports a problem, or cannot be reached.
+    Warning,
+    Failed,
+    Other,
+}
+
+impl DownloadState {
+    fn of_wire(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "downloading" => DownloadState::Downloading,
+            "queued" | "delay" => DownloadState::Queued,
+            "paused" => DownloadState::Paused,
+            "completed" => DownloadState::Completed,
+            "warning" | "downloadclientunavailable" => DownloadState::Warning,
+            "failed" => DownloadState::Failed,
+            _ => DownloadState::Other,
+        }
+    }
+}
+
+/// One item of a title's `downloadStatus`: a movie's download, or one episode's (or a season
+/// pack's) of a show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Download {
+    /// The release's name (server text).
+    pub title: String,
+    /// Bytes in all, and still to come.
+    pub size: i64,
+    pub size_left: i64,
+    /// The queue's `timeLeft` (`[d.]hh:mm:ss`), in milliseconds.
+    pub time_left_ms: Option<i64>,
+    pub state: DownloadState,
+    /// The season and episode one item of a show is, when the queue said.
+    pub episode: Option<(i32, i32)>,
+}
+
+/// A title's downloads taken together: bytes done over bytes in all, and the longest wait.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Progress {
+    /// 0.0 to 1.0.
+    pub fraction: f32,
+    pub size: i64,
+    pub size_left: i64,
+    pub time_left_ms: Option<i64>,
+    /// Is any of them moving? `false` when every one is queued, paused or stuck.
+    pub downloading: bool,
+}
+
+/// What `downloads` add up to, or `None` when there are none (or none with a size).
+pub fn progress(downloads: &[Download]) -> Option<Progress> {
+    let size: i64 = downloads.iter().map(|d| d.size.max(0)).sum();
+    if size <= 0 {
+        return None;
+    }
+    let size_left: i64 = downloads.iter().map(|d| d.size_left.clamp(0, d.size.max(0))).sum();
+    Some(Progress {
+        fraction: ((size - size_left) as f64 / size as f64) as f32,
+        size,
+        size_left,
+        time_left_ms: downloads.iter().filter_map(|d| d.time_left_ms).max(),
+        downloading: downloads.iter().any(|d| d.state == DownloadState::Downloading),
+    })
 }
 
 /// One title as a list row carries it. Every field but `kind` and `tmdb` tolerates absence.
@@ -152,6 +238,29 @@ pub struct TitleDetail {
     /// A show TMDB files under the "anime" keyword ([`ANIME_KEYWORD`]): Seerr sends it to a Sonarr
     /// server's anime profile and folder unless the request names others ([`ArrServer::defaults`]).
     pub anime: bool,
+    pub facts: TitleFacts,
+    /// What Radarr / Sonarr is downloading of it now (`mediaInfo.downloadStatus`).
+    pub downloads: Vec<Download>,
+    /// The requests made of it (`mediaInfo.requests`), newest first. Their `downloads` are empty:
+    /// the title's own are [`downloads`](Self::downloads).
+    pub requests: Vec<MediaRequest>,
+}
+
+/// What TMDB says about a title, as Seerr passes it on. Every field tolerates absence.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TitleFacts {
+    /// TMDB's `voteAverage`, out of 10; `None` when nobody voted.
+    pub rating: Option<f32>,
+    /// A movie's `runtime`, a show's first `episodeRunTime`, in minutes.
+    pub runtime_min: Option<i32>,
+    /// Genre names (server text).
+    pub genres: Vec<String>,
+    /// `releaseDate` or `firstAirDate`, as sent (`YYYY-MM-DD`).
+    pub released: Option<String>,
+    /// A show's first network, a movie's first production company (server text).
+    pub studio: Option<String>,
+    /// TMDB's own status words, "Released", "Returning Series" (server text).
+    pub tmdb_status: Option<String>,
 }
 
 /// TMDB's "anime" keyword, the one Seerr reads a show's anime-ness from (`ANIME_KEYWORD_ID`).
@@ -173,16 +282,42 @@ pub struct Page<T> {
     pub pages: u32,
 }
 
-/// One of the signed-in user's requests. The list does not carry the title's words: a row is drawn
+/// One request (Seerr's `MediaRequest`). The list does not carry the title's words: a row is drawn
 /// from a [`TitleDetail`] read by `kind` + `tmdb`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MyRequest {
+pub struct MediaRequest {
     pub id: i64,
     pub kind: MediaKind,
     pub tmdb: i64,
     pub status: RequestStatus,
+    /// The title's availability (`media.status`), which a request's own status does not say.
     pub availability: Availability,
+    /// A show's requested seasons.
     pub seasons: Vec<i32>,
+    /// Who asked, and who approved or declined it: Seerr display names (server text).
+    pub requested_by: Option<String>,
+    pub modified_by: Option<String>,
+    /// `createdAt` and `updatedAt`, as sent (ISO 8601).
+    pub created: Option<String>,
+    pub updated: Option<String>,
+    /// What Radarr / Sonarr is downloading of the title now (`media.downloadStatus`).
+    pub downloads: Vec<Download>,
+}
+
+/// An answer to a pending request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Decision {
+    Approve,
+    Decline,
+}
+
+impl Decision {
+    fn wire(self) -> &'static str {
+        match self {
+            Decision::Approve => "approve",
+            Decision::Decline => "decline",
+        }
+    }
 }
 
 /// The Seerr user the session speaks for.
@@ -201,8 +336,22 @@ pub const PERMISSION_ADMIN: u64 = 2;
 pub const PERMISSION_MANAGE_REQUESTS: u64 = 16;
 /// Seerr's `Permission.REQUEST_ADVANCED`: may pick a request's server, quality profile and folder.
 pub const PERMISSION_REQUEST_ADVANCED: u64 = 8192;
+/// Seerr's `Permission.REQUEST_VIEW`: may see everybody's requests.
+pub const PERMISSION_REQUEST_VIEW: u64 = 16384;
 
 impl SeerrUser {
+    /// May this user approve and decline requests? Seerr's `POST /request/{id}/{status}` takes Manage
+    /// Requests (an admin has every permission).
+    pub fn may_manage_requests(&self) -> bool {
+        self.permissions & (PERMISSION_ADMIN | PERMISSION_MANAGE_REQUESTS) != 0
+    }
+
+    /// Does the request list answer this user with everybody's requests? Seerr's own test: Manage
+    /// Requests or View Requests (an admin has both); anyone else sees only their own.
+    pub fn sees_all_requests(&self) -> bool {
+        self.permissions & (PERMISSION_ADMIN | PERMISSION_MANAGE_REQUESTS | PERMISSION_REQUEST_VIEW) != 0
+    }
+
     /// May this user choose a request's server, quality profile and root folder? Seerr's own
     /// dialog shows the choice to the same users (admin, Manage Requests, Advanced Requests), and its
     /// server keeps their choices over its override rules.
@@ -485,10 +634,12 @@ pub fn announce() {
     }
 }
 
-/// Does this request start something on the server? Only `POST .../api/v1/request`; the sign-in
-/// is a POST too, but it changes nothing anybody can see.
+/// Does this request start something on the server? Any `POST` under `.../api/v1/request`: a new
+/// request, an approval or a decline (`/request/{id}/approve|decline`), and Seerr's retry. The
+/// sign-in is a POST too, but it changes nothing anybody can see.
 fn is_write(method: &str, url: &str) -> bool {
-    method == "POST" && url.split('?').next().is_some_and(|p| p.ends_with("/api/v1/request"))
+    let path = url.split('?').next().unwrap_or(url);
+    method == "POST" && (path.ends_with("/api/v1/request") || path.contains("/api/v1/request/"))
 }
 
 /// The dev-build failsafe (module doc).
@@ -597,6 +748,18 @@ fn int(v: &Value, key: &str) -> Option<i64> {
     }
 }
 
+fn float(v: &Value, key: &str) -> Option<f64> {
+    match v.get(key)? {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn rows<'a>(v: Option<&'a Value>, key: &str) -> impl Iterator<Item = &'a Value> {
+    v.and_then(|v| v.get(key)).and_then(Value::as_array).into_iter().flatten()
+}
+
 fn year_of(date: Option<String>) -> Option<i32> {
     date.and_then(|d| d.get(..4).and_then(|y| y.parse().ok()))
 }
@@ -669,25 +832,108 @@ fn seasons_from(v: &Value) -> Vec<Season> {
     seasons
 }
 
-fn request_from(v: &Value) -> Option<MyRequest> {
+/// `[d.]hh:mm:ss[.fff]`, the queue's `timeLeft`, in milliseconds.
+fn time_left_of(s: &str) -> Option<i64> {
+    let (days, clock) = match s.trim().split_once('.') {
+        Some((d, rest)) if rest.contains(':') && !d.contains(':') => (d.parse::<i64>().ok()?, rest),
+        _ => (0, s.trim()),
+    };
+    let mut parts = clock.split(':');
+    let (h, m, sec) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let secs: f64 = sec.parse().ok()?;
+    let total = days * 86_400 + h.parse::<i64>().ok()? * 3_600 + m.parse::<i64>().ok()? * 60;
+    (secs >= 0.0 && total >= 0).then(|| total * 1_000 + (secs * 1_000.0) as i64)
+}
+
+fn download_from(v: &Value) -> Download {
+    let episode = v.get("episode").and_then(|e| Some((
+        i32::try_from(int(e, "seasonNumber")?).ok()?,
+        i32::try_from(int(e, "episodeNumber")?).ok()?,
+    )));
+    Download {
+        title: text(v, "title").unwrap_or_default(),
+        size: int(v, "size").unwrap_or(0),
+        size_left: int(v, "sizeLeft").unwrap_or(0),
+        time_left_ms: text(v, "timeLeft").and_then(|t| time_left_of(&t)),
+        state: text(v, "status").map_or(DownloadState::Other, |s| DownloadState::of_wire(&s)),
+        episode,
+    }
+}
+
+fn downloads_from(media: Option<&Value>) -> Vec<Download> {
+    rows(media, "downloadStatus").map(download_from).collect()
+}
+
+/// A Seerr user's name as Seerr shows it: `displayName`, else the Plex user name, else the local one.
+fn user_name(v: &Value) -> Option<String> {
+    text(v, "displayName").or_else(|| text(v, "plexUsername")).or_else(|| text(v, "username"))
+}
+
+/// One request row, of the title `media` names (the list) or of the title it is nested in (`kind`,
+/// `tmdb`, `availability`: a detail's `mediaInfo.requests`, whose rows carry no `media`).
+fn request_of(v: &Value, kind: MediaKind, tmdb: i64, availability: Availability, downloads: Vec<Download>)
+    -> Option<MediaRequest>
+{
+    Some(MediaRequest {
+        id: int(v, "id")?,
+        kind,
+        tmdb,
+        status: int(v, "status").map_or(RequestStatus::Other, RequestStatus::of_code),
+        availability,
+        seasons: rows(Some(v), "seasons").filter_map(|s| int(s, "seasonNumber").and_then(|n| i32::try_from(n).ok()))
+            .collect(),
+        requested_by: v.get("requestedBy").and_then(user_name),
+        modified_by: v.get("modifiedBy").and_then(user_name),
+        created: text(v, "createdAt"),
+        updated: text(v, "updatedAt"),
+        downloads,
+    })
+}
+
+fn request_from(v: &Value) -> Option<MediaRequest> {
     let media = v.get("media")?;
     let kind = text(media, "mediaType").and_then(|k| MediaKind::of_wire(&k))
         .or_else(|| text(v, "type").and_then(|k| MediaKind::of_wire(&k)))?;
-    Some(MyRequest {
-        id: int(v, "id")?,
-        kind,
-        tmdb: int(media, "tmdbId").filter(|id| *id > 0)?,
-        status: int(v, "status").map_or(RequestStatus::Other, RequestStatus::of_code),
-        availability: int(media, "status").map_or(Availability::Unknown, Availability::of_code),
-        seasons: v.get("seasons").and_then(Value::as_array).map_or(Vec::new(), |rows|
-            rows.iter().filter_map(|s| int(s, "seasonNumber").and_then(|n| i32::try_from(n).ok())).collect()),
-    })
+    let tmdb = int(media, "tmdbId").filter(|id| *id > 0)?;
+    let availability = int(media, "status").map_or(Availability::Unknown, Availability::of_code);
+    request_of(v, kind, tmdb, availability, downloads_from(Some(media)))
+}
+
+/// A detail record's TMDB facts.
+fn facts_from(v: &Value, kind: MediaKind) -> TitleFacts {
+    let first_name = |key: &str| rows(Some(v), key).find_map(|r| text(r, "name"));
+    let (runtime, released, studio) = match kind {
+        MediaKind::Movie => (int(v, "runtime"), text(v, "releaseDate"), first_name("productionCompanies")),
+        MediaKind::Tv => (
+            rows(Some(v), "episodeRunTime").find_map(Value::as_i64),
+            text(v, "firstAirDate"),
+            first_name("networks"),
+        ),
+    };
+    TitleFacts {
+        rating: float(v, "voteAverage").filter(|r| *r > 0.0 && *r <= 10.0).map(|r| r as f32),
+        runtime_min: runtime.filter(|m| *m > 0).and_then(|m| i32::try_from(m).ok()),
+        genres: rows(Some(v), "genres").filter_map(|g| text(g, "name")).collect(),
+        released,
+        studio,
+        tmdb_status: text(v, "status"),
+    }
+}
+
+/// A detail record's requests (`mediaInfo.requests`), newest first.
+fn title_requests_from(v: &Value, title: &Title, kind: MediaKind) -> Vec<MediaRequest> {
+    let mut requests: Vec<MediaRequest> = rows(v.get("mediaInfo"), "requests")
+        .filter_map(|r| request_of(r, kind, title.tmdb, title.status, Vec::new())).collect();
+    requests.sort_by(|a, b| b.created.cmp(&a.created).then(b.id.cmp(&a.id)));
+    requests
 }
 
 fn user_from(v: &Value) -> Option<SeerrUser> {
     let id = int(v, "id")?;
-    let name = text(v, "displayName").or_else(|| text(v, "plexUsername")).or_else(|| text(v, "username"))
-        .unwrap_or_default();
+    let name = user_name(v).unwrap_or_default();
     let permissions = int(v, "permissions").and_then(|p| u64::try_from(p).ok()).unwrap_or(0);
     Some(SeerrUser { id, name, permissions })
 }
@@ -792,7 +1038,15 @@ impl SeerrClient {
         let body = parse(&response)?;
         let title = title_from(&body, Some(kind)).ok_or(SeerrError::Unreadable)?;
         let seasons = if kind == MediaKind::Tv { seasons_from(&body) } else { Vec::new() };
-        Ok(TitleDetail { title, seasons, anime: kind == MediaKind::Tv && anime_from(&body) })
+        let requests = title_requests_from(&body, &title, kind);
+        Ok(TitleDetail {
+            seasons,
+            anime: kind == MediaKind::Tv && anime_from(&body),
+            facts: facts_from(&body, kind),
+            downloads: downloads_from(body.get("mediaInfo")),
+            requests,
+            title,
+        })
     }
 
     /// `GET /api/v1/service/radarr` (a movie) or `/sonarr` (a show): the servers a request of that
@@ -818,13 +1072,14 @@ impl SeerrClient {
         Ok(options_from(&parse(&response)?))
     }
 
-    /// One page of the signed-in user's own requests, newest first.
-    pub fn my_requests(&self, session: &SeerrSession, user: i64, page: u32, req: SeerrTransport)
-        -> Result<Page<MyRequest>, SeerrError>
+    /// One page of the request list, the most recently changed first: everybody's for a user who may
+    /// see them ([`SeerrUser::sees_all_requests`]), else the user's own (the server decides).
+    pub fn requests(&self, session: &SeerrSession, page: u32, req: SeerrTransport)
+        -> Result<Page<MediaRequest>, SeerrError>
     {
         let skip = i64::from(page.max(1) - 1) * i64::from(REQUEST_PAGE);
         let path = QueryBuilder::new("/api/v1/request").int("take", i64::from(REQUEST_PAGE)).int("skip", skip)
-            .str("filter", "all").str("sort", "added").int("requestedBy", user).build();
+            .str("filter", "all").str("sort", "modified").build();
         let response = call(req, "GET", self.url(&path), Some(session), None)?;
         let body = parse(&response)?;
         let items = body.get("results").and_then(Value::as_array).map_or(Vec::new(), |rows|
@@ -857,6 +1112,18 @@ impl SeerrClient {
             body["rootFolder"] = json!(folder);
         }
         call(req, "POST", self.url("/api/v1/request"), Some(session), Some(body)).map(|_| ())
+    }
+
+    /// `POST /api/v1/request/{id}/approve|decline`: answer a pending request. 403 for a user without
+    /// Manage Requests, 409 when the request is no longer pending.
+    pub fn decide(&self, session: &SeerrSession, id: i64, decision: Decision, req: SeerrTransport)
+        -> Result<(), SeerrError>
+    {
+        if id <= 0 {
+            return Err(SeerrError::NotFound);
+        }
+        let path = format!("/api/v1/request/{id}/{}", decision.wire());
+        call(req, "POST", self.url(&path), Some(session), None).map(|_| ())
     }
 }
 

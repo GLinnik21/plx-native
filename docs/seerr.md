@@ -13,10 +13,10 @@ it is reached at exactly that address.
 | piece | module | role |
 |---|---|---|
 | transport | `net::Resp::cookies` | each `Set-Cookie`'s `name=value`, beside `ETag` |
-| client | `plex::seerr` (`SeerrClient`, `live_transport`) | sign-in, search, discover rows, a title's detail, my requests, the Radarr / Sonarr servers and one server's profiles and folders, `POST /api/v1/request`; injectable transport; the dev-build write failsafe |
+| client | `plex::seerr` (`SeerrClient`, `live_transport`) | sign-in, search, discover rows, a title's detail (with TMDB's facts, its downloads and its requests), the request list, the Radarr / Sonarr servers and one server's profiles and folders, `POST /api/v1/request`, approving and declining; injectable transport; the dev-build write failsafe |
 | address | `Preferences::seerr_address` (`session::set_seerr_address`) | install-wide, kept across sign-out, no credential |
 | job body | `data::seerr` (`SeerrOp`, `run_op`, `SeerrIo`) | signs in when it holds no session, once more after a 401 |
-| store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands |
+| store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands; a `SeerrCmd::Refresh` keeps a slot's shown answer while it is read again, and when that read fails |
 | app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, the runner's `seerr-call` | hands the store the stored address, signs a seated profile in once |
 | Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`), Connect with the live connection line, Remove |
 | Requests tab | `screens/src/requests.rs` (`AppArg::Requests`, `TAB_KEY_REQUESTS`) | on the strip after the type pills and just before the Watchlist mark while an address is set (`chrome::StripSource::requests`); rows My requests (the first `MINE_SHOWN`, each title read by its own `Detail`), Trending, Popular movies and shows, Upcoming movies and shows; a card opens the Seerr title page |
@@ -77,10 +77,22 @@ Until they land, or if they cannot be read, the menu says so in a note and Reque
   dropped), `title` on a movie and `name` on a show, TMDB image paths in `posterPath`/`backdropPath`.
 - Availability, `mediaInfo.status`: 1 unknown, 2 pending, 3 processing, 4 partly available, 5
   available, 6 blocklisted. A row with no `mediaInfo` is a title nobody asked for.
-- A request: 1 pending approval, 2 approved, 3 declined. A show's season state folds what the server
-  holds (`mediaInfo.seasons`) with what open requests asked for; specials (season 0) are left out.
-- `GET /api/v1/request?take&skip&filter=all&sort=added&requestedBy=<id>`: the user's own requests;
-  the rows carry the TMDB id but no title.
+- A request: 1 pending approval, 2 approved, 3 declined, 4 failed, 5 completed
+  (`server/constants/media.ts`). A show's season state folds what the server holds
+  (`mediaInfo.seasons`) with what open requests asked for; specials (season 0) are left out.
+- `GET /api/v1/request?take&skip&filter=all&sort=modified`: the most recently changed requests first.
+  The client names no `requestedBy`: the server answers everybody's to a user with Manage Requests
+  or View Requests (an admin has both) and only the caller's own to anyone else
+  (`server/routes/request.ts`). The rows carry the TMDB id but no title, and their `requestedBy` and
+  `modifiedBy` users (`displayName`), `createdAt`, `updatedAt` and `media`, whose `downloadStatus` is
+  Radarr / Sonarr's queue for the title right now: `[{title, size, sizeLeft, status, timeLeft
+  ("[d.]hh:mm:ss"), estimatedCompletionTime, episode?}]`, empty when nothing is downloading
+  (`server/lib/downloadtracker.ts`, filled when a `Media` row loads).
+- `GET /api/v1/movie|tv/{id}` also carries TMDB's `voteAverage`, `genres`, `status`, a movie's
+  `runtime` and `productionCompanies`, a show's `episodeRunTime` and `networks`, and in `mediaInfo`
+  the title's `downloadStatus` and its `requests`, each with its users and dates.
+- `POST /api/v1/request/{id}/approve|decline`: Manage Requests only (403 otherwise); a request that
+  is no longer pending answers 409; 200 is the request as it now is.
 - `POST /api/v1/request {mediaType, mediaId, seasons?, serverId?, profileId?, rootFolder?}`: 201;
   409 when already requested; 403 when the user may not (no permission, over quota). For a user
   without Manage Requests or Advanced Requests the server's override rules replace the last three.
@@ -90,18 +102,22 @@ Until they land, or if they cannot be read, the menu says so in a note and Reque
   freeSpace, totalSpace}], tags}` (Seerr's `server/routes/service.ts`). Any signed-in user may read
   them.
 - Permission bits (`server/lib/permissions.ts`): ADMIN 2, MANAGE_REQUESTS 16, REQUEST 32,
-  REQUEST_ADVANCED 8192. A show's anime-ness is TMDB keyword 210024 in the detail's `keywords`.
+  REQUEST_ADVANCED 8192, REQUEST_VIEW 16384. A show's anime-ness is TMDB keyword 210024 in the detail's `keywords`.
 - Every search term is percent-encoded byte for byte (Overseerr refuses a raw quote or space).
 
 ## The write failsafe and the stand-in
 
-A `devtriggers` build refuses `POST /api/v1/request` (the one call that starts a download) unless
-the loopback stand-in or the owner's live switch is armed:
+A `devtriggers` build refuses every `POST` under `/api/v1/request` (a new request, an approval or a
+decline: the calls that start a download) unless the loopback stand-in or the owner's live switch is
+armed:
 
 - `plxnative-seerr=http://127.0.0.1:<port>` replaces the configured address with
   `tests/mock_pms.py`'s Seerr (`SeerrFixture`, same listener). Anything not loopback is refused.
   Its user is an admin (the request menu opens); `POST /_mock/seerr {"advanced": false}` makes it a
-  plain requester, whose press sends at once.
+  plain requester, whose press sends at once, and `{"manage": false}` a user with Advanced Requests
+  but not Manage Requests (the request list is their own only, and decisions answer 403). Two
+  other users have requests from the start: one waiting for approval, one approved with a download
+  moving, one declined and one completed.
 - `plxnative-seerr-live` lets a debug build write to the owner's real Seerr. **No agent creates it
   unless the owner asks in that session**; `.claude/hooks/watchlist-live-guard.py` refuses a command
   that would.

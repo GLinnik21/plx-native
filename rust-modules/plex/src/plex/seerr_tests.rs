@@ -143,23 +143,132 @@ fn a_movie_detail_has_no_seasons() {
 }
 
 #[test]
-fn my_requests_pages_by_skip_and_reads_kind_status_and_seasons() {
+fn the_request_list_pages_by_skip_newest_change_first_and_names_no_requester() {
     let body = r#"{"pageInfo":{"pages":4,"page":2},"results":[
         {"id":5,"status":1,"type":"tv","media":{"tmdbId":51,"mediaType":"tv","status":2},
          "seasons":[{"seasonNumber":2},{"seasonNumber":3}]},
         {"id":6,"status":2,"media":{"tmdbId":52,"mediaType":"movie","status":3}},
         {"id":7,"status":1,"media":{"mediaType":"movie"}}]}"#;
-    let (got, seen) = run(vec![ok(body)], |c, t| c.my_requests(&session(), 7, 2, t));
-    assert_eq!(seen[0].url,
-        "http://127.0.0.1:5055/api/v1/request?take=20&skip=20&filter=all&sort=added&requestedBy=7");
+    let (got, seen) = run(vec![ok(body)], |c, t| c.requests(&session(), 2, t));
+    assert_eq!(seen[0].url, "http://127.0.0.1:5055/api/v1/request?take=20&skip=20&filter=all&sort=modified",
+        "the server decides whose requests a user sees");
     let page = got.unwrap();
     assert_eq!((page.page, page.pages), (2, 4));
+    let bare = |id, kind, tmdb, status, availability, seasons: Vec<i32>| MediaRequest {
+        id, kind, tmdb, status, availability, seasons, requested_by: None, modified_by: None, created: None,
+        updated: None, downloads: Vec::new(),
+    };
     assert_eq!(page.items, [
-        MyRequest { id: 5, kind: MediaKind::Tv, tmdb: 51, status: RequestStatus::PendingApproval,
-            availability: Availability::Pending, seasons: vec![2, 3] },
-        MyRequest { id: 6, kind: MediaKind::Movie, tmdb: 52, status: RequestStatus::Approved,
-            availability: Availability::Processing, seasons: vec![] },
-    ], "a row with no tmdb id is dropped");
+        bare(5, MediaKind::Tv, 51, RequestStatus::PendingApproval, Availability::Pending, vec![2, 3]),
+        bare(6, MediaKind::Movie, 52, RequestStatus::Approved, Availability::Processing, vec![]),
+    ], "a row with no tmdb id is dropped; a row without users, dates or downloads still reads");
+}
+
+#[test]
+fn a_request_row_reads_who_asked_who_answered_when_and_its_downloads() {
+    let body = r#"{"pageInfo":{"pages":1},"results":[
+        {"id":9,"status":2,"createdAt":"2026-10-28T09:15:00.000Z","updatedAt":"2026-10-29T10:00:00.000Z",
+         "requestedBy":{"id":3,"displayName":"Alex"},"modifiedBy":{"id":1,"plexUsername":"owner"},
+         "media":{"tmdbId":90,"mediaType":"tv","status":3,"downloadStatus":[
+           {"title":"Show.S02E01","size":1000,"sizeLeft":250,"status":"downloading","timeLeft":"00:12:30",
+            "episode":{"seasonNumber":2,"episodeNumber":1}},
+           {"title":"Show.S02E02","size":3000,"sizeLeft":3000,"status":"queued","timeLeft":"1.02:00:00"}]},
+         "seasons":[{"seasonNumber":2}]},
+        {"id":10,"status":4,"media":{"tmdbId":91,"mediaType":"movie","status":1}},
+        {"id":11,"status":5,"media":{"tmdbId":92,"mediaType":"movie","status":5}}]}"#;
+    let (got, _) = run(vec![ok(body)], |c, t| c.requests(&session(), 1, t));
+    let items = got.unwrap().items;
+    let first = &items[0];
+    assert_eq!((first.requested_by.as_deref(), first.modified_by.as_deref()), (Some("Alex"), Some("owner")));
+    assert_eq!((first.created.as_deref(), first.updated.as_deref()),
+        (Some("2026-10-28T09:15:00.000Z"), Some("2026-10-29T10:00:00.000Z")));
+    assert_eq!(first.downloads, [
+        Download { title: "Show.S02E01".into(), size: 1000, size_left: 250, time_left_ms: Some(750_000),
+            state: DownloadState::Downloading, episode: Some((2, 1)) },
+        Download { title: "Show.S02E02".into(), size: 3000, size_left: 3000, time_left_ms: Some(93_600_000),
+            state: DownloadState::Queued, episode: None },
+    ]);
+    assert_eq!((items[1].status, items[2].status), (RequestStatus::Failed, RequestStatus::Completed));
+}
+
+#[test]
+fn a_titles_downloads_add_up_to_one_progress() {
+    let d = |size, left, ms, state| Download { title: String::new(), size, size_left: left, time_left_ms: ms, state,
+        episode: None };
+    assert_eq!(progress(&[]), None);
+    assert_eq!(progress(&[d(0, 0, None, DownloadState::Queued)]), None, "no size, no fraction");
+    let p = progress(&[d(1000, 250, Some(5), DownloadState::Downloading), d(3000, 3000, Some(9), DownloadState::Queued)])
+        .unwrap();
+    assert_eq!((p.fraction, p.size, p.size_left, p.time_left_ms, p.downloading), (0.1875, 4000, 3250, Some(9), true));
+    let stuck = progress(&[d(100, 500, None, DownloadState::Paused)]).unwrap();
+    assert_eq!((stuck.fraction, stuck.downloading), (0.0, false), "a size_left past the size is clamped");
+}
+
+#[test]
+fn a_queue_time_left_reads_days_hours_minutes_and_seconds() {
+    assert_eq!(time_left_of("00:00:05"), Some(5_000));
+    assert_eq!(time_left_of("01:02:03.5"), Some(3_723_500));
+    assert_eq!(time_left_of("2.00:00:00"), Some(172_800_000));
+    for bad in ["", "12:00", "a:b:c", "1:2:3:4", "-1:00:00"] {
+        assert_eq!(time_left_of(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn a_detail_reads_its_facts_its_downloads_and_its_requests() {
+    let movie = r#"{"id":61,"title":"M","releaseDate":"2024-03-01","runtime":166,"voteAverage":8.2,
+        "status":"Released","genres":[{"id":1,"name":"Science Fiction"},{"id":2,"name":"Adventure"}],
+        "productionCompanies":[{"name":"Studio A"},{"name":"Studio B"}],
+        "mediaInfo":{"status":3,"downloadStatus":[{"title":"M.2024","size":10,"sizeLeft":5,"status":"paused"}],
+          "requests":[
+            {"id":1,"status":3,"createdAt":"2026-01-01T00:00:00.000Z","requestedBy":{"displayName":"Sam"}},
+            {"id":2,"status":2,"createdAt":"2026-02-01T00:00:00.000Z","requestedBy":{"displayName":"Alex"},
+             "modifiedBy":{"displayName":"Owner"}}]}}"#;
+    let (got, _) = run(vec![ok(movie)], |c, t| c.detail(&session(), MediaKind::Movie, 61, t));
+    let detail = got.unwrap();
+    assert_eq!(detail.facts, TitleFacts {
+        rating: Some(8.2), runtime_min: Some(166), genres: vec!["Science Fiction".into(), "Adventure".into()],
+        released: Some("2024-03-01".into()), studio: Some("Studio A".into()), tmdb_status: Some("Released".into()),
+    });
+    assert_eq!(detail.downloads.len(), 1);
+    assert_eq!(detail.downloads[0].state, DownloadState::Paused);
+    let who: Vec<_> = detail.requests.iter().map(|r| (r.id, r.requested_by.as_deref(), r.status)).collect();
+    assert_eq!(who, [(2, Some("Alex"), RequestStatus::Approved), (1, Some("Sam"), RequestStatus::Declined)],
+        "newest first, each with the title's own kind and id");
+    assert!(detail.requests.iter().all(|r| r.tmdb == 61 && r.kind == MediaKind::Movie
+        && r.availability == Availability::Processing && r.downloads.is_empty()));
+
+    let show = r#"{"id":62,"name":"S","firstAirDate":"2020-05-05","episodeRunTime":[45,50],"voteAverage":0,
+        "networks":[{"name":"Net"}],"seasons":[]}"#;
+    let (got, _) = run(vec![ok(show)], |c, t| c.detail(&session(), MediaKind::Tv, 62, t));
+    let facts = got.unwrap().facts;
+    assert_eq!((facts.runtime_min, facts.studio.as_deref(), facts.released.as_deref(), facts.rating),
+        (Some(45), Some("Net"), Some("2020-05-05"), None), "nobody voted: no rating");
+}
+
+#[test]
+fn a_decision_posts_to_the_requests_own_route() {
+    for (decision, verb) in [(Decision::Approve, "approve"), (Decision::Decline, "decline")] {
+        let (got, seen) = run(vec![ok("{}")], |c, t| c.decide(&session(), 9, decision, t));
+        assert_eq!(got, Ok(()));
+        assert_eq!((seen[0].method, seen[0].url.clone(), seen[0].body.clone()),
+            ("POST", format!("http://127.0.0.1:5055/api/v1/request/9/{verb}"), None));
+    }
+    let (got, _) = run(vec![status(409)], |c, t| c.decide(&session(), 9, Decision::Approve, t));
+    assert_eq!(got, Err(SeerrError::AlreadyRequested), "no longer pending");
+    let (got, seen) = run(vec![], |c, t| c.decide(&session(), 0, Decision::Approve, t));
+    assert_eq!((got, seen.len()), (Err(SeerrError::NotFound), 0));
+}
+
+#[test]
+fn only_a_request_manager_decides_and_a_viewer_sees_everybodys_requests() {
+    let user = |permissions| SeerrUser { id: 1, name: String::new(), permissions };
+    assert!(!user(32).may_manage_requests() && !user(32).sees_all_requests(), "Request alone");
+    assert!(!user(16384).may_manage_requests() && user(16384).sees_all_requests(), "View Requests");
+    assert!(!user(8192).may_manage_requests() && !user(8192).sees_all_requests(), "Advanced Requests");
+    for bits in [2, 16, 2 | 32] {
+        assert!(user(bits).may_manage_requests() && user(bits).sees_all_requests(), "{bits}");
+    }
 }
 
 #[test]
@@ -320,6 +429,14 @@ fn a_dev_build_refuses_a_request_write_unless_the_stand_in_or_the_live_switch_is
     assert_eq!(permit_write("POST", url, false, false, false), Ok(()), "a release build always sends");
     assert_eq!(permit_write("POST", "http://h/api/v1/auth/plex", true, false, false), Ok(()), "signing in is no write");
     assert_eq!(permit_write("GET", "http://h/api/v1/request?take=20", true, false, false), Ok(()), "reading the list is not");
+    for write in ["http://h/api/v1/request/9/approve", "http://h/seerr/api/v1/request/12/decline",
+        "http://h/api/v1/request/9/retry"]
+    {
+        assert_eq!(permit_write("POST", write, true, false, false), Err(SeerrError::Refused), "{write}");
+        assert_eq!(permit_write("POST", write, true, true, false), Ok(()), "{write}");
+    }
+    assert_eq!(permit_write("GET", "http://h/api/v1/request/9", true, false, false), Ok(()), "reading one is not");
+    assert_eq!(permit_write("POST", "http://h/api/v1/requests", true, false, false), Ok(()), "another route");
 }
 
 #[test]

@@ -13,8 +13,9 @@
 //! [`WatchlistInput`]: crate::watchlist::WatchlistInput
 use plx_plex::plex::seerr::{live_transport, SeerrClient};
 pub use plx_plex::plex::seerr::{
-    default_server, ArrOptions, ArrServer, Availability, DiscoverRow, MediaKind, MyRequest, Page, QualityProfile,
-    RequestOptions, RequestStatus, RootFolder, Season, SeerrError, SeerrSession, SeerrUser, Title, TitleDetail,
+    default_server, progress, ArrOptions, ArrServer, Availability, Decision, DiscoverRow, Download, DownloadState,
+    MediaKind, MediaRequest, Page, Progress, QualityProfile, RequestOptions, RequestStatus, RootFolder, Season,
+    SeerrError, SeerrSession, SeerrUser, Title, TitleDetail, TitleFacts,
 };
 
 /// What one job asks of the server.
@@ -25,7 +26,8 @@ pub enum SeerrOp {
     Search { query: String, page: u32 },
     Discover { row: DiscoverRow, page: u32 },
     Detail { kind: MediaKind, tmdb: i64 },
-    MyRequests { page: u32 },
+    /// The request list: everybody's for a user who may see them, else the user's own.
+    Requests { page: u32 },
     /// The Radarr (a movie) or Sonarr (a show) servers a request can go to.
     Servers { kind: MediaKind },
     /// One of those servers' quality profiles and root folders.
@@ -33,6 +35,8 @@ pub enum SeerrOp {
     /// `POST /api/v1/request`. A show names its seasons; a movie none. `options` names where it goes
     /// (each `None` is the server's to decide).
     Request { kind: MediaKind, tmdb: i64, seasons: Vec<i32>, options: RequestOptions },
+    /// `POST /api/v1/request/{id}/approve|decline`.
+    Decide { id: i64, decision: Decision },
 }
 
 /// What a job that ran brought back.
@@ -41,10 +45,11 @@ pub enum SeerrData {
     Connected,
     Titles(Page<Title>),
     Detail(TitleDetail),
-    Requests(Page<MyRequest>),
+    Requests(Page<MediaRequest>),
     Servers(Vec<ArrServer>),
     ServerOptions(ArrOptions),
     Requested,
+    Decided,
 }
 
 /// Everything a job asks of the outside world. Production is [`LiveSeerrIo`]; tests script it.
@@ -66,7 +71,7 @@ impl SeerrIo for LiveSeerrIo {
         answer
     }
 
-    fn run(&self, address: &str, session: &SeerrSession, user: &SeerrUser, op: &SeerrOp) -> Result<SeerrData, SeerrError> {
+    fn run(&self, address: &str, session: &SeerrSession, _user: &SeerrUser, op: &SeerrOp) -> Result<SeerrData, SeerrError> {
         let client = SeerrClient::for_address(address).ok_or(SeerrError::BadAddress)?;
         let mut t = live_transport();
         let answer = match op {
@@ -74,12 +79,13 @@ impl SeerrIo for LiveSeerrIo {
             SeerrOp::Search { query, page } => client.search(session, query, *page, &mut t).map(SeerrData::Titles),
             SeerrOp::Discover { row, page } => client.discover(session, *row, *page, &mut t).map(SeerrData::Titles),
             SeerrOp::Detail { kind, tmdb } => client.detail(session, *kind, *tmdb, &mut t).map(SeerrData::Detail),
-            SeerrOp::MyRequests { page } => client.my_requests(session, user.id, *page, &mut t).map(SeerrData::Requests),
+            SeerrOp::Requests { page } => client.requests(session, *page, &mut t).map(SeerrData::Requests),
             SeerrOp::Servers { kind } => client.servers(session, *kind, &mut t).map(SeerrData::Servers),
             SeerrOp::ServerOptions { kind, server } =>
                 client.server_options(session, *kind, *server, &mut t).map(SeerrData::ServerOptions),
             SeerrOp::Request { kind, tmdb, seasons, options } =>
                 client.request(session, *kind, *tmdb, seasons, options, &mut t).map(|()| SeerrData::Requested),
+            SeerrOp::Decide { id, decision } => client.decide(session, *id, *decision, &mut t).map(|()| SeerrData::Decided),
         };
         answer
     }
@@ -177,7 +183,7 @@ mod tests {
         Script { sign_ins: Mutex::new(sign_ins), runs: Mutex::new(runs), ..Default::default() }
     }
 
-    const OP: SeerrOp = SeerrOp::MyRequests { page: 1 };
+    const OP: SeerrOp = SeerrOp::Requests { page: 1 };
 
     fn fresh() -> SessionChange {
         SessionChange::Fresh(s("new"), user())
