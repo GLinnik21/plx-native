@@ -415,15 +415,18 @@ pub mod codes {
         /// I4: a control's centre does not hit-test back to the control (another item's hit rect wins the
         /// point). Pointer: the control's item. Context: `state`, `slot`, the control's and the winner's `rects`.
         E1002 = (Error, "HUD-E1002", "hit-self");
-        /// I4: decor (text, image, icon, rule, ground, scrim, facts) overlaps a drawn interactive rect, except
-        /// a `rect` ground under its own cells and a strip card's own overlay and below content. Pointer: the
-        /// decor's node. Context: `state`, `slot`, the decor's and the control's `rects`.
+        /// I4: decor (text, image, icon, rule, ground, facts, Up Next's still and caption) overlaps a drawn
+        /// interactive rect, except a `rect` ground under its own cells and a strip card's own overlay and
+        /// below content. The scrim is exempt: it is the ground behind the whole HUD, under every control by
+        /// construction. Pointer: the decor's node. Context: `state`, `slot`, the decor's and the control's
+        /// `rects`.
         E1003 = (Error, "HUD-E1003", "decor-overlap");
         /// I5: an interactive drawn or hit rect lies outside `SAFE`. Pointer: the control's item. Context:
         /// `state`, `slot`, the control's and `SAFE`'s `rects`.
         E1101 = (Error, "HUD-E1101", "safe-interactive");
-        /// I5: a text, image or icon lies outside `SAFE` (scrims and `rect` grounds may bleed; a strip's cards
-        /// may run past the side edges). Pointer: the node's. Context: `state`, `slot`, the node's and
+        /// I5: a text, image, icon or facts box, Up Next's still or caption, or a strip card's content
+        /// (vertically) lies outside `SAFE` (scrims, `rect` grounds and rules may bleed; a strip's cards may
+        /// run past the side edges). Pointer: the node's. Context: `state`, `slot`, the node's and
         /// `SAFE`'s `rects`.
         E1102 = (Error, "HUD-E1102", "safe-content");
         /// I5: the focused strip card is not revealed inside `SAFE`, or the scrub-preview card's top is
@@ -431,8 +434,10 @@ pub mod codes {
         /// `state`, `slot`, the card's and `SAFE`'s `rects`.
         E1103 = (Error, "HUD-E1103", "safe-reveal");
         /// I6: in the compact state, under some slot, the package's caption band (`Compiled::band()`) rises
-        /// above `player_hud::min_controls_top_y()`. Pointer: `/layout/band`, else `/layout`. Context:
-        /// `state`, `slot`, the band's `rects`.
+        /// above `player_hud::min_controls_top_y()`. Pointer: the node that sets the band: a control's item,
+        /// the playbar's node, `/layout/up_next` for the Up Next and Skip stand-ins, or, under
+        /// `band: "block"`, whatever node drew the highest extent (`/layout` only if the extent scan drifts
+        /// from the compiled band). Context: `state`, `slot`, the `rects` `extent`, `band` and `limit`.
         E1201 = (Error, "HUD-E1201", "caption-band");
         /// Menus M1: a player menu anchored at its opener's rest rect would not sit against the opener
         /// (placed through `plx_ui::popover::anchor_panel(.., Placement::PLAYER_MENU)`). Pointer: the opener's
@@ -441,8 +446,10 @@ pub mod codes {
         /// Menus M2: a player menu placed from its opener leaves `SAFE`. Pointer: the opener's item. Context:
         /// `state`, `slot`, the menu's and `SAFE`'s `rects`.
         E1302 = (Error, "HUD-E1302", "menu-safe");
-        /// Menus M3 and M4: a player menu rises on the wrong side of its opener, or the two menus do not share
-        /// the near edge. Pointer: the opener's item. Context: `state`, `slot`, the two menus' `rects`.
+        /// Menus M3 and M4: a player menu rises on the wrong side of its opener (rects `anchor` and `menu`), or
+        /// two adjacent menu openers of one segment hang from different near edges (rects `menu` and `previous
+        /// menu`; the finding is on the later opener). Pointer: the opener's item. Context: `state`, `slot`,
+        /// and the rects named above.
         E1303 = (Error, "HUD-E1303", "menu-side");
         /// I10: app text fits but within `CI_TEXT_SKEW` of its room (a warning locally, an error in registry
         /// CI; 0 until PR12 measures it). Pointer: as `E0601`. Context: as `E0601`.
