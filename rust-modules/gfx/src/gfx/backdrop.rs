@@ -1442,10 +1442,7 @@ pub fn member_image(rect: Rect) -> Option<(Z, Rc<crate::gfx::BackdropImage>)> {
         }
         let sources = w.sources.borrow();
         sources.entries.iter().find_map(|(&z, e)| {
-            let listed = e
-                .members
-                .iter()
-                .any(|m| m.x == rect.x && m.y == rect.y && m.w == rect.w && m.h == rect.h);
+            let listed = e.members.contains(&rect);
             (listed && e.valid && e.seen == sources.frame)
                 .then(|| e.image.clone().map(|image| (z, image)))
                 .flatten()
