@@ -15,10 +15,11 @@ it is reached at exactly that address.
 | transport | `net::Resp::cookies` | each `Set-Cookie`'s `name=value`, beside `ETag` |
 | client | `plex::seerr` (`SeerrClient`, `live_transport`) | sign-in, search, discover rows, a title's detail (with TMDB's facts, its downloads and its requests), the request list, the Radarr / Sonarr servers and one server's profiles and folders, `POST /api/v1/request`, approving and declining; injectable transport; the dev-build write failsafe |
 | address | `Preferences::seerr_address` (`session::set_seerr_address`) | install-wide, kept across sign-out, no credential |
-| job body | `data::seerr` (`SeerrOp`, `run_op`, `SeerrIo`) | signs in when it holds no session, once more after a 401 |
+| sign-in way | `Preferences::seerr_sign_ins` (`session::SeerrSignIn`, `session::set_seerr_sign_in`) | per profile: a Seerr account's email and kept session; no entry is the Plex account; account-bound, cleared at sign-out |
+| job body | `data::seerr` (`SeerrOp`, `SeerrLogin`, `run_op`, `SeerrIo`) | signs in when it holds no session, once more after a 401 |
 | store | `stores::seerr::SeerrStore` (`StoreId::Seerr`, `StoreJob::Seerr`) | the connection and every surface's answer, per `Slot`; only a slot's latest ask lands; a `SeerrCmd::Refresh` keeps a slot's shown answer while it is read again, and when that read fails |
-| app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, the runner's `seerr-call` | hands the store the stored address, signs a seated profile in once |
-| Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`, typed in the Address row itself, above the raised keyboard, `text_field::SYSTEM_KEYBOARD_TOP`), Connect with the live connection line, Remove |
+| app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, `Bridge::seerr_sign_in`, the runner's `seerr-call` | hands the store the stored address and the profile's sign-in way, saves a Seerr account's changed session, signs a seated profile in once |
+| Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`, typed in the Address row itself, above the raised keyboard, `text_field::SYSTEM_KEYBOARD_TOP`), Sign in with (Plex or a Seerr account), a Seerr account's Email and Password (typed in their rows), Connect or Sign in with the live connection line, Remove |
 | Seerr tab | `screens/src/seerr_tab/` (`AppArg::Seerr`, `TAB_KEY_SEERR`) | on the strip after the type pills and just before the Watchlist mark while an address is set (`chrome::StripSource::seerr`); a header row switches its two sections, Requests (the request list as `plx_ui::media_row` rows) and Discover (Trending, Popular and Upcoming shelves); see below |
 | Detail page | `screens/src/detail` (`HeroCtl::Request`, `RequestFace`, `request_face`) | a show's missing seasons: the last disc of the hero row (see below) |
 | request menu | `screens/src/seerr_request.rs` (`ContentPanel::SeerrRequest`, `AppArg::SeerrRequest`) | where a request goes: server, quality profile, root folder (see below) |
@@ -32,12 +33,28 @@ runner, docs/sans-io.md), the page `screens`, which reads the store through `Inn
 
 ## Sign-in and the session
 
-`POST /api/v1/auth/plex {"authToken": <the seated profile's plex.tv token>}` signs that Plex account
-in; Seerr answers with the user and a `connect.sid` cookie, sent back as `Cookie:` on every later
-call. The session is never stored: it lives in the store, goes with the profile it was signed in
-for, and is signed in again after a 401 (a server restart forgets sessions). A 403 at sign-in is a
-Plex account the server does not let in (not imported, or Seerr's "new Plex sign-in" off); Settings
-says so. Redirects are never followed: a cookie must not reach another host.
+Each profile signs in one of two ways, chosen in Settings > Services > Seerr's "Sign in with".
+
+- **Plex** (the default): `POST /api/v1/auth/plex {"authToken": <the seated profile's plex.tv
+  token>}` signs that Plex account in. The session is never stored: it lives in the store, goes with
+  the profile it was signed in for, and is signed in again after a 401 (a server restart forgets
+  sessions). A 403 at sign-in is a Plex account the server does not let in (not imported, or Seerr's
+  "new Plex sign-in" off); Settings says so.
+- **Seerr account**: one of the server's own accounts. The Email row is stored; the Password row is
+  typed, drawn as `*`s, and goes with Sign in (`PreferenceCmd::SeerrSignIn`) to the store's one
+  `POST /api/v1/auth/local {"email", "password"}` job (`SeerrLogin::Account`). It is written nowhere,
+  and the page forgets it once Sign in sends it, or when the page goes. The session that sign-in
+  hands back IS stored, in the profile's `Preferences::seerr_sign_ins` entry with the address it was
+  signed in at (`SeerrStore::take_session_to_keep`, saved by `Bridge::seerr_pump`), so a restart
+  does not ask for the password: the kept session is checked with `GET /api/v1/auth/me`
+  (`SeerrLogin::Kept`). A kept session the server refuses is dropped from the record and the page
+  says "Not signed in" (`Connection::SignedOut`); a password the server refuses reads
+  `Connection::BadCredentials`. The entry is account-bound (`ACCOUNT_BOUND_PREFERENCES`): sign-out
+  clears it. Changing the email, or switching way, signs the profile out of the server.
+
+Seerr answers either sign-in with a `connect.sid` cookie, sent back as `Cookie:` on every later
+call. Redirects are never followed: a cookie must not reach another host. The mock's stand-in
+(`tests/mock_pms.py`) accepts the Seerr account `viewer@example.invalid` / `seerr`.
 
 ## The Seerr tab
 

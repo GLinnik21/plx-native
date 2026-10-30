@@ -109,6 +109,13 @@ pub enum PreferenceCmd {
     SeerrAddress { address: String, reply: std::sync::mpsc::Sender<bool> },
     /// Settings > Services > Seerr's Connect: sign the seated profile in at the stored address again.
     SeerrConnect,
+    /// Settings > Services > Seerr's "Sign in with": `Some(email)` signs the seated profile in with
+    /// that Seerr account from now on (a new email signs it out), `None` with its Plex account. The
+    /// app writes it through the session; `reply` learns whether the write was durable.
+    SeerrMethod { email: Option<String>, reply: std::sync::mpsc::Sender<bool> },
+    /// Settings > Services > Seerr's Sign in for a Seerr account. The password goes to the Seerr
+    /// store's one sign-in job and is held nowhere else; the Bridge answers this itself.
+    SeerrSignIn { email: String, password: String },
 }
 
 /// Whether an item has a context menu to open (`item_menu::has_actions`): the one predicate the

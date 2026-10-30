@@ -2423,6 +2423,9 @@ class SeerrFixture:
 
     COOKIE = "connect.sid"
     PAGE = 20
+    # The Seerr account `POST /api/v1/auth/local` accepts (synthetic: never a real account's).
+    LOCAL_EMAIL = "viewer@example.invalid"
+    LOCAL_PASSWORD = "seerr"
 
     def __init__(self, seed=1):
         rng = random.Random(seed * 7919 + 17)
@@ -2588,6 +2591,18 @@ class SeerrFixture:
             except (json.JSONDecodeError, AttributeError):
                 token = None
             if not token or self.refuse_login:
+                return j({"message": "Access denied."}, 403)
+            sid = "s%3A" + hashlib.sha1(f"seerr-{len(self.sessions)}".encode()).hexdigest()[:16]
+            self.sessions.add(sid)
+            return j(self.user, 200, [("Set-Cookie", f"{self.COOKIE}={sid}; Path=/; HttpOnly")])
+        if p == "/api/v1/auth/local" and method == "POST":
+            # A Seerr account of the server's own: `LOCAL_EMAIL` / `LOCAL_PASSWORD` sign in as the
+            # same user a Plex sign-in does; anything else is refused, as Seerr refuses it.
+            try:
+                sent = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                sent = {}
+            if not isinstance(sent, dict) or (sent.get("email"), sent.get("password")) != (self.LOCAL_EMAIL, self.LOCAL_PASSWORD):
                 return j({"message": "Access denied."}, 403)
             sid = "s%3A" + hashlib.sha1(f"seerr-{len(self.sessions)}".encode()).hexdigest()[:16]
             self.sessions.add(sid)
@@ -4387,6 +4402,11 @@ def _selftest_seerr():
         assert status == 200 and user["id"] == 1 and set_cookie.startswith("connect.sid="), (status, set_cookie)
         cookie = set_cookie.split(";")[0]
         assert call("/api/v1/auth/me", cookie=cookie)[1]["displayName"] == user["displayName"]
+        local = {"email": SeerrFixture.LOCAL_EMAIL, "password": SeerrFixture.LOCAL_PASSWORD}
+        status, _, local_cookie = call("/api/v1/auth/local", local)
+        assert status == 200 and local_cookie.startswith("connect.sid="), status
+        assert call("/api/v1/auth/me", cookie=local_cookie.split(";")[0])[0] == 200
+        assert call("/api/v1/auth/local", {**local, "password": "wrong"})[0] == 403
         show = next(t for t in pms.seerr.titles if t["kind"] == "tv" and t["status"] is None)
         word = show["name"].split()[0]
         hits = call(f"/api/v1/search?query={word}&page=1", cookie=cookie)[1]["results"]

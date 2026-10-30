@@ -9,17 +9,21 @@ struct Script {
     sign_in: Mutex<Result<(SeerrSession, SeerrUser), SeerrError>>,
     runs: Mutex<Vec<Result<SeerrData, SeerrError>>>,
     calls: Mutex<Vec<String>>,
+    /// How each sign-in signed in.
+    logins: Mutex<Vec<SeerrLogin>>,
 }
 
 impl Script {
     fn new(sign_in: Result<(SeerrSession, SeerrUser), SeerrError>, runs: Vec<Result<SeerrData, SeerrError>>) -> Arc<Self> {
-        Arc::new(Self { sign_in: Mutex::new(sign_in), runs: Mutex::new(runs), calls: Mutex::new(Vec::new()) })
+        Arc::new(Self { sign_in: Mutex::new(sign_in), runs: Mutex::new(runs), calls: Mutex::new(Vec::new()),
+            logins: Mutex::new(Vec::new()) })
     }
 }
 
 impl SeerrIo for Script {
-    fn sign_in(&self, address: &str, _: &str) -> Result<(SeerrSession, SeerrUser), SeerrError> {
+    fn sign_in(&self, address: &str, login: &SeerrLogin) -> Result<(SeerrSession, SeerrUser), SeerrError> {
         self.calls.lock().unwrap().push(format!("sign_in {address}"));
+        self.logins.lock().unwrap().push(login.clone());
         self.sign_in.lock().unwrap().clone()
     }
     fn run(&self, address: &str, _: &SeerrSession, _: &SeerrUser, op: &SeerrOp) -> Result<SeerrData, SeerrError> {
@@ -299,7 +303,7 @@ fn the_signed_in_users_permissions_say_who_decides_and_who_sees_everything() {
 fn a_job_that_panics_still_answers() {
     struct Panics;
     impl SeerrIo for Panics {
-        fn sign_in(&self, _: &str, _: &str) -> Result<(SeerrSession, SeerrUser), SeerrError> {
+        fn sign_in(&self, _: &str, _: &SeerrLogin) -> Result<(SeerrSession, SeerrUser), SeerrError> {
             panic!("synthetic")
         }
         fn run(&self, _: &str, _: &SeerrSession, _: &SeerrUser, _: &SeerrOp) -> Result<SeerrData, SeerrError> {
@@ -419,4 +423,91 @@ fn the_menu_reads_the_users_permission_and_the_servers_and_options_slots() {
     run_jobs(&mut plain);
     plain.pump(input.profile());
     assert!(!plain.may_choose_options(), "a user with Request alone sends straight away");
+}
+
+fn account(kept: Option<&str>) -> SeerrAccount {
+    SeerrAccount::Account { email: "viewer@example.invalid".into(), kept: kept.map(SeerrSession::for_test) }
+}
+
+#[test]
+fn a_seerr_account_with_no_kept_session_owes_its_password_and_asks_nothing() {
+    let io = Script::new(signed_in(), vec![]);
+    let mut store = store(&io);
+    store.set_account(account(None));
+    let input = WatchlistInput::for_test(1);
+    assert_eq!(store.connection(), &Connection::SignedOut);
+    assert!(!store.needs_connect(input.profile()), "nothing to sign in with until the password is typed");
+    store.ask(Slot::Search, search("q"), &input);
+    assert_eq!(store.answer(&Slot::Search), Some(&Answer::Failed(SeerrError::Unauthorized)));
+    assert!(!store.has_jobs());
+}
+
+#[test]
+fn a_password_sign_in_keeps_its_session_and_later_calls_ride_it() {
+    let io = Script::new(signed_in(), vec![Ok(titles(1))]);
+    let mut store = store(&io);
+    store.set_account(account(None));
+    let input = WatchlistInput::for_test(1);
+    store.sign_in_account("viewer@example.invalid", "synthetic-password", &input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    assert_eq!(store.connection(), &Connection::Connected { name: "s00000004".into() });
+    assert_eq!(*io.logins.lock().unwrap(), [SeerrLogin::Account {
+        email: "viewer@example.invalid".into(), password: "synthetic-password".into() }]);
+    assert_eq!(store.take_session_to_keep(), Some(Some(SeerrSession::for_test("connect.sid=x"))), "the Bridge saves it");
+    assert_eq!(store.take_session_to_keep(), None, "once");
+    // The stored record catching up is nothing new.
+    store.set_account(account(Some("connect.sid=x")));
+    store.ask(Slot::Search, search("q"), &input);
+    run_jobs(&mut store);
+    assert_eq!(io.logins.lock().unwrap().len(), 1, "no second sign-in: the session is held");
+}
+
+#[test]
+fn a_kept_session_is_checked_and_one_the_server_forgot_is_dropped_for_good() {
+    let io = Script::new(Err(SeerrError::Unauthorized), vec![]);
+    let mut store = store(&io);
+    store.set_account(account(Some("connect.sid=old")));
+    let input = WatchlistInput::for_test(1);
+    assert!(store.needs_connect(input.profile()), "a kept session is checked at once");
+    store.connect(&input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    assert_eq!(*io.logins.lock().unwrap(), [SeerrLogin::Kept(SeerrSession::for_test("connect.sid=old"))]);
+    assert_eq!(store.connection(), &Connection::SignedOut);
+    assert_eq!(store.take_session_to_keep(), Some(None), "the Bridge forgets the stored one");
+    // The record still names it until that write lands: it is not taken back.
+    store.set_account(account(Some("connect.sid=old")));
+    assert_eq!(store.connection(), &Connection::SignedOut);
+    assert!(!store.needs_connect(input.profile()));
+}
+
+#[test]
+fn a_refused_password_is_bad_credentials_and_keeps_nothing() {
+    let io = Script::new(Err(SeerrError::Forbidden), vec![]);
+    let mut store = store(&io);
+    store.set_account(account(None));
+    let input = WatchlistInput::for_test(1);
+    store.sign_in_account("viewer@example.invalid", "wrong", &input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    assert_eq!(store.connection(), &Connection::BadCredentials);
+    assert_eq!(store.take_session_to_keep(), None);
+}
+
+#[test]
+fn switching_back_to_plex_forgets_the_account_s_session() {
+    let io = Script::new(signed_in(), vec![]);
+    let mut store = store(&io);
+    store.set_account(account(None));
+    let input = WatchlistInput::for_test(1);
+    store.sign_in_account("viewer@example.invalid", "pw", &input);
+    run_jobs(&mut store);
+    store.pump(input.profile());
+    store.set_account(SeerrAccount::Plex);
+    assert_eq!(store.connection(), &Connection::Idle);
+    assert!(!store.may_manage_requests());
+    store.connect(&input);
+    run_jobs(&mut store);
+    assert!(matches!(io.logins.lock().unwrap().last(), Some(SeerrLogin::Plex(_))), "signs in as the Plex account");
 }
