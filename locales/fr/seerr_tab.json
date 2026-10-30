@@ -21,5 +21,14 @@
   "seerr.chip.downloading": "Téléchargement",
   "seerr.chip.processing": "En cours",
   "seerr.chip.available": "Disponible",
-  "seerr.chip.partly": "En partie disponible"
+  "seerr.chip.partly": "En partie disponible",
+  "seerr.chip.missing": "Manquante",
+  "seerr.chip.blocked": "Bloqué",
+  "seerr.decide.approve": "Approuver",
+  "seerr.decide.decline": "Refuser",
+  "seerr.decide.approving": "Approbation…",
+  "seerr.decide.declining": "Refus…",
+  "seerr.decide.forbidden": "Vous ne pouvez pas approuver ni refuser de demandes sur le serveur",
+  "seerr.decide.conflict": "Cette demande a déjà reçu une réponse",
+  "seerr.decide.failed": "Envoi impossible. Réessayez."
 }

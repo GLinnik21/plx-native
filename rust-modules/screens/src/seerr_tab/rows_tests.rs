@@ -1,7 +1,8 @@
 //! A request row's words: the chip for every state, the seasons, who asked and answered, the
 //! download line, and what a row says before its title has landed.
 use super::*;
-use plx_data::seerr::{Download, Title};
+use plx_data::seerr::{Download, DownloadState, Title};
+use crate::registry::seerr_cards::request_chip as chip;
 
 fn request(status: RequestStatus, availability: Availability) -> MediaRequest {
     MediaRequest {

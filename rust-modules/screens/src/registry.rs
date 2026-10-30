@@ -2710,7 +2710,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // The Seerr tab (docs/seerr.md): `ARG_SHAPE`'s `Requests` becomes `Seerr`, and `RequestsScreen::SHAPE`
 // in `SCREEN_SHAPES` becomes `SeerrScreen::SHAPE` (two sections under a header row, the request
 // rows); the previous pin was 0x5234_18a3_2b35_8218.
-const SCREEN_SHAPES_PIN: u64 = 0xdb97_2b53_a03a_e324;
+// Approve and decline on the Seerr title page (docs/seerr.md): `SeerrTitleScreen::SHAPE` gains
+// `deciding:opt<i64>` and `decided:bool`; the previous pin was 0xdb97_2b53_a03a_e324.
+const SCREEN_SHAPES_PIN: u64 = 0xa2c7_ae3a_69f0_4fce;
 
 #[cfg(test)]
 mod arg_tests {

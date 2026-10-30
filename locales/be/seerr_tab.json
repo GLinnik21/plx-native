@@ -21,5 +21,14 @@
   "seerr.chip.downloading": "Спампоўваецца",
   "seerr.chip.processing": "Апрацоўваецца",
   "seerr.chip.available": "Даступна",
-  "seerr.chip.partly": "Часткова даступна"
+  "seerr.chip.partly": "Часткова даступна",
+  "seerr.chip.missing": "Няма",
+  "seerr.chip.blocked": "Заблакавана",
+  "seerr.decide.approve": "Ухваліць",
+  "seerr.decide.decline": "Адхіліць",
+  "seerr.decide.approving": "Ухваленне…",
+  "seerr.decide.declining": "Адхіленне…",
+  "seerr.decide.forbidden": "Вы не можаце ўхваляць ці адхіляць запыты на серверы",
+  "seerr.decide.conflict": "На гэты запыт ужо адказалі",
+  "seerr.decide.failed": "Не ўдалося адправіць. Паспрабуйце яшчэ раз."
 }

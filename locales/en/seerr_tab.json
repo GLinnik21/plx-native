@@ -106,5 +106,41 @@
   "seerr.chip.partly": {
     "value": "Partly available",
     "description": "The Seerr tab, the household's Seerr request server: Request row status chip: some seasons are on the Plex server"
+  },
+  "seerr.chip.missing": {
+    "value": "Missing",
+    "description": "A title's page on the household's Seerr request server: Season chip state: the season is neither on the Plex server nor requested"
+  },
+  "seerr.chip.blocked": {
+    "value": "Blocked",
+    "description": "A title's page on the household's Seerr request server: Season chip state: the server's owner blocked it from being requested"
+  },
+  "seerr.decide.approve": {
+    "value": "Approve",
+    "description": "A title's page on the household's Seerr request server: Button: approve the pending request (administrators only)"
+  },
+  "seerr.decide.decline": {
+    "value": "Decline",
+    "description": "A title's page on the household's Seerr request server: Button: decline the pending request (administrators only)"
+  },
+  "seerr.decide.approving": {
+    "value": "Approving…",
+    "description": "A title's page on the household's Seerr request server: Button while the approval is being sent"
+  },
+  "seerr.decide.declining": {
+    "value": "Declining…",
+    "description": "A title's page on the household's Seerr request server: Button while the decline is being sent"
+  },
+  "seerr.decide.forbidden": {
+    "value": "You can't approve or decline requests on the server",
+    "description": "A title's page on the household's Seerr request server: Status line after the server refused an approval or a decline"
+  },
+  "seerr.decide.conflict": {
+    "value": "This request was already answered",
+    "description": "A title's page on the household's Seerr request server: Status line: someone answered the request first"
+  },
+  "seerr.decide.failed": {
+    "value": "Couldn't send that. Try again.",
+    "description": "A title's page on the household's Seerr request server: Status line after an approval or a decline got no answer"
   }
 }

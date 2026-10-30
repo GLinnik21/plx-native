@@ -21,5 +21,14 @@
   "seerr.chip.downloading": "Letöltés",
   "seerr.chip.processing": "Feldolgozás",
   "seerr.chip.available": "Elérhető",
-  "seerr.chip.partly": "Részben elérhető"
+  "seerr.chip.partly": "Részben elérhető",
+  "seerr.chip.missing": "Hiányzik",
+  "seerr.chip.blocked": "Letiltva",
+  "seerr.decide.approve": "Jóváhagyás",
+  "seerr.decide.decline": "Elutasítás",
+  "seerr.decide.approving": "Jóváhagyás…",
+  "seerr.decide.declining": "Elutasítás…",
+  "seerr.decide.forbidden": "A szerveren nem hagyhatsz jóvá és nem utasíthatsz el kéréseket",
+  "seerr.decide.conflict": "Erre a kérésre már válaszoltak",
+  "seerr.decide.failed": "Nem sikerült elküldeni. Próbáld újra."
 }

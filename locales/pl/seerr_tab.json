@@ -21,5 +21,14 @@
   "seerr.chip.downloading": "Pobieranie",
   "seerr.chip.processing": "W toku",
   "seerr.chip.available": "Dostępne",
-  "seerr.chip.partly": "Częściowo dostępne"
+  "seerr.chip.partly": "Częściowo dostępne",
+  "seerr.chip.missing": "Brak",
+  "seerr.chip.blocked": "Zablokowane",
+  "seerr.decide.approve": "Zatwierdź",
+  "seerr.decide.decline": "Odrzuć",
+  "seerr.decide.approving": "Zatwierdzanie…",
+  "seerr.decide.declining": "Odrzucanie…",
+  "seerr.decide.forbidden": "Nie możesz zatwierdzać ani odrzucać zamówień na serwerze",
+  "seerr.decide.conflict": "To zamówienie zostało już rozpatrzone",
+  "seerr.decide.failed": "Nie udało się wysłać. Spróbuj ponownie."
 }

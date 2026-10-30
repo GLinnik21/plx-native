@@ -21,5 +21,14 @@
   "seerr.chip.downloading": "Загружается",
   "seerr.chip.processing": "Обрабатывается",
   "seerr.chip.available": "Доступно",
-  "seerr.chip.partly": "Доступно частично"
+  "seerr.chip.partly": "Доступно частично",
+  "seerr.chip.missing": "Нет",
+  "seerr.chip.blocked": "Заблокировано",
+  "seerr.decide.approve": "Одобрить",
+  "seerr.decide.decline": "Отклонить",
+  "seerr.decide.approving": "Одобрение…",
+  "seerr.decide.declining": "Отклонение…",
+  "seerr.decide.forbidden": "Вы не можете одобрять или отклонять запросы на сервере",
+  "seerr.decide.conflict": "На этот запрос уже ответили",
+  "seerr.decide.failed": "Не удалось отправить. Попробуйте ещё раз."
 }

@@ -21,5 +21,14 @@
   "seerr.chip.downloading": "Lädt herunter",
   "seerr.chip.processing": "In Bearbeitung",
   "seerr.chip.available": "Verfügbar",
-  "seerr.chip.partly": "Teilweise verfügbar"
+  "seerr.chip.partly": "Teilweise verfügbar",
+  "seerr.chip.missing": "Fehlt",
+  "seerr.chip.blocked": "Gesperrt",
+  "seerr.decide.approve": "Genehmigen",
+  "seerr.decide.decline": "Ablehnen",
+  "seerr.decide.approving": "Wird genehmigt…",
+  "seerr.decide.declining": "Wird abgelehnt…",
+  "seerr.decide.forbidden": "Du darfst auf dem Server keine Anfragen genehmigen oder ablehnen",
+  "seerr.decide.conflict": "Diese Anfrage wurde bereits beantwortet",
+  "seerr.decide.failed": "Das ging nicht. Versuche es erneut."
 }

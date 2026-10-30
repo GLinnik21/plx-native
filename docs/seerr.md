@@ -54,7 +54,8 @@ other switches in place. The page opens on Requests.
   left", with the amber band along the poster's foot) or who approved or declined it, and a chip for
   what became of it (Pending, Approved, Declined, Failed, Downloading, Processing, Partly available,
   Available). A row is a section of its own, so the page scrolls to the focused row as it does to a
-  shelf. OK on a row opens the title's Seerr page.
+  shelf. OK on a row opens the title's Seerr page, where a request manager approves or declines it
+  (below).
 - The list is read again when the page is uncovered or Requests is chosen, and every 30 s
   (`REFRESH_MS`) while a request on view is approved and not yet available; a refresh
   (`SeerrCmd::Refresh`) keeps the rows on screen until it lands. Rows keep their order while the
@@ -65,6 +66,25 @@ other switches in place. The page opens on Requests.
   server are left out unless the header's "Available · Hidden / Shown" control shows them (a partly
   available show stays). A shelf the filter leaves short reads up to three pages by itself
   (`MAX_FILL_PAGES`), and every further page as the reader walks near its end.
+
+## A title's page
+
+`screens/src/seerr_title.rs`, opened by a Discover card, a Search Request card or a request row.
+Under the title it says what Seerr knows: TMDB's facts (kind, year, runtime, TMDB's score as a
+percentage, two genres, the network or studio), the availability (or what the last request or
+decision said), the newest request (its state, who asked and when, who approved or declined it),
+the download while one moves (with the amber band) and, for a show, one chip per season with its
+own state (Available, Partly available, Pending, Processing, Missing, Blocked). The words a request
+is described by are written once, in `registry::seerr_cards`, for the tab's rows and this page.
+
+The controls stand in one row: the Request pill while there is something to request, then
+**Approve** and **Decline** for a user with Manage Requests (`SeerrStore::may_manage_requests`)
+while a request of the title waits for approval. They answer the newest waiting request
+(`Slot::Decide(id)`, `POST /api/v1/request/{id}/approve|decline`); while it is on its way the
+pressed one says Approving… or Declining… and a second press sends nothing. A decision that went
+through, or one the server says somebody already made (409), reads the title back once; a refusal
+(403) or no answer says so in the status line and leaves the buttons to try again. Going back to the
+Seerr tab reads the list again, so the row shows the new state.
 
 ## A show's missing seasons (the Detail page)
 
@@ -164,5 +184,8 @@ query, a title, the token or the cookie.
   television's clock can be wrong after an offline start, and the UI has no wall clock.
 - A show's request asks for every missing season at once: there is no season picker, on the Detail
   page or the title page.
+- Approve and Decline answer the newest waiting request of a title, on its page; the Seerr tab's
+  rows open that page rather than offering the decision in place (a menu over the tab cannot open
+  a page, and the page is where the request's details are).
 - A show's TMDB id comes from its PMS record. A show matched by an agent that records none (the
   legacy TheTVDB agent, or a show matched by nothing) has no request disc.
