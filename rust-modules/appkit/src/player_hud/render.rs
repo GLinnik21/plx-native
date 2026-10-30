@@ -354,7 +354,6 @@ fn draw_control(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player_hud::classic;
     use crate::player_hud::geometry::{GROUP_SCRUB, GROUP_TABS};
     use crate::player_hud::state::Controls;
     use crate::skip_pill::prompt_for;
@@ -408,16 +407,12 @@ mod tests {
         }
     }
 
-    /// The hand-written draw and the renderer, over the same frame, each with a fresh motion state.
-    fn both(compiled: &Compiled, c: Case) -> (Census, Census, bool) {
+    /// The renderer over one frame, with a fresh motion state.
+    fn drawn(compiled: &Compiled, c: Case) -> (Census, bool) {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let store = plx_data::stores::metadata::MetadataStore::default();
         let model = HudModel { paused: c.paused, duration_ns: 600_000_000_000, playpos_ns: 90_000_000_000, ..HudModel::default() };
         let up = Countdown::default();
-        let mut hand_row = HudMotion::new();
-        let hand = census(|| {
-            classic::draw_hud(&ps, &model, &mut hand_row, &up, c.slot, Busy::None, c.focus, c.btn, c.tab, 1_000, c.transport, &FM, store.view());
-        });
         let mut row = HudMotion::new();
         let frame = Frame {
             ps: &ps,
@@ -435,7 +430,7 @@ mod tests {
         };
         let mut drew = false;
         let new = census(|| drew = draw(compiled, &frame, &mut row, Painter::root()));
-        (hand, new, drew)
+        (new, drew)
     }
 
     fn cases() -> Vec<Case> {
@@ -492,28 +487,23 @@ mod tests {
         u64::from_str_radix(line.split('\t').nth(3).expect("a hash"), 16).expect("a hex hash")
     }
 
-    /// **Classic through the renderer is classic through the hand-written draw**: every primitive,
-    /// glyph, text run and fill the two hand the painter is the same list, in the same order, for every
-    /// slot, focus, pause and panel state, in every shipped language. The state the host cannot reach is
-    /// the title text and Up Next's card (they need a playing item): the simulator's frame dump covers
-    /// them.
+    /// **Classic through the renderer is the frozen census of the hand-written draw**: every primitive,
+    /// glyph, text run and fill the renderer hands the painter hashes to the line `census-classic.golden.tsv`
+    /// froze from the hand-written `classic::draw_hud` (93fc5091d), for every slot, focus, pause and panel
+    /// state, in every shipped language. The state the host cannot reach is the title text and Up Next's
+    /// card (they need a playing item): the simulator's frame dump covers them.
     #[test]
     fn classic_through_the_renderer_draws_what_the_hand_written_hud_draws() {
         let mut compared = 0;
         for language in SHIPPED {
             let _language = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
-            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM).expect("classic loads");
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM);
             for (index, c) in cases().into_iter().enumerate() {
-                let (hand, new, drew) = both(&hud.compiled, c);
+                let (new, drew) = drawn(&hud.compiled, c);
                 assert!(drew, "{c:?}: the renderer has a state for every classic frame");
-                assert!(!hand.0.is_empty(), "{c:?}: the hand-written draw draws something");
-                assert_eq!(census_hash(&hand), frozen_hash(language.tag(), index), "{} {c:?}: the frozen census drifted from the hand-written draw", language.tag());
+                assert!(!new.0.is_empty(), "{c:?}: the renderer draws something");
                 assert_eq!(census_hash(&new), frozen_hash(language.tag(), index), "{} {c:?}: the renderer's frame is not the frozen census:\n{new:#?}", language.tag());
-                assert_eq!(hand.0, new.0, "{} {c:?}: the primitive census", language.tag());
-                assert_eq!(hand.1, new.1, "{} {c:?}: the text runs", language.tag());
-                assert_eq!(hand.2, new.2, "{} {c:?}: the glyphs", language.tag());
-                assert_eq!(hand.3, new.3, "{} {c:?}: the fills", language.tag());
                 compared += 1;
             }
         }
@@ -524,7 +514,7 @@ mod tests {
     /// A failure owns the frame: nothing of the transport draws, and the title's marquee resets.
     #[test]
     fn a_failure_read_out_owns_the_frame_in_the_renderer_too() {
-        let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM).unwrap();
+        let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
         let ps = plx_media::route::PlaybackSession::IDLE;
         let store = plx_data::stores::metadata::MetadataStore::default();
         let model = HudModel::default();

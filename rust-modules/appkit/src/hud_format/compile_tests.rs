@@ -23,9 +23,7 @@ use super::compile::*;
 use super::parse::{self, Package};
 use super::{check, Slot};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor};
-use crate::player_hud::motion::HudMotion;
-use crate::player_hud::{classic, ControlSlot, Controls};
-use crate::skip_pill::prompt_for;
+use crate::player_hud::{classic, Controls};
 use crate::{chapters_panel, info_panel};
 
 const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
@@ -147,23 +145,19 @@ fn compiled_classic_matches_the_hand_written_layout() {
         let _language = language_on_this_thread_for_test(language);
         for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
-            for (episode, controls) in [(false, Controls::NONE), (true, PAIR)] {
-                for (chapters, tabs) in [(false, 1), (true, 2)] {
+            for episode in [false, true] {
+                for chapters in [false, true] {
                     let slots = [
-                        (ControlSlot::Discs(controls), Slot::Discs, SkipKind::Intro),
-                        (ControlSlot::UpNext(marker(MarkerKind::Credits, true)), Slot::UpNext, SkipKind::Intro),
-                        (ControlSlot::Skip(prompt_for(marker(MarkerKind::Intro, false))), Slot::Skip, SkipKind::Intro),
-                        (ControlSlot::Skip(prompt_for(marker(MarkerKind::Credits, false))), Slot::Skip, SkipKind::Credits),
+                        (Slot::Discs, SkipKind::Intro),
+                        (Slot::UpNext, SkipKind::Intro),
+                        (Slot::Skip, SkipKind::Intro),
+                        (Slot::Skip, SkipKind::Credits),
                     ];
-                    for (slot, kind, skip) in slots {
-                        let want = classic::geometry(slot, &HudMotion::new(), tabs, measure);
+                    for (kind, skip) in slots {
                         let key = StateKey { open: 0, slot: kind, chapters, episode, paused: false };
                         let got = compiled.geometry(key, skip).expect("the compact state exists");
                         compared += 1;
                         let frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode={episode}/chapters={chapters}/{kind:?}/{skip:?}"));
-                        for line in diff(&frozen, &want) {
-                            mismatches.push(format!("[{language:?} {measure_name} episode={episode} chapters={chapters} {kind:?}/{skip:?}] FROZEN value drifted from the hand-written layout: {line}"));
-                        }
                         for line in diff(&got, &frozen) {
                             mismatches.push(format!(
                                 "[{language:?} {measure_name} episode={episode} chapters={chapters} {kind:?}/{skip:?}] {line}"
@@ -204,14 +198,10 @@ fn compiled_classic_title_stops_where_the_hand_written_title_does() {
             _ => None,
         })
     };
-    for (episode, controls) in [(false, Controls::NONE), (true, PAIR)] {
-        for (kind, slot) in [
-            (Slot::Discs, ControlSlot::Discs(controls)),
-            (Slot::UpNext, ControlSlot::UpNext(marker(MarkerKind::Credits, true))),
-        ] {
+    for episode in [false, true] {
+        for kind in [Slot::Discs, Slot::UpNext] {
             let state = compiled.lookup(0, kind, true, episode, false).unwrap();
             let frozen = frozen_title_right(&format!("{kind:?}/episode={episode}"));
-            assert_eq!(classic::title_right(slot, &HudMotion::new(), &FM), frozen, "FROZEN value drifted from the hand-written title: {kind:?} episode={episode}");
             assert_eq!(title_right(state), Some(frozen), "{kind:?} episode={episode}");
         }
     }
@@ -238,10 +228,8 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
             for episode in [false, true] {
                 let state = compiled.lookup(0, Slot::Skip, true, episode, false).unwrap();
                 let mut rights = Vec::new();
-                for (skip, kind) in [(SkipKind::Intro, MarkerKind::Intro), (SkipKind::Credits, MarkerKind::Credits)] {
+                for skip in [SkipKind::Intro, SkipKind::Credits] {
                     let frozen = frozen_title_right(&format!("{language:?}/{measure_name}/episode={episode}/{skip:?}"));
-                    let want = classic::title_right(ControlSlot::Skip(prompt_for(marker(kind, false))), &HudMotion::new(), measure);
-                    assert_eq!(want, frozen, "FROZEN value drifted from the hand-written title: {language:?} {measure_name} episode={episode} {skip:?}");
                     let got = title_right(state.skip_variant(skip));
                     assert_eq!(got, Some(frozen), "{language:?} {measure_name} episode={episode} {skip:?}");
                     rights.extend(got);
@@ -1105,7 +1093,8 @@ fn no_band_under_the_bar_starts_on_the_clocks_line() {
 /// literal in the fixture is that arithmetic, spelt here from the constants.
 #[test]
 fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
-    let geometry = classic::geometry(ControlSlot::Discs(Controls::NONE), &HudMotion::new(), 1, &FM);
+    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false };
+    let geometry = build(CLASSIC, &FM).geometry(key, SkipKind::Intro).expect("the compact state exists");
     let cell_foot = geometry.playbar.y + classic::CLOCK_TOP + classic::clock_line_h(theme::size::CAPTION);
     let gap = geometry.tab_row.y - cell_foot;
     assert_eq!(gap, 7.0, "the tabs sit 7 px under the bar's cell");

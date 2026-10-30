@@ -9,9 +9,9 @@
 //! measurer is passed in. The draw ([`super::render`])
 //! walks the result and computes nothing.
 //!
-//! `builtin:classic` is the only package that ships in this release; a failure to load whatever the
-//! owner asked for (a dev package that does not parse) leaves the screen with `None`, which draws the
-//! hand-written classic layout as it always has.
+//! `builtin:classic` is the only package that ships in this release, and it always loads (it is embedded
+//! and a test parses and compiles it clean in every shipped language): [`load_classic`] cannot fail. A
+//! dev package that does not parse is refused ([`DevStep::Report`]) and the owner keeps drawing classic.
 
 use std::sync::Arc;
 
@@ -50,9 +50,19 @@ pub fn load(bytes: &[u8], app_version: &str, cx: &LocaleContext, measure: &dyn M
     Ok(LoadedHud { key, language, compiled: Arc::new(compile(&package, measure, CompileCtx { labels: AppLabels::in_language(cx) })) })
 }
 
-/// `builtin:classic`, the embedded package ([`crate::hud_format::CLASSIC_PACKAGE`]), compiled.
-pub fn load_classic(app_version: &str, cx: &LocaleContext, measure: &dyn Measure) -> Result<LoadedHud, LoadError> {
-    load(crate::hud_format::CLASSIC_PACKAGE.as_bytes(), app_version, cx, measure)
+/// `builtin:classic`, the embedded package ([`crate::hud_format::CLASSIC_PACKAGE`]), compiled. It does not
+/// return a `Result`: the bytes are `include_str!`'d and `classic_loads_with_no_findings_in_every_shipped_language`
+/// parses and compiles them in all ten languages, so a failure here is a build that no test passed.
+pub fn load_classic(app_version: &str, cx: &LocaleContext, measure: &dyn Measure) -> LoadedHud {
+    load(crate::hud_format::CLASSIC_PACKAGE.as_bytes(), app_version, cx, measure).expect("the embedded builtin:classic parses")
+}
+
+/// **`builtin:classic` for a test that builds a player page**: English on the fixture advances
+/// (`FixtureMeasure`, the measurer every host rig lays out with), compiled once per call, outside any frame.
+/// The ONE helper a test builder takes its `PlayerScreen::new` argument from.
+#[cfg(any(test, feature = "test-support"))]
+pub fn classic_for_test() -> Arc<Compiled> {
+    load_classic("0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).compiled
 }
 
 /// **The dev trigger's value**: the path of the package to draw instead of classic, the first line of the
@@ -156,12 +166,42 @@ mod tests {
         assert_eq!(SHIPPED.len(), 10, "the claim is about the ten shipped languages");
         for language in SHIPPED {
             let cx = LocaleContext::resolve(language, None, None, None, None);
-            let hud = load_classic("0.0.0-test", &cx, &ShippedMeasure)
-                .unwrap_or_else(|e| panic!("classic did not load in {}: {e:?}", language.tag()));
+            let hud = load_classic("0.0.0-test", &cx, &ShippedMeasure);
             assert!(hud.compiled.findings().is_empty(), "{}: {:?}", language.tag(), hud.compiled.findings());
             assert!(!hud.compiled.states().is_empty(), "{}", language.tag());
             assert_eq!(hud.key.lang, hud.language.tag());
         }
+    }
+
+    /// **Classic answers every frame the player can be in**, in every shipped language: for every slot the
+    /// HUD can hold, with and without chapters, as an episode or a movie, paused or playing, the compact
+    /// state (`open == 0`) and its geometry exist. This is the proof that `frame_state` returning `None`
+    /// cannot happen for `builtin:classic`: the player draws and places from the compile with no
+    /// hand-written layout behind it.
+    #[test]
+    fn classic_answers_every_frame_the_player_can_be_in() {
+        use crate::hud_format::compile::SkipKind;
+        use crate::hud_format::reach::Slot;
+        let mut asked = 0;
+        for language in SHIPPED {
+            let cx = LocaleContext::resolve(language, None, None, None, None);
+            let hud = load_classic("0.0.0-test", &cx, &ShippedMeasure);
+            for slot in [Slot::Discs, Slot::UpNext, Slot::Skip] {
+                for chapters in [false, true] {
+                    for episode in [false, true] {
+                        for paused in [false, true] {
+                            asked += 1;
+                            let at = format!("{} {slot:?} chapters={chapters} episode={episode} paused={paused}", language.tag());
+                            let state = hud.compiled.lookup(0, slot, chapters, episode, paused).unwrap_or_else(|| panic!("no state for {at}"));
+                            for skip in [SkipKind::Intro, SkipKind::Credits] {
+                                assert_eq!(state.geometry(skip).band, hud.compiled.band(), "{at} {skip:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(asked, SHIPPED.len() * 3 * 2 * 2 * 2, "the ten languages x every combination");
     }
 
     /// The key is the bytes' digest: the same bytes in the same language are the same key, other bytes
@@ -169,12 +209,12 @@ mod tests {
     #[test]
     fn the_key_names_the_bytes_the_release_and_the_language() {
         let en = plx_platform::i18n::english();
-        let a = load_classic("1.0", en, &ShippedMeasure).unwrap().key;
-        assert_eq!(a, load_classic("1.0", en, &ShippedMeasure).unwrap().key);
-        assert_ne!(a, load_classic("1.1", en, &ShippedMeasure).unwrap().key, "the release is part of the key");
+        let a = load_classic("1.0", en, &ShippedMeasure).key;
+        assert_eq!(a, load_classic("1.0", en, &ShippedMeasure).key);
+        assert_ne!(a, load_classic("1.1", en, &ShippedMeasure).key, "the release is part of the key");
         let other = SHIPPED.into_iter().find(|p| p.language() != Some(plx_platform::i18n::Language::En)).expect("a shipped language other than English");
         let de = LocaleContext::resolve(other, None, None, None, None);
-        assert_ne!(a, load_classic("1.0", &de, &ShippedMeasure).unwrap().key, "the language is part of the key");
+        assert_ne!(a, load_classic("1.0", &de, &ShippedMeasure).key, "the language is part of the key");
         assert_eq!(a.sha256, plx_base::sha256::sha256(crate::hud_format::CLASSIC_PACKAGE.as_bytes()));
     }
 

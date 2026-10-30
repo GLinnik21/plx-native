@@ -2,29 +2,29 @@
 //! audit and the control-row STAND-INS (Skip, Up Next) need to know about where the HUD is, as values
 //! rather than as the classic layout's constants.
 //!
-//! **The compiled package fills it** (`CompiledState::geometry`): [`frame_geometry`] for the facts that do
-//! not depend on what occupies the row, [`geometry`] for the whole of it, [`row_len`] for how many stops
-//! the row group holds. These three are the ONE place a consumer asks where the HUD is, and the only
-//! place that names `classic::frame_geometry` / `classic::geometry`: while a screen holds no package, or
-//! the package has no state for the frame (the draw then falls back to `classic::draw_hud`, so the
-//! geometry takes the same exit), they answer with the hand-written layout's report. A consumer reads the
-//! report and so is indifferent to which layout produced it: the player's `Focusable` (group extents and
-//! row length), the pointer stops, the caption band and the stand-ins (`up_next`, `skip_pill`) never name
-//! `CTRL_Y`, `CTRL_H`, `CTRL_RIGHT` or `scrub_hit_rect` themselves. Stage 3 deletes the classic arm with
-//! `draw_hud`.
+//! **The compiled package fills it** (`CompiledState::geometry`): [`geometry`] for the whole of it, [`row_len`]
+//! for how many stops the row group holds, [`row_command`] / [`row_enabled`] / [`row_primary`] for what a
+//! press performs. These are the ONE place a consumer asks where the HUD is. A consumer reads the report
+//! and so is indifferent to which package produced it: the player's `Focusable` (group extents and row
+//! length), the pointer stops, the caption band and the stand-ins never name `CTRL_Y`, `CTRL_H`,
+//! `CTRL_RIGHT` themselves.
+//!
+//! **A package with no state for the frame** (`frame_state` answers `None`: a user package whose
+//! valuation the compile did not reach; `builtin:classic` has all of them, which a test pins) is decided
+//! HERE, once, for the draw and the geometry together: the report is empty (every rect zero, no stop in the
+//! row, the package's own caption band), and `render::draw` draws nothing and says so. The user-package
+//! fallback to classic is PR10b's.
 //!
 //! This module also names the HUD's focus GROUPS. They are the shared `FocusEngine` groups the
 //! player's `Focusable` declares, and the one set of numbers the HUD's motion and drawing compare a
 //! focus against, so the screen's `nav.focus` is a [`GroupId`] and not a bare integer.
 
-use plx_machine::machine::{GroupId, Measure};
+use plx_machine::machine::GroupId;
 use plx_media::player::text_style::HudBand;
 use plx_ui::Rect;
 
-use super::classic;
 use super::command::HudCommand;
 use super::model::HudModel;
-use super::motion::HudMotion;
 use super::state::{ControlSlot, Controls};
 use crate::hud_format::compile::{Compiled, CompiledState, SkipKind};
 use crate::hud_format::reach::Slot;
@@ -60,8 +60,8 @@ pub struct RowAnchor {
     pub h: f32,
 }
 
-/// The rects a layout reports for one frame. Built by `classic::frame_geometry()` (the
-/// slot-independent fields, `items` and `tabs` left `None`) or by `classic::geometry(..)` (all of it).
+/// The rects a layout reports for one frame: [`CompiledState::geometry`] (all of it), or [`HudGeometry::empty`]
+/// for a package with no state for the frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HudGeometry {
     /// The scrubber's GRAB band: deliberately much taller than the bar, because it is a pointer
@@ -93,6 +93,23 @@ pub struct HudGeometry {
 }
 
 impl HudGeometry {
+    /// **The report of a frame the package has no state for**: every rect zero (nothing to grab, press or
+    /// place), no item and no tab, and the package's own caption band, so a caption still stands clear of
+    /// whatever the package does draw.
+    pub fn empty(band: HudBand) -> Self {
+        Self {
+            grab: Rect::default(),
+            playbar: Rect::default(),
+            row: Rect::default(),
+            row_anchor: RowAnchor::default(),
+            items: [None; MAX_ROW_ITEMS],
+            tab_row: Rect::default(),
+            title: Rect::default(),
+            tabs: [None; HUD_TABS],
+            band,
+        }
+    }
+
     /// **The caption band this layout occupies**: the [`HudGeometry::band`] field, whichever slot
     /// occupies the row. A value from the layout, so the caption draws and the libass lift take it
     /// rather than a constant.
@@ -129,83 +146,71 @@ pub fn frame_state(compiled: &Compiled, slot: ControlSlot, chapters: bool, pause
     compiled.lookup(0, kind, chapters, episode, paused).map(|s| (s, skip))
 }
 
-/// **The geometry facts that do not depend on what occupies the row**, for the frame: the grab band, the
-/// bar, the row at its floor width and its anchor, the title and tab-row origins, the caption band. From
-/// the compiled package's state for the frame when it has one, else classic's. It measures nothing, so it
-/// is safe where there is no measurer (a pointer event, the caption draw).
-pub fn frame_geometry(compiled: Option<&Compiled>, slot: ControlSlot, chapters: bool, paused: bool) -> HudGeometry {
-    match compiled.and_then(|c| frame_state(c, slot, chapters, paused)) {
+/// **The whole geometry report for one frame**: the grab band, the bar, the row at its floor width and its
+/// anchor, item `i` of whatever occupies the row at the rect it is DRAWN at, each tab's pill, the title and
+/// tab-row origins and the caption band. It copies what the compile placed (the compile measured, once,
+/// outside the frame), so it needs no measurer and is safe anywhere: a pointer event, the caption draw, the
+/// stand-ins. [`HudGeometry::empty`] where the package has no state for the frame.
+pub fn geometry(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: bool) -> HudGeometry {
+    match frame_state(compiled, slot, chapters, paused) {
         Some((state, skip)) => state.geometry(skip),
-        None => classic::frame_geometry(),
-    }
-}
-
-/// **The whole geometry report for one frame**: [`frame_geometry`] plus item `i` of whatever occupies the
-/// row at the rect it is DRAWN at and each tab's pill. The compiled package's report copies what the
-/// compile placed; classic's measures (the Skip pill, the Up Next pair and the pills are as wide as their
-/// labels), like the draw it describes.
-pub fn geometry(
-    compiled: Option<&Compiled>,
-    slot: ControlSlot,
-    motion: &HudMotion,
-    chapters: bool,
-    paused: bool,
-    measure: &dyn Measure,
-) -> HudGeometry {
-    match compiled.and_then(|c| frame_state(c, slot, chapters, paused)) {
-        Some((state, skip)) => state.geometry(skip),
-        None => classic::geometry(slot, motion, if chapters { 2 } else { 1 }, measure),
+        None => HudGeometry::empty(compiled.band()),
     }
 }
 
 /// **How many stops the row group holds** for the frame: the replaced row's declared controls for a
 /// package's discs (a row wider than classic's five has a stop for each), `[credits, next]` for Up Next,
-/// `[pill]` for Skip, and [`ControlSlot::items`] where the package has no state for the frame.
-pub fn row_len(compiled: Option<&Compiled>, slot: ControlSlot, chapters: bool, paused: bool) -> usize {
-    match (slot, compiled.and_then(|c| frame_state(c, slot, chapters, paused))) {
+/// `[pill]` for Skip, and none where the package has no state for the frame (a stop with no rect cannot be
+/// placed).
+pub fn row_len(compiled: &Compiled, slot: ControlSlot, chapters: bool, paused: bool) -> usize {
+    match (slot, frame_state(compiled, slot, chapters, paused)) {
+        (_, None) => 0,
         (ControlSlot::Discs(_), Some((state, _))) => state.row_ids.len(),
         _ => slot.items().max(0) as usize,
     }
 }
 
 /// The compiled state of the discs for the frame and the `Controls` the slot sampled, when the occupant is
-/// the discs and the package has a state for the frame. `None` is "ask the slot" (classic's table).
-fn package_row<'c>(compiled: Option<&'c Compiled>, slot: ControlSlot, model: &HudModel) -> Option<(&'c CompiledState, Controls)> {
+/// the discs and the package has a state for the frame.
+fn package_row<'c>(compiled: &'c Compiled, slot: ControlSlot, model: &HudModel) -> Option<(&'c CompiledState, Controls)> {
     let ControlSlot::Discs(controls) = slot else { return None };
-    let (state, _) = frame_state(compiled?, slot, model.chapters, model.paused)?;
+    let (state, _) = frame_state(compiled, slot, model.chapters, model.paused)?;
     Some((state, controls))
 }
 
 /// **What a press of the row's item `i` performs**, `None` for an absent or disabled one (it has no stop).
-/// For the discs of a package it is the command of the control the package placed at that stable index
+/// For the discs it is the command of the control the package placed at that stable index
 /// (`CompiledState::row_ids`), with its parameters, enabled by the command's own predicate
 /// ([`HudCommand::enabled`]) over the frame's `model` (with the slot's sampled `Controls`, so the discs
-/// and the model cannot disagree). Everywhere else it is the slot's: classic's table, a stand-in's none.
-/// For `builtin:classic` the two are one answer (the test next to this fn pins it).
-pub fn row_command(compiled: Option<&Compiled>, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
-    match package_row(compiled, slot, model) {
-        Some((state, controls)) => {
+/// and the model cannot disagree); none where the package has no state for the frame. A stand-in's row
+/// (Skip, Up Next) is the slot's own table. For `builtin:classic` the discs' answer is classic's table (the
+/// test next to this fn pins it).
+pub fn row_command(compiled: &Compiled, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
+    match slot {
+        ControlSlot::Discs(controls) => {
+            let (state, _) = frame_state(compiled, slot, model.chapters, model.paused)?;
             let id = state.row_ids.get(usize::try_from(i).ok()?)?.as_deref()?;
             let act = state.control(id)?.act?;
             act.enabled(&HudModel { controls, ..*model }).then_some(act)
         }
-        None => slot.command(i),
+        _ => slot.command(i),
     }
 }
 
-/// Does item `i` of the row have a focus stop and a pointer target? [`row_command`] for the discs of a
-/// package, [`ControlSlot::enabled`] elsewhere.
-pub fn row_enabled(compiled: Option<&Compiled>, slot: ControlSlot, model: &HudModel, i: i32) -> bool {
-    match package_row(compiled, slot, model) {
-        Some(_) => row_command(compiled, slot, model, i).is_some(),
-        None => slot.enabled(i),
+/// Does item `i` of the row have a focus stop and a pointer target? [`row_command`] for the discs,
+/// [`ControlSlot::enabled`] for a stand-in.
+pub fn row_enabled(compiled: &Compiled, slot: ControlSlot, model: &HudModel, i: i32) -> bool {
+    match slot {
+        ControlSlot::Discs(_) => row_command(compiled, slot, model, i).is_some(),
+        _ => slot.enabled(i),
     }
 }
 
 /// **Where the cursor parks when the row appears.** Classic's rule over commands: an enabled Next, else an
 /// enabled Previous, else an enabled Play/Pause, else the first enabled control (classic has no Play/Pause
-/// control, so for it that is `Controls::primary`: Next, Previous, then Subtitles).
-pub fn row_primary(compiled: Option<&Compiled>, slot: ControlSlot, model: &HudModel) -> i32 {
+/// control, so for it that is `Controls::primary`: Next, Previous, then Subtitles). A stand-in's is the
+/// slot's own.
+pub fn row_primary(compiled: &Compiled, slot: ControlSlot, model: &HudModel) -> i32 {
     let Some((state, _)) = package_row(compiled, slot, model) else { return slot.primary_btn() };
     let len = i32::try_from(state.row_ids.len()).unwrap_or(0);
     let at = |want: Option<HudCommand>| (0..len).find(|&i| row_command(compiled, slot, model, i).is_some_and(|c| want.is_none_or(|w| c == w)));

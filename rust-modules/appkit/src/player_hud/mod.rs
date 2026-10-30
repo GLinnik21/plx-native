@@ -13,14 +13,13 @@
 //! | [`motion`] | the clock prewarm ([`motion::ClockWarm`]), the pop-in of a row ([`motion::RowPop`]) and the HUD's per-frame animation state ([`motion::HudMotion`], formerly `TransportRow`) |
 //! | [`geometry`] | the focus GROUPS ([`geometry::GROUP_SCRUB`] ..), [`geometry::HudGeometry`] and [`geometry::RowAnchor`]: what a layout reports back to focus, the pointer, the overscan audit and the stand-ins |
 //! | [`command`] | [`command::HudCommand`], the closed vocabulary of things a control asks the app to do, with its app-owned enabled predicates, and classic's five discs as controls |
-//! | [`classic`] | the classic layout: its constants, hit rects, and every draw of the transport (scrim, title, playbar, control row, tabs, the failure read-out) |
+//! | [`classic`] | the transport's primitives and `builtin:classic`'s constants: the draws the renderer and the trailer call (scrim, title, playbar, clocks, tabs, scrub preview), the failure read-out, `ROW_ANCHOR`. The arrangement is the compiled package's |
 //! | [`loaded`] | a package parsed and compiled once, outside the frame ([`loaded::LoadedHud`]), and the production [`AppLabels`](crate::hud_format::compile::AppLabels) constructor over a passed-in locale |
-//! | [`render`] | the renderer: it draws a [`Compiled`](crate::hud_format::compile::Compiled) package's state through the shared widgets, `builtin:classic` identically to [`classic`]'s hand-written draw |
+//! | [`render`] | the renderer: it draws a [`Compiled`](crate::hud_format::compile::Compiled) package's state through the shared widgets; `builtin:classic` is the embedded package it draws |
 //! | [`seek_jump`] | the long-seek jump chord |
 //!
 //! What stays here is the caption drawing (`draw_subtitle_message`, `draw_subtitle_bitmap`), which
 //! composites over the video plane and belongs to no layout, and `overscan_rects`.
-#![allow(dead_code)]
 pub mod classic;
 pub mod command;
 pub mod geometry;
@@ -404,12 +403,12 @@ impl SubtitleBitmaps {
 /// **The geometry the audits grade**: the embedded `builtin:classic`, compiled, in its compact Discs state
 /// (the same report the player page places from). The audit has no measurer of its own and none of these
 /// facts needs one, so the compile runs on the shipped advances; it is the same package and the same
-/// numbers the hand-written layout reports (`compiled_classic_matches_the_hand_written_layout`).
+/// numbers the hand-written layout reported (`compiled_classic_matches_the_hand_written_layout`, against
+/// the frozen golden).
 #[cfg(any(test, feature = "test-support"))]
 pub fn audit_geometry() -> geometry::HudGeometry {
-    let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure)
-        .expect("the embedded classic loads");
-    geometry::frame_geometry(Some(&hud.compiled), ControlSlot::Discs(Controls::NONE), false, false)
+    let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure);
+    geometry::geometry(&hud.compiled, ControlSlot::Discs(Controls::NONE), false, false)
 }
 
 /// **The transport's outermost drawn chrome, for the overscan audit**
