@@ -7752,10 +7752,12 @@ impl StripRender {
         // itself holds still, so those pixels are the app ground fading, not the screen's colour.
         let settled = crate::nav::page_alpha() >= 0.999;
         // **Decided BEFORE the ground is sampled, because it decides whether to sample at all.**
-        // `sample_ground` queues five framebuffer copies and reads them back later — so a track
-        // that is about to draw FLAT because the `flattabs` experiment is armed (the only thing
-        // that turns `glass_on` off) must not pay for a number only the glass path consumes. It
-        // did, on every screen wearing the bar, for as long as the app was open.
+        // `sample_ground` reads its taps from the retained image of the band this track's glass
+        // draws from — so a track that is about to draw FLAT because the `flattabs` experiment is
+        // armed (the only thing that turns `glass_on` off) has no band and no image, and there is
+        // nothing to read: its ground is the flat app ground, and `groundlog` says so (`src=flat`).
+        // It used to pay five framebuffer copies for a number only the glass path consumes, on every
+        // screen wearing the bar, for as long as the app was open.
         let glass_on = tab_glass_on();
         let groundlog = ground_log_armed();
         // …and FASTER while a polarity is being decided: the decision is gated on two independent
@@ -7763,7 +7765,7 @@ impl StripRender {
         // showing the material the bar is about to stop being.
         let (cr, cg, cb) = theme::CLEAR_RGB; // the app ground, as the token that names it
         let flat_ground = [cr, cg, cb];
-        let ground = if glass_on || groundlog {
+        let ground = if glass_on {
             plx_gfx::gfx::sample_ground([track.x, track.y, track.w, track.h], settled)
                 .unwrap_or(flat_ground)
         } else {
@@ -7788,12 +7790,14 @@ impl StripRender {
                 // thing it was armed to watch.
                 let drawn = track_density(ground, &mut band.density);
                 plx_base::eventlog::log(&format!(
-                    "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}",
+                    "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}{}",
                     ground[0], ground[1], ground[2],
                     lstar([ground[0], ground[1], ground[2], 1.0]),
                     plx_gfx::gfx::ground_span(),
                     track_alpha_for(ground), drawn,
                     track.x, track.y, track.w, track.h,
+                    // no glass, no band, nothing sampled: the numbers above are the flat ground's
+                    if glass_on { "" } else { " src=flat" },
                 ));
             }
             LAST.store(n.wrapping_add(1), Relaxed);

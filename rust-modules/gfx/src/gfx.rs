@@ -4095,6 +4095,17 @@ impl BackdropImage {
     pub fn covers(&self, r: Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
     pub fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
 }
+/// A GL-less image for the walk's tests: a band holding `reg` at `mw x mh` texels.
+#[cfg(test)]
+impl BackdropImage {
+    pub(crate) fn for_test(reg: [f32; 4], mw: c_int, mh: c_int) -> Self {
+        let chain = BlurChain {
+            grab: 0, gw: 1920, gh: 1080, gx: 0, gy: 0, mid: 0, mid_fbo: 0, mw, mh, a: 0, a_fbo: 0, b: 0,
+            b_fbo: 0, sw: 0, sh: 0, out: 0, bottom_up: false, reg, rw: mw * 2, rh: mh * 2,
+        };
+        Self { chain, texture: std::rc::Rc::new(BackdropTexture(0)), alpha_invariant: false, dim_excluded: false }
+    }
+}
 struct BackdropTexture(c_uint);
 impl Drop for BackdropTexture {
     fn drop(&mut self) { delete_tex(self.0); }
@@ -5275,7 +5286,7 @@ pub fn blur_source_pass() -> bool {
     unsafe { BLUR_IN_PASS || backdrop::source_walk() }
 }
 
-/// **Sample what is actually on the panel under `r`, at a low rate.**
+/// **Sample the ground under `r`, at a low rate — from the band's own backdrop image.**
 ///
 /// Five small boxes along the rect's centre line, at most every [`GROUND_SAMPLE_EVERY`] calls,
 /// through the asynchronous [`GroundProbe`]. It exists because a material whose density follows its ground needs to know
@@ -5284,12 +5295,28 @@ pub fn blur_source_pass() -> bool {
 /// where the top of the panel is actually (0.00, 0.68, 0.91) — and the wash's own corners lean only
 /// 26% toward the art. The pixels are the only honest answer.
 ///
+/// **The pixels are the retained image of the band that draws `r`** ([`ground_taps`]), not
+/// framebuffer 0. The frame already builds that image before the visible page draws a pixel
+/// (`app::run`'s source jobs): the page prefix strictly below the band, blurred, which is exactly
+/// the ground the bar's labels sit on, and it holds the ground and not the bar. Reading it costs
+/// no mid-page copy: a copy of framebuffer 0 splits the frame's render pass on the Mali, and the
+/// five it used to make every thirtieth frame were the period-31 spike (`GPU_ACTIVE` p95 10.54M
+/// against 8.82M with the probe off, television 2026-10-31). The boxes are copied at the next
+/// frame boundary instead ([`GroundProbe::kick_queued`]), and read back at the one after.
+///
 /// A hero holds for 8 seconds and a scrim density has no business changing faster than the picture
 /// does, so twice a second is the rate. Each reading is a GPU-side copy queued on one call and read
 /// back between frames once the GPU has passed it ([`ProbeCadence`]), so it never waits on the
 /// frame — it used to be a synchronous `glReadPixels` that drained the GPU mid-page. Returns `None`
-/// until the first reading lands, and the last one inside a source pass, where framebuffer 0 is not
-/// bound and the answer would be the FBO's own contents.
+/// until the first reading lands, and the last one whenever there is nothing to read: inside a
+/// source pass (the page being drawn is a source, not the panel), with no current image under the
+/// track (the glass is off — `flattabs` — or a video plane fills the screen, or the band's source
+/// refused this frame), or while a modal dim the composite owes is up.
+///
+/// **What the image does not hold is folded back in** ([`tap_composite`]): the glass composite adds
+/// the wash's delta while the page wash eases and mixes a layer's alpha toward the app ground, and
+/// the retained texels have neither. The reading is the colour the glass shows, which is the colour
+/// the framebuffer path read.
 ///
 /// Counted in presented frames rather than milliseconds: discovery/source calls between swaps do
 /// not consume cadence. 30 is about twice a second at 60 presented frames per second.
@@ -5306,8 +5333,14 @@ const GROUND_TAPS: usize = 5;
 /// actually sit on is the checker's mid-grey. A box at the blur's support answers for the region the
 /// blur will produce — the same answer on a smooth ground, and the honest one on a busy one.
 ///
-/// 25px, odd so a tap has a middle. One copy per tap either way, 3125 pixels in total.
-const GROUND_TAP_PX: c_int = 25;
+/// The taps are now read from the band's retained backdrop image itself (see [`sample_ground`]), so
+/// the box is counted in that image's TEXELS: 13, odd so a tap has a middle. The image is half the
+/// drawable's resolution per axis, so a texel is two drawable pixels on the television and 13 of
+/// them are the 25 pixels the framebuffer box used to be — the same support in screen terms. The
+/// image is already the blurred backdrop, so the box is now an average of an average: it answers
+/// for the region under a tap and no longer has to approximate the blur. One copy per tap, 845
+/// texels in total.
+const GROUND_TAP_PX: c_int = 13;
 static mut GROUND_RGB: Option<[f32; 3]> = None;
 /// **The SPREAD across the taps, in CIE L\*, beside the mean.**
 ///
@@ -5348,13 +5381,17 @@ static mut GROUND_PROBE: GroundProbe<GROUND_TAPS> = GroundProbe::new(GROUND_SAMP
 /// **And the rect is the whole contract, which is the trap here.** The consumer solves a scrim
 /// weight so its INK clears a contrast floor over these pixels; a surface that is not inside `r`
 /// gets a density answered for somewhere else. `BarMaterial`'s doc carries the measurement for the
-/// one surface in this app that is in that position.
+/// one surface in this app that is in that position. The rect also NAMES the band whose image is
+/// read: [`ground_taps`] matches it, exactly, against the rects the band's glass draws with, so it
+/// must be the rect the caller's glass is drawn at. A rect no band lists reads nothing and the
+/// answer stays the last reading.
 /// **May a ground sampler take a FRESH reading on this draw?** Not while the page is frozen.
 ///
 /// Both samplers ([`sample_ground`], [`sample_control_ground`]) answered from a synchronous
 /// `glReadPixels` when this refusal was written, which returns only once the GPU has drawn
-/// everything submitted before it; they queue a [`GroundProbe`] copy now, which is cheap but still
-/// a mid-frame copy of framebuffer 0 and still pointless here. A frozen page is one served from the
+/// everything submitted before it; they queue a [`GroundProbe`] copy now (the Hero row's a
+/// mid-frame copy of framebuffer 0, the bar's a frame-boundary copy of its band image), which is
+/// cheap but still pointless here. A frozen page is one served from the
 /// host snapshot under a modal — its draw produces no pixels, so the ground under its bar and its
 /// Hero row is by construction the one the last live reading already took, and a fresh read can
 /// only return that same answer. What it did cost was the stall: every thirtieth frame of a modal
@@ -5390,7 +5427,9 @@ pub enum ProbeStep {
 /// inserted after the copy ([`ProbeStep::Kick`]). A later call reads that target once at least one
 /// drawn frame has ended since (the swap is what flushes the copy) and the fence has signalled
 /// ([`ProbeStep::Collect`]) — a read of finished work, which does not wait. The answer lands one or
-/// two frames later than it used to; the cadence it keeps is the same.
+/// two frames later than it used to; the cadence it keeps is the same. A probe that copies a band
+/// image rather than framebuffer 0 makes its copy at the frame boundary after the call, not on it
+/// ([`SourceKind::copy_point`]), so its answer lands two or three frames later.
 ///
 /// `at` counts PRESENTED frames, not calls. Discovery and source walks can invoke a sampler more
 /// than once between swaps, and those descriptive calls must not accelerate a GPU probe. `dirty`
@@ -5419,8 +5458,11 @@ impl ProbeCadence {
 
     /// One sampler call. `have`: a reading is latched. `drawn`: drawn frames so far
     /// ([`drawn_frames`]). `finished`: the GPU has passed the queued copy (its fence signalled, or
-    /// there is no fence to ask).
-    pub fn step(&mut self, have: bool, drawn: u32, finished: bool) -> ProbeStep {
+    /// there is no fence to ask). `can_kick`: the call has something to copy FROM — the Hero row's
+    /// framebuffer always does; the bar's band image may not (no current image under the track).
+    /// A due reading that cannot kick is not lost and not counted: it is owed, and the first call
+    /// that has a source queues it.
+    pub fn step(&mut self, have: bool, drawn: u32, finished: bool, can_kick: bool) -> ProbeStep {
         if let Some(kicked) = self.pending {
             if drawn.wrapping_sub(kicked) >= 1 && finished {
                 self.pending = None;
@@ -5433,12 +5475,15 @@ impl ProbeCadence {
         }
         self.at = self.at.wrapping_add(drawn.wrapping_sub(self.last_drawn));
         self.last_drawn = drawn;
-        if self.dirty || !have || self.at % self.every == 0 {
-            self.pending = Some(drawn);
-            ProbeStep::Kick
-        } else {
-            ProbeStep::Keep
+        if !(self.dirty || !have || self.at % self.every == 0) {
+            return ProbeStep::Keep;
         }
+        if !can_kick {
+            self.dirty = true;
+            return ProbeStep::Keep;
+        }
+        self.pending = Some(drawn);
+        ProbeStep::Kick
     }
 
     /// The pixels under the probe changed meaning (a new item behind the Hero row): drop any
@@ -5475,10 +5520,90 @@ pub fn probe_mode(dump_armed: bool) -> ProbeMode {
     }
 }
 
+/// What a ground probe copies its tap boxes FROM, as a kind (the half a host test can reach).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceKind {
+    /// Framebuffer 0 as drawn so far — the Hero row's probe.
+    Framebuffer,
+    /// A band's retained backdrop image — the top bar's probe.
+    Image,
+}
+
+/// WHEN a due copy may be made.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CopyPoint {
+    /// On the sampler's own call, mid-page.
+    AtCall,
+    /// At the next frame boundary ([`ground_probes_frame_end`]), where nothing is pending.
+    AtFrameEnd,
+}
+
+impl SourceKind {
+    /// **Where the copy goes is decided by what it reads, not by who asks.** A copy of framebuffer 0
+    /// has to be made where the framebuffer holds the ground — mid-page, which splits the frame's
+    /// render pass on the Mali (the period-31 spike). A copy of a retained image reads a texture
+    /// that is finished, so it has no reason to be anywhere but a boundary: it adds no render pass
+    /// to framebuffer 0 there, and it can read an image no job refreshed this frame.
+    pub const fn copy_point(self) -> CopyPoint {
+        match self {
+            SourceKind::Framebuffer => CopyPoint::AtCall,
+            SourceKind::Image => CopyPoint::AtFrameEnd,
+        }
+    }
+}
+
+/// Is a queued copy ready to be read back? The copy has been KICKED (`pending`), not read already
+/// (`ready`), and — the clause that keeps the image path off the frame it was asked in — actually
+/// MADE: a copy still owed to the frame boundary has nothing in the target to read. The fence
+/// (asked of the GPU only if this holds) is the last test.
+#[inline]
+const fn read_back_due(pending: bool, ready: bool, copy_owed: bool) -> bool {
+    pending && !ready && !copy_owed
+}
+
+/// A band image's tap boxes, resolved by the sampler and waiting for the frame boundary.
+///
+/// `origins` are the boxes' corners in the image's own storage rows and columns. `scale` and
+/// `offset` are what the glass composite adds to the image after it is read (its wash delta and
+/// source alpha — [`tap_composite`]), so the reading is the colour the glass shows and not the
+/// colour the image happens to hold.
+struct ImageTaps<const N: usize> {
+    texture: std::rc::Rc<BackdropTexture>,
+    origins: [(c_int, c_int); N],
+    scale: f32,
+    offset: [[f32; 3]; N],
+}
+
+/// What a sampler hands [`GroundProbe::step`] to copy from.
+enum TapSource<const N: usize> {
+    /// Boxes of framebuffer 0, lower-left origins in framebuffer pixels, already clamped.
+    Framebuffer([(c_int, c_int); N]),
+    /// The retained image under the track, or `None` when there is no current one.
+    Image(Option<ImageTaps<N>>),
+}
+
+impl<const N: usize> TapSource<N> {
+    fn kind(&self) -> SourceKind {
+        match self {
+            TapSource::Framebuffer(_) => SourceKind::Framebuffer,
+            TapSource::Image(_) => SourceKind::Image,
+        }
+    }
+    /// Is there anything to copy from? Only an image can be absent.
+    fn can_kick(&self) -> bool {
+        !matches!(self, TapSource::Image(None))
+    }
+}
+
 /// **A ground sampler's asynchronous read-back**: `N` boxes of `px` square, copied side by side
 /// into one `N*px x px` target, fenced, and read once finished. See [`ProbeCadence`] for why.
 ///
-/// The target is built lazily on the first kick and never resized. An incomplete FBO latches `off`
+/// The copy's SOURCE is the caller's ([`TapSource`]), and the source decides where the copy is
+/// made ([`SourceKind::copy_point`]): the Hero row copies framebuffer 0 on its call; the top bar
+/// copies its band's retained image at the next frame boundary, so neither it nor the read-back
+/// ever touches framebuffer 0 mid-page.
+///
+/// The target is built lazily on the first copy and never resized. An incomplete FBO latches `off`
 /// and the sampler answers from its last reading (`None` if it never had one) from then on — the
 /// same refusal every other chain in this module makes.
 pub struct GroundProbe<const N: usize> {
@@ -5491,6 +5616,13 @@ pub struct GroundProbe<const N: usize> {
     /// The queued copy, read back at a frame boundary ([`ground_probes_frame_end`]) and waiting
     /// for the sampler's next call to reduce it.
     ready: Option<Vec<u8>>,
+    /// An image copy asked for by a call and owed to the frame boundary: it holds the band's
+    /// texture alive until the copy is made.
+    queued: Option<ImageTaps<N>>,
+    /// The framebuffer the image's texture is attached to for the length of a copy (0: not built).
+    reader: c_uint,
+    /// The composite terms of the reading in flight: `colour * scale + offset`, per tap.
+    composite: (f32, [[f32; 3]; N]),
 }
 
 impl<const N: usize> GroundProbe<N> {
@@ -5502,6 +5634,9 @@ impl<const N: usize> GroundProbe<N> {
             off: false,
             fence: None,
             ready: None,
+            queued: None,
+            reader: 0,
+            composite: (1.0, [[0.0; 3]; N]),
         }
     }
 
@@ -5509,6 +5644,12 @@ impl<const N: usize> GroundProbe<N> {
     fn invalidate(&mut self) {
         self.cadence.invalidate();
         self.ready = None;
+        self.queued = None;
+    }
+
+    /// The terms the reading just collected is owed (identity for a framebuffer reading).
+    fn composite(&self) -> (f32, &[[f32; 3]; N]) {
+        (self.composite.0, &self.composite.1)
     }
 
     /// **The read-back, at a frame BOUNDARY.** Called right after the swap, before the next frame
@@ -5518,7 +5659,7 @@ impl<const N: usize> GroundProbe<N> {
     /// ran ~12 ms over its neighbours with a 0.2 ms read (television, 2026-09-19). Only once the
     /// copy's fence has signalled; with no fences (the simulator) the swap alone is the rule.
     unsafe fn read_if_finished(&mut self) {
-        if self.cadence.pending.is_none() || self.ready.is_some() {
+        if !read_back_due(self.cadence.pending.is_some(), self.ready.is_some(), self.queued.is_some()) {
             return;
         }
         let Some((_, fbo)) = self.target else { return };
@@ -5536,23 +5677,80 @@ impl<const N: usize> GroundProbe<N> {
         self.ready = Some(buf);
     }
 
-    /// Dump mode's answer: build the target if needed, copy the boxes, read them back now.
-    #[cold]
-    unsafe fn read_now(&mut self, origins: &[(c_int, c_int); N], who: &str) -> Option<Vec<u8>> {
+    /// **The image copy, at a frame BOUNDARY** — the other half of [`Self::read_if_finished`].
+    /// [`ground_probes_frame_end`] runs the read first, so a copy made here is read at the NEXT
+    /// boundary at the earliest ("the swap is what flushes the copy" is the following swap).
+    /// Nothing of framebuffer 0 is pending after the swap, so binding the reader framebuffer here
+    /// adds no render pass to it, which is the whole point of the move: the same five copies made
+    /// inside the page split the frame's pass on the Mali (period-31 spikes, television 2026-10-31).
+    unsafe fn kick_queued(&mut self, who: &str) {
+        let Some(taps) = self.queued.take() else { return };
+        if self.off || !self.copy_image(&taps, who) {
+            self.cadence.abandon();
+            return;
+        }
+        // After the copies, so it signals once they are done. Replacing an older fence destroys
+        // it; nothing is waiting on it.
+        self.fence = crate::egl::fence::Fence::insert();
+    }
+
+    /// The probe's target, built on first use. An incomplete one latches the probe off.
+    unsafe fn ensure_target(&mut self, who: &str) -> Option<(c_uint, c_uint)> {
         if self.target.is_none() {
             self.target = fbo_target(self.px * N as c_int, self.px, who);
             if self.target.is_none() {
                 self.off = true;
-                return None;
+                self.cadence.abandon();
             }
         }
-        let (tex, fbo) = self.target?;
+        self.target
+    }
+
+    /// Copy the framebuffer's tap boxes into the target.
+    unsafe fn copy_framebuffer(&mut self, origins: &[(c_int, c_int); N], who: &str) -> bool {
+        let Some((tex, _)) = self.ensure_target(who) else { return false };
         let px = self.px;
         glBindTexture(GL_TEXTURE_2D, tex);
         for (i, &(x, y)) in origins.iter().enumerate() {
             glCopyTexSubImage2D(GL_TEXTURE_2D, 0, i as c_int * px, 0, x, y, px, px);
         }
-        let (w, h) = (px * N as c_int, px);
+        self.composite = (1.0, [[0.0; 3]; N]);
+        true
+    }
+
+    /// Copy the image's tap boxes into the target: the image's texture is attached to the probe's
+    /// own reader framebuffer for the length of the copies and detached again, so a later glass
+    /// draw never samples a texture that is a framebuffer attachment.
+    unsafe fn copy_image(&mut self, taps: &ImageTaps<N>, who: &str) -> bool {
+        let Some((tex, _)) = self.ensure_target(who) else { return false };
+        if self.reader == 0 {
+            glGenFramebuffers(1, &mut self.reader);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, self.reader);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, taps.texture.0, 0);
+        let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if st != GL_FRAMEBUFFER_COMPLETE {
+            log(&format!("{who}: band image FBO incomplete (status=0x{st:x}) — {who} off"));
+            glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+            self.off = true;
+            return false;
+        }
+        let px = self.px;
+        glBindTexture(GL_TEXTURE_2D, tex);
+        for (i, &(x, y)) in taps.origins.iter().enumerate() {
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, i as c_int * px, 0, x, y, px, px);
+        }
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        self.composite = (taps.scale, taps.offset);
+        true
+    }
+
+    /// Dump mode's read of what the copy just put in the target.
+    #[cold]
+    unsafe fn read_target_now(&mut self) -> Option<Vec<u8>> {
+        let (_, fbo) = self.target?;
+        let (w, h) = (self.px * N as c_int, self.px);
         let mut buf = vec![0u8; (w * h * 4) as usize];
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void);
@@ -5560,40 +5758,43 @@ impl<const N: usize> GroundProbe<N> {
         Some(buf)
     }
 
-    /// One sampler call. `origins` are the boxes' lower-left corners in framebuffer pixels, already
-    /// clamped — used only on a kick. Returns the collected `N*px x px` RGBA row-major buffer on a
-    /// collect, `None` otherwise.
-    unsafe fn step(&mut self, have: bool, origins: &[(c_int, c_int); N], who: &str) -> Option<Vec<u8>> {
+    /// One sampler call. Returns the collected `N*px x px` RGBA row-major buffer on a collect,
+    /// `None` otherwise. A kick of a framebuffer source copies here; a kick of an image source
+    /// only queues the copy for the frame boundary.
+    unsafe fn step(&mut self, have: bool, src: TapSource<N>, who: &str) -> Option<Vec<u8>> {
         if self.off {
             return None;
         }
         if probe_mode(crate::dump::armed()) == ProbeMode::Sync {
-            return self.read_now(origins, who);
+            // The same source as the product, read at once: the answer is a function of the frame
+            // being drawn and not of how many loop iterations went by.
+            let copied = match &src {
+                TapSource::Framebuffer(origins) => self.copy_framebuffer(origins, who),
+                TapSource::Image(Some(taps)) => self.copy_image(taps, who),
+                TapSource::Image(None) => false,
+            };
+            return if copied { self.read_target_now() } else { None };
         }
-        match self.cadence.step(have, drawn_frames(), self.ready.is_some()) {
+        match self.cadence.step(have, drawn_frames(), self.ready.is_some(), src.can_kick()) {
             ProbeStep::Keep => None,
             ProbeStep::Kick => {
-                if self.target.is_none() {
-                    // `fbo_target` binds `default_fb()` back, which is the page's current target
-                    // (the frame, or a host snapshot being rendered into) — where this was called.
-                    self.target = fbo_target(self.px * N as c_int, self.px, who);
-                    if self.target.is_none() {
-                        self.off = true;
-                        self.cadence.abandon();
-                        return None;
+                match (src.kind().copy_point(), src) {
+                    (CopyPoint::AtCall, TapSource::Framebuffer(origins)) => {
+                        // `fbo_target` binds `default_fb()` back, which is the page's current
+                        // target (the frame, or a host snapshot being rendered into) — where this
+                        // was called.
+                        let copied = plx_base::diag::spans::span("gndkick", || self.copy_framebuffer(&origins, who));
+                        if !copied {
+                            return None;
+                        }
+                        // After the copies, so it signals once they are done. Replacing an older
+                        // fence destroys it; nothing is waiting on it.
+                        self.fence = crate::egl::fence::Fence::insert();
                     }
+                    (CopyPoint::AtFrameEnd, TapSource::Image(Some(taps))) => self.queued = Some(taps),
+                    // `can_kick` is false for an absent image, and the cadence never kicks then.
+                    _ => self.cadence.abandon(),
                 }
-                let (tex, _) = self.target?;
-                let px = self.px;
-                plx_base::diag::spans::span("gndkick", || {
-                    glBindTexture(GL_TEXTURE_2D, tex);
-                    for (i, &(x, y)) in origins.iter().enumerate() {
-                        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, i as c_int * px, 0, x, y, px, px);
-                    }
-                });
-                // After the copies, so it signals once they are done. Replacing an older fence
-                // destroys it; nothing is waiting on it.
-                self.fence = crate::egl::fence::Fence::insert();
                 None
             }
             ProbeStep::Collect => self.ready.take(),
@@ -5601,12 +5802,16 @@ impl<const N: usize> GroundProbe<N> {
     }
 }
 
-/// Read back every ground probe whose copy the GPU has passed — `app::run` calls it right after
-/// the swap, beside [`field_frame_end`]. See [`GroundProbe::read_if_finished`].
+/// Read back every ground probe whose copy the GPU has passed, and make the copy the bar's probe
+/// owes the boundary — `app::run` calls it right after the swap, beside [`field_frame_end`]. See
+/// [`GroundProbe::read_if_finished`] and [`GroundProbe::kick_queued`].
 pub fn ground_probes_frame_end() {
     // SAFETY: main render thread, like every other access to the probes.
     unsafe {
-        (*std::ptr::addr_of_mut!(GROUND_PROBE)).read_if_finished();
+        let bar = &mut *std::ptr::addr_of_mut!(GROUND_PROBE);
+        // The read first: a copy made by the line below is not a copy to read at this boundary.
+        bar.read_if_finished();
+        bar.kick_queued("ground");
         (*std::ptr::addr_of_mut!(CONTROL_PROBE)).read_if_finished();
     }
 }
@@ -5629,6 +5834,99 @@ fn drawn_frames() -> u32 {
     FIELD_SWAPS.load(Ordering::Relaxed)
 }
 
+/// **The authored points the bar's ground is tapped at**: `N` places along the centre line of
+/// `r`, at `(i + 0.5) / N` of its width. Pure, and the one definition of "where": the image
+/// mapping ([`image_tap_origins`]) and the composite terms (`tap_composite`'s wash) both read it.
+fn ground_tap_points<const N: usize>(r: [f32; 4]) -> [(f32, f32); N] {
+    std::array::from_fn(|i| {
+        let f = (i as f32 + 0.5) / N as f32;
+        (r[0] + r[2] * f, r[1] + r[3] * 0.5)
+    })
+}
+
+/// **Where authored points land in a retained band image**, as the corners of `px`-texel boxes
+/// centred on them, in the image's own storage columns and rows — the coordinates
+/// `glCopyTexSubImage2D` reads with. `None` when the image is smaller than one box (a degenerate
+/// region), which is a refusal and not a clamp that would read outside the texture.
+///
+/// The image holds the authored region `reg` at `dims` texels — half the drawable's pixels per
+/// axis, so a texel is `reg[2] / dims.0` authored px and the mapping is a plain scale about the
+/// region's origin, with no knowledge of the drawable's size. `bottom_up` is the chain's storage
+/// order ([`BlurChain::bottom_up`]): the same parity [`blur_uv_rect`] flips v by, so a texel row is
+/// counted from the region's bottom edge when it is set. Boxes clamp to the image, never to the
+/// texture's allocation (the chain draws into the corner of full-size targets, but a retained image
+/// is exactly `dims`).
+fn image_tap_origins<const N: usize>(
+    points: &[(f32, f32); N],
+    reg: [f32; 4],
+    dims: (c_int, c_int),
+    bottom_up: bool,
+    px: c_int,
+) -> Option<[(c_int, c_int); N]> {
+    let (w, h) = dims;
+    if px < 1 || w < px || h < px || reg[2] <= 0.0 || reg[3] <= 0.0 {
+        return None;
+    }
+    Some(std::array::from_fn(|i| {
+        let (x, y) = points[i];
+        let fx = (x - reg[0]) / reg[2];
+        let fy = (y - reg[1]) / reg[3];
+        let fy = if bottom_up { 1.0 - fy } else { fy };
+        let cx = (fx * w as f32).floor() as c_int;
+        let cy = (fy * h as f32).floor() as c_int;
+        ((cx - px / 2).clamp(0, w - px), (cy - px / 2).clamp(0, h - px))
+    }))
+}
+
+/// **What the glass composite does to the image after it is read**, folded to `colour * scale +
+/// offset` per tap — `fs_glass.frag`'s `srcRGB`, in order: add the wash delta, then
+/// `mix(ground, c, alpha)`. Both are bound at composite and are not in the retained texels: the
+/// image keeps the wash it was drawn under (the glass owes the difference while the wash eases, and
+/// the image is re-taken when it settles), and a layer's composite alpha is mixed toward the app
+/// ground. The modal dim is the third such term, and is refused rather than folded
+/// ([`ground_taps`]). `wash` is the delta at each tap, already weighted
+/// ([`backdrop::GroundDelta::at`]); identity (`1.0`, zeros) when nothing is owed.
+fn tap_composite<const N: usize>(alpha: f32, ground: [f32; 3], wash: [[f32; 3]; N]) -> (f32, [[f32; 3]; N]) {
+    (
+        alpha,
+        std::array::from_fn(|i| std::array::from_fn(|c| ground[c] * (1.0 - alpha) + wash[i][c] * alpha)),
+    )
+}
+
+/// The bar's taps in the band image that holds the glass drawn at exactly `r`, or `None`.
+///
+/// **The band is found by the rect, not by a z or a coverage test**, because the ground the bar
+/// sits on is the band's OWN image — built from the prefix strictly below the band's ceiling. An
+/// image of a band ABOVE the bar would cover the same rect and contain the bar itself. Only a band
+/// that lists `r` among its drawn members (latched by the discovery walk, so this frame's) and
+/// whose image is current (`valid`) answers; `covers` is the last guard.
+fn ground_taps(r: [f32; 4]) -> Option<ImageTaps<GROUND_TAPS>> {
+    let rect = Rect::new(r[0], r[1], r[2], r[3]);
+    let (z, image) = backdrop::member_image(rect)?;
+    if !image.covers(rect) {
+        return None;
+    }
+    // The deferred dim is the one composite term that cannot be folded: its ink may be a field
+    // texture on the GPU. A page under a modal is frozen and never gets here; a live dim over the
+    // bar's own band leaves the last reading until it is gone.
+    if image.dim_excluded && backdrop::deferred_dim(z).is_some_and(|d| d.tint[3] > 0.0) {
+        return None;
+    }
+    let points = ground_tap_points::<GROUND_TAPS>(r);
+    let c = &image.chain;
+    let origins = image_tap_origins(&points, c.reg, (c.mw, c.mh), c.bottom_up, GROUND_TAP_PX)?;
+    let alpha = if image.alpha_invariant {
+        backdrop::source_alpha(z).unwrap_or(1.0)
+    } else {
+        1.0
+    };
+    let wash = backdrop::deferred_ground(z)
+        .map_or([[0.0; 3]; GROUND_TAPS], |d| std::array::from_fn(|i| d.at(points[i].0, points[i].1)));
+    let (cr, cg, cb) = tokens::CLEAR_RGB;
+    let (scale, offset) = tap_composite(alpha, [cr, cg, cb], wash);
+    Some(ImageTaps { texture: image.texture.clone(), origins, scale, offset })
+}
+
 pub fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         // A caller can refuse a FRESH reading while still wanting the last one — the route
@@ -5643,20 +5941,17 @@ pub fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
         let have = (*std::ptr::addr_of!(GROUND_RGB)).is_some();
-        let (gx, gy, gw, gh) = plx_base::surface::viewport();
-        let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
-        let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int; // GL origin is bottom-left
-        let origins: [(c_int, c_int); GROUND_TAPS] = std::array::from_fn(|i| {
-            let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
-            let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
-            (
-                (x - GROUND_TAP_PX / 2).clamp(0, gx + gw - GROUND_TAP_PX),
-                (cy - GROUND_TAP_PX / 2).clamp(0, gy + gh - GROUND_TAP_PX),
-            )
-        });
+        // The band image under the track, or none: no band (the glass is off, or a video plane
+        // fills the screen), a band whose source did not refresh, or one that does not hold the
+        // track. The answer is then the last reading, and the cadence keeps the reading owed.
+        let src = TapSource::Image(ground_taps(r));
         let probe = &mut *std::ptr::addr_of_mut!(GROUND_PROBE);
-        let Some(buf) = probe.step(have, &origins, "ground") else {
+        let Some(buf) = probe.step(have, src, "ground") else {
             return *std::ptr::addr_of!(GROUND_RGB);
+        };
+        let (scale, offset) = {
+            let (scale, offset) = probe.composite();
+            (scale, *offset)
         };
         let mut taps = [[0.0f32; 3]; GROUND_TAPS];
         let mut taps_l = [0.0f32; GROUND_TAPS];
@@ -5676,7 +5971,10 @@ pub fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
                 }
             }
             let k = (n * n) as f32;
-            taps[i] = [acc[0] / k, acc[1] / k, acc[2] / k];
+            // The image holds the ground BEFORE the glass composite's own terms: the same
+            // `colour * scale + offset` the shader applies ([`tap_composite`]), so the reading
+            // is the colour the glass shows under the labels.
+            taps[i] = std::array::from_fn(|c| (acc[c] / k * scale + offset[i][c]).clamp(0.0, 1.0));
             let y = 0.2126 * lin(taps[i][0]) + 0.7152 * lin(taps[i][1]) + 0.0722 * lin(taps[i][2]);
             taps_l[i] = if y > 0.008856 {
                 116.0 * y.cbrt() - 16.0
@@ -5871,7 +6169,7 @@ pub fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
             )
         });
         let probe = &mut *std::ptr::addr_of_mut!(CONTROL_PROBE);
-        let Some(buf) = probe.step(have, &origins, "control ground") else {
+        let Some(buf) = probe.step(have, TapSource::Framebuffer(origins), "control ground") else {
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
         };
         let taps: [[f32; 3]; CONTROL_GROUND_TAPS] = plx_base::diag::spans::span("gndmean", || {
@@ -8845,19 +9143,19 @@ mod tests {
     #[test]
     fn a_due_ground_reading_is_queued_and_collected_only_once_the_gpu_has_passed_it() {
         let mut c = ProbeCadence::new(30);
-        assert_eq!(c.step(false, 100, true), ProbeStep::Kick, "nothing latched: queue one");
-        assert_eq!(c.step(false, 100, true), ProbeStep::Keep, "same frame: the copy is not even flushed");
-        assert_eq!(c.step(false, 101, false), ProbeStep::Keep, "a frame later, but the GPU is behind");
-        assert_eq!(c.step(false, 102, true), ProbeStep::Collect);
+        assert_eq!(c.step(false, 100, true, true), ProbeStep::Kick, "nothing latched: queue one");
+        assert_eq!(c.step(false, 100, true, true), ProbeStep::Keep, "same frame: the copy is not even flushed");
+        assert_eq!(c.step(false, 101, false, true), ProbeStep::Keep, "a frame later, but the GPU is behind");
+        assert_eq!(c.step(false, 102, true, true), ProbeStep::Collect);
         // latched now: the next reading is due on the thirtieth call after the collect
         let mut steps = Vec::new();
         for i in 0..30 {
-            steps.push(c.step(true, 103 + i, true));
+            steps.push(c.step(true, 103 + i, true, true));
         }
         assert!(steps[..29].iter().all(|s| *s == ProbeStep::Keep), "{steps:?}");
         assert_eq!(steps[29], ProbeStep::Kick);
-        assert_eq!(c.step(true, 132, true), ProbeStep::Keep, "kicked this frame");
-        assert_eq!(c.step(true, 133, true), ProbeStep::Collect);
+        assert_eq!(c.step(true, 132, true, true), ProbeStep::Keep, "kicked this frame");
+        assert_eq!(c.step(true, 133, true, true), ProbeStep::Collect);
     }
 
     /// An invalidation drops a reading still in flight for the OLD item — collecting it would
@@ -8865,11 +9163,186 @@ mod tests {
     #[test]
     fn an_invalidated_probe_drops_its_reading_in_flight_and_queues_a_fresh_one() {
         let mut c = ProbeCadence::new(30);
-        assert_eq!(c.step(true, 1, true), ProbeStep::Kick, "a fresh probe is dirty");
+        assert_eq!(c.step(true, 1, true, true), ProbeStep::Kick, "a fresh probe is dirty");
         c.invalidate();
-        assert_eq!(c.step(true, 5, true), ProbeStep::Kick, "not the old kick's collect");
-        assert_eq!(c.step(true, 6, true), ProbeStep::Collect);
-        assert_eq!(c.step(true, 7, true), ProbeStep::Keep, "clean again once collected");
+        assert_eq!(c.step(true, 5, true, true), ProbeStep::Kick, "not the old kick's collect");
+        assert_eq!(c.step(true, 6, true, true), ProbeStep::Collect);
+        assert_eq!(c.step(true, 7, true, true), ProbeStep::Keep, "clean again once collected");
+    }
+
+    /// A due reading with nothing to copy from is OWED, not lost and not counted: the cadence does
+    /// not go in flight, and the first call that has a source queues it — even when the due
+    /// moment (the thirtieth frame) has passed. The bar's case when no band image is current.
+    #[test]
+    fn a_due_reading_with_no_source_is_owed_until_one_exists() {
+        let mut c = ProbeCadence::new(30);
+        assert_eq!(c.step(false, 100, true, false), ProbeStep::Keep, "nothing to copy from");
+        assert_eq!(c.step(false, 101, true, false), ProbeStep::Keep);
+        assert_eq!(c.pending, None, "nothing is in flight");
+        assert_eq!(c.step(false, 102, true, true), ProbeStep::Kick, "the first call with a source queues it");
+        assert_eq!(c.step(false, 103, true, true), ProbeStep::Collect);
+        // latched, and the thirtieth-frame moment passes with no source: still owed afterwards
+        for i in 0..40 {
+            assert_eq!(c.step(true, 104 + i, true, false), ProbeStep::Keep);
+        }
+        assert_eq!(c.pending, None);
+        assert_eq!(c.step(true, 144, true, true), ProbeStep::Kick, "owed since the due frame");
+    }
+
+    /// **Where a copy may be made follows from what it reads.** The Hero row copies framebuffer 0 on
+    /// its call; the bar copies a retained image, and that copy waits for the frame boundary, where
+    /// nothing of framebuffer 0 is pending — the move that removes the period-31 spike.
+    #[test]
+    fn an_image_copy_waits_for_the_frame_boundary_and_a_framebuffer_copy_does_not() {
+        assert_eq!(SourceKind::Image.copy_point(), CopyPoint::AtFrameEnd);
+        assert_eq!(SourceKind::Framebuffer.copy_point(), CopyPoint::AtCall);
+        assert_eq!(TapSource::<5>::Image(None).kind(), SourceKind::Image);
+        assert_eq!(TapSource::<5>::Framebuffer([(0, 0); 5]).kind(), SourceKind::Framebuffer);
+        assert!(TapSource::<5>::Framebuffer([(0, 0); 5]).can_kick());
+        assert!(!TapSource::<5>::Image(None).can_kick(), "no image, no kick");
+    }
+
+    /// A copy owed to the boundary is not read back before it is made: `pending` is set on the
+    /// call, the target holds nothing yet, and the sim (no fences) would read it at once.
+    #[test]
+    fn a_copy_that_has_not_been_made_is_not_read_back() {
+        assert!(read_back_due(true, false, false), "kicked, made, not read");
+        assert!(!read_back_due(true, false, true), "still owed to the boundary");
+        assert!(!read_back_due(true, true, false), "already read");
+        assert!(!read_back_due(false, false, false), "nothing in flight");
+    }
+
+    /// With no band image (no walk here; also `flattabs`, a video plane, the first frame, a
+    /// refused source job) the bar answers its last reading, queues nothing and goes nowhere near
+    /// the framebuffer — the case that used to keep a mid-page copy alive.
+    #[test]
+    fn a_bar_with_no_band_image_keeps_its_last_reading_and_copies_nothing() {
+        let _g = plx_base::testlock::serial();
+        let last = Some([0.25f32, 0.5, 0.75]);
+        unsafe {
+            GROUND_RGB = last;
+            (*std::ptr::addr_of_mut!(GROUND_PROBE)).invalidate();
+        }
+        let was = set_page_frozen(false);
+        for _ in 0..4 {
+            assert_eq!(sample_ground([622.0, 36.0, 676.0, 76.0], true), last);
+        }
+        set_page_frozen(was);
+        unsafe {
+            let probe = &*std::ptr::addr_of!(GROUND_PROBE);
+            assert!(probe.queued.is_none() && probe.target.is_none(), "no copy was owed or made");
+            assert_eq!(probe.cadence.pending, None);
+            GROUND_RGB = None;
+            (*std::ptr::addr_of_mut!(GROUND_PROBE)).invalidate();
+        }
+        assert!(backdrop::member_image(Rect::new(622.0, 36.0, 676.0, 76.0)).is_none(), "no walk, no band");
+    }
+
+    /// The region and image size the chain produces for a band holding `track`, at a 1920x1080
+    /// drawable: `blur_region_for` aligned to the direct path's step, halved to texels.
+    fn band_image(track: [f32; 4]) -> ([f32; 4], (c_int, c_int)) {
+        let reg = blur_region_for(false, track[0], track[1], track[2], track[3]);
+        let (rx, ry, rw, rh) = blur_region_px_align(reg, 1920, 1080, 4);
+        let live = [rx as f32, ry as f32, rw as f32, rh as f32];
+        (live, (rw / 2, rh / 2))
+    }
+
+    /// The tap geometry, against an independent statement of it: a texel is `dims / region` per
+    /// authored px, counted from the region's origin, and from its bottom edge when the image is
+    /// stored bottom-up. Both parities, at the two widths the bar takes (676 px at Home's narrower
+    /// tab sets, 1544 px at the widest).
+    #[test]
+    fn the_taps_land_in_the_band_image_at_its_own_scale() {
+        for (x, w) in [(622.0f32, 676.0f32), (188.0, 1544.0)] {
+            let track = [x, 36.0, w, 76.0];
+            let (reg, dims) = band_image(track);
+            let points = ground_tap_points::<GROUND_TAPS>(track);
+            for bottom_up in [false, true] {
+                let o = image_tap_origins(&points, reg, dims, bottom_up, GROUND_TAP_PX).expect("an image holds a box");
+                let (kx, ky) = (dims.0 as f32 / reg[2], dims.1 as f32 / reg[3]);
+                for (i, &(px_, py_)) in points.iter().enumerate() {
+                    let cx = ((px_ - reg[0]) * kx).floor() as c_int;
+                    let row = ((py_ - reg[1]) * ky).floor() as c_int;
+                    let cy = if bottom_up { dims.1 - 1 - row } else { row };
+                    assert!(
+                        (o[i].0 + GROUND_TAP_PX / 2 - cx).abs() <= 1 && (o[i].1 + GROUND_TAP_PX / 2 - cy).abs() <= 1,
+                        "w {w} tap {i} bottom_up {bottom_up}: origin {:?} for centre ({cx}, {cy})",
+                        o[i]
+                    );
+                    assert!(o[i].0 >= 0 && o[i].1 >= 0 && o[i].0 + GROUND_TAP_PX <= dims.0 && o[i].1 + GROUND_TAP_PX <= dims.1);
+                }
+                // five distinct places, left to right, a fifth of the track apart (in texels)
+                let pitch = (w / GROUND_TAPS as f32 * kx).round() as c_int;
+                for i in 1..GROUND_TAPS {
+                    assert!(((o[i].0 - o[i - 1].0) - pitch).abs() <= 1, "w {w}: pitch {pitch}, got {:?}", o);
+                }
+                // 676 px is a texel pitch of ~135 / 2: the boxes (13 texels) never overlap
+                assert!(pitch > GROUND_TAP_PX, "w {w}: boxes overlap at pitch {pitch}");
+            }
+        }
+    }
+
+    /// The two parities place the same tap on mirrored rows: the box that is `r` rows from the top
+    /// of a top-down image is `r` rows from the bottom of a bottom-up one.
+    #[test]
+    fn the_storage_order_mirrors_the_rows_and_only_the_rows() {
+        let track = [622.0f32, 36.0, 676.0, 76.0];
+        let (reg, dims) = band_image(track);
+        let points = ground_tap_points::<GROUND_TAPS>(track);
+        let top = image_tap_origins(&points, reg, dims, false, GROUND_TAP_PX).unwrap();
+        let bot = image_tap_origins(&points, reg, dims, true, GROUND_TAP_PX).unwrap();
+        for i in 0..GROUND_TAPS {
+            assert_eq!(top[i].0, bot[i].0, "columns do not depend on storage order");
+            assert!(
+                (top[i].1 + bot[i].1 + GROUND_TAP_PX - dims.1).abs() <= 1,
+                "rows mirror: {} + {} in {}",
+                top[i].1,
+                bot[i].1,
+                dims.1
+            );
+        }
+    }
+
+    /// Boxes clamp to the IMAGE: a track at a screen edge pulls its outer boxes inside rather than
+    /// reading off the texture, and an image smaller than one box is refused, not clamped.
+    #[test]
+    fn taps_clamp_to_the_image_edges_and_a_tiny_image_is_refused() {
+        // a narrow bar in the top-left corner: the first box wants a centre 2 texels in
+        let corner = [0.0f32, 0.0, 40.0, 10.0];
+        let (reg, dims) = band_image(corner);
+        let points = ground_tap_points::<GROUND_TAPS>(corner);
+        for bottom_up in [false, true] {
+            let o = image_tap_origins(&points, reg, dims, bottom_up, GROUND_TAP_PX).unwrap();
+            for &(x, y) in &o {
+                assert!(x >= 0 && y >= 0 && x + GROUND_TAP_PX <= dims.0 && y + GROUND_TAP_PX <= dims.1, "{o:?} in {dims:?}");
+            }
+            assert_eq!(o[0].0, 0, "the outermost box sits against the left edge");
+        }
+        // and the far edge: a point past the region's right edge clamps to the last whole box
+        let off = [(reg[0] + reg[2] + 500.0, reg[1] + reg[3] * 0.5); 5];
+        let o = image_tap_origins(&off, reg, dims, false, GROUND_TAP_PX).unwrap();
+        assert!(o.iter().all(|&(x, _)| x == dims.0 - GROUND_TAP_PX));
+        // smaller than a box in either axis: no source
+        assert!(image_tap_origins(&points, reg, (GROUND_TAP_PX - 1, dims.1), false, GROUND_TAP_PX).is_none());
+        assert!(image_tap_origins(&points, reg, (dims.0, GROUND_TAP_PX - 1), false, GROUND_TAP_PX).is_none());
+        assert!(image_tap_origins(&points, [0.0, 0.0, 0.0, 10.0], dims, false, GROUND_TAP_PX).is_none());
+    }
+
+    /// The composite terms are `fs_glass.frag`'s `mix(ground, c + wash, alpha)`, folded: identity
+    /// when nothing is owed, a mix toward the app ground under a layer alpha, and a wash that is
+    /// scaled by that alpha because it is added before the mix.
+    #[test]
+    fn the_composite_terms_are_the_glass_shaders_source_expression() {
+        let ground = [0.1f32, 0.2, 0.3];
+        let (s, o) = tap_composite::<2>(1.0, ground, [[0.0; 3]; 2]);
+        assert_eq!((s, o), (1.0, [[0.0; 3]; 2]), "nothing owed: the image is the reading");
+        let c = [0.8f32, 0.6, 0.4];
+        let wash = [[0.05f32, -0.1, 0.0], [0.0; 3]];
+        let (s, o) = tap_composite::<2>(0.5, ground, wash);
+        for ch in 0..3 {
+            let shader = ground[ch] + (c[ch] + wash[0][ch] - ground[ch]) * 0.5; // mix(ground, c + wash, alpha)
+            assert!((c[ch] * s + o[0][ch] - shader).abs() < 1e-6, "channel {ch}");
+        }
     }
 
     /// The table-driven mean is the `powf` mean to the bit, on every 8-bit value and on a real

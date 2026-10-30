@@ -1960,7 +1960,7 @@ fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
 /// **A fully tucked chrome band declares nothing by RULE, not by geometry.** The Library lifts a
 /// tucked bar off canvas ([`crate::screen::chrome_lift`]) and `surface_with` clips what is off
 /// canvas away, so it declared no glass at tuck 1 only because of where the lift put it; the track
-/// still ran its draw (a `sample_ground` framebuffer copy and a glass declaration) at alpha 0.
+/// still ran its draw (a `sample_ground` reading and a glass declaration) at alpha 0.
 /// Were the lift removed (it once was, as "unused") the invisible bar would go on sourcing every
 /// scrolled frame. The dispatcher therefore draws no chrome at `chrome_alpha` 0, whatever the lift.
 ///
