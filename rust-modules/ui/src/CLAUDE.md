@@ -86,7 +86,10 @@ arguments, and its time is the `dt` it is handed.
      regions.
    - **A row of pills** (selection and focus capsules that travel): `widgets::TabStrip` and
      `SelMark` (`widgets.rs`), the nav bar's own motion.
-   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). **Strips and grids of
+   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). A menu placed beside the
+     control that opened it takes its rect from `popover::anchor_panel` with a `Placement`
+     (`under_or_above` and the player menus are calls of it; a header menu's cross axis is `hang_x`),
+     never from a screen's own arithmetic. **Strips and grids of
      tiles**: `cards::Shelf` / `cards::Grid` (`cards/`, next section).
    - **A row of items an equal gap apart** (a header row, a crumb, a name packer): `hstack::HStack`
      (`hstack.rs`), UIStackView's spacing for widths the caller already measured. It places, sums
@@ -461,7 +464,7 @@ presentation in a design pass.
    paused, a seek spinner while the transport owns the busy signal, nothing at all while playing.
    Transport is driven by REMOTE KEYS, which must genuinely work. Any `<<` / `>>` added must be a
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
-   separate FF/REW entry in the default control row (`appkit/player_hud.rs`).
+   separate FF/REW entry in the default control row (`appkit/player_hud/state.rs`).
    Previous/Next share the default disc row for an episode with a neighbour in its PlayQueue,
    with no setting; the opt-in **Instant D-pad seeking** setting defaults to Off. Dedicated
    FF/REW taps jump immediately; held keys use the shared scrub gesture.
@@ -853,7 +856,7 @@ Its docstring states what it cannot see.
   the cascade `p.alpha()`, which would fade the art and the wash as one object. The cascade still
   reaches the whole `Backdrop` from above, which is how `nav`'s page dip covers it),
   `appkit::player_hud`'s `SCR_H`-offset geometry
-  (shared with `app.rs` pointer hit-tests), and the subtitle renderer. Leave them; wrapping them in a
+  (reported as `HudGeometry`, which the player screen's pointer hit-tests read), and the subtitle renderer. Leave them; wrapping them in a
   `View` breaks a load-bearing contract.
 - **Clipping: prefer culling; use a scissor clip only for a hard-bounded panel.** Two spellings
   today. The legacy one is `Painter::clip(rect)` / `clip_clear()` (backed by `gfx::clip_set`/

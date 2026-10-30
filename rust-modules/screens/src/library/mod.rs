@@ -728,7 +728,11 @@ impl LibraryScreen {
             }
         }
         self.relayout(Some(key));
-        let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
+        // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and a
+        // click by what it clicked, `Input`'s `Click` arm).
+        let want = if by == By::Pointer {
+            None
+        } else if let Some(index) = self.pair.detail.index_of(key.elem) {
             // held in the coordinates `scroll` is in until the grid's tick rebases both by a landing
             Some(self.target_layout.row_reveal(index / self.layout.cols()) - self.pair.detail.pending_shift(cx))
         } else if let Some(top) = self.header_focus().and_then(|focus| focus.reveal(key.elem)) {
@@ -1447,6 +1451,14 @@ impl LibraryScreen {
                     self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
                     return Handled::Yes;
                 }
+                // A click brings the page to the card it clicked, the way a key's move does.
+                if let InputKind::Click { hit: Some(hit), .. } = input.kind {
+                    if let Some(index) = self.pair.detail.index_of(hit) {
+                        self.scroll_target = self.target_layout.row_reveal(index / self.layout.cols())
+                            - self.pair.detail.pending_shift(cx);
+                        fx.invalidate(Provenance::Input);
+                    }
+                }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * self.layout.grid_pitch())
                         .clamp(0.0, self.target_layout.max_scroll());
@@ -1580,6 +1592,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         LibraryScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
     fn chrome_tuck(&self) -> f32 { self.handoff.tuck() }
     fn state(&self) -> &dyn LogicalState { self }

@@ -114,7 +114,7 @@ base
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
 | ui | `ui` (the library) | 51k | 47% |
-| data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog` | 27k | 56% |
+| data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog hudpacks` | 27k | 56% |
 | session | `auth` | 11k | 35% |
 | media | `ff aq abr hls curlio player route` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
@@ -134,6 +134,12 @@ intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover
 for the plex.tv credential, and `plex::servers` for the roster, reachability and `facts_gen`
 epochs. Neither names `net` or `media`; the screens (`watchlist`, `catalog`) and the tab pulse sit
 above them, and the application alone routes between them (`docs/watchlist.md`).
+
+`hudpacks` (the player-HUD package store, `docs/hud-plugins.md`) adds a data module and no edge. It is a
+pure machine that names only `base` (`sha256`) and `machine` (`Handled`): the HUD format lives in
+`appkit`, above data, so the store never parses a package and asks its caller for the verdict
+(`HudEffect::Validate`), and its directories, which `paths::hud_candidates()` supplies in `base`, arrive
+on an event.
 
 Four choices that were not obvious:
 
@@ -1661,7 +1667,7 @@ doc links that named `screens`, `app`, `lab` and `focusprobe` unbracketed. What 
 
 - **One orphan-rule hit, found by the compiler.** `impl Default for SubtitleBitmaps` sat in
   `screens/player/mod.rs`, a screen's impl of `std`'s trait for a type of the layer below; across a
-  crate boundary that is E0117. It lives beside the type in `player_hud.rs` now. The `Focusable`
+  crate boundary that is E0117. It lives beside the type in `player_hud/mod.rs` now. The `Focusable`
   and `Screen` impls of the application's own types are not affected (the traits are `plx_ui`'s and
   the types the application's). `appkit` defines no `#[macro_export]` macro and the crate has no
   `env!`, `option_env!`, `include_*!` or `CARGO_MANIFEST_DIR`.

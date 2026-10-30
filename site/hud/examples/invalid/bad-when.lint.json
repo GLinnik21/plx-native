@@ -1,0 +1,19 @@
+{
+  "file": "bad-when.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0501",
+      "hint": "write one of: panel.chapters, panel.info, sections, chapters.present, title.is_episode, transport.paused, slot.discs, slot.up_next, slot.skip",
+      "message": "`panel.infos` is not a known condition",
+      "nearest": [
+        "panel.info",
+        "panel.chapters",
+        "sections"
+      ],
+      "path": "/layout/block/1/when",
+      "rule": "condition-known",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}

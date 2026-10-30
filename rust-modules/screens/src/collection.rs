@@ -1066,6 +1066,7 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { super::registry::word::COLLECTION }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {

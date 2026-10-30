@@ -660,7 +660,7 @@ pub fn observe_video_plane(
     pl.set_video_plane_bound(bound)
 }
 
-// ---- transport accessors app.rs / player_hud.rs call ----
+// ---- transport accessors the app's per-frame loop and `HudMotion`'s tick call ----
 pub fn is_started() -> bool {
     TX.started.load(Relaxed)
 }
@@ -1774,8 +1774,9 @@ pub fn seek_display_ns() -> i64 {
 /// heartbeat's `pos=`, which `tests/run.py` grades real playback progress from — feeding it an
 /// intended position would let a seek that never lands read as playback that climbed.
 ///
-/// `appkit/player_hud.rs` deliberately does NOT call this: it needs the same outer two rungs with the
-/// live scrub preview between them, so its expression is a superset rather than a caller.
+/// `appkit/player_hud/state.rs::display_pos_ns` deliberately does NOT call this: it needs the same
+/// outer two rungs with the live scrub preview between them, so its expression is a superset
+/// rather than a caller.
 pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
     let t = seek_display_ns();
     if loading(ps) && t >= 0 {
