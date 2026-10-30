@@ -399,7 +399,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // except `scrub_ns`, which the page's `prepare` takes from its own scrub (a held scrub moves the
     // target by seconds a frame, and the clock prewarm warms only the displayed second and the next).
     if fr.player {
-        let model = hud_model(&app.player.session);
+        let model = hud_model(&app.player.session, app.bridge.metadata_view());
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.model = model;
         }
@@ -536,7 +536,10 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
 /// The playhead is read once and the cue lookup takes that same sample, so the two cannot straddle a
 /// media-thread publication. App-side by construction: the app crate is where globals are read, the
 /// screen and the draw receive the value (`prepare_window` is the one caller).
-fn hud_model(ps: &plx_media::route::PlaybackSession) -> plx_appkit::player_hud::model::HudModel {
+fn hud_model(
+    ps: &plx_media::route::PlaybackSession,
+    meta: plx_data::metadata::MetadataView<'_>,
+) -> plx_appkit::player_hud::model::HudModel {
     let playpos_ns = plx_media::player::playpos_ns();
     plx_appkit::player_hud::model::HudModel {
         paused: plx_media::player::TX.paused.load(Relaxed),
@@ -549,6 +552,9 @@ fn hud_model(ps: &plx_media::route::PlaybackSession) -> plx_appkit::player_hud::
         sub_position: plx_media::route::subtitle_position(),
         sub_tone: plx_media::player::subtitle_tone(),
         sub_sel: plx_media::player::desired_sub_idx(),
+        controls: plx_appkit::player_hud::Controls::now(ps),
+        chapters: plx_appkit::chapters_panel::has_chapters(meta),
+        detail: plx_appkit::info_panel::detail_rk(meta).is_some(),
         bitmap_key: plx_media::player::active_bitmap_key(playpos_ns),
         bitmap_by_key: plx_media::player::bitmap_by_key,
     }
@@ -1278,15 +1284,11 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // and the simulator cannot produce one — so `tools/keytable.py` is blind to
             // this by construction. Settling it needs a `key` line off the television.
         } else if matches!(key, Key::Ok) {
-            key_ok(&mut app.player.session,
-                &mut app.adapters.player,
-                app.last_input,
-                &mut app.ptr,
-                &mut app.ok_armed,
-                &mut app.input.press,
-                &mut app.pages,
-                &mut app.bridge,
-            );
+            // OK is no arm of this chain. Its one occupant was the player's, and a mounted player
+            // page owns input (`bridge::owns_input`, pinned by
+            // `a_mounted_player_page_owns_input_so_the_ladder_never_sees_ok`), so `tree_owns_key`
+            // above took the key; the row's press is the engine's, `PlayerScreen::row_pressed`.
+            // The arm stays, empty, so OK keeps its place in front of the arms below.
         } else if matches!(key, Key::Pause) {
             key_pause(&mut app.adapters.player, app.last_input, &mut app.pages);
         } else if matches!(key, Key::Play) {
@@ -2057,7 +2059,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                     if plx_appkit::up_next::countdown_may_run(
                         bare,
                         player.hud.nav.focus == GROUP_ROW,
-                        player.hud.nav.btn,
+                        player.hud.nav.btn == plx_appkit::up_next::BTN_NEXT,
                     ) {
                         player.hud.dismissed = false;
                         player.hud.extend(fr.now, HUD_LINGER_MS);
@@ -2145,8 +2147,8 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     // press-and-hold item menu opener is `SearchReq::ItemMenu`, drained by
                     // `content::search_requests` — an owned screen's press arms and commits
                     // through the tree's own press machine end to end, so it cannot arrive here
-                    // at all (`app.ok_armed` is armed only by the legacy `key_ok`/pointer-click
-                    // arms below, neither of which reaches Route::Search any more).
+                    // at all (`app.ok_armed` is armed only by the player's pointer-click
+                    // requests below, neither of which reaches Route::Search any more).
                     _ => false,
                 };
             if held_menu {
@@ -2463,8 +2465,8 @@ fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, 
             // fired on a user who walked UP to the discs on purpose, yanking the ring back
             // the same frame and making OK on a disc unreachable by remote.
             player.hud.nav = HudNav::HOME;
-            // The ring goes back to the SCRUBBER for the engine as much as for `nav`: `key_ok` acts
-            // on the element the engine holds, so a stale seat on the stand-in's item (an enabled
+            // The ring goes back to the SCRUBBER for the engine as much as for `nav`: `PlayerScreen::key_ok`
+            // acts on the element the engine holds, so a stale seat on the stand-in's item (an enabled
             // Previous / Restart on an episode, which reconcile leaves alone) made the next OK
             // press a disc where `main`'s `nav`-driven OK toggled pause. On a movie `main` did not
             // honour this contract either: reconcile moved the stale item to Subtitles and mirrored
@@ -4280,7 +4282,7 @@ mod lifecycle_regression_tests {
         shared.seek_display_ns.store(9_000_000_000, Relaxed);
         shared.duration_ns.store(100_000_000_000, Relaxed);
         shared.desired_sub_idx.store(3, Relaxed);
-        let model = hud_model(&app.player.session);
+        let model = hud_model(&app.player.session, app.bridge.metadata_view());
         // restore before grading: a failed assertion must not leak a scrub target into the next test
         plx_media::player::restore_state_for_test(state);
         plx_media::route::restore_subtitle_size(size);
@@ -4346,7 +4348,7 @@ mod lifecycle_regression_tests {
         }
         assert_eq!(
             app.pages.focus().map(|k| k.elem),
-            Some(plx_appkit::player_hud::ELEM_ROW_BASE + standin.primary_btn() as u32),
+            Some(plx_appkit::player_hud::ELEM_CONTROL_BASE + standin.primary_btn() as u32),
             "the offer seats the engine on the stand-in's primary item"
         );
         set_slot(&mut app, discs);
@@ -4402,6 +4404,204 @@ mod lifecycle_regression_tests {
         assert_eq!(focus, GROUP_SCRUB, "nav");
         assert_eq!(engine, Some(ELEM_SCRUB), "the engine");
         assert_eq!(reqs, vec![plx_screens::registry::PlayerReq::Transport(None)], "OK toggles play, it does not restart");
+    }
+
+    /// **The one performer, one row per command.** Every classic control's command goes through
+    /// `perform_hud_command` and lands where its press always did: Subtitles on the Tracks panel's
+    /// second tab, Audio on its first, More on the More root, and `open_more` on the Speed page on
+    /// the Speed page. Previous and Next hand the queue to the transport and leave the HUD exactly
+    /// as it was; every other command keeps the transport up and extends its linger.
+    #[test]
+    fn the_one_performer_sends_each_classic_command_where_its_press_always_went() {
+        use plx_appkit::more_menu::MorePage as Page;
+        use plx_appkit::player_hud::command::{HudCommand, MorePage, TrackTab};
+        use plx_screens::player::overlay::OverlayKind;
+        let _serial = plx_base::testlock::serial();
+        let perform = |app: &mut App, command, now| {
+            super::playback::perform_hud_command(
+                command,
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                now,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+                &mut app.bridge,
+            );
+            for later in [now + 16, now + 32, now + 48, now + 64] {
+                frame(app, later);
+            }
+        };
+        let panels = [
+            (HudCommand::OpenTracks(TrackTab::Subtitles), OverlayKind::Tracks { tab: 1 }),
+            (HudCommand::OpenTracks(TrackTab::Audio), OverlayKind::Tracks { tab: 0 }),
+            (HudCommand::OpenMore(MorePage::Root), OverlayKind::More { page: None }),
+            (HudCommand::OpenMore(MorePage::Speed), OverlayKind::More { page: Some(Page::Speed) }),
+        ];
+        for (command, want) in panels {
+            let mut app = app();
+            super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+            frame(&mut app, 16);
+            perform(&mut app, command, 100);
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), Some(want), "{command:?}");
+            let player = super::super::bridge::player(&app.pages).expect("the player page is mounted");
+            assert!(player.hud.until >= 100 + HUD_LINGER_MS, "{command:?} keeps the transport up");
+        }
+        for command in [HudCommand::Previous, HudCommand::Next] {
+            let mut app = app();
+            super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+            frame(&mut app, 16);
+            let before = super::super::bridge::player(&app.pages).expect("mounted").hud.until;
+            perform(&mut app, command, 100);
+            let player = super::super::bridge::player(&app.pages).expect("mounted");
+            assert_eq!(player.hud.until, before, "{command:?} leaves the HUD as it was");
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None, "{command:?} opens no panel");
+        }
+    }
+
+    /// The media globals the performer's seeks write, set for one test and put back after it, so a
+    /// failed assertion does not leak a seek target into the next test.
+    struct SeekGlobals {
+        saved: [i64; 5],
+    }
+    impl SeekGlobals {
+        fn set(playpos_ns: i64, duration_ns: i64) -> Self {
+            use std::sync::atomic::Ordering::Relaxed;
+            let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
+            let saved = [
+                shared.playpos_ns.swap(playpos_ns, Relaxed),
+                shared.duration_ns.swap(duration_ns, Relaxed),
+                shared.seek_display_ns.swap(-1, Relaxed),
+                tx.seek_to_ns.swap(-1, Relaxed),
+                tx.scrub_ns.swap(-1, Relaxed),
+            ];
+            Self { saved }
+        }
+        fn seek_to(&self) -> i64 {
+            plx_media::player::TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+    impl Drop for SeekGlobals {
+        fn drop(&mut self) {
+            use std::sync::atomic::Ordering::Relaxed;
+            let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
+            shared.playpos_ns.store(self.saved[0], Relaxed);
+            shared.duration_ns.store(self.saved[1], Relaxed);
+            shared.seek_display_ns.store(self.saved[2], Relaxed);
+            tx.seek_to_ns.store(self.saved[3], Relaxed);
+            tx.scrub_ns.store(self.saved[4], Relaxed);
+        }
+    }
+
+    fn perform_on_a_mounted_player(app: &mut App, command: plx_appkit::player_hud::command::HudCommand, now: u32) {
+        super::playback::perform_hud_command(
+            command,
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            now,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+    }
+
+    /// **Previous and Next are not interchangeable in the performer.** With the playhead past the
+    /// restart threshold, Previous restarts the item (`queue_transport::step(Previous)` seeks to 0);
+    /// Next, with no queue behind it, asks for no seek at all. A swap of the two steps fails both ways.
+    #[test]
+    fn previous_steps_the_queue_back_and_next_steps_it_forward() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        perform_on_a_mounted_player(&mut app, HudCommand::Next, 100);
+        assert_eq!(globals.seek_to(), -1, "Next, with nothing queued after it, seeks nowhere");
+        perform_on_a_mounted_player(&mut app, HudCommand::Previous, 200);
+        assert_eq!(globals.seek_to(), 0, "Previous past the threshold restarts the item");
+    }
+
+    /// **`toggle_play` in the performer is the keys' own function**: a pending scrub target is taken
+    /// as `SeekTo` (a seek, and the target is spent) where a bare transport toggle would leave it.
+    #[test]
+    fn the_toggle_play_command_takes_a_pending_scrub_target_as_the_play_keys_do() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::super::bridge::player_mut(&mut app.pages).expect("mounted").scrub.ns = 60_000_000_000;
+        perform_on_a_mounted_player(&mut app, HudCommand::TogglePlay, 100);
+        assert_eq!(globals.seek_to(), 60_000_000_000, "the pending target is the seek");
+        assert_eq!(super::super::bridge::player(&app.pages).expect("mounted").scrub.ns, -1, "and it is spent");
+    }
+
+    /// **A seek control keeps the HUD up and accumulates**: the performer's `seek` is
+    /// `jump_by(.., keep_hud = true, ..)`, so the transport it was pressed on is not dismissed (a
+    /// hidden-HUD jump key hides it), and a second press inside the burst continues from the first target.
+    #[test]
+    fn a_seek_command_keeps_the_hud_up_and_accumulates_inside_one_burst() {
+        use plx_appkit::player_hud::command::{HudCommand, SeekBy};
+        use std::num::NonZeroI32;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        let seek = HudCommand::Seek(SeekBy::Secs(NonZeroI32::new(10).unwrap()));
+        perform_on_a_mounted_player(&mut app, seek, 100);
+        assert_eq!(globals.seek_to(), 50_000_000_000);
+        let player = super::super::bridge::player(&app.pages).expect("mounted");
+        assert!(!player.hud.dismissed, "a control press does not hide the transport it was pressed on");
+        assert!(player.hud.until >= 100 + HUD_LINGER_MS, "and extends its linger");
+        perform_on_a_mounted_player(&mut app, seek, 300);
+        assert_eq!(globals.seek_to(), 60_000_000_000, "the second press accumulates");
+    }
+
+    /// **Section commands toggle**: `toggle_section` opens its panel and dismisses it when the same
+    /// panel is already up, the way the Info card's own tab does.
+    #[test]
+    fn toggle_section_opens_its_panel_and_a_second_press_closes_it() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        use plx_screens::player::overlay::OverlayKind;
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        let mut now = 100;
+        for want in [Some(OverlayKind::Chapters), None] {
+            super::playback::perform_hud_command(
+                HudCommand::ToggleSection(Section::Chapters),
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                now,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+                &mut app.bridge,
+            );
+            for _ in 0..24 {
+                now += 16;
+                frame(&mut app, now);
+            }
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), want);
+            now += 100;
+        }
+    }
+
+    /// **The app ladder's player OK arm is unreachable.** A mounted player page owns the keys
+    /// through the engine (`bridge::owns_input`), so `run.rs`'s ladder returns at `tree_owns_key`
+    /// before it can reach the OK arm for the player route, which is why that arm is gone.
+    #[test]
+    fn a_mounted_player_page_owns_input_so_the_ladder_never_sees_ok() {
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        assert!(super::super::bridge::owns_input(&app.pages), "the player page owns input");
     }
 
     #[test]

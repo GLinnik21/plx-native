@@ -353,7 +353,7 @@ impl PlayerScreen {
     fn elem_of(g: GroupId, i: u32) -> u32 {
         match g {
             GROUP_SCRUB => player_hud::ELEM_SCRUB,
-            GROUP_ROW => player_hud::ELEM_ROW_BASE + i,
+            GROUP_ROW => player_hud::control_elem(i as i32),
             GROUP_TABS => player_hud::ELEM_TAB_BASE + i,
             GROUP_FAILURE => player_hud::ELEM_FAILURE_BASE + i,
             _ => REPAIR_CANCEL + i,
@@ -506,7 +506,7 @@ impl PlayerScreen {
 /// HUD's own and live in `appkit::player_hud::geometry` ([`GROUP_SCRUB`], [`GROUP_ROW`],
 /// [`GROUP_TABS`], [`GROUP_FAILURE`]), because the HUD's motion and drawing compare a focus against
 /// the same numbers; element addresses within each are [`player_hud::ELEM_SCRUB`]/
-/// [`player_hud::ELEM_ROW_BASE`]/[`player_hud::ELEM_TAB_BASE`]/[`player_hud::ELEM_FAILURE_BASE`].
+/// [`player_hud::ELEM_CONTROL_BASE`]/[`player_hud::ELEM_TAB_BASE`]/[`player_hud::ELEM_FAILURE_BASE`].
 /// The sandbox-repair confirmation's group is this page's alone.
 const GROUP_REPAIR: GroupId = GroupId(4);
 const REPAIR_CANCEL: u32 = 40_000;
@@ -632,6 +632,12 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 }
                 Handled::Yes
             }
+            // **The engine's press on the control row committed** — the dip has played, on the
+            // spring-back. What the control the engine holds means is asked of the app.
+            ScreenEvent::PressCommit(_) => {
+                self.row_pressed(cx.focus.current.map(|k| k.elem), fx);
+                Handled::Yes
+            }
             ScreenEvent::Tick(tick) => {
                 if self.hud.nav.focus == GROUP_ROW && !self.slot.enabled(self.hud.nav.btn) {
                     self.hud.nav.btn = self.slot.primary_btn();
@@ -682,7 +688,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         let focused = cx.focus.current.map(|k| k.elem);
                         self.handle_key(
                             ps, consts::classify_input(*key, *sym, *wcode), *edge, *at_edge, input.at.ms,
-                            focused, fx, H::metadata(cx),
+                            focused, self.focused_command(focused), fx, H::metadata(cx),
                         )
                     }
                     InputKind::Click { hit, x, .. } => {
@@ -713,6 +719,14 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
             _ => Handled::No,
         }
     }
+}
+
+/// **Does this key press continue the relative-seek gesture in progress?** Every key but LEFT and
+/// RIGHT ends it ([`PlayerScreen::handle_key`] resets the burst), except OK on a control whose
+/// command is a seek: two seek controls pressed inside [`BURST_GAP_MS`](plx_appkit::player_hud::seek_jump::BURST_GAP_MS) are one gesture, and their steps
+/// accumulate into one target.
+fn continues_seek_burst(key: consts::Key, command: Option<player_hud::command::HudCommand>) -> bool {
+    key == consts::Key::Ok && matches!(command, Some(player_hud::command::HudCommand::Seek(_)))
 }
 
 impl PlayerScreen {
@@ -753,7 +767,7 @@ impl PlayerScreen {
         match action {
             A::PlayAutomatically => Self::ask(fx, PlayerReq::PlayAutomatically),
             A::TryAgain => Self::ask(fx, PlayerReq::RetryPlayback),
-            A::ChangeQuality => Self::ask(fx, PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true })),
+            A::ChangeQuality => Self::ask(fx, PlayerReq::OpenOverlay(overlay::OverlayKind::More { page: Some(plx_appkit::more_menu::MorePage::Quality) })),
             A::Repair => {
                 if ps.repair_status == plx_platform::tv::sandbox::State::Idle && !self.repair_alert.visible() {
                     self.repair_scroll = 0;
@@ -920,7 +934,9 @@ impl PlayerScreen {
     /// `at_edge` marks the dispatcher's RE-DELIVERY of a direction the engine could not move (an
     /// `EdgeRule::Screen` edge, §7.3 step 4): the screen's answer is [`Self::answer_edge`], and an
     /// edge is never asked twice. `focused` is the element the ENGINE holds focus on, which is what
-    /// decides OK ([`Self::key_ok`]) and which group an edge belongs to.
+    /// decides OK ([`Self::key_ok`]) and which group an edge belongs to. `command` is the command of
+    /// the control `focused` names ([`Self::focused_command`]), resolved by the caller: the burst
+    /// guard below turns on it, and no slot holds a seek control until a package can place one.
     fn handle_key<H: AppLike>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
@@ -929,12 +945,17 @@ impl PlayerScreen {
         at_edge: bool,
         now: u32,
         focused: Option<u32>,
+        command: Option<player_hud::command::HudCommand>,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) -> Handled {
         use consts::Key;
         if edge == Edge::Down && !matches!(key, Key::Left { .. } | Key::Right { .. }) {
-            self.seek_burst.reset();
+            // A press of a seek CONTROL belongs to the jump gesture in progress, so two of them
+            // inside one burst give one target (`seek_jump::SeekBurst`).
+            if !continues_seek_burst(key, command) {
+                self.seek_burst.reset();
+            }
             self.drop_transport_tap();
         }
         // **A terminal failure owns the whole frame, so almost nothing may be driven on it.**
@@ -981,16 +1002,14 @@ impl PlayerScreen {
         }
         match key {
             Key::Play | Key::Pause | Key::PlayPause => {
-                if edge == Edge::Down && key != Key::Pause && self.take_target(now, fx) {
-                    return Handled::Yes;
-                }
                 if edge == Edge::Down {
                     let play = match key {
                         Key::Play => Some(true),
                         Key::Pause => Some(false),
                         _ => None,
                     };
-                    Self::ask(fx, PlayerReq::Transport(play));
+                    let req = self.toggle_play(play, now);
+                    Self::ask(fx, req);
                 }
                 Handled::Yes
             }
@@ -1074,33 +1093,37 @@ impl PlayerScreen {
                 }
                 Handled::Yes
             }
-            Key::Ok => {
-                match edge {
-                    Edge::Down => self.key_ok(now, focused, fx),
-                    // …and the pointer button's own release, which the loop spells as this edge.
-                    Edge::Up => self.handle_release(now, fx),
-                    Edge::Repeat => {}
+            Key::Ok => match edge {
+                Edge::Down => self.key_ok(now, focused, fx),
+                // …and the pointer button's own release, which the loop spells as this edge.
+                Edge::Up => {
+                    self.handle_release(now, fx);
+                    Handled::Yes
                 }
-                Handled::Yes
-            }
+                Edge::Repeat => Handled::Yes,
+            },
             _ => Handled::No,
         }
     }
 
     /// **OK, off a panel** — a pending target is taken first; a hidden transport asks for the
     /// plain play/pause toggle. Otherwise the ENGINE's focus decides what was pressed: a control
-    /// row element is the deferred press (`PlayerReq::ArmControlRow`, which the loop's existing
-    /// commit-frame dispatch resolves through `activate_player_row`), a tab opens its panel
-    /// (Info for the first, Chapters for the second), and everything else, the scrubber included,
-    /// is the toggle — exactly as the old ladder's `else` arm. Port of `key_ok`'s `Route::Player`
-    /// arm.
-    fn key_ok<H: AppLike>(&mut self, now: u32, focused: Option<u32>, fx: &mut Effects<'_, H>) {
+    /// row element is left to the engine (`Handled::No`), whose press machinery dips the control
+    /// and delivers `PressCommit` on the spring-back ([`Self::row_pressed`] performs it), a tab
+    /// opens its panel (Info for the first, Chapters for the second), and everything else, the
+    /// scrubber included, is the toggle — exactly as the old ladder's `else` arm. The scrubber and
+    /// the tabs stay `Handled::Yes`: the scrubber's OK means the toggle or a target, which a bare
+    /// press cannot carry, and a tab opens at once with no dip to wait for.
+    fn key_ok<H: AppLike>(&mut self, now: u32, focused: Option<u32>, fx: &mut Effects<'_, H>) -> Handled {
         let vis = self.hud.visible_at_press;
         let focused = focused.filter(|_| vis);
+        let mut handled = Handled::Yes;
         if self.take_target(now, fx) {
             // OK confirmed the target and the film plays on from it; that is all this press means
         } else if focused.and_then(player_hud::row_index).is_some() {
-            self.arm_control_row(fx);
+            // the press takes the page from the scrubber, so a pending target goes with it
+            self.scrub.cancel();
+            handled = Handled::No;
         } else if let Some(tab) = focused
             .filter(|e| Self::hud_group_of(*e) == Some(GROUP_TABS))
             .map(|e| e - player_hud::ELEM_TAB_BASE)
@@ -1114,10 +1137,48 @@ impl PlayerScreen {
                 Self::ask(fx, PlayerReq::OpenOverlay(kind));
             }
         } else {
-            Self::ask(fx, PlayerReq::Transport(None));
+            let req = self.toggle_play(None, now);
+            Self::ask(fx, req);
         }
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
+        handled
+    }
+
+    /// **The play/pause toggle, the one function the Play/Pause/PlayPause keys, OK on the picture
+    /// and the `toggle_play` command share.** A key that confirms (PLAY, PLAYPAUSE and OK; never
+    /// PAUSE, which only pauses) takes a pending scrub target first ([`Self::take_target`]) and is
+    /// a [`PlayerReq::SeekTo`]; otherwise it is the [`PlayerReq::Transport`] toggle, with `play`
+    /// naming a one-way key. The caller performs the request it returns, as a screen does through
+    /// `fx`, or as the app's performer does directly.
+    pub fn toggle_play(&mut self, play: Option<bool>, now: u32) -> PlayerReq {
+        if play != Some(false) {
+            if let Some(target) = self.take_target_ns(now) {
+                return PlayerReq::SeekTo(target);
+            }
+        }
+        PlayerReq::Transport(play)
+    }
+
+    /// The command of the control the engine holds, if it holds one of the row's.
+    fn focused_command(&self, focused: Option<u32>) -> Option<player_hud::command::HudCommand> {
+        self.slot.command(focused.and_then(player_hud::row_index)?)
+    }
+
+    /// **A press on the row committed** (the engine's `PressCommit`, once the dip has played): ask
+    /// the app to perform what the control the engine holds means. A disc is its command
+    /// ([`PlayerReq::Command`]); a stand-in's meaning is the app's, so it is [`PlayerReq::StandIn`].
+    /// Nothing happens when the engine is not on an enabled control of the row any more (the row
+    /// changed under the press).
+    fn row_pressed<H: AppLike>(&mut self, focused: Option<u32>, fx: &mut Effects<'_, H>) {
+        let Some(ordinal) = focused.and_then(player_hud::row_index).filter(|&i| self.slot.enabled(i)) else {
+            return;
+        };
+        self.hud.nav.btn = ordinal;
+        match self.slot.command(ordinal) {
+            Some(command) => Self::ask(fx, PlayerReq::Command(command)),
+            None => Self::ask(fx, PlayerReq::StandIn),
+        }
     }
 
     /// The control row's deferred press (`PlayerReq::ArmControlRow`). It takes the page from the
@@ -1196,18 +1257,31 @@ impl PlayerScreen {
     /// progress is not a key target (its release is its own confirmation), and neither is a
     /// reveal's seed.
     fn take_target<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) -> bool {
+        match self.take_target_ns(now) {
+            Some(target) => {
+                Self::ask(fx, PlayerReq::SeekTo(target));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// [`Self::take_target`]'s state change, for a caller that performs the seek itself: the
+    /// target taken (and the gesture retired), or `None` when there is none to take.
+    fn take_target_ns(&mut self, now: u32) -> Option<i64> {
         if self.scrub.ns < 0 || self.scrub.drag || self.scrub.reveal {
-            return false;
+            return None;
         }
         plx_base::eventlog::log(&format!(
             "scrub: target taken {}s",
             self.scrub.ns / 1_000_000_000
         ));
-        self.commit_scrub(true, fx);
+        let target = self.scrub.ns;
+        self.scrub.ns = -1;
         self.scrub.disengage(); // a key may still be down: the gesture ends with its target
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
-        true
+        Some(target)
     }
 
     /// **BACK while a scrub is live**: the scrub is cancelled — no seek, the preview gone, the knob
@@ -1414,10 +1488,10 @@ impl PlayerScreen {
     /// Which of the HUD's three transport groups holds `elem` — the failure row and the repair
     /// card are not the transport's, and answer `None`.
     fn hud_group_of(elem: u32) -> Option<GroupId> {
-        use player_hud::{ELEM_FAILURE_BASE, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use player_hud::{ELEM_FAILURE_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         match elem {
             e if e == ELEM_SCRUB => Some(GROUP_SCRUB),
-            e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => Some(GROUP_ROW),
+            e if player_hud::row_index(e).is_some() => Some(GROUP_ROW),
             e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => Some(GROUP_TABS),
             _ => None,
         }
@@ -1559,7 +1633,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             let forward = match dir { Dir::Left => false, Dir::Right => true, _ => return Step::Edge };
             if let Some(next) = plx_ui::focus::next_enabled_index(index as usize, self.slot.items() as usize, forward,
                 |i| self.slot.enabled(i as i32)) {
-                return Step::Move(FocusKey { entry: self.entry, elem: player_hud::ELEM_ROW_BASE + next as u32 });
+                return Step::Move(FocusKey { entry: self.entry, elem: player_hud::control_elem(next as i32) });
             }
         }
         Step::Edge
@@ -1570,13 +1644,13 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
     }
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
         if player_hud::row_index(want.elem).is_some_and(|i| !self.slot.enabled(i)) {
-            FocusKey { entry: self.entry, elem: player_hud::ELEM_ROW_BASE + self.slot.primary_btn() as u32 }
+            FocusKey { entry: self.entry, elem: player_hud::control_elem(self.slot.primary_btn()) }
         } else { want }
     }
     fn seat(&self, g: GroupId, _from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         let elem = match g {
             GROUP_SCRUB => player_hud::ELEM_SCRUB,
-            GROUP_ROW => player_hud::ELEM_ROW_BASE + self.slot.primary_btn() as u32,
+            GROUP_ROW => player_hud::control_elem(self.slot.primary_btn()),
             // the tab the user last stood on (Down from the scrubber returns to it), held to the
             // tabs this item has
             GROUP_TABS => {
@@ -1693,12 +1767,13 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // hover, no click) which the hit map answers whatever this says.
         //
         // `Activate::Direct` on them, and it is not the same statement `ElemKind` makes
-        // elsewhere: the transport's control row DOES dip, but its press is the LOOP's
-        // (`PlayerReq::ArmControlRow` → `press.begin_ctl` → `activate_player_row` on the
-        // spring-back), so letting the dispatcher's own press machine arm it instead would leave
-        // that commit-frame dispatch with nothing to fire. Direct delivery, and the screen decides
-        // what the element means — including the scrubber, whose meaning needs the click's `x`
-        // and so cannot be carried by a bare `ScreenEvent::Activate` at all.
+        // elsewhere: the transport's control row DOES dip, and OK on it is the engine's own press
+        // (`key_ok` leaves it alone, the commit is `row_pressed`). A pointer CLICK on it is still
+        // the loop's (`PlayerReq::ArmControlRow` → `press.begin_ctl` → `activate_player_row` on the
+        // spring-back), which the hit census pins; both converge on `perform_hud_command`. Direct
+        // delivery, and the screen decides what the element means — including the scrubber, whose
+        // meaning needs the click's `x` and so cannot be carried by a bare `ScreenEvent::Activate`
+        // at all, and the tabs, which open a panel at once with no dip to wait for.
         let hud_drawn = self.hud_drawn(ps, now);
         if hud_drawn {
             self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
@@ -1990,6 +2065,13 @@ mod travel_rig {
             {
                 self.deliver(page, ScreenEvent::FocusMoved { from, to, by });
             }
+        }
+
+        /// Seat the engine on one element of the control row, as a pointer click or a restore does,
+        /// without delivering the move: the page's cursor is whatever the test left it.
+        pub(super) fn seat_on(&mut self, elem: u32) {
+            let key = FocusKey { entry: self.entry, elem };
+            self.engine.set(self.owner(), key, Some(GROUP_ROW), plx_ui::screen::By::Restore);
         }
 
         /// The element the engine holds focus on.
@@ -2430,7 +2512,7 @@ mod step_ladder_tests {
         use crate::registry::PlayerLike;
         use plx_ui::hit::{pointer_gaps, HitMap, PointerKind};
         use plx_machine::machine::FocusKey;
-        use plx_appkit::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use plx_appkit::player_hud::{Busy, ControlSlot, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_CONTROL_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         use plx_ui::screen::{At, DrawFrame};
         let _g = plx_base::testlock::serial();
         let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: kind == MarkerKind::Credits };
@@ -2438,11 +2520,11 @@ mod step_ladder_tests {
         let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true, plx_media::route::NextEpisodeMode::Countdown);
         assert!(matches!(skip, ControlSlot::Skip(_)) && matches!(up_next, ControlSlot::UpNext(_)));
         let failed = Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
-        let row = |n: u32| (0..n).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>();
+        let row = |n: u32| (0..n).map(|i| ELEM_CONTROL_BASE + i).collect::<Vec<_>>();
         let failure_n = player_hud::FailureReadout::now(TestHost::session(&cx())).actions().len() as u32;
         assert!(failure_n >= 1, "Back is always offered");
         let cases: [(&str, ControlSlot, Busy, Vec<u32>); 5] = [
-            ("discs", ControlSlot::Discs(player_hud::Controls::NONE), Busy::None, [(2..5).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>(), vec![ELEM_TAB_BASE]].concat()),
+            ("discs", ControlSlot::Discs(player_hud::Controls::NONE), Busy::None, [(2..5).map(|i| ELEM_CONTROL_BASE + i).collect::<Vec<_>>(), vec![ELEM_TAB_BASE]].concat()),
             ("episode", ControlSlot::Discs(player_hud::Controls { previous: true, next: true, restart: false }),
                 Busy::None, [row(5), vec![ELEM_TAB_BASE]].concat()),
             ("skip", skip, Busy::None, [row(1), vec![ELEM_TAB_BASE]].concat()),
@@ -2488,8 +2570,8 @@ mod step_ladder_tests {
                 assert!(!reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
                 assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::Transport(_))), "{name}: {elem} -> {reqs:?}");
                 assert!(page.hud.until >= 1_000 + input::HUD_LINGER_MS, "{name}: a click re-arms the linger");
-                if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&elem) {
-                    assert_eq!(page.hud.nav.btn, (elem - ELEM_ROW_BASE) as i32, "{name}: the CLICKED item arms");
+                if player_hud::row_index(elem).is_some() {
+                    assert_eq!(page.hud.nav.btn, (elem - ELEM_CONTROL_BASE) as i32, "{name}: the CLICKED item arms");
                     assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
                 }
                 if elem == ELEM_TAB_BASE {
@@ -2766,25 +2848,89 @@ mod step_ladder_tests {
         assert_eq!(page.hud.nav.focus, GROUP_SCRUB, "tabs -> scrubber");
     }
 
-    /// OK on the control row is the DEFERRED press (`ArmControlRow`), not an immediate action —
-    /// port of `key_ok`'s `focus == 1` arm — now read off the element the engine holds.
+    /// OK on the control row is the ENGINE's press, not the page's: the key is left unhandled so the
+    /// dispatcher arms the dip on the focused control, and the commit — delivered once the dip has
+    /// played — asks the app for that control's command. The page asks for nothing at key-down.
     #[test]
-    fn ok_on_the_control_row_arms_the_deferred_press() {
+    fn ok_on_the_control_row_leaves_the_press_to_the_engine() {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
         page.hud.nav.focus = GROUP_ROW;
         let mut rig = Rig::on(&page, ENTRY);
         let (handled, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
-        assert_eq!(handled, Handled::Yes);
-        assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
+        assert_eq!(handled, Handled::No);
+        assert!(reqs.is_empty(), "key-down asks for nothing: {reqs:?}");
+        let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        let ordinal = rig.current().and_then(player_hud::row_index).expect("the engine is on a control");
+        assert_eq!(page.hud.nav.btn, ordinal, "the commit seats the cursor where the engine is");
+        assert_eq!(reqs, vec![PlayerReq::Command(page.slot.command(ordinal).expect("a disc"))]);
+    }
+
+    /// **Up Next's two keys are fixed control ids**: `watch_credits` and `play_next` are the
+    /// row's elements 0 and 1, the engine presses either one, and a stand-in's press is the app's
+    /// to interpret ([`PlayerReq::StandIn`]) with the cursor seated on the pressed key — which is
+    /// what `countdown_may_run` reads.
+    #[test]
+    fn up_next_presses_its_two_fixed_ids_and_seats_the_cursor_on_the_pressed_one() {
+        use plx_appkit::up_next;
+        use plx_data::metadata::{Marker, MarkerKind};
+        let _g = plx_base::testlock::serial();
+        let credits = Marker { kind: MarkerKind::Credits, start_ms: 1_000, end_ms: 2_000, final_seg: true };
+        for (id, ordinal) in [("watch_credits", up_next::BTN_CREDITS), ("play_next", up_next::BTN_NEXT)] {
+            let mut page = PlayerScreen::new(ENTRY);
+            fresh(&mut page);
+            page.slot = player_hud::slot_for(Some(credits), true, plx_media::route::NextEpisodeMode::Countdown);
+            assert!(matches!(page.slot, ControlSlot::UpNext(_)));
+            page.hud.nav.focus = GROUP_ROW;
+            page.hud.nav.btn = up_next::PRIMARY_BTN;
+            let mut rig = Rig::on(&page, ENTRY);
+            let group = page.hud.nav.focus;
+            rig.reseat(&mut page, group);
+            rig.seat_on(player_hud::control_elem(ordinal));
+            let (handled, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
+            assert_eq!(handled, Handled::No, "{id}: OK is the engine's press");
+            assert!(reqs.is_empty(), "{id}: nothing is asked at key-down");
+            let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+            assert_eq!(reqs, vec![PlayerReq::StandIn], "{id}");
+            assert_eq!(page.hud.nav.btn, ordinal, "{id}: the cursor is on the pressed key");
+        }
+    }
+
+    /// A commit that finds the engine no longer on an enabled control of the row asks for nothing:
+    /// the row changed under the press (a disc that has since lost its stop).
+    #[test]
+    fn a_press_that_commits_after_its_control_went_away_asks_for_nothing() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY);
+        fresh(&mut page);
+        page.slot = ControlSlot::Discs(player_hud::Controls::NONE);
+        page.hud.nav.focus = GROUP_ROW;
+        let mut rig = Rig::on(&page, ENTRY);
+        rig.seat_on(player_hud::control_elem(player_hud::BTN_PREVIOUS));
+        let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        assert!(reqs.is_empty(), "{reqs:?}");
+        let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(2)));
+        assert!(reqs.is_empty(), "{reqs:?}");
+    }
+
+    /// OK on a seek control continues the relative-seek burst; every other key (and OK on any other
+    /// control) ends it.
+    #[test]
+    fn only_ok_on_a_seek_control_continues_the_seek_burst() {
+        use player_hud::command::{HudCommand, SeekBy, SeekDir};
+        let seek = Some(HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)));
+        assert!(continues_seek_burst(consts::Key::Ok, seek));
+        assert!(!continues_seek_burst(consts::Key::Up, seek));
+        assert!(!continues_seek_burst(consts::Key::Ok, Some(HudCommand::Next)));
+        assert!(!continues_seek_burst(consts::Key::Ok, None));
     }
 
     /// A segment offer moves the ring (`PlayerScreen::raise_for_offer` writes `nav`, with no effect to
     /// carry), so the app that calls it re-seats the engine afterwards. Until it does the engine is
     /// still on the scrubber, and OK there toggles play/pause instead of arming the offered pill.
     #[test]
-    fn a_segment_offer_arms_the_row_only_once_the_engine_is_re_seated() {
+    fn a_segment_offer_hands_ok_to_the_engine_only_once_it_is_re_seated() {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
@@ -2796,11 +2942,11 @@ mod step_ladder_tests {
         rig.reseat(&mut page, group);
         assert_eq!(
             rig.current(),
-            Some(player_hud::ELEM_ROW_BASE + page.slot.primary_btn() as u32),
+            Some(player_hud::ELEM_CONTROL_BASE + page.slot.primary_btn() as u32),
             "the app's re-seat lands it on the row's primary button"
         );
-        let (_, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_200);
-        assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
+        let (handled, _) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_200);
+        assert_eq!(handled, Handled::No, "OK on the row is the engine's press, not a play/pause toggle");
     }
 
     /// OK on the tabs row opens the named overlay AT ONCE — port of `key_ok`'s `focus == 2` arm,
@@ -2834,12 +2980,12 @@ mod step_ladder_tests {
     }
 
     /// A click on a registered control-row stop seats the ring on that button and asks the same
-    /// deferred press OK would — the pointer twin of `ok_on_the_control_row_arms_the_deferred_press`.
+    /// deferred press OK would — the pointer twin of `ok_on_the_control_row_leaves_the_press_to_the_engine`.
     #[test]
     fn a_click_on_a_disc_seats_the_ring_and_arms_the_press() {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
-        let (handled, reqs) = click(&mut page, player_hud::ELEM_ROW_BASE + player_hud::BTN_AUDIO as u32);
+        let (handled, reqs) = click(&mut page, player_hud::ELEM_CONTROL_BASE + player_hud::BTN_AUDIO as u32);
         assert_eq!(handled, Handled::Yes);
         assert_eq!(page.hud.nav.focus, GROUP_ROW);
         assert_eq!(page.hud.nav.btn, player_hud::BTN_AUDIO);
@@ -3434,7 +3580,7 @@ mod scrub_ownership_tests {
         page.transport = true;
         step(&mut page, 1_000);
         let before = elems(&page);
-        assert!(before.contains(&(player_hud::ELEM_ROW_BASE + player_hud::BTN_SUBTITLES as u32)) && before.contains(&player_hud::ELEM_TAB_BASE));
+        assert!(before.contains(&(player_hud::ELEM_CONTROL_BASE + player_hud::BTN_SUBTITLES as u32)) && before.contains(&player_hud::ELEM_TAB_BASE));
         assert!(before.contains(&player_hud::ELEM_SCRUB));
 
         plx_media::player::TX.scrub_ns.store(60_000_000_000, Relaxed);
@@ -3889,6 +4035,32 @@ mod scrub_ownership_tests {
             key_w(&mut page, 0, WCODE_PAUSE, Edge::Down, 2_000);
             assert_eq!(page.scrub.ns, 60 * S, "paused {paused}: PAUSE leaves the target alone");
         }
+    }
+
+    /// **The `toggle_play` command and the play keys are one function** ([`PlayerScreen::toggle_play`]):
+    /// whatever the keys answer for a pending target, the command answers the same, because the key
+    /// arm and the app's performer both call it. PAUSE (`Some(false)`) never takes the target.
+    #[test]
+    fn the_toggle_play_command_takes_a_pending_target_exactly_as_the_play_keys_do() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        playhead(50 * S);
+        let pending = || {
+            let mut page = page_on_the_bar();
+            key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
+            key(&mut page, SDLK_RIGHT, Edge::Up, 1_020);
+            assert_eq!(page.scrub.ns, 60 * S);
+            page
+        };
+        let mut page = pending();
+        assert_eq!(page.toggle_play(None, 2_000), PlayerReq::SeekTo(60 * S));
+        assert_eq!(page.scrub.ns, -1, "the target is spent");
+        assert_eq!(page.toggle_play(None, 2_100), PlayerReq::Transport(None), "with none pending it toggles");
+        let mut page = pending();
+        assert_eq!(page.toggle_play(Some(false), 2_000), PlayerReq::Transport(Some(false)));
+        assert_eq!(page.scrub.ns, 60 * S, "PAUSE leaves the target alone");
+        let mut page = pending();
+        assert_eq!(page.toggle_play(Some(true), 2_000), PlayerReq::SeekTo(60 * S), "PLAY confirms it");
     }
 
     /// **B.7 — BACK returns the knob to the playhead**, playing or paused: no seek, the target is

@@ -49,6 +49,11 @@ pub const COUNTDOWN_MS: u32 = 10_000;
 
 /// The row's two items, in the order they are DRAWN — so `hud_nav.btn` and the arrow keys agree
 /// without a translation table (LEFT lands on 0 because 0 is the left one).
+///
+/// These are the two FIXED control ids of Up Next, `watch_credits` and `play_next`: ordinals 0 and
+/// 1 of the row, so the engine addresses them as `control_elem(BTN_CREDITS)` and
+/// `control_elem(BTN_NEXT)`. They carry no [`HudCommand`](crate::player_hud::command::HudCommand) and no package may rebind them, because
+/// the countdown's meaning depends on which of the two is focused ([`countdown_may_run`]).
 pub const BTN_CREDITS: c_int = 0;
 pub const BTN_NEXT: c_int = 1;
 /// Where the focus ring parks when the row appears: the PRIMARY, which here is the right-hand item
@@ -120,8 +125,11 @@ pub fn tick(&mut self, slot: crate::player_hud::ControlSlot, now: u32) {
 /// and cut to the next episode out of nowhere — the same failure `HudState::raise_for_offer`
 /// exists to forbid, reached by the other door. A panel one presses OPEN is exactly as much
 /// "engaging the transport" as an arrow key.
-pub fn countdown_may_run(bare_transport: bool, row_focused: bool, btn: c_int) -> bool {
-    bare_transport && row_focused && btn == BTN_NEXT
+///
+/// `play_next_focused` is whether the focused control is `play_next` (`btn == BTN_NEXT`): the
+/// rule needs the identity of ONE control, not an index into a row.
+pub fn countdown_may_run(bare_transport: bool, row_focused: bool, play_next_focused: bool) -> bool {
+    bare_transport && row_focused && play_next_focused
 }
 
 impl Countdown {
@@ -379,16 +387,16 @@ mod tests {
     #[test]
     fn the_countdown_runs_only_while_the_ring_rests_on_the_primary() {
         assert!(
-            countdown_may_run(true, true, BTN_NEXT),
+            countdown_may_run(true, true, true),
             "the resting state the appear edge creates"
         );
         assert!(
-            !countdown_may_run(true, true, BTN_CREDITS),
+            !countdown_may_run(true, true, false),
             "reaching for Watch Credits is reaching for the alternative"
         );
         for b in [BTN_CREDITS, BTN_NEXT] {
             assert!(
-                !countdown_may_run(true, false, b),
+                !countdown_may_run(true, false, b == BTN_NEXT),
                 "focus off the row is the user driving the transport, whatever btn still says"
             );
         }
@@ -403,7 +411,7 @@ mod tests {
         for b in [BTN_CREDITS, BTN_NEXT] {
             for focused in [false, true] {
                 assert!(
-                    !countdown_may_run(false, focused, b),
+                    !countdown_may_run(false, focused, b == BTN_NEXT),
                     "a tile behind a panel counts down where it cannot be seen or refused"
                 );
             }
@@ -417,7 +425,7 @@ mod tests {
     #[test]
     fn the_primary_is_the_right_hand_item_and_the_countdown_survives_it() {
         assert_eq!(PRIMARY_BTN, BTN_NEXT);
-        assert!(countdown_may_run(true, true, PRIMARY_BTN));
+        assert!(countdown_may_run(true, true, PRIMARY_BTN == BTN_NEXT));
     }
 
     /// Geometry, from the design's own column: the two pills share a baseline and the control row's
