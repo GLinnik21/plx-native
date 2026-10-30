@@ -38,13 +38,16 @@
 //!   may underlie a higher one, provided no press at its centre lands on the higher one.
 //! - **`HUD-E1003` decor-overlap.** A decor rect overlaps a target's DRAWN rect by more than a hair. Two
 //!   exceptions, both said by I4: a `rect` ground underlies its own cells (a target whose pointer lies
-//!   under the ground's node), and a strip card's own overlay and below content belongs to its card (the
-//!   template op's origin lies under the strip's node: it is checked against every OTHER target).
+//!   under the ground's node; Up Next's buttons and the Skip pill stand where the segments
+//!   `up_next.replaces` names stand, so they are under that segment's ground too), and a strip card's own
+//!   overlay and below content belongs to its card (the template op's origin lies under the strip's node:
+//!   it is checked against every OTHER target).
 //!
 //! A Skip state is read in both layouts (the Intro pill with the layout as compiled, the Credits pill with
-//! `skip_variant(Credits)`): the two labels have two widths. Identical findings of one state are reported
-//! once.
+//! `skip_variant(Credits)`): the two labels have two widths. A fault is reported ONCE, by the first state that
+//! shows it ([`dedupe`], shared with `lint_safe` and `lint_text`).
 
+use plx_ui::consts::EDGE_TOL;
 use plx_ui::Rect;
 
 use super::compile::{CompiledState, DrawOp, SkipKind};
@@ -53,12 +56,8 @@ use super::lint::testing::{Base, InvalidCase};
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
 use super::parse::{Package, Val};
 use super::reach::Slot;
+use super::validate::each_object;
 use super::{codes, Context, Finding};
-
-/// Two rects overlap when they share MORE than this on both axes (`plx_ui::consts::inside_safe`'s own
-/// tolerance: a layout derived through f32 sums lands a hair either side of an exact edge, and edges that
-/// touch are not an overlap).
-const OVERLAP_EPS: f32 = 0.01;
 
 /// What kind of interactive thing a [`Target`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +90,10 @@ pub(super) struct Target {
     pub z: i64,
     /// the layer the hit rect lives on: `z`, except the scrub grab band, the lowest stop of all
     pub hit_z: i64,
+    /// Further nodes the target stands in besides its own `pointer`: a stand-in (Up Next's buttons, the Skip
+    /// pill) is produced by the `up_next` object but takes the place of the segments `up_next.replaces` names,
+    /// so a `rect` ground under one of those segments underlies it too. Empty for every other target.
+    pub standing_in: Vec<String>,
 }
 
 impl Target {
@@ -103,7 +106,22 @@ impl Target {
         z: i64,
     ) -> Target {
         let name = name.into();
-        Target { kind, hit_name: name.clone(), name, pointer: pointer.into(), drawn: rect, hit: rect, z, hit_z: z }
+        Target {
+            kind,
+            hit_name: name.clone(),
+            name,
+            pointer: pointer.into(),
+            drawn: rect,
+            hit: rect,
+            z,
+            hit_z: z,
+            standing_in: Vec::new(),
+        }
+    }
+
+    /// This target as standing in the nodes at `pointers` too (see [`Target::standing_in`]).
+    fn replacing(self, pointers: &[String]) -> Target {
+        Target { standing_in: pointers.to_vec(), ..self }
     }
 }
 
@@ -185,12 +203,14 @@ pub(super) fn within(parent: &str, child: &str) -> bool {
 }
 
 /// The `z` of every band, found from the package: a compiled state keeps a control's band by id, not its
-/// `z`.
+/// `z`; and where the stand-ins stand.
 struct Bands<'p> {
     /// `(pointer, id, z)` of each band of `layout.block`
     list: Vec<(&'p str, &'p str, i64)>,
     /// the id of the band Up Next and Skip live in
     host: &'p str,
+    /// the pointers of the segments `up_next.replaces` names: where the stand-ins take their place
+    replaced: Vec<String>,
 }
 
 impl<'p> Bands<'p> {
@@ -213,7 +233,20 @@ impl<'p> Bands<'p> {
             .and_then(|u| u.get("band"))
             .and_then(Val::as_str)
             .unwrap_or("");
-        Bands { list, host }
+        let names: Vec<&str> = layout
+            .get("up_next")
+            .and_then(Val::as_object)
+            .and_then(|u| u.get("replaces"))
+            .and_then(Val::as_list)
+            .map(|ids| ids.iter().filter_map(Val::as_str).collect())
+            .unwrap_or_default();
+        let mut replaced = Vec::new();
+        each_object(layout, &mut |o| {
+            if o.node == "segment" && o.get("id").and_then(Val::as_str).is_some_and(|id| names.contains(&id)) {
+                replaced.push(o.pointer.clone());
+            }
+        });
+        Bands { list, host, replaced }
     }
 
     /// The `z` of the band holding the node at `pointer`.
@@ -267,11 +300,13 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                 hit: *grab,
                 z: bands.z_of(origin),
                 hit_z: i64::MIN,
+                standing_in: Vec::new(),
             }),
             DrawOp::UpNext { rects, .. } => {
                 let z = bands.standin_z();
-                s.targets.push(Target::flat(TargetKind::UpNext, "up_next credits", origin, rects.credits, z));
-                s.targets.push(Target::flat(TargetKind::UpNext, "up_next next", origin, rects.next, z));
+                let stand = |name, rect| Target::flat(TargetKind::UpNext, name, origin, rect, z).replacing(&bands.replaced);
+                s.targets.push(stand("up_next credits", rects.credits));
+                s.targets.push(stand("up_next next", rects.next));
                 if let Some(rect) = rects.still {
                     let (kind, name) = (Kind::Image, "up_next still".to_owned());
                     s.content.push(Content { kind, name, pointer: origin.to_owned(), rect, card: None });
@@ -287,7 +322,8 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                     SkipKind::Credits => "skip pill (credits)",
                 };
                 let pill = rects[view.skip as usize];
-                s.targets.push(Target::flat(TargetKind::Skip, name, origin, pill, bands.standin_z()));
+                let pill = Target::flat(TargetKind::Skip, name, origin, pill, bands.standin_z());
+                s.targets.push(pill.replacing(&bands.replaced));
             }
             DrawOp::Strip { rect, card, template, .. } => {
                 let row = Rect::new(rect.x, card.y, rect.w, card.h);
@@ -309,10 +345,10 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
     s
 }
 
-/// Whether `a` and `b` overlap by more than [`OVERLAP_EPS`] on both axes.
+/// Whether `a` and `b` overlap by more than [`EDGE_TOL`] on both axes (edges that touch are not an overlap).
 pub(super) fn overlap(a: Rect, b: Rect) -> bool {
     let both = a.intersect(b);
-    both.w > OVERLAP_EPS && both.h > OVERLAP_EPS
+    both.w > EDGE_TOL && both.h > EDGE_TOL
 }
 
 /// A pair of targets, the earlier and the later in draw order, whose rects collide on one layer.
@@ -380,12 +416,16 @@ pub(super) struct Cover {
 }
 
 /// Every decor rect that overlaps a target's drawn rect, less the two exceptions of I4: a ground over the
-/// targets that live under its own node, and a strip card's own content over that strip.
+/// targets that live under its own node (a stand-in lives where the segment it replaces does), and a strip
+/// card's own content over that strip.
 pub(super) fn decor_overlaps(targets: &[Target], content: &[Content]) -> Vec<Cover> {
     let mut out = Vec::new();
     for (c, decor) in content.iter().enumerate() {
         for (t, target) in targets.iter().enumerate() {
-            let own_ground = decor.kind == Kind::Ground && within(&decor.pointer, &target.pointer);
+            let lives_under = |ground: &str| {
+                within(ground, &target.pointer) || target.standing_in.iter().any(|home| within(ground, home))
+            };
+            let own_ground = decor.kind == Kind::Ground && lives_under(&decor.pointer);
             let own_card = decor
                 .card
                 .as_ref()
@@ -398,11 +438,30 @@ pub(super) fn decor_overlaps(targets: &[Target], content: &[Content]) -> Vec<Cov
     out
 }
 
-/// Drop the findings of `out[from..]` that repeat an earlier one of that tail exactly.
+/// Whether `b` is the fault `a` is, found again in another state, slot or Skip layout: the same code, language,
+/// pointer, message and text fact, and rects that agree on `x` and `w` (their names, which a layout may spell
+/// differently, do not count). Where a fault was found (`state`, `slot`) is not a fact of the fault, and nor is
+/// how high it stood there: the bands are bottom-anchored, so opening a section lifts every band above it and
+/// a fault keeps its `x` and its width while its `y` moves.
+pub(super) fn same_fault(a: &Finding, b: &Finding) -> bool {
+    a.code == b.code
+        && a.ctx.lang == b.ctx.lang
+        && a.pointer == b.pointer
+        && a.message == b.message
+        && a.ctx.text == b.ctx.text
+        && a.ctx.rects.len() == b.ctx.rects.len()
+        && a.ctx.rects.iter().zip(&b.ctx.rects).all(|(p, q)| (p.x, p.w) == (q.x, q.w))
+}
+
+/// **One finding per fault.** Drop the findings of `out[from..]` that repeat an earlier one of that tail
+/// ([`same_fault`]): the first state (in `Compiled::states()` order) that shows a fault names it, with its
+/// rects, and the later states that show it again add nothing, so one round of fixes reads each fault once
+/// however many states and slots draw it. `lint_text`, `lint_zorder` and `lint_safe` all end their `check` with
+/// it (`lint_size` and `lint_menus` keep their own once-per-control and once-per-opener reports).
 pub(super) fn dedupe(out: &mut Vec<Finding>, from: usize) {
     let mut kept: Vec<Finding> = Vec::new();
     for finding in out.drain(from..) {
-        if !kept.contains(&finding) {
+        if !kept.iter().any(|seen| same_fault(seen, &finding)) {
             kept.push(finding);
         }
     }
@@ -522,7 +581,7 @@ pub(super) const UNIT_ONLY: &[(&str, &str)] = &[];
 mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
 
-    use super::super::lint::testing::{assert_case, Base};
+    use super::super::lint::testing::{apply, assert_case, Base};
     use super::super::lint::{lint, LintLang};
     use super::INVALID;
 
@@ -554,10 +613,11 @@ mod tests {
 
     use plx_ui::Rect;
 
+    use super::super::lint::named;
     use super::super::{codes, Finding};
     use super::{
-        decor_overlaps, dedupe, hit_misses, overlap, same_layer_overlaps, topmost, within, Card, Collision, Content,
-        Cover, Kind, Miss, Target, TargetKind,
+        decor_overlaps, dedupe, hit_misses, overlap, same_fault, same_layer_overlaps, topmost, within, Card, Collision,
+        Content, Cover, Kind, Miss, Target, TargetKind,
     };
 
     fn control(name: &str, pointer: &str, rect: Rect, z: i64) -> Target {
@@ -611,6 +671,7 @@ mod tests {
             hit: Rect::new(0.0, 28.0, 1000.0, 200.0),
             z: 0,
             hit_z: i64::MIN,
+            standing_in: Vec::new(),
         };
         // A control row standing over the grab band, clear of the drawn track.
         let row = control("row", "/row", Rect::new(400.0, 140.0, 100.0, 60.0), 0);
@@ -675,6 +736,34 @@ mod tests {
     }
 
     #[test]
+    fn a_stand_in_lives_under_the_ground_of_the_segment_it_replaces() {
+        let rect = Rect::new(100.0, 100.0, 80.0, 40.0);
+        let mut next = Target::flat(TargetKind::UpNext, "up_next next", "/layout/up_next", rect, 0);
+        let plate = decor(Kind::Ground, "/layout/block/0/cells/1/rect", Rect::new(0.0, 0.0, 400.0, 400.0));
+        assert_eq!(
+            decor_overlaps(&[next.clone()], &[plate.clone()]),
+            [Cover { content: 0, target: 0 }],
+            "the `up_next` object itself is under no ground"
+        );
+        next.standing_in = vec!["/layout/block/0/cells/1/rect/cells/0/segment".to_owned()];
+        assert!(decor_overlaps(&[next.clone()], &[plate]).is_empty(), "the plate under the replaced segment");
+        let elsewhere = decor(Kind::Ground, "/layout/block/2/cells/0/rect", Rect::new(0.0, 0.0, 400.0, 400.0));
+        assert_eq!(
+            decor_overlaps(&[next.clone()], &[elsewhere]),
+            [Cover { content: 0, target: 0 }],
+            "another band's ground"
+        );
+        let sibling = decor(Kind::Ground, "/layout/block/0/cells/1/rect/cells/1/rect", Rect::new(0.0, 0.0, 400.0, 400.0));
+        assert_eq!(
+            decor_overlaps(&[next.clone()], &[sibling]),
+            [Cover { content: 0, target: 0 }],
+            "a ground beside the replaced segment, not around it"
+        );
+        let image = decor(Kind::Image, "/layout/block/0/cells/1/rect", Rect::new(0.0, 0.0, 400.0, 400.0));
+        assert_eq!(decor_overlaps(&[next], &[image]), [Cover { content: 0, target: 0 }], "only a ground is exempt");
+    }
+
+    #[test]
     fn a_strip_cards_own_content_belongs_to_its_strip_only() {
         let cards = Target::flat(TargetKind::Cards, "cards", "/strip", Rect::new(0.0, 0.0, 800.0, 100.0), 0);
         let mut label = decor(Kind::Text, "/strip/card/0", Rect::new(10.0, 70.0, 100.0, 30.0));
@@ -688,6 +777,32 @@ mod tests {
         );
         label.card = Some(Card { strip: "/elsewhere".to_owned(), face: false });
         assert_eq!(decor_overlaps(&[cards], &[label]), [Cover { content: 0, target: 0 }], "another strip's content");
+    }
+
+    #[test]
+    fn a_fault_found_again_in_another_state_is_dropped_whatever_the_state_the_slot_or_the_height() {
+        let found = |state: &str, slot: &str, name: &str, rect: Rect, message: &str| {
+            let mut f = Finding::new(&codes::E1003, "/a", message, "h");
+            f.ctx.state = Some(state.to_owned());
+            f.ctx.slot = Some(slot.to_owned());
+            f.ctx.rects = vec![named(name, rect)];
+            f
+        };
+        let rect = Rect::new(100.0, 700.0, 80.0, 40.0);
+        let first = found("compact", "discs", "text", rect, "m");
+        let lifted = Rect::new(100.0, 500.0, 80.0, 40.0);
+        let again = found("chapters+info", "up_next", "text (credits layout)", lifted, "m");
+        assert!(same_fault(&first, &again), "another state, slot, name and height, the same fault");
+        assert!(!same_fault(&first, &found("compact", "discs", "text", Rect::new(110.0, 700.0, 80.0, 40.0), "m")), "x");
+        assert!(!same_fault(&first, &found("compact", "discs", "text", Rect::new(100.0, 700.0, 90.0, 40.0), "m")), "w");
+        assert!(!same_fault(&first, &found("compact", "discs", "text", rect, "other")), "another message");
+        let mut elsewhere = first.clone();
+        elsewhere.pointer = "/b".to_owned();
+        assert!(!same_fault(&first, &elsewhere), "another node");
+        let mut out = vec![first.clone(), again, found("info", "discs", "text", Rect::new(0.0, 0.0, 5.0, 5.0), "m")];
+        dedupe(&mut out, 0);
+        let states: Vec<_> = out.iter().map(|f| f.ctx.state.as_deref().unwrap()).collect();
+        assert_eq!(states, ["compact", "info"], "the first state that shows a fault names it");
     }
 
     #[test]
@@ -711,7 +826,12 @@ mod tests {
 
     /// Every layout of `base`'s English compile with its surfaces.
     fn census(base: Base) -> Vec<(Slot, Surfaces)> {
-        let package = parse(base.text().as_bytes()).package.expect("the shipped package parses");
+        census_of(base.text())
+    }
+
+    /// Every layout of the package in `text`, compiled in English, with its surfaces.
+    fn census_of(text: &str) -> Vec<(Slot, Surfaces)> {
+        let package = parse(text.as_bytes()).package.expect("the package parses");
         let lang = LintLang::for_tag("en").expect("English is shipped");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
         let opts = LintOptions::default();
@@ -751,5 +871,71 @@ mod tests {
         let lang = LintLang::for_tag("en").expect("English is shipped");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
         compiled.states().iter().filter(|s| s.key.slot == Slot::Skip).count()
+    }
+
+    // ---- a fault is one finding, however many states show it
+
+    /// The findings of `code` that `text` yields in English, and how many distinct (pointer, message) pairs
+    /// they make.
+    fn in_en(text: &str, code: &str) -> (Vec<Finding>, usize) {
+        let langs = [LintLang::for_tag("en").expect("shipped")];
+        let found: Vec<_> = lint(text, &ShippedMeasure, &langs).into_iter().filter(|f| f.code == code).collect();
+        let faults: std::collections::BTreeSet<_> = found.iter().map(|f| (&f.pointer, &f.message)).collect();
+        let distinct = faults.len();
+        (found, distinct)
+    }
+
+    #[test]
+    fn a_fault_in_every_state_is_one_finding_not_one_per_state_and_slot() {
+        // The reference's centre row spread until `fwd` meets `chapters`: every state that places the row has it.
+        let spread = [(r#""id": "center", "gap": "LG""#, r#""id": "center", "gap": 184"#)];
+        let (found, distinct) = in_en(&apply(Base::Reference, &spread), "HUD-E1001");
+        assert!(distinct >= 1, "the spread overlaps");
+        assert_eq!(found.len(), distinct, "one E1001 per fault, not per state: {found:#?}");
+        // The decor case: classic's Info still over the card's buttons shows in every state that opens Info.
+        let wide = [(r#""w": 320, "h": 180"#, r#""w": 1600, "h": 180"#)];
+        let (found, distinct) = in_en(&apply(Base::Classic, &wide), "HUD-E1003");
+        assert!(distinct >= 1, "the still overlaps the buttons");
+        assert_eq!(found.len(), distinct, "one E1003 per fault, not per state: {found:#?}");
+    }
+
+    // ---- a stand-in lives where the segment it replaces lives
+
+    /// The `rect` ground classic's transport row would be drawn on: the node the row's segment lies under.
+    const PLATE: &str = "/layout/block/0/cells/1/rect";
+
+    /// Classic's transport row (the segment `up_next.replaces` names) on a `rect` plate, a natural design:
+    /// the row becomes a cell of the plate, and so do the Up Next buttons and the Skip pill that take its place.
+    const ROW_ON_A_PLATE: &[(&str, &str)] = &[
+        (
+            r#"{ "align": "end", "valign": "bottom", "segment": { "id": "row", "gap": 20, "items": ["#,
+            r#"{ "align": "end", "valign": "bottom", "rect": { "ink": "PANEL_TOP", "pad": 8, "cells": [ { "align": "end", "segment": { "id": "row", "gap": 20, "items": ["#,
+        ),
+        (
+            "\"focus\": \"accent\" }\n        ] } }\n      ] },\n      { \"id\": \"bar\"",
+            "\"focus\": \"accent\" }\n        ] } } ] } }\n      ] },\n      { \"id\": \"bar\"",
+        ),
+    ];
+
+    #[test]
+    fn a_rect_plate_under_the_replaced_row_underlies_the_stand_ins_that_take_its_place() {
+        let text = apply(Base::Classic, ROW_ON_A_PLATE);
+        // The premise: in the Up Next and Skip states the stand-ins really lie on the plate, so a lint that
+        // is silent has exempted something and not looked at nothing.
+        let mut on_the_plate = 0;
+        for (_, s) in census_of(&text) {
+            let Some(ground) = s.content.iter().find(|c| c.kind == Kind::Ground && c.pointer == PLATE) else { continue };
+            let standins = s.targets.iter().filter(|t| matches!(t.kind, TargetKind::UpNext | TargetKind::Skip));
+            on_the_plate += standins.filter(|t| overlap(ground.rect, t.drawn)).count();
+        }
+        assert!(on_the_plate >= 3, "Up Next's two buttons and the Skip pill stand on the plate: {on_the_plate}");
+        for tag in ["en", "ru"] {
+            let langs = [LintLang::for_tag(tag).expect("shipped")];
+            let found: Vec<_> = lint(&text, &ShippedMeasure, &langs)
+                .into_iter()
+                .filter(|f| f.code == codes::E1003.id)
+                .collect();
+            assert!(found.is_empty(), "{tag}: the plate underlies its own cells, stand-ins included: {found:#?}");
+        }
     }
 }

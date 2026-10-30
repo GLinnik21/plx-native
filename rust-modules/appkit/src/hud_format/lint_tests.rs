@@ -390,6 +390,30 @@ fn classic_names_its_nodes() {
     assert_eq!(root.control_pointer(more), "/layout/block/0/cells/1/segment/items/4");
 }
 
+#[test]
+fn a_vstack_names_the_rect_it_was_laid_out_in() {
+    let lang = LintLang::for_tag("en").expect("English");
+    let package = package(REFERENCE);
+    let nodes = nodes(&package);
+    let compiled = compile(&package, &FixtureMeasure, CompileCtx { labels: lang.labels.clone() });
+    let vstacks: Vec<&str> = nodes.iter().filter(|(_, o)| o.node == "vstack").map(|(p, _)| *p).collect();
+    assert!(!vstacks.is_empty(), "the reference has vstacks");
+    for pointer in &vstacks {
+        let placed: Vec<Rect> = compiled.states().iter().filter_map(|state| state.vstack_rect(pointer)).collect();
+        assert!(!placed.is_empty(), "{pointer}: some state places it");
+        assert!(placed.iter().all(|r| r.x >= 0.0 && r.w > 0.0), "{pointer}: {placed:?}");
+    }
+    // the info card's vstack is a fixed 760 px wide, wherever a state puts it
+    let info = "/layout/block/6/cells/1/vstack";
+    assert!(compiled.states().iter().filter_map(|state| state.vstack_rect(info)).all(|r| r.w == 760.0));
+    // what is no vstack, and what is no node, has no rect
+    for state in compiled.states() {
+        assert!(state.vstack_rect("/layout/block/6/cells/1").is_none());
+        assert!(state.vstack_rect("/layout/block/6/cells/1/vstack/cells/0/text").is_none());
+        assert!(state.vstack_rect("").is_none());
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------
 // The invalid-case support
 // ---------------------------------------------------------------------------------------------------

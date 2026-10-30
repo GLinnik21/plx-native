@@ -445,7 +445,7 @@ mod tests {
             in_lang(&codes::E1001, at, Some("de"), "compact", "z"),
             in_lang(&codes::E1001, at, Some("de"), "compact", "a"),
             in_lang(&codes::E1001, at, None, "compact", "b"),
-            finding(&codes::E0105, at, "context-free, reported last"),
+            finding(&codes::E0105, at, "context-free, sorts first"),
         ];
         let order: Vec<String> = sorted(&found)
             .iter()
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(
             order,
             [
-                "HUD-E0105 - - context-free, reported last",
+                "HUD-E0105 - - context-free, sorts first",
                 "HUD-E1001 - compact b",
                 "HUD-E1001 de compact a",
                 "HUD-E1001 de compact z",

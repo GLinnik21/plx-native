@@ -18,11 +18,13 @@
 //! The pointer is the control's item (`CompiledState::control_pointer`), or the keyed value's own for
 //! E0604. Pure: no IO, no globals.
 
+use plx_ui::widgets::{StatusOverlay, TAB_PILL_H};
 use plx_ui::Rect;
 
 use super::compile::{CompileFinding, SkipKind};
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
 use super::{codes, Finding};
+use crate::player_hud::classic;
 
 /// **The smallest side, in px, a package's focusable control may be drawn at**
 /// (`docs/hud-plugins.md`, "Package format 1.0", the `size` paragraph). It is the narrowest seat the app's
@@ -62,6 +64,13 @@ use super::{codes, Finding};
 /// pins it. The test does compare it against every control face above that `appkit` CAN name.
 pub(crate) const MIN_CONTROL_SIZE: f32 = 26.0;
 
+/// The standalone control FACES the app places that `appkit` can name (the doc of [`MIN_CONTROL_SIZE`] lists
+/// them): the page header's pill, the hero discs, the tab pill, a plain table row and the transport discs. The
+/// hint of `HUD-E0603` prints their range, and `min_control_size_is_the_narrowest_seat` checks the floor
+/// against them, so neither keeps a copy of a number.
+const APP_FACES: [f32; 5] =
+    [plx_ui::page_header::HEIGHT, StatusOverlay::CTRL_H, TAB_PILL_H, plx_ui::table::ROW_H, classic::CTRL_H];
+
 /// Report this module's findings for the language of `cx`.
 pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
     undersized(cx, out);
@@ -100,6 +109,8 @@ fn undersized(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
             }
         }
     }
+    let smallest_face = APP_FACES.iter().copied().fold(f32::INFINITY, f32::min);
+    let largest_face = APP_FACES.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     for w in worst {
         let mut ctx = ctx_for(cx, &w.state);
         ctx.rects.push(named(w.id, w.rect));
@@ -113,8 +124,9 @@ fn undersized(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
                     w.id, w.rect.w, w.rect.h
                 ),
                 format!(
-                    "Set `size` to at least {MIN_CONTROL_SIZE}; the app's own control faces are 56 to 64 px \
-                     (classic's discs are 64)."
+                    "Set `size` to at least {MIN_CONTROL_SIZE}; the app's own control faces are {smallest_face} to \
+                     {largest_face} px (classic's discs are {}).",
+                    classic::CTRL_H
                 ),
             )
             .with(ctx),
@@ -187,7 +199,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use plx_base::fontcov::advances::ShippedMeasure;
-    use plx_ui::widgets::{StatusOverlay, TAB_PILL_H};
 
     use super::*;
     use crate::hud_format::compile::{compile, CompileCtx};
@@ -195,7 +206,6 @@ mod tests {
     use crate::hud_format::lint::{lint, LintLang, LintOptions};
     use crate::hud_format::parse;
     use crate::hud_format::{Code, BUILTIN_CLASSIC};
-    use crate::player_hud::classic;
 
     const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
     const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
@@ -243,13 +253,7 @@ mod tests {
         assert_eq!(MIN_CONTROL_SIZE, 26.0);
         // every control FACE the app places that `appkit` can name is at or above it, and the smallest of them,
         // the page header's pill, is the figure the constant's doc gives for why it is not the floor
-        let faces = [
-            plx_ui::page_header::HEIGHT,
-            StatusOverlay::CTRL_H,
-            TAB_PILL_H,
-            plx_ui::table::ROW_H,
-            classic::CTRL_H,
-        ];
+        let faces = APP_FACES;
         for face in faces {
             assert!(face >= MIN_CONTROL_SIZE, "a control face of {face} px is under the floor");
         }

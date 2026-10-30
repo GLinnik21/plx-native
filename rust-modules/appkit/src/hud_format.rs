@@ -365,9 +365,10 @@ pub mod codes {
         /// text cell (or the control whose label it is). Context: `lang`, `text` (the string, its measured
         /// width, the room) and the `rects` it meets. Server text may elide and is never checked.
         E0601 = (Error, "HUD-E0601", "text-fit");
-        /// I10: the minimum control size. A focusable control drawn smaller than the smallest control the
-        /// app's own screens place (`lint_size::MIN_CONTROL_SIZE`). Pointer: the control's item. Context:
-        /// `state`, `slot`, the control's `rects`.
+        /// The minimum control size: a focusable control drawn smaller than the smallest seat the app's own
+        /// screens give a focus target (`lint_size::MIN_CONTROL_SIZE`, the package format's `size` paragraph;
+        /// it is not an I10 text-fit rule). Pointer: the control's item. Context: `state`, `slot`, the
+        /// control's `rects`.
         E0603 = (Error, "HUD-E0603", "min-control-size");
         /// The compiler could not carry a number or gap keyed on a strip card's `item.*` term (it would be
         /// a different layout per card): the base value applies. Pointer: the keyed value's. This is
@@ -424,10 +425,9 @@ pub mod codes {
         /// I5: an interactive drawn or hit rect lies outside `SAFE`. Pointer: the control's item. Context:
         /// `state`, `slot`, the control's and `SAFE`'s `rects`.
         E1101 = (Error, "HUD-E1101", "safe-interactive");
-        /// I5: a text, image, icon or facts box, Up Next's still or caption, or a strip card's content
-        /// (vertically) lies outside `SAFE` (scrims, `rect` grounds and rules may bleed; a strip's cards may
-        /// run past the side edges). Pointer: the node's. Context: `state`, `slot`, the node's and
-        /// `SAFE`'s `rects`.
+        /// I5: a text, image, icon, rule or facts box, Up Next's still or caption, or a strip card's content
+        /// (vertically) lies outside `SAFE` (only scrims and `rect` grounds may bleed; a strip's cards may run
+        /// past the side edges). Pointer: the node's. Context: `state`, `slot`, the node's and `SAFE`'s `rects`.
         E1102 = (Error, "HUD-E1102", "safe-content");
         /// I5: the focused strip card is not revealed inside `SAFE`, or the scrub-preview card's top is
         /// outside it in a state that draws the bar. Pointer: the strip's (or the playbar's) node. Context:

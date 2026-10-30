@@ -388,6 +388,8 @@ pub struct CompiledState {
     /// `control_origins[i]` is the pointer of the item that produced `controls[i]`
     /// ([`CompiledState::control_pointer`])
     control_origins: Vec<String>,
+    /// `(pointer, rect)` of each `vstack` this state places ([`CompiledState::vstack_rect`])
+    vstacks: Vec<(String, Rect)>,
 }
 
 impl CompiledState {
@@ -415,6 +417,13 @@ impl CompiledState {
     /// `DrawOp::Control` was pushed for). An index out of range answers `""`.
     pub fn control_pointer(&self, control: usize) -> &str {
         self.control_origins.get(control).map_or("", String::as_str)
+    }
+
+    /// **Provenance of a `vstack`:** the rect the `vstack` at `pointer` was laid out in (its cells draw from
+    /// its left edge, a nested row such as a `rect` from further in), or `None` for a pointer that is not a
+    /// `vstack` this state places (a `when` removed it, or it lies in a strip card's template).
+    pub fn vstack_rect(&self, pointer: &str) -> Option<Rect> {
+        self.vstacks.iter().find(|(p, _)| p == pointer).map(|&(_, r)| r)
     }
 
     /// The control called `id`.
@@ -784,6 +793,8 @@ struct Out {
     controls: Vec<ControlRect>,
     /// `controls[i]`'s provenance: the pointer of the item
     control_origins: Vec<String>,
+    /// `(pointer, rect)` of each `vstack` placed
+    vstacks: Vec<(String, Rect)>,
     /// the rects of the replaced segments
     replaced: Vec<Rect>,
     title: Option<Rect>,
@@ -1466,6 +1477,7 @@ impl<'e, 'p> Env<'e, 'p> {
         {
             out.title = Some(Rect::new(r.x, r.y, 0.0, 0.0));
         }
+        out.vstacks.push((o.pointer.clone(), r));
         let ((items, gap), _) = self.vstack_items(o);
         let stack = VStack::new(&items, gap, Anchor::Top(r.y));
         let cells: Vec<&Object> = self.objects(o, "cells").into_iter().filter(|c| self.when(c)).filter(|c| content(c).is_some()).collect();
@@ -1697,6 +1709,7 @@ impl<'e, 'p> Env<'e, 'p> {
             skip_alt: None,
             origins,
             control_origins: out.control_origins,
+            vstacks: out.vstacks,
         }
     }
 

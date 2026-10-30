@@ -326,13 +326,18 @@ pub fn shared_by(handle: &str) -> Option<String> {
     (!handle.is_empty()).then(|| plx_platform::i18n::msg::core_shared_by(handle))
 }
 
+/// The separator between the episode's numbering and its title in [`episode_kicker`] (`"S2, E3 · Laura"`):
+/// shared so a caller that measures the numbering alone (the HUD lint's app-text fit) measures the same prefix
+/// the kicker draws.
+pub const KICKER_SEPARATOR: &str = " \u{b7} ";
+
 /// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
 /// it. ONE formatter, because this string is drawn by the transport HUD (the now-playing item), the
 /// route's pre-roll ctx line and the Up Next caption, and the whole point of the last two is that
 /// they read identically to the first. It was three separate literals before, with nothing keeping
 /// them in step.
 pub fn episode_kicker(season: i64, index: i64, title: &str) -> String {
-    join_present(&[&episode_ordinal(season, index), title], " \u{b7} ")
+    join_present(&[&episode_ordinal(season, index), title], KICKER_SEPARATOR)
 }
 
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no

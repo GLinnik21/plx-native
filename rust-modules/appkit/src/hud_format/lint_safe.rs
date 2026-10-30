@@ -18,14 +18,15 @@
 //!   a strip is a scrolling row, its cards run past `SAFE`'s left and right (E1103 asks for the focused
 //!   one), so only their vertical extent is tested.
 //! - **`HUD-E1102` safe-content.** A text, image, icon or fact box, Up Next's still and caption, or a
-//!   strip card's content leaves `SAFE` (a card's content only vertically, as above). Scrims, rules and
-//!   `rect` grounds bleed by design and are not tested. A strip card's art is the strip's own target.
+//!   strip card's content leaves `SAFE` (a card's content only vertically, as above), and so does a rule
+//!   (a hairline is neither a scrim nor a `rect` ground). Scrims and `rect` grounds bleed by design and
+//!   are not tested. A strip card's art is the strip's own target.
 //! - **`HUD-E1103` safe-reveal.** The focused card of a strip (its art with every overlay and below op)
 //!   is wider than the strip's viewport inside `SAFE`, so no scroll position reveals it whole; or, in a
 //!   state that draws the bar, the scrub-preview card ([`crate::scrub_preview::card_rect`] over the
 //!   track, at its widest) starts above `SAFE`'s top.
 
-use plx_ui::consts::{inside_safe, SAFE};
+use plx_ui::consts::{inside_safe, EDGE_TOL, MARGIN_X, MARGIN_Y, SAFE};
 use plx_ui::Rect;
 
 use super::compile::CompiledState;
@@ -35,10 +36,6 @@ use super::lint::{ctx_for, named, LangCtx};
 use super::lint_zorder::{dedupe, surfaces, views, Content, Kind, StripFacts, Target, TargetKind};
 use super::{codes, Context, Finding};
 use crate::scrub_preview::{card_rect, CARD_W_CAP};
-
-/// The tolerance of `plx_ui::consts::inside_safe`: a layout derived through f32 sums lands a hair either
-/// side of an exact edge.
-const EPS: f32 = 0.01;
 
 /// Whether `r` lies inside `SAFE` between its top and bottom edges, wherever it lies sideways: a strip
 /// card's test.
@@ -62,11 +59,12 @@ pub(super) fn interactive_outside(target: &Target) -> Vec<(String, Rect)> {
     out
 }
 
-/// Whether the decor `c` is where `SAFE` wants it: a text, image, icon or fact box inside, a strip
-/// card's content inside vertically. Grounds and rules bleed; a card's art is its strip's target.
+/// Whether the decor `c` is where `SAFE` wants it: a text, image, icon, rule or fact box inside, a strip
+/// card's content inside vertically. Only a `rect` ground bleeds (I5: "otherwise only scrims and `rect`
+/// grounds bleed", and the scrim is no decor here); a card's art is its strip's target.
 pub(super) fn content_inside(c: &Content) -> bool {
     match (c.kind, &c.card) {
-        (Kind::Ground | Kind::Rule, _) => true,
+        (Kind::Ground, _) => true,
         (_, Some(card)) if card.face => true,
         (_, Some(_)) => inside_safe_vertically(c.rect),
         (_, None) => inside_safe(c.rect),
@@ -77,7 +75,7 @@ pub(super) fn content_inside(c: &Content) -> bool {
 /// wider than their common stretch.
 pub(super) fn revealable(card: Rect, viewport: Rect) -> bool {
     let reach = viewport.intersect(Rect::new(SAFE.x, viewport.y, SAFE.w, viewport.h));
-    card.w <= reach.w + EPS
+    card.w <= reach.w + EDGE_TOL
 }
 
 /// Where the scrub-preview card of the bar `track` starts at its widest, the one number `SAFE` bounds.
@@ -85,9 +83,20 @@ pub(super) fn preview_card(track: Rect) -> Rect {
     card_rect(track.x + track.w * 0.5, track.x, track.w, track.y, CARD_W_CAP)
 }
 
+/// How far above the track the scrub-preview card's top stands (its height and its gap to the bar), read off
+/// the card's own placement so a hint never keeps a copy of it.
+fn preview_rise() -> f32 {
+    -preview_card(Rect::new(0.0, 0.0, 0.0, 0.0)).y
+}
+
+/// What a hint calls `SAFE`'s margins, from the constants that define the frame.
+fn margins() -> String {
+    format!("{MARGIN_X} px at the sides, {MARGIN_Y} px above and below")
+}
+
 /// Whether the scrub-preview card over `track` starts at or below `SAFE`'s top.
 pub(super) fn preview_inside(track: Rect) -> bool {
-    preview_card(track).y >= SAFE.y - EPS
+    preview_card(track).y >= SAFE.y - EDGE_TOL
 }
 
 /// The extent of the focused card of `strip` against its viewport, as a finding's rects.
@@ -122,7 +131,7 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
                     &codes::E1101,
                     target.pointer.clone(),
                     format!("{} leaves the safe area", names.join(" and ")),
-                    "Move it or shrink it so every interactive rect lies inside SAFE (96 px at the sides, 54 px above and below).",
+                    format!("Move it or shrink it so every interactive rect lies inside SAFE ({}).", margins()),
                 )
                 .with(at(rects)),
             );
@@ -133,7 +142,7 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
                     &codes::E1102,
                     c.pointer.clone(),
                     format!("`{}` leaves the safe area", c.name),
-                    "Move it or narrow it so the text, image or icon lies inside SAFE (96 px at the sides, 54 px above and below).",
+                    format!("Move it or narrow it so the text, image, icon or rule lies inside SAFE ({}).", margins()),
                 )
                 .with(at(vec![(c.name.clone(), c.rect), ("SAFE".to_owned(), SAFE)])),
             );
@@ -161,7 +170,10 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
                         &codes::E1103,
                         pointer,
                         "the scrub-preview card, floated above the bar, starts above the safe area",
-                        "Lower the bar in this state, or give the bar's band more room above: the preview card stands 242 px over the track and has to stay inside SAFE.",
+                        format!(
+                            "Lower the bar in this state, or give the bar's band more room above: the preview card stands {} px over the track and has to stay inside SAFE.",
+                            preview_rise()
+                        ),
                     )
                     .with(at(vec![("scrub preview".to_owned(), preview_card(track)), ("SAFE".to_owned(), SAFE)])),
                 );
@@ -202,6 +214,19 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         skew: 0.0,
         also: &[],
     },
+    // The reference's divider over the Info page drawn 1900 px long instead of the band's width: from x 96 it
+    // ends at 1996, past SAFE's right edge (1824). A rule is neither a scrim nor a `rect` ground, and I5 lets
+    // only those two bleed. The band holds nothing else, so nothing else is wrong.
+    InvalidCase {
+        name: "safe-content: a rule runs past SAFE",
+        code: "HUD-E1102",
+        pointer: "/layout/block/5/cells/0/rule",
+        base: Base::Reference,
+        edits: &[(r#""axis": "h", "length": "fill""#, r#""axis": "h", "length": 1900"#)],
+        langs: &["en", "ru"],
+        skew: 0.0,
+        also: &[],
+    },
     // The reference's chapter cards 1800 px wide: wider than SAFE (1728) and than the strip they scroll in,
     // so the focused card cannot be revealed inside SAFE.
     InvalidCase {
@@ -237,7 +262,7 @@ pub(super) const UNIT_ONLY: &[(&str, &str)] = &[];
 mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
 
-    use super::super::lint::testing::{assert_case, Base};
+    use super::super::lint::testing::{apply, assert_case, Base};
     use super::super::lint::{lint, LintLang};
     use super::INVALID;
 
@@ -265,13 +290,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_fault_in_every_state_is_one_finding_not_one_per_state_and_slot() {
+        let langs = [LintLang::for_tag("en").expect("shipped")];
+        // The reference's title 1900 px wide, in every state that draws the title band.
+        let wide = [(
+            r#""bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill""#,
+            r#""bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": 1900"#,
+        )];
+        // Classic's grab band 540 px deep, in every state that draws the bar.
+        let deep = [(r#""thickness": 8,"#, r#""thickness": 8, "grab": { "above": 72, "below": 540 },"#)];
+        for (base, edits, code) in [(Base::Reference, &wide[..], "HUD-E1102"), (Base::Classic, &deep[..], "HUD-E1101")] {
+            let text = apply(base, edits);
+            let found: Vec<_> = lint(&text, &ShippedMeasure, &langs).into_iter().filter(|f| f.code == code).collect();
+            let faults: std::collections::BTreeSet<_> = found.iter().map(|f| (&f.pointer, &f.message)).collect();
+            assert!(!found.is_empty(), "{code}: the edit is a fault");
+            assert_eq!(found.len(), faults.len(), "{code}: one finding per fault, not per state: {found:#?}");
+        }
+    }
+
     // ---- the predicates, on synthetic rects (no package)
 
-    use plx_ui::consts::SAFE;
+    use plx_ui::consts::{MARGIN_X, MARGIN_Y, SAFE};
     use plx_ui::Rect;
 
     use super::super::lint_zorder::{Card, Content, Kind, Target, TargetKind};
-    use super::{content_inside, inside_safe_vertically, interactive_outside, preview_card, preview_inside, revealable};
+    use super::{
+        content_inside, inside_safe_vertically, interactive_outside, margins, preview_card, preview_inside, preview_rise,
+        revealable,
+    };
 
     /// A rect inside `SAFE`.
     const INSIDE: Rect = Rect::new(200.0, 200.0, 300.0, 100.0);
@@ -318,6 +365,7 @@ mod tests {
             hit: grab,
             z: 0,
             hit_z: i64::MIN,
+            standing_in: Vec::new(),
         };
         let track = Rect::new(200.0, 900.0, 1000.0, 8.0);
         assert!(interactive_outside(&bar(track, Rect::new(200.0, 828.0, 1000.0, 120.0))).is_empty());
@@ -338,10 +386,10 @@ mod tests {
     }
 
     #[test]
-    fn content_is_inside_safe_except_that_grounds_and_rules_bleed_and_cards_run_sideways() {
+    fn content_is_inside_safe_except_that_grounds_bleed_and_cards_run_sideways() {
         let wide = Rect::new(-300.0, 400.0, 2500.0, 40.0);
         let tall = Rect::new(200.0, SAFE.y - 10.0, 100.0, 40.0);
-        for kind in [Kind::Text, Kind::Image, Kind::Icon, Kind::Facts] {
+        for kind in [Kind::Text, Kind::Image, Kind::Icon, Kind::Facts, Kind::Rule] {
             assert!(content_inside(&content(kind, INSIDE, None)), "{kind:?} inside");
             assert!(!content_inside(&content(kind, wide, None)), "{kind:?} past the sides");
             assert!(!content_inside(&content(kind, tall, None)), "{kind:?} above the top");
@@ -349,7 +397,6 @@ mod tests {
             assert!(!content_inside(&content(kind, tall, card(false))), "{kind:?} of a card is bound vertically");
         }
         assert!(content_inside(&content(Kind::Ground, wide, None)), "a ground bleeds");
-        assert!(content_inside(&content(Kind::Rule, wide, None)), "a rule bleeds");
         assert!(content_inside(&content(Kind::Image, tall, card(true))), "the card's art is its strip's target");
     }
 
@@ -369,9 +416,12 @@ mod tests {
     }
 
     #[test]
-    fn the_preview_card_stands_242_px_over_the_track_and_its_top_must_clear_safe() {
+    fn the_preview_card_stands_over_the_track_and_its_top_must_clear_safe() {
         let at = |y: f32| Rect::new(SAFE.x, y, SAFE.w, 8.0);
         assert_eq!(preview_card(at(500.0)).y, 500.0 - 242.0);
+        assert_eq!(preview_rise(), 242.0, "the rise the hint prints is the card's own: 216 tall, 26 above the bar");
+        let said = margins();
+        assert!(said.starts_with(&format!("{MARGIN_X} px")) && said.contains(&format!("{MARGIN_Y} px")), "{said}");
         assert_eq!(preview_card(at(500.0)).w, crate::scrub_preview::CARD_W_CAP);
         assert!(preview_inside(at(SAFE.y + 242.0)), "the card's top exactly on SAFE's top");
         assert!(!preview_inside(at(SAFE.y + 241.0)), "one pixel above");

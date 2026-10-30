@@ -2,7 +2,7 @@
 //!
 //! App text (tab and button labels, clocks, the chapters fallback, the kicker's numbering) must fit, in every
 //! language, inside the room it has: its box, the right edge of `SAFE`, the nearest control it would grow
-//! into on its line and the fixed width of the `vstack` it lives in. Server text (titles, chapter names, the
+//! into on its line and the right edge of the fixed-width `vstack` it lives in. Server text (titles, chapter names, the
 //! synopsis) may elide or wrap and is never checked. A Skip state's credits layout is checked as well as the
 //! intro one.
 //!
@@ -39,8 +39,9 @@
 //! * the nearest control (or Up Next / Skip pill) that starts at or right of the text and overlaps its line,
 //!   at the REST rect (as I4 reads it; the compiler's fill rule uses the `CTRL_FOCUS_SCALE`d edge, which
 //!   leaves room for the focus pop and which a hugging label does not get);
-//! * the enclosing `vstack`s' fixed `w` ("a `vstack` of fixed `w`", Text fit), which draw their cells at the
-//!   vstack's own `x`.
+//! * the enclosing `vstack`s' fixed `w` ("a `vstack` of fixed `w`", Text fit): the vstack's right edge is its
+//!   compiled `x` (`CompiledState::vstack_rect`) plus `w`, and the text's room is the distance from the TEXT's own
+//!   `x` to it, since a cell nested in a `rect` or behind an image does not start at the vstack's `x`.
 //!
 //! A strip card's text is held to its card's width alone: the card is the box (`w` or `card_w`), and a
 //! far card running past `SAFE` is I5's reveal rule.
@@ -49,7 +50,10 @@
 //! `room - measured < skew` (strictly: a text with exactly `skew` to spare passes), the skew being
 //! [`CI_TEXT_SKEW`] unless the caller says otherwise, so at the default 0 it cannot fire. Both point at the
 //! text cell (a strip card's text at its template node) and carry `lang`, `state`, `slot`, the string, its
-//! measured width, the room and the `rects` it concerns: the text's own, then the limits it reaches.
+//! measured width, the room and the `rects` it concerns: the text's own, then the limits it reaches. **A text
+//! that does not fit is ONE finding**, however many states and slots draw it: the first state in
+//! `Compiled::states()` order names it ([`dedupe`](super::lint_zorder::dedupe); a strip card sits higher while a
+//! section is open, but its string, its room and its horizontal extent are the same).
 //!
 //! Pure: no IO, no globals; the language is `cx.lang` and the numbered strings come from THAT language's
 //! catalog through a `LocaleContext` built from its tag (the way `LintLang` builds its labels), never from
@@ -62,12 +66,14 @@ use std::ops::RangeInclusive;
 use plx_machine::machine::Measure;
 use plx_platform::i18n::{msg, LocaleContext, Preference};
 use plx_ui::consts::SAFE;
+use plx_ui::fmt::KICKER_SEPARATOR;
 use plx_ui::Rect;
 
 use super::compile::{AppLabels, CompiledState, DrawOp, Live, SkipKind};
 #[cfg(test)]
 use super::lint::testing::{Base, InvalidCase};
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
+use super::lint_zorder::dedupe;
 use super::parse::{Object, Package, Val};
 use super::validate::each_object;
 use super::{codes, Finding, TextFact};
@@ -86,11 +92,10 @@ const CHAPTER_DIGITS: usize = 3;
 const SEASON_DIGITS: usize = 2;
 const EPISODE_DIGITS: usize = 3;
 
-/// The separator after the episode's numbering in a kicker ("S2, E3 · <title>").
-const KICKER_SEPARATOR: &str = " \u{b7} ";
-
-/// Report this module's findings for the language of `cx`.
+/// Report this module's findings for the language of `cx`: each fault once, by the first state that shows it
+/// ([`dedupe`]).
 pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
+    let from = out.len();
     let nodes = nodes_by_pointer(cx.package);
     let texts = Texts::new(cx);
     for state in cx.states() {
@@ -107,6 +112,7 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
         }
         out.extend(found);
     }
+    dedupe(out, from);
 }
 
 /// Every object of the package by its pointer: how a text finds the `vstack`s around it.
@@ -284,7 +290,7 @@ enum Bound {
     Safe,
     /// a control (or the Up Next / Skip pill) the text would grow into, by its id and drawn rect
     Control(String, Rect),
-    /// the fixed width of an enclosing `vstack`
+    /// the right edge of an enclosing `vstack` of a fixed `w`
     Vstack,
 }
 
@@ -304,13 +310,14 @@ enum Site {
 
 /// Every limit on the room of a text at `rect`. A hugging label's `rect.w` is its own text, so it is no limit
 /// (`hugs`); a strip card's text has its box alone; every other text is also held to the right edge of `SAFE`,
-/// to the controls in `obstacles` it would grow into on its line, and to `vstack_w`.
+/// to the controls in `obstacles` it would grow into on its line, and to `vstack_right`, the nearest right edge
+/// among the fixed-`w` vstacks around it.
 fn limits(
     rect: Rect,
     site: Site,
     hugs: bool,
     obstacles: &[(String, Rect)],
-    vstack_w: Option<f32>,
+    vstack_right: Option<f32>,
 ) -> Vec<Limit> {
     let mut limits = Vec::new();
     if site == Site::Card || !hugs {
@@ -335,9 +342,9 @@ fn limits(
             });
         }
     }
-    if let Some(w) = vstack_w {
+    if let Some(right) = vstack_right {
         limits.push(Limit {
-            room: w,
+            room: right - rect.x,
             bound: Bound::Vstack,
         });
     }
@@ -371,9 +378,17 @@ fn judge(measured: f32, room: f32, skew: f32) -> Verdict {
     }
 }
 
-/// The narrowest fixed `w` among the `vstack`s that enclose the node at `pointer`, if any.
-fn enclosing_vstack_w(pointer: &str, nodes: &BTreeMap<&str, &Object>) -> Option<f32> {
-    let mut narrowest: Option<f32> = None;
+/// The nearest right edge among the fixed-`w` `vstack`s that enclose the node at `pointer`, if any: each
+/// `vstack`'s own x (`placed`, its compiled rect) plus its `w`. A text in a `vstack` cell does not start at the
+/// `vstack`'s x (a `rect` cell insets by its pad, and a cell behind an image of its row starts further right),
+/// so its room to that edge is not the `w`. A `vstack` the state does not place (`placed` is `None`) bounds
+/// nothing.
+fn enclosing_vstack_right(
+    pointer: &str,
+    nodes: &BTreeMap<&str, &Object>,
+    placed: &dyn Fn(&str) -> Option<Rect>,
+) -> Option<f32> {
+    let mut nearest: Option<f32> = None;
     let mut end = pointer.len();
     while let Some(slash) = pointer[..end].rfind('/') {
         end = slash;
@@ -384,16 +399,17 @@ fn enclosing_vstack_w(pointer: &str, nodes: &BTreeMap<&str, &Object>) -> Option<
             continue;
         }
         let w = match node.get("w") {
-            Some(Val::Int(w)) => Some(*w as f32),
-            Some(Val::Num(w)) => Some(*w as f32),
-            _ => None,
+            Some(Val::Int(w)) => *w as f32,
+            Some(Val::Num(w)) => *w as f32,
+            _ => continue,
         };
-        narrowest = match (narrowest, w) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+        let Some(vstack) = placed(&pointer[..end]) else {
+            continue;
         };
+        let right = vstack.x + w;
+        nearest = Some(nearest.map_or(right, |a| a.min(right)));
     }
-    narrowest
+    nearest
 }
 
 /// The controls (and Up Next / Skip pills) a layout draws, by id, as the drawn rects.
@@ -520,12 +536,12 @@ impl Scan<'_, '_> {
                 .nodes
                 .get(op.pointer)
                 .is_some_and(|node| node.get("w").is_none());
-        let vstack_w = if op.site == Site::Band {
-            enclosing_vstack_w(op.pointer, self.nodes)
+        let vstack_right = if op.site == Site::Band {
+            enclosing_vstack_right(op.pointer, self.nodes, &|vstack| layout.vstack_rect(vstack))
         } else {
             None
         };
-        let limits = limits(op.rect, op.site, hugs, obstacles, vstack_w);
+        let limits = limits(op.rect, op.site, hugs, obstacles, vstack_right);
         let Some(tightest) = binding(&limits) else {
             return;
         };
@@ -543,9 +559,7 @@ impl Scan<'_, '_> {
             },
             skip,
         );
-        if !found.iter().any(|f| same_fault(f, &finding)) {
-            found.push(finding);
-        }
+        found.push(finding);
     }
 
     /// The finding for a text that does not fit (`HUD-E0601`) or fits within the skew (`HUD-W0602`).
@@ -617,20 +631,6 @@ impl Scan<'_, '_> {
     }
 }
 
-/// Is `a` the fault `b` is, in another layout of the same state (the intro and the credits pill)? The same
-/// code at the same node with the same text facts and the same rects, whatever the rects are called.
-fn same_fault(a: &Finding, b: &Finding) -> bool {
-    a.code == b.code
-        && a.pointer == b.pointer
-        && a.ctx.text == b.ctx.text
-        && a.ctx.rects.len() == b.ctx.rects.len()
-        && a.ctx
-            .rects
-            .iter()
-            .zip(&b.ctx.rects)
-            .all(|(p, q)| (p.x, p.y, p.w, p.h) == (q.x, q.y, q.w, q.h))
-}
-
 /// The reference's info-card vstack cut to 160 px, with its synopsis replaced by the "Chapters" label at the
 /// `DISPLAY` size: the label is wider than the vstack, the kicker above it (144 px) is not.
 #[cfg(test)]
@@ -641,6 +641,17 @@ const LABEL_IN_NARROW_VSTACK: &[(&str, &str)] = &[
         "{ \"text\": { \"bind\": \"label.chapters\", \"size\": \"DISPLAY\", \"ink\": \"TEXT_SECONDARY\", \"bold\": false } }",
     ),
 ];
+
+/// The reference's Chapters heading as the second cell of a `rect` that fills a 300 px vstack, after a 200 px
+/// image: the label's x is the vstack's plus 200.
+#[cfg(test)]
+const LABEL_BEHIND_AN_IMAGE_IN_A_VSTACK: &[(&str, &str)] = &[(
+    "{ \"align\": \"start\", \"text\": { \"bind\": \"label.chapters\", \"size\": \"LABEL\", \"ink\": \"TEXT_PRIMARY\", \"bold\": false } }",
+    "{ \"align\": \"start\", \"vstack\": { \"gap\": 0, \"w\": 300, \"cells\": [ { \"rect\": { \"ink\": \"PANEL_TOP\", \"cells\": [ \
+     { \"align\": \"start\", \"image\": { \"bind\": \"info.still\", \"w\": 200, \"h\": 40 } }, \
+     { \"align\": \"start\", \"text\": { \"bind\": \"label.chapters\", \"size\": \"LABEL\", \"ink\": \"TEXT_PRIMARY\", \"bold\": false } } \
+     ] } } ] } }",
+)];
 
 /// The invalid packages of this module's codes (`lint::testing::assert_case` runs each): the base, the
 /// exact-once edits, the code and pointer the edit must yield.
@@ -672,6 +683,19 @@ pub(super) const INVALID: &[InvalidCase] = &[
         pointer: "/layout/block/6/cells/1/vstack/cells/2/text",
         base: Base::Reference,
         edits: LABEL_IN_NARROW_VSTACK,
+        langs: &["en"],
+        skew: 0.0,
+        also: &[],
+    },
+    // The Chapters heading in a 300 px vstack, behind a 200 px image inside a `rect` cell: the label starts 200 px
+    // into the vstack, so only 100 px remain before the vstack's end. Measured from the label's own x (the text
+    // of any vstack cell is not at the vstack's x) its room would read 300 and nothing would be found.
+    InvalidCase {
+        name: "a tab label behind an image in a rect cell of a vstack, past the vstack's end",
+        code: "HUD-E0601",
+        pointer: "/layout/block/3/cells/0/vstack/cells/0/rect/cells/1/text",
+        base: Base::Reference,
+        edits: LABEL_BEHIND_AN_IMAGE_IN_A_VSTACK,
         langs: &["en"],
         skew: 0.0,
         also: &[],
@@ -1008,15 +1032,43 @@ mod tests {
     }
 
     #[test]
+    fn a_text_that_does_not_fit_is_one_finding_however_many_states_show_it() {
+        let narrow = REFERENCE.replace("\"card_w\": 192", "\"card_w\": 100");
+        let found: Vec<_> = in_en(&narrow, 0.0)
+            .into_iter()
+            .filter(|f| f.code == "HUD-E0601")
+            .collect();
+        assert!(
+            !found.is_empty(),
+            "the 100 px card overflows the chapter-name fallback"
+        );
+        // The card sits 197 px higher while the Info page is open (its y differs between the states), and
+        // `movie` / `paused` change nothing about the strip: a text is still one fault.
+        let texts: BTreeSet<_> = found
+            .iter()
+            .map(|f| {
+                (
+                    f.pointer.as_str(),
+                    f.ctx.text.as_ref().map(|t| t.string.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found.len(),
+            texts.len(),
+            "one E0601 per distinct text, not per state: {found:#?}"
+        );
+    }
+
+    #[test]
     fn the_clock_is_one_finding_for_all_languages_and_the_fallback_one_per_language() {
         let narrow = REFERENCE.replace("\"card_w\": 192", "\"card_w\": 60");
         let found = text_findings(&narrow, 0.0);
-        // the clock repeats per state, not per language
+        // the clock is the same in every language and in every state: ONE finding, with no language
         let clock: Vec<_> = found.iter().filter(|f| f.pointer == CLOCK).collect();
-        assert!(!clock.is_empty());
+        assert_eq!(clock.len(), 1, "{clock:?}");
         assert!(clock.iter().all(|f| f.ctx.lang.is_none()), "{clock:?}");
-        let states: BTreeSet<_> = clock.iter().map(|f| (&f.ctx.state, &f.ctx.slot)).collect();
-        assert_eq!(states.len(), clock.len(), "one finding per state and slot");
+        // the fallback is a different string in every language: one finding each
         let fallback: BTreeSet<_> = found
             .iter()
             .filter(|f| f.pointer == FALLBACK)
@@ -1025,7 +1077,7 @@ mod tests {
         assert_eq!(fallback.len(), 10, "{fallback:?}");
         assert_eq!(
             found.iter().filter(|f| f.pointer == FALLBACK).count(),
-            10 * clock.len(),
+            10,
             "{found:?}"
         );
     }
@@ -1304,10 +1356,13 @@ mod tests {
             Site::Band,
             false,
             &[("a".into(), rect(400.0, 50.0, 60.0, 24.0))],
-            Some(150.0),
+            Some(250.0),
         );
         let tightest = binding(&ls).unwrap();
-        assert_eq!(tightest.room, 150.0);
+        assert_eq!(
+            tightest.room, 150.0,
+            "the room runs from the text's x to the vstack's right edge"
+        );
         assert_eq!(tightest.bound, Bound::Vstack);
         let tie = [
             Limit {
@@ -1336,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn the_narrowest_enclosing_vstack_width_counts() {
+    fn the_nearest_enclosing_vstack_edge_counts() {
         let outer = vstack("/a", Some(Val::Int(400)));
         let middle = vstack("/a/vstack/cells/1", Some(Val::Num(250.5)));
         let fill = vstack(
@@ -1353,13 +1408,36 @@ mod tests {
             .into_iter()
             .map(|o| (o.pointer.as_str(), o))
             .collect();
-        // the fill vstack is no limit; the middle one is the narrowest fixed one
-        assert_eq!(enclosing_vstack_w(&cell.pointer, &nodes), Some(250.5));
+        // the outer vstack is placed at x 100, the middle one at x 200, the fill one at 210; /b is placed too
+        let placed = |pointer: &str| match pointer {
+            "/a" => Some(rect(100.0, 0.0, 400.0, 90.0)),
+            "/a/vstack/cells/1" => Some(rect(200.0, 0.0, 250.5, 90.0)),
+            "/a/vstack/cells/1/vstack/cells/0" => Some(rect(210.0, 0.0, 240.0, 90.0)),
+            "/b" => Some(rect(50.0, 0.0, 10.0, 10.0)),
+            _ => None,
+        };
+        // the fill vstack is no limit; of the fixed ones the middle edge (200 + 250.5) is nearer than the outer (100 + 400)
         assert_eq!(
-            enclosing_vstack_w("/a/vstack/cells/0/text", &nodes),
-            Some(400.0)
+            enclosing_vstack_right(&cell.pointer, &nodes, &placed),
+            Some(450.5)
         );
-        assert_eq!(enclosing_vstack_w("/b/vstack/cells/0/text", &nodes), None);
-        assert_eq!(enclosing_vstack_w("/elsewhere/text", &nodes), None);
+        // inside the outer one alone, its edge is its x plus its w
+        assert_eq!(
+            enclosing_vstack_right("/a/vstack/cells/0/text", &nodes, &placed),
+            Some(500.0)
+        );
+        assert_eq!(
+            enclosing_vstack_right("/b/vstack/cells/0/text", &nodes, &placed),
+            None
+        );
+        assert_eq!(
+            enclosing_vstack_right("/elsewhere/text", &nodes, &placed),
+            None
+        );
+        // a vstack the state does not place bounds nothing
+        assert_eq!(
+            enclosing_vstack_right("/a/vstack/cells/0/text", &nodes, &|_| None),
+            None
+        );
     }
 }

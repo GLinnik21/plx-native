@@ -45,7 +45,7 @@
 //!
 //! Pure: no IO, no global; the placer is the only thing asked.
 
-use plx_ui::consts::SAFE;
+use plx_ui::consts::{EDGE_TOL, SAFE};
 use plx_ui::popover::{Anchored, Side};
 use plx_ui::table::MENU_MAX_W;
 use plx_ui::widgets::CTRL_FOCUS_SCALE;
@@ -59,9 +59,6 @@ use super::{codes, Finding};
 use crate::{more_menu, track_menu};
 #[cfg(test)]
 use super::lint::testing::{Base, InvalidCase};
-
-/// Two edges closer than this (px) are the same edge, and an overlap thinner than it is two rects that touch.
-const EDGE_TOL: f32 = 0.01;
 
 /// Report this module's findings for the language of `cx`: each violation once per (code, opener), in the
 /// first state that has it (see the module doc).
