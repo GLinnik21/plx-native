@@ -606,10 +606,8 @@ pub const ELEM_CONTROL_BASE: u32 = 0x1_0000;
 /// (`PageWithStrip::group_of`), so a chapter card up there would belong to no group and the engine could not move
 /// off it.
 pub const ELEM_CHAPTER_BASE: u32 = 0xF000_0000;
-const _: () = assert!(
-    ELEM_CHAPTER_BASE >= plx_ui::geom::NAMESPACE_FLOOR && ELEM_CHAPTER_BASE < plx_ui::dispatch::STRIP_BASE,
-    "the chapter strip's keys must sit between the widget-index floor and the container strip's namespace"
-);
+// A build error here means the base left the band above: between the widget-index floor and the container strip's.
+const _: () = assert!(ELEM_CHAPTER_BASE >= plx_ui::geom::NAMESPACE_FLOOR && ELEM_CHAPTER_BASE < plx_ui::dispatch::STRIP_BASE);
 /// `+ 0..` an open section's own buttons (`actions`: the Info card's two), in the order the state places them.
 /// The range is open-ended up to [`ELEM_SECTION_END`], below the control range and the repair card.
 pub const ELEM_SECTION_BASE: u32 = 100;
