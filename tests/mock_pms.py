@@ -2629,7 +2629,7 @@ class SeerrFixture:
             r["status"] = 2 if segs[2] == "approve" else 3
             r["modified_by"], r["updated"] = self.user, self.stamp(len(self.requests) + 24 * 7)
             t = self.by_id(r["kind"], r["tmdb"])
-            if t is not None and r["status"] == 2 and t["kind"] == "movie":
+            if t is not None and r["status"] == 2 and t["status"] in (None, 1, 2):
                 t["status"] = 3
             return j(self.request_row(r))
         if segs == ["request"] and method == "POST":

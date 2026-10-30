@@ -521,8 +521,10 @@ impl<H: SearchLike> StackPage<H> for Page {
 
     fn draw_heading(&self, k: Sec, f: &mut DrawFrame<'_, '_, H>, r: Rect, lift: f32) {
         if let Sec::Shelf(row) = k {
-            let p = f.painter.alpha(f.page_alpha);
-            plx_ui::cards::draw_heading_c(p, discover::heading(row), c"", c"", MARGIN_X, r.y - lift, 1.0, f.measure);
+            // A heading that rides up under the standing strip fades by where it stands (Home's rule).
+            let y = r.y - lift;
+            let p = f.painter.alpha(f.page_alpha * plx_ui::scroll_chrome::clearance_under_shown_chrome(y));
+            plx_ui::cards::draw_heading_c(p, discover::heading(row), c"", c"", MARGIN_X, y, 1.0, f.measure);
         }
     }
 
@@ -530,8 +532,11 @@ impl<H: SearchLike> StackPage<H> for Page {
         let p = f.painter.alpha(f.page_alpha);
         match k {
             Sec::Head => {
+                // The row rides the page and fades as it passes under the standing strip, as Home's
+                // headings do (`scroll_chrome::clearance_under_shown_chrome`).
+                let clear = plx_ui::scroll_chrome::clearance_under_shown_chrome(r.y + plx_ui::page_header::TOP);
                 let pop = self.header_pop.scale_with(0, f.press.scale);
-                self.header_row(f.measure).draw(p, r.y, &self.header_capsules, pop);
+                self.header_row(f.measure).draw(p.alpha(clear), r.y, &self.header_capsules, pop);
             }
             Sec::Request(elem) => {
                 let Some(row) = self.row_of(elem) else { return };

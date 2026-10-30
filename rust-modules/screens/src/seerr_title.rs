@@ -412,10 +412,16 @@ impl SeerrTitleScreen {
         HeroLogo::new(0, "", &detail.title.title, LogoRung::Hero)
             .draw(p, Rect::new(x, detail_layout::TITLE_BOTTOM - band_h, detail_layout::HERO_TEXT_W, band_h), measure);
 
+        // Whole facts drop off the end until the line fits the hero's text column: a genre or a
+        // studio is the server's word and may be long, and half a fact says nothing.
         let meta = facts(self.kind, detail);
-        let runs: Vec<&str> = meta.iter().map(String::as_str).collect();
+        let mut runs: Vec<&str> = meta.iter().map(String::as_str).collect();
+        let run = plx_ui::widgets::DottedRun::new(theme::size::BODY, theme::TEXT_SECONDARY, theme::space::SM).measured(measure);
+        while runs.len() > 1 && run.width(measure, &runs) > detail_layout::HERO_TEXT_W {
+            runs.pop();
+        }
         let (cap_top, _) = plx_gfx::text::text_cap_band(theme::size::BODY, 0);
-        plx_ui::widgets::dotted_run(p, &runs, x, rows.meta - cap_top, theme::size::BODY, theme::TEXT_SECONDARY, theme::space::SM);
+        run.draw(p, &runs, x, rows.meta - cap_top);
 
         if let (Some(y), Some(text)) = (rows.status, status_line(detail, self.request(seerr), self.decision(seerr))) {
             Self::line(p, text, y, true, theme::TEXT_PRIMARY, measure);
