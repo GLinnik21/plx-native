@@ -1161,8 +1161,9 @@ jails by prefix (F39's table does not say); if so, the same order works.
   `https_get_public`: the same headerless, redirect-following request with `Some(max_body)` through
   `request`'s existing argument; no new curl option, but a curl-path change, so `fw-compat-reviewer`.
   UNVERIFIED: whether the TV's CA set accepts `objects.githubusercontent.com`, where release redirects land.
-- (b) CHOSEN, Dev Mode and rooted: copy the file into `<root>/drop/` over ssh; it is validated and installed
-  when HUD settings open. No network.
+- (b) CHOSEN, Dev Mode and rooted: copy the file into `<root>/drop/` over ssh; it is validated and listed when
+  HUD settings open, and installed only when the user confirms it on the TV (`InstallDrop`, which re-reads the
+  file and refuses it if it changed since the list). No network.
 - (c) QR to a web page: rejected; the site is static (F40) and cannot hand a file back.
 - (d) LAN page served by the app: rejected; a listening socket plus a worker (ledger growth, F31), and
   inbound reachability through the TV's firewall is UNVERIFIED.
@@ -1197,7 +1198,7 @@ this session, no network).
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
   playback, with backoff. The 24 h rule lives in the HudStore machine, which reads no clock (F31): the runner
-  hands `now` in on `SettingsOpened`. A package is fetched by hash and checked with `plx_base::sha256` before
+  hands `now` in on the event that opens HUD settings (PR13 adds the field to `Refresh`). A package is fetched by hash and checked with `plx_base::sha256` before
   it is written. Offline, installed HUDs keep working; the gallery shows the cached index with its date.
 - Why: TVs reading GitHub directly hit API rate limits (UNVERIFIED figure: 60 unauthenticated requests per
   hour per IP) and need tree walks; a bespoke backend means hosting and moderation for no gain over static

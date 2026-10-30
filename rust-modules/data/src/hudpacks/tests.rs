@@ -67,6 +67,8 @@ struct Rig {
     files: BTreeMap<PathBuf, Vec<u8>>,
     /// Writes to these paths, or under these roots, are refused.
     refuse: Vec<PathBuf>,
+    /// Reads of these paths fail (they exist, but cannot be read).
+    unreadable: Vec<PathBuf>,
     log: Vec<HudEffect>,
     notices: Vec<Notice>,
     selections: Vec<String>,
@@ -78,6 +80,7 @@ impl Rig {
             m: HudStore::new(),
             files: BTreeMap::new(),
             refuse: Vec::new(),
+            unreadable: Vec::new(),
             log: Vec::new(),
             notices: Vec::new(),
             selections: Vec::new(),
@@ -100,7 +103,7 @@ impl Rig {
             }
         }
         for (dir, index) in indexes {
-            rig.files.insert(index_path(dir), index_bytes(&index).to_vec());
+            rig.files.insert(index_path(dir), index_bytes(&index, &Map::new()).to_vec());
         }
         rig
     }
@@ -145,7 +148,8 @@ impl Rig {
                 }
                 HudEffect::ReadFile { tag, at, max_bytes } => {
                     let result = match self.files.get(&at.path()) {
-                        None => Err(ReadError::Failed),
+                        _ if self.unreadable.contains(&at.path()) => Err(ReadError::Failed),
+                        None => Err(ReadError::Missing),
                         Some(bytes) if bytes.len() > max_bytes => Err(ReadError::TooLarge),
                         Some(bytes) => Ok(bytes.clone()),
                     };
@@ -192,7 +196,7 @@ impl Rig {
     }
 
     fn index_of(&self, dir: usize) -> Index {
-        parse_index(self.files.get(&index_path(dir)).map_or(&b""[..], |b| b.as_slice()))
+        parse_index(self.files.get(&index_path(dir)).map_or(&b""[..], |b| b.as_slice())).index
     }
 
     fn ids(&self) -> Vec<String> {
@@ -263,7 +267,7 @@ fn install_writes_the_pack_then_the_index() {
     let (_, fx) = step(&mut m2, HudEvent::Written { tag: tag_of(&fx[0]), outcome: WriteOutcome::Done });
     assert_eq!(fx.iter().map(line).collect::<Vec<_>>(), [format!("write {}", index_path(0).display())]);
     let HudEffect::WriteFile { bytes: index, .. } = &fx[0] else { panic!("{fx:?}") };
-    let written = parse_index(index);
+    let written = parse_index(index).index;
     assert_eq!(written["org.example.hud"], Record { sha, source: Source::Address, at: 100 });
     assert_eq!(m2.entries().len(), 1, "the index is not down yet");
 
@@ -417,7 +421,7 @@ fn a_drop_file_with_the_builtin_id_is_refused_and_the_builtin_stays_selectable()
     assert_eq!(r.notices.last(), Some(&Notice::Refused { sha, reason: Refusal::BuiltinId }));
     let mut index = Index::new();
     index.insert(BUILTIN_CLASSIC.to_string(), record(&bytes, Source::Registry));
-    r.files.insert(index_path(1), index_bytes(&index).to_vec());
+    r.files.insert(index_path(1), index_bytes(&index, &Map::new()).to_vec());
     r.files.insert(pack_path(1, sha), bytes.clone());
     r.refresh();
     assert_eq!(r.ids(), [BUILTIN_CLASSIC]);
@@ -628,18 +632,18 @@ fn a_pack_is_listed_only_if_its_name_its_index_entry_and_its_bytes_agree() {
     // The liar's index entry says another id.
     let mut index = Index::new();
     index.insert("org.example.claimed".to_string(), record(&liar, Source::Address));
-    r.files.insert(index_path(1), index_bytes(&index).to_vec());
+    r.files.insert(index_path(1), index_bytes(&index, &Map::new()).to_vec());
     // A third entry whose file is gone.
     let gone = pack("org.example.gone", "1.0.0");
     let mut index = r.index_of(0);
     index.insert("org.example.gone".to_string(), record(&gone, Source::Address));
-    r.files.insert(index_path(0), index_bytes(&index).to_vec());
+    r.files.insert(index_path(0), index_bytes(&index, &Map::new()).to_vec());
     // The good pack's file is swapped for other bytes under its name.
     let swapped = pack("org.example.swapped", "1.0.0");
     r.files.insert(pack_path(2, Sha::of(&swapped)), pack("org.example.other", "9.9.9"));
     let mut index = Index::new();
     index.insert("org.example.swapped".to_string(), record(&swapped, Source::Address));
-    r.files.insert(index_path(2), index_bytes(&index).to_vec());
+    r.files.insert(index_path(2), index_bytes(&index, &Map::new()).to_vec());
     r.refresh();
     assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.good"]);
 }
@@ -731,12 +735,131 @@ fn stale_answers_and_busy_commands_are_not_handled() {
     assert_ne!(tag_of(&fx[0]), first);
     assert_eq!(step(&mut m, HudEvent::Read { tag: first, result: Err(ReadError::Failed) }).0, Handled::No);
 
-    // An install in flight keeps its place against a Refresh and an answer of the wrong kind.
+    // An install in flight is not displaced by a command, and an answer of the wrong kind is ignored.
     let mut m = listed();
     let (_, fx) = step(&mut m, HudEvent::Install { bytes, source: Source::Address, now: 1 });
-    assert_eq!(step(&mut m, HudEvent::Refresh { setup: setup(), selected: String::new() }).0, Handled::No);
+    assert_eq!(step(&mut m, HudEvent::Install { bytes: pack("org.example.other", "1.0.0"), source: Source::Address, now: 2 }).0, Handled::No);
     assert_eq!(step(&mut m, HudEvent::Read { tag: tag_of(&fx[0]), result: Err(ReadError::Failed) }).0, Handled::No);
     assert!(m.busy());
+}
+
+/// An answer that never comes, or comes in the wrong kind, must not leave the store busy for the life
+/// of the process: reopening HUD settings (a `Refresh`) takes over from an install or a removal, and
+/// the answers the old one was still owed are stale.
+#[test]
+fn a_refresh_takes_over_from_an_install_or_removal_that_never_finished() {
+    let bytes = pack("org.example.hud", "1.0.0");
+    let mut m = listed();
+    let (_, fx) = step(&mut m, HudEvent::Install { bytes: bytes.clone(), source: Source::Address, now: 1 });
+    let owed = tag_of(&fx[0]);
+    assert!(m.busy());
+    let (handled, fx) = step(&mut m, HudEvent::Refresh { setup: setup(), selected: String::new() });
+    assert_eq!(handled, Handled::Yes);
+    assert_ne!(tag_of(&fx[0]), owed);
+    let verdict = validator(&bytes);
+    assert_eq!(step(&mut m, HudEvent::Validated { tag: owed, sha: Sha::of(&bytes), verdict }).0, Handled::No);
+
+    let mut r = Rig::with(&[(&bytes, Source::Address, &[0])]);
+    r.refresh();
+    let (handled, fx) = step(&mut r.m, HudEvent::Removed { id: "org.example.hud".into() });
+    assert_eq!(handled, Handled::Yes);
+    let owed = tag_of(&fx[0]);
+    assert!(r.m.busy());
+    assert_eq!(r.send(HudEvent::Refresh { setup: setup(), selected: String::new() }), Handled::Yes);
+    assert!(!r.m.busy());
+    let ack = HudEvent::Written { tag: owed, outcome: WriteOutcome::Done };
+    assert_eq!(step(&mut r.m, ack).0, Handled::No);
+    // Nothing was removed on the way: the disk still lists it.
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.hud"]);
+}
+
+// ---- an installed.json this build cannot fully read is never rewritten from a partial view ----
+
+/// A candidate whose index could not be READ (a failure, as opposed to the file not being there) is
+/// unknown, not empty: installing into it would overwrite the packages it lists. The install goes to
+/// the next candidate and the unread index is left byte for byte.
+#[test]
+fn an_index_that_could_not_be_read_is_never_overwritten() {
+    let a = pack("org.example.a", "1.0.0");
+    let b = pack("org.example.b", "1.0.0");
+    let mut r = Rig::with(&[(&a, Source::Address, &[0])]);
+    let before = r.files[&index_path(0)].clone();
+    r.unreadable.push(index_path(0));
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC], "what could not be read is not listed");
+    r.install(&b, Source::Address, 3);
+    assert!(r.files.contains_key(&pack_path(1, Sha::of(&b))), "the install went to the next candidate");
+    assert!(!r.files.contains_key(&pack_path(0, Sha::of(&b))));
+    assert_eq!(r.files[&index_path(0)], before);
+    // Once it reads again, its packages are back, and so is the winner by candidate order.
+    r.unreadable.clear();
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a", "org.example.b"]);
+
+    // An index that is simply not there is an empty candidate, which is writable.
+    let mut r = Rig::new();
+    r.refresh();
+    r.install(&b, Source::Address, 3);
+    assert!(r.files.contains_key(&pack_path(0, Sha::of(&b))));
+}
+
+/// An index that is not JSON, or that a newer build wrote in a layout this one does not know, lists
+/// what it can and is never written.
+#[test]
+fn an_index_from_a_newer_build_or_garbage_is_listed_but_never_rewritten() {
+    let a = pack("org.example.a", "1.0.0");
+    let b = pack("org.example.b", "1.0.0");
+    let newer = format!(
+        r#"{{"v":2,"packs":{{"org.example.a":{{"sha":"{}","source":"drop","at":1}}}}}}"#,
+        Sha::of(&a).hex()
+    );
+    let mut r = Rig::new();
+    r.files.insert(index_path(0), newer.clone().into_bytes());
+    r.files.insert(pack_path(0, Sha::of(&a)), a.clone());
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a"]);
+    r.install(&b, Source::Address, 3);
+    assert!(r.files.contains_key(&pack_path(1, Sha::of(&b))));
+    assert_eq!(r.files[&index_path(0)], newer.as_bytes());
+
+    // Removing a package a read-only candidate lists cannot be done there: it says so.
+    r.send(HudEvent::Removed { id: "org.example.a".into() });
+    assert_eq!(r.notices.last(), Some(&Notice::RemoveIncomplete { id: "org.example.a".into() }));
+    assert_eq!(r.files[&index_path(0)], newer.as_bytes());
+
+    let mut r = Rig::new();
+    r.files.insert(index_path(0), b"not json".to_vec());
+    r.refresh();
+    r.install(&b, Source::Address, 3);
+    assert!(r.files.contains_key(&pack_path(1, Sha::of(&b))));
+    assert_eq!(r.files[&index_path(0)], b"not json");
+}
+
+/// A record this build cannot read (an unknown source, an extra field a later build added) is not the
+/// store's to delete: an install into the same index writes it back unchanged.
+#[test]
+fn records_this_build_cannot_read_survive_a_rewrite() {
+    let a = pack("org.example.a", "1.0.0");
+    let b = pack("org.example.b", "1.0.0");
+    let text = format!(
+        r#"{{"v":1,"packs":{{
+            "org.example.a":{{"sha":"{}","source":"drop","at":1}},
+            "org.example.future":{{"sha":"{}","source":"carrier-pigeon","at":2,"extra":true}}
+        }}}}"#,
+        Sha::of(&a).hex(),
+        Sha::of(b"f").hex()
+    );
+    let mut r = Rig::new();
+    r.files.insert(index_path(0), text.into_bytes());
+    r.files.insert(pack_path(0, Sha::of(&a)), a.clone());
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a"]);
+    r.install(&b, Source::Address, 3);
+    let doc: Value = serde_json::from_slice(&r.files[&index_path(0)]).unwrap();
+    let packs = doc["packs"].as_object().unwrap();
+    assert_eq!(packs.keys().collect::<Vec<_>>(), ["org.example.a", "org.example.b", "org.example.future"]);
+    assert_eq!(packs["org.example.future"]["source"], "carrier-pigeon");
+    assert_eq!(packs["org.example.future"]["extra"], true);
 }
 
 /// An install over the byte bound is refused before anything is asked of the runner.
@@ -780,8 +903,12 @@ fn the_index_file_round_trips_and_a_bad_record_costs_only_itself() {
     let mut index = Index::new();
     index.insert("org.example.a".to_string(), Record { sha: Sha::of(b"a"), source: Source::Registry, at: 5 });
     index.insert("org.example.b".to_string(), Record { sha: Sha::of(b"b"), source: Source::Drop, at: 6 });
-    assert_eq!(parse_index(&index_bytes(&index)), index);
-    assert_eq!(index_bytes(&index), index_bytes(&index.clone()), "the same index is the same bytes");
+    assert_eq!(parse_index(&index_bytes(&index, &Map::new())).index, index);
+    assert_eq!(
+        index_bytes(&index, &Map::new()),
+        index_bytes(&index.clone(), &Map::new()),
+        "the same index is the same bytes"
+    );
 
     let good = Sha::of(b"g").hex();
     let text = format!(
@@ -794,8 +921,17 @@ fn the_index_file_round_trips_and_a_bad_record_costs_only_itself() {
         }}}}"#
     );
     let parsed = parse_index(text.as_bytes());
-    assert_eq!(parsed.keys().collect::<Vec<_>>(), ["org.example.good"]);
-    assert!(parse_index(b"not json").is_empty() && parse_index(b"").is_empty() && parse_index(b"[]").is_empty());
+    assert_eq!(parsed.index.keys().collect::<Vec<_>>(), ["org.example.good"]);
+    // The ones this build cannot read are kept to be written back; the claim on the built-in is not.
+    assert_eq!(
+        parsed.kept.keys().collect::<Vec<_>>(),
+        ["org.example.badsha", "org.example.newsource", "org.example.nosha"]
+    );
+    assert!(parsed.access == Access::Writable);
+    for text in [&b"not json"[..], b"", b"[]"] {
+        let parsed = parse_index(text);
+        assert!(parsed.index.is_empty() && parsed.access == Access::ReadOnly, "{text:?}");
+    }
 }
 
 #[test]

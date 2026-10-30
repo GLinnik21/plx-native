@@ -684,11 +684,20 @@ fn hud_candidate_list(steerable: bool, id: &str, runtime: PathBuf) -> Vec<PathBu
     v
 }
 
-/// Whether the HUD store must create this candidate owner-only: it sits directly in the
-/// world-writable `/media/developer/temp`, like the image cache's. The other candidates keep the mode
-/// they are given.
+/// Whether the HUD store's runner must create this candidate owner-only, and refuse one it finds that
+/// another uid owns or that is a symlink: it sits directly in a directory anyone can write. That is
+/// the shared `/media/developer/temp` and, on a device, the runtime root (`/tmp`, or the 1777
+/// `/tmp/<id>`), where the last-resort candidate would otherwise be a name another process could
+/// pre-create. The store trusts the `source` an index claims, so a candidate it reads must be ours.
+/// The other candidates keep the mode they are given.
 pub fn hud_dir_is_private(path: &Path) -> bool {
-    path.parent() == Some(Path::new("/media/developer/temp"))
+    hud_dir_is_private_in(ENV_STEERABLE, runtime_dir(), path)
+}
+
+/// [`hud_dir_is_private`] for a given build kind and runtime root. A simulator's runtime root has one
+/// writer and is not widened, so only a device's counts.
+fn hud_dir_is_private_in(steerable: bool, runtime: &Path, path: &Path) -> bool {
+    path.parent() == Some(Path::new("/media/developer/temp")) || (!steerable && path.parent() == Some(runtime))
 }
 
 /// The spool, beside the decision that authorised it.
@@ -845,14 +854,40 @@ mod tests {
         assert_eq!(live[at], runtime, "{live:?}");
     }
 
-    /// Only the candidate inside the world-writable `/media/developer/temp` is created owner-only.
+    /// A candidate directly inside a directory anyone can write is created owner-only: the shared
+    /// `/media/developer/temp`, and on a device the runtime root (`/tmp`, or the 1777 `/tmp/<id>`),
+    /// whose last-resort candidate would otherwise be a name another process could pre-create. A
+    /// simulator's runtime root has one writer and is not widened.
     #[test]
-    fn hud_dir_is_private_only_inside_the_shared_temp_directory() {
+    fn hud_dir_is_private_only_inside_a_world_writable_directory() {
+        use std::path::Path;
+        let device = |id: &str| super::hud_candidate_list(false, id, Path::new("/tmp").join(id).join("huds"));
+        for id in ["plxnative", "plxnative-nightly"] {
+            let c = device(id);
+            let private: Vec<_> = c
+                .iter()
+                .filter(|p| super::hud_dir_is_private_in(false, &Path::new("/tmp").join(id), p))
+                .collect();
+            assert_eq!(private.len(), 2, "{c:?}");
+            assert!(private[0].starts_with("/media/developer/temp"), "{c:?}");
+            assert_eq!(*private[1], Path::new("/tmp").join(id).join("huds"), "{c:?}");
+        }
+        // The stable install's runtime root is plain `/tmp`.
+        let stable = super::hud_candidate_list(false, "plxnative", Path::new("/tmp/huds").to_path_buf());
+        let in_tmp = |p: &Path| super::hud_dir_is_private_in(false, Path::new("/tmp"), p);
+        assert!(in_tmp(stable.last().unwrap()));
+        assert!(!in_tmp(Path::new("/media/developer/plxnative-huds")));
+        assert!(!in_tmp(Path::new("/media/internal/.plxnative-huds")));
+        // A simulator's runtime root is its own.
+        let sim = super::hud_candidate_list(true, "plxnative", Path::new("/work/run/huds").to_path_buf());
+        let private: Vec<_> =
+            sim.iter().filter(|p| super::hud_dir_is_private_in(true, Path::new("/work/run"), p)).collect();
+        assert_eq!(private.len(), 1, "{sim:?}");
+        assert!(private[0].starts_with("/media/developer/temp"), "{sim:?}");
+        // This build kind agrees with the helper.
         let c = super::hud_candidates();
-        let private: Vec<_> = c.iter().filter(|p| super::hud_dir_is_private(p)).collect();
-        assert_eq!(private.len(), 1, "{c:?}");
-        assert!(private[0].starts_with("/media/developer/temp"), "{c:?}");
-        assert!(!super::hud_dir_is_private(std::path::Path::new("/media/developer/x-huds")));
+        let here: Vec<_> = c.iter().filter(|p| super::hud_dir_is_private(p)).collect();
+        assert_eq!(here.len(), if super::ENV_STEERABLE { 1 } else { 2 }, "{c:?}");
     }
 
     /// The runtime root is a path in the shared, sticky `/tmp`, and `ensure_runtime_dir` chmods it

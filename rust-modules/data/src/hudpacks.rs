@@ -28,19 +28,25 @@
 //! installed one of its id only with a strictly higher `version` ([`Semver`]). `builtin:classic` is
 //! refused from every source: the built-in entry is compiled in, always listed, always selectable.
 //!
+//! **Unreadable is not empty.** An `installed.json` that is missing is an empty candidate, free to take
+//! the first install. One that failed to read, is not JSON, or says it is from a newer layout is listed
+//! as far as it parses and never written (an install goes to the next candidate, a removal reports
+//! itself incomplete), and a record this build cannot read is written back unchanged by every rewrite
+//! of its file: a partial view never overwrites what it did not see.
+//!
 //! **Work is sequential**: at most one request is in flight, so a runner may execute effects in the
 //! order they are pushed and memory stays bounded by one file, with no cap on how many packages exist.
 //!
 //! | event | in state | effects, next state |
 //! |---|---|---|
-//! | `Refresh` | idle or listing | per candidate `ReadFile(installed.json)`; then `ReadFile(packs/<sha>)` + `Validate` per distinct sha; then `ScanDir(drop)` and `ReadFile` + `Validate` per file; idle |
+//! | `Refresh` | any (it takes over from work whose answer never came) | per candidate `ReadFile(installed.json)`; then `ReadFile(packs/<sha>)` + `Validate` per distinct sha; then `ScanDir(drop)` and `ReadFile` + `Validate` per file; idle |
 //! | `Install` | idle | `Validate`; on a loadable verdict `WriteFile(pack)` then `WriteFile(installed.json)`; `Notice::Installed` or `Notice::Refused`/`NotWritten` |
 //! | `InstallDrop` | idle | `ReadFile(drop file)`, then as `Install` (the bytes must hash to the sha the user saw) |
 //! | `Removed` | idle | `WriteFile(installed.json)` per candidate listing the id, `Delete(pack)`; `Selection(builtin)` when the selected one went |
 //! | `Selected` | any | `Selection(id)` for the built-in or a listed, loadable package; else not handled |
 //!
 //! A pair not listed (a result for a tag nothing awaits, an install while busy) is [`Handled::No`] and
-//! changes nothing.
+//! changes nothing. A runner that loses an answer is recovered by the next `Refresh`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -53,8 +59,9 @@ use serde_json::{Map, Value};
 
 /// The id of the built-in HUD: compiled in, always listed, always selectable, and claimed by no file.
 /// The same literal as `appkit::hud_format::schema::BUILTIN_CLASSIC_ID` (the format accepts it so the
-/// built-in's own file parses); appkit is above this layer, so the two are pinned equal where both are
-/// visible.
+/// built-in's own file parses). appkit is above this layer, so nothing here can compare the two: the
+/// test that pins them equal belongs where both are visible, with the runner that wires this store
+/// (PR10b).
 pub const BUILTIN_CLASSIC: &str = "builtin:classic";
 
 const PACKS_DIR: &str = "packs";
@@ -232,7 +239,10 @@ pub enum Refusal {
 pub enum ReadError {
     /// Larger than the effect's `max_bytes`; nothing was read.
     TooLarge,
-    /// Missing, unreadable or not a directory.
+    /// There is no such file or directory: the runner saw `NotFound` and nothing else. An empty
+    /// candidate is not an unreadable one.
+    Missing,
+    /// Unreadable, not a directory, or any other failure: what is there is unknown.
     Failed,
 }
 
@@ -265,7 +275,10 @@ pub struct Setup {
 }
 
 /// A place under one candidate directory: the runner makes the root (owner-only when
-/// `paths::hud_dir_is_private`) and any folder between it and the file.
+/// `paths::hud_dir_is_private`) and any folder between it and the file. The runner refuses a root
+/// that is a symlink or that another uid owns, and a file it cannot confirm is its own: the store
+/// trusts the `source` an `installed.json` claims, so a directory anyone can write is not one it may
+/// read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Loc {
     pub root: PathBuf,
@@ -381,9 +394,23 @@ struct Record {
     at: u64,
 }
 
+/// Whether the store may rewrite a candidate's `installed.json`.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Access {
+    #[default]
+    Writable,
+    /// What is there could not be read whole (a read failure, text that is not JSON, a layout from a
+    /// newer build): it is listed as far as it parses and never written, so a partial view cannot
+    /// overwrite what it did not see.
+    ReadOnly,
+}
+
 #[derive(Clone, Default)]
 struct Dir {
     index: Index,
+    /// The entries of the file this build cannot read, written back unchanged with every rewrite.
+    kept: Map<String, Value>,
+    access: Access,
 }
 
 /// A package whose bytes were read and validated.
@@ -601,9 +628,9 @@ impl HudStore {
     pub fn step(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
         match ev {
             HudEvent::Refresh { setup, selected } => {
-                if !matches!(self.op, Op::Idle | Op::Listing(_)) {
-                    return Handled::No;
-                }
+                // Always taken: it is how a store whose runner lost an answer recovers. Whatever it
+                // displaces wrote atomically and put the index last, so disk is consistent, and the
+                // answers the displaced work is still owed carry a stale tag.
                 self.begin_listing(setup, selected, fx);
                 Handled::Yes
             }
@@ -809,8 +836,13 @@ impl HudStore {
         }
         match (job, stage, ev) {
             (Job::Index(dir), Stage::Io, HudEvent::Read { result, .. }) => {
-                // An index that is missing, too large or not JSON lists nothing from that candidate.
-                self.dirs[dir].index = result.map(|bytes| parse_index(&bytes)).unwrap_or_default();
+                self.dirs[dir] = match result {
+                    Ok(bytes) => parse_index(&bytes),
+                    // Nothing there yet: an empty candidate, free to take the first install.
+                    Err(ReadError::Missing) => Dir::default(),
+                    // Unknown, not empty: list nothing from it and write nothing to it.
+                    Err(ReadError::TooLarge | ReadError::Failed) => Dir { access: Access::ReadOnly, ..Dir::default() },
+                };
             }
             (Job::Scan(dir), Stage::Io, HudEvent::Scanned { result, .. }) => {
                 let names = result.unwrap_or_default();
@@ -856,7 +888,7 @@ impl HudStore {
                     return (Op::Listing(listing), Handled::Yes);
                 }
                 Err(ReadError::TooLarge) => self.drops.push(Dropped { dir, name, found: Found::TooLarge }),
-                Err(ReadError::Failed) => {}
+                Err(ReadError::Missing | ReadError::Failed) => {}
             },
             (Job::Drop { dir, name }, Stage::Validation(asked), HudEvent::Validated { sha: got, verdict, .. })
                 if asked == got =>
@@ -922,7 +954,7 @@ impl HudStore {
                     fx.push(HudEffect::WriteFile {
                         tag,
                         at: self.loc(dir, INDEX_FILE.to_string()),
-                        bytes: index_bytes(&index),
+                        bytes: index_bytes(&index, &self.dirs[dir].kept),
                     });
                     Op::Installing(Installing {
                         tag,
@@ -959,10 +991,11 @@ impl HudStore {
 
     /// Write the pack to candidate `dir`; with no candidate left, nothing was installed.
     fn write_pack(&mut self, offer: Offer, meta: Meta, dir: usize, fx: &mut Vec<HudEffect>) -> Op {
-        if dir >= self.setup.candidates.len() {
+        // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
+        let Some(dir) = (dir..self.dirs.len()).find(|d| self.dirs[*d].access == Access::Writable) else {
             Self::notice(fx, Notice::NotWritten { sha: offer.sha });
             return Op::Idle;
-        }
+        };
         let tag = self.tag();
         fx.push(HudEffect::WriteFile {
             tag,
@@ -989,13 +1022,18 @@ impl HudStore {
 
     fn advance_removal(&mut self, mut removing: Removing, fx: &mut Vec<HudEffect>) -> Op {
         while let Some(dir) = removing.dirs.pop_front() {
+            if self.dirs[dir].access == Access::ReadOnly {
+                // Cannot be taken out of an index nobody may write: the package stays listed.
+                removing.incomplete = true;
+                continue;
+            }
             let mut index = self.dirs[dir].index.clone();
             let Some(gone) = index.remove(&removing.id) else { continue };
             let tag = self.tag();
             fx.push(HudEffect::WriteFile {
                 tag,
                 at: self.loc(dir, INDEX_FILE.to_string()),
-                bytes: index_bytes(&index),
+                bytes: index_bytes(&index, &self.dirs[dir].kept),
             });
             removing.flight = Some((tag, dir, index, gone.sha));
             return Op::Removing(removing);
@@ -1064,6 +1102,8 @@ fn drop_name_ok(name: &str) -> bool {
 #[derive(Deserialize)]
 struct IndexFile {
     #[serde(default)]
+    v: u64,
+    #[serde(default)]
     packs: BTreeMap<String, Value>,
 }
 
@@ -1074,24 +1114,47 @@ struct IndexRecord {
     at: u64,
 }
 
-/// The entries of an `installed.json`, leniently: one bad record, an unknown source, a sha that is not
-/// 64 lowercase hex digits and any claim on `builtin:classic` drop that entry alone; a file that is
-/// not JSON lists nothing.
-fn parse_index(bytes: &[u8]) -> Index {
-    let Ok(file) = serde_json::from_slice::<IndexFile>(bytes) else { return Index::new() };
-    file.packs
-        .into_iter()
-        .filter(|(id, _)| id != BUILTIN_CLASSIC)
-        .filter_map(|(id, value)| {
-            let record: IndexRecord = serde_json::from_value(value).ok()?;
-            Some((id, Record { sha: Sha::parse(&record.sha)?, source: record.source, at: record.at }))
-        })
-        .collect()
+/// The entries of an `installed.json`, leniently. One bad record (an unknown source, a sha that is not
+/// 64 lowercase hex digits, a missing field) costs only itself: it is not listed, and it is kept to be
+/// written back unchanged. A claim on `builtin:classic` is dropped outright. A file that is not JSON,
+/// or that a newer layout wrote (`v` above [`INDEX_FORMAT`]), lists what parses and is read-only.
+fn parse_index(bytes: &[u8]) -> Dir {
+    // An object, not just anything serde would fill a struct from (an empty array reads as all defaults).
+    let file = serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .filter(Value::is_object)
+        .and_then(|doc| serde_json::from_value::<IndexFile>(doc).ok());
+    let Some(file) = file else { return Dir { access: Access::ReadOnly, ..Dir::default() } };
+    let mut dir = Dir { access: if file.v > INDEX_FORMAT { Access::ReadOnly } else { Access::Writable }, ..Dir::default() };
+    for (id, value) in file.packs {
+        if id == BUILTIN_CLASSIC {
+            continue;
+        }
+        let record = serde_json::from_value::<IndexRecord>(value.clone())
+            .ok()
+            .and_then(|r| Some(Record { sha: Sha::parse(&r.sha)?, source: r.source, at: r.at }));
+        match (record, value) {
+            (Some(record), _) => {
+                dir.index.insert(id, record);
+            }
+            (None, Value::Object(raw)) => {
+                dir.kept.insert(id, Value::Object(raw));
+            }
+            (None, _) => {}
+        }
+    }
+    dir
 }
 
-/// An `installed.json` holding `index`, keys in order so the bytes are the same for the same index.
-fn index_bytes(index: &Index) -> Arc<[u8]> {
+/// An `installed.json` holding `index` and, unchanged, the `kept` entries no record of `index`
+/// replaces; keys in order so the bytes are the same for the same state.
+fn index_bytes(index: &Index, kept: &Map<String, Value>) -> Arc<[u8]> {
     let mut packs = Map::new();
+    for (id, raw) in kept {
+        if !index.contains_key(id) {
+            packs.insert(id.clone(), raw.clone());
+        }
+    }
     for (id, record) in index {
         let mut entry = Map::new();
         entry.insert("sha".to_string(), Value::String(record.sha.hex()));
