@@ -254,9 +254,10 @@ Russian month names). Every space in a value is a no-break space; an empty value
 "Never" under Date viewed and Plays for something nobody played, the en dash only for data the server did not send
 (a show's Last episode added, `episode.addedAt`, is such a gap: the listing carries no date of its latest episode, so that sort is not worded and
 the grid keeps its captions). A line that does not fit drops its `+1`, then its mark, and is never cut. **Today is an
-input, not a read:** a screen reads no clock (the `wall` rule); the application's clock door
-(`app::clock::today`) reads the platform's calendar date once a minute and `LibraryLike::today` hands
-it in, and `CaptionCache` keys its labels on it so "Today" rebuilds at midnight. The settings preview
+input, not a read:** a screen reads no clock and fetches no date; the application's loop publishes the
+calendar date once per frame (`Bridge::publish_today`, read from the platform at most once a minute through
+`app::clock::today`, the loop its one caller) and `LibraryLike::today` hands it in from the frame's views,
+and `CaptionCache` keys its labels on it so "Today" rebuilds at midnight. The settings preview
 illustrates the mode as a library sorted by Year while the Sort value row has focus: each sample's own year
 (through `registry::sort_info::label`) under its tile and a "Sorted by Year" caption at the frame's foot. The frame is the
 board's (`cards::SampleFrame`: 660 x 556, Library cards 35 px apart so the outer two are clipped by it and drawn at 35%, their

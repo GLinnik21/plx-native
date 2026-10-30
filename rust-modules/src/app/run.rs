@@ -204,10 +204,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the tree and the loop's route mirror ("the tree still says player, the route already
         // says home"); with one authority it is an EDGE, read either side of the frame.
         let was_player = super::bridge::player(&app.pages).is_some();
-        // **Publish the frame's inputs into the tree** (spec §2.3) before the dispatcher's frame
-        // and the draw that follows it, so every owned screen in one frame reads one consistent
-        // picture: the playback session (only while something that reads it is mounted — see
-        // `Bridge::publish_playback`) and the calendar date (`publish_frame`, below).
+        // **Publish the frame's inputs into the tree** (spec §2.3) before the dispatcher's frame and
+        // the draw, so every owned screen in one frame reads one consistent picture: the playback
+        // session and the calendar date, see `publish_frame`.
         if app.adapters.player.poll_repair(&mut app.player.repair) {
             plx_machine::idle::invalidate();
         }

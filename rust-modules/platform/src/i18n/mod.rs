@@ -668,9 +668,12 @@ mod tests;
 
 /// **Today's calendar date in the operating system's timezone** — the ONE wall-clock read for
 /// calendar display, here in the platform layer and never in a machine (`screens/`, `ui/`,
-/// `data/src/stores`: the `wall` gate). The application's clock door (`app::clock::today`) calls it
-/// once a minute and hands the date to the screens as an input, the way a frame's time arrives on
-/// a `Tick`.
+/// `data/src/stores`). It reads `SystemTime::now`, so a machine that called it would be reading the
+/// clock, and the `wall` gate does not cover it: that pattern (`Instant::now`, `SystemTime::now`,
+/// `.elapsed()`) names the raw reads and is not run over this crate, so a call to THIS function from
+/// a machine passes it. Its one caller is the application's clock door (`app::clock::today`), which
+/// the loop calls once per frame (the door reads this at most once a minute) and publishes the
+/// date to the screens as an input, the way a frame's time arrives on a `Tick`.
 pub fn local_calendar_today() -> Option<[i32; 3]> {
     let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
     local_calendar_date(i64::try_from(seconds).ok()?)

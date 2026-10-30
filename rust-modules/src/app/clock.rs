@@ -1,8 +1,10 @@
 //! The application's clock (restructure spec §4.1): ONE door to frame time, so a replay can drive
 //! the loop on recorded ticks. `today()` is the same door for the calendar date: the ONE place the
-//! application asks the platform what day it is (`plx_platform::i18n::local_calendar_today`, which
-//! holds the wall-clock read: the `wall` gate scans `app/`), once a minute, for the screens that word
-//! a date ("Today", "Yesterday") but read no clock. `now()` reads `SDL_GetTicks` — the only call site of it in `app/`
+//! application asks the platform what day it is (`plx_platform::i18n::local_calendar_today`), once a
+//! minute. Its one caller is the LOOP, which publishes the answer once per iteration
+//! (`run::publish_frame` -> `Bridge::publish_today`); a screen that words a date ("Today",
+//! "Yesterday") RECEIVES it as `AppViews::today` (`LibraryLike::today`) and reads no clock, the way
+//! a frame's time arrives on a `Tick`. `now()` reads `SDL_GetTicks` — the only call site of it in `app/`
 //! (the §15.2 gate: `SDL_GetTicks(` only in the clock and the instruments) — unless a replay has
 //! set the frame's recorded tick, in which case every read in the frame answers that tick: the
 //! ingest stamp, each press arm, the HUD linger, a script delay.
@@ -65,6 +67,10 @@ pub(crate) fn set_replay(ms: u32) {
 /// frame pays one thread-local read. Under a replay (or a test that set one) it is the pinned date.
 /// `None` when the platform cannot say (an unrepresentable `time_t`): a date then reads as month
 /// and year. Main-thread only, like the clock.
+///
+/// **Only the loop calls it** (`run::publish_frame`, once per iteration), and publishes the answer
+/// into the Bridge's views. A screen or a host impl never calls it: `AppHost::today` returns the
+/// frame's publication.
 pub(crate) fn today() -> Option<[i32; 3]> {
     if let Some(date) = REPLAY_TODAY.with(|c| c.get()) {
         return Some(date);
