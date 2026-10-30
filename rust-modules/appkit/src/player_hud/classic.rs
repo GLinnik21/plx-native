@@ -1002,7 +1002,7 @@ pub fn frame_geometry() -> HudGeometry {
         playbar: Rect::new(SB_X, SB_Y, sb_w(), SB_H),
         row: ctrl_row_hit_rect(),
         row_anchor,
-        items: [None; BTN_N as usize],
+        items: [None; super::geometry::MAX_ROW_ITEMS],
         tab_row: Rect::new(SB_X, tab_y(), 0.0, BTN_S),
         title: Rect::new(SB_X, SCR_H - 312.0, 0.0, 0.0),
         tabs: [None; HUD_TABS],

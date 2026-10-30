@@ -12,7 +12,6 @@
 //! player's `Focusable` declares, and the one set of numbers the HUD's motion and drawing compare a
 //! focus against, so the screen's `nav.focus` is a [`GroupId`] and not a bare integer.
 
-use super::state::BTN_N;
 use plx_machine::machine::GroupId;
 use plx_media::player::text_style::HudBand;
 use plx_ui::Rect;
@@ -25,6 +24,12 @@ pub const GROUP_ROW: GroupId = GroupId(1);
 pub const GROUP_TABS: GroupId = GroupId(2);
 /// The failure read-out's action row.
 pub const GROUP_FAILURE: GroupId = GroupId(3);
+
+/// **The most controls a layout can place in the control row**: the format's bound on one segment
+/// ([`crate::hud_format::schema::MAX_SEGMENT_ITEMS`]), so a row a package can write is a row the report
+/// holds and the focus group and the pointer stops can walk. Classic's is five ([`super::state::BTN_N`]);
+/// the compiler reports a row wider than this as a finding rather than dropping its tail.
+pub const MAX_ROW_ITEMS: usize = crate::hud_format::schema::MAX_SEGMENT_ITEMS;
 
 /// How many tabs the bottom row can hold: Info, then Chapters.
 pub(super) const HUD_TABS: usize = 2;
@@ -58,7 +63,7 @@ pub struct HudGeometry {
     pub row_anchor: RowAnchor,
     /// Item `i` of whatever occupies the row, at the rect it is DRAWN at; `None` past the
     /// occupant's last item and at an absent disc.
-    pub items: [Option<Rect>; BTN_N as usize],
+    pub items: [Option<Rect>; MAX_ROW_ITEMS],
     /// The bottom tab row's origin and height, at its narrowest (no width): the overscan audit's
     /// "player bottom tab row".
     pub tab_row: Rect,

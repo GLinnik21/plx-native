@@ -63,8 +63,7 @@ use super::reach::{Layout, Slot, State, Valuation};
 use super::schema;
 use super::{pointer_push, validate::each_object};
 use crate::player_hud::classic::{stand_in_w, KNOB_GLOW_R};
-use crate::player_hud::geometry::{HudGeometry, RowAnchor};
-use crate::player_hud::BTN_N;
+use crate::player_hud::geometry::{HudGeometry, RowAnchor, MAX_ROW_ITEMS};
 use crate::up_next;
 
 /// `StateKey::open` bit for the chapters section.
@@ -476,7 +475,7 @@ impl CompiledState {
             playbar: Rect::default(),
             row: self.standin.row,
             row_anchor: self.standin.anchor,
-            items: [None; BTN_N as usize],
+            items: [None; crate::player_hud::geometry::MAX_ROW_ITEMS],
             tab_row: self.tab_row,
             title: shown.title,
             tabs: [self.tab("info"), self.tab("chapters")],
@@ -488,11 +487,9 @@ impl CompiledState {
         }
         match self.key.slot {
             Slot::Discs => {
-                // PR7 OBLIGATION: `HudGeometry::items` holds `BTN_N` = 5 stops (classic's row), so this zip
-                // drops every row item past the fifth. The reference has nine (forward, chapters, info and
-                // More among them) and R1 guarantees More: they stay in `controls` and in `row_ids`, whole,
-                // and widening `items` to the longest row a package can place is PR7's change to the
-                // report and its consumers (the focus group, the pointer stops), not this compiler's.
+                // `items` is `MAX_ROW_ITEMS` wide (one segment's bound in the format), so every placed
+                // control of the row has its stop; a row wider than that is a finding (`compile`), and
+                // the tail stays whole in `controls` and `row_ids`.
                 for (cell, id) in g.items.iter_mut().zip(&self.row_ids) {
                     *cell = id.as_deref().and_then(|id| self.control(id)).map(|c| c.rect);
                 }
@@ -668,11 +665,19 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
     for state in &mut states {
         state.set_band(band);
     }
+    let mut findings = frame.findings;
+    if let Some(wide) = states.iter().map(|s| s.row_ids.len()).filter(|&n| n > MAX_ROW_ITEMS).max() {
+        findings.push(CompileFinding {
+            pointer: "/layout/up_next/replaces".to_owned(),
+            term: String::new(),
+            message: format!("the replaced row places {wide} controls, but the geometry report holds {MAX_ROW_ITEMS}, so the tail has no stop"),
+        });
+    }
     Compiled {
         states,
         named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
         band,
-        findings: frame.findings,
+        findings,
     }
 }
 

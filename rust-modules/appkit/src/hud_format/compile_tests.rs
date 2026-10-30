@@ -736,8 +736,9 @@ fn the_band_is_one_value_in_the_geometry_and_in_the_compiled_package() {
 
 #[test]
 fn a_row_wider_than_the_report_keeps_every_control() {
-    // `HudGeometry::items` has `BTN_N` = 5 slots (classic's row); the reference's row has nine and R1
-    // guarantees More. The compiler drops none; widening the report is PR7's (see `geometry`).
+    // The reference's row has nine controls and R1 guarantees More. The compiler drops none, and since PR7
+    // the report (`HudGeometry::items`, `MAX_ROW_ITEMS` wide) holds them all; before it held the first
+    // `BTN_N` = 5, classic's row.
     let compiled = build(REFERENCE, &FM);
     let state = compiled.lookup(0, Slot::Discs, true, true, false).unwrap();
     let ids: Vec<&str> = state.controls.iter().map(|c| c.id.as_str()).collect();
@@ -747,7 +748,7 @@ fn a_row_wider_than_the_report_keeps_every_control() {
     let nine: Vec<_> = state.row_ids.iter().flatten().collect();
     assert_eq!(nine.len(), 9, "all nine stay addressable by index in `row_ids`");
     let g = state.geometry(SkipKind::Intro);
-    assert_eq!(g.items.iter().flatten().count(), crate::player_hud::BTN_N as usize, "the report holds the first BTN_N");
+    assert_eq!(g.items.iter().flatten().count(), 9, "the widened report holds the whole row");
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -818,4 +819,22 @@ fn the_focus_face_and_the_playbar_looks_reach_the_draw_list() {
     assert_eq!(bar(&reference), (KnobMode::Always, ClockMode::Ends, MarkMode::BusyOnly));
     let play = compact(&reference, Slot::Discs).control("play").expect("the play disc").clone();
     assert_eq!((play.focus, play.rest), (Focus::Ring, Rest::Solid));
+}
+
+/// **The report holds the whole row.** `HudGeometry::items` was five stops wide (classic's row) and the
+/// zip dropped every control past the fifth; the reference places nine in a row (forward, chapters, info
+/// and More among them) and each must have the rect it is drawn at, so the focus group and the pointer
+/// stops can take it.
+#[test]
+fn the_geometry_reports_every_item_of_the_references_row() {
+    let c = build(REFERENCE, &FM);
+    let state = compact(&c, Slot::Discs);
+    let placed: Vec<&str> = state.row_ids.iter().flatten().map(String::as_str).collect();
+    assert!(placed.len() > crate::player_hud::BTN_N as usize, "the reference's row is wider than classic's: {placed:?}");
+    let g = state.geometry(SkipKind::Intro);
+    for (i, id) in state.row_ids.iter().enumerate() {
+        let want = id.as_deref().and_then(|id| state.control(id)).map(|c| c.rect);
+        assert_eq!(g.items[i], want, "row item {i} ({id:?})");
+    }
+    assert!(state.row_ids.len() <= crate::player_hud::geometry::MAX_ROW_ITEMS);
 }

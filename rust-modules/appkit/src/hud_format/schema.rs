@@ -1299,6 +1299,10 @@ pub static CELL_SPACER: Node = Node {
     doc: "Empty width.",
 };
 
+/// The most controls one `segment` holds. The player's row is a segment, and
+/// [`crate::player_hud::geometry::MAX_ROW_ITEMS`], the width of the geometry report's `items`, is this.
+pub const MAX_SEGMENT_ITEMS: usize = 24;
+
 pub static CELL_PLAYBAR: Node = Node {
     name: "playbar",
     kind: NodeKind::Plain,
@@ -1379,7 +1383,7 @@ pub static CELL_SEGMENT: Node = Node {
             "items",
             Ty::List {
                 of: &Ty::Object("item"),
-                max_len: 24,
+                max_len: MAX_SEGMENT_ITEMS,
             },
             "The controls, in order.",
         ),
