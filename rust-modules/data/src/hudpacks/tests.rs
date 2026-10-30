@@ -59,7 +59,7 @@ fn index_path(n: usize) -> PathBuf {
 }
 
 fn record(bytes: &[u8], source: Source) -> Record {
-    Record { sha: Sha::of(bytes), source, at: 7 }
+    Record::new(Sha::of(bytes), source, 7)
 }
 
 struct Rig {
@@ -69,6 +69,9 @@ struct Rig {
     refuse: Vec<PathBuf>,
     /// Reads of these paths fail (they exist, but cannot be read).
     unreadable: Vec<PathBuf>,
+    /// The next effect this matches is sent and its answer never comes (the runner lost it); the flag
+    /// says whether a write reached the disk before that. Nothing after it in the queue runs.
+    lose: Option<(fn(&HudEffect) -> bool, bool)>,
     log: Vec<HudEffect>,
     notices: Vec<Notice>,
     selections: Vec<String>,
@@ -81,6 +84,7 @@ impl Rig {
             files: BTreeMap::new(),
             refuse: Vec::new(),
             unreadable: Vec::new(),
+            lose: None,
             log: Vec::new(),
             notices: Vec::new(),
             selections: Vec::new(),
@@ -135,6 +139,16 @@ impl Rig {
         let mut queue: VecDeque<HudEffect> = fx.into();
         while let Some(effect) = queue.pop_front() {
             self.log.push(effect.clone());
+            if let Some((matches, landed)) = self.lose {
+                if matches(&effect) {
+                    self.lose = None;
+                    if let (true, HudEffect::WriteFile { at, bytes, .. }) = (landed, &effect) {
+                        self.files.insert(at.path(), bytes.to_vec());
+                    }
+                    queue.clear();
+                    continue;
+                }
+            }
             let answer = match effect {
                 HudEffect::ScanDir { tag, at } => {
                     let dir = at.path();
@@ -244,6 +258,38 @@ fn tag_of(effect: &HudEffect) -> Tag {
     }
 }
 
+fn is_validate(effect: &HudEffect) -> bool {
+    matches!(effect, HudEffect::Validate { .. })
+}
+
+fn is_pack_write(effect: &HudEffect) -> bool {
+    matches!(effect, HudEffect::WriteFile { at, .. } if at.rel.starts_with("packs/"))
+}
+
+fn is_index_write(effect: &HudEffect) -> bool {
+    matches!(effect, HudEffect::WriteFile { at, .. } if at.rel == INDEX_FILE)
+}
+
+fn is_drop_read(effect: &HudEffect) -> bool {
+    matches!(effect, HudEffect::ReadFile { at, .. } if at.rel.starts_with("drop/"))
+}
+
+/// A rig whose disk holds `installed`, listed, with an install of `bytes` started and the answer to
+/// the request `lose` matches lost. The store is left busy, waiting for it.
+fn stalled_install(
+    installed: &[(&[u8], Source, &[usize])],
+    bytes: &[u8],
+    lose: fn(&HudEffect) -> bool,
+    landed: bool,
+) -> Rig {
+    let mut r = Rig::with(installed);
+    r.refresh();
+    r.lose = Some((lose, landed));
+    assert_eq!(r.send(HudEvent::Install { bytes: bytes.to_vec(), source: Source::Address, now: 9 }), Handled::Yes);
+    assert!(r.m.busy(), "the answer never came");
+    r
+}
+
 // ---- the behaviours the PR is for ----
 
 /// The pack is written first and `installed.json` second, and nothing is listed until the second
@@ -268,7 +314,7 @@ fn install_writes_the_pack_then_the_index() {
     assert_eq!(fx.iter().map(line).collect::<Vec<_>>(), [format!("write {}", index_path(0).display())]);
     let HudEffect::WriteFile { bytes: index, .. } = &fx[0] else { panic!("{fx:?}") };
     let written = parse_index(index).index;
-    assert_eq!(written["org.example.hud"], Record { sha, source: Source::Address, at: 100 });
+    assert_eq!(written["org.example.hud"], Record::new(sha, Source::Address, 100));
     assert_eq!(m2.entries().len(), 1, "the index is not down yet");
 
     let (_, fx) = step(&mut m2, HudEvent::Written { tag: tag_of(&fx[0]), outcome: WriteOutcome::Done });
@@ -301,7 +347,7 @@ fn an_install_asks_validate_pack_index_in_that_order() {
     assert!(lines[3].starts_with("notice Installed"), "{lines:?}");
     assert_eq!(lines.len(), 4);
     assert_eq!(r.files[&pack_path(0, sha)], bytes);
-    assert_eq!(r.index_of(0)["org.example.hud"], Record { sha, source: Source::Address, at: 100 });
+    assert_eq!(r.index_of(0)["org.example.hud"], Record::new(sha, Source::Address, 100));
 }
 
 /// A candidate that refuses the pack, or the index, is passed over; the first that takes both is used.
@@ -715,8 +761,8 @@ fn a_drop_file_installs_as_unreviewed_when_it_is_still_what_was_listed() {
 
 // ---- addressing and busy ----
 
-/// An answer for a tag nothing awaits changes nothing, an install waits for the idle, and a Refresh
-/// takes over a listing but not an install.
+/// An answer for a tag nothing awaits changes nothing, an install or a removal waits for the idle, and
+/// a Refresh is always taken: it replaces a listing, an install or a removal in flight.
 #[test]
 fn stale_answers_and_busy_commands_are_not_handled() {
     let bytes = pack("org.example.hud", "1.0.0");
@@ -741,6 +787,8 @@ fn stale_answers_and_busy_commands_are_not_handled() {
     assert_eq!(step(&mut m, HudEvent::Install { bytes: pack("org.example.other", "1.0.0"), source: Source::Address, now: 2 }).0, Handled::No);
     assert_eq!(step(&mut m, HudEvent::Read { tag: tag_of(&fx[0]), result: Err(ReadError::Failed) }).0, Handled::No);
     assert!(m.busy());
+    // A Refresh is the one command it does not hold back: it takes over from the install.
+    assert_eq!(step(&mut m, HudEvent::Refresh { setup: setup(), selected: String::new() }).0, Handled::Yes);
 }
 
 /// An answer that never comes, or comes in the wrong kind, must not leave the store busy for the life
@@ -755,7 +803,7 @@ fn a_refresh_takes_over_from_an_install_or_removal_that_never_finished() {
     assert!(m.busy());
     let (handled, fx) = step(&mut m, HudEvent::Refresh { setup: setup(), selected: String::new() });
     assert_eq!(handled, Handled::Yes);
-    assert_ne!(tag_of(&fx[0]), owed);
+    assert_ne!(tag_of(&fx[1]), owed, "the notice for the displaced install comes first");
     let verdict = validator(&bytes);
     assert_eq!(step(&mut m, HudEvent::Validated { tag: owed, sha: Sha::of(&bytes), verdict }).0, Handled::No);
 
@@ -771,6 +819,131 @@ fn a_refresh_takes_over_from_an_install_or_removal_that_never_finished() {
     assert_eq!(step(&mut r.m, ack).0, Handled::No);
     // Nothing was removed on the way: the disk still lists it.
     assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.hud"]);
+}
+
+/// A Refresh that displaces an install ends it with a notice, whatever step it had reached: nothing
+/// else will say it did not finish. The listing that follows shows what the disk holds, so an install
+/// whose index write did reach the disk is listed anyway.
+#[test]
+fn a_refresh_that_displaces_an_install_says_it_was_not_written() {
+    let bytes = pack("org.example.hud", "1.0.0");
+    let sha = Sha::of(&bytes);
+    let not_written = Notice::NotWritten { sha };
+    for (step, lose, landed, listed) in [
+        ("validating", is_validate as fn(&HudEffect) -> bool, false, false),
+        ("writing the pack", is_pack_write, false, false),
+        ("writing the pack, which landed", is_pack_write, true, false),
+        ("writing the index", is_index_write, false, false),
+        ("writing the index, which landed", is_index_write, true, true),
+    ] {
+        let mut r = stalled_install(&[], &bytes, lose, landed);
+        let mark = r.log.len();
+        r.refresh();
+        assert_eq!(r.log[mark], HudEffect::Notice(not_written.clone()), "{step}: the notice leads");
+        assert_eq!(r.notices, [not_written.clone()], "{step}");
+        assert_eq!(r.ids().len(), 1 + usize::from(listed), "{step}: the listing shows the disk");
+    }
+
+    // A drop file being read again before it is installed.
+    let mut r = Rig::new();
+    r.files.insert(root(0).join(DROP_DIR).join("a.plxhud.json"), bytes.clone());
+    r.refresh();
+    r.lose = Some((is_drop_read, false));
+    assert_eq!(r.send(HudEvent::InstallDrop { sha, now: 9 }), Handled::Yes);
+    assert!(r.m.busy());
+    r.refresh();
+    assert_eq!(r.notices, [not_written]);
+}
+
+/// A Refresh that displaces a removal ends it with `RemoveIncomplete`: the candidates it had not
+/// rewritten yet still list the id.
+#[test]
+fn a_refresh_that_displaces_a_removal_says_it_is_incomplete() {
+    let bytes = pack("org.example.hud", "1.0.0");
+    let sha = Sha::of(&bytes);
+    let id = "org.example.hud";
+    let mut r = Rig::with(&[(&bytes, Source::Drop, &[0, 1])]);
+    r.refresh();
+    r.lose = Some((is_index_write, true));
+    assert_eq!(r.send(HudEvent::Removed { id: id.into() }), Handled::Yes);
+    assert!(r.m.busy(), "the first candidate's answer never came");
+    let mark = r.log.len();
+    r.refresh();
+    let incomplete = Notice::RemoveIncomplete { id: id.into() };
+    assert_eq!(r.log[mark], HudEffect::Notice(incomplete.clone()));
+    assert_eq!(r.notices, [incomplete]);
+    // The disk is as the half-done removal left it, and the listing says so.
+    assert!(r.index_of(0).is_empty() && !r.index_of(1).is_empty());
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, id]);
+    // The pack of the candidate it did rewrite is no longer named by anything: gone. The other is kept.
+    assert!(!r.files.contains_key(&pack_path(0, sha)));
+    assert!(r.files.contains_key(&pack_path(1, sha)));
+}
+
+/// The pack an install was writing when a Refresh displaced it is deleted once the listing has read
+/// the indexes again and no index names it; which pack that is depends on whether the index write
+/// reached the disk, which only the disk knows.
+#[test]
+fn a_pack_a_displaced_install_left_unlisted_is_deleted_by_the_listing_that_follows() {
+    let v1 = pack("org.example.hud", "1.0.0");
+    let v2 = pack("org.example.hud", "2.0.0");
+    let (s1, s2) = (Sha::of(&v1), Sha::of(&v2));
+    let installed: &[(&[u8], Source, &[usize])] = &[(&v1, Source::Address, &[0])];
+    let version = |r: &Rig| r.entry("org.example.hud").meta.unwrap().version;
+
+    // The pack landed and the index was never written: v2's pack is the orphan.
+    let mut r = stalled_install(installed, &v2, is_pack_write, true);
+    assert!(r.files.contains_key(&pack_path(0, s2)));
+    r.refresh();
+    assert!(!r.files.contains_key(&pack_path(0, s2)));
+    assert!(r.files.contains_key(&pack_path(0, s1)), "the installed one is untouched");
+    assert_eq!(version(&r), "1.0.0");
+
+    // The index write reached the disk and its answer was lost: v2 is the package, v1's pack the orphan.
+    let mut r = stalled_install(installed, &v2, is_index_write, true);
+    r.refresh();
+    assert_eq!(version(&r), "2.0.0");
+    assert!(r.files.contains_key(&pack_path(0, s2)));
+    assert!(!r.files.contains_key(&pack_path(0, s1)));
+
+    // The index write never reached the disk: v2's pack is the orphan, v1 is still the package.
+    let mut r = stalled_install(installed, &v2, is_index_write, false);
+    r.refresh();
+    assert_eq!(version(&r), "1.0.0");
+    assert!(!r.files.contains_key(&pack_path(0, s2)));
+    assert!(r.files.contains_key(&pack_path(0, s1)));
+}
+
+/// The reclaim never costs a pack an index it could not read might name, or one an unreadable record
+/// of the same file still names.
+#[test]
+fn a_reclaim_spares_what_an_index_it_could_not_read_may_name() {
+    let v2 = pack("org.example.hud", "2.0.0");
+    let s2 = Sha::of(&v2);
+
+    // Candidate 0's index is unreadable when the listing comes: the pack may be listed there.
+    let mut r = stalled_install(&[], &v2, is_pack_write, true);
+    r.unreadable.push(index_path(0));
+    r.refresh();
+    assert!(r.files.contains_key(&pack_path(0, s2)));
+
+    // A record this build cannot read still names the pack of the package a removal takes out.
+    let a = pack("org.example.a", "1.0.0");
+    let text = format!(
+        r#"{{"v":1,"packs":{{
+            "org.example.a":{{"sha":"{0}","source":"drop","at":1}},
+            "org.example.b":{{"sha":"{0}","source":"carrier-pigeon","at":2}}
+        }}}}"#,
+        Sha::of(&a).hex()
+    );
+    let mut r = Rig::new();
+    r.files.insert(index_path(0), text.into_bytes());
+    r.files.insert(pack_path(0, Sha::of(&a)), a.clone());
+    r.refresh();
+    let mark = r.log.len();
+    assert_eq!(r.send(HudEvent::Removed { id: "org.example.a".into() }), Handled::Yes);
+    assert!(r.lines(mark).iter().all(|l| !l.starts_with("delete")), "{:?}", r.lines(mark));
+    assert!(r.files.contains_key(&pack_path(0, Sha::of(&a))));
 }
 
 // ---- an installed.json this build cannot fully read is never rewritten from a partial view ----
@@ -835,31 +1008,132 @@ fn an_index_from_a_newer_build_or_garbage_is_listed_but_never_rewritten() {
     assert_eq!(r.files[&index_path(0)], b"not json");
 }
 
-/// A record this build cannot read (an unknown source, an extra field a later build added) is not the
-/// store's to delete: an install into the same index writes it back unchanged.
+/// The packs object of the `installed.json` a rig holds for candidate `n`.
+fn packs_of(r: &Rig, n: usize) -> Map<String, Value> {
+    let doc: Value = serde_json::from_slice(&r.files[&index_path(n)]).unwrap();
+    doc["packs"].as_object().unwrap().clone()
+}
+
+/// A rig whose candidate 0 holds this `installed.json` and the pack of `org.example.a`.
+fn rig_with_index(text: String, a: &[u8]) -> Rig {
+    let mut r = Rig::new();
+    r.files.insert(index_path(0), text.into_bytes());
+    r.files.insert(pack_path(0, Sha::of(a)), a.to_vec());
+    r
+}
+
+/// A record this build reads, with a field a later build added, is listed and written back with that
+/// field: a rewrite for another package must not strip what it does not know.
 #[test]
-fn records_this_build_cannot_read_survive_a_rewrite() {
+fn a_record_with_a_field_a_later_build_added_is_written_back_with_it() {
+    let a = pack("org.example.a", "1.0.0");
+    let b = pack("org.example.b", "1.0.0");
+    let text = format!(
+        r#"{{"v":1,"packs":{{"org.example.a":{{"sha":"{}","source":"drop","at":1,"pinned":true,"note":{{"k":[1,2]}}}}}}}}"#,
+        Sha::of(&a).hex()
+    );
+    let mut r = rig_with_index(text, &a);
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a"], "it is a record this build reads");
+    r.install(&b, Source::Address, 3);
+    let packs = packs_of(&r, 0);
+    assert_eq!(packs.keys().collect::<Vec<_>>(), ["org.example.a", "org.example.b"]);
+    assert_eq!(packs["org.example.a"]["pinned"], true);
+    assert_eq!(packs["org.example.a"]["note"], serde_json::json!({"k": [1, 2]}));
+    assert_eq!(packs["org.example.a"]["source"], "drop");
+    assert_eq!(packs["org.example.a"]["at"], 1);
+    // Removing the other package rewrites the file again; the field is still there.
+    r.send(HudEvent::Removed { id: "org.example.b".into() });
+    assert_eq!(packs_of(&r, 0)["org.example.a"]["pinned"], true);
+}
+
+/// A record whose source this build does not know is not listed, and is written back as it was.
+#[test]
+fn a_record_with_a_source_this_build_does_not_know_is_written_back_unchanged() {
     let a = pack("org.example.a", "1.0.0");
     let b = pack("org.example.b", "1.0.0");
     let text = format!(
         r#"{{"v":1,"packs":{{
             "org.example.a":{{"sha":"{}","source":"drop","at":1}},
-            "org.example.future":{{"sha":"{}","source":"carrier-pigeon","at":2,"extra":true}}
+            "org.example.future":{{"sha":"{}","source":"carrier-pigeon","at":2}}
         }}}}"#,
         Sha::of(&a).hex(),
         Sha::of(b"f").hex()
     );
-    let mut r = Rig::new();
-    r.files.insert(index_path(0), text.into_bytes());
-    r.files.insert(pack_path(0, Sha::of(&a)), a.clone());
+    let mut r = rig_with_index(text, &a);
     r.refresh();
     assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a"]);
     r.install(&b, Source::Address, 3);
-    let doc: Value = serde_json::from_slice(&r.files[&index_path(0)]).unwrap();
-    let packs = doc["packs"].as_object().unwrap();
+    let packs = packs_of(&r, 0);
     assert_eq!(packs.keys().collect::<Vec<_>>(), ["org.example.a", "org.example.b", "org.example.future"]);
-    assert_eq!(packs["org.example.future"]["source"], "carrier-pigeon");
-    assert_eq!(packs["org.example.future"]["extra"], true);
+    assert_eq!(
+        packs["org.example.future"],
+        serde_json::json!({"sha": Sha::of(b"f").hex(), "source": "carrier-pigeon", "at": 2})
+    );
+}
+
+/// An install of an id that only an unreadable record names replaces that record, says so, and leaves
+/// nothing of it behind: a removal that follows in the same listing must not write it back.
+///
+/// Why replace and not refuse: the list never shows such a record, so no one can remove it, and a
+/// refusal would block the id for good (a corrupt record, or one a later build wrote, is exactly what
+/// the user is trying to get past). An explicit install of an id is the user choosing the package of
+/// that id; the notice is how the loss is not silent.
+#[test]
+fn an_install_over_an_unreadable_record_of_its_id_replaces_it_and_says_so() {
+    let a = pack("org.example.a", "1.0.0");
+    let old = b"the pack the unreadable record named".to_vec();
+    let text = format!(
+        r#"{{"v":1,"packs":{{"org.example.a":{{"sha":"{}","source":"carrier-pigeon","at":2}}}}}}"#,
+        Sha::of(&old).hex()
+    );
+    let mut r = rig_with_index(text, &old);
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC], "not listed: this build cannot read it");
+
+    r.install(&a, Source::Address, 3);
+    assert_eq!(
+        r.notices,
+        [
+            Notice::ReplacedUnreadable { id: "org.example.a".into() },
+            Notice::Installed { id: "org.example.a".into(), version: "1.0.0".into(), sha: Sha::of(&a), until_restart: false },
+        ]
+    );
+    assert_eq!(packs_of(&r, 0)["org.example.a"]["source"], "address");
+    assert!(!r.files.contains_key(&pack_path(0, Sha::of(&old))), "the replaced record's pack is not left behind");
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a"]);
+
+    // The old record is gone from the store's memory too: removing the package empties the id.
+    r.send(HudEvent::Removed { id: "org.example.a".into() });
+    assert!(packs_of(&r, 0).is_empty(), "{:?}", packs_of(&r, 0));
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC]);
+}
+
+/// A removal takes every record of the id out, the ones this build cannot read included: a listed copy
+/// in one candidate and an unreadable one in another both go, and an id only an unreadable record
+/// names can be removed too.
+#[test]
+fn a_removal_drops_the_unreadable_records_of_the_id_too() {
+    let a = pack("org.example.a", "1.0.0");
+    let unreadable = |id: &str, sha: Sha| {
+        format!(r#"{{"v":1,"packs":{{"{id}":{{"sha":"{}","source":"carrier-pigeon","at":2}}}}}}"#, sha.hex())
+    };
+    let mut r = Rig::with(&[(&a, Source::Drop, &[1])]);
+    r.files.insert(index_path(0), unreadable("org.example.a", Sha::of(b"x")).into_bytes());
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a"], "candidate 1 lists it");
+    assert_eq!(r.send(HudEvent::Removed { id: "org.example.a".into() }), Handled::Yes);
+    assert!(packs_of(&r, 0).is_empty() && packs_of(&r, 1).is_empty());
+    assert_eq!(r.notices.last(), Some(&Notice::Removed { id: "org.example.a".into() }));
+
+    // Only an unreadable record names it: no listing offers a remove, but the command is honoured.
+    let mut r = Rig::new();
+    r.files.insert(index_path(0), unreadable("org.example.ghost", Sha::of(b"x")).into_bytes());
+    r.refresh();
+    assert_eq!(r.send(HudEvent::Removed { id: "org.example.ghost".into() }), Handled::Yes);
+    assert!(packs_of(&r, 0).is_empty());
+    assert_eq!(r.notices.last(), Some(&Notice::Removed { id: "org.example.ghost".into() }));
+    assert_eq!(r.send(HudEvent::Removed { id: "org.example.ghost".into() }), Handled::No);
 }
 
 /// An install over the byte bound is refused before anything is asked of the runner.
@@ -901,8 +1175,8 @@ fn a_sha_round_trips_through_its_hex_and_only_64_lowercase_digits_parse() {
 #[test]
 fn the_index_file_round_trips_and_a_bad_record_costs_only_itself() {
     let mut index = Index::new();
-    index.insert("org.example.a".to_string(), Record { sha: Sha::of(b"a"), source: Source::Registry, at: 5 });
-    index.insert("org.example.b".to_string(), Record { sha: Sha::of(b"b"), source: Source::Drop, at: 6 });
+    index.insert("org.example.a".to_string(), Record::new(Sha::of(b"a"), Source::Registry, 5));
+    index.insert("org.example.b".to_string(), Record::new(Sha::of(b"b"), Source::Drop, 6));
     assert_eq!(parse_index(&index_bytes(&index, &Map::new())).index, index);
     assert_eq!(
         index_bytes(&index, &Map::new()),

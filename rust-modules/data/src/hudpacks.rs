@@ -31,18 +31,26 @@
 //! **Unreadable is not empty.** An `installed.json` that is missing is an empty candidate, free to take
 //! the first install. One that failed to read, is not JSON, or says it is from a newer layout is listed
 //! as far as it parses and never written (an install goes to the next candidate, a removal reports
-//! itself incomplete), and a record this build cannot read is written back unchanged by every rewrite
-//! of its file: a partial view never overwrites what it did not see.
+//! itself incomplete), and a partial view never overwrites what it did not see: a record this build
+//! cannot read (a source or a sha it does not know) and the fields of a record it can read that a later
+//! build added are written back unchanged by every rewrite of their file. Only an install of the same
+//! id replaces an unreadable record (the list never shows it, so no one could remove it; the install
+//! says so with [`Notice::ReplacedUnreadable`]), and a removal of the id takes it out.
 //!
 //! **Work is sequential**: at most one request is in flight, so a runner may execute effects in the
 //! order they are pushed and memory stays bounded by one file, with no cap on how many packages exist.
+//! A `Refresh` replaces work in flight, so it ends an install or removal it displaces with a notice and,
+//! once the indexes are read again, deletes the packs that work may have left that no index names (an
+//! unreadable index shields its candidate). A process that dies mid-install is not covered: the store
+//! keeps no list of the packs on disk, only of those an index names, and a pack left that way costs
+//! bytes, never correctness (installing the same package again writes over it).
 //!
 //! | event | in state | effects, next state |
 //! |---|---|---|
-//! | `Refresh` | any (it takes over from work whose answer never came) | per candidate `ReadFile(installed.json)`; then `ReadFile(packs/<sha>)` + `Validate` per distinct sha; then `ScanDir(drop)` and `ReadFile` + `Validate` per file; idle |
+//! | `Refresh` | any: it replaces a listing, install or removal in flight (an install ends `NotWritten`, a removal `RemoveIncomplete`) | per candidate `ReadFile(installed.json)`; `Delete` of a displaced work's pack no index names; then `ReadFile(packs/<sha>)` + `Validate` per distinct sha; then `ScanDir(drop)` and `ReadFile` + `Validate` per file; idle |
 //! | `Install` | idle | `Validate`; on a loadable verdict `WriteFile(pack)` then `WriteFile(installed.json)`; `Notice::Installed` or `Notice::Refused`/`NotWritten` |
 //! | `InstallDrop` | idle | `ReadFile(drop file)`, then as `Install` (the bytes must hash to the sha the user saw) |
-//! | `Removed` | idle | `WriteFile(installed.json)` per candidate listing the id, `Delete(pack)`; `Selection(builtin)` when the selected one went |
+//! | `Removed` | idle | `WriteFile(installed.json)` per candidate holding a record of the id (an unreadable one too), `Delete(pack)`; `Selection(builtin)` when the selected one went |
 //! | `Selected` | any | `Selection(id)` for the built-in or a listed, loadable package; else not handled |
 //!
 //! A pair not listed (a result for a tag nothing awaits, an install while busy) is [`Handled::No`] and
@@ -68,7 +76,10 @@ const PACKS_DIR: &str = "packs";
 const DROP_DIR: &str = "drop";
 const INDEX_FILE: &str = "installed.json";
 const PACK_SUFFIX: &str = ".plxhud.json";
-/// The `v` of an `installed.json` this build writes.
+/// The `v` of an `installed.json` this build writes. A build that adds a field to a record keeps `v`
+/// (an older build carries the field through, [`Record::extra`]); a change an older build could not
+/// carry through (a new top-level key, a different meaning for a field) raises it, and an older build
+/// then reads the file and never writes it.
 const INDEX_FORMAT: u64 = 1;
 
 // ---------------------------------------------------------------------------------------------
@@ -270,7 +281,10 @@ pub struct Setup {
     /// `paths::hud_candidates()` in order, each marked volatile or not by the runner.
     pub candidates: Vec<Candidate>,
     /// The most bytes of one file the store asks to read (`appkit::hud_format`'s package bound, which
-    /// the validator enforces too; also bounds an `installed.json`).
+    /// the validator enforces too; also bounds an `installed.json`) and the most an install may carry.
+    /// `Setup::default()` leaves it 0, so an `Install` before the first `Refresh` is refused as
+    /// [`Refusal::TooLarge`]: the runner that wires the store (PR10b) sets it from `appkit`'s
+    /// `MAX_PACKAGE_BYTES` in the `Setup` it sends.
     pub max_pack_bytes: usize,
 }
 
@@ -303,14 +317,20 @@ pub enum Notice {
     Removed { id: String },
     /// Some candidate kept the entry (its index could not be rewritten), so the id may list again.
     RemoveIncomplete { id: String },
+    /// An install took the place of a record of its id in `installed.json` that this build cannot read
+    /// (so the list never showed it). Sent just before `Installed`.
+    ReplacedUnreadable { id: String },
 }
 
 /// The events [`HudStore::step`] takes.
 #[derive(Debug)]
 pub enum HudEvent {
-    /// HUD settings opened (or the store started): forget the listing and read every candidate. Takes
-    /// over a listing in flight; ignored while an install or removal runs. `selected` is the profile's
-    /// setting (empty: the built-in).
+    /// HUD settings opened (or the store started): forget the listing and read every candidate. Always
+    /// taken, and it replaces whatever is in flight. A listing is dropped silently. An install ends
+    /// with [`Notice::NotWritten`] and a removal with [`Notice::RemoveIncomplete`] (the listing that
+    /// follows shows what the disk holds, which may be the finished work: an answer can be lost after
+    /// the write landed), and a pack the displaced work may have left that no index names after the
+    /// re-read is deleted. `selected` is the profile's setting (empty: the built-in).
     Refresh { setup: Setup, selected: String },
     /// A [`HudEffect::ScanDir`] answered with the file names in the directory.
     Scanned { tag: Tag, result: Result<Vec<String>, ReadError> },
@@ -340,7 +360,8 @@ pub enum HudEffect {
     ReadFile { tag: Tag, at: Loc, max_bytes: usize },
     /// Write a file whole and atomically (beside it, then renamed): [`HudEvent::Written`].
     WriteFile { tag: Tag, at: Loc, bytes: Arc<[u8]> },
-    /// Delete a file. Nothing returns: a pack left behind costs bytes, never correctness.
+    /// Delete a file; one already gone is not an error. Nothing returns: a pack left behind costs
+    /// bytes, never correctness.
     Delete { at: Loc },
     /// Parse and compile these bytes (the format lives above this layer): [`HudEvent::Validated`].
     Validate { tag: Tag, sha: Sha, bytes: Arc<[u8]> },
@@ -387,11 +408,20 @@ pub struct DropFile {
 type Index = BTreeMap<String, Record>;
 
 /// One `installed.json` entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Record {
     sha: Sha,
     source: Source,
     at: u64,
+    /// The fields of the entry this build does not know (a later build added them): written back with
+    /// it by every rewrite, and gone with it when the record is replaced or removed.
+    extra: Map<String, Value>,
+}
+
+impl Record {
+    fn new(sha: Sha, source: Source, at: u64) -> Self {
+        Record { sha, source, at, extra: Map::new() }
+    }
 }
 
 /// Whether the store may rewrite a candidate's `installed.json`.
@@ -460,6 +490,9 @@ struct Flight {
 struct Listing {
     todo: VecDeque<Job>,
     flight: Option<Flight>,
+    /// Packs a displaced install or removal may have left unlisted, by candidate directory: deleted
+    /// once the indexes are read again, if none of them names the pack.
+    stray: Vec<(PathBuf, Sha)>,
 }
 
 /// Bytes on their way to the disk, and what is known about them.
@@ -494,8 +527,17 @@ struct Removing {
     /// The candidates still to rewrite.
     dirs: VecDeque<usize>,
     incomplete: bool,
-    /// The index write in flight: its candidate, its tag, the index it writes and the pack it unlists.
-    flight: Option<(Tag, usize, Index, Sha)>,
+    flight: Option<Rewrite>,
+}
+
+/// An index write of a removal, in flight: what the candidate holds once it lands.
+struct Rewrite {
+    tag: Tag,
+    dir: usize,
+    index: Index,
+    kept: Map<String, Value>,
+    /// The packs the removed records named (a record this build cannot read may name one too).
+    gone: Vec<Sha>,
 }
 
 enum Op {
@@ -757,8 +799,11 @@ impl HudStore {
         Ok(meta.clone())
     }
 
+    /// Whether an index of candidate `dir` names the pack, in a record this build reads or one it keeps.
     fn referenced(&self, dir: usize, sha: Sha) -> bool {
-        self.dirs.get(dir).is_some_and(|d| d.index.values().any(|r| r.sha == sha))
+        self.dirs.get(dir).is_some_and(|d| {
+            d.index.values().any(|r| r.sha == sha) || d.kept.values().any(|raw| raw_sha(raw) == Some(sha))
+        })
     }
 
     fn notice(fx: &mut Vec<HudEffect>, notice: Notice) {
@@ -767,7 +812,42 @@ impl HudStore {
 
     // -------- listing --------
 
+    /// End the install or removal a `Refresh` displaces with its notice, and return the packs it may
+    /// have left behind. It must run before the new `Setup` replaces the candidates it indexes.
+    fn displaced(&mut self, fx: &mut Vec<HudEffect>) -> Vec<(PathBuf, Sha)> {
+        let at = |store: &Self, dir: usize, sha: Sha| store.setup.candidates.get(dir).map(|c| (c.dir.clone(), sha));
+        let mut stray = Vec::new();
+        match std::mem::replace(&mut self.op, Op::Idle) {
+            Op::Idle | Op::Listing(_) => {}
+            Op::Installing(Installing { step, .. }) => {
+                let sha = match step {
+                    Step::Reading { sha, .. } => sha,
+                    Step::Validating(offer) => offer.sha,
+                    Step::Writing { offer, dir, what, .. } => {
+                        // The pack is down or on its way. If the index write reached the disk the id's
+                        // old pack is the unlisted one, if not the new one is: only a re-read says.
+                        stray.extend(at(self, dir, offer.sha));
+                        if let Write::Index { replaced: Some(old), .. } = what {
+                            stray.extend(at(self, dir, old).filter(|_| old != offer.sha));
+                        }
+                        offer.sha
+                    }
+                };
+                Self::notice(fx, Notice::NotWritten { sha });
+            }
+            Op::Removing(Removing { id, flight, .. }) => {
+                if let Some(Rewrite { dir, gone, .. }) = flight {
+                    // The rewrite may have reached the disk: the packs it unlisted are the stray ones.
+                    stray.extend(gone.into_iter().filter_map(|sha| at(self, dir, sha)));
+                }
+                Self::notice(fx, Notice::RemoveIncomplete { id });
+            }
+        }
+        stray
+    }
+
     fn begin_listing(&mut self, setup: Setup, selected: String, fx: &mut Vec<HudEffect>) {
+        let stray = self.displaced(fx);
         let n = setup.candidates.len();
         self.dirs = vec![Dir::default(); n];
         self.packs.clear();
@@ -777,7 +857,19 @@ impl HudStore {
         let mut todo: VecDeque<Job> = (0..n).map(Job::Index).collect();
         todo.push_back(Job::Plan);
         todo.extend((0..n).map(Job::Scan));
-        self.op = self.advance(Listing { todo, flight: None }, fx);
+        self.op = self.advance(Listing { todo, flight: None, stray }, fx);
+    }
+
+    /// Delete the packs a displaced operation may have left that no index names now that every index
+    /// has been read again. A candidate whose index could not be read whole is left alone: it may name
+    /// them.
+    fn reclaim(&self, stray: Vec<(PathBuf, Sha)>, fx: &mut Vec<HudEffect>) {
+        for (root, sha) in stray {
+            let Some(dir) = self.setup.candidates.iter().position(|c| c.dir == root) else { continue };
+            if self.dirs[dir].access == Access::Writable && !self.referenced(dir, sha) {
+                fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
+            }
+        }
     }
 
     /// The `Pack` jobs for every distinct sha the indexes name, each trying its candidates in order.
@@ -800,6 +892,7 @@ impl HudStore {
             let tag = self.tag();
             let effect = match &job {
                 Job::Plan => {
+                    self.reclaim(std::mem::take(&mut listing.stray), fx);
                     for planned in self.plan_packs().into_iter().rev() {
                         listing.todo.push_front(planned);
                     }
@@ -948,7 +1041,7 @@ impl HudStore {
                     // The pack is down: switch the candidate's index to it.
                     let mut index = self.dirs[dir].index.clone();
                     let replaced = index
-                        .insert(meta.id.clone(), Record { sha: offer.sha, source: offer.source, at: offer.now })
+                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now))
                         .map(|old| old.sha);
                     let tag = self.tag();
                     fx.push(HudEffect::WriteFile {
@@ -964,11 +1057,21 @@ impl HudStore {
                 (Write::Pack, WriteOutcome::Refused) => self.write_pack(offer, meta, dir + 1, fx),
                 (Write::Index { index, replaced }, WriteOutcome::Done) => {
                     self.dirs[dir].index = index;
+                    // A record of this id that only the kept entries held is replaced by the one just
+                    // written (`index_bytes` left it out): forget it, or a removal would write it back.
+                    let unreadable = self.dirs[dir].kept.remove(&meta.id);
                     let until_restart = self.volatile(dir);
                     self.packs
                         .insert(offer.sha, Loaded { meta: meta.clone(), loadable: Ok(()), volatile: until_restart });
-                    if let Some(old) = replaced.filter(|old| *old != offer.sha && !self.referenced(dir, *old)) {
-                        fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(old)) });
+                    let mut old = Vec::new();
+                    for sha in replaced.into_iter().chain(unreadable.as_ref().and_then(raw_sha)) {
+                        if sha != offer.sha && !old.contains(&sha) && !self.referenced(dir, sha) {
+                            old.push(sha);
+                            fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
+                        }
+                    }
+                    if unreadable.is_some() {
+                        Self::notice(fx, Notice::ReplacedUnreadable { id: meta.id.clone() });
                     }
                     Self::notice(
                         fx,
@@ -1011,8 +1114,9 @@ impl HudStore {
         if self.busy() || id == BUILTIN_CLASSIC {
             return Handled::No;
         }
-        let dirs: VecDeque<usize> =
-            (0..self.dirs.len()).filter(|d| self.dirs[*d].index.contains_key(&id)).collect();
+        let dirs: VecDeque<usize> = (0..self.dirs.len())
+            .filter(|d| self.dirs[*d].index.contains_key(&id) || self.dirs[*d].kept.contains_key(&id))
+            .collect();
         if dirs.is_empty() {
             return Handled::No;
         }
@@ -1027,15 +1131,22 @@ impl HudStore {
                 removing.incomplete = true;
                 continue;
             }
+            // The record of the id in this candidate, whether this build reads it or only keeps it.
             let mut index = self.dirs[dir].index.clone();
-            let Some(gone) = index.remove(&removing.id) else { continue };
+            let mut kept = self.dirs[dir].kept.clone();
+            let mut gone: Vec<Sha> = index.remove(&removing.id).map(|r| r.sha).into_iter().collect();
+            let unreadable = kept.remove(&removing.id);
+            gone.extend(unreadable.as_ref().and_then(raw_sha).filter(|sha| !gone.contains(sha)));
+            if gone.is_empty() && unreadable.is_none() {
+                continue;
+            }
             let tag = self.tag();
             fx.push(HudEffect::WriteFile {
                 tag,
                 at: self.loc(dir, INDEX_FILE.to_string()),
-                bytes: index_bytes(&index, &self.dirs[dir].kept),
+                bytes: index_bytes(&index, &kept),
             });
-            removing.flight = Some((tag, dir, index, gone.sha));
+            removing.flight = Some(Rewrite { tag, dir, index, kept, gone });
             return Op::Removing(removing);
         }
         // Whatever no candidate lists any more is forgotten, and the selection follows the package.
@@ -1057,11 +1168,12 @@ impl HudStore {
     fn removing_result(&mut self, mut removing: Removing, ev: HudEvent, fx: &mut Vec<HudEffect>) -> (Op, Handled) {
         let HudEvent::Written { tag, outcome } = ev else { return (Op::Removing(removing), Handled::No) };
         match removing.flight.take() {
-            Some((awaited, dir, index, sha)) if awaited == tag => {
+            Some(Rewrite { tag: awaited, dir, index, kept, gone }) if awaited == tag => {
                 match outcome {
                     WriteOutcome::Done => {
                         self.dirs[dir].index = index;
-                        if !self.referenced(dir, sha) {
+                        self.dirs[dir].kept = kept;
+                        for sha in gone.into_iter().filter(|sha| !self.referenced(dir, *sha)) {
                             fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
                         }
                     }
@@ -1112,11 +1224,22 @@ struct IndexRecord {
     sha: String,
     source: Source,
     at: u64,
+    /// What a later build added to the entry; [`Record::extra`].
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+/// The sha an entry of `installed.json` names, read off the raw JSON: it works for a record this build
+/// cannot otherwise read (an unknown source) too, so the pack that record names is not deleted from
+/// under it.
+fn raw_sha(raw: &Value) -> Option<Sha> {
+    raw.get("sha").and_then(Value::as_str).and_then(Sha::parse)
 }
 
 /// The entries of an `installed.json`, leniently. One bad record (an unknown source, a sha that is not
 /// 64 lowercase hex digits, a missing field) costs only itself: it is not listed, and it is kept to be
-/// written back unchanged. A claim on `builtin:classic` is dropped outright. A file that is not JSON,
+/// written back unchanged. A record that parses keeps any field beyond `sha`, `source` and `at`
+/// ([`Record::extra`]). A claim on `builtin:classic` is dropped outright. A file that is not JSON,
 /// or that a newer layout wrote (`v` above [`INDEX_FORMAT`]), lists what parses and is read-only.
 fn parse_index(bytes: &[u8]) -> Dir {
     // An object, not just anything serde would fill a struct from (an empty array reads as all defaults).
@@ -1132,7 +1255,7 @@ fn parse_index(bytes: &[u8]) -> Dir {
         }
         let record = serde_json::from_value::<IndexRecord>(value.clone())
             .ok()
-            .and_then(|r| Some(Record { sha: Sha::parse(&r.sha)?, source: r.source, at: r.at }));
+            .and_then(|r| Some(Record { extra: r.extra, ..Record::new(Sha::parse(&r.sha)?, r.source, r.at) }));
         match (record, value) {
             (Some(record), _) => {
                 dir.index.insert(id, record);
@@ -1156,7 +1279,7 @@ fn index_bytes(index: &Index, kept: &Map<String, Value>) -> Arc<[u8]> {
         }
     }
     for (id, record) in index {
-        let mut entry = Map::new();
+        let mut entry = record.extra.clone();
         entry.insert("sha".to_string(), Value::String(record.sha.hex()));
         entry.insert("source".to_string(), Value::String(record.source.as_str().to_string()));
         entry.insert("at".to_string(), Value::from(record.at));
