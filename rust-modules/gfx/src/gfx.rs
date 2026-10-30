@@ -4581,7 +4581,8 @@ const POPOVER_MAX_RISE: f32 = 20.0;
 ///
 /// **Only for a glass that RISES.** A glass that stays at its rest rect is grabbed [`BLUR_REACH`] out
 /// and no more ([`blur_region_for`]); `BLUR_MARGIN` is the figure for the ones that slide
-/// (`ui::hold_hint`) and the conservative upper bound the band budget is priced at.
+/// (`ui::hold_hint`). The top band never rises and has no budget priced at it since 2026-10-30;
+/// only the hold hint's separation test still grades the band at this margin, as an upper bound.
 pub const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
 
 /// The region area a MOVING host can carry at 60 fps, in authored px² — the design system's

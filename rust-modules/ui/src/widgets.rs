@@ -2779,7 +2779,9 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 ///
 /// The tab band publishes the shared face on `GlassPlan`; both surfaces automatically declare
 /// their current rectangles in the same chrome layer. The planner captures their union once,
-/// and separates their z bands automatically if their sampling regions overlap.
+/// and separates their z bands only if their drawn rects overlap: inside each other's sampling
+/// reach they still sample the page, never each other, so they keep one source
+/// (`backdrop::surface_with`).
 ///
 /// **`frozen` is the opener lift's ground** (`lift_profile_chip`, the account menu up): the
 /// capsule then stands on the stack's latched underlay field through `Painter::glass_frozen`, with
@@ -3081,10 +3083,11 @@ pub fn lift_profile_chip(
 /// for them instead of smearing across the grow.
 ///
 /// The two differ on ONE policy and deliberately: what happens when the word does not fit. The chip
-/// ELIDES to a fixed `CHIP_NAME_MAX` budget, because a profile name is user data of any length and
-/// a shortened name is still a name. A verb is not — half of "Mark as Unwatched" teaches less than
-/// the tick it was meant to explain — so a control with a hard bound to respect asks
-/// [`CircleButton::label_budget`] and shows the whole word or none of it
+/// ELIDES to [`chip_name_budget`], the room the bar leaves capped at `CHIP_NAME_MAX`, because a
+/// profile name is user data of any length and a shortened name is still a name; only a bar that
+/// leaves no room for a glyph or two takes the name away. A verb is not — half of "Mark as
+/// Unwatched" teaches less than the tick it was meant to explain — so a control with a hard bound
+/// to respect asks [`CircleButton::label_budget`] and shows the whole word or none of it
 /// (`detail::watch_cap_at`). Both are right for their content; neither is the default.
 const DISC_LABEL_LEAD: f32 = 26.0;
 const DISC_LABEL_GAP: f32 = 14.0;
@@ -7358,7 +7361,9 @@ pub const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
 /// the glass for 4 px. The bar gains entries and its labels vary by language, so its width must
 /// never decide its material, and the clearance moved to the one party whose width is user data
 /// anyway. A 676 px track leaves 396 px of room, so the shipped bar keeps the whole 320; the
-/// budget only bites on a strip near its [`TAB_VIEW_MAX`], where it falls to nothing.
+/// budget bites once the room falls under `CHIP_NAME_MAX` and is `0` under `CHIP_NAME_MIN`, both
+/// well short of [`TAB_VIEW_MAX`]: one more library pill on today's widest strip is already in
+/// that range, so a change to the strip can shorten the name.
 ///
 /// The owner of the chip's text re-asks when either input changes (`app::chrome::ChromeSnapshot`:
 /// the strip's widths with `tabs_generation`, the label with the profile), because the elision
@@ -7747,9 +7752,9 @@ impl StripRender {
         let settled = crate::nav::page_alpha() >= 0.999;
         // **Decided BEFORE the ground is sampled, because it decides whether to sample at all.**
         // `sample_ground` queues five framebuffer copies and reads them back later — so a track
-        // that is about to draw FLAT (a popover is up or `flattabs` is armed) must not pay for a
-        // number only the glass path consumes. It did, on every screen wearing the bar, for as long
-        // as the app was open.
+        // that is about to draw FLAT because the `flattabs` experiment is armed (the only thing
+        // that turns `glass_on` off) must not pay for a number only the glass path consumes. It
+        // did, on every screen wearing the bar, for as long as the app was open.
         let glass_on = tab_glass_on();
         let groundlog = ground_log_armed();
         // …and FASTER while a polarity is being decided: the decision is gated on two independent
@@ -7858,14 +7863,11 @@ impl StripRender {
                 );
             }
         } else {
-            // NOT during a blur source pass. `tab_glass_on` is false there by design — the flat
-            // track is the right source pixel — but deactivating on that basis makes the NEXT
-            // frame's `prepare` see an inactive state, call `activate`, and invalidate the
-            // backdrop. The cadence then resets on every source pass instead of following the
-            // configured refresh period. The old every-third experiment measured 50 refreshes/s
-            // against its intended 20 and an 11% whole-frame regression; the shipping period is
-            // now every changed present, but this guard is still what makes the configured policy
-            // authoritative rather than an accidental reactivation loop.
+            // Only the `flattabs` experiment lands here: `tab_glass_on` is `!flat_tabs_armed()` and
+            // nothing else. It does NOT go false during a blur source pass (nor with a popover up):
+            // the glass arm above runs and the glass call answers the pass itself
+            // (`gfx::draw_blur_backdrop`, `backdrop::surface_with`), and a chain that refuses is
+            // that arm's own flat `else`.
             // The flat capsule, which is the same material at its ceiling — there is nothing for
             // this path to say about ink any more. It once wrote the row's POLARITY here, and that
             // was a reported bug twice over: the write clobbered a value the spring owned, so the

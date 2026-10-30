@@ -883,8 +883,13 @@ below, and they are consistent with it.
 > 88); and the owner's Belarusian strip (676 px once the Watchlist mark joined the bar) lost the
 > glass for 4 px. The cap is gone: the bar is glass at any width, a strip past `TAB_VIEW_MAX`
 > scrolls inside a track that stays glass, and the unfurled chip is kept off the track by its NAME
-> budget instead (`widgets::chip_name_budget`). The widest bar's cost was priced by this
-> section's rule and not re-measured on the television.
+> budget instead (`widgets::chip_name_budget`). The widest bar's cost is measured, not priced:
+> 2026-10-30, `FLAVOR=debug`, `ARM_PROFILE=release`, mock, single runs apart from the two 1544 px
+> `hero-pong` legs. `GPU_ACTIVE` p50 on `hero-pong` reads 7.61M flat, 8.70M at 676 px and 9.65M at
+> 1544 px, the widest track. Missed refreshes in cycles 2-60 read 10 flat, 13 at 676 px, and 14 and
+> 16 at 1544 px on `hero-pong`, and 15 flat, 20 at 676 px and 17 at 1544 px on `grid-pong`. The
+> 1544 px `hero-pong` leg missed 104 and 69 before `backdrop::surface_with` stopped splitting the
+> shared band on touching sampling footprints.
 
 ### What it actually costs
 

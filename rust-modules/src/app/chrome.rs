@@ -143,8 +143,8 @@ impl ChromeSnapshot {
     }
 
     /// Elide the chip's name to the room the strip's CURRENT widths leave it. Called when the
-    /// profile changes and when the strip does (a language switch or a library change lengthens
-    /// the track), because the budget is a function of both and drawing measures nothing.
+    /// profile changes and when the strip does (a library kind appearing or leaving changes the
+    /// track), because the budget is a function of both and drawing measures nothing.
     fn elide_chip_name(&mut self, measure: &dyn Measure) {
         let budget = widgets::chip_name_budget(widgets::tab_track_w(&self.widths));
         (self.initial, self.name, self.name_w) =
@@ -252,7 +252,7 @@ mod tests {
     }
 
     /// The chip's name is elided to the room the strip leaves it, so a change of the STRIP (a
-    /// language switch lengthening every label) re-elides it with the profile untouched: the owner
+    /// library kind appearing or leaving) re-elides it with the profile untouched: the owner
     /// holds the full label and re-asks `chip_name_budget` whenever `tabs_generation` moves, and
     /// drawing measures nothing. A bar too wide to leave the name any room shows none.
     #[test]
