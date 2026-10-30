@@ -210,10 +210,11 @@ pub enum PlayerReq {
     /// take the playback session's `&mut`, which a screen never has (§2.2) — so the panel decides
     /// and the loop performs, exactly as every other request in this enum.
     CommitTrack(plx_appkit::track_menu::TrackCommit),
-    /// **Present one of the player's overlays directly** (restructure phase 12) — the tabs row's OK
-    /// (`OverlayKind::Info`/`::Chapters`, the old `key_ok`'s `focus == 2` arm) and the failure
-    /// read-out's own recovery escape (`OverlayKind::More` on its Quality page, the old
-    /// `key_player_failed`'s `ChooseQuality` arm). Both used to reach
+    /// **Present one of the player's overlays directly** (restructure phase 12) — the failure read-out's own
+    /// recovery escape (`OverlayKind::More` on its Quality page, the old `key_player_failed`'s `ChooseQuality`
+    /// arm) and the Tracks->Timing hand-off. (The tabs row's OK used to be here with `OverlayKind::Info` /
+    /// `::Chapters`; it asks `PlayerReq::Command(HudCommand::ToggleSection(..))` now, and no live path presents
+    /// those two kinds.) The first used to reach
     /// `super::bridge::open_player_overlay` straight from the loop's key ladder; `PlayerScreen`
     /// may not name that function itself (§2.2), so it asks instead.
     OpenOverlay(crate::player::overlay::OverlayKind),

@@ -229,8 +229,9 @@ impl Sections {
 #[derive(Clone, Copy)]
 pub struct HudNav {
     /// Which of the HUD's FocusEngine groups holds focus: [`GROUP_SCRUB`] (the scrubber),
-    /// [`GROUP_ROW`] (the control row: Subtitles/Audio/More, the Skip pill or the Up Next pair) or
-    /// [`GROUP_TABS`] (the bottom tabs). It MIRRORS the engine's focus, which is the authority:
+    /// [`GROUP_ROW`] (the control row: Subtitles/Audio/More, the Skip pill or the Up Next pair),
+    /// [`GROUP_TABS`] (the bottom tabs) or, while a section is open, [`GROUP_SECTION`] (the Info buttons) or
+    /// [`GROUP_STRIP`] (the Chapters cards). It MIRRORS the engine's focus, which is the authority:
     /// `PlayerScreen::step` writes it on `FocusMoved` and every other write is paired with a
     /// re-seat. The canon hash writes its `.0`, where the integer used to be.
     pub focus: GroupId,

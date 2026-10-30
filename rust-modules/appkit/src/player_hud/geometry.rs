@@ -38,7 +38,7 @@ pub const GROUP_TABS: GroupId = GroupId(2);
 /// The failure read-out's action row.
 pub const GROUP_FAILURE: GroupId = GroupId(3);
 /// An open section's own controls (Info's two buttons). The renderer reads focus on it
-/// ([`super::render::draw_state`]); the screen registers the group when the sections go live.
+/// ([`super::render::draw_state`]); the screen registers the group while Info is open.
 pub const GROUP_SECTION: GroupId = GroupId(4);
 /// An open Chapters section's strip: the cards of the `cards::Shelf` the renderer paints (`strip`), addressed
 /// `ELEM_CHAPTER_BASE + index`. Registered by the screen while that section is open.

@@ -321,13 +321,25 @@ impl Run {
 
     /// One bound key as the television delivers it.
     fn press(&mut self, k: Key) {
+        self.press_coded(k, 0);
+    }
+
+    /// [`Self::press`] with the remote's own code on the event: the dedicated REWIND / FAST-FORWARD keys arrive as
+    /// the machine's `Left` / `Right` with `wcode` 452 / 451 (`ui::consts::classify`'s `alt: true`).
+    fn press_coded(&mut self, k: Key, wcode: u32) {
+        let coded = |mut e: InputEvent<u32>| {
+            if let plx_machine::machine::InputKind::Key { wcode: w, .. } = &mut e.kind {
+                *w = wcode;
+            }
+            e
+        };
         let now = self.now;
         let ps = plx_media::route::idle_session_for_test();
         // the app's per-key preamble, before the key-down frame
         self.screen().hud.note_fresh_press(ps, now, false);
-        self.frame(now, vec![key(k, tick(now))]);
+        self.frame(now, vec![coded(key(k, tick(now)))]);
         self.frame(now + 16, vec![]);
-        self.frame(now + 112, vec![key_up(k, tick(now + 112))]);
+        self.frame(now + 112, vec![coded(key_up(k, tick(now + 112)))]);
         self.settle(now);
         self.now += 600;
     }
@@ -1672,6 +1684,53 @@ mod sections {
         assert!(run.asked().is_empty(), "walking asks the app for nothing");
     }
 
+    /// A playing film's length, for the keys whose meaning needs a bar to scrub; the harness's idle playhead has none.
+    struct Duration(i64);
+    impl Duration {
+        fn of(ns: i64) -> Self {
+            Self(plx_media::player::SHARED.duration_ns.swap(ns, std::sync::atomic::Ordering::Relaxed))
+        }
+    }
+    impl Drop for Duration {
+        fn drop(&mut self) {
+            plx_media::player::SHARED.duration_ns.store(self.0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// **FAST-FORWARD and REWIND do nothing under a modal page.** They reach the machine as `Key::Other` (only the
+    /// D-pad arrows navigate), so the engine never moves on them and the overlay panel ignored them. They are
+    /// `Left` / `Right { alt: true }` to the screen, and `jump_key` runs before any section check: a film with a
+    /// length would begin a scrub of a bar the page has taken the middle from, seat `GROUP_SCRUB` (not a group
+    /// while the middle is withheld, so the ring falls to a tab with the page still open) and commit a real seek
+    /// under the page on release.
+    #[test]
+    fn fast_forward_and_rewind_do_nothing_under_a_modal_page() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _length = Duration::of(7_200_000_000_000);
+        let _chapters = Chaptered::install();
+        for (open, section, group, key_wcode) in [
+            (1, Section::Chapters, GROUP_STRIP.0, plx_ui::consts::WCODE_FASTFORWARD),
+            (1, Section::Chapters, GROUP_STRIP.0, plx_ui::consts::WCODE_REWIND),
+            (0, Section::Info, GROUP_SECTION.0, plx_ui::consts::WCODE_FASTFORWARD),
+            (0, Section::Info, GROUP_SECTION.0, plx_ui::consts::WCODE_REWIND),
+        ] {
+            let mut run = classic_run(Occupant::Plain);
+            run.open_from_tab(open);
+            let held = run.held();
+            run.asked();
+            run.press_coded(Key::Other, key_wcode);
+            let asked = run.asked();
+            assert!(asked.is_empty(), "{section:?} {key_wcode}: nothing is asked of the app, asked {asked:?}");
+            assert!(!run.screen().scrub.is_live(), "{section:?} {key_wcode}: the bar is not on screen, so nothing scrubs");
+            assert_eq!(
+                (run.open_sections(), run.group(), run.held()),
+                (vec![section], group, held),
+                "{section:?} {key_wcode}: the page stays open with the ring where it was",
+            );
+        }
+    }
+
     /// OK on a card seeks to where the chapter starts and puts the strip away, focus back on its tab.
     #[test]
     fn ok_on_a_chapter_seeks_to_its_start_and_closes_the_strip() {
@@ -1773,6 +1832,24 @@ mod sections {
         );
         assert_eq!(run.open_sections(), Vec::<Section>::new(), "performing it puts the page away");
         assert_eq!((run.group(), run.screen().hud.nav.tab), (GROUP_TABS.0, 0));
+    }
+
+    /// A press on a button whose command is not meaningful now (Go to details with no detail page to go to) asks
+    /// nothing and still puts the page away, as the overlay's card did (`InfoAction::None` then closed it).
+    #[test]
+    fn ok_on_a_disabled_info_button_asks_nothing_and_closes_the_page() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(0);
+        run.step('D');
+        assert_eq!(run.held(), Some(ELEM_SECTION_BASE + 1), "Info's second button");
+        run.screen().model.detail = false;
+        run.step('K');
+        let asked = run.asked();
+        assert!(asked.is_empty(), "a disabled command is not asked, got {asked:?}");
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "the page still goes away");
     }
 
     /// Down off Info's last button is the modal bottom edge: the page goes away and the Info tab has the ring.

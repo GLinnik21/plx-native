@@ -4002,12 +4002,24 @@ pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_ap
     );
 }
 
+/// **Close every open HUD section of the player page** — one `toggle_player_section` per open one, so each closes
+/// the way a press on its opener does (focus handed back through the screen's own `close_section`). The app
+/// switch and the decoder park use it where the overlay panels' `dismiss_player_overlays` once took the Info card
+/// and the Chapters strip down: a section is the page's state, not a surface, and the page stays mounted.
+pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
+    let open: Vec<plx_appkit::player_hud::command::Section> =
+        player(d).map(|p| p.hud.sections.iter().collect()).unwrap_or_default();
+    for section in open {
+        toggle_player_section(d, section);
+    }
+}
+
 /// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half
 /// of an APP-SIDE write to `hud.nav.focus`.
 ///
 /// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
 /// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in five
-/// places — a Chapters / Info panel handing the ring back to the tabs (`PlayerReq::FocusTabs`), the
+/// places — a retained Chapters / Info overlay panel handing the ring back to the tabs (`PlayerReq::FocusTabs`; an open section hands it back through `close_section`), the
 /// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, the auto-hide
 /// park (in `run::update`) and the Skip / Up Next stand-in's departure (`run::follow_control_row`: the
 /// ring goes back to the scrubber, `standin_left_the_ring`'s contract) — and a bare write would leave

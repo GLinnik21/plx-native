@@ -445,12 +445,20 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     // resolve above, so a load longer than the 4.5 s linger expired the HUD before it was ever
     // drawn and the user got a blank screen instead of a transport.
     bridge.seed_player_hud(hud_ms);
+    // An open section goes with the old film; the engine is on one of its stops, so it is told where the reset put
+    // the cursor (`reseat_player_focus`, the write-then-reseat rule every app-side `hud.nav` write follows).
+    let mut sections_were_open = false;
     if let Some(player) = super::bridge::player_mut(pages) {
+        sections_were_open = player.hud.sections.any();
         player.hud = HudState::IDLE;
         player.scrub = Scrub::IDLE;
         player.up_next.reset();
+        player.row.drop_strip();
         player.hud.extend(clock::now(), hud_ms);
         player.publish();
+    }
+    if sections_were_open {
+        super::bridge::reseat_player_focus(pages);
     }
     set_paused(false);
     entering
@@ -645,9 +653,9 @@ pub(crate) fn player_requests(
             PlayerReq::Info(action) => {
                 apply_info_action(player, pa, repause_at, action, refresh_hubs, pages, bridge)
             }
-            // The old `key_ok`'s tabs-row (`focus == 2`) and failure-read-out (`ChooseQuality`)
-            // arms, both of which presented a panel immediately rather than through the deferred
-            // press `ArmControlRow`/`ArmInfoPress` use.
+            // The failure-read-out's recovery escape (`ChooseQuality`) and the Tracks->Timing hand-off, which
+            // present a panel immediately rather than through the deferred press `ArmControlRow` uses. The
+            // tabs row is not an asker any more: it asks `ToggleSection` (Info and Chapters are sections).
             PlayerReq::OpenOverlay(kind) => {
                 seed_menu_anchor(pages, bridge, kind);
                 super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);

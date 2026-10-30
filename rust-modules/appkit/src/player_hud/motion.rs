@@ -126,8 +126,8 @@ fn row_pops(slot: ControlSlot) -> usize {
 pub struct HudMotion {
     pub(super) pop: RowPop,
     /// An open section's own buttons' focus pop ([`super::geometry::GROUP_SECTION`]), one spring per button:
-    /// the renderer's twin of `InfoPanelState::ctl_pop`. It is stepped only once the screen focuses
-    /// `GROUP_SECTION` (PR8's switch); until then the live card's pop is `info_panel.rs`'s.
+    /// the renderer's twin of `InfoPanelState::ctl_pop`. It is stepped while the screen focuses
+    /// `GROUP_SECTION` (the open Info page is the section; `info_panel.rs`'s pop belongs to the retained overlay).
     pub(super) section_pop: RowPop,
     /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
     pub(super) title_clock: plx_ui::marquee::Clock,

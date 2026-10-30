@@ -290,7 +290,7 @@ fn button_icon(act: Option<HudCommand>) -> Icon {
 
 /// An `actions` `button`, at the rect the compile placed it (one width for the column, ten languages
 /// measured). Its label is the command's app string for the playing item (`actions`); `focused` and
-/// `scale` are the section group's (stage 2 registers it), at rest until then.
+/// `scale` are the section group's (the screen registers it while Info is open).
 pub(super) fn button(f: &Frame<'_>, q: Painter, e: &plx_ui::Env, c: &ControlRect, focused: bool, scale: f32) {
     let label = match c.act {
         Some(HudCommand::FromBeginning) => actions(f.meta)[0],

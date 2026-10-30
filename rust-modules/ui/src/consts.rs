@@ -659,8 +659,8 @@ mod tests {
 
     /// The two horizontal tests the ladder asks, copied here as the `matches!` patterns `app.rs`
     /// spells at those arms — so the asymmetry between them is asserted rather than described.
-    /// `nav4` is the non-player four-way nav dispatch; `lr` is the player's scrub arm (and the
-    /// Chapters strip, and the scrub's key-up/auto-repeat companions).
+    /// `nav4` is the non-player four-way nav dispatch; `lr` is the player's scrub arm (and
+    /// the scrub's key-up/auto-repeat companions).
     fn nav4(k: Key) -> bool {
         matches!(
             k,

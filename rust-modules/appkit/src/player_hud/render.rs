@@ -5,12 +5,14 @@
 //! renderer to the hashes that draw froze on the host, and the simulator's frame dump is the proof of pixels.
 //! A package with no state for the frame draws nothing: [`draw`] returns `false`.
 //!
-//! **What it walks.** The state [`Compiled::lookup`] answers for the frame ([`draw`]: `open == 0`, the
-//! compact state; the sections go live in the screen with PR8's switch), then its [`Span`]s in draw
+//! **What it walks.** The state [`Compiled::lookup`] answers for the frame ([`draw`]: the frame's real open bits,
+//! `Frame::open`, from the screen's `HudState::sections`), then its [`Span`]s in draw
 //! order, through [`draw_state`], which walks any state, an open section's included. A `Fades` span draws on
 //! the scrub's chrome alpha and is skipped when that alpha is spent; a `Steady` one draws at full alpha.
-//! In a Skip state it walks [`CompiledState::skip_variant`], because the two labels have two widths. While
-//! a panel owns the middle (`!transport`) only the scrim and the section tabs of a COMPACT state draw.
+//! In a Skip state it walks [`CompiledState::skip_variant`], because the two labels have two widths. A MODAL
+//! section's page owns the middle: `transport` is false AND the state is the section's, and it draws whole. A
+//! compact state with the middle withheld (`!transport`, `open == 0`) draws only the scrim and the section tabs,
+//! which only a test constructs now.
 //! The section arms (a ground, a rule, an icon, the still, the sections' text, a facts row, an `actions`
 //! button) are `sections.rs`'s.
 //!
@@ -121,10 +123,10 @@ where
     true
 }
 
-/// Walk one compiled state's ops into `p`. [`draw`] hands it the compact state the frame is in; a test
-/// hands it an open-section state (`compiled.lookup(OPEN_INFO | OPEN_CHAPTERS, ..)`), which the screen does
-/// not reach until the sections go live. The failure read-out is [`draw`]'s: it owns the frame before any
-/// state is chosen.
+/// Walk one compiled state's ops into `p`. [`draw`] hands it the state the frame's open bits select (the compact
+/// one with no section open, an open-section state otherwise); a test hands it any state it builds
+/// (`compiled.lookup(OPEN_INFO | OPEN_CHAPTERS, ..)`). The failure read-out is [`draw`]'s: it owns the frame
+/// before any state is chosen.
 pub fn draw_state<H: Host>(compiled: &Compiled, state: &CompiledState, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter)
 where
     H::Elem: IndexElem,
@@ -985,7 +987,7 @@ mod tests {
 
     /// **An open section's focus**: the buttons' pop on `GROUP_SECTION` and the tab's selected state, both read
     /// from the walk (the state it is in, the group the focus is on), so the screen has nothing to hand in but
-    /// the group once the sections go live.
+    /// the group.
     mod section_focus {
         use super::*;
         use crate::hud_format::compile::OPEN_INFO;
