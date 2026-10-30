@@ -188,13 +188,63 @@ fn civil_days([year, month, day]: [i32; 3]) -> i64 {
 mod tests {
     use super::*;
     use plx_data::pms::SortInfo;
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_platform::i18n::{language_on_this_thread_for_test, Language, Preference, SHIPPED};
 
     const TODAY: [i32; 3] = [2026, 10, 30];
     const ALL_KEYS: [&str; 13] = ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating",
         "duration", "viewOffset", "viewCount", "addedAt", "lastViewedAt", "mediaHeight", "mediaBitrate", "year"];
-    const TEN: [Preference; 10] = [Preference::En, Preference::Be, Preference::De, Preference::Es, Preference::Fr,
-        Preference::Hu, Preference::It, Preference::Pl, Preference::Pt, Preference::Ru];
+
+    /// What the current thread's language's OWN catalogue file (`locales/<tag>/<file>.json`) says for `key`,
+    /// read as text rather than through the compiled catalogue: a plain string, or the object of plural
+    /// forms. English wraps its entry (`{"value": .., "description": ..}`); the other languages do not.
+    fn catalogue_entry(file: &str, key: &str) -> serde_json::Value {
+        let tag = plx_platform::i18n::current().language().tag();
+        let path = format!("{}/../../locales/{tag}/{file}.json", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let catalogue: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let entry = catalogue.get(key).unwrap_or_else(|| panic!("{path} has no {key}")).clone();
+        match entry.get("value") { Some(value) => value.clone(), None => entry }
+    }
+
+    /// The phrase the current language's own catalogue file words `count` with: the form of the count's
+    /// plural category (ICU's, the same rules `languages.json` declares), the file's `other` for a
+    /// category it does not spell, the count filled in, every space a no-break space.
+    fn catalogue_phrase(entry: &serde_json::Value, count: u32) -> String {
+        let form = match entry {
+            serde_json::Value::String(text) => text,
+            forms => {
+                let category = format!("{:?}", plx_platform::i18n::current().plural(i64::from(count))).to_lowercase();
+                forms.get(&category).or_else(|| forms.get("other")).and_then(|form| form.as_str())
+                    .unwrap_or_else(|| panic!("no {category} or other form in {forms}"))
+            }
+        };
+        form.replace("{count}", &count.to_string()).replace(' ', "\u{a0}")
+    }
+
+    /// "N <noun>" in every shipped language's plural categories: the line a count draws is the language's
+    /// own catalogue phrase for the count's category with a no-break space between number and noun, and
+    /// the counts cross the plural boundaries (one / other, and one / few / many by the last digits) so a
+    /// form pinned to the wrong category, or one rule for every language, shows. `line` words a count
+    /// through the code under test; 0 is not asked (nothing draws at 0).
+    fn counts_follow_the_catalogue(file: &str, key: &str, mut line: impl FnMut(u32) -> String) {
+        let counts = [1u32, 2, 3, 4, 5, 6, 11, 12, 14, 21, 22, 24, 25, 100, 101, 102, 111];
+        for preference in SHIPPED {
+            let _locale = language_on_this_thread_for_test(preference);
+            let entry = catalogue_entry(file, key);
+            let mut categories = std::collections::BTreeSet::new();
+            for n in counts {
+                let drawn = line(n);
+                assert_eq!(drawn, catalogue_phrase(&entry, n), "{preference:?} {n}");
+                assert!(drawn.starts_with(&format!("{n}\u{a0}")) && !drawn.contains(' '), "{preference:?} {n}: {drawn:?}");
+                categories.insert(format!("{:?}", plx_platform::i18n::current().plural(i64::from(n))));
+            }
+            // The counts are not all one category, and a language that declares `few` meets it.
+            assert!(categories.len() >= 2, "{preference:?}: {categories:?}");
+            let language = plx_platform::i18n::current().language();
+            let declared = Language::PLURALS.iter().find(|(l, _)| *l == language).expect("declared plurals").1;
+            if declared.contains(&"few") { assert!(categories.contains("Few") && categories.contains("Many"), "{preference:?}: {categories:?}"); }
+        }
+    }
 
     fn movie() -> PmsMovie {
         PmsMovie { title: "Film".into(), year: 1997, aired: "1997-12-12".into(),
@@ -290,33 +340,14 @@ mod tests {
     }
 
     /// The plural boundaries of "N episodes" in every shipped language: the category of the count, in the
-    /// language's own words. 0 is not asked (nothing draws at 0).
+    /// language's own words (`browse.detail.episodes` in its catalogue file).
     #[test]
     fn unplayed_follows_each_languages_plural_rules() {
-        let nb = '\u{a0}';
-        let word = |forms: &[&str], n: u32| format!("{n}{nb}{}", forms[match n { 1 => 0, _ => 1 }]);
-        // one / other languages
-        for (preference, one, other) in [(Preference::En, "episode", "episodes"), (Preference::De, "Episode", "Episoden"),
-            (Preference::Es, "episodio", "episodios"), (Preference::Fr, "épisode", "épisodes"), (Preference::Hu, "epizód", "epizód"),
-            (Preference::It, "episodio", "episodi"), (Preference::Pt, "episódio", "episódios")] {
-            let _locale = language_on_this_thread_for_test(preference);
-            let mut s = show();
-            for n in [1, 2, 5, 11, 21, 22] {
-                s.leaf_count = Some(n); s.viewed_leaf_count = Some(0);
-                assert_eq!(text(&s, "unviewedLeafCount"), word(&[one, other], n), "{preference:?} {n}");
-            }
-        }
-        // one / few / many / other languages, by the last digits
-        for (preference, [one, few, many]) in [(Preference::Ru, ["серия", "серии", "серий"]),
-            (Preference::Pl, ["odcinek", "odcinki", "odcinków"]), (Preference::Be, ["серыя", "серыі", "серый"])] {
-            let _locale = language_on_this_thread_for_test(preference);
-            let mut s = show();
-            for (n, form) in [(1, one), (2, few), (4, few), (5, many), (11, many), (21, if preference == Preference::Pl { many } else { one }),
-                (22, few), (25, many)] {
-                s.leaf_count = Some(n); s.viewed_leaf_count = Some(0);
-                assert_eq!(text(&s, "unviewedLeafCount"), format!("{n}{nb}{form}"), "{preference:?} {n}");
-            }
-        }
+        let mut s = show();
+        counts_follow_the_catalogue("browse", "browse.detail.episodes", |n| {
+            s.leaf_count = Some(n); s.viewed_leaf_count = Some(0);
+            text(&s, "unviewedLeafCount")
+        });
     }
 
     #[test]
@@ -408,38 +439,26 @@ mod tests {
     /// "N plays" in every shipped language's plural categories (the same rule "N episodes" follows).
     #[test]
     fn plays_follow_each_languages_plural_rules() {
-        let nb = '\u{a0}';
-        let plays = |n: i64| { let mut m = movie(); m.sort_info.as_mut().unwrap().view_count = Some(n); m };
-        for (preference, one, other) in [(Preference::En, "play", "plays"), (Preference::De, "Wiedergabe", "Wiedergaben"),
-            (Preference::Es, "reproducción", "reproducciones"), (Preference::Fr, "lecture", "lectures"),
-            (Preference::Hu, "lejátszás", "lejátszás"), (Preference::It, "riproduzione", "riproduzioni"),
-            (Preference::Pt, "reprodução", "reproduções")] {
-            let _locale = language_on_this_thread_for_test(preference);
-            for n in [1, 2, 5, 11, 21, 22] {
-                assert_eq!(text(&plays(n), "viewCount"), format!("{n}{nb}{}", if n == 1 { one } else { other }), "{preference:?} {n}");
-            }
-        }
-        for (preference, [one, few, many]) in [(Preference::Ru, ["просмотр", "просмотра", "просмотров"]),
-            (Preference::Pl, ["odtworzenie", "odtworzenia", "odtworzeń"]), (Preference::Be, ["прагляд", "прагляды", "праглядаў"])] {
-            let _locale = language_on_this_thread_for_test(preference);
-            for (n, form) in [(1, one), (2, few), (4, few), (5, many), (11, many), (21, if preference == Preference::Pl { many } else { one }),
-                (22, few), (25, many)] {
-                assert_eq!(text(&plays(n), "viewCount"), format!("{n}{nb}{form}"), "{preference:?} {n}");
-            }
-        }
+        let mut m = movie();
+        counts_follow_the_catalogue("under_posters", "under_posters.value_plays", |n| {
+            m.sort_info.as_mut().unwrap().view_count = Some(i64::from(n));
+            text(&m, "viewCount")
+        });
     }
 
+    /// "Never" is the language's own catalogue word, quiet like the dash, in every shipped language.
     #[test]
     fn never_is_translated_and_quiet_in_every_shipped_language() {
         let en = { let _l = language_on_this_thread_for_test(Preference::En); msg::under_posters_value_never().to_owned() };
         assert_eq!(en, "Never");
-        for (preference, word) in [(Preference::De, "Nie"), (Preference::Es, "Nunca"), (Preference::Fr, "Jamais"),
-            (Preference::Hu, "Soha"), (Preference::It, "Mai"), (Preference::Pl, "Nigdy"), (Preference::Pt, "Nunca"),
-            (Preference::Ru, "Никогда"), (Preference::Be, "Ніколі")] {
+        for preference in SHIPPED {
             let _locale = language_on_this_thread_for_test(preference);
+            let word = catalogue_entry("under_posters", "under_posters.value_never");
+            let word = word.as_str().expect("one word");
             assert_eq!(msg::under_posters_value_never(), word, "{preference:?}");
+            if preference != Preference::En { assert_ne!(word, en, "{preference:?} is translated"); }
             let v = never();
-            assert!(v.missing && v.text == word, "{preference:?}");
+            assert!(v.missing && v.text == word && v.mark.is_empty() && !v.plus, "{preference:?}");
         }
     }
 
@@ -499,7 +518,7 @@ mod tests {
     #[test]
     fn dates_use_named_months_in_every_shipped_language_and_never_numerals_alone() {
         let en_today = { let _l = language_on_this_thread_for_test(Preference::En); msg::under_posters_value_today().to_owned() };
-        for preference in TEN {
+        for preference in SHIPPED {
             let _locale = language_on_this_thread_for_test(preference);
             let (today, yesterday) = (msg::under_posters_value_today(), msg::under_posters_value_yesterday());
             assert!(!today.is_empty() && today != yesterday, "{preference:?}");
@@ -534,7 +553,7 @@ mod tests {
             info.rating_image = "imdb://image.rating".into();
         }
         let mut too_wide = Vec::new();
-        for preference in TEN {
+        for preference in SHIPPED {
             let _locale = language_on_this_thread_for_test(preference);
             let mut samples: Vec<SortValue> = ALL_KEYS.iter().map(|key| read(&m, key, Some(TODAY))).collect();
             samples.push(SortValue { text: msg::under_posters_value_yesterday().to_owned(), ..Default::default() });

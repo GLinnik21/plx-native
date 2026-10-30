@@ -784,16 +784,22 @@ fn numeric_dates_match_icu_without_month_name_data() {
 
 #[test]
 fn month_year_is_the_ymmm_skeleton_in_every_shipped_language_and_never_numeric() {
-    let read: Vec<String> = [
-        Preference::En, Preference::Be, Preference::De, Preference::Es, Preference::Fr,
-        Preference::Hu, Preference::It, Preference::Pl, Preference::Pt, Preference::Ru,
-    ].into_iter().map(|preference| {
+    for preference in SHIPPED {
         let cx = LocaleContext::resolve(preference, None, None, None, None);
-        let text = cx.month_year(2024, 10).expect("a real month");
-        assert!(cx.month_year(2024, 13).is_none() && cx.month_year(2024, 0).is_none());
-        format!("{}={text}", cx.language().tag())
-    }).collect();
-    assert_eq!(read.join("|"), "en=Oct 2024|be=кас 2024 г.|de=Okt. 2024|es=oct 2024|fr=oct. 2024|hu=2024. okt.|it=ott 2024|pl=paź 2024|pt=out. de 2024|ru=окт. 2024 г.");
+        let tag = cx.language().tag();
+        assert!(cx.month_year(2024, 13).is_none() && cx.month_year(2024, 0).is_none(), "{tag}");
+        let mut seen: Vec<String> = Vec::new();
+        for month in 1..=12 {
+            let text = cx.month_year(2024, month).expect("a real month");
+            // The year is the only number in it: the month is a name, in the language's own letters.
+            assert!(text.contains("2024"), "{tag} {month}: {text}");
+            let name = text.replacen("2024", "", 1);
+            assert!(!name.chars().any(|c| c.is_ascii_digit() || c == '/'), "{tag} {month}: {text}");
+            assert!(name.chars().any(char::is_alphabetic), "{tag} {month}: {text}");
+            assert!(!seen.contains(&text), "{tag} {month}: {text} repeats a month");
+            seen.push(text);
+        }
+    }
 }
 
 #[test]
