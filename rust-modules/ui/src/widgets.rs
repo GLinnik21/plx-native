@@ -7766,7 +7766,11 @@ impl StripRender {
         let (cr, cg, cb) = theme::CLEAR_RGB; // the app ground, as the token that names it
         let flat_ground = [cr, cg, cb];
         let ground = if glass_on {
-            plx_gfx::gfx::sample_ground([track.x, track.y, track.w, track.h], settled)
+            // The rect the glass below is DRAWN at: the painter's placement (a lifted or zoomed
+            // chrome band) is part of it, and the band the ground is read from is found by that
+            // rect (`gfx::sample_ground`), so the unplaced `track` would match no band.
+            let at = p.place(track);
+            plx_gfx::gfx::sample_ground([at.x, at.y, at.w, at.h], settled)
                 .unwrap_or(flat_ground)
         } else {
             flat_ground
@@ -7796,8 +7800,9 @@ impl StripRender {
                     plx_gfx::gfx::ground_span(),
                     track_alpha_for(ground), drawn,
                     track.x, track.y, track.w, track.h,
-                    // no glass, no band, nothing sampled: the numbers above are the flat ground's
-                    if glass_on { "" } else { " src=flat" },
+                    // where the ground came from: the band's image, nothing found this frame (the
+                    // last reading, or the flat ground before the first), or no glass at all
+                    if !glass_on { " src=flat" } else if plx_gfx::gfx::ground_sourced() { " src=image" } else { " src=none" },
                 ));
             }
             LAST.store(n.wrapping_add(1), Relaxed);

@@ -5353,6 +5353,11 @@ static mut GROUND_SPAN: f32 = 0.0;
 pub fn ground_span() -> f32 {
     unsafe { *std::ptr::addr_of!(GROUND_SPAN) }
 }
+/// Did the bar's latest [`sample_ground`] call find a current band image to read? `false`: the
+/// answer it gave was the last reading (or none) — see [`ground_taps`] for why a call finds none.
+pub fn ground_sourced() -> bool {
+    unsafe { (*std::ptr::addr_of!(GROUND_PROBE)).sourced }
+}
 /// The bar's probe: its cadence, its target, and the reading in flight.
 static mut GROUND_PROBE: GroundProbe<GROUND_TAPS> = GroundProbe::new(GROUND_SAMPLE_EVERY, GROUND_TAP_PX);
 
@@ -5383,8 +5388,9 @@ static mut GROUND_PROBE: GroundProbe<GROUND_TAPS> = GroundProbe::new(GROUND_SAMP
 /// gets a density answered for somewhere else. `BarMaterial`'s doc carries the measurement for the
 /// one surface in this app that is in that position. The rect also NAMES the band whose image is
 /// read: [`ground_taps`] matches it, exactly, against the rects the band's glass draws with, so it
-/// must be the rect the caller's glass is drawn at. A rect no band lists reads nothing and the
-/// answer stays the last reading.
+/// must be the rect the caller's glass is drawn at — AFTER the painter's placement (the cascade
+/// translate and zoom: `Painter::place`), which is the rect the band stores. A rect no band lists
+/// reads nothing and the answer stays the last reading.
 /// **May a ground sampler take a FRESH reading on this draw?** Not while the page is frozen.
 ///
 /// Both samplers ([`sample_ground`], [`sample_control_ground`]) answered from a synchronous
@@ -5623,6 +5629,9 @@ pub struct GroundProbe<const N: usize> {
     reader: c_uint,
     /// The composite terms of the reading in flight: `colour * scale + offset`, per tap.
     composite: (f32, [[f32; 3]; N]),
+    /// Did the latest sampler call have something to copy from? What `groundlog` reports as `src`,
+    /// so "the bar reads flat" and "the bar never found its band" are different lines.
+    sourced: bool,
 }
 
 impl<const N: usize> GroundProbe<N> {
@@ -5637,6 +5646,7 @@ impl<const N: usize> GroundProbe<N> {
             queued: None,
             reader: 0,
             composite: (1.0, [[0.0; 3]; N]),
+            sourced: false,
         }
     }
 
@@ -5762,6 +5772,7 @@ impl<const N: usize> GroundProbe<N> {
     /// `None` otherwise. A kick of a framebuffer source copies here; a kick of an image source
     /// only queues the copy for the frame boundary.
     unsafe fn step(&mut self, have: bool, src: TapSource<N>, who: &str) -> Option<Vec<u8>> {
+        self.sourced = src.can_kick();
         if self.off {
             return None;
         }
@@ -9230,6 +9241,7 @@ mod tests {
         set_page_frozen(was);
         unsafe {
             let probe = &*std::ptr::addr_of!(GROUND_PROBE);
+            assert!(!ground_sourced(), "no band image: the tell says so");
             assert!(probe.queued.is_none() && probe.target.is_none(), "no copy was owed or made");
             assert_eq!(probe.cadence.pending, None);
             GROUND_RGB = None;
