@@ -349,7 +349,9 @@ fn the_open_menus_pill_is_lit_by_the_lift_and_left_out_of_the_page() {
     let plates: Vec<_> = prims.iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| *r).collect();
     assert!(plates.len() == 1 && (plates[0].x - pill.x).abs() < 0.5 && (plates[0].w - pill.w).abs() < 0.5 && (plates[0].h - pill.h).abs() < 0.5,
         "the lift paints one accent pill at the focused extent {pill:?}: {plates:?}");
-    assert!(runs.iter().any(|run| run.text.contains("Sort") && inside(&run.at)), "and its label: {runs:?}");
+    let criterion = h.screen.options().summary();
+    assert!(runs.iter().any(|run| run.text == criterion && inside(&run.at)), "and its criterion: {runs:?}");
+    assert!(!runs.iter().any(|run| run.text.contains("Sort")), "the control's name is carried, never drawn: {runs:?}");
     assert!(runs.iter().all(|run| run.ink.iter().zip(plx_ui::ACCENT_INK).all(|(a, b)| (a - b).abs() < 0.01)),
         "every run of the face in the focused ink: {runs:?}");
     // a card is not the pill: the lift for a tile paints no accent pill
@@ -1136,6 +1138,68 @@ fn the_returning_chrome_never_draws_over_the_header_row_still_arriving() {
     assert!(arriving >= 3, "and the title arrives over more than a pop ({arriving} partial frames)");
     assert!(h.screen.scroll().abs() < 0.5, "premise: the page is home");
     assert_eq!(h.screen.head_alpha(), 1.0, "and the header row is whole once it is there");
+}
+
+/// **A sort picked from the menu swaps the control's criterion; it never cuts.** The row is rebuilt
+/// where the options land (an `input`, before any tick), so the swap begins from the rebuild
+/// itself: the frame that changes the sort already draws the OLD criterion, and then the old falls
+/// as the new rises, both ending at the control's one right edge, in the page's own pass and in the
+/// opener lift (the only thing that draws the control while the menu that picked is still closing).
+/// Red while the Watchlist's row held no swap: the new sort showed whole on the first frame.
+#[test]
+fn a_picked_sort_swaps_the_criterion_in_the_page_pass_and_through_the_lift() {
+    use plx_machine::machine::FocusKey;
+    use plx_ui::draw_census::Run;
+    use plx_ui::screen::By;
+    let _g = plx_base::testlock::serial();
+    let _l = language_on_this_thread_for_test(Preference::En);
+    let mut h = Harness::new(tiles(3));
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 3 }));
+    h.focus_elem(PILL_ELEM, By::Dir);
+    h.run(60);
+    let key = FocusKey { entry: super::cards_harness::ENTRY, elem: PILL_ELEM };
+    let (old, new) = ("Date added", "Title");
+    let opacity = |runs: &[Run], text: &str| runs.iter().find(|run| run.text == text).map_or(0.0, |run| run.ink[3]);
+    let rest = opacity(&h.draw_runs(), old);
+    assert!(rest > 0.9, "premise: the control reads {old:?} at rest, drawn at {rest}");
+    assert!(!h.screen.probe_header_swap_active(), "premise: nothing is swapping at rest");
+
+    h.screen.input(WatchlistIn::Options(WatchlistOptionsState { sort: super::options::SortKey::Title, ..Default::default() }));
+    // `(old, new)` as the page's pass and the lift draw them this frame.
+    let drawn = |h: &mut Harness| {
+        let page = h.draw_runs();
+        let lift = h.lift_census(Some(key)).1;
+        ((opacity(&page, old), opacity(&page, new)), (opacity(&lift, old), opacity(&lift, new)), page)
+    };
+    let (page, lift, runs) = drawn(&mut h);
+    assert!(h.screen.probe_header_swap_active(), "the pick began a swap, before any tick");
+    for (what, (out, arriving)) in [("page", page), ("lift", lift)] {
+        assert!(out > 0.9 * rest && arriving < 0.1 * rest, "the first frame of the pick: the {what} draws the OLD criterion ({out}, {arriving})");
+    }
+    let edge = |runs: &[Run], text: &str| runs.iter().find(|run| run.text == text).map(|run| run.at.x + run.at.w);
+    let control_edge = edge(&runs, old).expect("the old criterion is drawn");
+
+    let mut last = (rest, 0.0);
+    let mut both = 0;
+    for frame in 0..240 {
+        h.run(1);
+        let (page, lift, runs) = drawn(&mut h);
+        if let (Some(a), Some(b)) = (edge(&runs, old), edge(&runs, new)) {
+            both += 1;
+            assert!((a - control_edge).abs() < 0.01 && (b - control_edge).abs() < 0.01, "frame {frame}: both criteria end at the control's one right edge ({a}, {b}, {control_edge})");
+        }
+        for (what, (out, arriving)) in [("page", page), ("lift", lift)] {
+            assert!((out + arriving - rest).abs() < 1.0e-3, "frame {frame}: the {what} draws {out} + {arriving}, which is not {rest}");
+        }
+        assert_eq!(page, lift, "frame {frame}: the page and the lift draw the swap alike");
+        assert!(page.0 <= last.0 + 1.0e-3 && page.1 >= last.1 - 1.0e-3, "frame {frame}: the cross-fade runs one way");
+        last = page;
+        if !h.screen.probe_header_swap_active() { break; }
+    }
+    assert!(!h.screen.probe_header_swap_active(), "the swap landed");
+    assert!(both > 3, "premise: the two criteria were on screen together for a while ({both} frames)");
+    let (page, lift, _) = drawn(&mut h);
+    assert_eq!((page, lift), ((0.0, rest), (0.0, rest)), "the settled control draws the new criterion alone");
 }
 
 /// **The header row is built once per key, not once per question.** The page asks for the row in its

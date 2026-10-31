@@ -437,7 +437,7 @@ impl LibraryScreen {
         self.header.row().and_then(|row| row.readout()).map(str::to_owned)
     }
 
-    /// The Sort & Filter pill's value on the header row (the text after the dot), if the row has one.
+    /// The sort control's criterion on the header row (the one text it draws), if the row has one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_sort_value(&self) -> Option<String> {
         self.header.row()?.page.spec().right.iter().find(|item| item.fold_glyph).and_then(|item| item.value.clone())

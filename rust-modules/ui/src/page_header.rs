@@ -284,8 +284,8 @@ fn ink_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
 const FOLD_GAP: f32 = 10.0;
 const FOLD_SIZE: f32 = 22.0;
 /// The board's down chevron on the sort control: 20 px, 12 after the criterion, at 65%.
-const QUIET_FOLD_SIZE: f32 = 20.0;
-const QUIET_FOLD_GAP: f32 = 12.0;
+pub const QUIET_FOLD_SIZE: f32 = 20.0;
+pub const QUIET_FOLD_GAP: f32 = 12.0;
 /// The mark that leads a control's text, and its air before the text (the sort icon).
 pub const GLYPH_SIZE: f32 = 26.0;
 pub const GLYPH_GAP: f32 = 12.0;

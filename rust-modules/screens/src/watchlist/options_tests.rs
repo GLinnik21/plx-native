@@ -7,6 +7,7 @@ use plx_machine::machine::Measure as _;
 use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::fixture::FixtureMeasure;
+use plx_ui::page_header::HeaderSwap;
 use plx_ui::table::MENU_MAX_W;
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use std::ffi::CString;
@@ -101,14 +102,55 @@ fn the_summary_is_the_sort_and_only_the_sort() {
     assert_eq!(s.summary(), "Title", "the direction is the panel's checked-row value, not the pill's");
 }
 
+/// **The control is the Library's sort control**: the sort icon, the sort in force and a quiet down
+/// chevron, with "Sort & Filter" its name, carried and never drawn: no label, no separator, no
+/// "Sort & Filter · ".
 #[test]
-fn the_control_reads_label_dot_value_with_both_regular() {
+fn the_control_draws_the_criterion_alone_and_never_its_name() {
     let _g = language_on_this_thread_for_test(Preference::En);
-    let row = header::Row::new(&FixtureMeasure, "Date added", None);
-    let log = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false));
-    // title, then the control's label, separator and value: every run at the regular weight.
-    assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 4);
-    assert_eq!(plx_platform::i18n::msg::watchlist_page_sort_filter(), "Sort & Filter");
+    let row = header::Row::new(&ShippedMeasure, "Date added", None);
+    let runs = plx_ui::draw_census::capture_runs(|| row.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false, &HeaderSwap::new()));
+    let words: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(words, [msg::watchlist_page_title(), "Date added"], "the title and the criterion: no name, no separator");
+    assert_eq!(msg::watchlist_page_sort_filter(), "Sort & Filter", "the name is still the catalog's");
+    let item = &row.sort_item();
+    assert_eq!(item.label, msg::watchlist_page_sort_filter(), "the item carries the name (the identity the row's swap knows it by)");
+    assert!(item.value_only && item.fold_glyph && item.fold_quiet && item.glyph == Some(plx_ui::icons::Icon::Sort) && item.focusable);
+    assert_eq!(item.value.as_deref(), Some("Date added"));
+}
+
+/// **The control is the Library's, pixel for pixel in its parts**: the icon box leads, the criterion
+/// follows one glyph gap past it, and the quiet chevron ends the text edge, x 1771; the criterion's
+/// ink is the one run the control draws.
+#[test]
+fn the_control_ends_on_the_text_edge_with_its_icon_criterion_and_quiet_chevron() {
+    use plx_ui::page_header::{GLYPH_GAP, GLYPH_SIZE, QUIET_FOLD_GAP, QUIET_FOLD_SIZE};
+    let _g = language_on_this_thread_for_test(Preference::En);
+    // The painter that records the census measures with the legacy advances; the row is laid out
+    // with the same ones so that what is drawn is compared with what was placed.
+    let row = header::Row::new(&plx_ui::widgets::LegacyMeasure, "Date added", None);
+    let at = row.items()[1].text;
+    assert!((at.x + at.w - header::GRID_RIGHT).abs() < 0.01, "the control ends on the right text edge: {at:?}");
+    let runs = plx_ui::draw_census::capture_runs(|| row.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false, &HeaderSwap::new()));
+    let criterion = runs.iter().find(|r| r.text == "Date added").expect("the criterion is drawn");
+    assert_eq!(criterion.at.x, at.x + GLYPH_SIZE + GLYPH_GAP, "the criterion starts one gap past the icon's box");
+    assert_eq!(criterion.at.x + criterion.at.w + QUIET_FOLD_GAP + QUIET_FOLD_SIZE, at.x + at.w, "the quiet chevron closes the text edge");
+}
+
+/// **The criterion has no slot, in any shipped language**: a longer sort name widens the control
+/// to the LEFT of the text edge, and the read-out in front of it keeps a cluster gap clear of the
+/// title (`the_menu_pill_and_readouts_fit_in_every_shipped_language`).
+#[test]
+fn the_control_keeps_its_right_edge_whatever_the_criterion_is() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let edge = |summary: &str| {
+        let row = header::Row::new(&ShippedMeasure, summary, Some(Count::Of { shown: 6, total: 14 }));
+        let control = row.items()[2].text;
+        (control.x, control.x + control.w)
+    };
+    let (short, long) = (edge("Title"), edge("Date added"));
+    assert!((short.1 - long.1).abs() < 0.01 && (short.1 - 1771.0).abs() < 0.01, "the edge never moves: {short:?} {long:?}");
+    assert!(long.0 < short.0, "the control grows leftwards with its criterion");
 }
 
 // ---- the menu: glass ground, morph, geometry ----
@@ -242,10 +284,10 @@ fn the_title_is_plain_text_with_no_plate_under_it() {
     let (mut capsules, mut pop) = (TabStrip::new(), CtlPop::<1>::new());
     for _ in 0..180 { row.step(EntryId(1), None, &mut capsules, &mut pop, 1.0 / 60.0); }
     let title = row.title_box();
-    let plates = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false));
+    let plates = plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false, &HeaderSwap::new()));
     let under_title: Vec<_> = plates.iter().filter(|(tag, r)| *tag == 2 && r.x <= title.x + title.w && r.x + r.w >= title.x).collect();
     assert!(under_title.is_empty(), "a plate is drawn under the title: {under_title:?}");
-    let runs = plx_ui::draw_census::capture_runs(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false));
+    let runs = plx_ui::draw_census::capture_runs(|| row.draw(plx_ui::Painter::recording(), 0.0, &capsules, 1.0, false, &HeaderSwap::new()));
     let name = runs.iter().find(|r| r.text == msg::watchlist_page_title()).expect("the title is drawn");
     assert_eq!(name.ink, [1.0, 1.0, 1.0, 1.0], "the title is full white, not a resting control's 65%");
 }
@@ -263,8 +305,8 @@ fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
     assert_eq!(control.text.x - (readout.text.x + readout.text.w), plx_ui::page_header::GAP);
     assert!(!readout.focusable && control.focusable);
     assert_eq!(narrowed.plate(), plain.plate(), "the control does not move for the read-out");
-    let log = plx_ui::draw_census::capture(|| narrowed.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false));
-    assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 5);
+    let log = plx_ui::draw_census::capture(|| narrowed.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false, &HeaderSwap::new()));
+    assert_eq!(log.iter().filter(|(t, _)| *t == 100).count(), 3, "the title, the read-out and the criterion");
 }
 
 /// A lifted control (the Sort & Filter menu is its owner now) is left out of the page's pass, and
@@ -272,7 +314,7 @@ fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
 #[test]
 fn a_lifted_control_is_left_out_and_the_row_rides_the_scroll() {
     let row = header::Row::new(&FixtureMeasure, "Date added", None);
-    let at = |dy: f32, lifted: bool| plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), dy, &plx_ui::widgets::TabStrip::new(), 1.0, lifted));
+    let at = |dy: f32, lifted: bool| plx_ui::draw_census::capture(|| row.draw(plx_ui::Painter::recording(), dy, &plx_ui::widgets::TabStrip::new(), 1.0, lifted, &HeaderSwap::new()));
     assert_eq!(at(0.0, true).iter().filter(|(t, _)| *t == 100).count(), 1, "the title alone");
     let (rest, scrolled) = (at(0.0, false), at(-100.0, false));
     for (a, b) in rest.iter().zip(&scrolled) {
@@ -398,6 +440,11 @@ fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
                 let (title_end, cluster) = (row.title_box().x + row.title_box().w, row.cluster_left());
                 if cluster < title_end + plx_ui::page_header::CLUSTER_GAP {
                     bad.push(format!("{tag} {sort:?} {count:?}: the cluster starts at x {cluster:.0}, the title's plate ends {title_end:.0}"));
+                }
+                // The control has no slot: whatever the sort is called, it ends on the text edge.
+                let control = row.items().last().expect("the control").text;
+                if (control.x + control.w - header::GRID_RIGHT).abs() > 0.01 {
+                    bad.push(format!("{tag} {sort:?} {count:?}: the control ends at x {:.1}, not {}", control.x + control.w, header::GRID_RIGHT));
                 }
             }
         }
