@@ -2845,8 +2845,9 @@ class MockPms:
     def sort_meta(self, kind=None, lib=None, section=None):
         if kind != "18" and lib is not None and lib.band_fixture:
             # `--band-fixture`: the lists a real PMS offers, one per type (a movie list and a show
-            # list differ). Seasons and episodes keep the short list below.
-            name = {"1": "movie", "2": "show"}.get(kind) or \
+            # list differ). A request with no `type` takes its section's type; seasons and episodes
+            # (types 3 and 4) keep the short list below, which `section_items` can apply to them.
+            name = {"1": "movie", "2": "show"}.get(kind) if kind is not None else \
                 next((s["type"] for s in lib.sections if s["key"] == section), None)
             if name in BAND_SORT_MENUS:
                 type_id = 1 if name == "movie" else 2

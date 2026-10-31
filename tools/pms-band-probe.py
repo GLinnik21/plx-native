@@ -29,8 +29,9 @@ listing, and prints a verdict per family.
 
 ## Verdict per family (the first column of the table)
 
-VERIFIED      every edge probe's count equals the number of items on the high side of the edge
-              AND the real listing, read at `Start=lead+c-1, Size=2`, straddles the edge there.
+VERIFIED      every edge probe's count equals the number of items on the high side of the edge,
+              AND the real listing, read at `Start=lead+c-1, Size=2` for the first and the last
+              edge only, straddles the edge there.
 OFF-BY-ONE    `>>=E` behaves as an inclusive `>=E`.
 CAST-TO-INT   a fractional edge is truncated before it is compared (9.51 acts as 9).
 IGNORED       every count equals the library total: the field is not a filter key here.

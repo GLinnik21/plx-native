@@ -181,9 +181,10 @@ from COUNTS instead of loading the listing? `GET /library/sections/{k}/all?type=
 with `X-Plex-Container-Start: 0` and `X-Plex-Container-Size: 0` returns no rows and the number of
 items that satisfy the term as `totalSize`. Measured read-only (GET only, 100 ms apart) by
 `tools/pms-band-probe.py`. **The evidence is one small library of each kind: every verdict below is
-"exact there, not proven at scale"** (edges were data-driven quantiles of the distinct values, four
-per family). VERIFIED means each edge's count equalled the count derived from the full listing's own
-values AND the real paged listing straddled the edge at that offset (`Start=count-1, Size=2`).
+"exact there, not proven at scale"** (edges were data-driven quantiles of the distinct values: four
+per family, two where a family had only three distinct values). VERIFIED means each edge's count
+equalled the count derived from the full listing's own values, and the real paged listing was read
+at the first and last edge (`Start=count-1, Size=2`) and straddled the edge there.
 
 | family (filter key = sort key) | movies | shows |
 |---|---|---|
@@ -256,10 +257,11 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
   `lastViewedAt`, `mediaHeight`, `random`; shows list `titleSort`, `originallyAvailableAt`, `rating`,
   `audienceRating`, `unviewedLeafCount`, `episode.addedAt`, `lastViewedAt`, `random`. `year` and
   `viewCount` are accepted as sorts but are not listed.
-- **The grid's own terms** (`genre`, `inProgress`) are honoured by the probes: the counts under each
-  matched the same-terms listing for movie `rating` and `addedAt` and show `unviewedLeafCount`.
-  `unwatched=1` and `unwatchedLeaves=1` proved nothing here (the Guest had no completed view, so they
-  left every total unchanged).
+- **The grid's own terms** are honoured by the probes: two edges per family, counted with the terms
+  and compared with the same-terms listing, matched. `genre` was probed on both libraries (movie
+  `rating` and `addedAt`, show `unviewedLeafCount`), `inProgress=1` on the movie library only (`rating`
+  and `addedAt`). `unwatched=1` and `unwatchedLeaves=1` proved nothing here (the Guest had no
+  completed view, so they left every total unchanged).
 - **Cost** (loopback, small libraries): a count probe median 3.2 ms (max 17 ms, 234 probes), a row
   page of up to 200 rows median 6.5 ms, a directory read 1-5 ms; the first read after an idle spell
   took 0.67-0.82 s and the first `/library/sections` of a session ~0.7 s.

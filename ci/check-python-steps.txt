@@ -375,3 +375,9 @@ python3 tests/test_mkv_audio_lead.py
 # file, family or pin key; a new area file; a pin; no base) and checks that the CI job that runs it fetches the full history.
 python3 ci/test_ledger_ratchet.py
 python3 ci/check-ledger-ratchet.py
+
+# tools/pms-band-probe.py, the A-Z rail's read-only PMS probe: its request guard (GET only, and only the server root, /library/sections and
+# /library/sections/{id}/{all|genre|year|decade|firstCharacter}; every /:/ route, metadata route and write route refused, the token never
+# a query term) and its verdict arithmetic. Offline: no server, no token file, no port, nothing written. The measuring run needs a real
+# PMS and is never part of a gate; tests/mock_pms.py --band-fixture is the server it can be pointed at.
+python3 tools/pms-band-probe.py --selftest

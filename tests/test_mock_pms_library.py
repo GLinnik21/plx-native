@@ -5,12 +5,14 @@ import datetime
 import io
 import json
 import hashlib
+import os
 import pathlib
 import re
 import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.parse
 import urllib.request
@@ -27,6 +29,24 @@ HAS_FFMPEG_AND_FFPROBE = shutil.which("ffmpeg") and shutil.which("ffprobe")
 HAS_DEMO_CACHE = bool(HAS_FFMPEG_AND_FFPROBE) and (demo_cache_dir() / "derived").is_dir()
 CATALOG = pathlib.Path(__file__).resolve().parent / "demo_library" / "catalog.json"
 FIXTURES = pathlib.Path(__file__).resolve().parent / "demo_library" / "fixtures"
+
+
+@contextlib.contextmanager
+def local_zone(name):
+    """Run with the process's local time zone set to `name` (a platform without `tzset` skips)."""
+    if not hasattr(time, "tzset"):
+        raise unittest.SkipTest("no time.tzset on this platform")
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if before is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
 
 
 def get(pms, path):
@@ -670,16 +690,23 @@ class BandQueries(unittest.TestCase):
         midnight = calendar.timegm(datetime.date.fromisoformat(day).timetuple())
         held = [self.mine(m, "originallyAvailableAt") for m in self.movies]
         self.assertGreaterEqual(held.count(midnight), 1)
-        self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", "=", midnight)),
-                         held.count(midnight))
-        self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", "=", midnight + 3600)), 0)
-        self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", ">>=", midnight)),
-                         sum(v is not None and v > midnight for v in held))
+        # In a zone that is not UTC (a CI runner usually is), where a day read as LOCAL midnight
+        # (`time.mktime`) lands hours away from the UTC midnight the server compares.
+        for zone in ("Asia/Tokyo", "America/Los_Angeles"):
+            with self.subTest(zone=zone), local_zone(zone):
+                self.assertNotEqual(time.mktime(datetime.date.fromisoformat(day).timetuple()), midnight)
+                self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", "=", midnight)),
+                                 held.count(midnight))
+                self.assertEqual(
+                    self.count(1, 1, self.term("originallyAvailableAt", "=", midnight + 3600)), 0)
+                self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", ">>=", midnight)),
+                                 sum(v is not None and v > midnight for v in held))
 
     def test_sort_menus_follow_the_server_per_type_under_the_fixture_only(self):
         def keys(pms, section, kind):
+            typed = "" if kind is None else f"type={kind}&"
             status, _, data = pms.handle(
-                "GET", f"/library/sections/{section}/all?type={kind}&includeMeta=1"
+                "GET", f"/library/sections/{section}/all?{typed}includeMeta=1"
                        "&X-Plex-Container-Start=0&X-Plex-Container-Size=0")
             return [s["key"] for s in json.loads(data)["MediaContainer"]["Meta"]["Type"][0]["Sort"]]
         self.assertEqual(keys(self.pms, 1, 1), [
@@ -688,8 +715,14 @@ class BandQueries(unittest.TestCase):
         self.assertEqual(keys(self.pms, 2, 2), [
             "titleSort", "originallyAvailableAt", "rating", "audienceRating", "unviewedLeafCount",
             "episode.addedAt", "lastViewedAt", "random"])
-        self.assertEqual(keys(MockPms(Library()), 1, 1),
-                         ["titleSort", "addedAt", "originallyAvailableAt", "rating", "lastViewedAt", "random"])
+        short = ["titleSort", "addedAt", "originallyAvailableAt", "rating", "lastViewedAt", "random"]
+        self.assertEqual(keys(MockPms(Library()), 1, 1), short)
+        # no `type` takes the section's own; seasons and episodes keep the short list, the show list
+        # being one `section_items` cannot apply to them
+        self.assertEqual(keys(self.pms, 2, None), keys(self.pms, 2, 2))
+        self.assertEqual(keys(self.pms, 1, None), keys(self.pms, 1, 1))
+        for kind in (3, 4):
+            self.assertEqual(keys(self.pms, 2, kind), short, kind)
 
     def test_off_by_default_and_the_older_sorts_order_as_they_always_did(self):
         lib = Library()
