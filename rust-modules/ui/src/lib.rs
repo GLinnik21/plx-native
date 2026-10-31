@@ -432,6 +432,25 @@ pub mod draw_census {
         ICONS.with(|l| l.borrow_mut().take()).unwrap_or_default()
     }
 
+    thread_local! {
+        static SVGS: RefCell<Option<Vec<(u64, Rect)>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was asked for a package glyph ([`crate::icons::draw_svg_raster`]): the
+    /// census of [`note_icon`] for an [`crate::icons::Svg`], as `(its key, screen box)`.
+    pub fn note_svg(key: u64, r: Rect) {
+        SVGS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((key, r));
+            }
+        });
+    }
+    /// Every package glyph a recording painter is handed while `f` runs.
+    pub fn capture_svgs(f: impl FnOnce()) -> Vec<(u64, Rect)> {
+        SVGS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        SVGS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
     /// A recorded text run with its STYLE: what a test needs to say "regular weight, 65% white".
     #[derive(Clone, Debug, PartialEq)]
     pub struct Run {

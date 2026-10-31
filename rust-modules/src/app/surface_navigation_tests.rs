@@ -400,7 +400,7 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
         OverlayKind::Tracks { tab: 0 },
         OverlayKind::Info,
         OverlayKind::Chapters,
-        OverlayKind::More { quality: false },
+        OverlayKind::More { page: None },
     ] {
         open_player_overlay(
             plx_media::route::idle_session_for_test(),
@@ -953,6 +953,45 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
             instance,
             "{kind:?} closed onto the SAME player instance — no remount",
         );
+    }
+}
+
+/// **The rect the app seeds the mounter with is the rect the menu mounts with, once.** The canonical
+/// `PlayerOverlayArg` is the panel's KIND, so the opener's anchor rides on the mounter
+/// (`Bridge::seed_player_menu_anchor`), is taken by the mount of the next menu, and is gone for the one after:
+/// a press that seeds nothing mounts the menu's own default, not the previous press's rect.
+#[test]
+fn a_seeded_menu_anchor_is_mounted_into_the_next_menu_and_only_that_one() {
+    use plx_screens::player::overlay::{OverlayKind, Panel};
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = || plx_data::stores::metadata::MetadataStore::default();
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
+    let anchor_of = |d: &mut Dispatcher<AppHost>| match player_overlay_mut(d).expect("a panel is up").panel() {
+        Panel::Tracks(p) => p.anchor(),
+        Panel::More(p) => p.anchor(),
+        _ => panic!("a menu"),
+    };
+    let seeded = plx_ui::Rect::new(333.0, 222.0, 111.0, 55.0);
+    let own_default = plx_appkit::player_hud::audit_geometry().row;
+    assert_ne!(seeded, own_default);
+    for (kind, tick_at) in [(OverlayKind::Tracks { tab: 1 }, 1), (OverlayKind::More { page: None }, 5)] {
+        rig.seed_player_menu_anchor(Some(seeded));
+        open_player_overlay(&ps, meta().view(), &mut d, kind);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at), vec![]);
+        assert_eq!(anchor_of(&mut d), seeded, "{kind:?} mounts with the rect it was handed");
+        dismiss_player_overlays(&mut d);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 1), vec![]);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 2), vec![]);
+        // the seed is spent: an open that seeds nothing keeps the menu's own default
+        open_player_overlay(&ps, meta().view(), &mut d, kind);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 3), vec![]);
+        assert_eq!(anchor_of(&mut d), own_default, "{kind:?} with no seed mounts at its default");
+        dismiss_player_overlays(&mut d);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 4), vec![]);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 5), vec![]);
     }
 }
 

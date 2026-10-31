@@ -146,8 +146,9 @@ different areas never edit the same `# count:` header. The directories do not co
 
 Each file starts with `# count: N` (it must equal the entry count), then a comment header saying what
 the rule is, then one key per line. A line filed in the wrong area fails the gate and names the right one.
-`tests/test_harness.py` pins each rule's total (`PINNED_LEDGER_TOTALS`), so a ledger and its count
-cannot grow together unseen.
+`tests/test_harness.py` pins each rule's total (`PINNED_LEDGER_TOTALS`), and `ci/check-ledger-ratchet.py`
+fails a PR whose entry counts or pins rise above its base's, so a ledger, its count and its pin cannot
+grow together.
 
 ## What fails
 
@@ -168,7 +169,8 @@ becomes one code path that tests and the product both drive. The PR then:
 3. leaves the gate green (`ci/check-deps.sh`).
 
 It never edits a line to make a new site pass, and never adds one: a new worker start, registry read
-or fork in a machine is moved behind an effect instead. A ledger file that reaches zero entries is
+or fork in a machine is moved behind an effect instead, and CI fails a PR whose ledger counts rise
+above its base's (`ci/check-ledger-ratchet.py`). A ledger file that reaches zero entries is
 deleted; a rule whose last file is gone has a total of zero, and its pin says so.
 
 A store the Bridge runs leaves as a store job, not an `AppFx`, while a stepped machine such as the

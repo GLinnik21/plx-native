@@ -35,7 +35,7 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
     if item.kind == 3 { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) }
 }
 
-/// The Under posters setting as the caption policy every Library grid card and band follows.
+/// The standard focused caption policy; the movie grid can use persistent sort captions instead.
 pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// A grid card's label under `policy`: the focused caption band shows exactly what the Under
@@ -99,6 +99,16 @@ struct Window {
     elems: Vec<u32>,
 }
 
+/// Render cache bounded by the projected windows. A data publication, sort or locale change
+/// invalidates formatting; walking focus only changes the shared component's presentation.
+#[derive(Default)]
+struct CaptionCache {
+    language: Option<plx_platform::i18n::Language>,
+    format: String,
+    sort: String,
+    labels: HashMap<usize, (usize, ui_cards::TileLabel)>,
+}
+
 pub(super) struct GridPart {
     entry: EntryId,
     group: GroupId,
@@ -133,6 +143,7 @@ pub(super) struct GridPart {
     indexes: GridIndexes,
     /// Render history for the at-rest poster lookahead (`lookahead.rs`); never logical state.
     rest: super::lookahead::Rest,
+    captions: std::cell::RefCell<CaptionCache>,
     #[cfg(test)]
     test_ops: PublicationOps,
 }
@@ -153,7 +164,7 @@ impl GridPart {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
         // projection and identity are traversed below; its Arc address never enters logical state.
         let Self { entry: _, group, total, windows, applied: _, pins: _, known, identity, layout, scroll, target_layout,
-            scroll_target, grid, snapshot: _, indexes: _, rest: _, #[cfg(test)] test_ops: _ } = self;
+            scroll_target, grid, snapshot: _, indexes: _, rest: _, captions: _, #[cfg(test)] test_ops: _ } = self;
         c.u32(group.0).u32(*total as u32).seq(windows.len());
         for w in windows {
             c.u32(w.first as u32).seq(w.elems.len());
@@ -193,6 +204,7 @@ impl GridPart {
             snapshot: None,
             indexes: GridIndexes::default(),
             rest: Default::default(),
+            captions: Default::default(),
             #[cfg(test)] test_ops: PublicationOps::default(),
         }
     }
@@ -207,7 +219,7 @@ impl GridPart {
     pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
         self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
-        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() };
+        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), persistent: self.layout.persistent_captions(), captions: &self.captions };
         let _ = self.grid.on(ev, cx, &src, fx);
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
@@ -243,6 +255,7 @@ impl GridPart {
         self.target_layout = target_layout;
         self.scroll_target = scroll_target;
         self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
+        self.grid.set_persistent_captions(layout.persistent_captions());
         self.grid.set_caption_policy(Some(caption_policy()));
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
@@ -288,6 +301,7 @@ impl GridPart {
         if self.snapshot.as_ref().is_some_and(|old| view.same_items(old.view())) && ranges == self.applied {
             return;
         }
+        self.captions.borrow_mut().labels.clear();
         self.snapshot = Some(view.retain());
         self.project(view, keys, ranges);
     }
@@ -436,7 +450,7 @@ impl GridPart {
 
     /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
     fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
-        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() }
+        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), persistent: self.layout.persistent_captions(), captions: &self.captions }
     }
 
     /// The painter the grid draws and registers stops through: the page's alpha, and the stops
@@ -500,6 +514,8 @@ struct GridSrc<'a, 'v> {
     indexes: &'a GridIndexes,
     view: plx_data::stores::browse::ListingView<'v>,
     policy: CaptionPolicy,
+    persistent: bool,
+    captions: &'a std::cell::RefCell<CaptionCache>,
 }
 
 impl GridSrc<'_, '_> {
@@ -508,9 +524,25 @@ impl GridSrc<'_, '_> {
     fn collections(&self) -> bool { self.view.library_type() == plx_data::browse::LibraryType::Collections }
 
     /// The label the grid draws under tile `i`: the one [`CardSource::label`] answers.
-    fn tile_label(&self, i: usize) -> ui_cards::TileLabel {
-        let Some(item) = self.view.item(i) else { return Default::default() };
-        grid_label(item, &self.policy)
+    fn with_tile_label<R>(&self, i: usize, read: impl FnOnce(&ui_cards::TileLabel) -> R) -> R {
+        let Some(item) = self.view.item(i) else { return read(&ui_cards::TileLabel::default()) };
+        if self.persistent {
+            let key = self.view.sorts().get(self.view.sort_index()).map_or("", |sort| sort.key.as_str());
+            let locale = plx_platform::i18n::current();
+            let mut cache = self.captions.borrow_mut();
+            if cache.language != Some(locale.language()) || cache.format != locale.format_locale() || cache.sort != key {
+                cache.labels.clear(); cache.language = Some(locale.language());
+                cache.format = locale.format_locale().to_owned(); cache.sort = key.to_owned();
+            }
+            let owner = item as *const plx_data::pms::PmsMovie as usize;
+            if let Some((_, label)) = cache.labels.get(&i).filter(|(old, _)| *old == owner) {
+                return read(label);
+            }
+            let entry = cache.labels.entry(i).or_insert_with(|| (owner, crate::registry::sort_info::label(item, key)));
+            if entry.0 != owner { *entry = (owner, crate::registry::sort_info::label(item, key)); }
+            return read(&entry.1);
+        }
+        read(&grid_label(item, &self.policy))
     }
 }
 
@@ -521,7 +553,8 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn art(&self, i: usize) -> Art<'_> {
         self.view.item(i).map_or(Art::Poster(None), grid_art)
     }
-    fn label(&self, i: usize) -> ui_cards::TileLabel { self.tile_label(i) }
+    fn label(&self, i: usize) -> ui_cards::TileLabel { self.with_tile_label(i, Clone::clone) }
+    fn with_label<R>(&self, i: usize, read: impl FnOnce(&ui_cards::TileLabel) -> R) -> R { self.with_tile_label(i, read) }
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }
@@ -656,5 +689,41 @@ impl<H: LibraryLike> Part<H> for GridPart {
         let p = Self::painter(f);
         let src = self.source(f.cx);
         self.grid.draw(f, p, &src);
+    }
+}
+
+#[cfg(test)]
+mod caption_cache_review_tests {
+    use super::*;
+    use plx_data::{browse::view::ListingSnapshot, pms::PmsMovie};
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+
+    #[test]
+    fn review_caption_cache_borrows_words_and_invalidates_stale_publications() {
+        let _guard = plx_base::testlock::serial();
+        let _locale = language_on_this_thread_for_test(Preference::En);
+        let listing = ListingSnapshot::fixture(plx_plex::plex::ServerId::from_raw(0),
+            vec![Some(PmsMovie { title: "Original".into(), year: 1997, ..Default::default() })], vec![]);
+        let cache = std::cell::RefCell::new(CaptionCache::default());
+        let indexes = GridIndexes::default();
+        let mut src = GridSrc { total: 1, windows: &[], indexes: &indexes, view: listing.view(),
+            policy: CaptionPolicy::default(), persistent: true, captions: &cache };
+        let pointer = |label: &ui_cards::TileLabel| label.title.as_ref().unwrap().as_ptr() as usize;
+        let first = src.with_tile_label(0, pointer);
+        assert_eq!(first, pointer(&cache.borrow().labels[&0].1), "read the cached CString itself");
+        assert_eq!(src.with_tile_label(0, pointer), first);
+        assert_eq!(cache.borrow().labels.len(), 1);
+        cache.borrow_mut().sort = "obsoleteSort".into();
+        src.with_tile_label(0, |_| {});
+        assert_eq!(cache.borrow().sort, "titleSort");
+        {
+            let _ru = language_on_this_thread_for_test(Preference::Ru);
+            src.with_tile_label(0, |_| {});
+            assert_eq!(cache.borrow().language, Some(plx_platform::i18n::current().language()));
+        }
+        let changed = listing.clone().with_page(0, vec![PmsMovie { title: "Replaced".into(), ..Default::default() }]);
+        src.view = changed.view();
+        src.with_tile_label(0, |label| assert_eq!(label.title.as_ref().unwrap().to_str().unwrap(), "Replaced"));
+        assert_eq!(cache.borrow().labels.len(), 1);
     }
 }

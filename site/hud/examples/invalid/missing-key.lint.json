@@ -1,0 +1,15 @@
+{
+  "file": "missing-key.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0103",
+      "hint": "add \"anchor\": one of: bottom",
+      "message": "the required key `anchor` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}

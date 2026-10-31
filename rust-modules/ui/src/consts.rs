@@ -98,18 +98,23 @@ pub const SAFE: crate::Rect = crate::Rect::new(
     SCR_H - 2.0 * MARGIN_Y,
 );
 
+/// **The tolerance of an edge test, in px.** A layout derived through f32 sums lands a hair either side of an
+/// exact edge, so two edges closer than this are the same edge and rects that overlap by less than it only
+/// touch. [`inside_safe`] reads it; the HUD lint's overlap, `SAFE` and menu checks share it rather than each
+/// keeping a copy.
+pub const EDGE_TOL: f32 = 0.01;
+
 /// Is `r` wholly inside [`SAFE`]? The one test the audit's table asks, per rect.
 ///
-/// A hair of tolerance (`EPS`) because several of the rects handed here are the result of an f32
+/// A hair of tolerance ([`EDGE_TOL`]) because several of the rects handed here are the result of an f32
 /// derivation that lands on the boundary exactly — `SCR_W - MARGIN_X - w` then `+ w` is not bit-for-
 /// bit `SCR_W - MARGIN_X` — and a control flush against the frame is compliant, not a violation.
 #[inline]
 pub fn inside_safe(r: crate::Rect) -> bool {
-    const EPS: f32 = 0.01;
-    r.x >= SAFE.x - EPS
-        && r.y >= SAFE.y - EPS
-        && r.x + r.w <= SAFE.x + SAFE.w + EPS
-        && r.y + r.h <= SAFE.y + SAFE.h + EPS
+    r.x >= SAFE.x - EDGE_TOL
+        && r.y >= SAFE.y - EDGE_TOL
+        && r.x + r.w <= SAFE.x + SAFE.w + EDGE_TOL
+        && r.y + r.h <= SAFE.y + SAFE.h + EDGE_TOL
 }
 
 // hero <-> grid continuum

@@ -1,0 +1,19 @@
+{
+  "file": "unknown-command.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0301",
+      "hint": "write one of: toggle_play, seek, previous, next, open_tracks, open_more, toggle_section, from_beginning, go_to_detail, toggle_stats",
+      "message": "`skip_back` is not a known command",
+      "nearest": [
+        "open_tracks",
+        "seek",
+        "open_more"
+      ],
+      "path": "/layout/block/1/cells/0/segment/items/0/command",
+      "rule": "command-known",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}

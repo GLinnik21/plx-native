@@ -104,6 +104,8 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         refresh_gen: 0,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
+        free: false,
+        episode_free: false,
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),

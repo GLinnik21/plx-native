@@ -31,6 +31,7 @@ use plx_machine::machine::{
     InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
 };
 use plx_ui::screen::{At, By, Focusable, Placed, ScreenEvent};
+#[path = "hud_pins_tests.rs"] mod hud_pins;
 
 pub(super) struct TestHost;
 impl Host for TestHost {
@@ -244,7 +245,7 @@ fn stop_stays_swallowed_by_the_three_reading_panels() {
 fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
     let ps = plx_media::route::PlaybackSession::IDLE;
     for wcode in [WCODE_PAUSE, WCODE_PLAY, WCODE_PLAYPAUSE] {
-        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+        let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { page: None });
         let (handled, reqs, dismissed) = press(&mut page, 0, wcode, Edge::Down);
         assert_eq!(handled, Handled::Yes);
         assert!(
@@ -259,13 +260,13 @@ fn the_options_popover_keeps_the_old_swallow_everything_behaviour() {
 fn back_dismisses_more_at_the_root_and_pops_the_quality_page_first() {
     let ps = plx_media::route::PlaybackSession::IDLE;
     // the ordinary entry is the root: BACK dismisses
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { page: None });
     let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert_eq!(handled, Handled::Yes, "More owns BACK");
     assert!(reqs.is_empty(), "BACK must not activate a More row");
     assert!(dismissed, "BACK must dismiss the More root");
     // the quality recovery entry opens ON the Quality page: BACK goes up one page, then dismisses
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: true });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { page: Some(MorePage::Quality) });
     assert_eq!(more_page(&page), Some(MorePage::Quality));
     let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert_eq!(handled, Handled::Yes);
@@ -273,6 +274,21 @@ fn back_dismisses_more_at_the_root_and_pops_the_quality_page_first() {
     assert_eq!(more_page(&page), None);
     let (_, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
     assert!(reqs.is_empty() && dismissed, "BACK at the root dismisses");
+}
+
+/// **`open_more {page: speed}` is an address the overlay honours**: the `…` popover mounts on its
+/// Speed page, the way the failure read-out's recovery mounts it on Quality, and BACK pops to the
+/// root before it dismisses.
+#[test]
+fn the_more_popover_mounts_on_the_speed_page_when_addressed_to_it() {
+    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { page: Some(MorePage::Speed) });
+    assert_eq!(more_page(&page), Some(MorePage::Speed));
+    let (_, reqs, dismissed) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+    assert!(only_hud(&reqs) && !dismissed, "BACK on the Speed page only pops it: {reqs:?}");
+    assert_eq!(more_page(&page), None);
 }
 
 /// Nothing but the read-time `ExtendHud` a menu move raises.
@@ -302,7 +318,7 @@ fn the_quality_row_pushes_and_left_back_and_the_title_pop() {
     let _g = plx_base::testlock::serial();
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
-    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { page: None });
     assert_eq!(more_page(&page), None);
 
     // OK on the row
@@ -347,7 +363,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
     let _g = plx_base::testlock::serial();
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
-    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { page: None });
     let stops_of = |page: &PlayerOverlayScreen| {
         let cx = cx();
         let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
@@ -391,7 +407,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
 #[test]
 fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
     let ps = plx_media::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { page: None });
     // A fresh press rearms the cadence and is handed to the engine.
     let (handled, ..) = press(&mut page, SDLK_DOWN, 0, Edge::Down);
     assert_eq!(handled, Handled::No, "the fresh press falls through to the engine");
@@ -417,7 +433,7 @@ fn a_held_direction_is_paced_and_a_fresh_press_is_never_swallowed() {
 #[test]
 fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
     let ps = plx_media::route::PlaybackSession::IDLE;
-    for (kind, name) in MODAL.into_iter().chain([(OverlayKind::More { quality: false }, "More")]) {
+    for (kind, name) in MODAL.into_iter().chain([(OverlayKind::More { page: None }, "More")]) {
         let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let (handled, reqs, dismissed) = click(&mut page, 10.0, 10.0);
         assert_eq!(handled, Handled::No, "{name}: the engine's hit map resolves a click, not step");
@@ -498,7 +514,7 @@ fn activate_commits_the_bare_rows_directly() {
     assert!(dismissed, "Tracks: Activate commits and dismisses");
 
     // an Options row: the root's first row is the Quality drill-in, which opens a page instead
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { quality: false });
+    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { page: None });
     let (_, reqs, dismissed) = more_open(&mut page, MoreRow::Act(MoreAction::ToggleStats));
     assert!(dismissed, "More: Activate commits and dismisses");
     assert!(
@@ -1013,7 +1029,7 @@ fn the_player_panels_dim_through_the_container_in_the_neutral_dim_whatever_the_i
     }))));
     for (kind, alpha) in [
         (OverlayKind::Tracks { tab: 0 }, DIM_PLAYER),
-        (OverlayKind::More { quality: false }, DIM_SHEET),
+        (OverlayKind::More { page: None }, DIM_SHEET),
         (OverlayKind::Info, 0.0),
         (OverlayKind::Chapters, 0.0),
     ] {
@@ -1103,8 +1119,8 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         OverlayKind::Tracks { tab: 1 },
         OverlayKind::Info,
         OverlayKind::Chapters,
-        OverlayKind::More { quality: false },
-        OverlayKind::More { quality: true },
+        OverlayKind::More { page: None },
+        OverlayKind::More { page: Some(MorePage::Quality) },
     ] {
         let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let cx = cx();
@@ -1157,4 +1173,53 @@ fn every_kind_is_listed_once() {
     slots.sort_unstable();
     assert_eq!(slots, (0..OverlayKind::ALL.len() as u8).collect::<Vec<_>>());
     assert!(OverlayKind::ALL.into_iter().all(listed));
+}
+
+/// **The player screen hands the menu its anchor when it mounts it.** Whichever opener asked (the
+/// Subtitles or Audio disc, the `…` disc, or the failure read-out's quality entry, which has no
+/// disc), classic's anchor is the control row ending at the segment edge `CTRL_RIGHT`, so every
+/// panel settles at `CTRL_RIGHT - pw`, bottom 764, as the constants placed it.
+#[test]
+fn every_classic_opener_hands_its_menu_the_control_rows_anchor() {
+    let _g = plx_base::testlock::serial();
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let row = plx_appkit::player_hud::audit_geometry().row;
+    assert_eq!(row.x + row.w, plx_appkit::player_hud::classic::CTRL_RIGHT);
+    for (kind, name) in MENUS {
+        let page = PlayerOverlayScreen::new_with(&ps, meta.view(), ENTRY, kind, false);
+        assert_eq!(menu_anchor_of(&page, name), row, "{name}");
+    }
+}
+
+/// The menus' own default is classic's row too, so the test above cannot tell a screen that hands
+/// the anchor over from one that forgot to. Here the anchor is one no opener produces, and every
+/// menu arm of the mount reachable from a host test must arrive with exactly it. (More's Force
+/// Direct Play fallback of the quality entry needs a forced session no host test can build.)
+#[test]
+fn every_menu_arm_latches_the_anchor_it_is_handed() {
+    let _g = plx_base::testlock::serial();
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let anchor = plx_ui::Rect::new(333.0, 222.0, 111.0, 55.0);
+    assert_ne!(anchor, plx_appkit::player_hud::audit_geometry().row);
+    for (kind, name) in MENUS {
+        let page = PlayerOverlayScreen::new_anchored(&ps, meta.view(), ENTRY, kind, false, anchor);
+        assert_eq!(menu_anchor_of(&page, name), anchor, "{name}");
+    }
+}
+
+const MENUS: [(OverlayKind, &str); 4] = [
+    (OverlayKind::Tracks { tab: 0 }, "Audio disc"),
+    (OverlayKind::Tracks { tab: 1 }, "Subtitles disc"),
+    (OverlayKind::More { page: None }, "More disc"),
+    (OverlayKind::More { page: Some(MorePage::Quality) }, "failure read-out"),
+];
+
+fn menu_anchor_of(page: &PlayerOverlayScreen, name: &str) -> plx_ui::Rect {
+    match page.panel() {
+        Panel::Tracks(p) => p.anchor(),
+        Panel::More(p) => p.anchor(),
+        _ => panic!("{name}: a menu"),
+    }
 }

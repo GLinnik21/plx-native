@@ -7524,8 +7524,9 @@ impl PersonOwnerGateFixture {
     # Phase 12 (P8-H): a per-file PIN, on top of the self-consistency check above. That check
     # only proves a file's own `# count: N` line matches its own entry count — it cannot see an
     # allowlist and its count grow TOGETHER, correctly, in the same edit, past the number this
-    # phase actually measured. This table is that second line of defence: growing any file below
-    # means also raising its number HERE, in the same diff, so a reviewer sees the move rather
+    # phase actually measured. This table is that second line of defence, and a raised number
+    # fails `ci/check-ledger-ratchet.py` against the base branch: growing any file below is the
+    # owner's call, made by merging past that check, so a reviewer sees the move rather
     # than an allowlist quietly absorbing a new violation. Shrinking is always allowed (update
     # the number down). The weave that merged P8-H also retired `ci/allow/statics-migration.txt`
     # to 0 — its one entry (ui/widgets.rs) was the 11 top-bar/glass-band statics named individually
@@ -7577,8 +7578,9 @@ impl PersonOwnerGateFixture {
     }
 
     # The Sans-IO ledgers' pins, one number per RULE (the sum over its area files): a ledger only
-    # shrinks, so growing one means raising its number here, in the same diff, where a reviewer sees
-    # the move. A migration PR lowers the number with the lines it deletes. Seeded 2026-10-24 from
+    # shrinks, and a raised number fails `ci/check-ledger-ratchet.py` against the base branch, so
+    # growing one is the owner's call, made by merging past that check. A migration PR lowers the
+    # number with the lines it deletes. Seeded 2026-10-24 from
     # the tool's own output on the tree this table was written for.
     PINNED_LEDGER_TOTALS = {
         # Browse B-A (the section hubs' list and row reads leave as `StoreJob::BrowseHubs`): -2 here (`hubs_spawn`,
@@ -7653,9 +7655,10 @@ impl PersonOwnerGateFixture {
                 declared = int(f.readline().split(":")[1])
             self.assertLessEqual(
                 declared, pinned,
-                f"{fn} grew from the pinned {pinned} to {declared} — if this growth is "
-                "deliberate (a real, reasoned new entry, not a workaround), raise the number in "
-                "PINNED_ALLOWLIST_COUNTS in the same change so a reviewer sees it move",
+                f"{fn} grew from the pinned {pinned} to {declared}: an allowlist only shrinks, and "
+                "ci/check-ledger-ratchet.py fails a raised pin as well as the new entry. Remove the "
+                "entry, or stop and explain in the PR why the site seems to need one (an exception "
+                "is the owner's call)",
             )
 
 

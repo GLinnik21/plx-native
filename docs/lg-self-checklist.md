@@ -146,7 +146,7 @@ skips; a partial green count is not equivalent to 21/21.
 ## 6. Decisions and N/A items
 
 **#41 — language setting.** Settings now offers System default, English, Spanish, Belarusian, French, Italian,
-Portuguese, German, Hungarian and Russian (the languages `locales/languages.json` registers), with changes applied at the next app launch. Localized launcher metadata still follows webOS.
+Portuguese, German, Hungarian, Russian, Polish and Dutch (the languages `locales/languages.json` registers), with changes applied at the next app launch. Localized launcher metadata still follows webOS.
 The native Settings Service supplies UI and formatting locales, and the resolved app language
 becomes `X-Plex-Language` for PMS. Native device checks on 2026-09-27 verified detection, persistence across restarts, Cyrillic
 text, consent scrolling and the contribution QR. See `docs/localization.md` for the scope.

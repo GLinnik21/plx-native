@@ -223,7 +223,7 @@ use crate::pms::PmsMovie;
 use crate::viewstate::{ViewAt, ViewEdit};
 use plx_plex::plex::{LibrarySection, MediaContainer};
 
-const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
 
 /// A `firstCharacter` answer of `counts`.
 fn letter_container(counts: &[(&str, i64)]) -> MediaContainer {

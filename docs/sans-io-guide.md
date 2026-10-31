@@ -192,8 +192,10 @@ blocks belongs in such a body, or in the runner. A step never calls it, and neve
 ## The ledgers
 
 `ci/allow/{workers,globals,forks,fxlanes}/` only shrink. A new line there, a raised `# count:`
-header or a raised `PINNED_LEDGER_TOTALS` entry (`tests/test_harness.py`) is never the fix. If a
-step truly seems to need IO, stop and say why in the PR or the handoff; do not add the exception.
+header or a raised `PINNED_LEDGER_TOTALS` entry (`tests/test_harness.py`) is never the fix: CI
+(`ci/check-ledger-ratchet.py`) fails a PR whose ledger counts rise above its base's, so all three
+raised together still fail. If a step truly seems to need IO, stop and say why in the PR or the
+handoff; do not add the exception.
 A one-for-one rename of the fn that already holds a site, the site itself unchanged (#1116 renamed
 `mod.rs::sink` to `mod.rs::raw_sink` in `ci/allow/forks/media.txt`), changes only its key; say so in
 the PR. It never covers a new call. A migration deletes lines (`docs/sans-io.md`, "How a migration

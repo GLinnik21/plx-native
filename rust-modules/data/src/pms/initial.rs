@@ -201,7 +201,7 @@ fn movie(m: &PmsMovie, w: &mut impl Sink) {
         subtype: _, smart: _, genre: _, video_resolution: _, hdr: _, audience_rating: _,
         leaf_count: _, viewed_leaf_count: _, added_at: _,
         // a listing's versions only feed the item menu's row, which the menu captures at open
-        versions: _ } = m;
+        versions: _, sort_info: _ } = m;
     w.u32(sid.raw().into()); w.u64(*sec as u64); w.text(title); w.u32(*year as u32);
     w.text(rating); w.u64(*dur_ns as u64);
     for text in [part, thumb, still, art, summary, rk, vcodec, acodec] { w.text(text); }
