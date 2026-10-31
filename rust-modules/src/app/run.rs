@@ -5037,6 +5037,9 @@ mod lifecycle_regression_tests {
         entered: mpsc::Receiver<()>,
         requests: Arc<Mutex<Vec<String>>>,
         stop: Arc<AtomicBool>,
+        /// The fixture's answer gate: while it is closed ([`Self::hold_answers`]) every request that
+        /// reaches the fixture waits, unanswered, until [`Self::answer_held`] opens it.
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
@@ -5085,6 +5088,8 @@ mod lifecycle_regression_tests {
             let log = requests.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let stopping = stop.clone();
+            let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let fixture_gate = gate.clone();
             let worker = match plx_base::task::spawn_small_keeping("lifecycle-fixture", move || {
                 let mut first = true;
                 while !stopping.load(Ordering::Acquire) {
@@ -5123,6 +5128,13 @@ mod lifecycle_regression_tests {
                         arrived.send(()).unwrap();
                         let _ = wait.recv_timeout(Duration::from_secs(5));
                     }
+                    {
+                        let (closed, opened) = &*fixture_gate;
+                        let mut held = closed.lock().unwrap();
+                        while *held && !stopping.load(Ordering::Acquire) {
+                            held = opened.wait_timeout(held, Duration::from_millis(50)).unwrap().0;
+                        }
+                    }
                     let body = respond(&request);
                     // a handler answers `!503` for a refusal: a 5xx with an empty body
                     let (status, body) = match body.as_str() {
@@ -5157,8 +5169,21 @@ mod lifecycle_regression_tests {
                 entered,
                 requests,
                 stop,
+                gate,
                 worker: Some(worker),
             })
+        }
+
+        /// Close the answer gate: every request the fixture receives from now on is logged and then
+        /// waits, unanswered, until [`Self::answer_held`]. The worker that sent it blocks on its reply,
+        /// so a resolve started after this cannot land inside the frame that started it.
+        fn hold_answers(&self) {
+            *self.gate.0.lock().unwrap() = true;
+        }
+
+        fn answer_held(&self) {
+            *self.gate.0.lock().unwrap() = false;
+            self.gate.1.notify_all();
         }
 
         fn request(&mut self) {
@@ -5239,6 +5264,7 @@ mod lifecycle_regression_tests {
 
     impl Drop for Rig {
         fn drop(&mut self) {
+            self.answer_held();
             let _ = self.release.send(());
             plx_media::route::cancel_play(&mut self.app.player.session);
             // `cancel_play` withdraws the landing but leaves the detached resolve worker running,
@@ -8641,6 +8667,10 @@ mod lifecycle_regression_tests {
             "inside the credits the tile takes over",
         );
         assert!(!plx_media::route::play_pending(), "the countdown is still running");
+        // The successor's resolve answers at once (only the first request is held), so a worker
+        // scheduled between `playback_tick` and `update` inside one `step` lands and is pumped before
+        // the assertion below: hold its answers, so the request it makes is what is graded.
+        rig.hold_answers();
         t += plx_appkit::up_next::COUNTDOWN_MS;
         step(&mut rig.app, &mut t, vec![]);
         assert!(plx_media::route::play_pending(), "the countdown requests the successor");

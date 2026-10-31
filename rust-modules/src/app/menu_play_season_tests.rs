@@ -110,8 +110,20 @@ impl Rig {
 
 impl Drop for Rig {
     fn drop(&mut self) {
+        // A landing that played the season's first episode began a resolve (`route::play_pending`:
+        // `PLAY_BUSY`, a process global that only a landing's consume or a cancel clears), and nothing
+        // in these tests consumes it. Left set, the next test to read `player::state()` found
+        // `Resolving` where it expected Idle (`diagnostics::an_unknown_firmware_is_named_as_unknown`,
+        // intermittently; six rig tests fail "left a play pending" when this cancel is removed).
+        // Withdraw it FIRST and join its worker before anything is torn down, in the order the
+        // matching rig in `run.rs` uses: the worker looks its client up through the server registry
+        // (`client_for`) to retire its abandoned plan, so the registry is reset only after it has
+        // finished. The guard drops after this body, so the lock is held throughout.
+        plx_media::route::cancel_play(&mut self.ps);
+        let joined = plx_media::route::wait_resolve_workers_for_test(std::time::Duration::from_secs(5));
         self.bridge.metadata_mut().run(MetadataCmd::Clear);
         plx_plex::plex::reset_servers_for_test();
+        assert!(joined || std::thread::panicking(), "a resolve worker outlived its test");
     }
 }
 

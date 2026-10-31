@@ -667,9 +667,19 @@ impl World {
         dip.plan(&self.d, self.frame * 16)
     }
 
-    /// `n` idle frames; returns what the pump performed meanwhile (a navigation a press began and
-    /// the loop finishes a few frames on).
+    /// `n` idle frames, after the store workers the press started have finished; returns what the
+    /// pump performed meanwhile (a navigation a press began and the loop finishes a few frames on).
+    ///
+    /// **The join comes first because the rig's server is a closed port whose fetch fails at once, but
+    /// on a REAL worker** (`launch_browse_page`'s `page`): a page opened over a listing that is not
+    /// held reads Failed, and seats focus on its Retry, only once that worker has returned and a frame
+    /// has applied its landing. Counting frames alone races the worker's wall-clock: under load a
+    /// graded step saw the Collections page still Loading, focus on nothing
+    /// (`the_crumb_root_pops_to_the_library…`, `the_rail_is_entered_only_from_the_last_column…`,
+    /// 4 whole-binary runs of 37). The join is `Serial`'s own (`task::drain_workers_for_test`): a
+    /// worker that outlives its bound is reported and left, never waited on forever.
     pub(super) fn settle(&mut self, n: u32) -> Vec<String> {
+        plx_base::task::drain_workers_for_test();
         self.performed.clear();
         self.frames(n);
         std::mem::take(&mut self.performed)

@@ -66,6 +66,35 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// **Pins the thread's Under posters setting to its default while it lives**, for a test fixture that
+/// draws a grid or a shelf and does not take `testlock::serial()` (or that must not depend on what the
+/// Settings tests last wrote). The grid and the shelves read the setting every frame ([`policy`]) to
+/// size the focused row's caption band, 80 px under one line and 112 under two; unpinned, that read is
+/// the process-wide cell the Settings tests write (`restore_under_posters`), and a write between two
+/// frames of a fixture moves every row under the focused one by the 32 px between the bands
+/// (`watchlist::page_tests::a_remove_changes_nothing_on_the_grid_until_the_landing_starts`,
+/// intermittent). The pin is the per-thread override above, so it writes nothing another thread can
+/// read. A setting the test pinned itself before the guard stands (the pin is the default only where
+/// nothing was pinned), and what was there is put back on the way out, a panic included.
+#[cfg(test)]
+pub(crate) struct PolicyPin(Option<plx_plex::plex::session::UnderPosters>);
+
+#[cfg(test)]
+impl PolicyPin {
+    pub(crate) fn default_setting() -> Self {
+        let before = TEST_UNDER_POSTERS.with(|cell| cell.get());
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(before.unwrap_or(plx_plex::plex::session::UnderPosters::DEFAULT))));
+        PolicyPin(before)
+    }
+}
+
+#[cfg(test)]
+impl Drop for PolicyPin {
+    fn drop(&mut self) {
+        TEST_UNDER_POSTERS.with(|cell| cell.set(self.0));
+    }
+}
+
 /// **The policy the Continue Watching deck follows** (the owner's 2026-10-22 call): the progress
 /// line is the tile's state and is always shown, so Details Nothing is read as a details line being
 /// present (it is the state line); every other kind, and the Title switch, stand. The deck shelf is
