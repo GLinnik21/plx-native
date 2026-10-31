@@ -118,9 +118,8 @@ pub(crate) unsafe fn run(app: &mut App) {
         let _frame_scope = plx_base::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         let wslg_frame_budget = app.wslg_frame_pacing.then(super::window_activity::WslgFrameBudget::begin);
-        // Resolve the control row once per iteration, before the event pump, and pass this
-        // value to input, update and draw alike (`content_requests` re-resolves it once after a
-        // dismissal; see `Frame::ctrl`). `player_hud::slot()` reads `playpos_ns`, which
+        // Resolve the control row ONCE per iteration, before the event pump, and pass this
+        // value to input, update and draw alike. `player_hud::slot()` reads `playpos_ns`, which
         // LG's media thread writes and `player::pump` advances mid-iteration — deriving it per
         // call site let a keypress activate a control this same frame then declined to draw.
         // Frame-drop detector, stamp 0 of 9: the TOP of the iteration, before the ls2 pump
