@@ -364,8 +364,15 @@ fn the_open_menus_pill_is_lit_by_the_lift_and_left_out_of_the_page() {
 /// **The menu's surface draws no pill of its own** (S12): its glass begins at the pill's rect and is
 /// never nothing once the morph is under way, and the pill above it is the lift's. Driven through
 /// the surface itself, as the dispatcher drives it: Mount, the open's frames, BACK, and the close
-/// run out and past. Red while the surface painted the pill's plate and label (the morph face), which
-/// is also what put a second copy of the label under the lift's on the first frames.
+/// run out and past. Red while the surface painted the control's face (the morph face), which is
+/// also what put a second copy of the face under the lift's on the first frames.
+///
+/// What the face draws is read off the primitives, not the words: the sort glyph (`Icon::Sort`,
+/// which no menu row wears), its quiet chevron inside the control's rect, and the accent plate at
+/// the pill's rect (a rounded fill, tag 2). The criterion's text cannot be the witness: the menu's
+/// Sort section draws the same label as a row. A premise first pins that the lift (the control's
+/// one paint) shows every one of those marks through the same readers, so a green surface is not
+/// a reader that sees nothing.
 #[test]
 fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
     use super::cards_harness::{WatchHost, ENTRY};
@@ -373,11 +380,37 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
     use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, Key, Machine, PressRead, Tick,
     };
-    use plx_ui::screen::{DrawFrame, Screen, ScreenEvent};
+    use plx_ui::draw_census::{capture, capture_icons};
+    use plx_ui::icons::Icon;
+    use plx_ui::screen::{By, DrawFrame, Screen, ScreenEvent};
+    use plx_ui::Rect;
     use std::{cell::RefCell, rc::Rc};
     let _g = plx_base::testlock::serial();
-    let h = Harness::new(tiles(3));
+    let mut h = Harness::new(tiles(3));
+    h.focus_elem(PILL_ELEM, By::Dir);
+    h.run(60); // the row's motion brings the focused pill up
     let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
+    let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+    // the accent plate: a rounded fill (tag 2) at the pill's rect, as the lift paints it
+    let is_plate = |tag: u64, r: &Rect| tag == 2 && near(r.x, pill.x) && near(r.w, pill.w) && near(r.h, pill.h);
+    let in_control = |r: &Rect| r.cx() > pill.x && r.cx() < pill.x + pill.w && r.cy() > pill.y && r.cy() < pill.y + pill.h;
+    // the control's marks among one frame's primitives and glyphs: the plate, the sort glyph (anywhere:
+    // no row wears it) and the chevron inside the control's rect
+    let face_marks = |prims: &[(u64, Rect)], icons: &[(Icon, Rect)]| -> Vec<String> {
+        let mut found = Vec::new();
+        found.extend(prims.iter().filter(|(tag, r)| is_plate(*tag, r)).map(|(_, r)| format!("accent plate {r:?}")));
+        found.extend(icons.iter().filter(|(id, _)| *id == Icon::Sort).map(|(_, r)| format!("sort glyph {r:?}")));
+        found.extend(icons.iter().filter(|(id, r)| *id == Icon::ChevronDown && in_control(r)).map(|(_, r)| format!("chevron {r:?}")));
+        found
+    };
+
+    // premise: the lift is the control's paint, and the readers see all three of its marks
+    let key = FocusKey { entry: ENTRY, elem: PILL_ELEM };
+    let mut lift_prims = Vec::new();
+    let lift_icons = capture_icons(|| lift_prims = capture(|| h.redraw_lift(Some(key))));
+    let marks = face_marks(&lift_prims, &lift_icons);
+    assert!(marks.len() == 3, "premise: the lift paints the plate, the sort glyph and the chevron, readers see {marks:?}");
+
     let arg = crate::registry::WatchlistMenuArg {
         host: ENTRY,
         options: WatchlistOptionsState::default(),
@@ -400,7 +433,8 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
         let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
         Machine::<WatchHost>::step(menu, &ev, &cx, &mut fx);
     };
-    let draw = |menu: &mut WatchlistMenuScreen| -> Vec<(String, plx_ui::Rect)> {
+    // one frame of the surface: its primitives and its glyphs
+    let draw = |menu: &mut WatchlistMenuScreen| -> (Vec<(u64, Rect)>, Vec<(Icon, Rect)>) {
         let sources = Rc::new(RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
         let cx = Cx {
             views: (),
@@ -410,13 +444,16 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
             focus: FocusRead { current: Some(FocusKey { entry, elem: 0 }), ..Default::default() },
             owner: InputOwner::Entry(entry),
         };
-        plx_ui::draw_census::capture_text(|| {
-            let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
-            let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
-            Screen::<WatchHost>::draw(menu, &mut f);
-        })
+        let mut prims = Vec::new();
+        let icons = capture_icons(|| {
+            prims = capture(|| {
+                let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
+                let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
+                Screen::<WatchHost>::draw(menu, &mut f);
+            });
+        });
+        (prims, icons)
     };
-    let pill_label = plx_platform::i18n::msg::watchlist_page_sort_filter();
     step(&mut menu, ScreenEvent::Mount, ms);
     let back = InputEvent {
         kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
@@ -427,8 +464,9 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
         if frame == 40 { step(&mut menu, ScreenEvent::Input(back.clone()), ms); }
         ms += 16;
         step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
-        let words = draw(&mut menu);
-        assert!(!words.iter().any(|(text, _)| text == pill_label), "frame {frame}: the surface drew the pill's label: {words:?}");
+        let (prims, icons) = draw(&mut menu);
+        let drawn = face_marks(&prims, &icons);
+        assert!(drawn.is_empty(), "frame {frame}: the surface painted the control's face: {drawn:?}");
     }
 }
 
