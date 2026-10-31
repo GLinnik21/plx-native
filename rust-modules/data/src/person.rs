@@ -269,12 +269,12 @@ pub struct Person {
     /// generation moved over nothing they depend on. Background roster refresh can
     /// add/remove/re-point while a page remains open, without going through `install_pms::reset`.
     roster_gen: u32,
-    /// Which servers the sources were built for, and which client object each answered with, as
-    /// the first pump saw them. The generation also moves when a server is re-registered at the
-    /// same origin (a retoken keeps its client object); every fetched shelf is still true then, so
-    /// [`sync_roster`] keeps the page instead of drawing its skeleton again. `None` until a pump has
-    /// read the registry's answer.
-    roster_sig: Option<Vec<(ServerId, u32)>>,
+    /// Which servers the sources were built for, which client object each answered with and whose
+    /// credential it held, as the first pump saw them. The generation also moves when a server is
+    /// re-registered at the same origin and a live token is refreshed in place; every fetched shelf
+    /// is still true then, so [`sync_roster`] keeps the page instead of drawing its skeleton again.
+    /// `None` until a pump has read the registry's answer.
+    roster_sig: Option<Vec<(ServerId, u32, u32)>>,
 }
 
 impl Person {
@@ -736,10 +736,10 @@ impl PersonState {
 /// plex.tv; a `ServerId` that names no slot ([`ServerId::UNSET`]) is not a source at all, since
 /// there is nothing to dial and no mailbox to land in.
 ///
-/// Read on open and whenever the roster's servers or the client objects behind them change
-/// ([`sync_roster`]; a generation that moved over neither keeps the sources). The roster is tiny;
-/// rebuilding only at that explicit boundary prevents an open page retaining a revoked share or
-/// missing a new one.
+/// Read on open and whenever the roster's servers, the client objects behind them or whose
+/// credential they hold change ([`sync_roster`]; a generation that moved over none of these keeps
+/// the sources). The roster is tiny; rebuilding only at that explicit boundary prevents an open
+/// page retaining a revoked share or missing a new one.
 fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
     let mut out: Vec<Src> = Vec::new();
     for sid in plx_plex::plex::server_ids().chain(std::iter::once(origin)) {
@@ -1388,10 +1388,12 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
     true
 }
 
-/// The servers the roster offers and the client object each answers with (a re-point makes a new
-/// one; a token rotation keeps it): what a page's sources depend on.
-fn roster_sig(keys: &ClientKeys) -> Vec<(ServerId, u32)> {
-    keys.iter().map(|(sid, key)| (sid, key.instance)).collect()
+/// The servers the roster offers, the client object each answers with (a re-point makes a new one;
+/// a token rotation keeps it) and whose credential it holds (`ClientKey::grant`: a live token
+/// refreshed in place keeps it, a revocation moves it): what a page's sources and shelves
+/// depend on.
+fn roster_sig(keys: &ClientKeys) -> Vec<(ServerId, u32, u32)> {
+    keys.iter().map(|(sid, key)| (sid, key.instance, key.grant)).collect()
 }
 
 /// Rebuild an open page's per-source projection at an exact registry identity boundary. Header
@@ -1409,8 +1411,10 @@ fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter, keys: &ClientKe
         }
         return false;
     }
-    // The generation also moves for a server re-registered at the same origin (a retoken keeps the
-    // client object). Nothing fetched is stale then, and rebuilding would blank a loaded page.
+    // The generation also moves for a server re-registered at the same origin, which refreshes a
+    // live token in place: the same client, the same identity. Nothing fetched is stale then, and
+    // rebuilding would blank a loaded page. A revocation moves the grant, so a token for another
+    // identity does not get this far.
     let sig = roster_sig(keys);
     if let Some(p) = state.current.as_mut().filter(|p| p.roster_sig.as_ref() == Some(&sig)) {
         p.roster_gen = gen;
@@ -2754,8 +2758,11 @@ mod tests {
         assert!(owner.current().unwrap().landed);
         assert!(!owner.sync_roster(), "the first read records the roster");
         let before = plx_plex::plex::server_roster_gen();
+        let epoch = plx_plex::plex::client_for(a).unwrap().grant_epoch();
         plx_plex::plex::register_for_test("person-a", "127.0.0.1", 1, "rotated", "cid");
         assert_ne!(before, plx_plex::plex::server_roster_gen(), "the retoken moved the generation");
+        assert_eq!(plx_plex::plex::client_for(a).unwrap().grant_epoch(), epoch,
+            "a live token replaced by another live one speaks for the same identity");
         assert!(!owner.sync_roster(), "nothing the page fetched is stale");
         let p = owner.current().unwrap();
         assert!(p.landed, "the page does not fall back to its skeleton");
@@ -2812,6 +2819,34 @@ mod tests {
             .iter()
             .all(|s| s.items.is_empty()));
 
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A roster listed with the account holder's token while a Home member is seated revokes the
+    /// live token and installs the other on the SAME client (`revoke_before_foreign_retoken`): the
+    /// client object and the origin are unchanged, but the shelves were served to someone else.
+    #[test]
+    fn a_retoken_across_an_identity_edge_rebuilds_the_loaded_page() {
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-a", "127.0.0.1", 1, "admin", "cid");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
+        assert!(owner.apply(fx(a, K_MEDIA).unwrap(), media(vec![movie_on(a, "4")], Vec::new())));
+        assert!(owner.current().unwrap().landed);
+        assert!(!owner.sync_roster(), "the first read records the roster");
+        let epoch = plx_plex::plex::client_for(a).unwrap().grant_epoch();
+        plx_plex::plex::revoke_before_foreign_retoken("person-a", "member");
+        let again = plx_plex::plex::register_for_test("person-a", "127.0.0.1", 1, "member", "cid");
+        assert_eq!(again, a, "the same slot and the same client");
+        assert_ne!(plx_plex::plex::client_for(a).unwrap().grant_epoch(), epoch,
+            "the token now speaks for another identity");
+        assert!(owner.sync_roster(), "what the admin was served is not the member's page");
+        let p = owner.current().unwrap();
+        assert!(!p.landed, "the page asks again");
+        assert_eq!(p.shelf(0).len() + p.shelf(1).len(), 0);
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }
@@ -4543,7 +4578,7 @@ mod tests {
     // (`Owner::step`).
 
     /// The client a server holds, as the registry's answer names it.
-    const KEY: ClientKey = ClientKey { instance: 7, token: 3 };
+    const KEY: ClientKey = ClientKey { instance: 7, token: 3, grant: 3 };
 
     /// Puts the tape back to its inactive state when a test ends, however it ends.
     struct TapeOff;

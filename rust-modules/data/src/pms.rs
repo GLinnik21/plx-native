@@ -3702,8 +3702,9 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         // landing's `instance`: a replayed landing carries the recording's logical id there, and
         // only the resource it was bound to is the registry's.
         let lifecycle_matches = l.client.is_none_or(|client| {
-            scope.clients.key(l.sid)
-                == Some(ClientKey { instance: client.resource.instance_gen(), token: l.token_gen })
+            scope.clients.key(l.sid).is_some_and(|k| {
+                k.instance == client.resource.instance_gen() && k.token == l.token_gen
+            })
         });
         if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
             if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
