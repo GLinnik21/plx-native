@@ -195,7 +195,7 @@ at the first and last edge (`Start=count-1, Size=2`) and straddled the edge ther
 | `lastViewedAt` (epoch s) | VERIFIED | VERIFIED |
 | `year` | VERIFIED | VERIFIED |
 | `originallyAvailableAt` | VERIFIED as UTC-midnight epochs | VERIFIED, same |
-| `viewCount` | UNTESTABLE (no play count in the listing) | VERIFIED (3 distinct values, 2 edges) |
+| `viewCount` | UNTESTABLE (no play count in the listing; it stores zeros the listing hides, see "Stored zeros") | VERIFIED (3 distinct values, 2 edges) |
 | `unviewedLeafCount` | not a movie field | VERIFIED (integers; it equals `leafCount - viewedLeafCount`, but every `viewedLeafCount` was 0, so only `leafCount` was exercised) |
 | `viewedLeafCount` | not a movie field | UNTESTABLE (all 0 under the Guest) |
 | `episode.addedAt` (`type=2`) | not a movie field | VERIFIED for `:desc` only, see below |
@@ -222,6 +222,17 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
   them (`rating>>=<below the minimum>` answered the non-null count, 38 of 44) while `<<=` and `<=`
   INCLUDE them (movie `lastViewedAt<<=<mid>` answered 35 = 10 with a value + 25 without). `=`
   counts only items with the value.
+- **Stored zeros, and a probe at zero** (measured 2026-10-31, same server, `tools/pms-band-probe.py
+  --floor-and-negative-only`). A listing shows a stored zero as no value at all, but the filter sees
+  it: movie `viewCount` has no value on any row, yet `viewCount>>=-1` and `viewCount>=0` answered 25
+  of 44 and `viewCount>>=0` answered 0 (25 items store 0, 19 hold nothing); on the shows 5, 5 and 4
+  of 15 (one stored zero). So **`>>=0` leaves out the no-value items AND the stored zeros (it counts
+  "above zero"), while `>=0` leaves out only the no-value items and counts the stored zeros.** Movie
+  `rating` (38 of 44 rated), movie `duration` (44 of 44) and show `unviewedLeafCount` (15 of 15) held
+  no stored zero, and there `>>=-1`, `>>=0` and `>=0` all answered the same (38, 44, 15): a probe at
+  zero never counted the 6 unrated movies. What was NOT exercised is a stored rating of 0.0 or a
+  duration of 0 (none existed). A negative literal on a numeric field is an absolute number (`>>=-1`
+  answered like `>=0` in all five families).
 - **Offsets.** In a `:desc` listing the first item below E sits at offset `count(>=E)`. In `:asc`
   the first item at or above E sits at `total - count(>=E)`, which is also `count(<<=E)` because
   that counts the leading no-value items. The no-value tail or lead is `total - count(>>=<below the
@@ -244,6 +255,17 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
 - **`/year` and `/decade` carry no per-bucket `size`** (`key`, `title`, `fastKey` only: 25 and 6
   buckets on the movie library); only `/firstCharacter` does. A year or decade band therefore costs
   one count probe per bucket (`decade=D` over the six movie decade keys summed to the library total).
+- **A negative bare number on a date field is an absolute epoch, not a relative date** (measured
+  2026-10-31, movie and show libraries of 44 and 15 items, HTTP 200 on all 28 probes). On
+  `originallyAvailableAt` and on `addedAt`: `>=-315619200` (1960-01-01 UTC), `>>=-315619201`, `>=-1`,
+  `>>=-1` and `>=0` answered the whole library (44 movies, 15 shows), `<<=-1` and `<=-315619200`
+  answered 0. Read as seconds-ago relative dates, the movie `originallyAvailableAt` probes would
+  have answered 15, 15, 0, 0 (the four `>=`/`>>=` ones, 8, 8, 0, 0 on the shows) and 44, 29 (the two
+  `<<=`/`<=` ones), and an ignored term would have answered 44 to all of them; only the absolute
+  reading fits all seven probes of each field. A unit (`-3w`) is still relative. **Not exercised:**
+  neither library held an item dated before 1970 or an item without a release date, so a
+  comparison AT a real pre-1970 value was not seen, only that a negative edge is read as a number
+  and compared as one.
 - **Relative dates** (`addedAt>>=<form>`): `-12h`, `-30d`, `-3w`, `-4w`, `-1mon`, `-6mon`, `-1y`, `-2y`
   were accepted and cut at their nominal ages. **`-6m` is MINUTES** (0 of 44 movies), and **`-1mo` is
   HTTP 500**. Build absolute epochs instead.

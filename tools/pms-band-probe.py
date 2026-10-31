@@ -47,7 +47,23 @@ The `ops` column lists the other operators at one value present in the data, eac
 (wrong), and `nulls` where `<<=`/`<=` also counted the items that have no value. `nulls desc/asc`
 say where the no-value items sit in the real listings; `nullsLast d/a` where `:nullsLast` puts them.
 
+## `--floor-and-negative-only` (a second, smaller run)
+
+Two questions the family run does not ask, answered with a few dozen more counts:
+
+* FLOOR: what a probe at ZERO counts. For each of movie rating, duration, viewCount and show
+  unviewedLeafCount, viewCount it asks `>>=-1`, `>>=0` and `>=0`, and reports them beside the
+  listing's own tallies (no value / zero / above zero). The listing hides a stored zero as "no
+  value" for some fields, so the probes decide: `>=0` minus `>>=0` is the items that STORE zero.
+* NEGATIVE DATE EDGES: whether a negative literal on a date field is an absolute epoch (pre-1970),
+  is ignored, or is read as a RELATIVE date (`-N` is relative-date syntax on these fields). Seven
+  probes per field (`originallyAvailableAt`, `addedAt`), each judged against what every reading
+  predicts; `reading` lists the readings the count is consistent with.
+
+Counts only: no title, name or date of any item is printed (only how many items are older than 1970).
+
 Usage:  tools/pms-band-probe.py [--base URL] [--token-file PATH] [--json PATH] [--only a,b]
+                                [--floor-and-negative-only]
 """
 
 import argparse
@@ -708,6 +724,75 @@ def filter_terms_test(pms, section, ptype, families, genre, unwatched_term, extr
     return out
 
 
+# -- the floor and the negative date edges (the second run) ----------------------------------------
+
+FLOOR_FAMILIES = {"movie": ("rating", "duration", "viewCount"), "show": ("unviewedLeafCount", "viewCount")}
+FLOOR_PROBES = ((">>=", -1), (">>=", 0), (">=", 0))
+NEGATIVE_FIELDS = ("originallyAvailableAt", "addedAt")
+# 1960-01-01 UTC and one second before it, one second before 1970, and 1970-01-01 itself
+NEGATIVE_PROBES = ((">=", -315619200), (">>=", -315619201), (">=", -1), (">>=", -1),
+                   ("<<=", -1), ("<=", -315619200), (">=", 0))
+
+
+def reading_of(count, absolute, relative, total):
+    """Which hypotheses a negative-edge count is consistent with, as a '/'-joined string."""
+    names = [name for name, expected in (("absolute", absolute), ("relative-seconds", relative),
+                                         ("ignored", total), ("zero", 0)) if count == expected]
+    return "/".join(names) or "other"
+
+
+def floor_test(pms, fam, section, rows):
+    """What `>>=-1`, `>>=0` and `>=0` count, beside what the listing shows for the same items."""
+    values = [fam.variants[next(iter(fam.variants))](r) for r in rows]
+    listed = [x for x in values if x is not None]
+    out = {"family": fam.name, "total": len(values),
+           "listing": {"no_value": len(values) - len(listed), "zero": sum(1 for x in listed if x == 0),
+                       "above_zero": sum(1 for x in listed if x > 0)},
+           "counts": {}}
+    for op, edge in FLOOR_PROBES:
+        reply = pms.count(section, fam.ptype, [term(fam.key, op, edge)])
+        out["counts"]["%s%s" % (op, edge)] = reply.total if reply.status == 200 else "HTTP %d" % reply.status
+    c = out["counts"]
+    if all(isinstance(v, int) for v in c.values()):
+        out["stored_zero"] = c[">=0"] - c[">>=0"]
+        out["no_stored_value"] = out["total"] - c[">=0"]
+        out["negative_literal_is_absolute"] = c[">>=-1"] == c[">=0"]
+        out["strict_zero_matches_listing_above_zero"] = c[">>=0"] == out["listing"]["above_zero"]
+    return out
+
+
+def negative_edge_test(pms, fam, section, rows):
+    """Is a negative literal on a date field an absolute epoch, ignored, or a relative date?"""
+    key = "oa_utc" if fam.name == "originallyAvailableAt" else fam.name
+    values = [r.get(key) for r in rows]
+    present = [v for v in values if v is not None]
+    nulls, total, now = len(values) - len(present), len(values), time.time()
+    out = {"family": fam.name, "total": total, "no_value": nulls,
+           "before_1970": sum(1 for v in present if v < 0), "probes": []}
+    for op, edge in NEGATIVE_PROBES:
+        reply = pms.count(section, fam.ptype, [term(fam.key, op, edge)])
+        entry = {"term": "%s%s%s" % (fam.key, op, edge), "status": reply.status}
+        if reply.status == 200:
+            low = op in ("<<=", "<=")  # these also count the items with no value
+            absolute = expect(present, op, edge) + (nulls if low else 0)
+            relative = expect(present, op, now + edge) + (nulls if low else 0)
+            entry.update(count=reply.total, if_absolute=absolute, if_relative_seconds=relative,
+                         reading=reading_of(reply.total, absolute, relative, total))
+        out["probes"].append(entry)
+    return out
+
+
+def floor_and_negative_library(pms, section, kind, label):
+    ptype = 1 if kind == "movie" else 2
+    rows, total, _ = pms.read_all(section, ptype)
+    print("\n#### %s: %d items" % (label, total))
+    families = movie_families() if kind == "movie" else show_families({}, {})
+    lib = {"label": label, "kind": kind, "items": total}
+    lib["floor"] = [floor_test(pms, f, section, rows) for f in families if f.name in FLOOR_FAMILIES[kind]]
+    lib["negative_edges"] = [negative_edge_test(pms, f, section, rows) for f in families if f.name in NEGATIVE_FIELDS]
+    return lib
+
+
 # -- reporting ------------------------------------------------------------------------------------
 
 def table(headers, rows):
@@ -807,6 +892,14 @@ def print_extras(lib):
                 fam["family"], fam["verdict"], fam["total"], compact(edges), "; ".join(fam.get("detail") or [])))
 
 
+def print_floor_and_negative(lib):
+    compact = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"))
+    for entry in lib["floor"]:
+        print("-- floor %s" % compact(entry))
+    for entry in lib["negative_edges"]:
+        print("-- negative-edges %s" % compact(entry))
+
+
 def selftest():
     """Offline checks of the read-only guard and of the verdict arithmetic; touches no server."""
     for bad in ("/:/scrobble?key=1", "/:/timeline", "/library/metadata/1", "/library/sections/1/refresh",
@@ -835,6 +928,10 @@ def selftest():
     assert nominal_readings("-6m")[0] == ("minutes", 6 / 1440.0) and nominal_readings("-2y")[0][0] == "years"
     assert ordered([3, 2, None, 2], True) and not ordered([1, 3], True)
     assert pick_edges([1, 2, 3]) == [2, 3] and 1 not in pick_edges(list(range(1, 40)))
+    assert term("viewCount", ">>=", -1) == "viewCount%3E%3E=-1" and term("rating", ">=", 0) == "rating%3E=0"
+    assert reading_of(10, 10, 4, 12) == "absolute" and reading_of(12, 10, 4, 12) == "ignored"
+    assert reading_of(0, 10, 4, 12) == "zero" and reading_of(4, 10, 4, 12) == "relative-seconds"
+    assert reading_of(7, 10, 4, 12) == "other" and reading_of(12, 12, 4, 12) == "absolute/ignored"
     print("selftest ok")
 
 
@@ -849,6 +946,8 @@ def main():
     parser.add_argument("--families-only", action="store_true",
                         help="skip request-shape, canary, float, relative-date, directory and filter-term sections")
     parser.add_argument("--json", default=None, help="also write the numbers here (a path OUTSIDE the repository)")
+    parser.add_argument("--floor-and-negative-only", action="store_true",
+                        help="run only the zero-floor and negative-date-edge checks (a few dozen counts)")
     parser.add_argument("--selftest", action="store_true", help="check the guard and the arithmetic offline")
     args = parser.parse_args()
     if args.selftest:
@@ -886,6 +985,11 @@ def main():
         print("PMS %s; %d request-able libraries (%s)" % (report["version"], len(sections), ", ".join(s[2] for s in sections)))
 
         for section, kind, label in sections:
+            if args.floor_and_negative_only:
+                lib = floor_and_negative_library(pms, section, kind, label)
+                report["libraries"].append(lib)
+                print_floor_and_negative(lib)
+                continue
             lib = measure_library(pms, section, kind, label, only, args.families_only)
             report["libraries"].append(lib)
             print_extras(lib)

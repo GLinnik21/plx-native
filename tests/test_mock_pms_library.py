@@ -594,6 +594,56 @@ class BandQueries(unittest.TestCase):
             self.assertEqual(self.count(1, 1, self.term(field, "<=", above)), len(held))
             self.assertEqual(self.count(1, 1, self.term(field, "=", below)), 0)
 
+    def test_a_probe_at_zero_leaves_out_no_value_items_and_only_the_inclusive_one_counts_stored_zeros(self):
+        # Measured (docs/pms-api.md, "Stored zeros"): `>>=-1` and `>=0` count every item that holds a
+        # number, `>>=0` only those above zero; an item with no value is in none of them.
+        for field, items in (("rating", self.movies), ("duration", self.movies),
+                             ("unviewedLeafCount", self.shows)):
+            held = [self.mine(it, field) for it in items]
+            nonnull = [v for v in held if v is not None]
+            kind, section = (1, 1) if items is self.movies else (2, 2)
+            with self.subTest(field=field):
+                self.assertEqual(self.count(section, kind, self.term(field, ">>=", -1)), len(nonnull))
+                self.assertEqual(self.count(section, kind, self.term(field, ">=", 0)), len(nonnull))
+                self.assertEqual(self.count(section, kind, self.term(field, ">>=", 0)),
+                                 sum(v > 0 for v in nonnull))
+        self.assertLess(len([it for it in self.movies if "rating" in it]), len(self.movies), "unrated movies")
+        # A server that STORES a zero the listing hides (movie `viewCount`: 25 of 44 on the measured one).
+        lib = Library(seed=3, movies=20, shows=3, band_fixture=True)
+        movies = [it for it in lib.items.values() if it["type"] == "movie" and it["librarySectionID"] == 1]
+        unplayed = [it for it in movies if "viewCount" not in it]
+        played = sum(it.get("viewCount", 0) > 0 for it in movies)
+        self.assertGreaterEqual(len(unplayed), 4)
+        for it in unplayed[:4]:
+            it["viewCount"] = 0
+        self.pms = MockPms(lib)  # on the instance: the shared server is back after the test
+        for op, edge, want in ((">>=", -1, played + 4), (">=", 0, played + 4), (">>=", 0, played)):
+            self.assertEqual(self.count(1, 1, self.term("viewCount", op, edge)), want, f"{op}{edge}")
+
+    def test_a_negative_bare_number_on_a_date_field_is_an_absolute_epoch(self):
+        # Measured (docs/pms-api.md): `-N` without a unit is a number, not a relative date. The mock's
+        # release dates reach back to 1950, so the probes below tell an absolute reading from both an
+        # ignored term and a clamp at zero.
+        sixties = -315619200  # 1960-01-01 UTC
+        for field, items in (("originallyAvailableAt", self.movies), ("addedAt", self.movies),
+                             ("originallyAvailableAt", self.shows)):
+            held = [self.mine(it, field) for it in items]
+            kind, section = (1, 1) if items is self.movies else (2, 2)
+            for op, edge in ((">=", sixties), (">>=", sixties - 1), (">=", -1), (">>=", -1),
+                             ("<<=", -1), ("<=", sixties), (">=", 0)):
+                with self.subTest(field=field, op=op, edge=edge):
+                    self.assertEqual(self.count(section, kind, self.term(field, op, edge)),
+                                     sum(self.passes(op, v, edge) for v in held))
+        held = [self.mine(it, "originallyAvailableAt") for it in self.movies]
+        before_1970 = sum(v is not None and v < 0 for v in held)
+        before_1960 = sum(v is not None and v < sixties for v in held)
+        self.assertGreater(before_1960, 0)
+        self.assertGreater(before_1970, before_1960)
+        self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", ">=", sixties)),
+                         len([v for v in held if v is not None]) - before_1960)
+        self.assertNotEqual(self.count(1, 1, self.term("originallyAvailableAt", ">=", sixties)),
+                            self.count(1, 1, self.term("originallyAvailableAt", ">=", 0)), "not a clamp at 0")
+
     def test_the_count_probe_needs_a_start_as_well_as_a_size(self):
         total = len(self.movies)
         path = "/library/sections/1/all?type=1"
