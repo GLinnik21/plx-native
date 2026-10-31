@@ -1,4 +1,11 @@
 {
+  "library_rail.decade": {
+    "value": "{decade}s",
+    "args": {
+      "decade": "str"
+    },
+    "description": "The Library rail's band for a decade of release years (2020s) when the list is sorted by Release date. {decade} arrives as the decade's first year in plain digits (2020, 1990) and the string says \"the decade that starts there\" the way the language writes it shortest. Keep it short: it stands in a narrow column beside the posters, about 100 px at the rail's 22 px type, so a longer native phrase (\"Années 2020\", \"Anni 2020\", \"2020-as évek\") may not fit."
+  },
   "library_rail.hours": {
     "value": "{hours}h",
     "args": {
@@ -12,5 +19,9 @@
       "hours": "str"
     },
     "description": "The Library rail's top Duration band (3h+): at least this many hours. {hours} arrives formatted; the unit is the language's own short hour, as in library_rail.hours, and the + follows it. Keep it short."
+  },
+  "library_rail.today": {
+    "value": "Today",
+    "description": "The Library rail's first band when the list is sorted by Date added, Date viewed or Last episode added: items from today. The same word as under_posters.value_today, unless that is too wide for the rail's narrow column beside the posters (about 100 px at the rail's 22 px type): then its usual abbreviation. One short word."
   }
 }
