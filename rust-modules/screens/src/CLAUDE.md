@@ -274,9 +274,12 @@ a value ladder has its BANDS (`ListingView::bands_available`: rating `95% 90% 85
 1½h 1h <1h`, unplayed `12+ 10 8 6 4 2 1`, plays `10+ 5 3 2 1`), never both. What differs:
 
 - **Labels** are `library/rail_bands.rs`, built from the data layer's `Mark` tokens with `fmt::percent`, the locale's
-  numbers and `library_rail.hours` (the language's own short hour unit, spaced as `core.duration_hours` spaces it, `½`
-  for a half hour); `<` and `+` are written by the code. Focus identity is the token, not the text.
-- **Geometry** is `layout::BandRows`: centre x 1834 (the letters keep 1844), rows 40 px apart (letters 32), the first
+  numbers and the catalog's `library_rail.hours` and `library_rail.hours_or_more` (the language's own short hour unit,
+  spaced as `core.duration_hours` spaces it, `½` for a half hour). `<` is written by the code, and so is the `+` of the
+  count ladders (`12+`, `10+`); the Duration ladder's `3h+` is `library_rail.hours_or_more`, a catalog string, so a
+  language can put the `+` after its own unit. Focus identity is the token, not the text.
+- **Geometry** is `layout::BandRows`: centre x 1834 (the letters keep 1844), rows 40 px apart (the letters' pitch is
+  `layout::rail_pitch`: 32 at most, squeezed toward 26 for a long alphabet), the first
   at the grid's top (244), `BAND_STEP_GAP` extra before the rows a scale change names (none for these ladders), the
   track as wide as the widest label plus the pill's 12 px each side (never under the letters' 44, never into the
   posters). The grid does not move for it.

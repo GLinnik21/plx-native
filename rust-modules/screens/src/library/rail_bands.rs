@@ -7,11 +7,14 @@
 //! (`Today`, a month, a year, a decade) wait for the job that asks the data layer for them
 //! (`BandFamily::rail_ready`), and have no label. The shared rules:
 //!
-//! - **A percent is [`fmt::percent`]**, so a language that sets the sign off with a no-break space
-//!   (Spanish, Belarusian, German, French) does so on the rail as it does under a poster.
+//! - **A percent is [`fmt::percent`]**, so the sign is placed as the catalog places it, under a poster
+//!   and on the rail alike (`git grep '"core.percent"' -- 'locales/*/core.json'` shows which languages
+//!   set it off with a no-break space).
 //! - **An hour is the language's own short hour** (`library_rail.hours`: `h`, `ó`, `u`, `ч`, `г`,
 //!   `godz.`), spaced as `core.duration_hours` spaces it, and the half hour is a `½` after the number.
-//! - **`<` and `+` are neutral signs**, written by the code: `<75%`, `<1h`, `12+`, `10+`.
+//! - **`<` is written by the code, and so is the `+` of the count ladders** (`12+`, `10+`); the Duration
+//!   ladder's `3h+` is `library_rail.hours_or_more`, a catalog string, so a language can put the `+` after
+//!   its own unit.
 //!
 //! [`Mark`]: plx_data::browse::bands::Mark
 use plx_data::browse::bands::Mark;
@@ -19,8 +22,9 @@ use plx_platform::i18n::msg;
 use plx_ui::fmt;
 
 /// The label of a band, in the language the UI is in. A mark no ladder drawn today produces (a
-/// calendar band) reads as its debug token: unreachable while `BandFamily::rail_ready` keeps those
-/// families off, and visibly wrong, not blank, the day one slips through.
+/// calendar band) reads as its debug token, after a debug build's `debug_assert!` has fired first:
+/// unreachable while `BandFamily::rail_ready` keeps those families off, and visibly wrong, not blank,
+/// the day one slips through.
 pub(super) fn label(mark: Mark) -> String {
     let locale = plx_platform::i18n::current();
     match mark {

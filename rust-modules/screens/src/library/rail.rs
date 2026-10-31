@@ -253,7 +253,7 @@ impl RailPart {
             |column| column.rows.scroll_target(scroll, drive))
     }
 
-    /// The rail as a route test reads it: every letter with whether the server listed a title
+    /// The rail as a route test reads it: every letter or band with whether the server listed a title
     /// under it, and the index of the one focus is on (`None` off the rail).
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn probe(&self, focus: Option<FocusKey<u32>>) -> (Vec<(String, bool)>, Option<usize>) {
@@ -264,7 +264,7 @@ impl RailPart {
         (letters, focused)
     }
 
-    /// The nearest letter with titles at or before `index`, else the first one after it.
+    /// The nearest letter or band with titles at or before `index`, else the first one after it.
     fn skip_empty(&self, index: usize) -> usize {
         (0..=index.min(self.elems.len().saturating_sub(1))).rev().find(|i| !self.letter_empty(*i))
             .or_else(|| (index..self.elems.len()).find(|i| !self.letter_empty(*i)))

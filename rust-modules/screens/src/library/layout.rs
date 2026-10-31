@@ -264,7 +264,8 @@ pub(super) fn rail_scroll_target(scroll: f32, drive: usize, n: usize) -> f32 {
 /// The centre of a rail of BANDS (the sort's value ladder): ten px nearer the posters than the letters'
 /// ([`RAIL_CX`]), the board's `x 1834`.
 pub(super) const BAND_RAIL_CX: f32 = 1834.0;
-/// The distance between two bands' tops: the board's 40, against the letters' 32.
+/// The distance between two bands' tops: the board's 40. The letters' pitch is [`rail_pitch`]: 32 at
+/// most, squeezed toward 26 for a long alphabet.
 pub(super) const BAND_PITCH: f32 = 40.0;
 /// The air a band row adds where its scale changes (a calendar rail's months give way to years): the
 /// board's one spacing step. [`BandRows::new`] takes the rows it goes before, and the value ladders

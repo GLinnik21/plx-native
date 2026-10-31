@@ -283,13 +283,13 @@ pad back to the roster.
 Reached from any library pill in the top strip. A poster grid, four-way navigable, with:
 
 - one **sort** control at the right of the header row, reading its current choice (the sort icon, the criterion and a down chevron; its Sort & Filter menu also holds the filters), beside the **Collections** and **Recommended** places;
-- an **A–Z rail** down the right edge, which jumps the grid to a letter;
+- an **A–Z rail** down the right edge, which jumps the grid to a letter, or on a value sort (Score, Duration, Unplayed, Plays) to a band;
 - watched check marks on the cards.
 
 **CH ▲ / CH ▼ page the grid**, which is the fast way through a large library.
 
-**BACK here climbs one region a press, and from the bar it leaves for Home.** From the A–Z rail BACK
-returns to the grid; from deep in the grid it returns to the top of the page — a deep shelf is as far
+**BACK here climbs one region a press, and from the bar it leaves for Home.** From the A–Z rail (or a
+value sort's band rail) BACK returns to the grid; from deep in the grid it returns to the top of the page — a deep shelf is as far
 from the head as a deep grid row is; from the top it steps to the header row, from the header
 to the tab bar, and from the bar it hands the screen back. UP is still the one-press route to the
 strip; the header and bar steps exist so that BACK can never loop between them. The Collections and
