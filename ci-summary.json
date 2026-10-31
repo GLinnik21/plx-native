@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T23:49:42Z",
+ "generated": "2026-10-31T23:50:10Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -90,9 +90,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 86,
-   "now": 198,
+   "now": 198.0,
    "prev7": 143.0,
    "shown": true,
    "state": "worse",
@@ -166,17 +166,17 @@
   },
   {
    "change30_pct": -63.4,
-   "change7_pct": 16.9,
+   "change7_pct": 16.8,
    "d30": 1056,
-   "delta30": -669,
-   "delta7": 56.0,
+   "delta30": -669.5,
+   "delta7": 55.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 100,
-   "now": 387,
+   "now": 386.5,
    "prev7": 331.0,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 30.7,
-   "change7_pct": 5.1,
+   "change30_pct": 30.4,
+   "change7_pct": 4.9,
    "d30": 212,
-   "delta30": 65,
-   "delta7": 13.5,
+   "delta30": 64.5,
+   "delta7": 13.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 86,
-   "now": 277,
+   "now": 276.5,
    "prev7": 263.5,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -78.8,
-   "change7_pct": 8.0,
+   "change30_pct": -78.9,
+   "change7_pct": 7.5,
    "d30": 1020,
-   "delta30": -804,
-   "delta7": 16,
+   "delta30": -805.0,
+   "delta7": 15.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 85,
-   "now": 216,
+   "now": 215.0,
    "prev7": 200,
    "shown": true,
    "state": "flat",
@@ -560,15 +560,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1,
+   "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 86,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.5,
    "commits": [
     {
-     "pr": 1174,
-     "sha": "d03081ccf",
-     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
-    },
-    {
      "pr": 1175,
      "sha": "3913c7494",
      "title": "A-Z rail bands, step 4b: the rail draws and navigates the calendar bands (date added, date viewed, last episode added, r"
@@ -715,6 +710,11 @@
      "pr": 1187,
      "sha": "42077a1e0",
      "title": "HUD: dismiss an offer through the metadata store's skipped set"
+    },
+    {
+     "pr": 1157,
+     "sha": "4974279b3",
+     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
     }
    ],
    "from": 189,
@@ -728,11 +728,6 @@
    "change_pct": 38.5,
    "commits": [
     {
-     "pr": 1174,
-     "sha": "d03081ccf",
-     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
-    },
-    {
      "pr": 1175,
      "sha": "3913c7494",
      "title": "A-Z rail bands, step 4b: the rail draws and navigates the calendar bands (date added, date viewed, last episode added, r"
@@ -776,6 +771,11 @@
      "pr": 1187,
      "sha": "42077a1e0",
      "title": "HUD: dismiss an offer through the metadata store's skipped set"
+    },
+    {
+     "pr": 1157,
+     "sha": "4974279b3",
+     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
     }
    ],
    "from": 143.0,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 198
+   "to": 198.0
   },
   {
    "change_pct": 22.4,
    "commits": [
-    {
-     "pr": 1174,
-     "sha": "d03081ccf",
-     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
-    },
     {
      "pr": 1175,
      "sha": "3913c7494",
@@ -837,6 +832,11 @@
      "pr": 1187,
      "sha": "42077a1e0",
      "title": "HUD: dismiss an offer through the metadata store's skipped set"
+    },
+    {
+     "pr": 1157,
+     "sha": "4974279b3",
+     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
     }
    ],
    "from": 268.0,
@@ -850,11 +850,6 @@
    "change_pct": 18.6,
    "commits": [
     {
-     "pr": 1174,
-     "sha": "d03081ccf",
-     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
-    },
-    {
      "pr": 1175,
      "sha": "3913c7494",
      "title": "A-Z rail bands, step 4b: the rail draws and navigates the calendar bands (date added, date viewed, last episode added, r"
@@ -898,6 +893,11 @@
      "pr": 1187,
      "sha": "42077a1e0",
      "title": "HUD: dismiss an offer through the metadata store's skipped set"
+    },
+    {
+     "pr": 1157,
+     "sha": "4974279b3",
+     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
     }
    ],
    "from": 2089,
