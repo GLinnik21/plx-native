@@ -508,6 +508,10 @@ pub struct Cost {
 pub struct Span {
     /// the band's id; empty for the scrim
     pub band: String,
+    /// The section the band belongs to (`StateKey::open`'s bit: [`OPEN_CHAPTERS`], [`OPEN_INFO`]) when its `when`
+    /// names `panel.chapters` / `panel.info`, `0` for a band of the transport. The renderer paints a section's
+    /// spans as one layer, faded and raised by that section's own appear (`HudMotion::section_appear`).
+    pub section: u8,
     pub chrome: Chrome,
     pub ops: std::ops::Range<usize>,
 }
@@ -1153,8 +1157,19 @@ impl Out {
     }
 }
 
+/// The section a band belongs to: the bit of the `panel.*` term its `when` names without a negation, else `0`.
+fn section_of(band: &Object) -> u8 {
+    let Some(Val::Cond(cond)) = band.get("when") else { return 0 };
+    cond.terms.iter().filter(|t| !t.negated).fold(0, |bits, t| match t.name.as_str() {
+        "panel.chapters" => bits | OPEN_CHAPTERS,
+        "panel.info" => bits | OPEN_INFO,
+        _ => bits,
+    })
+}
+
 struct Band<'p> {
     id: &'p str,
+    section: u8,
     chrome: Chrome,
     before: Option<f32>,
     gap: f32,
@@ -2012,6 +2027,7 @@ impl<'e, 'p> Env<'e, 'p> {
             .filter(|b| self.when(b))
             .map(|b| Band {
                 id: b.get("id").and_then(Val::as_str).unwrap_or(""),
+                section: section_of(b),
                 chrome: if b.get("chrome").and_then(Val::as_str) == Some("steady") { Chrome::Steady } else { Chrome::Fades },
                 before: self.gap(b, "gap_before"),
                 gap: self.gap(b, "gap").unwrap_or(0.0),
@@ -2034,7 +2050,7 @@ impl<'e, 'p> Env<'e, 'p> {
             };
             let start = out.ops.len();
             self.place_row(&bands[i].cells, bands[i].gap, boxes[i], &band_mode, &mut out);
-            let span = Span { band: bands[i].id.to_owned(), chrome: bands[i].chrome, ops: start..out.ops.len() };
+            let span = Span { band: bands[i].id.to_owned(), section: bands[i].section, chrome: bands[i].chrome, ops: start..out.ops.len() };
             out.spans.push(span);
         }
         out
@@ -2138,12 +2154,13 @@ impl<'e, 'p> Env<'e, 'p> {
         let shift = ops.len();
         let mut spans: Vec<Span> = Vec::new();
         if shift > 0 {
-            spans.push(Span { band: String::new(), chrome: Chrome::Steady, ops: 0..shift });
+            spans.push(Span { band: String::new(), section: 0, chrome: Chrome::Steady, ops: 0..shift });
         }
         spans.extend(out.spans.iter().map(|s| Span { ops: s.ops.start + shift..s.ops.end + shift, ..s.clone() }));
         if out.ops.len() > band_ops {
             let chrome = bands.iter().find(|b| b.id == host).map_or(Chrome::Fades, |b| b.chrome);
-            spans.push(Span { band: host.to_owned(), chrome, ops: band_ops + shift..out.ops.len() + shift });
+            let section = bands.iter().find(|b| b.id == host).map_or(0, |b| b.section);
+            spans.push(Span { band: host.to_owned(), section, chrome, ops: band_ops + shift..out.ops.len() + shift });
         }
         ops.append(&mut out.ops);
         // the scrim op is the node `layout.scrim` (its owner is the layout when there is none to name)

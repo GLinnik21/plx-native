@@ -267,7 +267,7 @@ impl PlayerScreen {
             self.hud.last_offer = None;
             // a section does not outlive the film it was opened over
             self.hud.sections = Sections::NONE;
-            self.row.drop_strip();
+            self.row.cut_sections();
             self.up_next.reset();
         }
         self.publish();
@@ -302,7 +302,7 @@ impl PlayerScreen {
             model: &self.model,
             up: &self.up_next,
             open: self.hud.sections.bits(),
-            slot: self.eff_slot(),
+            slot: self.draw_slot(),
             busy: self.busy,
             focus: self.hud.nav.focus,
             btn: self.hud.nav.btn,
@@ -733,7 +733,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 if failed && self.hud.sections.any() {
                     // a failure owns the frame outright: the sections go with the picture they were over
                     self.hud.sections = Sections::NONE;
-                    self.row.drop_strip();
+                    self.row.cut_sections();
                     self.hud.nav.focus = GROUP_SCRUB;
                     Self::repair_focus(fx, GROUP_SCRUB);
                 }
@@ -746,6 +746,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // was open (`HudMotion::step`'s own doc).
                 self.row
                     .step(self.eff_slot(), self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms);
+                // …and the sections' appear springs, pointed at the sections that are open (a write to
+                // `hud.sections` that did not tell them is caught up here) and stepped once per frame.
+                self.row.follow(self.hud.sections.bits());
+                self.row.step_appear(*tick, &mut fx.present());
                 // …and the Up Next countdown, which arms on APPEARANCE and is dropped with the
                 // segment. Stepped for the whole route, not per-overlay: the countdown must keep
                 // running whichever panel is up (`up_next::tick`).
@@ -1343,8 +1347,6 @@ impl PlayerScreen {
             // opened it (D6); an inline page has the row beside it and nothing below, so the edge stays put.
             (Some(GROUP_STRIP | GROUP_SECTION), consts::Key::Down) if self.modal() => {
                 if let Some(latest) = self.hud.sections.latest() {
-                    self.hud.sections = Sections::NONE;
-                    self.row.drop_strip();
                     self.close_section(latest, chapters, now, fx);
                 }
             }
@@ -1621,6 +1623,17 @@ impl PlayerScreen {
         }
     }
 
+    /// **The control-row occupant the DRAW reads.** An inline package keeps drawing the discs while a section fades out
+    /// (its block is laid out by the presented sections, and the stand-in comes back when the last has gone); a modal
+    /// one is the logical [`Self::eff_slot`] at once, the transport coming back the moment the page is put away.
+    fn draw_slot(&self) -> ControlSlot {
+        if !self.modal() && self.row.presented() != 0 {
+            ControlSlot::Discs(self.model.controls)
+        } else {
+            self.eff_slot()
+        }
+    }
+
     /// Is the transport's MIDDLE (the scrubber and the control row) on screen? Not while a modal section holds it.
     fn middle_up(&self) -> bool {
         self.transport && !(self.hud.sections.any() && self.modal())
@@ -1638,13 +1651,23 @@ impl PlayerScreen {
         &self,
         cx: &Cx<'a, H>,
     ) -> Option<(player_hud::strip::Geometry, player_hud::strip::Cards<'a, u32>)> {
-        if !self.hud.sections.contains(Section::Chapters) {
+        self.strip_source_in(cx, self.hud.sections.bits())
+    }
+
+    /// [`Self::strip_source`] over the state the bits `open` select: the strip's geometry and cards, `None` when
+    /// they do not name Chapters.
+    fn strip_source_in<'a, H: PlayerLike + crate::registry::MetadataLike>(
+        &self,
+        cx: &Cx<'a, H>,
+        open: u8,
+    ) -> Option<(player_hud::strip::Geometry, player_hud::strip::Cards<'a, u32>)> {
+        if open & Section::Chapters.open_bit() == 0 {
             return None;
         }
         let meta = H::metadata(cx);
         let (state, skip) = player_hud::geometry::frame_state(
             &self.compiled,
-            self.hud.sections.bits(),
+            open,
             self.eff_slot(),
             plx_appkit::chapters_panel::has_chapters(meta),
             self.model.paused,
@@ -1679,7 +1702,12 @@ impl PlayerScreen {
         cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>,
     ) -> Option<CardEvent<u32>> {
-        let (geo, src) = self.strip_source(cx)?;
+        // …and keeps stepping while the strip fades out after the section was put away, so it fades as it was, not frozen
+        let open = match self.hud.sections.contains(Section::Chapters) {
+            true => self.hud.sections.bits(),
+            false => self.row.presented() & Section::Chapters.open_bit(),
+        };
+        let (geo, src) = self.strip_source_in(cx, open)?;
         self.row.strip(self.entry, &geo).on(ev, cx, &src, fx)
     }
 
@@ -1720,9 +1748,8 @@ impl PlayerScreen {
             return;
         }
         self.hud.sections = self.hud.sections.toggled(section, self.modal());
-        if !self.hud.sections.contains(Section::Chapters) {
-            self.row.drop_strip();
-        }
+        // the springs start now: the presented frame draws the section at appear 0
+        self.row.follow(self.hud.sections.bits());
         // The page takes the transport: a pending scrub target ends with it, never committed.
         self.scrub.cancel();
         self.end_jump_gesture();
@@ -1750,9 +1777,8 @@ impl PlayerScreen {
     /// package drew), else to the latest page still open, else to the scrubber. The transport lingers from here.
     fn close_section<H: AppLike>(&mut self, section: Section, chapters: bool, now: u32, fx: &mut Effects<'_, H>) {
         self.hud.sections = self.hud.sections.closed(section);
-        if section == Section::Chapters {
-            self.row.drop_strip();
-        }
+        // the section stays on screen, fading, until its spring is out (its Shelf with it): only the logical set changed
+        self.row.follow(self.hud.sections.bits());
         self.hud.extend(now, input::HUD_LINGER_MS);
         let opener = player_hud::geometry::frame_state(
             &self.compiled,

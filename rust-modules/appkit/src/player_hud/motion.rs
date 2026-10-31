@@ -13,8 +13,10 @@ use super::geometry::{GROUP_ROW, GROUP_SECTION, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
 use crate::knob_spring::KnobSpring;
-use plx_machine::machine::{EntryId, GroupId};
+use super::command::Section;
+use plx_machine::machine::{EntryId, GroupId, PresentHandle, Tick};
 use plx_ui::cards::Shelf;
+use plx_ui::containers::modal::PopoverMotion;
 use plx_ui::theme;
 use std::ffi::CString;
 use std::os::raw::{c_int};
@@ -149,7 +151,25 @@ pub struct HudMotion {
     /// the screen's tick steps (`Shelf::on`), so the shelf is held here with the rest of the HUD's motion and a
     /// draw only paints it. Built by [`strip`](Self::strip) on first use.
     strip: Option<Shelf>,
+    /// **Each section's appear spring**, the shared `PopoverMotion` the panels' surfaces ran (Chapters, then Info;
+    /// [`section_index`]): at 1 when the section is up and at rest, `0` when it is not, and in between while it
+    /// opens or fades. LOGICAL state like the Shelf's springs, stepped by [`step_appear`](Self::step_appear) from
+    /// the screen's tick and only read by a draw. Its target follows `HudState::sections` ([`follow`](Self::follow)).
+    appear: [PopoverMotion; 2],
+    /// The sections the springs were last told are open (`StateKey::open` bits).
+    wants: u8,
 }
+
+/// Which spring is `section`'s.
+fn section_index(section: Section) -> usize {
+    match section {
+        Section::Chapters => 0,
+        Section::Info => 1,
+    }
+}
+
+/// Both sections, in spring order.
+const SECTIONS: [Section; 2] = [Section::Chapters, Section::Info];
 
 impl Default for HudMotion {
     fn default() -> Self {
@@ -168,7 +188,79 @@ impl HudMotion {
             preview: crate::scrub_preview::ScrubPreview::new(),
             spring: KnobSpring::new(),
             strip: None,
+            appear: [PopoverMotion::at(0.0); 2],
+            wants: 0,
         }
+    }
+
+    /// **Point the appear springs at the sections that are open now** (`StateKey::open` bits, the screen's
+    /// `HudState::sections`). A section that opens from nothing starts at appear 0 and holds that one frame
+    /// (`PopoverMotion::hold_one_frame`): the presented frame draws it invisible and the spring runs from the
+    /// next, as a surface's does. One that opens while still fading out is turned round where it is. A section
+    /// that closed fades back down. A call with nothing changed does nothing.
+    pub fn follow(&mut self, open: u8) {
+        let changed = open ^ self.wants;
+        for section in SECTIONS {
+            if changed & section.open_bit() == 0 {
+                continue;
+            }
+            let spring = &mut self.appear[section_index(section)];
+            if open & section.open_bit() != 0 {
+                let fresh = spring.gone();
+                spring.to(1.0);
+                if fresh {
+                    spring.hold_one_frame();
+                }
+            } else {
+                spring.to(0.0);
+            }
+        }
+        self.wants = open;
+    }
+
+    /// **Take every section away at once**, nothing composited of them again (`PopoverMotion::at(0.0)`, the jump
+    /// `ModalStack::hide` makes): a failed playback, a new film, the page leaving. The strip's Shelf goes with them.
+    pub fn cut_sections(&mut self) {
+        self.appear = [PopoverMotion::at(0.0); 2];
+        self.wants = 0;
+        self.strip = None;
+    }
+
+    /// Step the sections' appear springs, once per frame from the screen's tick and never from a draw. A frame is
+    /// owed for as long as one moves: the spring notes `PresentEvent::Motion` on the handle the dispatcher gives
+    /// every machine and its surfaces alike, so no fingerprint term is needed. The Chapters strip's Shelf is
+    /// forgotten once its section has faded out.
+    pub fn step_appear(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
+        for spring in &mut self.appear {
+            spring.tick(t, present);
+        }
+        if self.appear[section_index(Section::Chapters)].gone() && self.wants & Section::Chapters.open_bit() == 0 {
+            self.strip = None;
+        }
+    }
+
+    /// `section`'s appear this frame: `0` held or gone, `1` at rest.
+    pub fn section_appear(&self, section: Section) -> f32 {
+        self.appear[section_index(section)].appear
+    }
+
+    /// Put `section` at appear `a`, opening: the springs a test draws at a chosen point of the motion instead of
+    /// stepping to it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_section_appear_for_test(&mut self, section: Section, a: f32) {
+        let mut spring = PopoverMotion::at(a);
+        spring.to(1.0);
+        self.appear[section_index(section)] = spring;
+        self.wants |= section.open_bit();
+    }
+
+    /// **The sections that are PRESENTED**: open, or closed and still fading out (`StateKey::open` bits). The
+    /// draw's mask; the logical one, the screen's `HudState::sections`, still decides stops, groups and keys.
+    pub fn presented(&self) -> u8 {
+        SECTIONS
+            .into_iter()
+            .filter(|s| !self.appear[section_index(*s)].gone())
+            .fold(0, |bits, s| bits | s.open_bit())
     }
 
     /// The strip's Shelf for a strip of this `geo`, under `entry`: held across frames so its springs live, and

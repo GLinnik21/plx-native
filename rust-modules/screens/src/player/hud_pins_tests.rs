@@ -327,6 +327,15 @@ impl Run {
     /// [`Self::press`] with the remote's own code on the event: the dedicated REWIND / FAST-FORWARD keys arrive as
     /// the machine's `Left` / `Right` with `wcode` 452 / 451 (`ui::consts::classify`'s `alt: true`).
     fn press_coded(&mut self, k: Key, wcode: u32) {
+        let now = self.now;
+        self.press_unsettled(k, wcode);
+        self.settle(now);
+        self.now += 600;
+    }
+
+    /// [`Self::press_coded`] without the settling: the key's own three frames (down, one between, up), the clock
+    /// left at the last of them, so a spring the key started is read in flight.
+    fn press_unsettled(&mut self, k: Key, wcode: u32) {
         let coded = |mut e: InputEvent<u32>| {
             if let plx_machine::machine::InputKind::Key { wcode: w, .. } = &mut e.kind {
                 *w = wcode;
@@ -340,8 +349,7 @@ impl Run {
         self.frame(now, vec![coded(key(k, tick(now)))]);
         self.frame(now + 16, vec![]);
         self.frame(now + 112, vec![coded(key_up(k, tick(now + 112)))]);
-        self.settle(now);
-        self.now += 600;
+        self.now = now + 112;
     }
 
     /// A key HELD: the press, an `Edge::Repeat` at each of `repeat_at` ms after it (the remote streams them at
@@ -2069,5 +2077,181 @@ mod sections {
         run.step('B');
         assert_eq!(run.open_sections(), Vec::<Section>::new());
         assert_eq!((run.group(), run.screen().hud.nav.btn), (GROUP_ROW.0, chapters));
+    }
+
+    // -- the sections' motion: what the panels' surfaces did, on the page's own springs ---------------------------
+
+    impl Run {
+        /// `n` frames with nothing in them, 16 ms apart, from the clock.
+        fn frames(&mut self, n: u32) {
+            for _ in 0..n {
+                self.now += 16;
+                let now = self.now;
+                self.frame(now, vec![]);
+            }
+        }
+        /// `section`'s appear this frame.
+        fn appear(&mut self, section: Section) -> f32 {
+            self.screen().row.section_appear(section)
+        }
+        /// The sections the draw presents: the open ones, and one that is closed and still fading out.
+        fn presented(&mut self) -> Vec<Section> {
+            let bits = self.screen().row.presented();
+            [Section::Chapters, Section::Info].into_iter().filter(|s| bits & s.open_bit() != 0).collect()
+        }
+        /// A key and its release, the spring it started left in flight.
+        fn tap(&mut self, k: Key) {
+            self.press_unsettled(k, 0);
+        }
+    }
+
+    /// **A section opens the way a panel did**: the frame that presents it draws it at appear 0 (nothing of it
+    /// shows, nothing jumps), then the spring carries it to 1 without overshoot.
+    #[test]
+    fn a_section_opens_at_appear_zero_and_rises_to_one() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::Plain);
+        assert!(run.presented().is_empty(), "nothing is presented before it opens");
+        run.toggle(Section::Info);
+        assert_eq!(run.open_sections(), vec![Section::Info]);
+        assert_eq!(run.presented(), vec![Section::Info], "the frame that opens it presents it");
+        assert_eq!(run.appear(Section::Info), 0.0, "…at appear 0");
+        let mut last = 0.0;
+        for _ in 0..6 {
+            run.frames(1);
+            let now = run.appear(Section::Info);
+            assert!(now >= last && now <= 1.0, "the spring rises and never passes 1: {last} then {now}");
+            last = now;
+        }
+        assert!(last > 0.0 && last < 1.0, "six frames in it is on its way: {last}");
+        run.frames(80);
+        assert!(run.appear(Section::Info) > 0.99, "…and it comes to rest: {}", run.appear(Section::Info));
+        assert_eq!(run.presented(), vec![Section::Info]);
+    }
+
+    /// **BACK fades a section out and gives the transport back at the dismissal frame.** The logical set drops the
+    /// section the moment BACK lands (stops, groups and keys read it), the spring carries the picture down, and
+    /// the stand-in the section had pushed aside is back at once, as `player_overlay_kind` had it the frame the
+    /// panel went to `Closing`.
+    #[test]
+    fn back_fades_a_section_out_and_the_stand_in_returns_at_the_dismissal_frame() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::SkipIntro);
+        let stand_in = slot_of(Occupant::SkipIntro);
+        run.toggle(Section::Info);
+        run.frames(80);
+        assert_eq!(run.appear(Section::Info), 1.0);
+        assert!(matches!(run.screen().draw_slot(), ControlSlot::Discs(_)), "the discs while the section is up");
+        run.tap(Key::Back);
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "the logical set dropped it");
+        assert_eq!(run.presented(), vec![Section::Info], "…the picture has not");
+        let a = run.appear(Section::Info);
+        assert!(a > 0.0 && a < 1.0, "it is part-way down: {a}");
+        assert!(run.screen().draw_slot() == stand_in, "the stand-in is back at the dismissal frame");
+        run.frames(80);
+        assert_eq!(run.presented(), Vec::<Section>::new(), "…and the picture goes once the spring is out");
+        assert_eq!(run.appear(Section::Info), 0.0);
+    }
+
+    /// **A direction out of the strip fades it like BACK does, and its Shelf stays until it is gone** (a draw
+    /// that finds the section presented and no Shelf would have nothing to paint).
+    #[test]
+    fn a_direction_out_of_the_strip_fades_it_and_its_shelf_outlives_the_close() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.frames(80);
+        assert_eq!(run.appear(Section::Chapters), 1.0);
+        assert!(run.screen().row.strip_shelf().is_some(), "the strip's Shelf is held while it is up");
+        run.tap(Key::Down);
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "Down at the bottom edge closes a modal page");
+        assert_eq!(run.presented(), vec![Section::Chapters]);
+        let a = run.appear(Section::Chapters);
+        assert!(a > 0.0 && a < 1.0, "it is part-way down: {a}");
+        assert!(run.screen().row.strip_shelf().is_some(), "the Shelf outlives the logical close");
+        run.frames(80);
+        assert_eq!(run.presented(), Vec::<Section>::new());
+        assert!(run.screen().row.strip_shelf().is_none(), "…and goes with the last of the fade");
+    }
+
+    /// **Info for Chapters is a swap, not a cut**: the new section opens at appear 0 while the old one is still
+    /// being drawn on its way out (the two panels' surfaces overlapped the same way).
+    #[test]
+    fn swapping_info_for_chapters_fades_one_while_the_other_rises() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Info);
+        run.frames(80);
+        run.toggle(Section::Chapters);
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "a modal page replaces the one before it");
+        assert_eq!(run.presented(), vec![Section::Chapters, Section::Info], "both are drawn through the swap");
+        assert_eq!(run.appear(Section::Chapters), 0.0, "the new one starts invisible");
+        assert!(run.appear(Section::Info) > 0.5, "the old one has only begun to go: {}", run.appear(Section::Info));
+        run.frames(80);
+        assert_eq!(run.presented(), vec![Section::Chapters], "the old one is gone");
+        assert!(run.appear(Section::Chapters) > 0.99);
+    }
+
+    /// **A failure, and a stop, take a section away at once**: `ModalStack::hide` jumped, it did not fade. The
+    /// failure read-out owns the frame the picture stood on; a new film (or the page leaving) takes the sections
+    /// with it.
+    #[test]
+    fn a_failure_and_a_stop_cut_the_section_where_a_close_would_have_faded_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Info);
+        run.frames(80);
+        run.screen().busy = Busy::Readout(
+            plx_ui::widgets::StatusKind::Failed,
+            core::ffi::CStr::from_bytes_with_nul(b"failed\0").unwrap(),
+        );
+        run.frames(1);
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!(run.presented(), Vec::<Section>::new(), "a failure cuts: nothing is left to fade");
+        assert_eq!(run.appear(Section::Info), 0.0);
+
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Info);
+        run.frames(80);
+        run.screen().transport_reset(false);
+        assert_eq!(run.presented(), Vec::<Section>::new(), "a stop cuts at the call, before any frame");
+        assert_eq!(run.appear(Section::Info), 0.0);
+
+        // a reload is the SAME playback at a new position: the sections stay
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Info);
+        run.frames(80);
+        run.screen().transport_reset(true);
+        assert_eq!(run.presented(), vec![Section::Info]);
+    }
+
+    /// **An inline package keeps the discs while a section fades**: its bands under the transport are still being
+    /// drawn, so the stand-in waits until the last of them is gone (the modal package gives it back at once).
+    #[test]
+    fn an_inline_package_keeps_the_discs_until_the_section_has_faded() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = reference_run();
+        let stand_in = slot_of(Occupant::SkipIntro);
+        run.screen().slot = stand_in;
+        run.toggle(Section::Info);
+        run.frames(80);
+        assert!(matches!(run.screen().draw_slot(), ControlSlot::Discs(_)), "the discs while the section is up");
+        run.toggle(Section::Info);
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!(run.presented(), vec![Section::Info]);
+        assert!(run.screen().eff_slot() == stand_in, "the logical slot is the stand-in's");
+        assert!(matches!(run.screen().draw_slot(), ControlSlot::Discs(_)), "…but the picture still draws the discs");
+        run.frames(80);
+        assert_eq!(run.presented(), Vec::<Section>::new());
+        assert!(run.screen().draw_slot() == stand_in, "the stand-in is back once the section is gone");
     }
 }

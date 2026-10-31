@@ -307,11 +307,13 @@ pub(super) fn button(f: &Frame<'_>, q: Painter, e: &plx_ui::Env, c: &ControlRect
 
 /// **The chapters strip** (`DrawOp::Strip`): the Shelf held in `row` paints the playing item's chapters at the
 /// op's geometry ([`super::strip`]). The Shelf's springs are stepped by the screen's tick, not here.
-pub(super) fn strip<H: Host>(f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, q: Painter, op: &DrawOp)
+pub(super) fn strip<H: Host>(f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, q: Painter, op: &DrawOp, moved: f32)
 where
     H::Elem: IndexElem,
 {
     let Some(geo) = Geometry::of(op) else { return };
     let Some(src) = cards_for::<H::Elem>(geo, f.meta, f.ps) else { return };
-    row.strip(f.entry, &geo).paint(df, q, &src, SectionFrame::new(geo.card.y, geo.rect));
+    // a Shelf stands at the SCREEN y it is given whatever its painter translates by (`SectionFrame`), so the rise
+    // and the lift the walk put on `q` (`moved`) are added to where the strip stands
+    row.strip(f.entry, &geo).paint(df, q, &src, SectionFrame::new(geo.card.y + moved, geo.rect));
 }

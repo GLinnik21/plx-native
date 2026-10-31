@@ -72,8 +72,8 @@ use super::state::{readout_owns_frame, Busy, ControlSlot};
 use plx_machine::machine::{GroupId, Host};
 use plx_ui::geom::IndexElem;
 use plx_ui::screen::DrawFrame;
-use super::command::{HudCommand, SeekBy, TrackTab};
-use crate::hud_format::compile::{Chrome, Compiled, CompiledState, DrawOp, FaceRef, Focus, Rest, Span, Widget};
+use super::command::{HudCommand, SeekBy, Section, TrackTab};
+use crate::hud_format::compile::{Chrome, Compiled, CompiledState, DrawOp, FaceRef, Focus, Rest, Span, Widget, OPEN_CHAPTERS, OPEN_INFO};
 use crate::skip_pill;
 use crate::up_next::{self, Countdown, Decor, Layout};
 
@@ -102,9 +102,88 @@ pub struct Frame<'a> {
 
 /// The compiled state this frame draws, or `None` when the package has no state for it
 /// ([`frame_state`], the lookup every geometry consumer takes too).
-fn state_for<'c>(compiled: &'c Compiled, f: &Frame<'_>) -> Option<&'c CompiledState> {
+fn state_for<'c>(compiled: &'c Compiled, open: u8, f: &Frame<'_>) -> Option<&'c CompiledState> {
     let chapters = crate::chapters_panel::has_chapters(f.meta);
-    frame_state(compiled, f.open, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
+    frame_state(compiled, open, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
+}
+
+/// **How the sections' motion shapes one walk** (`docs/hud-plugins.md`, "Sections"): each section's appear, which
+/// paints the spans it owns as ONE layer (faded by it, risen by `Popover::RISE` over `1 - appear`: what the panels
+/// drew), and, for an inline package, how far each band above an appearing or fading section stands below its
+/// place in the presented state.
+struct Layers {
+    /// Chapters, then Info
+    appear: [f32; 2],
+    /// `(band id, dy)` of the bands that stand lower than their rest place, in logical pixels
+    lift: Vec<(String, f32)>,
+}
+
+impl Layers {
+    /// Every section at rest: what a state walked on its own (a test's) draws.
+    fn settled() -> Self {
+        Self { appear: [1.0; 2], lift: Vec::new() }
+    }
+
+    /// The layers of `state`, the state of the `base` bits, from the motion `row` holds.
+    fn of(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, inline: bool, row: &HudMotion) -> Self {
+        let appear = [row.section_appear(Section::Chapters), row.section_appear(Section::Info)];
+        let lift = if inline { lift(compiled, state, base, f, &appear) } else { Vec::new() };
+        Self { appear, lift }
+    }
+
+    /// The appear of the first section named in `bits`, `1` for a span of the transport.
+    fn appear_of(&self, bits: u8) -> f32 {
+        if bits & OPEN_CHAPTERS != 0 {
+            self.appear[0]
+        } else if bits & OPEN_INFO != 0 {
+            self.appear[1]
+        } else {
+            1.0
+        }
+    }
+
+    /// `p` for a span that belongs to the sections `bits`: faded and raised as the panels were.
+    fn paint(&self, bits: u8, p: Painter) -> Painter {
+        let a = self.appear_of(bits);
+        if a >= 1.0 {
+            return p;
+        }
+        p.alpha(a).translate(0.0, plx_ui::popover::Popover::RISE * (1.0 - a))
+    }
+
+    /// How far below its rest place the band `id` stands.
+    fn lift_of(&self, id: &str) -> f32 {
+        self.lift.iter().find(|(band, _)| band == id).map_or(0.0, |(_, dy)| *dy)
+    }
+}
+
+/// **Where the bands above an appearing or fading section stand.** An inline package lays the sections' bands
+/// under the transport's, so opening one lifts the bands above it. Each of those stands `(1 - appear)` of that
+/// lift LOWER than its rest place in `state`, so at appear 0 the block is where the state without the section
+/// puts it and the mask drops with no jump. The lift is read from the compiler's geometry: the band's box in
+/// `state` against the same band's box in the state without the section, so it is whatever the package laid out
+/// (a keyed `gap_before` included) and nothing is tuned per package. No state is kept per op.
+fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, appear: &[f32; 2]) -> Vec<(String, f32)> {
+    let mut out: Vec<(String, f32)> = Vec::new();
+    for section in [Section::Chapters, Section::Info] {
+        let bit = section.open_bit();
+        let a = appear[if bit == OPEN_CHAPTERS { 0 } else { 1 }];
+        if base & bit == 0 || a >= 1.0 {
+            continue;
+        }
+        let Some(without) = state_for(compiled, base & !bit, f) else { continue };
+        let owned = |id: &str| state.spans.iter().any(|span| span.section & bit != 0 && span.band == id);
+        let Some(first) = state.bands.iter().position(|(id, _)| owned(id)) else { continue };
+        for (id, rect) in &state.bands[..first] {
+            let Some((_, rest)) = without.bands.iter().find(|(other, _)| other == id) else { continue };
+            let dy = (1.0 - a) * (rest.y - rect.y);
+            match out.iter_mut().find(|(band, _)| band == id) {
+                Some(entry) => entry.1 += dy,
+                None => out.push((id.clone(), dy)),
+            }
+        }
+    }
+    out
 }
 
 /// Draw the transport from `compiled` into `p`. Returns false, having drawn nothing, when the package
@@ -118,8 +197,26 @@ where
         row.reset_title();
         return true;
     }
-    let Some(state) = state_for(compiled, f) else { return false };
-    draw_state(compiled, state, f, df, row, p);
+    // A MODAL package draws the logical state whole (the transport comes back the moment a section is put away, as
+    // it did under the panels) and lays a section still fading out over it; an INLINE one draws the block as the
+    // presented sections lay it out.
+    let presented = row.presented();
+    let inline = !compiled.sections_modal();
+    let base = if inline { f.open | presented } else { f.open };
+    let Some(state) = state_for(compiled, base, f) else { return false };
+    let layers = Layers::of(compiled, state, base, f, inline, row);
+    walk(compiled, state, f, df, row, p, &layers, 0);
+    if !inline {
+        for section in [Section::Chapters, Section::Info] {
+            let bit = section.open_bit();
+            if presented & !base & bit == 0 {
+                continue;
+            }
+            if let Some(leaving) = state_for(compiled, bit, f) {
+                walk(compiled, leaving, f, df, row, p, &Layers::of(compiled, leaving, bit, f, false, row), bit);
+            }
+        }
+    }
     true
 }
 
@@ -131,6 +228,24 @@ pub fn draw_state<H: Host>(compiled: &Compiled, state: &CompiledState, f: &Frame
 where
     H::Elem: IndexElem,
 {
+    walk(compiled, state, f, df, row, p, &Layers::settled(), 0);
+}
+
+/// [`draw_state`] under `layers`: the spans of the section bits `only` alone when it is not `0` (a section still
+/// fading out over a state that no longer holds it), else every span.
+#[allow(clippy::too_many_arguments)]
+fn walk<H: Host>(
+    compiled: &Compiled,
+    state: &CompiledState,
+    f: &Frame<'_>,
+    df: &DrawFrame<'_, '_, H>,
+    row: &mut HudMotion,
+    p: Painter,
+    layers: &Layers,
+    only: u8,
+) where
+    H::Elem: IndexElem,
+{
     let e = hud_env();
     // a panel owning the middle hides the compact state's transport; a section state IS the panel
     let hides_transport = state.key.open == 0 && !f.transport;
@@ -140,6 +255,7 @@ where
     let chrome_a = row.preview.motion.chrome_alpha(f.now);
     let chrome = chrome_a > 0.004;
     let pc = p.alpha(chrome_a);
+    let walked = p;
     if !f.transport || !chrome {
         row.reset_title();
     }
@@ -149,10 +265,19 @@ where
     let mut kicker_rect: Option<(Rect, i32)> = None;
     let mut bar: Option<Playbar> = None;
     let mut run = |span: &Span| {
+        if only != 0 && span.section & only == 0 {
+            return;
+        }
         if span.chrome == Chrome::Fades && !chrome {
             return;
         }
         let q = if span.chrome == Chrome::Fades { pc } else { p };
+        // an appearing or fading section lifts the bands above it; its own spans are one layer
+        let dy = layers.lift_of(&span.band);
+        let (q, p) = if dy != 0.0 { (q.translate(0.0, dy), p.translate(0.0, dy)) } else { (q, p) };
+        let q = layers.paint(span.section, q);
+        // a Shelf stands at a SCREEN y whatever translate its painter carries, so the strip is told the layer's
+        let moved = q.dy() - walked.dy();
         // the end of the group being drawn: its children are drawn together, from their real heights
         let mut grouped_to = 0;
         for (at, op) in state.ops[span.ops.clone()].iter().enumerate().map(|(k, op)| (span.ops.start + k, op)) {
@@ -217,7 +342,7 @@ where
                     sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, bold, ink)
                 }
                 // not drawn by this renderer yet: see the module doc
-                DrawOp::Strip { .. } => sections::strip(f, df, row, q, op),
+                DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved),
             }
         }
         // right after the bar's band, so the still floats over the title block and the row above it
@@ -698,6 +823,11 @@ mod tests {
 
         /// (the renderer's side, the hand-written strip's side) with focus on chapter `sel`, scroll at rest.
         fn both(items: Vec<Chapter>, sel: u32) -> (Side, Side) {
+            both_at(items, sel, 1.0)
+        }
+
+        /// [`both`] with the section at appear `appear` on both sides: the renderer's spring and the strip's argument.
+        fn both_at(items: Vec<Chapter>, sel: u32, appear: f32) -> (Side, Side) {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
@@ -709,9 +839,10 @@ mod tests {
             let model = HudModel::default();
             let up = Countdown::default();
             let mut row = HudMotion::new();
+            row.set_section_appear_for_test(Section::Chapters, appear);
             let frame = Frame {
                 entry: ENTRY, ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
-                focus: GROUP_SCRUB, btn: 0, tab: 0, open: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+                focus: GROUP_SCRUB, btn: 0, tab: 0, open: OPEN_CHAPTERS, now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
             let key = FocusKey { entry: ENTRY, elem: crate::player_hud::state::ELEM_CHAPTER_BASE + sel };
             let focus = FocusRead { current: Some(key), ..FocusRead::default() };
@@ -728,7 +859,7 @@ mod tests {
                 }
             });
             let mut new = None;
-            let rings = capture_rings(|| new = Some(census(|| with_df_focus(focus, |df| draw_state(&hud.compiled, state, &frame, df, &mut row, Painter::root())))));
+            let rings = capture_rings(|| new = Some(census(|| with_df_focus(focus, |df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))))));
             let new = side(new.unwrap(), rings);
             let mut panel = ChaptersState::new(store.view());
             panel.set_sel(sel as std::os::raw::c_int);
@@ -736,7 +867,7 @@ mod tests {
                 panel.update(0.016_667, store.view());
             }
             let mut old = None;
-            let rings = capture_rings(|| old = Some(census(|| panel.draw(&ps, 1.0, &FM, store.view()))));
+            let rings = capture_rings(|| old = Some(census(|| panel.draw(&ps, appear, &FM, store.view()))));
             (new, side(old.unwrap(), rings))
         }
 
@@ -796,6 +927,32 @@ mod tests {
                 assert!(close(n.1, o.1), "sel {sel}: the ring's corner {} against the strip's {}", n.1, o.1);
             }
         }
+
+        /// **The strip's appear is the strip's**: at every point of the spring the section path draws what the
+        /// hand-written strip drew at that appear (`Popover::painter`'s fade and `Popover::RISE` rise, as one layer):
+        /// the same words, in the same ink and place, and the same ring.
+        #[test]
+        fn the_strip_at_every_appear_is_what_the_hand_written_strip_drew() {
+            for appear in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let (new, old) = both_at(chapters(&["Opening", "Dinner", "The Chase"]), 0, appear);
+                assert_eq!(new.runs.len(), old.runs.len(), "appear {appear}: the same runs:\nrenderer {:#?}\nstrip    {:#?}", new.runs, old.runs);
+                for (n, o) in new.runs.iter().zip(&old.runs) {
+                    assert_eq!((&n.text, n.size, n.bold, n.align), (&o.text, o.size, o.bold, o.align), "appear {appear}: the run `{}`", o.text);
+                    assert!(
+                        n.ink.iter().zip(&o.ink).all(|(a, b)| (a - b).abs() < 0.001),
+                        "appear {appear}: `{}` is inked {:?} where the strip inks it {:?}", o.text, n.ink, o.ink
+                    );
+                    assert!(
+                        close(n.at.x, o.at.x) && close(n.at.y, o.at.y) && close(n.at.w, o.at.w),
+                        "appear {appear}: `{}` stands at {:?} where the strip draws it at {:?}", o.text, n.at, o.at
+                    );
+                }
+                assert_eq!(new.rings.len(), old.rings.len(), "appear {appear}: the focused card's ring");
+                for (n, o) in new.rings.iter().zip(&old.rings) {
+                    assert!(close(n.0.x, o.0.x) && close(n.0.y, o.0.y) && close(n.0.w, o.0.w) && close(n.0.h, o.0.h), "appear {appear}: the ring {:?} against {:?}", n.0, o.0);
+                }
+            }
+        }
     }
 
     /// **The Info section through the renderer** (`draw_state` over classic's `OPEN_INFO` state), against the
@@ -823,23 +980,75 @@ mod tests {
 
         /// (the renderer's census, the hand-written card's census) over one playing item
         fn both(detail: Detail) -> (Census, Census) {
+            both_at(detail, 1.0)
+        }
+
+        /// [`both`] with the section at appear `appear` on both sides: the renderer's spring and the card's argument.
+        fn both_at(detail: Detail, appear: f32) -> (Census, Census) {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
             plx_data::metadata::set_current_for_test(store.state_mut(), Some(detail));
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
-            let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("classic has an info state");
+            assert!(hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).is_some(), "classic has an info state");
             let ps = plx_media::route::PlaybackSession::IDLE;
             let model = HudModel::default();
             let up = Countdown::default();
             let mut row = HudMotion::new();
+            row.set_section_appear_for_test(Section::Info, appear);
             let frame = Frame {
                 entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
-                focus: GROUP_SCRUB, btn: 0, tab: 0, open: 0, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+                focus: GROUP_SCRUB, btn: 0, tab: 0, open: OPEN_INFO, now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
-            let new = census(|| with_df(|df| draw_state(&hud.compiled, state, &frame, df, &mut row, Painter::root())));
-            let old = census(|| InfoPanelState::new().draw(&ps, 1.0, &FM, store.view()));
+            let new = census(|| with_df(|df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))));
+            let old = census(|| InfoPanelState::new().draw(&ps, appear, &FM, store.view()));
             (new, old)
+        }
+
+        /// **The card's appear is the card's**: at every point of the spring the section path draws what the
+        /// hand-written card drew at that appear (its fills with their cascaded alpha, its words, where they stand,
+        /// risen by `Popover::RISE * (1 - appear)`), and ONLY the card: the tab row under it is the same at every
+        /// appear, as main painted it outside the panel's `.alpha(appear)`.
+        #[test]
+        fn the_card_at_every_appear_is_what_the_hand_written_card_drew_and_the_tabs_do_not_move() {
+            fn near(a: &Rect, b: &Rect) -> bool {
+                (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01 && (a.w - b.w).abs() < 0.01 && (a.h - b.h).abs() < 0.01
+            }
+            // the inks the card did not draw: the tab row's. (The card's focused button wears a glow, tag 5, the
+            // section state draws none while the focus is not on the section: that is focus, not appear.)
+            fn tabs(new: &Census, old: &Census) -> Vec<(u64, Rect, f32)> {
+                let mut rest = new.3.clone();
+                for (tag, rect, alpha) in old.3.iter().filter(|(tag, ..)| *tag != 5) {
+                    let at = rest
+                        .iter()
+                        .position(|(t, r, a)| t == tag && near(r, rect) && (a - alpha).abs() < 0.001)
+                        .unwrap_or_else(|| panic!("the card inks {tag} in {rect:?} at alpha {alpha}, the renderer does not: {:?}", new.3));
+                    rest.remove(at);
+                }
+                rest
+            }
+            let (settled_new, settled_old) = both_at(playing(), 1.0);
+            let still = tabs(&settled_new, &settled_old);
+            for appear in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let (new, old) = both_at(playing(), appear);
+                assert_eq!(tabs(&new, &old), still, "appear {appear}: the tab row neither fades nor rises with the card");
+                fn words(c: &Census) -> Vec<&Run> {
+                    let mut runs: Vec<&Run> = c.1.iter().filter(|r| r.text != "Info" && r.text != "Chapters").collect();
+                    runs.sort_by(|a, b| (a.at.x, a.at.y, &a.text).partial_cmp(&(b.at.x, b.at.y, &b.text)).unwrap());
+                    runs
+                }
+                let (n, o) = (words(&new), words(&old));
+                assert_eq!(n.len(), o.len(), "appear {appear}: the same words");
+                for (n, o) in n.into_iter().zip(o) {
+                    assert_eq!((&n.text, n.size, n.bold), (&o.text, o.size, o.bold), "appear {appear}: `{}`", o.text);
+                    // the colour of a button's label is its focus's (the card opens on its first button), the fade is the alpha
+                    assert!(
+                        (n.ink[3] - o.ink[3]).abs() < 0.001,
+                        "appear {appear}: `{}` is inked {:?} where the card inks it {:?}", o.text, n.ink, o.ink
+                    );
+                    assert!(near(&n.at, &o.at), "appear {appear}: `{}` stands at {:?} where the card draws it at {:?}", o.text, n.at, o.at);
+                }
+            }
         }
 
         fn run<'a>(c: &'a Census, text: &str) -> &'a Run {
@@ -1178,6 +1387,51 @@ mod tests {
             let dead = frame_census(&compiled, GROUP_SCRUB, 0, HudModel { duration_ns: 0, ..model() });
             assert_ne!(live.3, dead.3, "the fills differ when the seek discs go dead");
             assert_ne!(live.0, dead.0);
+        }
+
+        /// **An inline section's ops stacked above it ride one delta** (`docs/hud-plugins.md`, "Sections"): the
+        /// reference lays the Info band UNDER the transport, so opening it lifts the title, the bar and the row.
+        /// At appear `a` each of them stands `(1 - a)` of that lift lower than where the open state puts it, so at
+        /// `0` the block is where the closed state puts it and at `1` where the open one does. The bar's clocks and
+        /// the row's discs are the ops above the band; both ride the SAME delta.
+        #[test]
+        fn the_ops_above_an_inline_section_stand_one_delta_lower_while_it_appears() {
+            use crate::hud_format::compile::OPEN_INFO;
+            let compiled = reference();
+            let at = |open: u8, appear: Option<f32>| -> Census {
+                let ps = plx_media::route::PlaybackSession::IDLE;
+                let store = plx_data::stores::metadata::MetadataStore::default();
+                let up = Countdown::default();
+                let model = model();
+                let mut row = HudMotion::new();
+                if let Some(a) = appear {
+                    row.set_section_appear_for_test(Section::Info, a);
+                }
+                let frame = Frame {
+                    entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+                    focus: GROUP_SCRUB, btn: 0, tab: 0, open, now: 1_000, transport: true, measure: &FM, meta: store.view(),
+                };
+                census(|| assert!(with_df(|df| draw(&compiled, &frame, df, &mut row, Painter::root()))))
+            };
+            let clock = |c: &Census| c.1.iter().find(|r| r.text == "1:30").map(|r| r.at.y).expect("the bar's elapsed clock");
+            let disc = |c: &Census| c.2.iter().find(|(i, _)| *i == Icon::Pause).map(|(_, r)| r.y).expect("the play disc");
+            let closed = at(0, None);
+            let open = at(OPEN_INFO, Some(1.0));
+            let (clock_lift, disc_lift) = (clock(&closed) - clock(&open), disc(&closed) - disc(&open));
+            assert!(clock_lift > 8.0, "opening the section lifts the bar by something real: {clock_lift}");
+            assert!((clock_lift - disc_lift).abs() < 0.01, "…and the row by the same: {clock_lift} against {disc_lift}");
+            for appear in [0.0, 0.5, 1.0] {
+                let drawn = at(OPEN_INFO, Some(appear));
+                let owed = (1.0 - appear) * clock_lift;
+                assert!(
+                    (clock(&drawn) - (clock(&open) + owed)).abs() < 0.01,
+                    "appear {appear}: the clock stands at {} where the open state's {} plus {owed} puts it", clock(&drawn), clock(&open)
+                );
+                assert!(
+                    (disc(&drawn) - (disc(&open) + owed)).abs() < 0.01,
+                    "appear {appear}: the play disc stands at {} where the open state's {} plus {owed} puts it", disc(&drawn), disc(&open)
+                );
+            }
         }
     }
 }
