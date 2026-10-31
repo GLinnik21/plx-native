@@ -143,6 +143,24 @@ impl ListingSnapshot {
         self
     }
 
+    /// A fixture listing whose value sort has these band counts (`BandRail::new`), shown as current.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_bands(mut self, rail: super::bands::BandRail) -> Self {
+        if let Some(data) = &mut self.data {
+            data.bands = Some(Arc::new(rail));
+        }
+        self
+    }
+
+    /// A fixture listing sorted in the given direction.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_sort_desc(mut self, descending: bool) -> Self {
+        if let Some(data) = &mut self.data {
+            data.sort_desc = descending;
+        }
+        self
+    }
+
     /// A fixture listing with the Unwatched filter on or off.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_unwatched(mut self, on: bool) -> Self {
