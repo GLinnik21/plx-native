@@ -264,13 +264,16 @@ pub struct Person {
     /// empty. [`Person::profiled`]'s twin, and the gate the Filmography entry row is
     /// drawn on: an entry naming no count is an entry that cannot promise a list.
     pub credited: bool,
-    /// Exact registry identity this source vector was built from. Background roster refresh can
+    /// The registry generation this source vector was last reconciled against: it moves on a
+    /// rebuild, and also when [`sync_roster`] kept the sources because `roster_sig` showed the
+    /// generation moved over nothing they depend on. Background roster refresh can
     /// add/remove/re-point while a page remains open, without going through `install_pms::reset`.
     roster_gen: u32,
-    /// Which servers `roster_gen` held, and which client object each answered with, as the first
-    /// pump saw them. A generation that moved with this unchanged (a retoken, a restated fact) left
-    /// every fetched shelf true, so [`sync_roster`] keeps the page instead of drawing its skeleton
-    /// again. `None` until a pump has read the registry's answer.
+    /// Which servers the sources were built for, and which client object each answered with, as
+    /// the first pump saw them. The generation also moves when a server is re-registered at the
+    /// same origin (a retoken keeps its client object); every fetched shelf is still true then, so
+    /// [`sync_roster`] keeps the page instead of drawing its skeleton again. `None` until a pump has
+    /// read the registry's answer.
     roster_sig: Option<Vec<(ServerId, u32)>>,
 }
 
@@ -733,8 +736,10 @@ impl PersonState {
 /// plex.tv; a `ServerId` that names no slot ([`ServerId::UNSET`]) is not a source at all, since
 /// there is nothing to dial and no mailbox to land in.
 ///
-/// Read on open and whenever the registry generation moves. The roster is tiny; rebuilding only at
-/// that explicit boundary prevents an open page retaining a revoked share or missing a new one.
+/// Read on open and whenever the roster's servers or the client objects behind them change
+/// ([`sync_roster`]; a generation that moved over neither keeps the sources). The roster is tiny;
+/// rebuilding only at that explicit boundary prevents an open page retaining a revoked share or
+/// missing a new one.
 fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
     let mut out: Vec<Src> = Vec::new();
     for sid in plx_plex::plex::server_ids().chain(std::iter::once(origin)) {
@@ -1404,8 +1409,8 @@ fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter, keys: &ClientKe
         }
         return false;
     }
-    // The generation also moves for a token that rotated or a fact restated about a server already
-    // in the table. Nothing fetched is stale then, and rebuilding would blank a loaded page.
+    // The generation also moves for a server re-registered at the same origin (a retoken keeps the
+    // client object). Nothing fetched is stale then, and rebuilding would blank a loaded page.
     let sig = roster_sig(keys);
     if let Some(p) = state.current.as_mut().filter(|p| p.roster_sig.as_ref() == Some(&sig)) {
         p.roster_gen = gen;
@@ -2768,6 +2773,7 @@ mod tests {
         let a = plx_plex::plex::register_for_test("person-a", "127.0.0.1", 1, "a", "cid");
         let b = plx_plex::plex::register_for_test("person-b", "127.0.0.1", 2, "b", "cid");
         owner.open(a, "7", "plex://person/7", "Actor", "");
+        assert!(!owner.sync_roster(), "the first read records the roster the page was built for");
         assert_eq!(
             owner.current()
                 .unwrap()
@@ -2806,6 +2812,31 @@ mod tests {
             .iter()
             .all(|s| s.items.is_empty()));
 
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The other half of the keep rule: a server answering from a new address is a new client
+    /// object, so what the open page fetched from the old one is not true of it.
+    #[test]
+    fn a_server_re_registered_at_a_new_address_rebuilds_the_loaded_page() {
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-a", "127.0.0.1", 1, "a", "cid");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
+        assert!(owner.apply(fx(a, K_MEDIA).unwrap(), media(vec![movie_on(a, "4")], Vec::new())));
+        assert!(owner.current().unwrap().landed);
+        assert!(!owner.sync_roster(), "the first read records the roster");
+        let before = plx_plex::plex::server_roster_gen();
+        let again = plx_plex::plex::register_for_test("person-a", "127.0.0.1", 2, "a", "cid");
+        assert_eq!(again, a, "the same machine keeps its slot");
+        assert_ne!(before, plx_plex::plex::server_roster_gen(), "the re-point moved the generation");
+        assert!(owner.sync_roster(), "a re-pointed server is not the one the shelves came from");
+        let p = owner.current().unwrap();
+        assert!(!p.landed, "the page asks the new address again");
+        assert_eq!(p.shelf(0).len() + p.shelf(1).len(), 0);
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }
