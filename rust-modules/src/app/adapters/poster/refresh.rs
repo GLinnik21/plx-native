@@ -1,5 +1,5 @@
 //! Bounded stale-while-revalidate lane. Cached pixels reach the render queue immediately;
-//! slow or offline servers cannot occupy either demand decoder or the main-thread store lock.
+//! slow or offline servers cannot occupy a demand decoder or the main-thread store lock.
 //! Only idle source periods start refreshes. A key gets at most one attempt per account epoch
 //! within the bounded recent-attempt set, so revisiting stale art cannot hammer an offline PMS.
 
