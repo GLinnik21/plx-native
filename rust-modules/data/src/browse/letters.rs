@@ -1,4 +1,5 @@
-//! The A-Z rail's first-letter list, and what it counted.
+//! The A-Z rail's data: the first-letter list of a title sort, the band counts of a value sort, and
+//! what each counted.
 //!
 //! The rail jumps to a letter by the running sum of the counts before it, so the counts have to
 //! be those of the very listing the grid shows: the same `type=`, the same Unwatched key
@@ -18,32 +19,57 @@
 //! else does. A library TYPE change forgets the list outright ([`SecState::forget_letters`]); the
 //! Collections page's loan does not carry it.
 //!
+//! A VALUE sort's rail (rating, duration, unplayed, plays) is the same shape with another payload: one
+//! kept slot of band counts ([`SecState::shown_bands`]) keyed by the same terms and the sort's
+//! [`BandFamily`], so [`LettersKey`] carries the family (`None` for the letters). The direction is
+//! deliberately NOT in the key: the counts are of values, and a landed [`BandRail`] holds the layout
+//! of both directions, so a flip of the direction asks the server nothing. A family that a watch
+//! moves (`BandFamily::moves_with_viewing`) takes the viewing generation as an Unwatched key does.
+//! A read whose counts were not trusted lands as a list with no rail, not as a failure
+//! ([`SecState::land_bands`]): the answer would not change on a retry, so only a moved key asks again.
+//!
 //! A read that FAILED leaves the list as it was (not current, so hidden: never shown over a grid it
 //! does not describe) and holds the same key back for [`LETTERS_RETRY_STEPS`] steps, as the page
 //! lane's `retry_cd` does; any edit asks at once.
 
-use super::{Arc, BrowseState, DirectoryResult, SecState};
+use super::bands::{BandFamily, BandRail};
+use super::{Arc, BrowseState, DirectoryResult, SecKind, SecState};
 
-/// What a first-letter list counted: the grid's own query as it stood when the list was asked.
-/// Compared field by field wherever the letters are read ([`LettersKey::is`]), without allocating.
+/// What a first-letter list (or a value sort's band counts) counted: the grid's own query as it stood
+/// when the list was asked. Compared field by field wherever the list is read ([`LettersKey::is`]),
+/// without allocating.
 ///
 /// There is deliberately no listing type here: the landing refuses an answer whose
 /// `DirectoryResult::library_type` is not the section's, and a type change forgets the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct LettersKey {
+    /// The band family the counts are of; `None` for the title letters.
+    pub(super) family: Option<BandFamily>,
     /// The Unwatched switch AS APPLIED (false while a type the filters do not apply to is listed).
     pub(super) unwatched: bool,
     /// The genre tag id AS APPLIED.
     pub(super) genre: Option<String>,
     /// [`SecState::key_gen`] when asked: moves when the server's membership changed under the
-    /// section, or (Unwatched only) a title's watched state was read back, which no term shows.
+    /// section, or (a key [`Self::viewing_sensitive`]) a title's watched state was read back, which
+    /// no term shows.
     pub(super) gen: u32,
 }
 
 impl LettersKey {
-    fn is(&self, unwatched: bool, genre: Option<&str>, gen: u32) -> bool {
-        self.unwatched == unwatched && self.genre.as_deref() == genre && self.gen == gen
+    fn is(&self, family: Option<BandFamily>, unwatched: bool, genre: Option<&str>, gen: u32) -> bool {
+        self.family == family && self.unwatched == unwatched && self.genre.as_deref() == genre && self.gen == gen
     }
+
+    /// Do the counts move with every watch? Those counted under Unwatched, and a family whose
+    /// values a watch changes.
+    fn viewing_sensitive(&self) -> bool {
+        sensitive(self.family, self.unwatched)
+    }
+}
+
+/// Does a key counted for `family` under `unwatched` move with a watch ([`SecState::key_gen`])?
+fn sensitive(family: Option<BandFamily>, unwatched: bool) -> bool {
+    unwatched || family.is_some_and(BandFamily::moves_with_viewing)
 }
 
 /// Steps a failed letters read holds the same key back (the page lane's `retry_cd` is 120 too).
@@ -59,17 +85,27 @@ impl SecState {
         (self.unwatched, self.genre.as_ref().map(|genre| genre.id.as_str()))
     }
 
-    /// The generation a key counted with `unwatched` carries: the membership's, and for an
-    /// Unwatched key the viewing one as well. Both only count up, so the sum moves whenever either
-    /// does, and an unfiltered or genre-only list is left alone by a watch.
-    fn key_gen(&self, unwatched: bool) -> u32 {
-        if unwatched { self.letters_gen.wrapping_add(self.viewing_gen) } else { self.letters_gen }
+    /// The generation a key carries: the membership's, and for a key that moves with a watch
+    /// (`viewing`: Unwatched, or a family a watch changes) the viewing one as well. Both only count
+    /// up, so the sum moves whenever either does, and an unfiltered or genre-only list is left alone
+    /// by a watch.
+    fn key_gen(&self, viewing: bool) -> u32 {
+        if viewing { self.letters_gen.wrapping_add(self.viewing_gen) } else { self.letters_gen }
     }
 
     /// The key a letters read asked NOW would carry.
     pub(super) fn letters_key(&self) -> LettersKey {
         let (unwatched, genre) = self.applied_terms();
-        LettersKey { unwatched, genre: genre.map(str::to_owned), gen: self.key_gen(unwatched) }
+        LettersKey { family: None, unwatched, genre: genre.map(str::to_owned), gen: self.key_gen(unwatched) }
+    }
+
+    /// The key a bands read for `family` asked NOW would carry.
+    pub(super) fn bands_key(&self, family: BandFamily) -> LettersKey {
+        let (unwatched, genre) = self.applied_terms();
+        LettersKey {
+            family: Some(family), unwatched, genre: genre.map(str::to_owned),
+            gen: self.key_gen(sensitive(Some(family), unwatched)),
+        }
     }
 
     /// The list that describes the listing the grid shows now, if one is on hand: the landed one,
@@ -79,12 +115,12 @@ impl SecState {
     pub(super) fn shown_letters(&self) -> Option<&Arc<Vec<(String, i64)>>> {
         let (unwatched, genre) = self.applied_terms();
         let gen = self.key_gen(unwatched);
-        if self.letters_for.as_ref().is_some_and(|key| key.is(unwatched, genre, gen)) {
+        if self.letters_for.as_ref().is_some_and(|key| key.is(None, unwatched, genre, gen)) {
             return Some(&self.letters);
         }
         self.letters_kept
             .as_ref()
-            .filter(|(key, _)| key.is(unwatched, genre, gen))
+            .filter(|(key, _)| key.is(None, unwatched, genre, gen))
             .map(|(_, list)| list)
     }
 
@@ -101,7 +137,7 @@ impl SecState {
         }
         let (unwatched, genre) = self.applied_terms();
         let gen = self.key_gen(unwatched);
-        !self.letters_backoff.as_ref().is_some_and(|(key, steps)| *steps > 0 && key.is(unwatched, genre, gen))
+        !self.letters_backoff.as_ref().is_some_and(|(key, steps)| *steps > 0 && key.is(None, unwatched, genre, gen))
     }
 
     /// Is a back-off counting down? The store must be stepped while it is, as for `retry_cd`.
@@ -137,7 +173,7 @@ impl SecState {
         match self.letters_for.take() {
             Some(previous) if previous != key => {
                 let replaced = std::mem::replace(&mut self.letters, Arc::new(list));
-                self.letters_kept = (!previous.unwatched).then_some((previous, replaced));
+                self.letters_kept = (!previous.viewing_sensitive()).then_some((previous, replaced));
             }
             _ => {
                 self.letters = Arc::new(list);
@@ -162,6 +198,7 @@ impl SecState {
         self.letters_for = None;
         self.letters_kept = None;
         self.letters_backoff = None;
+        self.forget_bands();
     }
 
     /// What the server lists under this section changed (a library scan, a read-back that moved a
@@ -184,12 +221,106 @@ impl SecState {
     /// answers. Every list counted under Unwatched is stale from here on, whether or not Unwatched
     /// is applied now: the one behind a shown unfiltered list is brought back by the switch, and
     /// the read that is out was asked before the title changed. Only Unwatched counts depend on
-    /// viewing, so an unfiltered or genre-only list stands ([`Self::key_gen`]). Returns true when the
-    /// rail on screen lost its list, so the store publishes a change.
-    pub(super) fn viewing_changed(&mut self) -> bool {
-        let shown = self.letters_current();
+    /// viewing, so an unfiltered or genre-only list stands ([`Self::key_gen`]); so do the counts of a
+    /// family a watch moves, whatever the terms. Returns true when the rail on screen lost its list,
+    /// so the store publishes a change. `kind` is the section's, which says the family of the sort.
+    pub(super) fn viewing_changed(&mut self, kind: SecKind) -> bool {
+        let (letters, bands) = (self.letters_current(), self.bands_current(kind));
         self.viewing_gen = self.viewing_gen.wrapping_add(1);
-        shown && !self.letters_current()
+        (letters && !self.letters_current()) || (bands && !self.bands_current(kind))
+    }
+
+    // ---- the value sorts' bands ------------------------------------------------------------------
+
+    /// The family whose bands the rail draws for the sort the grid is ordered by, or `None` (a title
+    /// sort has the letters; a sort without a ladder, or a family the rail is not ready for, none).
+    pub(super) fn rail_family(&self, kind: SecKind) -> Option<BandFamily> {
+        let sort = self.sorts.get(self.sort_idx)?;
+        BandFamily::of_sort(&sort.key, self.sort_desc, kind, self.library_type).filter(|f| f.rail_ready())
+    }
+
+    /// The verdict of the band counts that describe the listing the grid shows now, if one is on
+    /// hand: `Some(Some(rail))` a rail, `Some(None)` counted and not trusted or empty (no rail).
+    fn bands_verdict(&self, kind: SecKind) -> Option<&Option<Arc<BandRail>>> {
+        let family = self.rail_family(kind)?;
+        let (unwatched, genre) = self.applied_terms();
+        let gen = self.key_gen(sensitive(Some(family), unwatched));
+        [self.bands.as_ref(), self.bands_kept.as_ref()]
+            .into_iter()
+            .flatten()
+            .find(|(key, _)| key.is(Some(family), unwatched, genre, gen))
+            .map(|(_, verdict)| verdict)
+    }
+
+    /// The rail of the band counts that describe the listing the grid shows now; like
+    /// [`Self::shown_letters`], the one place a bands list is picked, at the READ site.
+    pub(super) fn shown_bands(&self, kind: SecKind) -> Option<&Arc<BandRail>> {
+        self.bands_verdict(kind)?.as_ref()
+    }
+
+    /// Does a bands list on hand describe the listing the grid shows now (a rail or a verdict)?
+    pub(super) fn bands_current(&self, kind: SecKind) -> bool {
+        self.bands_verdict(kind).is_some()
+    }
+
+    /// Is a bands read owed: the sort has a ladder, no list on hand describes the grid, and a failed
+    /// read of THIS key is not holding the next one back?
+    pub(super) fn bands_owed(&self, kind: SecKind) -> bool {
+        let Some(family) = self.rail_family(kind) else { return false };
+        if self.bands_current(kind) {
+            return false;
+        }
+        let (unwatched, genre) = self.applied_terms();
+        let gen = self.key_gen(sensitive(Some(family), unwatched));
+        !self.bands_backoff.as_ref().is_some_and(|(key, steps)| *steps > 0 && key.is(Some(family), unwatched, genre, gen))
+    }
+
+    /// Is a bands back-off counting down? The store must be stepped while it is.
+    pub(super) fn bands_waiting(&self) -> bool {
+        self.bands_backoff.is_some()
+    }
+
+    /// One step of the back-off; spent at zero.
+    pub(super) fn tick_bands_backoff(&mut self) {
+        if let Some((_, steps)) = &mut self.bands_backoff {
+            *steps = steps.saturating_sub(1);
+            if *steps == 0 {
+                self.bands_backoff = None;
+            }
+        }
+    }
+
+    /// A bands read asked under `key` came back: with a rail, or with none (`None`: an empty listing
+    /// or counts not trusted, a verdict that a retry would not change). It becomes the landed list and
+    /// the one it replaces is kept in the one slot, as [`Self::land_letters`] keeps its own, unless it
+    /// moves with a watch.
+    pub(super) fn land_bands(&mut self, key: LettersKey, rail: Option<BandRail>) {
+        let landed = rail.map(Arc::new);
+        match self.bands.take() {
+            Some(previous) if previous.0 != key => {
+                self.bands_kept = (!previous.0.viewing_sensitive()).then_some(previous);
+            }
+            _ => {
+                if self.bands_kept.as_ref().is_some_and(|(kept, _)| *kept == key) {
+                    self.bands_kept = None;
+                }
+            }
+        }
+        self.bands = Some((key, landed));
+        self.bands_backoff = None;
+    }
+
+    /// A bands read asked under `key` FAILED to get its counts: what was on hand stays and the same
+    /// key waits.
+    fn bands_failed(&mut self, key: LettersKey) {
+        self.bands_backoff = Some((key, LETTERS_RETRY_STEPS));
+    }
+
+    /// Drop the bands and everything about them (every library type change, as the letters).
+    pub(super) fn forget_bands(&mut self) {
+        self.bands = None;
+        self.bands_kept = None;
+        self.bands_backoff = None;
     }
 }
 
@@ -210,6 +341,25 @@ impl BrowseState {
                 state.land_letters(asked, list);
             } else {
                 state.letters_failed(asked);
+            }
+        })
+    }
+
+    /// Land the bands mailbox's answer: the same landing as the letters', for the counts of a value
+    /// sort. A read that answered lands under the key it was asked with, a rail or none; one that
+    /// failed touches nothing but the back-off. `#[track_caller]` as [`Self::land_letters_owned`].
+    #[track_caller]
+    pub(super) fn land_bands_owned(
+        &mut self,
+        gate: &plx_machine::landgate::Gate,
+        fetch: &crate::stores::Fetch<DirectoryResult<BandRail>>,
+    ) -> bool {
+        self.land_directory_owned_with_gate(gate, fetch, |state, list, ok, asked| {
+            let Some(asked) = asked else { return };
+            if ok {
+                state.land_bands(asked, list.into_iter().next());
+            } else {
+                state.bands_failed(asked);
             }
         })
     }

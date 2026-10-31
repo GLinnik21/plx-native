@@ -74,7 +74,7 @@ fn a_panicking_directory_body_lands_as_an_empty_list() {
 
 /// The directory job the steps have left, taken off the outbox.
 #[track_caller]
-fn the_directory_job(browse: &mut TestBrowse) -> (plx_machine::job::Job<BrowseDirectoryReq>, BrowseDirectoryPort) {
+pub(super) fn the_directory_job(browse: &mut TestBrowse) -> (plx_machine::job::Job<BrowseDirectoryReq>, BrowseDirectoryPort) {
     let mut jobs = std::mem::take(&mut browse.jobs);
     assert_eq!(jobs.len(), 1, "exactly one job is on the outbox: {jobs:?}");
     match jobs.remove(0) {
@@ -84,14 +84,14 @@ fn the_directory_job(browse: &mut TestBrowse) -> (plx_machine::job::Job<BrowseDi
 }
 
 /// The menu's tick for `work` (`Genres` or `Letters`) on the registry as of now.
-fn tick_directory(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId, work: LibraryWork) {
+pub(super) fn tick_directory(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId, work: LibraryWork) {
     browse.refill();
     let target = SectionAddress { epoch: browse.state.table_epoch(), sid, section: 1 };
     assert!(browse.state.addressed_with_adapter(&browse.adapter, target, work, &browse.keys, &mut browse.jobs));
 }
 
 /// The tick on a registry that holds no client, as the step the refused job's settle runs in.
-fn tick_directory_without_keys(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId, work: LibraryWork)
+pub(super) fn tick_directory_without_keys(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId, work: LibraryWork)
     -> Vec<StoreJob> {
     let target = SectionAddress { epoch: browse.state.table_epoch(), sid, section: 1 };
     let mut jobs = Vec::new();
@@ -100,10 +100,11 @@ fn tick_directory_without_keys(browse: &mut TestBrowse, sid: plx_plex::plex::Ser
 }
 
 /// Is the refusal of directory request `id` still on the adapter, unconsumed? (Consumes it if so.)
-fn directory_refusal_pending(browse: &TestBrowse, which: Directory, id: u32) -> bool {
+pub(super) fn directory_refusal_pending(browse: &TestBrowse, which: Directory, id: u32) -> bool {
     match which {
         Directory::Genres => browse.adapter.genres.take_refused(id),
         Directory::Letters => browse.adapter.letters.take_refused(id),
+        Directory::Bands => browse.adapter.bands.take_refused(id),
     }
 }
 

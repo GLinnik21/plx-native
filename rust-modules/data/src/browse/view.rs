@@ -31,6 +31,10 @@ struct ListingData {
     letters: Arc<Vec<(String, i64)>>,
     /// Do `letters` describe the listing the query now asks for ([`super::SecState::letters_current`])?
     letters_current: bool,
+    /// The bands of the sort the grid is ordered by, while the counts on hand describe the listing the
+    /// query now asks for ([`super::SecState::shown_bands`]); `None` for a title sort, a sort with no
+    /// ladder, counts not yet landed or a listing with no rail.
+    bands: Option<Arc<super::bands::BandRail>>,
     sort_idx: usize,
     sort_desc: bool,
     genre: Option<Arc<GenreEntry>>,
@@ -184,6 +188,7 @@ impl ListingSnapshot {
                 genres: Arc::new(Vec::new()),
                 letters: Arc::new(letters),
                 letters_current: true,
+                bands: None,
                 sort_idx: 0,
                 sort_desc: false,
                 genre: None,
@@ -260,6 +265,16 @@ impl<'a> ListingView<'a> {
     pub fn letters(self) -> &'a [(String, i64)] {
         self.0.data.as_ref().filter(|s| s.letters_current).map_or(&[], |s| s.letters.as_slice())
     }
+    /// The bands of THIS listing's value sort, laid out in the listing's own order for the direction it
+    /// is sorted in: each band's first item and size, the unlabelled items before the first band
+    /// (`lead`, the no-value items of an ascending sort) and after the last (`tail`). `None` while the
+    /// counts on hand were made for other terms or another sort, or when there is no ladder for the
+    /// sort, so a stale list can never size a jump. Only the sorts the rail is ready for have one
+    /// (`BandFamily::rail_ready`).
+    pub fn bands(self) -> Option<&'a super::bands::Offsets> {
+        let rail = self.0.data.as_ref()?.bands.as_deref()?;
+        Some(rail.listed(self.sort_desc()))
+    }
     pub fn sort_index(self) -> usize {
         self.0.data.as_ref().map_or(0, |s| s.sort_idx)
     }
@@ -286,16 +301,20 @@ impl<'a> ListingView<'a> {
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
-    /// Is the A-Z rail offered? The sort is the title, ascending (the order the counts sum in), and
-    /// there are letters of THIS listing to jump to. Unwatched and a genre do not hide it: the letters
-    /// are asked with the grid's own terms and shown only while they describe them ([`Self::letters`]).
+    /// Is the A-Z rail offered? For the title sort, when it is ascending (the order the counts sum in)
+    /// and there are letters of THIS listing to jump to; a descending title sort has none. For a value
+    /// sort with bands (`BandFamily::rail_ready`), when the counts of THIS listing put items in at
+    /// least two of them ([`Self::bands`]). Unwatched and a genre do not hide it: both lists are asked
+    /// with the grid's own terms and shown only while they describe them. Any other sort has no rail.
     pub fn rail_available(self) -> bool {
-        self.id().is_some()
-            && self
-                .sorts()
-                .get(self.sort_index())
-                .is_none_or(|s| s.key == "titleSort" && !self.sort_desc())
-            && self.letters().len() > 1
+        if self.id().is_none() {
+            return false;
+        }
+        match self.sorts().get(self.sort_index()) {
+            None => self.letters().len() > 1,
+            Some(sort) if sort.key == "titleSort" => !self.sort_desc() && self.letters().len() > 1,
+            Some(_) => self.bands().is_some_and(|bands| bands.populated() >= 2),
+        }
     }
     pub fn letter_start(self, index: usize) -> usize {
         self.letters()
@@ -341,6 +360,7 @@ impl Iterator for ChangedPageRanges<'_, '_> {
 impl super::BrowseState {
     pub fn listing_snapshot(&self) -> ListingSnapshot {
         let sec = self.cur();
+        let kind = self.sections().get(sec).map(|section| section.kind);
         let id = self.sections().get(sec).and_then(|section| {
             Some(ListingId {
                 epoch: self.table_epoch(),
@@ -363,6 +383,7 @@ impl super::BrowseState {
                     genres: state.genres.clone(),
                     letters: state.shown_letters().unwrap_or(&state.letters).clone(),
                     letters_current: state.letters_current(),
+                    bands: kind.and_then(|kind| state.shown_bands(kind)).cloned(),
                     sort_idx: state.sort_idx,
                     sort_desc: state.sort_desc,
                     genre: state.genre.clone(),

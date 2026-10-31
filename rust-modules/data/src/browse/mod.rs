@@ -13,7 +13,8 @@
 //! answer waits in a claim-guarded mailbox (`Fetch`) stamped with the request's generation (a
 //! re-query supersedes in-flight landings), applied on the main thread by [`pump`] once a frame
 //! while the Library screen is up. The filter menus' value lists (genres, first letters) leave the
-//! same way, as `StoreJob::BrowseDirectory`.
+//! same way, as `StoreJob::BrowseDirectory`, and so do the band counts of a value sort's rail
+//! (`bands.rs`, `letters.rs`).
 //!
 //! The sort/filter MENUS are server-driven: the first page of a section is requested with
 //! `includeMeta=1` and the response's `Meta.Type[]` supplies the Sort entries; the genre
@@ -616,6 +617,14 @@ struct SecState {
     viewing_gen: u32,
     /// A failed letters read of this key, and the steps left before it is asked again.
     letters_backoff: Option<(LettersKey, u32)>,
+    /// The band counts of a value sort's rail, with the key they counted under and the verdict: the
+    /// rail, or `None` for a listing with nothing to band or counts that were not trusted. Shown only
+    /// while the key is the present one ([`SecState::shown_bands`], `letters.rs`), like the letters.
+    bands: Option<(LettersKey, Option<Arc<bands::BandRail>>)>,
+    /// The list `bands` replaced, while it is still worth showing again ([`SecState::land_bands`]).
+    bands_kept: Option<(LettersKey, Option<Arc<bands::BandRail>>)>,
+    /// A failed bands read of this key, and the steps left before it is asked again.
+    bands_backoff: Option<(LettersKey, u32)>,
     /// The grid's own view (sort, genre, menus), set aside while the section is on the Collections
     /// listing and put back when it returns to the type it was on ([`LoanedView`]). The letters are
     /// not loaned: every type change forgets them and the listing it lands on asks again.
@@ -831,6 +840,9 @@ impl Default for SecState {
             letters_gen: 0,
             viewing_gen: 0,
             letters_backoff: None,
+            bands: None,
+            bands_kept: None,
+            bands_backoff: None,
             loaned: None,
             hubs: Default::default(),
             fetch: SecFetch::Loading,
@@ -898,6 +910,7 @@ pub struct BrowseState {
     page_req: u32,
     genres_req: u32,
     letters_req: u32,
+    bands_req: u32,
     /// The request id of the last source discovery the step emitted: each takes the next one and
     /// raises the discovery claim for it, and a refusal of that id is what the next step settles
     /// ([`BrowseState::discovery_settle`]).
@@ -986,6 +999,8 @@ pub struct BrowseAdapter {
     /// The genre and first-letter lists, each with a claim and mailbox of its own.
     genres: crate::stores::Fetch<DirectoryResult<GenreEntry>>,
     letters: crate::stores::Fetch<DirectoryResult<(String, i64)>>,
+    /// The band counts of a value sort's rail (`letters`' twin, with a claim and a mailbox of its own).
+    bands: crate::stores::Fetch<DirectoryResult<bands::BandRail>>,
     /// The source discovery's claim, raised by the step that emits the read ([`discovery_job`]).
     /// Its mailbox slot is unused: the answer lands in `src_result`, which `record::take_from`
     /// takes and a controlled run records, and whose claim is lowered at APPLY
@@ -1009,6 +1024,7 @@ impl Default for BrowseAdapter {
             page: Default::default(),
             genres: Default::default(),
             letters: Default::default(),
+            bands: Default::default(),
             src_fetching: Default::default(),
             src_result: Mutex::new(None),
             hubs: Default::default(),
@@ -1021,6 +1037,7 @@ impl BrowseAdapter {
         self.page.clear();
         self.genres.clear();
         self.letters.clear();
+        self.bands.clear();
         *self.src_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.hubs.fetch.clear();
         self.src_fetching.clear();
@@ -1035,6 +1052,7 @@ impl Default for BrowseState {
             page_req: 0,
             genres_req: 0,
             letters_req: 0,
+            bands_req: 0,
             src_req: 0,
             src_flight: None,
             hubs_stamp: 0,
@@ -1118,9 +1136,11 @@ impl BrowseState {
         if self.discovery_needs_pump(adapter)
             || self.retry_cd > 0
             || self.cur_state().is_some_and(SecState::letters_waiting)
+            || self.cur_state().is_some_and(SecState::bands_waiting)
             || adapter.page.has_mail()
             || adapter.genres.has_mail()
             || adapter.letters.has_mail()
+            || adapter.bands.has_mail()
             || adapter.hubs.fetch.has_mail()
             // A read the runner refused (or an adapter retired under) leaves its record with the claim
             // down: the next step settles it ([`BrowseState::hubs_settle`]), and nothing else would
@@ -1473,7 +1493,9 @@ impl BrowseState {
             for i in 0..self.states.len() {
                 if self.section_sid(i) == Some(at.sid) {
                     if let Some(state) = self.states.get_mut(i) {
-                        hit |= state.viewing_changed();
+                        if let Some(kind) = self.sections.get(i).map(|section| section.kind) {
+                            hit |= state.viewing_changed(kind);
+                        }
                     }
                 }
             }
@@ -1756,10 +1778,12 @@ impl BrowseState {
         self.settle_refused_reads(adapter);
         let current = self.cur();
         // Genres are asked once per listing type; the letters are asked whenever the list on hand
-        // does not describe the grid ([`SecState::letters_owed`]).
-        let owed = self.cur_state().map(|state| match which {
+        // does not describe the grid ([`SecState::letters_owed`]), and so are a value sort's bands
+        // ([`SecState::bands_owed`]).
+        let owed = self.cur_state().zip(self.section_kind(current)).map(|(state, kind)| match which {
             listing_jobs::Directory::Genres => !state.genres_done,
             listing_jobs::Directory::Letters => state.letters_owed(),
+            listing_jobs::Directory::Bands => state.bands_owed(kind),
         });
         if self.states.get(current).is_none() || !owed.unwrap_or(false) {
             return;
@@ -1782,10 +1806,16 @@ impl BrowseState {
         let (filters, letters) = match which {
             listing_jobs::Directory::Genres => (library_type.type_terms(kind), None),
             listing_jobs::Directory::Letters => (state.query_filters(kind), Some(state.letters_key())),
+            // The bands carry the page's terms too; the family is in the key the answer comes back with.
+            listing_jobs::Directory::Bands => {
+                let Some(family) = state.rail_family(kind) else { return };
+                (state.query_filters(kind), Some(state.bands_key(family)))
+            }
         };
         let id = match which {
             listing_jobs::Directory::Genres => &mut self.genres_req,
             listing_jobs::Directory::Letters => &mut self.letters_req,
+            listing_jobs::Directory::Bands => &mut self.bands_req,
         };
         *id = id.wrapping_add(1);
         let id = *id;
@@ -1809,7 +1839,8 @@ impl BrowseState {
     fn settle_refused_reads(&mut self, adapter: &BrowseAdapter) {
         let refused = adapter.page.take_refused(self.page_req)
             | adapter.genres.take_refused(self.genres_req)
-            | adapter.letters.take_refused(self.letters_req);
+            | adapter.letters.take_refused(self.letters_req)
+            | adapter.bands.take_refused(self.bands_req);
         if refused {
             plx_machine::idle::invalidate();
         }
@@ -1821,6 +1852,13 @@ impl BrowseState {
     fn kick_letters(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
         jobs: &mut Vec<crate::stores::StoreJob>) {
         self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Letters);
+    }
+    /// The rail's data is asked on the one tick the screens send for it: the letters, and the bands
+    /// when the sort has them (a title sort owes none, so its tick is the letters' alone).
+    fn kick_rail(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>) {
+        self.kick_letters(adapter, keys, jobs);
+        self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Bands);
     }
     pub fn addressed_with_adapter(
         &mut self,
@@ -1906,7 +1944,7 @@ impl BrowseState {
                 }
                 match work {
                     LibraryWork::Want { lo, hi, focus } => self.want(lo, hi, focus),
-                    LibraryWork::Letters => self.kick_letters(adapter, keys, jobs),
+                    LibraryWork::Letters => self.kick_rail(adapter, keys, jobs),
                     LibraryWork::Genres => self.kick_genres(adapter, keys, jobs),
                     LibraryWork::Retry => self.retry_cur_source(),
                     LibraryWork::Requery => {
@@ -2093,14 +2131,16 @@ impl BrowseState {
     }
     #[cfg(test)]
     fn rail_available(&self) -> bool {
-        let Some(state) = self.cur_state() else {
+        let (Some(state), Some(kind)) = (self.cur_state(), self.section_kind(self.cur())) else {
             return false;
         };
-        let title_asc = match state.sorts.get(state.sort_idx) {
-            Some(sort) => sort.key == "titleSort" && !state.sort_desc,
-            None => true,
-        };
-        title_asc && state.shown_letters().is_some_and(|letters| letters.len() > 1)
+        let letters = || state.shown_letters().is_some_and(|letters| letters.len() > 1);
+        match state.sorts.get(state.sort_idx) {
+            None => letters(),
+            Some(sort) if sort.key == "titleSort" => !state.sort_desc && letters(),
+            // a value sort: its bands, two of them with items in
+            Some(_) => state.shown_bands(kind).is_some_and(|rail| rail.listed(state.sort_desc).populated() >= 2),
+        }
     }
     fn discovery_state(&self) -> SecFetch {
         if !self.sections.is_empty() || self.sources.iter().all(|source| source.sections_done) {
@@ -2972,6 +3012,7 @@ impl BrowseState {
         let current = self.cur();
         if let Some(state) = self.states.get_mut(current) {
             state.tick_letters_backoff();
+            state.tick_bands_backoff();
         }
         let discovery = self.land_discovery_owned_with_gate(adapter, gate, session);
         changed |= discovery.changed;
@@ -2988,6 +3029,7 @@ impl BrowseState {
             }
         });
         changed |= self.land_letters_owned(gate, &adapter.letters);
+        changed |= self.land_bands_owned(gate, &adapter.bands);
         // DUMP MODE: owed while the listing page's claim is held. The take lowers it with it.
         // The wanted window, read before the landing borrows the section table: the grid's
         // visible rows, the focused slot's page and the page a restore lands on.
@@ -4116,13 +4158,13 @@ pub fn adapter_has_page_for_test(adapter: &BrowseAdapter) -> bool {
 /// still waiting for the pump?
 #[cfg(any(test, feature = "test-support"))]
 pub fn directory_answered_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.genres.has_mail() || adapter.letters.has_mail()
+    adapter.genres.has_mail() || adapter.letters.has_mail() || adapter.bands.has_mail()
 }
 
 /// TEST ONLY: is a directory claim (genres or letters) up on this adapter?
 #[cfg(any(test, feature = "test-support"))]
 pub fn directory_claim_up_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.genres.busy() || adapter.letters.busy()
+    adapter.genres.busy() || adapter.letters.busy() || adapter.bands.busy()
 }
 
 #[cfg(any(test, feature = "test-support"))]

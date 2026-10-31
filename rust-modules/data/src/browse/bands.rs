@@ -1,6 +1,7 @@
 //! The bands a value sort's rail shows, and how a probe's COUNTS become rail offsets. Pure data and
-//! functions: no read, no clock, no time zone, no global. Nothing calls it yet; the data job that
-//! asks the counts and the screens that draw the rail come after it.
+//! functions: no read, no clock, no time zone, no global. The data job asks the counts of the
+//! families [`BandFamily::rail_ready`] names (`listing_jobs.rs`, `letters.rs`) and hands the screens a
+//! [`BandRail`]; the calendar families wait for a job that knows the time zone and the oldest year.
 //!
 //! The A-Z rail jumps to a letter by the running sum of per-letter counts. PMS has no per-band
 //! directory for a VALUE sort (`/year` and `/decade` carry no `size`), so a band's offset comes from
@@ -163,6 +164,37 @@ impl BandFamily {
             Self::Unplayed => "unviewedLeafCount",
             Self::Plays => super::PLAYS_SORT_KEY,
             Self::Release => "originallyAvailableAt",
+        }
+    }
+
+    /// Does the A-Z rail draw this family's bands yet? THE gate, and the only place to widen: the
+    /// four families whose edges are fixed numbers need nothing from the viewer's clock or the
+    /// server's extent. The calendar families (dates, last episode added, release year) need the
+    /// time zone for their edges and the oldest year from an extent read, and stay off until the
+    /// data job asks for both.
+    pub fn rail_ready(self) -> bool {
+        // Exhaustive on purpose: a ninth family must decide here.
+        match self {
+            Self::Rating | Self::Duration | Self::Unplayed | Self::Plays => true,
+            Self::DateAdded | Self::DateViewed | Self::LastEpisodeAdded | Self::Release => false,
+        }
+    }
+
+    /// The bands of a [`Self::rail_ready`] family, highest first, or `None` for one that is not.
+    /// A fixed ladder reads neither `today` nor the oldest year, so a caller with no clock gets its
+    /// plan here instead of inventing a date for [`plan`].
+    pub fn fixed_ladder(self) -> Option<Vec<Band>> {
+        self.rail_ready().then(|| plan(self, [EARLIEST_YEAR, 1, 1], EARLIEST_YEAR))
+    }
+
+    /// Does a watch move this family's counts? A play count and an unplayed count change with every
+    /// title watched, as a date viewed does; a rating, a duration and a date added do not, and
+    /// neither does the newest episode of a show.
+    pub fn moves_with_viewing(self) -> bool {
+        // Exhaustive on purpose, like `rail_ready`.
+        match self {
+            Self::Plays | Self::Unplayed | Self::DateViewed => true,
+            Self::Rating | Self::Duration | Self::DateAdded | Self::LastEpisodeAdded | Self::Release => false,
         }
     }
 
@@ -539,6 +571,32 @@ pub fn offsets(bands: &[Band], at_or_above: &[u32], total: u32, descending: bool
     let unbanded = total - lowest;
     let (lead, tail) = if descending { (0, unbanded) } else { (unbanded, 0) };
     Ok(Offsets { lead, bands: starts, tail })
+}
+
+/// The counts of one listing's probes, turned into the rail's layout in BOTH directions once, when
+/// they land. A value sort's counts are in value order and the direction is not part of what was
+/// counted, so a flip of the sort's direction picks the other layout ([`Self::listed`]) and asks
+/// the server nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BandRail {
+    ascending: Offsets,
+    descending: Offsets,
+}
+
+impl BandRail {
+    /// The layouts for `at_or_above` counts of `bands` over a listing of `total` items, or why the
+    /// counts are not trusted ([`offsets`]; a [`Reject`] does not depend on the direction).
+    pub fn new(bands: &[Band], at_or_above: &[u32], total: u32) -> Result<BandRail, Reject> {
+        Ok(BandRail {
+            ascending: offsets(bands, at_or_above, total, false)?,
+            descending: offsets(bands, at_or_above, total, true)?,
+        })
+    }
+
+    /// The layout in the listing's own order, for the direction the page asks.
+    pub fn listed(&self, descending: bool) -> &Offsets {
+        if descending { &self.descending } else { &self.ascending }
+    }
 }
 
 #[cfg(test)]
@@ -1462,5 +1520,38 @@ mod tests {
         // honest (every item is unlabelled); the caller reads `populated()` to hide the rail.
         let layout = offsets(&rating(), &[0; 6], 12, false).unwrap();
         assert_eq!((layout.lead, layout.tail, layout.populated()), (12, 0, 0));
+    }
+
+    /// The rail draws exactly the four fixed ladders; every family with a calendar edge stays off,
+    /// and a fixed ladder is the plan the model makes for it.
+    #[test]
+    fn the_rail_is_ready_for_the_fixed_ladders_only() {
+        let ready: Vec<BandFamily> = BandFamily::ALL.into_iter().filter(|f| f.rail_ready()).collect();
+        assert_eq!(ready, [BandFamily::Rating, BandFamily::Duration, BandFamily::Unplayed, BandFamily::Plays]);
+        for family in BandFamily::ALL {
+            assert_eq!(family.rail_ready(), family.basis().is_none(), "{family:?}: ready is `no calendar edge`");
+            assert_eq!(family.fixed_ladder().is_some(), family.rail_ready(), "{family:?}");
+        }
+        assert_eq!(BandFamily::Rating.fixed_ladder(), Some(rating()));
+        assert_eq!(BandFamily::Plays.fixed_ladder().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn a_watch_moves_the_play_and_unplayed_counts_and_not_the_rating() {
+        let moving: Vec<BandFamily> = BandFamily::ALL.into_iter().filter(|f| f.moves_with_viewing()).collect();
+        assert_eq!(moving, [BandFamily::DateViewed, BandFamily::Unplayed, BandFamily::Plays]);
+    }
+
+    /// Both directions are laid out at once, each as `offsets` lays it out alone, and a Reject is
+    /// the same whichever the page asks.
+    #[test]
+    fn a_band_rail_holds_both_directions_and_rejects_alike() {
+        let counts = [1, 3, 4, 6, 8, 9];
+        let rail = BandRail::new(&rating(), &counts, 12).unwrap();
+        assert_eq!(rail.listed(true), &offsets(&rating(), &counts, 12, true).unwrap());
+        assert_eq!(rail.listed(false), &offsets(&rating(), &counts, 12, false).unwrap());
+        assert_ne!(rail.listed(true), rail.listed(false));
+        assert_eq!(BandRail::new(&rating(), &[12; 6], 12), Err(Reject::AllEqualTotal));
+        assert_eq!(BandRail::new(&rating(), &[1, 3, 2, 6, 8, 9], 12), Err(Reject::NotMonotone { index: 2 }));
     }
 }
