@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T20:27:50Z",
+ "generated": "2026-10-31T20:33:35Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 37.4,
+   "change7_pct": 36.4,
    "d30": null,
    "delta30": null,
-   "delta7": 53.5,
+   "delta7": 52.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 82,
-   "now": 196.5,
+   "now": 195,
    "prev7": 143.0,
    "shown": true,
    "state": "worse",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.6,
-   "change7_pct": 16.8,
+   "change30_pct": -63.7,
+   "change7_pct": 16.6,
    "d30": 1062.0,
-   "delta30": -675.5,
-   "delta7": 55.5,
+   "delta30": -676.0,
+   "delta7": 55.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 96,
-   "now": 386.5,
+   "now": 386,
    "prev7": 331.0,
    "shown": true,
    "state": "flat",
@@ -390,15 +390,15 @@
    "change30_pct": 34.0,
    "change7_pct": 4.9,
    "d30": 206,
-   "delta30": 70.0,
+   "delta30": 70,
    "delta7": 13.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 82,
-   "now": 276.0,
+   "now": 276,
    "prev7": 263.0,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -78.4,
-   "change7_pct": 6.8,
+   "change30_pct": -78.3,
+   "change7_pct": 7.0,
    "d30": 988,
-   "delta30": -774.5,
-   "delta7": 13.5,
+   "delta30": -774,
+   "delta7": 14,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 81,
-   "now": 213.5,
+   "now": 214,
    "prev7": 200,
    "shown": true,
    "state": "flat",
@@ -560,15 +560,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1.0,
+   "delta30": 1,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 82,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.9,
    "commits": [
     {
-     "pr": 1171,
-     "sha": "604dd81b7",
-     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
-    },
-    {
      "pr": 1172,
      "sha": "6f3fb9ff5",
      "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
@@ -715,6 +710,11 @@
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
+    },
+    {
+     "pr": 1138,
+     "sha": "048374834",
+     "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
     }
    ],
    "from": 188,
@@ -725,13 +725,8 @@
    "to": 325
   },
   {
-   "change_pct": 37.4,
+   "change_pct": 36.4,
    "commits": [
-    {
-     "pr": 1171,
-     "sha": "604dd81b7",
-     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
-    },
     {
      "pr": 1172,
      "sha": "6f3fb9ff5",
@@ -776,6 +771,11 @@
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
+    },
+    {
+     "pr": 1138,
+     "sha": "048374834",
+     "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
     }
    ],
    "from": 143.0,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 196.5
+   "to": 195
   },
   {
    "change_pct": 22.0,
    "commits": [
-    {
-     "pr": 1171,
-     "sha": "604dd81b7",
-     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
-    },
     {
      "pr": 1172,
      "sha": "6f3fb9ff5",
@@ -837,6 +832,11 @@
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
+    },
+    {
+     "pr": 1138,
+     "sha": "048374834",
+     "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
     }
    ],
    "from": 268.0,
@@ -850,11 +850,6 @@
    "change_pct": 18.1,
    "commits": [
     {
-     "pr": 1171,
-     "sha": "604dd81b7",
-     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
-    },
-    {
      "pr": 1172,
      "sha": "6f3fb9ff5",
      "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
@@ -898,6 +893,11 @@
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
+    },
+    {
+     "pr": 1138,
+     "sha": "048374834",
+     "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
     }
    ],
    "from": 2086.0,
