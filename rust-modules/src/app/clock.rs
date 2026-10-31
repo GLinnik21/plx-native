@@ -34,9 +34,6 @@ unsafe fn SDL_GetTicks() -> u32 {
 thread_local! {
     /// The replay override: `Some(ms)` while a recorded frame is being replayed.
     static REPLAY: Cell<Option<u32>> = const { Cell::new(None) };
-    /// The date override: `Some(date)` under a replay or a test, so a recorded Library grid sorted by
-    /// a date words the same on every run and on every day.
-    static REPLAY_TODAY: Cell<Option<[i32; 3]>> = const { Cell::new(None) };
     /// The last read of the platform's calendar date and the minute (of the frame clock) it was read in.
     static TODAY: Cell<Option<(u32, Option<[i32; 3]>)>> = const { Cell::new(None) };
 }
@@ -59,7 +56,6 @@ pub(crate) fn now() -> u32 {
 /// ([`REPLAY_DATE`]).
 pub(crate) fn set_replay(ms: u32) {
     REPLAY.with(|c| c.set(Some(ms)));
-    REPLAY_TODAY.with(|c| c.set(Some(REPLAY_DATE)));
 }
 
 /// **Today's calendar date** in the OS time zone, `[year, month, day]`: read from the platform at
@@ -72,8 +68,9 @@ pub(crate) fn set_replay(ms: u32) {
 /// into the Bridge's views. A screen or a host impl never calls it: `AppHost::today` returns the
 /// frame's publication.
 pub(crate) fn today() -> Option<[i32; 3]> {
-    if let Some(date) = REPLAY_TODAY.with(|c| c.get()) {
-        return Some(date);
+    // A recorded Library grid sorted by a date must word the same on every run and on every day.
+    if REPLAY.with(|c| c.get()).is_some() {
+        return Some(REPLAY_DATE);
     }
     let minute = now() / 60_000;
     if let Some((at, date)) = TODAY.with(|c| c.get()) {
@@ -91,7 +88,6 @@ mod tests {
         super::set_replay(4242);
         assert_eq!(super::now(), 4242);
         super::REPLAY.with(|c| c.set(None));
-        super::REPLAY_TODAY.with(|c| c.set(None));
     }
 
     #[test]
@@ -121,12 +117,11 @@ mod tests {
         bridge.publish_today(None);
         assert_eq!(seen(&bridge), None, "a publication of nothing is nothing");
         super::REPLAY.with(|c| c.set(None));
-        super::REPLAY_TODAY.with(|c| c.set(None));
     }
 
     #[test]
     fn the_date_is_pinned_under_a_replay_and_read_once_a_minute_otherwise() {
-        super::REPLAY_TODAY.with(|c| c.set(None));
+        super::REPLAY.with(|c| c.set(None));
         super::TODAY.with(|c| c.set(None));
         // Live: the platform's date, cached for the minute (the host test's frame clock stands at 0).
         let live = super::today();
@@ -139,7 +134,6 @@ mod tests {
         super::set_replay(100);
         assert_eq!(super::today(), Some(super::REPLAY_DATE));
         super::REPLAY.with(|c| c.set(None));
-        super::REPLAY_TODAY.with(|c| c.set(None));
         super::TODAY.with(|c| c.set(None));
     }
 }

@@ -67,6 +67,13 @@ fn never() -> SortValue {
     SortValue { text: msg::under_posters_value_never().to_owned(), plus: false, mark: &[], missing: true }
 }
 
+/// A release year as a value line: its digits, or the dash for a year the server did not send. The
+/// one wording of the Year sort, which the Under posters preview also shows without an item to ask.
+pub(crate) fn year_value(year: i32) -> SortValue {
+    if year > 0 { SortValue { text: year.to_string(), plus: false, mark: &[], missing: false } }
+    else { SortValue { text: MISSING.into(), plus: false, mark: &[], missing: true } }
+}
+
 /// The line under `item`: the dash for a fact the server did not send, "Never" for something never
 /// played, and `None` when the sort's fact says there is nothing to show (a show whose every episode is
 /// watched).
@@ -80,10 +87,11 @@ fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValu
     // server does not have.
     let never_played = facts.is_some() && !item.watched && item.resume_ms == 0
         && item.viewed_leaf_count.unwrap_or(0) == 0;
+    let out_of_ten = |v: f64| format!("{}{}", fmt::rating_score(fmt::RatingScale::OutOfTen, v), fmt::rating_suffix(fmt::RatingScale::OutOfTen));
     let mut mark = &[][..];
     let mut plus = false;
     let text = if !matches!(item.kind, 0 | KIND_SHOW) { None } else { match term(key) {
-        "year" => (item.year > 0).then(|| item.year.to_string()),
+        "year" => return Some(year_value(item.year)),
         "originallyAvailableAt" => {
             // No year fallback: a bare year is not a complete release date.
             let iso = item.aired.split(['T', ' ']).next().unwrap_or("");
@@ -101,15 +109,15 @@ fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValu
                 match RatingArt::from_image(image) {
                     Some(art) => {
                         mark = crate::registry::captions::rating_mark(art);
-                        if art == RatingArt::Imdb { format!("IMDb {}{}", fmt::rating_score(fmt::RatingScale::OutOfTen, value), fmt::rating_suffix(fmt::RatingScale::OutOfTen)) }
+                        if art == RatingArt::Imdb { format!("IMDb {}", out_of_ten(value)) }
                         else if art == RatingArt::Tmdb { format!("TMDB {}", fmt::rating_score(fmt::RatingScale::Percent, value)) }
                         else { fmt::rating_score(fmt::RatingScale::Percent, value) }
                     }
-                    None => format!("{}{}", fmt::rating_score(fmt::RatingScale::OutOfTen, value), fmt::rating_suffix(fmt::RatingScale::OutOfTen)),
+                    None => out_of_ten(value),
                 }
             })
         }
-        "userRating" => facts.and_then(|f| f.user_rating).map(|v| format!("{}{}", fmt::rating_score(fmt::RatingScale::OutOfTen, v), fmt::rating_suffix(fmt::RatingScale::OutOfTen))),
+        "userRating" => facts.and_then(|f| f.user_rating).map(out_of_ten),
         "contentRating" => (!item.rating.is_empty()).then(|| item.rating.clone()),
         // A show row's duration is one episode's and it has no media of its own: those are not the show's facts.
         "duration" if !show => (item.dur_ns > 0).then(|| fmt::duration(item.dur_ns / 1_000_000)),

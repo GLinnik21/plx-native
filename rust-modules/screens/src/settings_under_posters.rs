@@ -280,9 +280,6 @@ const PREVIEW_FRAME_H: f32 = 556.0;
 const PREVIEW_PAD: f32 = 40.0;
 /// How much of a tile that is not the lifted one shows (the board's 35%).
 const PREVIEW_REST_ALPHA: f32 = 0.35;
-/// The sort the Sort value state illustrates: a library sorted by Year, whose value line is each
-/// poster's own year.
-const PREVIEW_SORT: &str = "year";
 
 /// The preview's frame: the whole block rests on the narrative column's floor.
 fn preview_frame() -> Rect {
@@ -369,25 +366,22 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], foot: Option
     measure: &dyn plx_machine::machine::Measure) {
     let frame = SampleFrame { rect: preview_frame(), row: preview_row(), rest_alpha: PREVIEW_REST_ALPHA, foot };
     let lifted = lifted_tile(posters.len());
-    let label = if band_h(&caption_policy_of(v)) > 0.0 {
-        label_of(v, &caption_facts_of(lifted_poster(posters)))
-    } else {
-        TileLabel::default()
-    };
     let tiles = (0..PREVIEW_TILES).map(|i| Art::Poster(posters.get(i).map(|m| tile_facts::of(m))));
     if v.sort_value {
         // The Sort value row has focus: the row as a library sorted by Year draws it, every poster
-        // wearing its own year (through the one value formatter), the lifted one bold. The year is the
+        // wearing its own year (through the one year formatter), the lifted one bold. The year is the
         // item's own fact whatever kind the last-opened listing held (a TV show library, its Seasons
-        // or Episodes, a Collections page), so it is handed over as a bare Movie's: the value table
-        // words only the primary grids' kinds, and a season's year must not read as a missing fact.
+        // or Episodes, a Collections page), so it is worded from the bare year and not from the
+        // item: the value table words only the primary grids' kinds, and a season's year must not
+        // read as a missing fact.
         SampleRow::draw_values(p, &frame, &PREVIEW_STYLE, tiles, lifted,
-            |i| {
-                let year = posters.get(i).map_or(SAMPLE_YEAR, |item| item.year);
-                crate::registry::sort_info::label(&PmsMovie { year, ..Default::default() }, PREVIEW_SORT, None)
-                    .value.unwrap_or_default()
-            }, measure);
+            |i| crate::registry::sort_info::year_value(posters.get(i).map_or(SAMPLE_YEAR, |item| item.year)), measure);
     } else {
+        let label = if band_h(&caption_policy_of(v)) > 0.0 {
+            label_of(v, &caption_facts_of(lifted_poster(posters)))
+        } else {
+            TileLabel::default()
+        };
         SampleRow::draw(p, &frame, &PREVIEW_STYLE, tiles, lifted, &label, measure);
     }
 }

@@ -226,9 +226,9 @@ impl LibraryScreen {
         widest.push(divider());
         let sort = self.sort_value(cx);
         let longest = H::listing(cx).sorts().iter().map(|sort| sort.label()).chain([sort])
-            .max_by(|a, b| page_header::cluster_width(&[sort_control("", *a)], cx.measure)
-                .total_cmp(&page_header::cluster_width(&[sort_control("", *b)], cx.measure)))
-            .unwrap_or_default().to_owned();
+            .map(|label| (page_header::cluster_width(&[sort_control("", label)], cx.measure), label))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .map_or("", |(_, label)| label).to_owned();
         right.push(sort_control(msg::library_header_sort_filter(), sort));
         widest.push(sort_control(msg::library_header_sort_filter(), longest));
         (right, widest)

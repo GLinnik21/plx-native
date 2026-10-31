@@ -293,7 +293,7 @@ fn previewed_values<S: Screen<InnerHost>>(page: &mut S) -> Vec<(String, bool)> {
     let mut f = DrawFrame::new(&c, plx_ui::Painter::recording());
     let runs = plx_ui::draw_census::capture_runs(|| page.draw(&mut f));
     let wanted: Vec<String> = captioned_posters().iter()
-        .map(|m| crate::registry::sort_info::label(m, PREVIEW_SORT, None).value.unwrap().text).collect();
+        .map(|m| crate::registry::sort_info::label(m, "year", None).value.unwrap().text).collect();
     runs.into_iter().filter(|run| wanted.contains(&run.text) && run.size == plx_ui::theme::size::CAPTION && run.ink[3] > 0.2)
         .map(|run| (run.text, run.bold)).collect()
 }

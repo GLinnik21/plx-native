@@ -259,7 +259,6 @@ fn fold_item(quiet: bool) -> Item {
 /// The width of what an item DRAWS: [`run_w`], less the unused part of a slot. The item's text box
 /// and its plate are this wide, and the next item stands one gap past it.
 fn ink_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
-    if item.value_slot.is_none() { return run_w(item, measure); }
     HStack::new(&parts(item, measure, false), 0.0, Align::Leading(0.0)).width()
 }
 
@@ -545,10 +544,11 @@ impl PageHeader {
         // The label answers to both plates; what follows it (the separator, the value, the glyph)
         // only to the focus one: a value is full white whatever is selected.
         let label_ink = to_accent(theme::cross(rest, strong, selected.clamp(0.0, 1.0)));
-        if look.value_only {
-            // The label is the control's name, not its look.
-        } else if let Ok(c) = CString::new(face.label.as_str()) {
-            x += p.text(c.as_ptr(), x, y, theme::size::BODY, label_ink, 0, 0);
+        // (A value-only control's label is its name, not its look: nothing is drawn.)
+        if !look.value_only {
+            if let Ok(c) = CString::new(face.label.as_str()) {
+                x += p.text(c.as_ptr(), x, y, theme::size::BODY, label_ink, 0, 0);
+            }
         }
         // The separator stands for whichever value is there, so it fades only when the control
         // gains its first value or loses its last.

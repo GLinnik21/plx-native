@@ -885,7 +885,8 @@ pub fn paint_visible(p: Painter, rect: Rect, scale: f32, labelled: bool) -> bool
     paint_visible_with_label_h(p, rect, scale, label_h)
 }
 
-/// A card whose caller declares a taller persistent caption block.
+/// A card whose caller declares how far below it something is drawn (`label_h`): a grid of value
+/// lines passes [`SORT_VALUE_REACH`].
 pub fn paint_visible_with_label_h(p: Painter, rect: Rect, scale: f32, label_h: f32) -> bool {
     if p.is_recording() { return true; }
     let mut bounds = tile_paint_bounds(rect, scale, label_h > 0.0);
@@ -937,8 +938,6 @@ pub struct TileLabel {
     /// ONE line such a grid draws under every poster, in place of the title and details block
     /// ([`draw_sort_value`]). `None` for every other label.
     pub value: Option<SortValue>,
-    /// A sample row's unfocused tiles elide rather than glide; only the focused caption may marquee.
-    pub static_text: bool,
     /// lead the FIRST line drawn with the amber play triangle (Continue Watching's tile has no play
     /// disc): the title when the block has one, else the details line. The mark hangs to the left of
     /// the line, which is centred as if it were not there. Set only while a press on the tile plays
@@ -1213,7 +1212,19 @@ pub fn draw_label(
     label: &TileLabel,
     measure: &dyn plx_machine::machine::Measure,
 ) {
-    draw_label_mode(p, rect, s, sty, label, measure, label.static_text, label.within_tile);
+    // The label block anchors to the UNSCALED card bottom (rect is scaled about its center, so
+    // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
+    // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
+    // the label into the next shelf's title.
+    let bottom = unscaled_bottom(rect, s);
+    // …and each LINE of the block rides the band's reveal ([`line_reveal_for`]). The card, its ring
+    // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
+    // only about whether the room under it holds the line yet.
+    let lines = label.lines();
+    if lines.iter().flatten().all(|l| l.alpha <= 0.0) {
+        return;
+    }
+    draw_label_block(p, rect, sty, label, lines, bottom, measure);
 }
 
 /// The sort value line's box: CAPTION 24 on a 24 px line.
@@ -1267,18 +1278,21 @@ pub(crate) fn draw_sort_value(
     let t = crate::widgets::pop_factor(s, sty.focus_scale);
     let top = rect.y + rect.h + SORT_VALUE_GAP + (SORT_VALUE_GAP_LIFTED - SORT_VALUE_GAP) * t;
     let cy = top + SORT_VALUE_H * 0.5;
-    let with_plus = format!("{}{SORT_VALUE_PLUS}", value.text);
     let hang = 2.0 * (SORT_VALUE_MARK_D + SORT_VALUE_MARK_GAP);
     // Judged on the bold face, the widest the line gets, so the choice is the same whichever
     // texture shows; the memoised fitted run answers it, so a warm frame measures nothing.
     let width_of = |text: &str, mark: bool| measure.fit_line_measured(text, SORT_VALUE_NATURAL, size, true).1
         + if mark { hang } else { 0.0 };
     let has_mark = !value.mark.is_empty();
-    let (text, mark) = if value.plus && width_of(&with_plus, has_mark) <= sty.w { (with_plus.as_str(), value.mark) }
-        else if width_of(&value.text, has_mark) <= sty.w { (value.text.as_str(), value.mark) }
-        else { (value.text.as_str(), &[][..]) };
-    // A line that fits at its natural width is not given a budget it could be cut to.
-    let budget = if width_of(text, !mark.is_empty()) <= sty.w { SORT_VALUE_NATURAL } else { sty.w };
+    let with_plus = value.plus.then(|| format!("{}{SORT_VALUE_PLUS}", value.text));
+    // A line that fits at its natural width is not given a budget it could be cut to: `natural` is
+    // that verdict, taken from the measure the choice already made (a dropped mark is measured bare).
+    let (text, mark, natural) = match &with_plus {
+        Some(plus) if width_of(plus, has_mark) <= sty.w => (plus.as_str(), value.mark, true),
+        _ if width_of(&value.text, has_mark) <= sty.w => (value.text.as_str(), value.mark, true),
+        _ => (value.text.as_str(), &[][..], has_mark && width_of(&value.text, false) <= sty.w),
+    };
+    let budget = if natural { SORT_VALUE_NATURAL } else { sty.w };
     let (regular, bold) = if value.missing { (1.0, 0.0) } else { sort_value_weights(t, focused) };
     let mut width = 0.0;
     for (is_bold, alpha, ink) in [(false, regular, if value.missing { theme::SORT_VALUE_MISSING_INK } else { theme::SORT_VALUE_INK }),
@@ -1296,26 +1310,6 @@ pub(crate) fn draw_sort_value(
         SORT_VALUE_MARK_D, SORT_VALUE_MARK_D);
     // The art's own zoom puts a tomato's body at the board's 15 px in the 20 px box (`icons::mark_zoom`).
     for (mask, tint) in mark { crate::icons::draw(p, *mask, mark_rect.scaled(crate::icons::mark_zoom(*mask)), *tint); }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_label_mode(
-    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
-    measure: &dyn plx_machine::machine::Measure, static_text: bool, within_tile: bool,
-) {
-    // The label block anchors to the UNSCALED card bottom (rect is scaled about its center, so
-    // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
-    // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
-    // the label into the next shelf's title.
-    let bottom = unscaled_bottom(rect, s);
-    // …and each LINE of the block rides the band's reveal ([`line_reveal_for`]). The card, its ring
-    // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
-    // only about whether the room under it holds the line yet.
-    let lines = label.lines();
-    if lines.iter().flatten().all(|l| l.alpha <= 0.0) {
-        return;
-    }
-    draw_label_block(p, rect, sty, label, lines, bottom, measure, static_text, within_tile);
 }
 
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
@@ -1919,7 +1913,6 @@ pub fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
 /// caption — placed ONCE by [`place_label_wide`] from the wider of its two runs (plus the uncapped
 /// `want`), so both lines share one alignment: centred together, starting together at the card's
 /// leading edge, or ending together at its trailing edge when the room to the right is too small.
-#[allow(clippy::too_many_arguments)]
 fn draw_label_block(
     p: Painter,
     rect: Rect,
@@ -1928,30 +1921,11 @@ fn draw_label_block(
     lines: [Option<LineBox>; 2],
     bottom: f32,
     measure: &dyn plx_machine::machine::Measure,
-    static_text: bool,
-    within_tile: bool,
 ) {
     // Every run of the block is a label block's to a recording census, whatever its ink.
     #[cfg(any(test, feature = "test-support"))]
     let _label_scope = crate::draw_census::label_scope();
-    if static_text {
-        for (text, line, size, bold, ink) in [
-            (label.title.as_ref(), lines[0], theme::size::LABEL, true, theme::TEXT_PRIMARY),
-            (label.caption.as_ref(), lines[1], theme::size::CAPTION, false, theme::CAPTION_DETAIL_INK),
-        ] {
-            if let (Some(text), Some(line)) = (text, line.filter(|l| l.alpha > 0.0)) {
-                let run = measure.fit_line(&text.to_string_lossy(), sty.w, size, bold);
-                let p = p.alpha(line.alpha);
-                let y = bottom + line.top;
-                if label.shadowed {
-                    p.text(run.as_ptr(), rect.cx(), y + crate::caption_policy::CAPTION_SHADOW_DY, size,
-                        crate::caption_policy::CAPTION_SHADOW, 1, i32::from(bold));
-                }
-                p.text(run.as_ptr(), rect.cx(), y, size, ink, 1, i32::from(bold));
-            }
-        }
-        return;
-    }
+    let within_tile = label.within_tile;
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
     // Measured once and threaded through: the title's drawn width feeds both how wide the block

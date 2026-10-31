@@ -1307,16 +1307,14 @@ impl Default for UnderPosters {
 /// any absent, malformed or non-boolean entry reads as On (the default), the way every other
 /// field of the setting is soft-parsed.
 mod sort_value_off {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use serde_json::Value;
+    use serde::{Deserializer, Serializer};
 
     pub fn is_on(on: &bool) -> bool { *on }
 
     pub fn serialize<S: Serializer>(on: &bool, s: S) -> Result<S::Ok, S::Error> { s.serialize_bool(!*on) }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-        let Ok(v) = Value::deserialize(d) else { return Ok(true) };
-        Ok(!v.as_bool().unwrap_or(false))
+        super::de_soft_bool(d).map(|off| !off)
     }
 }
 

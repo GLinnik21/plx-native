@@ -259,7 +259,7 @@ calendar date once per frame (`Bridge::publish_today`, read from the platform at
 `app::clock::today`, the loop its one caller) and `LibraryLike::today` hands it in from the frame's views,
 and `CaptionCache` keys its labels on it so "Today" rebuilds at midnight. The settings preview
 illustrates the mode as a library sorted by Year while the Sort value row has focus: each sample's own year
-(through `registry::sort_info::label`) under its tile and a "Sorted by Year" caption at the frame's foot. The frame is the
+(through `registry::sort_info::year_value`, the Year sort's own wording) under its tile and a "Sorted by Year" caption at the frame's foot. The frame is the
 board's (`cards::SampleFrame`: 660 x 556, Library cards 35 px apart so the outer two are clipped by it and drawn at 35%, their
 value lines with them); the Details picker's frame says "The library you last opened" at its foot, and its Video choice
 carries the one detail line the table can hold without a focus-only mechanism. It never adds sort choices.

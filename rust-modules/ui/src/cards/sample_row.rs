@@ -89,12 +89,7 @@ impl SampleRow {
         label: &TileLabel,
         measure: &dyn Measure,
     ) {
-        frame.panel(p);
-        {
-            let _clip = ClipScope::open_in(p, frame.rect);
-            Self::tiles(p, frame, sty, tiles, focused, label, measure);
-        }
-        frame.draw_foot(p, measure);
+        Self::framed(p, frame, measure, || Self::tiles(p, frame, sty, tiles, focused, label, measure));
     }
 
     /// Paint `tiles` as a library grid shows them while values are on: every tile wears its sort
@@ -104,9 +99,7 @@ impl SampleRow {
     pub fn draw_values<'a>(p: Painter, frame: &SampleFrame<'_>, sty: &RowStyle,
         tiles: impl ExactSizeIterator<Item = Art<'a>>, focused: usize,
         mut value: impl FnMut(usize) -> SortValue, measure: &dyn Measure) {
-        frame.panel(p);
-        {
-            let _clip = ClipScope::open_in(p, frame.rect);
+        Self::framed(p, frame, measure, || {
             let n = tiles.len();
             Self::tiles(p, frame, sty, tiles, focused, &TileLabel::default(), measure);
             // Over every tile, as the grid draws them: the lifted card's shadow reaches the value line.
@@ -118,6 +111,15 @@ impl SampleRow {
                 };
                 card_row::draw_sort_value(layer, rect, s, sty, &value(i), measure, i == focused);
             }
+        });
+    }
+
+    /// The frame's panel, then `body` clipped to the frame, then its foot caption.
+    fn framed(p: Painter, frame: &SampleFrame<'_>, measure: &dyn Measure, body: impl FnOnce()) {
+        frame.panel(p);
+        {
+            let _clip = ClipScope::open_in(p, frame.rect);
+            body();
         }
         frame.draw_foot(p, measure);
     }
