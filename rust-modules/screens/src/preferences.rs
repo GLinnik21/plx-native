@@ -618,7 +618,7 @@ fn instant_dpad_seeking_label(mode: InstantDpadSeeking) -> &'static str {
 fn dolby_vision_label(mode: DolbyVisionMode) -> &'static str {
     match mode {
         DolbyVisionMode::Auto => plx_platform::i18n::msg::settings_playback_auto(),
-        DolbyVisionMode::Off => plx_platform::i18n::msg::settings_playback_instant_dpad_seeking_off(),
+        DolbyVisionMode::Off => plx_platform::i18n::msg::settings_playback_dolby_vision_off(),
     }
 }
 /// What the Interface resolution reads, on the Settings root and in its picker. The sizes are

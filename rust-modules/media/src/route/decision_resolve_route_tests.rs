@@ -2258,6 +2258,34 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
     );
 }
 
+/// Settings > Playback > Dolby Vision Off reaches the facts row: a Profile 5 that a supported set
+/// would direct-play reads as a conversion, the same answer the resolve plans from.
+#[test]
+fn dolby_vision_off_stops_the_preview_promising_a_profile_5_direct_play() {
+    use plx_plex::plex::session::DolbyVisionMode;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    struct Back;
+    impl Drop for Back {
+        fn drop(&mut self) { restore_dolby_vision_mode(DolbyVisionMode::Auto); }
+    }
+    let _back = Back;
+    let movie = plx_data::metadata::Detail {
+        part: "/library/parts/1/2/p5.mkv".into(),
+        vcodec: "hevc".into(),
+        width: 3840,
+        height: 1602,
+        dovi: p5(),
+        audio: vec![plx_data::metadata::Stream { codec: "eac3".into(), ..Default::default() }],
+        ..Default::default()
+    };
+    let supported = plx_platform::devcaps::dv::DvCapability::Supported;
+    assert_eq!(playback_preview_with_capability_for_test(&movie, supported), Some(Preview::DirectPlay));
+    restore_dolby_vision_mode(DolbyVisionMode::Off);
+    assert_eq!(playback_preview_with_capability_for_test(&movie, supported), Some(Preview::Converts));
+}
+
 #[test]
 fn restored_sidecar_is_part_of_the_route_contract() {
     let mut ps = PlaybackSession::IDLE;
@@ -2746,7 +2774,7 @@ fn uncopyable_video_keeps_its_stand_in() {
         Vec::new(),
         "truehd",
         |env, item| {
-            env.dv_capability = Some(plx_platform::devcaps::dv::DvCapability::Supported);
+            env.dv_capability = plx_platform::devcaps::dv::DvCapability::Supported;
             item.dovi = p5();
         },
     );

@@ -248,7 +248,7 @@ fn dv_declared_p8_usable_base_is_enhanced_remux_that_keeps_dv() {
             item.dovi = p8();
             item
         },
-        |env, _| env.dv_capability = Some(plx_platform::devcaps::dv::DvCapability::Supported));
+        |env, _| env.dv_capability = plx_platform::devcaps::dv::DvCapability::Supported);
     let direct = r.plan.auto_original.as_ref().map(|c| c.dv_decision);
     assert!(
         direct.is_some_and(|d| d.presentation.declared().is_some()),

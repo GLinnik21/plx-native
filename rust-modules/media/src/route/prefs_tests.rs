@@ -661,8 +661,7 @@ impl Drop for DolbyVisionBack {
 }
 
 #[test]
-fn dolby_vision_mode_is_picked_into_the_seated_profiles_record_and_disables_dv_capability() {
-    use plx_platform::devcaps::dv::{self, DvCapability};
+fn dolby_vision_mode_is_picked_into_the_seated_profiles_record_and_follows_the_seat() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("dolby-vision-mode");
     let _restore = Put::back(cells());
@@ -674,12 +673,9 @@ fn dolby_vision_mode_is_picked_into_the_seated_profiles_record_and_disables_dv_c
     seed_profile_prefs_for_test(&session::peek());
     restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
     assert_eq!(dolby_vision_mode(), DolbyVisionMode::Auto);
-    assert!(!dv::is_disabled_by_pref());
 
     assert!(confirm::<DolbyVisionModePref>(DolbyVisionMode::Off));
     assert_eq!(dolby_vision_mode(), DolbyVisionMode::Off);
-    assert!(dv::is_disabled_by_pref());
-    assert_eq!(dv::capability(), DvCapability::Unsupported);
     let after = session::load();
     assert_eq!(after.prefs.dolby_vision_mode, DolbyVisionMode::Auto, "the TV's key is untouched");
     assert_eq!(own_of::<DolbyVisionModePref>(&after.prefs.profile_prefs, "u1"), Some(DolbyVisionMode::Off));
@@ -687,12 +683,8 @@ fn dolby_vision_mode_is_picked_into_the_seated_profiles_record_and_disables_dv_c
     session.seated("u2", TOKEN);
     restore_profile_rows(&session::peek(), &seat("u2"), Overrides::default());
     assert_eq!(dolby_vision_mode(), DolbyVisionMode::Auto, "another profile reads the default");
-    assert!(!dv::is_disabled_by_pref());
 
     session.seated("u1", TOKEN);
     restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
     assert_eq!(dolby_vision_mode(), DolbyVisionMode::Off, "u1 seated again restores Off");
-    assert!(dv::is_disabled_by_pref());
-    assert_eq!(dv::capability(), DvCapability::Unsupported);
 }
-

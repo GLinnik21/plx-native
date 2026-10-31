@@ -6191,7 +6191,7 @@ pub fn set_stream_declaration(
         fps,
         dovi,
         immersive,
-        plx_platform::devcaps::dv::capability(),
+        dolby_vision_mode().gate(plx_platform::devcaps::dv::capability()),
     )
 }
 
@@ -8170,6 +8170,8 @@ impl ResolveEnv {
             version: None,
             quality: quality(),
             direct_play_mode: direct_play_mode(),
+            dolby_vision_mode: dolby_vision_mode(),
+            dv_capability: plx_platform::devcaps::dv::capability(),
             caps: ps.attempt_caps(),
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
@@ -8182,8 +8184,6 @@ impl ResolveEnv {
             fresh_play: false,
             #[cfg(any(test, feature = "test-support"))]
             account_subtitles: None,
-            #[cfg(any(test, feature = "test-support"))]
-            dv_capability: None,
         }
     }
 }
@@ -8203,14 +8203,15 @@ fn playback_preview_with_capability(
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
-    let presentation = match capability {
-        Some(capability) => d.dovi.presentation(
-            !plx_data::metadata::dv_withheld(),
-            capability,
-            plx_data::metadata::dv_video_codec(vcodec),
-        ),
-        None => d.dovi.presentation_now(plx_data::metadata::dv_video_codec(vcodec)),
-    };
+    // The page answers for the play a press would start, so it plans from the same gated
+    // capability `ResolveEnv::dolby_vision_mode` hands the resolve.
+    let capability = dolby_vision_mode()
+        .gate(capability.unwrap_or_else(plx_platform::devcaps::dv::capability));
+    let presentation = d.dovi.presentation(
+        !plx_data::metadata::dv_withheld(),
+        capability,
+        plx_data::metadata::dv_video_codec(vcodec),
+    );
     let mode = direct_play_mode();
     // The facts row is a read-out of what the device would do NOW, with no attempt behind it, so it
     // is a start edge of its own: the value a play started this moment would begin on (the boot

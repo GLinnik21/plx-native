@@ -1273,6 +1273,16 @@ pub struct ResolveEnv {
     pub quality: Quality,
     /// Captured with the quality preference; never re-read by a worker.
     pub direct_play_mode: DirectPlayMode,
+    /// The seated profile's Dolby Vision setting, captured with the direct-play mode for the same
+    /// reason: the worker must not read the cell the main thread moves. `Off` plans as an
+    /// `Unsupported` set ([`DolbyVisionMode::gate`]): no node is sent, a stream with a
+    /// cross-compatible base layer plays that layer, and one without (Profile 5) is refused
+    /// direct play.
+    pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
+    /// The set's Dolby Vision answer (`devcaps::dv::capability`), read once at the request beside
+    /// the mode so the worker never reads the process cache. A regression sets it directly: no
+    /// test mutates the production `OnceLock` or makes the whole host a DV set.
+    pub dv_capability: plx_platform::devcaps::dv::DvCapability,
     /// **The capability value this attempt plans from**, copied off the session
     /// ([`PlaybackSession::attempt_caps`]) beside the quality and the mode, so the worker never reads the
     /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
@@ -1319,10 +1329,6 @@ pub struct ResolveEnv {
     /// plex.tv call a unit test cannot make.
     #[cfg(any(test, feature = "test-support"))]
     pub(super) account_subtitles: Option<(Option<String>, i64, i64)>,
-    /// Test-only replacement for the process cache. Capability is an explicit policy input in
-    /// regressions; no test mutates the production `OnceLock` or makes the whole host a DV set.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(super) dv_capability: Option<plx_platform::devcaps::dv::DvCapability>,
 }
 
 
@@ -1716,20 +1722,15 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
             // Freeze the capability and derived presentation together. A late configd answer affects the
             // next route only; it cannot change this candidate between the gate and Starfish Load.
-            #[cfg(any(test, feature = "test-support"))]
-            let dv_decision = match env.dv_capability {
-                Some(capability) => plx_data::metadata::DvDecision {
+            let capability = env.dolby_vision_mode.gate(env.dv_capability);
+            let dv_decision = plx_data::metadata::DvDecision {
+                capability,
+                presentation: dovi.presentation(
+                    !plx_data::metadata::dv_withheld(),
                     capability,
-                    presentation: dovi.presentation(
-                        !plx_data::metadata::dv_withheld(),
-                        capability,
-                        plx_data::metadata::dv_video_codec(vcodec),
-                    ),
-                },
-                None => dovi.decision_now(plx_data::metadata::dv_video_codec(vcodec)),
+                    plx_data::metadata::dv_video_codec(vcodec),
+                ),
             };
-            #[cfg(not(any(test, feature = "test-support")))]
-            let dv_decision = dovi.decision_now(plx_data::metadata::dv_video_codec(vcodec));
             let dv = dv_decision.presentation;
             let video_dp = if forced { video_feed_supported(vcodec, dv, &env.caps) } else {
                 video_direct_plays(vcodec, src_w, src_h, dv, &env.caps)

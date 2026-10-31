@@ -632,24 +632,6 @@ impl Dovi {
             encryption_type: "clear",
         })
     }
-
-    /// Resolve a fresh decision from the cached platform answer and the boot-latched diagnostic
-    /// signal. Call once at a route boundary; installed playback must retain the returned value.
-    pub fn presentation_now(&self, video_carries_dv: bool) -> DvPresentation {
-        self.presentation(
-            !dv_withheld(),
-            plx_platform::devcaps::dv::capability(),
-            video_carries_dv,
-        )
-    }
-
-    pub fn decision_now(&self, video_carries_dv: bool) -> DvDecision {
-        let capability = plx_platform::devcaps::dv::capability();
-        DvDecision {
-            capability,
-            presentation: self.presentation(!dv_withheld(), capability, video_carries_dv),
-        }
-    }
 }
 
 /// The `option.externalStreamingInfo.contents.DolbyHdrInfo` node of the Starfish Load payload:
@@ -689,8 +671,10 @@ pub enum DvPresentation {
     Refuse(&'static str),
 }
 
-/// The platform answer and the presentation derived from it at one route boundary. Both are
-/// copyable so reload, recovery and rollback preserve the installed decision exactly.
+/// The capability a route planned from and the presentation derived from it at one route
+/// boundary. The capability is the probe passed through the seated profile's `DolbyVisionMode`
+/// gate, so it reads `Unsupported` under Off whatever the set said; the set's own answer is
+/// `devcaps::dv::capability()`, which Diagnostics' header prints. Both are copyable so reload, recovery and rollback preserve the installed decision exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DvDecision {
     pub capability: plx_platform::devcaps::dv::DvCapability,

@@ -1,4 +1,4 @@
-# count: 14
+# count: 13
 # Test/production forks (docs/sans-io.md), area `media`: one line per production-visible `#[cfg(..)]` / `cfg!(..)` whose predicate reads `test` or `feature = "test-support"`
 # (`not(test)`, `not(any(test, feature = "test-support"))`, ...) in every machine crate (data/, plex/, media/, session/, screens/, ui/, appkit/ and machine/), keyed `<path>::<item name>` (an attribute on an item), `<path>::<enclosing fn>` (a statement or an inline `cfg!`) or `<path>::<struct>` (a field).
 # Logic is one thing in production and tests deliver it events: there is no cfg(test) fork. Spec: ci/check-deps.sh `forks`.
@@ -16,4 +16,3 @@ rust-modules/media/src/player/preview.rs::load_still_out
 rust-modules/media/src/player/subside.rs::sync
 rust-modules/media/src/route/decision.rs::pump_play
 rust-modules/media/src/route/decision.rs::settle_plan_start_in_unit_test
-rust-modules/media/src/route/plan.rs::build_stream

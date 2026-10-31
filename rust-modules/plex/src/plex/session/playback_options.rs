@@ -33,8 +33,10 @@ impl InstantDpadSeeking {
     }
 }
 
-/// Whether Dolby Vision is used when the TV reports support, or bypassed so compatible streams fall
-/// back to HDR10 or server transcoding — one per profile, like [`InstantDpadSeeking`]. Absence is
+/// Whether Dolby Vision is declared when the TV reports support, or never — one per profile, like
+/// [`InstantDpadSeeking`]. `Off` sends no Dolby Vision node, so a stream with a cross-compatible
+/// base layer (Profile 8.1) plays that layer, and one without (Profile 5) is refused direct play
+/// and asked of the server, which may refuse it too (code 2000, `docs/pms-api.md`). Absence is
 /// `Auto`, which trusts the firmware capability probe (`tv.config.supportDolbyHDRContents`).
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DolbyVisionMode {
@@ -60,6 +62,17 @@ impl DolbyVisionMode {
 
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// The capability a route plans from: `Auto` is the set's own answer, `Off` is `Unsupported`
+    /// whatever the set reports. Applied where a route is planned, never to the probe itself, so
+    /// Diagnostics' capability line still shows what the television said (a playing route's
+    /// `DvDecision` carries the gated value).
+    pub fn gate(self, probed: plx_platform::devcaps::dv::DvCapability) -> plx_platform::devcaps::dv::DvCapability {
+        match self {
+            DolbyVisionMode::Auto => probed,
+            DolbyVisionMode::Off => plx_platform::devcaps::dv::DvCapability::Unsupported,
+        }
     }
 }
 
@@ -105,5 +118,14 @@ mod tests {
         }
         let encoded = serde_json::to_string(&records[0].prefs).unwrap();
         assert_eq!(serde_json::from_str::<ProfilePrefs>(&encoded).unwrap(), records[0].prefs);
+    }
+
+    #[test]
+    fn dolby_vision_off_plans_as_an_unsupported_set_and_auto_trusts_the_probe() {
+        use plx_platform::devcaps::dv::DvCapability::{Supported, Unknown, Unsupported};
+        for probed in [Supported, Unknown, Unsupported] {
+            assert_eq!(DolbyVisionMode::Auto.gate(probed), probed);
+            assert_eq!(DolbyVisionMode::Off.gate(probed), Unsupported);
+        }
     }
 }

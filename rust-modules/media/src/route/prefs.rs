@@ -325,16 +325,7 @@ macro_rules! live_setting {
 
 live_setting!(DirectPlayModePref, DIRECT_PLAY_MODE, "direct play mode");
 live_setting!(InstantDpadSeekingPref, INSTANT_DPAD_SEEKING, "instant D-pad seeking");
-impl LiveSetting for DolbyVisionModePref {
-    fn live() -> DolbyVisionMode { DOLBY_VISION_MODE.get() }
-    fn publish(v: DolbyVisionMode) {
-        DOLBY_VISION_MODE.set(v);
-        plx_platform::devcaps::dv::set_disabled_by_pref(v == DolbyVisionMode::Off);
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    fn publishes() -> u32 { DOLBY_VISION_MODE.publishes() }
-    fn log_label() -> &'static str { "Dolby Vision mode" }
-}
+live_setting!(DolbyVisionModePref, DOLBY_VISION_MODE, "Dolby Vision mode");
 live_setting!(DeckPressPref, DECK_PRESS, "deck press");
 live_setting!(UnderPostersPref, UNDER_POSTERS, "under posters");
 live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
