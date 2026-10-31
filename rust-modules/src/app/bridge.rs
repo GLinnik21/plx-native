@@ -4027,8 +4027,7 @@ pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
 
 /// Re-seat the player's ring on the element its row currently calls primary — the APP's half of a
 /// row swap, used after it re-resolves a slot the page changed while the frame was in flight
-/// (BACK over an offer). A group-only re-seat would restore the element the engine remembered from
-/// before the stand-in, which can be a different disc from the one now drawn as primary.
+/// (BACK over an offer), so the engine lands on the primary of the row the loop will draw.
 pub(crate) fn reseat_player_focus_on_primary(d: &mut Dispatcher<AppHost>) {
     let Some(instance) = d.top_page() else { return };
     let Some(entry) = d.nav.entry_of_instance(instance) else { return };

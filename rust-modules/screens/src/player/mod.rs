@@ -1352,11 +1352,10 @@ impl PlayerScreen {
             marker.kind,
             marker.start_ms / 1_000
         ));
-        // A group-only re-seat would let the engine restore the element it remembered from
-        // before the stand-in — the Subtitles disc it was on when the offer took the row. Land
-        // it on the primary this frame draws instead, so the ring and OK can never disagree.
+        // The row seats by its own policy (`Seat::First`), which lands the engine on
+        // `row_primary()` — the primary `nav.btn` names and this frame draws — so the ring and OK
+        // can never disagree.
         Self::repair_focus(fx, GROUP_ROW);
-        self.seat_elem(fx, player_hud::control_elem(primary));
         self.publish();
     }
 
