@@ -5512,15 +5512,6 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
         s.requested_resume_ns = 0;
     } }
 }
-/// Test-only twin of [`clear_play_verdict`], for a test whose assertion presumes "no session":
-/// `player::state()` derives `Error` from these fields, and a test that exercised a refusal on the
-/// SAME session value may have left one standing. It no longer needs `plx_base::testlock::serial()`
-/// for this reason — since phase 9 a test owns its session outright and cannot leave a refusal in
-/// anybody else's.
-#[cfg(any(test, feature = "test-support"))]
-pub fn clear_play_verdict_for_test(ps: &mut PlaybackSession) {
-    clear_play_verdict(ps)
-}
 /// Test-only: leave `ps` exactly as a refusing [`apply_plan`] does — the verdict installed, no URL,
 /// no encoder session. For asserting what the failure report says about a playback that never got
 /// a route.
