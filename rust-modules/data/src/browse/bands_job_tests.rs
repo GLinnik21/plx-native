@@ -15,6 +15,7 @@ use crate::browse::{SecKind, SortEntry};
 use crate::stores::browse::LibraryWork;
 use crate::stores::StoreJob;
 use crate::viewstate::{ViewAt, ViewEdit};
+use plx_plex::plex::SectionTotal;
 use std::cell::{Cell, RefCell};
 
 const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
@@ -31,7 +32,7 @@ struct Item {
 
 /// A server holding `items`, answering count reads, and recording every read it was asked.
 struct Server {
-    items: Vec<Item>,
+    items: RefCell<Vec<Item>>,
     /// The sort field the model answers a range on.
     field: &'static str,
     /// Wire units in one whole of the probe's decimal (`100` for a rating written `9.49`).
@@ -41,11 +42,18 @@ struct Server {
     fail_from: Cell<Option<usize>>,
     /// Answer every range read with the unfiltered size: a server that ignores the field.
     ignores_the_field: bool,
+    /// Answer every read with rows and no count: a server that ignores the `Size=0` window.
+    ignores_the_window: bool,
+    /// A library scan landing: this item joins the library just before the read at this index.
+    scan: Cell<Option<(usize, Item)>>,
 }
 
 impl Server {
     fn new(items: Vec<Item>, field: &'static str, scale: i64) -> Self {
-        Self { items, field, scale, seen: RefCell::default(), fail_from: Cell::new(None), ignores_the_field: false }
+        Self {
+            items: RefCell::new(items), field, scale, seen: RefCell::default(), fail_from: Cell::new(None),
+            ignores_the_field: false, ignores_the_window: false, scan: Cell::new(None),
+        }
     }
 
     fn passes(item: &Item, filters: &[(String, String)]) -> bool {
@@ -67,14 +75,28 @@ impl Server {
         whole.parse::<i64>().unwrap() * self.scale + if digits == 0 { 0 } else { fraction.parse::<i64>().unwrap() }
     }
 
-    fn count(&self, terms: &[(String, String)]) -> Option<i64> {
+    fn count(&self, terms: &[(String, String)]) -> Option<SectionTotal> {
         let read = self.seen.borrow().len();
         self.seen.borrow_mut().push(terms.to_vec());
+        if let Some((at, item)) = self.scan.get() {
+            if read == at {
+                self.items.borrow_mut().push(item);
+                self.scan.set(None);
+            }
+        }
         if self.fail_from.get().is_some_and(|from| read >= from) {
             return None;
         }
+        if self.ignores_the_window {
+            return Some(SectionTotal::Ignored);
+        }
+        self.matching(terms).map(SectionTotal::Count)
+    }
+
+    fn matching(&self, terms: &[(String, String)]) -> Option<i64> {
         let (ranges, filters): (Vec<_>, Vec<_>) = terms.iter().cloned().partition(|(key, _)| key.contains('>'));
-        let rows = self.items.iter().filter(|item| Self::passes(item, &filters));
+        let items = self.items.borrow();
+        let rows = items.iter().filter(|item| Self::passes(item, &filters));
         match ranges.as_slice() {
             [] => Some(rows.count() as i64),
             _ if self.ignores_the_field => Some(rows.count() as i64),
@@ -260,9 +282,10 @@ fn every_read_carries_the_grids_terms_and_one_range_on_the_sorts_field() {
         let server = ladder.server(ladder.items(40, 5));
         rail_of(ladder.family, &filters, &server).expect("a rail");
         let seen = server.seen.borrow();
-        assert_eq!(seen.len(), 1 + ladder.bands(), "the size, then one read per band");
+        assert_eq!(seen.len(), 2 + ladder.bands(), "the size, one read per band, the size again");
         assert_eq!(seen[0], filters, "the size is the listing's own");
-        for (read, spelled) in seen[1..].iter().zip(spelled) {
+        assert_eq!(seen[seen.len() - 1], filters, "…and so is the check at the end");
+        for (read, spelled) in seen[1..=ladder.bands()].iter().zip(spelled) {
             assert_eq!(read[..filters.len()], filters[..], "the page's terms, in the page's order");
             assert_eq!(read.len(), filters.len() + 1);
             let (key, value) = read.last().unwrap();
@@ -295,7 +318,7 @@ fn a_stored_zero_and_a_missing_value_are_unlabelled_not_the_lowest_band() {
 #[test]
 fn one_read_that_fails_fails_the_answer_wherever_it_falls() {
     let ladder = Ladder::rating();
-    for from in 0..=ladder.bands() {
+    for from in 0..2 + ladder.bands() {
         let server = ladder.server(ladder.items(30, 7));
         server.fail_from.set(Some(from));
         assert!(matches!(read_bands(Some(ladder.family), &[], |t| server.count(t)), BandsRead::Failed),
@@ -308,30 +331,79 @@ fn one_read_that_fails_fails_the_answer_wherever_it_falls() {
         BandsRead::Failed));
 }
 
-/// Counts that cannot be trusted give no rail and are NOT a failure: a server that ignores the field
-/// answers the whole listing to every probe; a count that rises as the edge falls is some other list.
+/// Counts that cannot be trusted give no rail and are NOT a failure while the listing held still: a
+/// server that ignores the field answers the whole listing to every probe; a count that rises as the
+/// edge falls is some other list; a server that answers rows to a count-only read does so every time.
 #[test]
 fn counts_that_are_not_trusted_give_no_rail_and_are_not_retried() {
     let ladder = Ladder::rating();
     let mut ignoring = ladder.server(ladder.items(30, 9));
     ignoring.ignores_the_field = true;
     assert!(rail_of(ladder.family, &[], &ignoring).is_none(), "every count is the total: the filter was ignored");
+    assert_eq!(ignoring.seen.borrow().len(), 2 + ladder.bands(), "…read in full, and verified");
 
     let calls = Cell::new(0);
     let falling = |terms: &[(String, String)]| {
         calls.set(calls.get() + 1);
-        Some(if terms.is_empty() { 30 } else { 20 - 2 * calls.get() as i64 })
+        Some(SectionTotal::Count(if terms.is_empty() { 30 } else { 20 - 2 * calls.get() as i64 }))
     };
     assert!(matches!(read_bands(Some(BandFamily::Rating), &[], falling), BandsRead::Counted(None)),
-        "counts that fall as the edge falls");
+        "counts that fall as the edge falls, in a listing that did not move");
 
     let empty = ladder.server(Vec::new());
     assert!(matches!(read_bands(Some(ladder.family), &[], |t| empty.count(t)), BandsRead::Counted(None)));
     assert_eq!(empty.seen.borrow().len(), 1, "an empty listing is not read band by band");
 
-    // a read of a size that is no count
-    assert!(matches!(read_bands(Some(BandFamily::Rating), &[], |_| Some(-1)), BandsRead::Failed));
-    assert!(matches!(read_bands(Some(BandFamily::Rating), &[], |_| Some(i64::from(u32::MAX) + 1)), BandsRead::Failed));
+    // rows to a count-only read: the window is ignored, and will be again. One read, a verdict.
+    let mut rows = ladder.server(ladder.items(30, 9));
+    rows.ignores_the_window = true;
+    assert!(matches!(read_bands(Some(ladder.family), &[], |t| rows.count(t)), BandsRead::Counted(None)));
+    assert_eq!(rows.seen.borrow().len(), 1);
+
+    // a size that is no count
+    let count = |n: i64| move |_: &[(String, String)]| Some(SectionTotal::Count(n));
+    assert!(matches!(read_bands(Some(BandFamily::Rating), &[], count(-1)), BandsRead::Failed));
+    assert!(matches!(read_bands(Some(BandFamily::Rating), &[], count(i64::from(u32::MAX) + 1)), BandsRead::Failed));
+}
+
+/// A library scan lands between the sequential reads: counts above the total, or falling as the edge
+/// falls, are then the scan's doing and not the server's word. The size is read again at the end, and
+/// a size that moved fails the answer (the back-off asks again) instead of leaving a rail-less verdict
+/// that nothing would ever revisit (a server one does not own has no feed to move the key).
+#[test]
+fn a_scan_landing_between_the_reads_fails_the_answer_and_a_clean_read_after_it_succeeds() {
+    let _g = plx_base::testlock::serial();
+    let ladder = Ladder::rating();
+    // ten rated items; one more rated item arrives while the bands are counted (the 4th read), so the
+    // lowest edge counts eleven of a listing the size read said had ten
+    let rated = |value| Item { value: Some(value), unwatched: true, genre: 7 };
+    let items: Vec<Item> = [960, 920, 870, 810, 770, 760, 700, 650, 600, 500].map(rated).to_vec();
+    let server = ladder.server(items);
+    server.scan.set(Some((4, rated(990))));
+    assert!(matches!(read_bands(Some(ladder.family), &[], |t| server.count(t)), BandsRead::Failed),
+        "the size moved from 10 to 11 under the counts");
+    assert_eq!(server.seen.borrow().len(), 2 + ladder.bands(), "every read was made, the last one is the check");
+    // …asked again (the library holds still now), the same server gives a rail
+    let rail = rail_of(ladder.family, &[], &server).expect("a clean read");
+    assert_eq!(rail.listed(true).bands.iter().map(|b| b.size).sum::<u32>() + rail.listed(true).tail, 11);
+
+    // the same through the step: a failure with the back-off armed, then a clean read after it
+    let (_cleanup, mut browse, sid, client) = banded_source(SecKind::Movie, &["rating"]);
+    assert!(browse.state.set_sort_by_key("rating", true));
+    let items: Vec<Item> = [960, 920, 870, 810, 770, 760, 700, 650, 600, 500].map(rated).to_vec();
+    let server = ladder.server(items);
+    server.scan.set(Some((4, rated(990))));
+    ask_bands(&mut browse, sid, client, &server);
+    assert!(!bands_shown(&browse));
+    assert!(browse.state.states()[0].bands_waiting(), "a failure: the back-off is armed");
+    no_job_is_owed(&mut browse, sid, "inside the back-off");
+    for _ in 0..crate::browse::letters::LETTERS_RETRY_STEPS {
+        let _ = browse.pump();
+        browse.jobs.clear();
+    }
+    ask_bands(&mut browse, sid, client, &server);
+    assert!(bands_shown(&browse), "asked again after the back-off, over a library that held still");
+    assert!(!browse.state.states()[0].bands_waiting());
 }
 
 // ---- the step, the key, the landing and the view -------------------------------------------------

@@ -27,7 +27,7 @@ use super::{
 };
 use plx_machine::job::Port;
 use plx_machine::machine::{Addr, MachineId, RequestId};
-use plx_plex::plex::{Client, ClientKey, LibrarySection, MediaContainer, ServerId};
+use plx_plex::plex::{Client, ClientKey, LibrarySection, MediaContainer, SectionTotal, ServerId};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -253,7 +253,8 @@ enum BandsRead {
 
 /// [`finish_browse_directory_job`] for a bands read, over `probe`, the one call that reaches the
 /// server: it takes the wire terms of one count-only read (the listing's filters, and for a band's
-/// edge the range term after them) and answers the number of items they match. The seam a test swaps
+/// edge the range term after them) and answers the number of items they match, or that the server
+/// ignored the count-only window ([`SectionTotal`]). The seam a test swaps
 /// for a model of the server, or for a read that panics; the real one is `Client::section_total`.
 ///
 /// The reads are sequential and ALL OR NOTHING: a rail built from some of its counts would point at
@@ -261,7 +262,7 @@ enum BandsRead {
 /// letters). The answer is posted OUTSIDE the guard, so a body that panics lands like a read that
 /// failed.
 fn finish_bands_with(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
-    req: BrowseDirectoryReq, probe: impl Fn(&[(String, String)]) -> Option<i64>) {
+    req: BrowseDirectoryReq, probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) {
     let BrowseDirectoryReq { key, epoch, sec, library_type, filters, letters, .. } = req;
     let family = letters.as_ref().and_then(|asked| asked.family);
     let read = catch_unwind(AssertUnwindSafe(|| read_bands(family, &filters, probe)))
@@ -275,45 +276,81 @@ fn finish_bands_with(port: &BrowseDirectoryPort, addr: Addr, client: &'static Cl
     })));
 }
 
+/// Why a bands read stopped before it had a rail.
+enum Stop {
+    /// A read did not answer, answered something that is no count, or the listing moved under the
+    /// counts: the back-off asks again.
+    Failed,
+    /// The server answered rows to a count-only read: it ignores the window, and answers so every
+    /// time. A verdict, not retried until the key moves.
+    Ignored,
+}
+
 /// The counts behind a rail: the size of the listing (the grid's terms alone), then, for each band
-/// of the family's ladder, how many items sit at or above its edge. The reads see the SAME filter
-/// terms the page request sends, in the same order, and the listing's size is read in the same pass
-/// as the counts, never taken from the page, which another request may have moved.
+/// of the family's ladder, how many items sit at or above its edge, then the size again. The reads see
+/// the SAME filter terms the page request sends, in the same order, and the size is read in the same
+/// pass as the counts, never taken from the page, which another request may have moved.
+///
+/// The reads are sequential, so a library scan can land between them and move the listing under the
+/// counts; to the offsets that looks like a count above the total or one that falls as the edge falls.
+/// The size is therefore read once more after the last band, and an answer that differs from the first
+/// is a [`Stop::Failed`] (asked again after the back-off), never a verdict about the counts.
 ///
 /// A listing with nothing in it has nothing to band and is not read further. Counts that
-/// [`bands::offsets`] does not trust (every band as large as the listing: the server ignored the
-/// field; or counts that fall as the edge falls) give no rail and say why in the log.
+/// [`bands::offsets`] does not trust while the size held still (every band as large as the listing:
+/// the server ignored the field; or counts that fall as the edge falls) give no rail and say why in
+/// the log, and so does a server that answers rows to a count-only read.
 fn read_bands(family: Option<BandFamily>, filters: &[(String, String)],
-    probe: impl Fn(&[(String, String)]) -> Option<i64>) -> BandsRead {
+    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) -> BandsRead {
     let Some((family, ladder)) = family.and_then(|family| Some((family, family.fixed_ladder()?))) else {
         debug_assert!(false, "a bands read for {family:?}, which has no fixed ladder");
         plx_base::eventlog::log(&format!("rail: no fixed band ladder for {family:?} — no rail"));
         return BandsRead::Counted(None);
     };
-    let count = |terms: &[(String, String)]| probe(terms).and_then(|count| u32::try_from(count).ok());
-    let Some(total) = count(filters) else { return BandsRead::Failed };
+    match count_bands(family, &ladder, filters, probe) {
+        Ok(rail) => BandsRead::Counted(rail),
+        Err(Stop::Failed) => BandsRead::Failed,
+        Err(Stop::Ignored) => {
+            plx_base::eventlog::log(&format!("rail: {family:?} the server answered rows to a count-only read — no rail"));
+            BandsRead::Counted(None)
+        }
+    }
+}
+
+fn count_bands(family: BandFamily, ladder: &[bands::Band], filters: &[(String, String)],
+    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) -> Result<Option<BandRail>, Stop> {
+    let count = |terms: &[(String, String)]| match probe(terms) {
+        Some(SectionTotal::Count(count)) => u32::try_from(count).map_err(|_| Stop::Failed),
+        Some(SectionTotal::Ignored) => Err(Stop::Ignored),
+        None => Err(Stop::Failed),
+    };
+    let total = count(filters)?;
     if total == 0 {
-        return BandsRead::Counted(None);
+        return Ok(None);
     }
     // A fixed ladder has no calendar edge, so the converter is never asked.
-    let Some(edges) = bands::probes(&ladder, &|_| None) else {
+    let Some(edges) = bands::probes(ladder, &|_| None) else {
         plx_base::eventlog::log(&format!("rail: {family:?} has an edge without a probe — no rail"));
-        return BandsRead::Counted(None);
+        return Ok(None);
     };
     let mut at_or_above = Vec::with_capacity(edges.len());
     for edge in &edges {
         let (field, value) = edge.query_pair();
         let mut terms = filters.to_vec();
         terms.push((field, value.to_owned()));
-        let Some(counted) = count(&terms) else { return BandsRead::Failed };
-        at_or_above.push(counted);
+        at_or_above.push(count(&terms)?);
     }
-    match BandRail::new(&ladder, &at_or_above, total) {
-        Ok(rail) => BandsRead::Counted(Some(rail)),
+    let after = count(filters)?;
+    if after != total {
+        plx_base::eventlog::log(&format!("rail: {family:?} the listing moved while it was counted ({total} then {after})"));
+        return Err(Stop::Failed);
+    }
+    match BandRail::new(ladder, &at_or_above, total) {
+        Ok(rail) => Ok(Some(rail)),
         Err(reject) => {
             plx_base::eventlog::log(&format!(
                 "rail: {family:?} counts not trusted ({reject:?}; total {total}, counts {at_or_above:?}) — no rail"));
-            BandsRead::Counted(None)
+            Ok(None)
         }
     }
 }

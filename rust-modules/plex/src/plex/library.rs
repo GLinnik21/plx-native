@@ -178,9 +178,9 @@ impl Client {
     /// `type=`, `unwatched`/`unwatchedLeaves`, `genre`) and, for a band edge, the range term after them
     /// (`rating>>` and `9.49`). Every key is percent-encoded (`rating%3E%3E=9.49`; a filter's key comes
     /// out unchanged), so the grid's terms are byte for byte the page request's. `None` when the read
-    /// did not answer, or answered rows (paging ignored: the number is not a count then). Docs:
-    /// `docs/pms-api.md`, "Count probes at band edges".
-    pub fn section_total(&self, section_key: i64, terms: &[(String, String)]) -> Option<i64> {
+    /// did not answer; [`SectionTotal::Ignored`] when it answered ROWS (the window was ignored, and
+    /// will be again). Docs: `docs/pms-api.md`, "Count probes at band edges".
+    pub fn section_total(&self, section_key: i64, terms: &[(String, String)]) -> Option<SectionTotal> {
         total_of_probe(&self.get_json(&section_total_path(section_key, terms))?)
     }
 
@@ -455,10 +455,24 @@ fn section_total_path(section_key: i64, terms: &[(String, String)]) -> String {
     paged_path(&query.build(), PageReq::window(0, 0))
 }
 
-/// The count a `Size=0` probe answered: `totalSize`, when the answer is one. A server that ignored
-/// the window answers rows and no `totalSize` (read as 0 by the lenient parse), which is no count.
-fn total_of_probe(container: &MediaContainer) -> Option<i64> {
-    (container.metadata.is_empty() && container.total_size >= 0).then_some(container.total_size)
+/// What a count-only read ([`Client::section_total`]) found, when the server answered at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SectionTotal {
+    /// The number of items that match: `totalSize`.
+    Count(i64),
+    /// The reply carried rows and no count: the server ignored the `Size=0` window. It answers the
+    /// same to every such read, so a caller does not ask again for another answer.
+    Ignored,
+}
+
+/// The count a `Size=0` probe answered: `totalSize`, or [`SectionTotal::Ignored`] for a reply with
+/// rows (read with no `totalSize` as 0 by the lenient parse, which is no count). A negative
+/// `totalSize` is no answer.
+fn total_of_probe(container: &MediaContainer) -> Option<SectionTotal> {
+    if container.total_size < 0 {
+        return None;
+    }
+    Some(if container.metadata.is_empty() { SectionTotal::Count(container.total_size) } else { SectionTotal::Ignored })
 }
 
 /// PMS's numeric `type` for a `plex://<kind>/<id>` guid — the metadata provider's own kind, which is
@@ -532,13 +546,14 @@ mod tests {
     /// is a read whose window was ignored, and is no count.
     #[test]
     fn a_total_probe_reads_total_size_and_refuses_an_answer_with_rows() {
-        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":38,"offset":0}"#)), Some(38));
-        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":"38"}"#)), Some(38));
-        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":0}"#)), Some(0), "a real zero");
-        assert_eq!(total_of_probe(&container(r#"{"size":2,"Metadata":[{"ratingKey":"1"},{"ratingKey":"2"}]}"#)), None,
-            "rows and no totalSize: the window was ignored");
-        assert_eq!(total_of_probe(&container(r#"{"size":1,"totalSize":9,"Metadata":[{"ratingKey":"1"}]}"#)), None,
-            "rows are never a count-only answer");
+        let count = |n| Some(SectionTotal::Count(n));
+        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":38,"offset":0}"#)), count(38));
+        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":"38"}"#)), count(38));
+        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":0}"#)), count(0), "a real zero");
+        assert_eq!(total_of_probe(&container(r#"{"size":2,"Metadata":[{"ratingKey":"1"},{"ratingKey":"2"}]}"#)),
+            Some(SectionTotal::Ignored), "rows and no totalSize: the window was ignored");
+        assert_eq!(total_of_probe(&container(r#"{"size":1,"totalSize":9,"Metadata":[{"ratingKey":"1"}]}"#)),
+            Some(SectionTotal::Ignored), "rows are never a count-only answer");
         assert_eq!(total_of_probe(&container(r#"{"totalSize":-1}"#)), None);
     }
 
