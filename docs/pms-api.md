@@ -259,8 +259,9 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
   these three fields on a small library is the measurement above, not a run of this read. A show row
   carries no `episode.addedAt`, so the last episode added reads the section's oldest EPISODE
   (`type=4`, `sort=addedAt:asc:nullsLast`, no other filter), which is never newer than any show's
-  newest one. The app judges the year it gets: before 1900 or after the current year gives the sort
-  no rail, rather than a probe for every year in between.
+  newest one. The app judges the year it gets: one after the current year gives the sort
+  no rail, and one before 1900 starts the bands at 1900 (an 1895 film or a `0001-01-01` date joins the
+  items with no value, at the low end, instead of costing a probe for every year in between).
 - **`episode.addedAt` is not mirror-symmetric.** With `type=2`, `episode.addedAt>>=E` is the shows
   that have ANY episode newer than E, which equals "whose newest episode is newer" (checked against
   the per-show maximum of 525 episodes: 4 of 4 edges, 2 of 2 straddles), and

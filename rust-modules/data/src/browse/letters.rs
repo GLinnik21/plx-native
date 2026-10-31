@@ -11,19 +11,22 @@
 //! ([`SecState::shown_letters`]), and that is checked where the letters are READ, not at the
 //! edit sites: the first page's landing applies a saved genre after the letters were asked
 //! (`pump_owned_with_gate`), and nothing there has to remember to forget them. Two things move the
-//! key without a term changing and both bump [`LettersKey::gen`]: the server's membership changed
+//! key without a term changing by bumping [`LettersKey::gen`]: the server's membership changed
 //! under the section ([`SecState::membership_changed`] and the stale flag spent by
 //! [`SecState::reset_listing`]), which every key carries; and a title of the section's server had
 //! its watched state read back ([`SecState::viewing_changed`]), which only a key whose counts move
 //! with a watch carries ([`SecState::key_gen`]): one counted under Unwatched, or a bands family a
-//! watch changes (plays, unplayed; `BandFamily::moves_with_viewing`). Nothing else does. A library
+//! watch changes (plays, unplayed; `BandFamily::moves_with_viewing`). Nothing else bumps it; a third
+//! thing moves a key by a FIELD of it, not by `gen`: the day turning, for a calendar family
+//! ([`LettersKey::today`], below). A library
 //! TYPE change forgets the list outright ([`SecState::forget_letters`]); the
 //! Collections page's loan does not carry it.
 //!
 //! A VALUE sort's rail is the same shape with another payload: one kept slot of band counts
 //! ([`SecState::shown_bands`]) keyed by the same terms and the sort's [`BandFamily`], so [`LettersKey`]
 //! carries the family (`None` for the letters) and, for a calendar family, the day it was counted on
-//! (the bands are that day's: a day turn asks once more). The direction is
+//! (`today`, a field of the key and no `gen`: the bands are that day's, so a day turn is a new key and
+//! asks once more, and a fixed ladder's key never carries it). The direction is
 //! deliberately NOT in the key: the counts are of values, and a landed [`BandRail`] holds the layout
 //! of both directions, so a flip of the direction asks the server nothing. A family that a watch
 //! moves (`BandFamily::moves_with_viewing`) takes the viewing generation as an Unwatched key does.
