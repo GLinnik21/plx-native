@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T06:18:15Z",
+ "generated": "2026-10-31T06:25:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -85,14 +85,14 @@
    "change7_pct": 31.9,
    "d30": null,
    "delta30": null,
-   "delta7": 46,
+   "delta7": 46.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 67,
-   "now": 190,
+   "now": 190.0,
    "prev7": 144,
    "shown": true,
    "state": "worse",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -62.8,
-   "change7_pct": 14.8,
+   "change30_pct": -63.0,
+   "change7_pct": 14.4,
    "d30": 1020,
-   "delta30": -641,
-   "delta7": 49,
+   "delta30": -642.5,
+   "delta7": 47.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 93,
+   "n_now": 94,
    "n_prev": 79,
-   "now": 379,
+   "now": 377.5,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.5,
-   "change7_pct": 2.3,
+   "change30_pct": 32.3,
+   "change7_pct": 2.1,
    "d30": 203,
-   "delta30": 66,
-   "delta7": 6,
+   "delta30": 65.5,
+   "delta7": 5.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 67,
-   "now": 269,
+   "now": 268.5,
    "prev7": 263,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -76.7,
-   "change7_pct": 6.2,
+   "change30_pct": -76.8,
+   "change7_pct": 6.0,
    "d30": 915,
-   "delta30": -702,
-   "delta7": 12.5,
+   "delta30": -702.5,
+   "delta7": 12.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 66,
-   "now": 213,
+   "now": 212.5,
    "prev7": 200.5,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1,
-   "delta7": -1,
+   "delta30": 1.0,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 67,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 67.6,
    "commits": [
     {
-     "pr": 1153,
-     "sha": "aef53a3f6",
-     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
-    },
-    {
      "pr": 1159,
      "sha": "8b634f436",
      "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
@@ -715,6 +710,11 @@
      "pr": 1172,
      "sha": "6f3fb9ff5",
      "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
+    },
+    {
+     "pr": 1173,
+     "sha": "83bd902b1",
+     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
     }
    ],
    "from": 186.5,
@@ -728,11 +728,6 @@
    "change_pct": 31.9,
    "commits": [
     {
-     "pr": 1153,
-     "sha": "aef53a3f6",
-     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
-    },
-    {
      "pr": 1159,
      "sha": "8b634f436",
      "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
@@ -776,6 +771,11 @@
      "pr": 1172,
      "sha": "6f3fb9ff5",
      "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
+    },
+    {
+     "pr": 1173,
+     "sha": "83bd902b1",
+     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
     }
    ],
    "from": 144,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 190
+   "to": 190.0
   },
   {
    "change_pct": 30.6,
    "commits": [
-    {
-     "pr": 1153,
-     "sha": "aef53a3f6",
-     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
-    },
     {
      "pr": 1159,
      "sha": "8b634f436",
@@ -837,6 +832,11 @@
      "pr": 1172,
      "sha": "6f3fb9ff5",
      "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
+    },
+    {
+     "pr": 1173,
+     "sha": "83bd902b1",
+     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
     }
    ],
    "from": 120.3,
@@ -850,11 +850,6 @@
    "change_pct": 16.3,
    "commits": [
     {
-     "pr": 1153,
-     "sha": "aef53a3f6",
-     "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
-    },
-    {
      "pr": 1159,
      "sha": "8b634f436",
      "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
@@ -898,6 +893,11 @@
      "pr": 1172,
      "sha": "6f3fb9ff5",
      "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
+    },
+    {
+     "pr": 1173,
+     "sha": "83bd902b1",
+     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
     }
    ],
    "from": 2074.0,
