@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T05:10:54Z",
+ "generated": "2026-10-31T05:17:35Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 33.5,
+   "change7_pct": 33.8,
    "d30": null,
    "delta30": null,
-   "delta7": 47.5,
+   "delta7": 48,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 65,
-   "now": 189.5,
+   "now": 190,
    "prev7": 142,
    "shown": true,
    "state": "worse",
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -4.4,
+   "change30_pct": -4.2,
    "change7_pct": 16.4,
-   "d30": 2523,
-   "delta30": -111,
+   "d30": 2517.0,
+   "delta30": -105.0,
    "delta7": 339.0,
    "group": "ci",
    "id": "minutes",
@@ -148,15 +148,15 @@
    "change7_pct": 14.4,
    "d30": 959.5,
    "delta30": -578.5,
-   "delta7": 48.0,
+   "delta7": 48,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 242,
-   "n_prev": 156,
-   "now": 381.0,
-   "prev7": 333.0,
+   "n_now": 241,
+   "n_prev": 157,
+   "now": 381,
+   "prev7": 333,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -166,17 +166,17 @@
   },
   {
    "change30_pct": -63.1,
-   "change7_pct": 14.4,
-   "d30": 1023.0,
-   "delta30": -645.5,
-   "delta7": 47.5,
+   "change7_pct": 13.9,
+   "d30": 1020,
+   "delta30": -644,
+   "delta7": 46,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 77,
-   "now": 377.5,
+   "now": 376,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.2,
+   "change30_pct": 32.5,
    "change7_pct": 2.3,
-   "d30": 202.0,
-   "delta30": 67.0,
-   "delta7": 6.0,
+   "d30": 203,
+   "delta30": 66,
+   "delta7": 6,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 65,
-   "now": 269.0,
+   "now": 269,
    "prev7": 263,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -77.0,
-   "change7_pct": 4.9,
-   "d30": 924.5,
-   "delta30": -712.0,
-   "delta7": 10.0,
+   "change30_pct": -76.8,
+   "change7_pct": 4.7,
+   "d30": 915,
+   "delta30": -703,
+   "delta7": 9.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 64,
-   "now": 212.5,
+   "now": 212,
    "prev7": 202.5,
    "shown": true,
    "state": "flat",
@@ -538,16 +538,16 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -5.3,
-   "d30": 17.0,
-   "delta30": 1.0,
-   "delta7": -1.0,
+   "d30": 17,
+   "delta30": 1,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 65,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -601,8 +601,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 294,
-   "delta30": -291,
+   "d30": 294.0,
+   "delta30": -291.0,
    "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -622,8 +622,8 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 962,
-   "delta30": -959,
+   "d30": 961.0,
+   "delta30": -958.0,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -667,11 +667,6 @@
    "change_pct": 67.7,
    "commits": [
     {
-     "pr": 986,
-     "sha": "36e5ffea8",
-     "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
-    },
-    {
      "pr": 1153,
      "sha": "aef53a3f6",
      "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
@@ -715,6 +710,11 @@
      "pr": 1171,
      "sha": "604dd81b7",
      "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
+    },
+    {
+     "pr": 1172,
+     "sha": "6f3fb9ff5",
+     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
     }
    ],
    "from": 185.5,
@@ -725,13 +725,8 @@
    "to": 311
   },
   {
-   "change_pct": 33.5,
+   "change_pct": 33.8,
    "commits": [
-    {
-     "pr": 986,
-     "sha": "36e5ffea8",
-     "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
-    },
     {
      "pr": 1153,
      "sha": "aef53a3f6",
@@ -776,6 +771,11 @@
      "pr": 1171,
      "sha": "604dd81b7",
      "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
+    },
+    {
+     "pr": 1172,
+     "sha": "6f3fb9ff5",
+     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
     }
    ],
    "from": 142,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 189.5
+   "to": 190
   },
   {
    "change_pct": 30.6,
    "commits": [
-    {
-     "pr": 986,
-     "sha": "36e5ffea8",
-     "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
-    },
     {
      "pr": 1153,
      "sha": "aef53a3f6",
@@ -837,6 +832,11 @@
      "pr": 1171,
      "sha": "604dd81b7",
      "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
+    },
+    {
+     "pr": 1172,
+     "sha": "6f3fb9ff5",
+     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
     }
    ],
    "from": 120.3,
@@ -850,11 +850,6 @@
    "change_pct": 16.4,
    "commits": [
     {
-     "pr": 986,
-     "sha": "36e5ffea8",
-     "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
-    },
-    {
      "pr": 1153,
      "sha": "aef53a3f6",
      "title": "HUD plugins: the lint, and --hud-lint / --hud-schema / --hud-export in the simulator"
@@ -898,6 +893,11 @@
      "pr": 1171,
      "sha": "604dd81b7",
      "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
+    },
+    {
+     "pr": 1172,
+     "sha": "6f3fb9ff5",
+     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
     }
    ],
    "from": 2073.0,
