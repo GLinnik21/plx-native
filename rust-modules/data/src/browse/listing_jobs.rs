@@ -20,14 +20,14 @@
 //! Home run never emits them (`bootstrap/effects.rs` accepts only `Browse(Reset)` and
 //! `Browse(Discovery(..))` and refuses `StoreWork::Browse`).
 
-use super::bands::{self, BandFamily, BandRail};
+use super::bands::{self, BandFamily, BandRail, Day, Zone};
 use super::{
     genre_entry, fetch_listing_page, DirectoryResult, GenreEntry, LettersKey, LibraryType, ListingPage,
-    PageResult, Restore, SectionQuery, PAGE,
+    PageResult, Restore, SecKind, SectionQuery, PAGE,
 };
 use plx_machine::job::Port;
 use plx_machine::machine::{Addr, MachineId, RequestId};
-use plx_plex::plex::{Client, ClientKey, LibrarySection, MediaContainer, SectionTotal, ServerId};
+use plx_plex::plex::{Client, ClientKey, LibrarySection, MediaContainer, Oldest, SectionTotal, ServerId};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -195,12 +195,15 @@ impl BrowseDirectoryReq {
 
 /// The request's IO body and its completion: read the directory through `client` and post the
 /// answer to `port`. The answer is posted OUTSIDE the guard, so a read that panics lands like one that
-/// failed (`ok: false`), never as the empty list of a read that found nothing.
+/// failed (`ok: false`), never as the empty list of a read that found nothing. `zone` is the viewer's
+/// time zone, which only the application's runner can read (`plx_platform::i18n`): a bands read of a
+/// calendar family converts its edges with it, and nothing else uses it.
 pub fn finish_browse_directory_job(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
-    req: BrowseDirectoryReq) {
+    req: BrowseDirectoryReq, zone: Zone) {
     let (section, which, filters) = (req.section, req.which, req.filters.clone());
     if which == Directory::Bands {
-        finish_bands_with(port, addr, client, req, move |terms| client.section_total(section, terms));
+        finish_bands_with(port, addr, client, req, zone, move |terms| client.section_total(section, terms),
+            move |terms, field| client.section_oldest(section, terms, field));
         return;
     }
     finish_directory_with(port, addr, client, req, move || {
@@ -257,15 +260,25 @@ enum BandsRead {
 /// ignored the count-only window ([`SectionTotal`]). The seam a test swaps
 /// for a model of the server, or for a read that panics; the real one is `Client::section_total`.
 ///
+/// A calendar family also reads the oldest value of its field first, through `oldest` (the terms of
+/// the listing it is read over, and the date field to sort by), and converts its edges with `zone`;
+/// `today` is the day the key was asked on (`LettersKey::today`).
+///
 /// The reads are sequential and ALL OR NOTHING: a rail built from some of its counts would point at
 /// the wrong rows, so one read that fails fails the answer (`ok: false`: the same back-off as the
-/// letters). The answer is posted OUTSIDE the guard, so a body that panics lands like a read that
-/// failed.
+/// letters). They are NOT asked beside one another (`task::beside`): a calendar is a dozen months and a
+/// year apiece, each a count-only read the server answers without rows (3 ms on a loopback server), the
+/// re-read of the total at the end only means something if the reads ran in order, and nothing is
+/// shown until all are in. A fan-out is a change of this function alone, if a remote server ever
+/// measures too slow. The answer is posted OUTSIDE the guard, so a body that panics lands like a read
+/// that failed.
 fn finish_bands_with(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
-    req: BrowseDirectoryReq, probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) {
+    req: BrowseDirectoryReq, zone: Zone, probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>,
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) {
     let BrowseDirectoryReq { key, epoch, sec, library_type, filters, letters, .. } = req;
     let family = letters.as_ref().and_then(|asked| asked.family);
-    let read = catch_unwind(AssertUnwindSafe(|| read_bands(family, &filters, probe)))
+    let today = letters.as_ref().and_then(|asked| asked.today);
+    let read = catch_unwind(AssertUnwindSafe(|| read_bands(family, today, zone, &filters, probe, oldest)))
         .unwrap_or(BandsRead::Failed);
     let (ok, list) = match read {
         BandsRead::Counted(rail) => (true, rail.into_iter().collect()),
@@ -286,10 +299,11 @@ enum Stop {
     Ignored,
 }
 
-/// The counts behind a rail: the size of the listing (the grid's terms alone), then, for each band
-/// of the family's ladder, how many items sit at or above its edge, then the size again. The reads see
-/// the SAME filter terms the page request sends, in the same order, and the size is read in the same
-/// pass as the counts, never taken from the page, which another request may have moved.
+/// The counts behind a rail: the size of the listing (the grid's terms alone), then, for a calendar
+/// family, the oldest year ([`ladder_of`]), then, for each band of the family's ladder, how many items
+/// sit at or above its edge, then the size again. The reads see the SAME filter terms the page request
+/// sends, in the same order, and the size is read in the same pass as the counts, never taken from the
+/// page, which another request may have moved.
 ///
 /// The reads are sequential, so a library scan can land between them and move the listing under the
 /// counts; to the offsets that looks like a count above the total or one that falls as the edge falls.
@@ -299,15 +313,18 @@ enum Stop {
 /// A listing with nothing in it has nothing to band and is not read further. Counts that
 /// [`bands::offsets`] does not trust while the size held still (every band as large as the listing:
 /// the server ignored the field; or counts that fall as the edge falls) give no rail and say why in
-/// the log, and so does a server that answers rows to a count-only read.
-fn read_bands(family: Option<BandFamily>, filters: &[(String, String)],
-    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) -> BandsRead {
-    let Some((family, ladder)) = family.and_then(|family| Some((family, family.fixed_ladder()?))) else {
-        debug_assert!(false, "a bands read for {family:?}, which has no fixed ladder");
-        plx_base::eventlog::log(&format!("rail: no fixed band ladder for {family:?} — no rail"));
+/// the log, and so does a server that answers rows to a count-only read, a calendar family with no day,
+/// no value in its field, an extent that is no believable year ([`bands::plausible_extent`]) or an
+/// edge the zone cannot convert.
+fn read_bands(family: Option<BandFamily>, today: Option<Day>, zone: Zone, filters: &[(String, String)],
+    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>,
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) -> BandsRead {
+    let Some(family) = family else {
+        debug_assert!(false, "a bands read for no family");
+        plx_base::eventlog::log("rail: a bands read for no family — no rail");
         return BandsRead::Counted(None);
     };
-    match count_bands(family, &ladder, filters, probe) {
+    match count_bands(family, today, zone, filters, probe, oldest) {
         Ok(rail) => BandsRead::Counted(rail),
         Err(Stop::Failed) => BandsRead::Failed,
         Err(Stop::Ignored) => {
@@ -317,8 +334,51 @@ fn read_bands(family: Option<BandFamily>, filters: &[(String, String)],
     }
 }
 
-fn count_bands(family: BandFamily, ladder: &[bands::Band], filters: &[(String, String)],
-    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) -> Result<Option<BandRail>, Stop> {
+/// The ladder `family` counts over, or `None` for no rail (said in the log): a fixed ladder as it is, a
+/// calendar family's bands from `today` and the year of its oldest value. The oldest value is ONE read
+/// of the first row of `sort=<field>:asc:nullsLast` over the page's own terms (a show family that
+/// sorts by its newest episode reads the section's oldest EPISODE instead,
+/// [`bands::ExtentRead::episodes`]); a read that did not answer fails the answer.
+fn ladder_of(family: BandFamily, today: Option<Day>, zone: Zone, filters: &[(String, String)],
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) -> Result<Option<Vec<bands::Band>>, Stop> {
+    let Some(extent) = family.extent_read() else {
+        let ladder = family.fixed_ladder();
+        if ladder.is_none() {
+            debug_assert!(false, "a bands read for {family:?}, which has no fixed ladder");
+            plx_base::eventlog::log(&format!("rail: no fixed band ladder for {family:?} — no rail"));
+        }
+        return Ok(ladder);
+    };
+    let Some(today) = today else {
+        plx_base::eventlog::log(&format!("rail: {family:?} has no date to count by — no rail"));
+        return Ok(None);
+    };
+    let episodes = LibraryType::Episodes.type_terms(SecKind::Show);
+    let terms = if extent.episodes { &episodes[..] } else { filters };
+    let year = match oldest(terms, extent.field).ok_or(Stop::Failed)? {
+        Oldest::Year(year) => Some(year),
+        Oldest::Instant(epoch) => (zone.local_date)(epoch).map(|[year, ..]| year),
+        Oldest::Nothing => None,
+    };
+    let Some(year) = year else {
+        plx_base::eventlog::log(&format!("rail: {family:?} no item has a usable value in {} — no rail", extent.field));
+        return Ok(None);
+    };
+    if !bands::plausible_extent(year, today) {
+        plx_base::eventlog::log(&format!("rail: {family:?} the oldest value is in the year {year} — no rail"));
+        return Ok(None);
+    }
+    let ladder = bands::plan(family, today, year);
+    if ladder.is_empty() {
+        plx_base::eventlog::log(&format!("rail: {family:?} no bands for {today:?} — no rail"));
+        return Ok(None);
+    }
+    Ok(Some(ladder))
+}
+
+fn count_bands(family: BandFamily, today: Option<Day>, zone: Zone, filters: &[(String, String)],
+    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>,
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) -> Result<Option<BandRail>, Stop> {
     let count = |terms: &[(String, String)]| match probe(terms) {
         Some(SectionTotal::Count(count)) => u32::try_from(count).map_err(|_| Stop::Failed),
         Some(SectionTotal::Ignored) => Err(Stop::Ignored),
@@ -328,8 +388,10 @@ fn count_bands(family: BandFamily, ladder: &[bands::Band], filters: &[(String, S
     if total == 0 {
         return Ok(None);
     }
-    // A fixed ladder has no calendar edge, so the converter is never asked.
-    let Some(edges) = bands::probes(ladder, &|_| None) else {
+    let Some(ladder) = ladder_of(family, today, zone, filters, oldest)? else { return Ok(None) };
+    // A fixed ladder has no calendar edge, so the converter is never asked of it; a local edge the
+    // zone cannot convert leaves the whole rail without a probe (a rail of some bands would lie).
+    let Some(edges) = bands::probes(&ladder, &zone.local_midnight) else {
         plx_base::eventlog::log(&format!("rail: {family:?} has an edge without a probe — no rail"));
         return Ok(None);
     };
@@ -345,7 +407,7 @@ fn count_bands(family: BandFamily, ladder: &[bands::Band], filters: &[(String, S
         plx_base::eventlog::log(&format!("rail: {family:?} the listing moved while it was counted ({total} then {after})"));
         return Err(Stop::Failed);
     }
-    match BandRail::new(ladder, &at_or_above, total) {
+    match BandRail::new(&ladder, &at_or_above, total) {
         Ok(rail) => Ok(Some(rail)),
         Err(reject) => {
             plx_base::eventlog::log(&format!(
@@ -481,3 +543,7 @@ mod tests;
 #[cfg(test)]
 #[path = "bands_job_tests.rs"]
 mod bands_tests;
+
+#[cfg(test)]
+#[path = "bands_calendar_tests.rs"]
+mod bands_calendar_tests;

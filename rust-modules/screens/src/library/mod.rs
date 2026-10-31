@@ -1484,7 +1484,7 @@ impl LibraryScreen {
                     let focus = cx.focus.current.filter(|key| key.entry == self.entry)
                         .and_then(|key| self.pair.detail.index_of(key.elem));
                     self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * self.layout.cols(), hi: (hi + 1) * self.layout.cols(), focus }, fx);
-                    self.store(target, LibraryWork::Letters, fx);
+                    self.store(target, LibraryWork::Letters { today: H::today(cx) }, fx);
                 }
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
             }

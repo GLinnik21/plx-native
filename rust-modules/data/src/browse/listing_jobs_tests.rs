@@ -168,7 +168,7 @@ fn a_refused_page_is_asked_for_again_at_the_same_offset() {
 /// with the client back under a new key, asks again with THAT key.
 #[test]
 fn a_refused_directory_job_is_settled_by_the_next_step_and_the_one_after_asks_again_with_the_new_key() {
-    for (which, work) in [(Directory::Genres, LibraryWork::Genres), (Directory::Letters, LibraryWork::Letters)] {
+    for (which, work) in [(Directory::Genres, LibraryWork::Genres), (Directory::Letters, LibraryWork::Letters { today: None })] {
         let _g = plx_base::testlock::serial();
         let (_cleanup, mut browse, sid, client) = loopback_page_source();
         let first = ClientKey::of(client);
@@ -204,7 +204,7 @@ fn a_refused_genre_read_leaves_the_letters_read_in_flight() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, _client) = loopback_page_source();
     tick_directory(&mut browse, sid, LibraryWork::Genres);
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     let jobs = std::mem::take(&mut browse.jobs);
     assert_eq!(jobs.len(), 2, "one read each: {jobs:?}");
     let StoreJob::BrowseDirectory(genres, port) = &jobs[0] else { panic!("genres first") };
@@ -259,7 +259,7 @@ fn rail_shown(browse: &TestBrowse) -> bool {
 #[track_caller]
 fn land_letters(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId,
     client: &'static plx_plex::plex::Client, counts: &[(&str, i64)]) {
-    tick_directory(browse, sid, LibraryWork::Letters);
+    tick_directory(browse, sid, LibraryWork::Letters { today: None });
     answer_letters(browse, client, counts);
 }
 
@@ -346,7 +346,7 @@ fn the_letters_request_carries_the_terms_the_grid_sends() {
             assert!(browse.state.set_genre_by_id(Some(id)));
         }
 
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         assert_eq!(browse.jobs.len(), 1, "{kind:?} {library_type:?}: the edit owes the letters again");
         assert_eq!(browse.run_listing_jobs(), 1);
 
@@ -364,7 +364,7 @@ fn the_letters_request_carries_the_terms_the_grid_sends() {
 fn an_answer_asked_under_older_terms_is_never_shown() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, client) = loopback_page_source();
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     let (job, port) = the_directory_job(&mut browse);
     assert!(browse.state.set_unwatched(true), "the viewer narrows the listing while the read is out");
 
@@ -376,7 +376,7 @@ fn an_answer_asked_under_older_terms_is_never_shown() {
         shown_letters(&browse));
     assert!(!rail_shown(&browse));
 
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     answer_letters(&mut browse, client, &[("A", 1), ("B", 2)]);
     assert_eq!(shown_letters(&browse), [("A".to_owned(), 1), ("B".to_owned(), 2)]);
     assert!(rail_shown(&browse), "the rail shows under Unwatched once the list is the grid's own");
@@ -403,7 +403,7 @@ fn a_restored_genre_owes_the_letters_again() {
         "premise: the page landing applied the saved genre");
 
     assert!(shown_letters(&browse).is_empty(), "the unfiltered counts must not describe the genre's grid");
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "the letters are owed again");
 }
 
@@ -422,13 +422,13 @@ fn a_membership_change_owes_the_letters_again() {
         state.items = SecItems::from_vec(vec![Some(PmsMovie { sid, rk: "7".into(), unwatched: true, ..Default::default() })]);
     }
     assert_eq!(shown_letters(&browse).len(), 2, "premise: the list is the grid's own");
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert!(browse.jobs.is_empty(), "premise: nothing is owed");
 
     assert!(browse.state.apply_view_local(&ViewAt::leaf(sid, "7"), WATCHED_FACTS));
     assert!(browse.state.requery_stale(), "the listing is asked again");
     assert!(shown_letters(&browse).is_empty(), "the old counts include the title that left");
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     answer_letters(&mut browse, client, &[("A", 2), ("B", 4)]);
     assert_eq!(browse.state.listing_snapshot().view().letter_start(1), 2);
 }
@@ -446,7 +446,7 @@ fn an_answer_asked_before_a_membership_change_is_not_the_current_list() {
         state.total = 1;
         state.items = SecItems::from_vec(vec![Some(PmsMovie { sid, rk: "7".into(), unwatched: true, ..Default::default() })]);
     }
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     let (job, port) = the_directory_job(&mut browse);
     assert!(browse.state.apply_view_local(&ViewAt::leaf(sid, "7"), WATCHED_FACTS));
     assert!(browse.state.requery_stale());
@@ -456,7 +456,7 @@ fn an_answer_asked_before_a_membership_change_is_not_the_current_list() {
     let _ = browse.pump();
     browse.jobs.clear();
     assert!(shown_letters(&browse).is_empty(), "asked before the change: {:?}", shown_letters(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "and asked again");
 }
 
@@ -472,7 +472,7 @@ fn a_scan_owes_the_letters_of_a_section_that_is_not_showing() {
     assert!(browse.state.listings_changed(sid, false));
     browse.state.set_cur(0);
     assert!(shown_letters(&browse).is_empty(), "what the section lists moved while it was away");
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1);
 }
 
@@ -489,7 +489,7 @@ fn a_sort_change_does_not_owe_the_letters() {
     ]);
     for (key, desc) in [("addedAt", true), ("titleSort", true), ("titleSort", false)] {
         assert!(browse.state.set_sort_by_key(key, desc));
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         assert!(browse.jobs.is_empty(), "{key} desc={desc}: nothing is owed: {:?}", browse.jobs);
         assert_eq!(shown_letters(&browse).len(), 2, "{key} desc={desc}: the list stays");
     }
@@ -545,7 +545,7 @@ fn a_watch_while_collections_is_listed_does_not_leave_old_counts_over_the_new_gr
     assert!(shown_letters(&browse).is_empty(),
         "the counts from before the watch over the refetched grid: {:?}", shown_letters(&browse));
     assert!(!rail_shown(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     answer_letters(&mut browse, client, &[("A", 2), ("B", 4)]);
     assert_eq!(browse.state.listing_snapshot().view().letter_start(1), 2, "the post-watch counts");
 }
@@ -560,7 +560,7 @@ fn returning_from_collections_asks_for_the_letters_again() {
     assert!(browse.state.set_library_type(LibraryType::Collections));
     assert!(browse.state.set_library_type(LibraryType::Primary));
     assert!(shown_letters(&browse).is_empty());
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "one small request, like any fresh listing");
 }
 
@@ -574,7 +574,7 @@ fn an_empty_answer_hides_the_rail_without_a_retry_loop() {
     land_letters(&mut browse, sid, client, &[]);
     assert!(shown_letters(&browse).is_empty());
     assert!(!rail_shown(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert!(browse.jobs.is_empty(), "an empty answer is an answer: {:?}", browse.jobs);
     assert!(!Directory::Letters.busy(&browse.adapter), "and no claim is left up");
 }
@@ -588,7 +588,7 @@ fn the_request_carries_the_terms_and_the_key_it_is_asked_under() {
     assert!(browse.state.set_library_type(LibraryType::Seasons));
     assert!(browse.state.set_unwatched(true));
 
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     let (job, _port) = the_directory_job(&mut browse);
     assert_eq!(job.req.filters, terms(&[("type", "3"), ("unwatchedLeaves", "1")]));
     assert_eq!(job.req.letters, Some(browse.state.states()[0].letters_key()));
@@ -616,7 +616,7 @@ fn a_failed_letters_read_keeps_the_rail_owed_and_is_retried_after_the_backoff() 
         land_letters(&mut browse, sid, client, &[("A", 3), ("B", 4)]);
         assert!(browse.state.set_unwatched(true));
 
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         let (job, port) = the_directory_job(&mut browse);
         if panics {
             finish_directory_with(&port, job.addr, client, job.req, || panic!("the body panicked"));
@@ -634,14 +634,14 @@ fn a_failed_letters_read_keeps_the_rail_owed_and_is_retried_after_the_backoff() 
 
         // Held back for the length of the back-off, one step at a time.
         for step in 1..LETTERS_RETRY_STEPS {
-            tick_directory(&mut browse, sid, LibraryWork::Letters);
+            tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
             assert!(browse.jobs.is_empty(), "panics={panics} step {step}: {:?}", browse.jobs);
             let _ = browse.pump();
             browse.jobs.clear();
         }
         let _ = browse.pump();
         browse.jobs.clear();
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         assert_eq!(browse.jobs.len(), 1, "panics={panics}: asked again once the back-off is spent");
         answer_letters(&mut browse, client, &[("A", 1)]);
         assert!(browse.state.states()[0].letters_current());
@@ -651,14 +651,14 @@ fn a_failed_letters_read_keeps_the_rail_owed_and_is_retried_after_the_backoff() 
         assert!(browse.state.set_unwatched(false));
         a_genre_menu(&mut browse);
         assert!(browse.state.set_genre_by_id(Some("7")));
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         let (job, port) = the_directory_job(&mut browse);
         finish_directory_with(&port, job.addr, client, job.req, || None);
         let _ = browse.pump();
         browse.jobs.clear();
         assert!(browse.state.states()[0].letters_waiting());
         assert!(browse.state.set_unwatched(true));
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         assert_eq!(browse.jobs.len(), 1, "panics={panics}: a different key is asked at once");
     }
 }
@@ -691,7 +691,7 @@ fn turning_a_filter_off_brings_the_unfiltered_rail_back_without_a_read() {
         }
         assert_eq!(shown_letters(&browse), plain, "genre={genre}: back on the unfiltered grid, at once");
         assert!(rail_shown(&browse), "genre={genre}");
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         assert!(browse.jobs.is_empty(), "genre={genre}: nothing is owed: {:?}", browse.jobs);
 
         // And the filtered list is still the one beside it: no read to switch the filter on again
@@ -718,7 +718,7 @@ fn an_unwatched_list_is_not_kept_across_the_switch() {
 
     assert!(browse.state.set_unwatched(true));
     assert!(shown_letters(&browse).is_empty(), "the Unwatched counts of an earlier visit: {:?}", shown_letters(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "asked afresh");
 }
 
@@ -737,19 +737,19 @@ fn a_watch_made_while_unwatched_is_off_stales_the_unwatched_list_behind_the_kept
     land_letters(&mut browse, sid, client, &[("A", 2), ("B", 4)]);
     assert!(browse.state.set_unwatched(false));
     assert_eq!(shown_letters(&browse), plain, "premise: the kept unfiltered list is shown again");
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert!(browse.jobs.is_empty(), "premise: nothing is owed");
 
     // A title of this server is finished (a read-back, its card in no loaded page). Unwatched is off:
     // the grid on screen is unaffected, and so are the unfiltered counts.
     browse.state.apply_view_local(&ViewAt::leaf(sid, "7"), WATCHED_FACTS);
     assert_eq!(shown_letters(&browse), plain, "the unfiltered counts do not move with a watch");
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert!(browse.jobs.is_empty(), "and nothing is asked while Unwatched is off: {:?}", browse.jobs);
 
     assert!(browse.state.set_unwatched(true));
     assert!(shown_letters(&browse).is_empty(), "the Unwatched counts of before the watch: {:?}", shown_letters(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "asked afresh");
     answer_letters(&mut browse, client, &[("A", 1), ("B", 4)]);
     assert_eq!(shown_letters(&browse), [("A".to_owned(), 1), ("B".to_owned(), 4)]);
@@ -780,7 +780,7 @@ fn a_watch_of_a_title_in_no_loaded_page_owes_the_unwatched_letters() {
 
     assert!(browse.state.apply_view_local(&ViewAt::leaf(sid, "99"), WATCHED_FACTS), "the rail lost its list: a change to publish");
     assert!(shown_letters(&browse).is_empty(), "the old counts include the title: {:?}", shown_letters(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "owed again");
     let (job, port) = the_directory_job(&mut browse);
 
@@ -791,7 +791,7 @@ fn a_watch_of_a_title_in_no_loaded_page_owes_the_unwatched_letters() {
     let _ = browse.pump();
     browse.jobs.clear();
     assert!(shown_letters(&browse).is_empty(), "asked before the read-back: {:?}", shown_letters(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     answer_letters(&mut browse, client, &[("A", 3), ("B", 2)]);
     assert_eq!(shown_letters(&browse), [("A".to_owned(), 3), ("B".to_owned(), 2)]);
 }
@@ -810,7 +810,7 @@ fn a_membership_change_and_a_type_change_forget_the_kept_list() {
     browse.state.state_mut(0).unwrap().membership_changed();
     assert!(browse.state.set_genre_by_id(None));
     assert!(shown_letters(&browse).is_empty(), "the kept counts are of before the scan: {:?}", shown_letters(&browse));
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "asked afresh");
 
     browse.state.state_mut(0).unwrap().forget_letters();
@@ -837,6 +837,6 @@ fn only_the_last_two_lists_are_held() {
     assert_eq!(shown_letters(&browse), [("A".to_owned(), 1)], "the previous one is held");
     assert!(browse.state.set_genre_by_id(None));
     assert!(shown_letters(&browse).is_empty(), "the oldest was evicted");
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     assert_eq!(browse.jobs.len(), 1, "and is asked once more");
 }

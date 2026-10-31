@@ -626,6 +626,10 @@ struct SecState {
     bands_kept: Option<(LettersKey, Option<Arc<bands::BandRail>>)>,
     /// A failed bands read of this key, and the steps left before it is asked again.
     bands_backoff: Option<(LettersKey, u32)>,
+    /// Today's date as the Library's last ask handed it in (`LibraryWork::Letters`), the same for every
+    /// section ([`BrowseState::note_today`]): an INPUT, never a clock read. A calendar family's key
+    /// carries it, and none has bands without it.
+    today: Option<bands::Day>,
     /// The grid's own view (sort, genre, menus), set aside while the section is on the Collections
     /// listing and put back when it returns to the type it was on ([`LoanedView`]). The letters are
     /// not loaned: every type change forgets them and the listing it lands on asks again.
@@ -844,6 +848,7 @@ impl Default for SecState {
             bands: None,
             bands_kept: None,
             bands_backoff: None,
+            today: None,
             loaned: None,
             hubs: Default::default(),
             fetch: SecFetch::Loading,
@@ -1845,6 +1850,14 @@ impl BrowseState {
             plx_machine::idle::invalidate();
         }
     }
+    /// Take the date the Library's ask carries into every section's state, where a calendar family's key
+    /// reads it. A new day is a new key, so the bands counted on yesterday are no longer shown and the
+    /// next ask counts them again.
+    fn note_today(&mut self, today: Option<bands::Day>) {
+        for state in &mut self.states {
+            state.today = today;
+        }
+    }
     fn kick_genres(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
         jobs: &mut Vec<crate::stores::StoreJob>) {
         self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Genres);
@@ -1856,7 +1869,8 @@ impl BrowseState {
     /// The rail's data is asked on the one tick the screens send for it: the letters, and the bands
     /// when the sort has them (a title sort owes none, so its tick is the letters' alone).
     fn kick_rail(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
-        jobs: &mut Vec<crate::stores::StoreJob>) {
+        jobs: &mut Vec<crate::stores::StoreJob>, today: Option<bands::Day>) {
+        self.note_today(today);
         self.kick_letters(adapter, keys, jobs);
         self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Bands);
     }
@@ -1944,7 +1958,7 @@ impl BrowseState {
                 }
                 match work {
                     LibraryWork::Want { lo, hi, focus } => self.want(lo, hi, focus),
-                    LibraryWork::Letters => self.kick_rail(adapter, keys, jobs),
+                    LibraryWork::Letters { today } => self.kick_rail(adapter, keys, jobs, today),
                     LibraryWork::Genres => self.kick_genres(adapter, keys, jobs),
                     LibraryWork::Retry => self.retry_cur_source(),
                     LibraryWork::Requery => {

@@ -23,40 +23,40 @@ const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: fals
 // ---- the server model --------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
-struct Item {
+pub(super) struct Item {
     /// The value in the sort's field, in the wire's smallest unit; `None` = no value at all.
-    value: Option<i64>,
-    unwatched: bool,
-    genre: u8,
+    pub(super) value: Option<i64>,
+    pub(super) unwatched: bool,
+    pub(super) genre: u8,
 }
 
 /// A server holding `items`, answering count reads, and recording every read it was asked.
-struct Server {
-    items: RefCell<Vec<Item>>,
+pub(super) struct Server {
+    pub(super) items: RefCell<Vec<Item>>,
     /// The sort field the model answers a range on.
     field: &'static str,
     /// Wire units in one whole of the probe's decimal (`100` for a rating written `9.49`).
     scale: i64,
-    seen: RefCell<Vec<Vec<(String, String)>>>,
+    pub(super) seen: RefCell<Vec<Vec<(String, String)>>>,
     /// Answer no read from this one on (0-based): a server that stops answering.
-    fail_from: Cell<Option<usize>>,
+    pub(super) fail_from: Cell<Option<usize>>,
     /// Answer every range read with the unfiltered size: a server that ignores the field.
-    ignores_the_field: bool,
+    pub(super) ignores_the_field: bool,
     /// Answer every read with rows and no count: a server that ignores the `Size=0` window.
-    ignores_the_window: bool,
+    pub(super) ignores_the_window: bool,
     /// A library scan landing: this item joins the library just before the read at this index.
-    scan: Cell<Option<(usize, Item)>>,
+    pub(super) scan: Cell<Option<(usize, Item)>>,
 }
 
 impl Server {
-    fn new(items: Vec<Item>, field: &'static str, scale: i64) -> Self {
+    pub(super) fn new(items: Vec<Item>, field: &'static str, scale: i64) -> Self {
         Self {
             items: RefCell::new(items), field, scale, seen: RefCell::default(), fail_from: Cell::new(None),
             ignores_the_field: false, ignores_the_window: false, scan: Cell::new(None),
         }
     }
 
-    fn passes(item: &Item, filters: &[(String, String)]) -> bool {
+    pub(super) fn passes(item: &Item, filters: &[(String, String)]) -> bool {
         filters.iter().all(|(key, value)| match key.as_str() {
             "unwatched" | "unwatchedLeaves" => value != "1" || item.unwatched,
             "genre" => value.parse::<u8>().is_ok_and(|genre| genre == item.genre),
@@ -75,7 +75,7 @@ impl Server {
         whole.parse::<i64>().unwrap() * self.scale + if digits == 0 { 0 } else { fraction.parse::<i64>().unwrap() }
     }
 
-    fn count(&self, terms: &[(String, String)]) -> Option<SectionTotal> {
+    pub(super) fn count(&self, terms: &[(String, String)]) -> Option<SectionTotal> {
         let read = self.seen.borrow().len();
         self.seen.borrow_mut().push(terms.to_vec());
         if let Some((at, item)) = self.scan.get() {
@@ -193,7 +193,19 @@ impl Ladder {
     }
 }
 
-fn terms(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+/// A bands read of a family with fixed edges: no day, no extent.
+fn read_fixed(family: BandFamily, filters: &[(String, String)],
+    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) -> BandsRead {
+    read_bands(Some(family), None, bands::utc_zone(), filters, probe, |_, _| None)
+}
+
+/// [`finish_bands_with`] for a family with fixed edges.
+fn finish_fixed(port: &BrowseDirectoryPort, addr: Addr, client: &'static plx_plex::plex::Client,
+    req: BrowseDirectoryReq, probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>) {
+    finish_bands_with(port, addr, client, req, bands::utc_zone(), probe, |_, _| None);
+}
+
+pub(super) fn terms(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
 }
 
@@ -231,7 +243,7 @@ fn assert_layout(ladder: &Ladder, rows: &[Option<usize>], layout: &Offsets, desc
 }
 
 fn rail_of(family: BandFamily, filters: &[(String, String)], server: &Server) -> Option<BandRail> {
-    match read_bands(Some(family), filters, |terms| server.count(terms)) {
+    match read_fixed(family, filters, |terms| server.count(terms)) {
         BandsRead::Counted(rail) => rail,
         BandsRead::Failed => panic!("the model answers every read"),
     }
@@ -321,12 +333,12 @@ fn one_read_that_fails_fails_the_answer_wherever_it_falls() {
     for from in 0..2 + ladder.bands() {
         let server = ladder.server(ladder.items(30, 7));
         server.fail_from.set(Some(from));
-        assert!(matches!(read_bands(Some(ladder.family), &[], |t| server.count(t)), BandsRead::Failed),
+        assert!(matches!(read_fixed(ladder.family, &[], |t| server.count(t)), BandsRead::Failed),
             "reads from the {from}th fail");
     }
     // …and so does a body that panics
     assert!(matches!(
-        catch_unwind(AssertUnwindSafe(|| read_bands(Some(BandFamily::Rating), &[], |_| panic!("the body panicked"))))
+        catch_unwind(AssertUnwindSafe(|| read_fixed(BandFamily::Rating, &[], |_| panic!("the body panicked"))))
             .unwrap_or(BandsRead::Failed),
         BandsRead::Failed));
 }
@@ -347,23 +359,23 @@ fn counts_that_are_not_trusted_give_no_rail_and_are_not_retried() {
         calls.set(calls.get() + 1);
         Some(SectionTotal::Count(if terms.is_empty() { 30 } else { 20 - 2 * calls.get() as i64 }))
     };
-    assert!(matches!(read_bands(Some(BandFamily::Rating), &[], falling), BandsRead::Counted(None)),
+    assert!(matches!(read_fixed(BandFamily::Rating, &[], falling), BandsRead::Counted(None)),
         "counts that fall as the edge falls, in a listing that did not move");
 
     let empty = ladder.server(Vec::new());
-    assert!(matches!(read_bands(Some(ladder.family), &[], |t| empty.count(t)), BandsRead::Counted(None)));
+    assert!(matches!(read_fixed(ladder.family, &[], |t| empty.count(t)), BandsRead::Counted(None)));
     assert_eq!(empty.seen.borrow().len(), 1, "an empty listing is not read band by band");
 
     // rows to a count-only read: the window is ignored, and will be again. One read, a verdict.
     let mut rows = ladder.server(ladder.items(30, 9));
     rows.ignores_the_window = true;
-    assert!(matches!(read_bands(Some(ladder.family), &[], |t| rows.count(t)), BandsRead::Counted(None)));
+    assert!(matches!(read_fixed(ladder.family, &[], |t| rows.count(t)), BandsRead::Counted(None)));
     assert_eq!(rows.seen.borrow().len(), 1);
 
     // a size that is no count
     let count = |n: i64| move |_: &[(String, String)]| Some(SectionTotal::Count(n));
-    assert!(matches!(read_bands(Some(BandFamily::Rating), &[], count(-1)), BandsRead::Failed));
-    assert!(matches!(read_bands(Some(BandFamily::Rating), &[], count(i64::from(u32::MAX) + 1)), BandsRead::Failed));
+    assert!(matches!(read_fixed(BandFamily::Rating, &[], count(-1)), BandsRead::Failed));
+    assert!(matches!(read_fixed(BandFamily::Rating, &[], count(i64::from(u32::MAX) + 1)), BandsRead::Failed));
 }
 
 /// A library scan lands between the sequential reads: counts above the total, or falling as the edge
@@ -380,7 +392,7 @@ fn a_scan_landing_between_the_reads_fails_the_answer_and_a_clean_read_after_it_s
     let items: Vec<Item> = [960, 920, 870, 810, 770, 760, 700, 650, 600, 500].map(rated).to_vec();
     let server = ladder.server(items);
     server.scan.set(Some((4, rated(990))));
-    assert!(matches!(read_bands(Some(ladder.family), &[], |t| server.count(t)), BandsRead::Failed),
+    assert!(matches!(read_fixed(ladder.family, &[], |t| server.count(t)), BandsRead::Failed),
         "the size moved from 10 to 11 under the counts");
     assert_eq!(server.seen.borrow().len(), 2 + ladder.bands(), "every read was made, the last one is the check");
     // …asked again (the library holds still now), the same server gives a rail
@@ -414,7 +426,7 @@ fn sort(key: &str, default_desc: bool) -> SortEntry {
 
 /// A source of `kind` with the sorts a server lists and the title letters already landed, so the
 /// only job a tick leaves is the bands'. Ordered by title, ascending.
-fn banded_source(kind: SecKind, keys: &[&str])
+pub(super) fn banded_source(kind: SecKind, keys: &[&str])
     -> (RegisteredCleanup, TestBrowse, plx_plex::plex::ServerId, &'static plx_plex::plex::Client) {
     let (cleanup, mut browse, sid, client) = loopback_source_at(9, kind);
     let state = browse.state.state_mut(0).unwrap();
@@ -440,7 +452,7 @@ fn a_genre_menu(browse: &mut TestBrowse) {
 /// The bands job the rail's tick leaves (the only one), taken off the outbox.
 #[track_caller]
 fn bands_job(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId) -> (plx_machine::job::Job<BrowseDirectoryReq>, BrowseDirectoryPort) {
-    tick_directory(browse, sid, LibraryWork::Letters);
+    tick_directory(browse, sid, LibraryWork::Letters { today: None });
     let (job, port) = the_directory_job(browse);
     assert_eq!(job.req.which, Directory::Bands, "the value sort's tick asks for its bands");
     (job, port)
@@ -450,7 +462,7 @@ fn bands_job(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId) -> (plx_mac
 #[track_caller]
 fn ask_bands(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId, client: &'static plx_plex::plex::Client, server: &Server) {
     let (job, port) = bands_job(browse, sid);
-    finish_bands_with(&port, job.addr, client, job.req, |terms| server.count(terms));
+    finish_fixed(&port, job.addr, client, job.req, |terms| server.count(terms));
     let _ = browse.pump();
     browse.jobs.clear();
 }
@@ -470,7 +482,7 @@ fn letters_shown(browse: &TestBrowse) -> bool {
 }
 
 fn no_job_is_owed(browse: &mut TestBrowse, sid: plx_plex::plex::ServerId, what: &str) {
-    tick_directory(browse, sid, LibraryWork::Letters);
+    tick_directory(browse, sid, LibraryWork::Letters { today: None });
     assert!(browse.jobs.is_empty(), "{what}: nothing is owed, saw {:?}", browse.jobs);
 }
 
@@ -497,7 +509,7 @@ fn a_value_sort_asks_with_the_pages_terms_and_the_view_lays_the_bands_out() {
     };
     assert_eq!(job.req.filters, page_terms, "the bands are counted over the listing the page asks for");
     assert_eq!(job.req.letters.as_ref().and_then(|key| key.family), Some(BandFamily::Rating));
-    finish_bands_with(&port, job.addr, client, job.req, |terms| server.count(terms));
+    finish_fixed(&port, job.addr, client, job.req, |terms| server.count(terms));
     for read in server.seen.borrow().iter() {
         assert_eq!(read[..page_terms.len()], page_terms[..], "every read carries them");
     }
@@ -584,7 +596,7 @@ fn a_title_sort_still_asks_for_the_letters_and_only_the_letters() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, _client) = loopback_source_at(9, SecKind::Movie);
     browse.state.state_mut(0).unwrap().sorts = Arc::new(vec![sort("titleSort", false), sort("rating", true)]);
-    tick_directory(&mut browse, sid, LibraryWork::Letters);
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
     let (job, _port) = the_directory_job(&mut browse);
     assert_eq!(job.req.which, Directory::Letters);
     assert!(job.req.letters.as_ref().is_some_and(|key| key.family.is_none()));
@@ -666,7 +678,7 @@ fn a_failed_read_backs_off_like_the_letters() {
         let _ = browse.pump();
         browse.jobs.clear();
         assert!(!Directory::Bands.busy(&browse.adapter));
-        tick_directory(&mut browse, sid, LibraryWork::Letters);
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
         assert!(browse.jobs.is_empty(), "step {step}: still backing off");
     }
     let _ = browse.pump();
@@ -691,7 +703,7 @@ fn an_answer_asked_under_older_terms_is_not_shown() {
     let server = ladder.server(ladder.items(60, 2));
     let (job, port) = bands_job(&mut browse, sid);
     assert!(browse.state.set_unwatched(true), "the viewer narrows the listing while the read is out");
-    finish_bands_with(&port, job.addr, client, job.req, |terms| server.count(terms));
+    finish_fixed(&port, job.addr, client, job.req, |terms| server.count(terms));
     let _ = browse.pump();
     browse.jobs.clear();
     assert!(snapshot_bands(&browse).is_none(), "counts of the unfiltered listing over a filtered grid");
@@ -784,7 +796,7 @@ fn a_refused_bands_job_is_settled_and_asked_again() {
     port.refused(job.addr);
     assert!(!Directory::Bands.busy(&browse.adapter), "the refusal gave the claim back");
     // a claim that is down while the letters' stays up does not release the other kinds
-    let jobs = tick_directory_without_keys(&mut browse, sid, LibraryWork::Letters);
+    let jobs = tick_directory_without_keys(&mut browse, sid, LibraryWork::Letters { today: None });
     assert!(jobs.is_empty(), "no client, no read");
     assert!(!directory_refusal_pending(&browse, Directory::Bands, job.addr.req.0), "the refusal is consumed");
     assert!(browse.state.states()[0].bands_owed(SecKind::Movie), "still owed");
@@ -800,7 +812,7 @@ fn a_panicking_bands_body_lands_as_a_failed_read() {
     let (_cleanup, mut browse, sid, client) = banded_source(SecKind::Movie, &["rating"]);
     assert!(browse.state.set_sort_by_key("rating", true));
     let (job, port) = bands_job(&mut browse, sid);
-    finish_bands_with(&port, job.addr, client, job.req, |_| panic!("the body panicked"));
+    finish_fixed(&port, job.addr, client, job.req, |_| panic!("the body panicked"));
     assert!(browse.adapter.bands.has_mail(), "the answer was posted");
     let _ = browse.pump();
     assert!(browse.state.states()[0].bands_waiting(), "a failure, not an empty rail");

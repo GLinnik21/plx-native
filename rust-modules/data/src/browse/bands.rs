@@ -1,7 +1,9 @@
 //! The bands a value sort's rail shows, and how a probe's COUNTS become rail offsets. Pure data and
 //! functions: no read, no clock, no time zone, no global. The data job asks the counts of the
 //! families [`BandFamily::rail_ready`] names (`listing_jobs.rs`, `letters.rs`) and hands the screens a
-//! [`BandRail`]; the calendar families wait for a job that knows the time zone and the oldest year.
+//! [`BandRail`]. A calendar family's job also gets `today` on the ask, the viewer's [`Zone`] from the
+//! runner and the oldest year from one extent read ([`BandFamily::extent_read`]); the screens draw
+//! none of them until they have labels, and [`BandFamily::rail_ready`] says so.
 //!
 //! The A-Z rail jumps to a letter by the running sum of per-letter counts. PMS has no per-band
 //! directory for a VALUE sort (`/year` and `/decade` carry no `size`), so a band's offset comes from
@@ -83,6 +85,61 @@ pub enum Basis {
     Local,
     /// A date (`originallyAvailableAt`): the epoch of UTC midnight, whatever zone the viewer is in.
     Utc,
+}
+
+/// The viewer's time zone as the two reads of the OS a calendar family needs, handed to a bands job
+/// by the application's runner as plain functions (`plx_platform::i18n::local_midnight` and
+/// `local_calendar_date`): the model and the job body read no zone and no clock themselves, and a test
+/// passes a fake. A civil date to its first moment (asked once per [`Basis::Local`] edge, daylight
+/// saving being per date), and an instant to the civil date it falls on; `None` from either where the
+/// OS cannot say.
+#[derive(Clone, Copy, Debug)]
+pub struct Zone {
+    /// The epoch of the viewer's local midnight at the start of a civil day.
+    pub local_midnight: fn(Day) -> Option<i64>,
+    /// The civil date, in the viewer's zone, of an epoch.
+    pub local_date: fn(i64) -> Option<Day>,
+}
+
+/// A viewer on UTC, for the tests that run the production body: local midnight is UTC midnight and a
+/// local date the UTC one (Howard Hinnant's `civil_from_days`).
+#[cfg(test)]
+pub(super) fn utc_zone() -> Zone {
+    fn civil(epoch: i64) -> Option<Day> {
+        let z = epoch.div_euclid(86_400) + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        Some([i32::try_from(year).ok()?, i32::try_from(month).ok()?, i32::try_from(day).ok()?])
+    }
+    Zone { local_midnight: |date| Some(utc_midnight(date)), local_date: civil }
+}
+
+/// The oldest year the extent of a calendar family may name. An extent comes off the server, and a
+/// year before this one (a bogus `0001-01-01`) would mean a probe for every year since: at most
+/// `current year - 1900 + 13` of them for one that passes.
+pub const FIRST_PLAUSIBLE_YEAR: i32 = 1900;
+
+/// Is `year` a believable year for the oldest item of a calendar family on `today`: from
+/// [`FIRST_PLAUSIBLE_YEAR`] to this year? Anything else gives the family no rail.
+pub fn plausible_extent(year: i32, today: Day) -> bool {
+    (FIRST_PLAUSIBLE_YEAR..=today[0]).contains(&year)
+}
+
+/// How a calendar family finds its oldest value ([`BandFamily::extent_read`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtentRead {
+    /// The date field of a listed item, sorted `:asc:nullsLast` for the first row.
+    pub field: &'static str,
+    /// Read it from the section's EPISODES (`type=4`, unfiltered) instead of the page's own listing: a
+    /// show row carries no `episode.addedAt`, and the oldest episode is not newer than any show's newest
+    /// one, so the year it gives never cuts a band off. It may leave empty years at the old end.
+    pub episodes: bool,
 }
 
 /// The sorts that have bands, one per board table.
@@ -169,9 +226,9 @@ impl BandFamily {
 
     /// Does the A-Z rail draw this family's bands yet? THE gate, and the only place to widen: the
     /// four families whose edges are fixed numbers need nothing from the viewer's clock or the
-    /// server's extent. The calendar families (dates, last episode added, release year) need the
-    /// time zone for their edges and the oldest year from an extent read, and stay off until the
-    /// data job asks for both.
+    /// server's extent. The calendar families (dates, last episode added, release year) are counted by
+    /// the data job now (`today` on the ask, the [`Zone`], the extent read), but the screens have no
+    /// label for their bands yet, so they stay off until they do.
     pub fn rail_ready(self) -> bool {
         // Exhaustive on purpose: a ninth family must decide here.
         match self {
@@ -196,6 +253,19 @@ impl BandFamily {
             Self::Plays | Self::Unplayed | Self::DateViewed => true,
             Self::Rating | Self::Duration | Self::DateAdded | Self::LastEpisodeAdded | Self::Release => false,
         }
+    }
+
+    /// How the family finds the oldest value for [`plan`]'s `oldest_year`, or `None` for a family with
+    /// fixed edges. `Some` exactly when [`Self::basis`] is: the dates are the ones that need an extent.
+    pub fn extent_read(self) -> Option<ExtentRead> {
+        let (field, episodes) = match self {
+            Self::DateAdded => ("addedAt", false),
+            Self::DateViewed => ("lastViewedAt", false),
+            Self::LastEpisodeAdded => ("addedAt", true),
+            Self::Release => ("originallyAvailableAt", false),
+            Self::Rating | Self::Duration | Self::Unplayed | Self::Plays => return None,
+        };
+        Some(ExtentRead { field, episodes })
     }
 
     /// What the family's civil-date edges are measured against, or `None` for a family whose edges

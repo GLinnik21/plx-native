@@ -20,9 +20,10 @@
 //! TYPE change forgets the list outright ([`SecState::forget_letters`]); the
 //! Collections page's loan does not carry it.
 //!
-//! A VALUE sort's rail (rating, duration, unplayed, plays) is the same shape with another payload: one
-//! kept slot of band counts ([`SecState::shown_bands`]) keyed by the same terms and the sort's
-//! [`BandFamily`], so [`LettersKey`] carries the family (`None` for the letters). The direction is
+//! A VALUE sort's rail is the same shape with another payload: one kept slot of band counts
+//! ([`SecState::shown_bands`]) keyed by the same terms and the sort's [`BandFamily`], so [`LettersKey`]
+//! carries the family (`None` for the letters) and, for a calendar family, the day it was counted on
+//! (the bands are that day's: a day turn asks once more). The direction is
 //! deliberately NOT in the key: the counts are of values, and a landed [`BandRail`] holds the layout
 //! of both directions, so a flip of the direction asks the server nothing. A family that a watch
 //! moves (`BandFamily::moves_with_viewing`) takes the viewing generation as an Unwatched key does.
@@ -35,7 +36,7 @@
 //! does not describe) and holds the same key back for [`LETTERS_RETRY_STEPS`] steps, as the page
 //! lane's `retry_cd` does; any edit asks at once.
 
-use super::bands::{BandFamily, BandRail};
+use super::bands::{BandFamily, BandRail, Day};
 use super::{Arc, BrowseState, DirectoryResult, SecKind, SecState};
 
 /// What a first-letter list (or a value sort's band counts) counted: the grid's own query as it stood
@@ -48,6 +49,9 @@ use super::{Arc, BrowseState, DirectoryResult, SecKind, SecState};
 pub(super) struct LettersKey {
     /// The band family the counts are of; `None` for the title letters.
     pub(super) family: Option<BandFamily>,
+    /// Today's date for a calendar family (its edges and its bands are this day's), `None` for every
+    /// other key: a day turn is a new key and asks once more.
+    pub(super) today: Option<Day>,
     /// The Unwatched switch AS APPLIED (false while a type the filters do not apply to is listed).
     pub(super) unwatched: bool,
     /// The genre tag id AS APPLIED.
@@ -59,8 +63,9 @@ pub(super) struct LettersKey {
 }
 
 impl LettersKey {
-    fn is(&self, family: Option<BandFamily>, unwatched: bool, genre: Option<&str>, gen: u32) -> bool {
-        self.family == family && self.unwatched == unwatched && self.genre.as_deref() == genre && self.gen == gen
+    fn is(&self, family: Option<BandFamily>, today: Option<Day>, unwatched: bool, genre: Option<&str>, gen: u32) -> bool {
+        self.family == family && self.today == today && self.unwatched == unwatched
+            && self.genre.as_deref() == genre && self.gen == gen
     }
 
     /// Do the counts move with every watch? Those counted under Unwatched, and a family whose
@@ -99,14 +104,20 @@ impl SecState {
     /// The key a letters read asked NOW would carry.
     pub(super) fn letters_key(&self) -> LettersKey {
         let (unwatched, genre) = self.applied_terms();
-        LettersKey { family: None, unwatched, genre: genre.map(str::to_owned), gen: self.key_gen(unwatched) }
+        LettersKey { family: None, today: None, unwatched, genre: genre.map(str::to_owned), gen: self.key_gen(unwatched) }
+    }
+
+    /// The day a key for `family` is of: today for a calendar family, nothing for a fixed ladder (its
+    /// bands do not move with the date).
+    fn key_today(&self, family: BandFamily) -> Option<Day> {
+        family.basis().and(self.today)
     }
 
     /// The key a bands read for `family` asked NOW would carry.
     pub(super) fn bands_key(&self, family: BandFamily) -> LettersKey {
         let (unwatched, genre) = self.applied_terms();
         LettersKey {
-            family: Some(family), unwatched, genre: genre.map(str::to_owned),
+            family: Some(family), today: self.key_today(family), unwatched, genre: genre.map(str::to_owned),
             gen: self.key_gen(sensitive(Some(family), unwatched)),
         }
     }
@@ -118,12 +129,12 @@ impl SecState {
     pub(super) fn shown_letters(&self) -> Option<&Arc<Vec<(String, i64)>>> {
         let (unwatched, genre) = self.applied_terms();
         let gen = self.key_gen(unwatched);
-        if self.letters_for.as_ref().is_some_and(|key| key.is(None, unwatched, genre, gen)) {
+        if self.letters_for.as_ref().is_some_and(|key| key.is(None, None, unwatched, genre, gen)) {
             return Some(&self.letters);
         }
         self.letters_kept
             .as_ref()
-            .filter(|(key, _)| key.is(None, unwatched, genre, gen))
+            .filter(|(key, _)| key.is(None, None, unwatched, genre, gen))
             .map(|(_, list)| list)
     }
 
@@ -140,7 +151,7 @@ impl SecState {
         }
         let (unwatched, genre) = self.applied_terms();
         let gen = self.key_gen(unwatched);
-        !self.letters_backoff.as_ref().is_some_and(|(key, steps)| *steps > 0 && key.is(None, unwatched, genre, gen))
+        !self.letters_backoff.as_ref().is_some_and(|(key, steps)| *steps > 0 && key.is(None, None, unwatched, genre, gen))
     }
 
     /// Is a back-off counting down? The store must be stepped while it is, as for `retry_cd`.
@@ -237,22 +248,29 @@ impl SecState {
     // ---- the value sorts' bands ------------------------------------------------------------------
 
     /// The family whose bands the rail draws for the sort the grid is ordered by, or `None` (a title
-    /// sort has the letters; a sort without a ladder, or a family the rail is not ready for, none).
+    /// sort has the letters; a sort without a ladder, or a family the rail is not ready for, none). A
+    /// calendar family also needs the day: the application has none to hand, no bands.
     pub(super) fn rail_family(&self, kind: SecKind) -> Option<BandFamily> {
         let sort = self.sorts.get(self.sort_idx)?;
-        BandFamily::of_sort(&sort.key, self.sort_desc, kind, self.library_type).filter(|f| f.rail_ready())
+        BandFamily::of_sort(&sort.key, self.sort_desc, kind, self.library_type)
+            .filter(|family| family.rail_ready() && (family.basis().is_none() || self.today.is_some()))
     }
 
     /// The verdict of the band counts that describe the listing the grid shows now, if one is on
     /// hand: `Some(Some(rail))` a rail, `Some(None)` counted and not trusted or empty (no rail).
     fn bands_verdict(&self, kind: SecKind) -> Option<&Option<Arc<BandRail>>> {
-        let family = self.rail_family(kind)?;
+        self.bands_verdict_for(self.rail_family(kind)?)
+    }
+
+    /// [`Self::bands_verdict`] for `family`, whether or not the rail is ready for it.
+    pub(super) fn bands_verdict_for(&self, family: BandFamily) -> Option<&Option<Arc<BandRail>>> {
         let (unwatched, genre) = self.applied_terms();
         let gen = self.key_gen(sensitive(Some(family), unwatched));
+        let today = self.key_today(family);
         [self.bands.as_ref(), self.bands_kept.as_ref()]
             .into_iter()
             .flatten()
-            .find(|(key, _)| key.is(Some(family), unwatched, genre, gen))
+            .find(|(key, _)| key.is(Some(family), today, unwatched, genre, gen))
             .map(|(_, verdict)| verdict)
     }
 
@@ -270,13 +288,18 @@ impl SecState {
     /// Is a bands read owed: the sort has a ladder, no list on hand describes the grid, and a failed
     /// read of THIS key is not holding the next one back?
     pub(super) fn bands_owed(&self, kind: SecKind) -> bool {
-        let Some(family) = self.rail_family(kind) else { return false };
-        if self.bands_current(kind) {
+        self.rail_family(kind).is_some_and(|family| self.bands_owed_for(family))
+    }
+
+    /// [`Self::bands_owed`] for `family`, whether or not the rail is ready for it.
+    pub(super) fn bands_owed_for(&self, family: BandFamily) -> bool {
+        if self.bands_verdict_for(family).is_some() {
             return false;
         }
         let (unwatched, genre) = self.applied_terms();
         let gen = self.key_gen(sensitive(Some(family), unwatched));
-        !self.bands_backoff.as_ref().is_some_and(|(key, steps)| *steps > 0 && key.is(Some(family), unwatched, genre, gen))
+        let today = self.key_today(family);
+        !self.bands_backoff.as_ref().is_some_and(|(key, steps)| *steps > 0 && key.is(Some(family), today, unwatched, genre, gen))
     }
 
     /// Is a bands back-off counting down? The store must be stepped while it is.

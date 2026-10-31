@@ -119,7 +119,7 @@ fn housekeeping() -> Vec<AppFx> {
         AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
             target, work: LibraryWork::Want { lo: 0, hi: 24, focus: None },
         })),
-        AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed { target, work: LibraryWork::Letters })),
+        AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed { target, work: LibraryWork::Letters { today: None } })),
         AppFx::Library(LibraryReq::PublishShelves { target, hidden_page: false, at_head: false }),
         AppFx::StoreWork(StoreWork::Browse),
     ]
