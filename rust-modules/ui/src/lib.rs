@@ -830,12 +830,20 @@ impl Painter {
     /// off, an unsettled key), the identity painter when it fills the texture. A caller therefore
     /// draws in the painter's own space, `r` being where the picture stands in it.
     ///
+    /// **`paint` draws no glass and no blur.** A glass or blur pass ends by rebinding the frame's
+    /// framebuffer and resetting the viewport and clip target to the frame's, which would pull the
+    /// rest of `paint` out of the texture and onto the frame (`gfx::region_paint` asserts it in debug
+    /// builds). A page's rects, rings, textures, cards and text are what it is for.
+    ///
+    /// A call with no key still counts as the page asking for the region: a frame in which no page
+    /// asks gives the texture back (`gfx::region_frame_end`).
+    ///
     /// Returns whether `paint` RAN: `false` when the picture came from the texture, so a caller that
     /// books what a draw books (the placeholder debt) books it itself.
     pub fn cached_region(self, key: Option<u64>, r: Rect, paint: impl FnOnce(Painter)) -> bool {
         let mut paint = Some(paint);
         // A clip the caller holds (a scrolling list's) would be baked into the texture: not cached.
-        if key.is_some() && !self.records() && self.zoom.is_none() && self.scale == 1.0 && self.a > 0.0 && self.clip == Rect::FULL {
+        if !self.records() && self.zoom.is_none() && self.scale == 1.0 && self.a > 0.0 && self.clip == Rect::FULL {
             let g = self.rgb * self.a;
             let drawn = plx_gfx::gfx::region_paint(key, [r.x, r.y, r.w, r.h], [self.dx, self.dy], [g, g, g, self.a], &mut || {
                 if let Some(paint) = paint.take() {

@@ -310,7 +310,7 @@ mod tests {
     // ---- the cached picture: what names it ----
 
     use crate::tile::TileFacts;
-    use plx_gfx::gfx::{KeyedSlots, RegionPlan};
+    use plx_gfx::gfx::RegionSlot;
 
     fn board() -> (SampleFrame<'static>, RowStyle) {
         let sty = RowStyle { gap: 35.0, ..RowStyle::HOME };
@@ -382,49 +382,42 @@ mod tests {
     }
 
     /// The draw-count pin, end to end on the host: the names of a scripted run of frames go through
-    /// the slot table `region_paint` serves from. Twenty frames of the same inputs are ONE render;
-    /// each changed input is one more; a frame mid-dissolve has no name and renders nothing (it is
-    /// drawn live); and the two pages of a push - same picture, so the same name - share the render.
+    /// `RegionSlot::serve`, the very step `region_paint` serves from, with a counter for the texture.
+    /// Twenty frames of the same inputs are ONE fill; each changed input is one more; a frame
+    /// mid-dissolve has no name, so it never reaches the slot (it is drawn live); and the two pages of a
+    /// push - the same picture, so the same name - share the fill.
     #[test]
-    fn the_same_inputs_render_once_each_change_renders_again_and_a_dissolve_draws_live() {
+    fn the_same_inputs_fill_once_each_change_fills_again_and_a_dissolve_draws_live() {
         let (frame, sty) = board();
         let arts = [Art::Poster(Some(facts("/a"))), Art::Poster(Some(facts("/b"))), Art::Poster(Some(facts("/c")))];
-        let mut slots = KeyedSlots::<2>::new();
-        let (renders_c, live_c) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+        let mut slot = RegionSlot::new();
+        let (mut fills, mut live) = (0u32, 0u32);
         let mut frame_of = |led: &[ArtImage], frame: &SampleFrame<'_>, pages: usize| {
             for _ in 0..pages {
                 match key_of(frame, &sty, &arts, led, 1) {
-                    None => live_c.set(live_c.get() + 1),
+                    None => live += 1,
                     Some(k) => {
-                        if let RegionPlan::Render(i) = slots.plan(k) {
-                            renders_c.set(renders_c.get() + 1);
-                            slots.filled(i, k);
-                        }
+                        slot.serve(&mut fills, k, |f| { *f += 1; true }, |_| true);
                     }
                 }
             }
+            (fills, live)
         };
-        let renders = || renders_c.get();
-        let live = || live_c.get();
         let resting = [image(5), image(6), image(7)];
         for _ in 0..20 {
             frame_of(&resting, &frame, 1);
         }
-        assert_eq!(renders(), 1, "twenty frames, one render");
+        assert_eq!(frame_of(&resting, &frame, 1).0, 1, "twenty frames, one fill");
         for _ in 0..12 {
             frame_of(&resting, &frame, 2); // a push: both pages, one picture
         }
-        assert_eq!(renders(), 1, "both pages of a push are served by the one render");
+        assert_eq!(frame_of(&resting, &frame, 2).0, 1, "both pages of a push are served by the one fill");
         let mid = [image(5), ArtImage { shown: 0.5, ..image(6) }, image(7)];
-        frame_of(&mid, &frame, 1);
-        assert_eq!((renders(), live()), (1, 1), "a frame mid-dissolve is drawn live, and fills nothing");
+        assert_eq!(frame_of(&mid, &frame, 1), (1, 1), "a frame mid-dissolve is drawn live, and fills nothing");
         let arrived = [image(5), image(6), image(8)];
-        frame_of(&arrived, &frame, 1);
-        assert_eq!(renders(), 2, "the settled picture is rendered once it is whole");
-        frame_of(&arrived, &SampleFrame { rest_alpha: 0.5, ..frame }, 1);
-        assert_eq!(renders(), 3, "a changed input renders again");
-        frame_of(&arrived, &frame, 1);
-        assert_eq!(renders(), 3, "and the one before it is still held (two slots)");
+        assert_eq!(frame_of(&arrived, &frame, 1).0, 2, "the settled picture is filled once it is whole");
+        assert_eq!(frame_of(&arrived, &SampleFrame { rest_alpha: 0.5, ..frame }, 1).0, 3, "a changed input fills again");
+        assert_eq!(frame_of(&arrived, &SampleFrame { rest_alpha: 0.5, ..frame }, 1).0, 3, "and holds");
     }
 
     /// On the host no GL is linked: the picture is drawn live, once, with the page's own painter and

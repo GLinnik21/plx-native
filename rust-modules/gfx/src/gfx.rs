@@ -3447,6 +3447,23 @@ impl FrameCache {
         }
     }
 
+    /// Give the main texture (and its framebuffer) back: whatever it held is gone, the next
+    /// [`render_into`](Self::render_into) / [`render_region`](Self::render_region) makes it again.
+    pub fn release(&mut self) {
+        if self.fbo != 0 {
+            // SAFETY: render thread, current context, like every GL resource here.
+            unsafe { glDeleteFramebuffers(1, &self.fbo) };
+            self.fbo = 0;
+        }
+        delete_tex(self.tex);
+        self.tex = 0;
+        self.w = 0;
+        self.h = 0;
+        self.valid = false;
+        self.checked = false;
+        self.region = [0; 4];
+    }
+
     /// Draw the second slot across the canvas at `alpha`, over what is drawn so far.
     pub fn draw_prev(&self, alpha: f32) -> bool {
         if self.prev == 0 {
@@ -3783,76 +3800,62 @@ impl Drop for RegionTarget {
     }
 }
 
-/// **Which texture serves a region this frame**, for the keyed slots behind [`region_paint`]: a pure
-/// table, no GL, so the rule is pinned on the host. A key the slots hold is [`Cached`](Self::Cached);
-/// any other key claims the least recently used slot to be [`Render`](Self::Render)ed, and the slot
-/// holds nothing until [`KeyedSlots::filled`] says the fill landed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RegionPlan {
-    Cached(usize),
-    Render(usize),
+/// **The one texture slot behind [`region_paint`]**, as a pure table: no GL, so the rule is pinned on
+/// the host by the very function the renderer calls ([`serve`](Self::serve)). It remembers the key of
+/// the picture the texture holds. Both Under posters pages ask for the SAME picture (a page whose art
+/// is still dissolving has no key and draws live, it never asks for a different one), so one slot
+/// serves a push and a pop; a picture that changes is a new key and one fill.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegionSlot {
+    key: Option<u64>,
 }
 
-/// `N` texture slots, each holding the key of the picture it was last filled with. Two is the number
-/// the Under posters push needs: during a push or a pop BOTH pages draw their preview, and when their
-/// keys differ (the picker's hovered caption is not the stored one) a single slot would be refilled by
-/// each in turn, every frame.
-#[derive(Clone, Copy, Debug)]
-pub struct KeyedSlots<const N: usize> {
-    keys: [Option<u64>; N],
-    used: [u64; N],
-    tick: u64,
-}
-
-impl<const N: usize> Default for KeyedSlots<N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const N: usize> KeyedSlots<N> {
+impl RegionSlot {
     pub const fn new() -> Self {
-        Self { keys: [None; N], used: [0; N], tick: 0 }
+        Self { key: None }
     }
 
-    /// The plan for `key`, touching the slot it names (or claiming the one it will fill).
-    pub fn plan(&mut self, key: u64) -> RegionPlan {
-        self.tick += 1;
-        if let Some(i) = self.keys.iter().position(|k| *k == Some(key)) {
-            self.used[i] = self.tick;
-            return RegionPlan::Cached(i);
+    /// **The slot step.** `key` is the picture asked for. The key the slot holds is `draw`n from the
+    /// texture; any other `fill`s the texture first (`fill` returns whether it landed) and then
+    /// `draw`s. `state` is whatever the two touch (the texture), lent to each in turn. A fill that did
+    /// not land leaves the slot empty, so the next ask fills again rather than serving a texture that
+    /// holds something else. Returns whether the picture was drawn.
+    pub fn serve<S>(
+        &mut self,
+        state: &mut S,
+        key: u64,
+        fill: impl FnOnce(&mut S) -> bool,
+        draw: impl FnOnce(&S) -> bool,
+    ) -> bool {
+        if self.key != Some(key) {
+            self.key = None;
+            if !fill(state) {
+                return false;
+            }
+            self.key = Some(key);
         }
-        // An empty slot first, else the one touched longest ago.
-        let i = (0..N).min_by_key(|&i| (self.keys[i].is_some(), self.used[i])).unwrap_or(0);
-        self.keys[i] = None;
-        RegionPlan::Render(i)
+        draw(state)
     }
 
-    /// Slot `i` now holds the picture of `key`.
-    pub fn filled(&mut self, i: usize, key: u64) {
-        self.keys[i] = Some(key);
-        self.used[i] = self.tick;
+    /// The slot gave its texture back: it holds nothing now.
+    pub fn forget(&mut self) {
+        self.key = None;
     }
 }
 
-/// The slots and their textures, on the render thread (GL resources, like [`FrameCache`] itself).
+/// The slot and its texture, on the render thread (a GL resource, like [`FrameCache`] itself).
 struct RegionSet {
-    slots: KeyedSlots<2>,
-    caches: [FrameCache; 2],
+    slot: RegionSlot,
+    cache: FrameCache,
+    /// Did any page ask for the region since the last frame end? A frame that asked for none gives the
+    /// texture back ([`region_frame_end`]).
+    asked: bool,
 }
 
 thread_local! {
-    static REGIONS: std::cell::RefCell<RegionSet> = const {
-        std::cell::RefCell::new(RegionSet { slots: KeyedSlots::new(), caches: [FrameCache::new(), FrameCache::new()] })
+    static REGION: std::cell::RefCell<RegionSet> = const {
+        std::cell::RefCell::new(RegionSet { slot: RegionSlot::new(), cache: FrameCache::new(), asked: false })
     };
-}
-
-/// How many regions were drawn into a texture (the fills), for the tests and the dev log.
-static REGION_FILLS: AtomicU32 = AtomicU32::new(0);
-
-/// Fills since boot.
-pub fn region_fills() -> u32 {
-    REGION_FILLS.load(Ordering::Relaxed)
 }
 
 /// The whole-pixel canvas rect a region of `rect` (`x, y, w, h` logical px) is drawn into: the rect
@@ -3880,11 +3883,19 @@ fn region_mix(key: u64, extent: [c_int; 4]) -> u64 {
 /// `rect` is where the picture stands on the PAGE (`x, y, w, h` logical px), `shift` the painter's
 /// translation of the page this frame, and `tint` the group tint ([`FrameCache::draw_region`]).
 ///
-/// A key a slot holds is one quad. Another key draws `paint` into a slot's texture ONCE
+/// The key the texture holds is one quad. Another key draws `paint` into the texture ONCE
 /// ([`FrameCache::render_region`]; `paint` then draws as if for the canvas, with an identity painter)
-/// and puts that on the frame. Returns whether the region was drawn: `false` means `paint` did NOT
-/// run and the caller draws it live - with the cache switched off, with no key, with no GL, on a
-/// frozen page, in a blur or discovery pass, in another page target, or when the fill declined.
+/// and puts that on the frame. Every call, keyed or not, counts as the frame asking for the region:
+/// a frame that asks for none gives the texture back ([`region_frame_end`]). Returns whether the region
+/// was drawn: `false` means `paint` did NOT run and the caller draws it live - with the cache switched
+/// off, with no key, with no GL, on a frozen page, in a blur or discovery pass, in another page target,
+/// or when the fill declined.
+///
+/// **`paint` must draw no glass and no blur.** A glass or blur pass ends by rebinding
+/// [`plx_base::surface::default_fb`] and resetting the viewport, [`CLIP_TARGET`] and the scissor to the
+/// frame's: that would pull the rest of `paint` out of the region's texture and onto the frame. A
+/// plain page's rects, rings, textures, cards and text are fine; the fill asserts (debug builds) that
+/// no such pass ran inside it.
 pub fn region_paint(
     key: Option<u64>,
     rect: [f32; 4],
@@ -3892,39 +3903,67 @@ pub fn region_paint(
     tint: [f32; 4],
     paint: &mut dyn FnMut(),
 ) -> bool {
-    let Some(key) = key else { return false };
-    if !region_cache() || page_frozen() || blur_source_pass() || backdrop::discovering() {
-        return false;
-    }
-    // No image shader, no GL context (a host test): nothing here may call GL.
-    if unsafe { IPROG } == 0 || plx_base::surface::default_fb() != plx_base::surface::frame_fb() {
-        return false;
-    }
-    let extent = region_extent(rect);
-    let key = region_mix(key, extent);
-    let mut at = [extent[0] as f32 + shift[0], extent[1] as f32 + shift[1]];
-    if region_snap() {
-        at = [snap(at[0]), snap(at[1])];
-    }
-    REGIONS.with(|cell| {
+    REGION.with(|cell| {
         let Ok(mut set) = cell.try_borrow_mut() else { return false };
+        set.asked = true;
+        let Some(key) = key else { return false };
+        if !region_cache() || page_frozen() || blur_source_pass() || backdrop::discovering() {
+            return false;
+        }
+        // No image shader, no GL context (a host test): nothing here may call GL.
+        if unsafe { IPROG } == 0 || plx_base::surface::default_fb() != plx_base::surface::frame_fb() {
+            return false;
+        }
+        let extent = region_extent(rect);
+        let key = region_mix(key, extent);
+        let mut at = [extent[0] as f32 + shift[0], extent[1] as f32 + shift[1]];
+        if region_snap() {
+            at = [snap(at[0]), snap(at[1])];
+        }
         let set = &mut *set;
-        match set.slots.plan(key) {
-            RegionPlan::Cached(i) => set.caches[i].draw_region(at, tint),
-            RegionPlan::Render(i) => {
-                let Some(target) = set.caches[i].render_region(extent) else { return false };
+        set.slot.serve(
+            &mut set.cache,
+            key,
+            |cache| {
+                let Some(target) = cache.render_region(extent) else { return false };
+                let passes = region_glass_passes();
                 paint();
-                set.caches[i].finish_region(target);
-                set.slots.filled(i, key);
-                REGION_FILLS.fetch_add(1, Ordering::Relaxed);
+                debug_assert_eq!(passes, region_glass_passes(), "a region fill drew a glass or blur pass");
+                cache.finish_region(target);
                 log(&format!(
-                    "region cache: fill slot {i} key {key:016x} {}x{} at ({}, {})",
+                    "region cache: fill key {key:016x} {}x{} at ({}, {})",
                     extent[2], extent[3], extent[0], extent[1]
                 ));
-                set.caches[i].draw_region(at, tint)
-            }
-        }
+                true
+            },
+            |cache| cache.draw_region(at, tint),
+        )
     })
+}
+
+/// A frame ended: if no page asked for the region during it, the texture goes back to the driver
+/// (1.4 MiB that nothing is showing), and the next ask fills again. Called once per presented frame,
+/// beside the other frame-end hooks. A push, a pop and a transition between the two pages ask on every
+/// frame (one page or the other always draws), so it never frees mid-transition.
+pub fn region_frame_end() {
+    REGION.with(|cell| {
+        let Ok(mut set) = cell.try_borrow_mut() else { return };
+        if !std::mem::replace(&mut set.asked, false) && set.cache.resident_bytes() > 0 {
+            let set = &mut *set;
+            set.cache.release();
+            set.slot.forget();
+        }
+    });
+}
+
+/// Bytes the region's texture holds right now, for the render set's ledger.
+pub fn region_resident_bytes() -> usize {
+    REGION.with(|cell| cell.try_borrow().map_or(0, |set| set.cache.resident_bytes()))
+}
+
+/// Glass and blur passes begun since boot, read by the region fill's debug check.
+fn region_glass_passes() -> u32 {
+    BLUR_SNAPSHOTS.load(Ordering::Relaxed)
 }
 
 /// [`draw_tex`] plus the focus edge-sheen baked into the same pass (rim only, no shadow), and now

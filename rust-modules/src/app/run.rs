@@ -774,6 +774,8 @@ unsafe fn present_and_swap(
         app.glass.sources.borrow_mut().finish();
         // …and a queued underlay-field reduction has had one more drawn frame to finish in.
         plx_gfx::gfx::field_frame_end();
+        // …and a region texture no page asked for this frame goes back to the driver.
+        plx_gfx::gfx::region_frame_end();
         // …and a frame that captured the page leaves a fence the next frames wait on.
         plx_gfx::gfx::snapshot_frame_end();
         // …and a ground probe's queued copy is read back here, between frames, if it is done.
