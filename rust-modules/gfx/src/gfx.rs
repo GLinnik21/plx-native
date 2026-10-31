@@ -397,8 +397,9 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) {
 
 /// Where authored coordinates land in the bound target: its window origin `(vx, vy)` and the window
 /// pixels per authored px. The same triple `glViewport` was given - the main surface's
-/// ([`plx_base::surface`]), or the reduced-resolution source pass's ([`CLIP_TARGET`]) - which is what
-/// keeps a scissor box and the pixel grid of a quad cut along it on the very pixels the viewport maps to.
+/// ([`plx_base::surface`]), or the reduced-resolution source pass's ([`CLIP_TARGET`]) or a
+/// [`FrameCache::render_region`] fill's (scale 1) - which is what keeps a scissor box and the pixel
+/// grid of a quad cut along it on the very pixels the viewport maps to.
 fn target_map() -> (c_int, c_int, f32) {
     match unsafe { CLIP_TARGET } {
         Some((tx, ty, ts, _, _)) => (tx, ty, ts),

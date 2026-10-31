@@ -96,7 +96,8 @@ pub enum CardPath {
     Split = 0,
     /// A focused or risen card (`f > 0` or `dy > 0`): the focus program, the whole quad, unsplit.
     Focus = 1,
-    /// A resting card on a reduced-resolution source pass (`CLIP_TARGET`): whole.
+    /// A resting card on a reduced-resolution source pass (`CLIP_TARGET`), or inside a full-resolution
+    /// `FrameCache::render_region` fill (scale 1): whole.
     Clipped = 2,
     /// A resting card with no certainly-plain interior (a circle, a sliver): whole.
     NoInterior = 3,
@@ -216,8 +217,9 @@ mod imp {
 
     /// Book one card draw against the path it took: the quad's screen-visible area (the very
     /// arithmetic [`gate`] books a class with) and one draw. Unlike [`gate`] this INCLUDES a blur
-    /// source pass's draws, because those are the ones [`CardPath::Clipped`] exists to count; the
-    /// class ledger keeps leaving them out, so the paths' draws can exceed the `card` class's.
+    /// source pass's draws (and a `FrameCache::render_region` fill's), because those are the ones
+    /// [`CardPath::Clipped`] exists to count; the class ledger keeps leaving them out, so the paths'
+    /// draws can exceed the `card` class's.
     #[inline]
     pub fn note_card_path(path: CardPath, x: f32, y: f32, w: f32, h: f32) {
         if ON.with(|f| f.get()) {
