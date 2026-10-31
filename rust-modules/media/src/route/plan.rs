@@ -2121,7 +2121,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // A direct play needs a track to play: with none the server converts the intended one, which
             // is not Original whatever MDE said about the (omitted) audio. With no track list yet, the
             // Media-level audio codec stands in: one the TV cannot decode (DTS-HD MA on a set with no DTS
-            // row, #584) is the same case, since MDE judged the profile and not what the pipeline feeds.
+            // row, #584) is the same case, since MDE judged the profile and not what the pipeline feeds. So is a
+            // Media-level Opus: with no track list its width is unstated (0), which the Load cannot describe
+            // (`audio_track_fits`; the engine used to refuse it at width 0, #1096), so it is not direct play.
             let mut directplay = (audio_sel.is_some()
                 || (tracks.is_empty() && (acodec.is_empty() || audio_direct_plays_with(&env.caps, env.direct_play_mode, acodec, 0, 0))))
                 && mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
@@ -3112,7 +3114,9 @@ pub(super) fn pick_dp_audio_pref(
 /// through `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
 /// Both also apply the Load's own limits ([`plx_platform::devcaps::audio_track_fits`]): the PCM
 /// path's channel count and rate rule (`pcm_load_rate`: a table rate, or any faster one the app
-/// resamples), and the sample-rate ceiling every other codec shares (DTS and TrueHD excepted). They belong
+/// resamples), the stated channel count an Opus `opusInfo` header can describe (1..=8,
+/// `devcaps::OPUS_LOAD_CHANNELS`; an unstated width is not direct-playable, #1096), and the sample-rate
+/// ceiling every other codec shares (DTS and TrueHD excepted). They belong
 /// to the app's decoder and the Load, not to a hardware decoder Forced may trust past its table, so a 5.1
 /// FLAC, or a 96 kHz AAC, is refused under Forced instead of failing at the Load; a 96 kHz stereo FLAC is not.
 pub(super) fn audio_direct_plays_with(

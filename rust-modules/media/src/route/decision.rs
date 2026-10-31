@@ -5687,15 +5687,61 @@ fn carried_audio_of_stream(ps: &PlaybackSession) -> Option<&CarriedAudio> {
     let declared = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
     ps.cur_audio.as_ref().filter(|a| plx_platform::devcaps::audio_codec_id(&a.codec) == declared)
 }
-/// The carried audio track's channel count when it is the codec the stream declares, else 0.
-/// An Opus Load needs it (`opusInfo`), and the no-downmix rule reads it
+/// What an Opus Load declares about its audio, and where each fact comes from: the ONE derivation
+/// [`stream_achannels`] and the Load's `opusInfo` log line both read ([`opus_lane`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpusLane {
+    /// The channel count the Load declares (`contents.opusInfo.channels`); 0 is not a layout, and the
+    /// Load is refused.
+    pub width: i64,
+    /// The server converted the audio to the declared codec (a live transcode whose carried track is
+    /// another codec), so the carried width is the SOURCE's and `width` is the one asked for.
+    pub converted: bool,
+    /// The carried track's channel count, whatever its codec (0: no track, or an unstated count).
+    pub source: i64,
+    /// The Opus bound the profile asked the server for ([`plx_platform::devcaps::Caps::opus_lane_bound`]).
+    pub bound: u32,
+}
+
+/// The width an Opus Load declares and why ([`OpusLane`]); read only while the stream declares Opus.
+///
+/// * The carried track is Opus (a direct play, or a server remux that kept the codec): its own width.
+/// * A **server conversion** to Opus (`is_transcoding`, and the carried track is another codec): the plan
+///   carries the SOURCE track while the stream declares the `/decision` OUTPUT codec, so the carried
+///   width is not the output's. The Load declares the width the profile asked the server for
+///   ([`plx_platform::devcaps::Caps::opus_lane_width`]: the source's, held to the attempt's Opus bound,
+///   stereo when unknown). The PMS output width itself is not measured.
+/// * Anything else with a mismatching track (a native track switch in a direct play or Force Direct Play
+///   moves only the declared codec): 0, never a guessed stereo header over another track's packets
+///   (#917, #918).
+pub fn opus_lane(ps: &PlaybackSession) -> OpusLane {
+    let carried = ps.cur_audio.as_ref();
+    let source = carried.map_or(0, |a| a.channels);
+    let caps = ps.attempt_caps();
+    let bound = caps.opus_lane_bound();
+    let converted = is_transcoding(ps) && carried_audio_of_stream(ps).is_none();
+    let width = if converted {
+        i64::from(caps.opus_lane_width(source))
+    } else {
+        carried_audio_of_stream(ps).map_or(0, |a| a.channels)
+    };
+    OpusLane { width, converted, source, bound }
+}
+/// The channel count the stream's Load declares: the carried audio track's when it is the codec the
+/// stream declares, else 0, except that a server-converted Opus lane declares the width the server was
+/// asked for ([`opus_lane`]). An Opus Load needs it (`opusInfo`), and the no-downmix rule reads it
 /// ([`plx_platform::devcaps::app_decode_mixes_down`]: 0 is unknown, which counts as a downmix).
 pub fn stream_achannels(ps: &PlaybackSession) -> i64 {
-    carried_audio_of_stream(ps).map_or(0, |a| a.channels)
+    if plx_platform::devcaps::audio_codec_id(&ps.stream_acodec) == "opus" {
+        opus_lane(ps).width
+    } else {
+        carried_audio_of_stream(ps).map_or(0, |a| a.channels)
+    }
 }
 /// What the pipeline was fed, for the failed-open ladder ([`crate::player::recovery::OpenFacts`]):
-/// the stream's audio codec and the carried track's channel count ([`stream_achannels`]: 0 when
-/// that track is not the declared codec). `None` while no audio codec is declared. Beside
+/// the stream's audio codec and the channel count the Load declares for it ([`stream_achannels`]: the
+/// carried track's, 0 when that track is not the declared codec, except that an Opus lane the server
+/// converted declares the width it was asked for, [`opus_lane`]). `None` while no audio codec is declared. Beside
 /// [`stream_achannels`] so the session keeps its fields private.
 pub fn stream_audio(ps: &PlaybackSession) -> Option<crate::player::recovery::StreamAudio> {
     let codec = stream_acodec(ps);
@@ -6024,6 +6070,104 @@ mod pcm_format_tests {
                 assert_eq!(stream_audio(&ps).unwrap().channels, channels as u32, "{what}: the ladder's fact");
             }
         }
+    }
+
+    /// A session whose attempt announces Opus at `bound` channels (`None`: no stated bound), declaring
+    /// `opus`, carrying `carried` (`None`: no track), on a server transcode or not.
+    fn opus_session(bound: Option<u32>, carried: Option<(&str, i64)>, transcoding: bool) -> PlaybackSession {
+        use plx_platform::devcaps::Caps;
+        let caps = Caps {
+            audio: "aac,ac3,eac3,opus".into(),
+            audio_channels: bound.map(|b| [("opus".to_string(), b)].into()).unwrap_or_default(),
+            ..Caps::assumed()
+        };
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(caps));
+        set_stream_codecs(&mut ps, "h264", "opus");
+        if let Some((codec, channels)) = carried {
+            set_carried_audio_for_test(&mut ps, CarriedAudio { codec: codec.into(), ..flac(channels, 48_000, 0) });
+        }
+        if transcoding {
+            install_transcode_for_test(&mut ps, true, false);
+        }
+        ps
+    }
+
+    /// **A server-converted Opus lane declares the width the server was asked for.** The plan carries the
+    /// SOURCE track while the stream declares the `/decision` OUTPUT codec, so the declared codec differs
+    /// from the carried one and the carried width is the source's, which the converted stream need not
+    /// have (#1096: a 0 refused the Load with "no Opus layout for 0 channel(s)"). The profile asks the
+    /// server for at most the attempt's Opus bound; the PMS output width itself is not measured.
+    #[test]
+    fn a_server_converted_opus_lane_declares_the_width_the_server_was_asked_for() {
+        // (carried, bound, width)
+        let rows: [(Option<(&str, i64)>, Option<u32>, i64); 10] = [
+            (Some(("aac", 6)), Some(2), 2),
+            (Some(("aac", 1)), Some(2), 1),
+            (Some(("aac", 2)), Some(2), 2),
+            (Some(("aac", 0)), Some(2), 2),
+            (None, Some(2), 2),
+            (Some(("eac3", 8)), Some(2), 2),
+            (Some(("aac", 6)), Some(6), 6),
+            (Some(("aac", 10)), Some(8), 8),
+            (Some(("aac", 6)), None, 2),
+            (Some(("dca", 6)), Some(2), 2),
+        ];
+        for (carried, bound, width) in rows {
+            let ps = opus_session(bound, carried, true);
+            let what = format!("carried {carried:?}, bound {bound:?}");
+            assert_eq!(stream_achannels(&ps), width, "{what}");
+            assert_eq!(i64::from(stream_audio(&ps).unwrap().channels), width, "{what}: the ladder's fact");
+        }
+        // A copy of an Opus track (the carried codec is the declared one) keeps its own width, converted
+        // session or not.
+        for transcoding in [false, true] {
+            let ps = opus_session(Some(2), Some(("opus", 6)), transcoding);
+            assert_eq!(stream_achannels(&ps), 6, "copy, transcoding={transcoding}");
+        }
+    }
+
+    /// The lane the Load logs is the lane it declares from: one derivation, `stream_achannels` reads its width.
+    #[test]
+    fn the_opus_lane_names_where_the_declared_width_came_from() {
+        let converted = opus_session(Some(2), Some(("aac", 6)), true);
+        assert_eq!(opus_lane(&converted), OpusLane { width: 2, converted: true, source: 6, bound: 2 });
+        let copy = opus_session(Some(2), Some(("opus", 6)), true);
+        assert_eq!(opus_lane(&copy), OpusLane { width: 6, converted: false, source: 6, bound: 2 });
+        let nothing = opus_session(None, None, true);
+        assert_eq!(opus_lane(&nothing), OpusLane { width: 2, converted: true, source: 0, bound: 2 });
+        let switched = opus_session(Some(2), Some(("aac", 6)), false);
+        assert_eq!(opus_lane(&switched), OpusLane { width: 0, converted: false, source: 6, bound: 2 });
+        for ps in [&converted, &copy, &nothing, &switched] {
+            assert_eq!(stream_achannels(ps), opus_lane(ps).width);
+        }
+    }
+
+    /// **The converted-lane width is Opus's alone.** Any other declared codec on a server transcode whose
+    /// carried track is another codec keeps today's 0: the Load of AC-3, DTS or AAC declares no channel
+    /// count, and the ladder's facet for them is unchanged.
+    #[test]
+    fn a_converted_lane_of_another_codec_keeps_its_zero_width() {
+        for (declared, carried) in [("ac3", "dca"), ("aac", "eac3"), ("dts", "aac"), ("eac3", "opus")] {
+            let mut ps = opus_session(Some(2), Some((carried, 6)), true);
+            set_stream_codecs(&mut ps, "h264", declared);
+            assert_eq!(stream_achannels(&ps), 0, "{declared} converted from {carried}");
+            assert_eq!(stream_audio(&ps).unwrap().channels, 0, "{declared} from {carried}: the ladder's fact");
+        }
+    }
+
+    /// **Only a server conversion earns the declared stereo.** A direct play (or Force) whose carried
+    /// track is another codec than the declared one is a native track switch, which moves the declared
+    /// codec alone (`flight::stage_native_audio`): the packets are the new track's, so a stereo header over
+    /// 5.1 packets (#917, #918) must not be declared. The width stays 0, and the Load stays refused.
+    #[test]
+    fn a_mismatched_track_in_direct_play_keeps_a_zero_width() {
+        let ps = opus_session(Some(2), Some(("aac", 6)), false);
+        assert_eq!(stream_achannels(&ps), 0, "direct play");
+        let mut forced = opus_session(Some(2), Some(("aac", 2)), false);
+        forced.direct_play_mode = DirectPlayMode::Forced;
+        assert_eq!(stream_achannels(&forced), 0, "Force Direct Play after a native switch to an Opus track");
+        assert_eq!(stream_audio(&forced).unwrap().channels, 0);
     }
 
     /// **MP3 and Vorbis in force** (S4-4) declare the same one shape as DTS, only on an attempt
