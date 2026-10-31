@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T21:18:21Z",
+ "generated": "2026-10-31T21:23:32Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 34.7,
+   "change7_pct": 35.4,
    "d30": null,
    "delta30": null,
-   "delta7": 50.0,
+   "delta7": 51,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 83,
-   "now": 194.0,
+   "now": 195,
    "prev7": 144,
    "shown": true,
    "state": "worse",
@@ -169,14 +169,14 @@
    "change7_pct": 16.6,
    "d30": 1057.0,
    "delta30": -671.0,
-   "delta7": 55.0,
+   "delta7": 55,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 97,
-   "now": 386.0,
+   "now": 386,
    "prev7": 331,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.9,
-   "change7_pct": 5.1,
+   "change30_pct": 34.1,
+   "change7_pct": 5.3,
    "d30": 206.5,
-   "delta30": 70.0,
-   "delta7": 13.5,
+   "delta30": 70.5,
+   "delta7": 14,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 83,
-   "now": 276.5,
+   "now": 277,
    "prev7": 263,
    "shown": true,
    "state": "flat",
@@ -430,17 +430,17 @@
   },
   {
    "change30_pct": -78.7,
-   "change7_pct": 6.5,
+   "change7_pct": 6.7,
    "d30": 1004.0,
-   "delta30": -790.5,
-   "delta7": 13.0,
+   "delta30": -790.0,
+   "delta7": 13.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 82,
-   "now": 213.5,
+   "now": 214,
    "prev7": 200.5,
    "shown": true,
    "state": "flat",
@@ -561,14 +561,14 @@
    "change7_pct": -5.3,
    "d30": 17.0,
    "delta30": 1.0,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 83,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.9,
    "commits": [
     {
-     "pr": 1172,
-     "sha": "6f3fb9ff5",
-     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
-    },
-    {
      "pr": 1173,
      "sha": "83bd902b1",
      "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
@@ -715,6 +710,11 @@
      "pr": 1138,
      "sha": "048374834",
      "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
+    },
+    {
+     "pr": 1188,
+     "sha": "5a6e155c8",
+     "title": "The Under posters preview is rendered once: smooth Details push and pop"
     }
    ],
    "from": 188.0,
@@ -725,13 +725,8 @@
    "to": 325
   },
   {
-   "change_pct": 34.7,
+   "change_pct": 35.4,
    "commits": [
-    {
-     "pr": 1172,
-     "sha": "6f3fb9ff5",
-     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
-    },
     {
      "pr": 1173,
      "sha": "83bd902b1",
@@ -776,6 +771,11 @@
      "pr": 1138,
      "sha": "048374834",
      "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
+    },
+    {
+     "pr": 1188,
+     "sha": "5a6e155c8",
+     "title": "The Under posters preview is rendered once: smooth Details push and pop"
     }
    ],
    "from": 144,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 194.0
+   "to": 195
   },
   {
    "change_pct": 22.9,
    "commits": [
-    {
-     "pr": 1172,
-     "sha": "6f3fb9ff5",
-     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
-    },
     {
      "pr": 1173,
      "sha": "83bd902b1",
@@ -837,6 +832,11 @@
      "pr": 1138,
      "sha": "048374834",
      "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
+    },
+    {
+     "pr": 1188,
+     "sha": "5a6e155c8",
+     "title": "The Under posters preview is rendered once: smooth Details push and pop"
     }
    ],
    "from": 266,
@@ -850,11 +850,6 @@
    "change_pct": 18.2,
    "commits": [
     {
-     "pr": 1172,
-     "sha": "6f3fb9ff5",
-     "title": "A-Z rail bands, step 2: the data job that reads band counts for rating, duration, unplayed and plays"
-    },
-    {
      "pr": 1173,
      "sha": "83bd902b1",
      "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
@@ -898,6 +893,11 @@
      "pr": 1138,
      "sha": "048374834",
      "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
+    },
+    {
+     "pr": 1188,
+     "sha": "5a6e155c8",
+     "title": "The Under posters preview is rendered once: smooth Details push and pop"
     }
    ],
    "from": 2087,
