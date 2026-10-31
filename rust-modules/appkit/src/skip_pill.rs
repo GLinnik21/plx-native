@@ -4,10 +4,12 @@
 //! same height — and the discs return the moment the segment ends.
 //!
 //! Replacing them rather than joining them is the design call: one wide unmissable target in the
-//! spot the eye already goes for transport controls. The cost is that CC/Audio are unreachable for
-//! the length of the segment, and that the button only exists while the HUD is up — which is why
-//! `app.rs` RAISES the HUD once when a segment begins and parks focus here, so a bare OK still
-//! skips in one press instead of three.
+//! spot the eye already goes for transport controls. The cost is that CC/Audio are covered for the
+//! length of the segment, so BACK over the pill DISMISSES the offer for that segment and puts the
+//! discs back (`HudState::dismissed_offer`, `PlayerScreen::dismiss_offer`) — the row stays at five
+//! controls and the viewer never has to wait an intro out to change tracks. The button only exists
+//! while the HUD is up, which is why `app.rs` RAISES the HUD once when a segment begins and parks
+//! focus here, so a bare OK still skips in one press instead of three.
 #![allow(dead_code)]
 use plx_data::metadata::{self, MarkerKind};
 use plx_ui::theme;
