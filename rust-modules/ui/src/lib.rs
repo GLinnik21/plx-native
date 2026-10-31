@@ -816,6 +816,41 @@ impl Painter {
             ..self
         }
     }
+
+    /// **Paint `r` of the page once and serve it as one textured quad** ([`plx_gfx::gfx::region_paint`]).
+    /// `paint` draws the picture; `key` names it and must change with everything it draws (`None`:
+    /// it is not settled, so it is drawn live). Served from the texture, the picture is drawn by
+    /// `paint(Painter::root())` ONCE per key, onto a transparent target, and every frame after that
+    /// is a single premultiplied quad at this painter's translation, alpha and dimming: the cascade
+    /// applies to the picture as a GROUP (a cross-fade of two pages draws each page's picture at its
+    /// own alpha, not each primitive in it).
+    ///
+    /// `paint` runs exactly once, with the painter to draw with: this one when the picture is drawn
+    /// live (a recording or discovery walk, a zoom, a pop, a frozen page, no GL, the cache switched
+    /// off, an unsettled key), the identity painter when it fills the texture. A caller therefore
+    /// draws in the painter's own space, `r` being where the picture stands in it.
+    ///
+    /// Returns whether `paint` RAN: `false` when the picture came from the texture, so a caller that
+    /// books what a draw books (the placeholder debt) books it itself.
+    pub fn cached_region(self, key: Option<u64>, r: Rect, paint: impl FnOnce(Painter)) -> bool {
+        let mut paint = Some(paint);
+        // A clip the caller holds (a scrolling list's) would be baked into the texture: not cached.
+        if key.is_some() && !self.records() && self.zoom.is_none() && self.scale == 1.0 && self.a > 0.0 && self.clip == Rect::FULL {
+            let g = self.rgb * self.a;
+            let drawn = plx_gfx::gfx::region_paint(key, [r.x, r.y, r.w, r.h], [self.dx, self.dy], [g, g, g, self.a], &mut || {
+                if let Some(paint) = paint.take() {
+                    paint(Painter::root());
+                }
+            });
+            if drawn {
+                return paint.is_none();
+            }
+        }
+        if let Some(paint) = paint.take() {
+            paint(self);
+        }
+        true
+    }
     /// The opacity carried on the cascade — for a caller whose WORK depends on whether anything it
     /// draws can be seen this frame (`RouteGround::draw_host` defers its page read to a frame
     /// on which the ground is invisible).

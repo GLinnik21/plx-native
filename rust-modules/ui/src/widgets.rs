@@ -337,6 +337,10 @@ pub fn warm_tex_on(
 /// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton), any
 /// keyed thumbnail at an explicit resolution (flat placeholder skeleton), or a person's headshot
 /// (the same thumbnail, but its EMPTY case draws a person glyph rather than a blank tile).
+///
+/// `Copy`: it is borrowed values all through (a tile's facts, a path, a size), so a caller that
+/// asks for a tile's art ahead of drawing it ([`lead_card_art`]) and draws it later holds it twice.
+#[derive(Clone, Copy)]
 pub enum Art<'a> {
     /// The facts a poster tile reads of its catalog row — see [`TileFacts`], which the caller (a
     /// screen) fills from the row; the library never names the row's own type.

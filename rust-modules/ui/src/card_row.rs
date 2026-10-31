@@ -15,7 +15,7 @@ use crate::hstack::{Flow, Item};
 use crate::vstack::{Anchor, VStack};
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
-use crate::widgets::{card, pop_factor, Art};
+use crate::widgets::{pop_factor, Art};
 use crate::{Painter, Rect, Spring};
 use std::os::raw::c_char;
 
@@ -909,6 +909,23 @@ pub fn draw_tile(
     sty: &RowStyle,
     resume: Option<f32>,
 ) {
+    draw_tile_led(p, art, rect, s, sty, resume, None);
+}
+
+/// [`draw_tile`] for a tile whose art was asked for ahead of its draw ([`lead_focused`], which is
+/// the same call for a resting tile as for a lifted one): `led` is that answer, `None` resolves in
+/// the draw. A caller that needs the answer BEFORE it draws (to key a cache on the art, to see that
+/// it is still dissolving in) resolves once and hands it on; a second resolve would be a second
+/// occurrence of the card in `card_motion`.
+pub fn draw_tile_led(
+    p: Painter,
+    art: Art,
+    rect: Rect,
+    s: f32,
+    sty: &RowStyle,
+    resume: Option<f32>,
+    led: Option<crate::widgets::ArtImage>,
+) {
     let rad = sty.tile_radius(rect, s);
     // every tile carries a resting shadow + 1px perimeter stroke, both FOLDED into card()'s single
     // composite pass; a near-neighbour mid-pop (s slightly >1) lifts smoothly toward the focused
@@ -916,7 +933,7 @@ pub fn draw_tile(
     let f = pop_factor(s, sty.focus_scale);
     // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
     // tile's size (a fan's live name) must not re-layout on every frame of a pop.
-    card(p, rect.scaled(1.0 / s), art, rad, true, s, f);
+    crate::widgets::card_named_led(p, rect.scaled(1.0 / s), art, None, rad, true, s, f, led);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }

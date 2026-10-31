@@ -30,16 +30,20 @@
 //!    ledger above counts logical composites and cannot see this (a split card is one composite and
 //!    five GL draws); this can, and it is how a stalled spring that kept every visited card on the
 //!    focus program was found. `/tmp/plxnative-nocardsplit` ([`set_card_split`]) switches the split
-//!    off for a leg, so one binary measures it on and off interleaved.
+//!    off for a leg, so one binary measures it on and off interleaved. A region drawn once into a
+//!    texture (`gfx::region_paint`, the Under posters preview) has two switches of its own:
+//!    `/tmp/plxnative-nopreviewcache` ([`set_region_cache`]) draws it live again, and
+//!    `/tmp/plxnative-previewsnap` ([`set_region_snap`]) puts its quad on whole pixels.
 //!
 //! A masked leg is deliberately a BROKEN PICTURE. This is a measurement knob, not a feature — the
 //! mask exists so a control-leg difference can be taken, and every leg it produces except the
 //! control is unshippable by construction.
 //!
 //! All three surfaces are dev-only: with `devtriggers` off, [`gate`] is `false`, [`masked_part`] is
-//! `false`, and [`note_px`], [`note_card_path`] and [`set_card_split`] are empty at compile time (and
-//! [`card_split`] is always `true`: a release build always splits), so a release binary carries
-//! neither the branch nor the counters.
+//! `false`, and [`note_px`], [`note_card_path`], [`set_card_split`], [`set_region_cache`] and
+//! [`set_region_snap`] are empty at compile time (and [`card_split`] and [`region_cache`] are always
+//! `true` and [`region_snap`] `false`: a release build always splits and always caches), so a release
+//! binary carries neither the branch nor the counters.
 
 /// What kind of quad a draw call submits. One variant per PRIMITIVE FAMILY rather than per screen
 /// element, because that is the granularity `gfx`/`text` can label a draw at without every screen
@@ -168,6 +172,10 @@ mod imp {
         static PATH_DRAWS: [Cell<u32>; NPATH] = const { [const { Cell::new(0) }; NPATH] };
         /// Is the resting-card split allowed? On unless a leg switched it off.
         static SPLIT: Cell<bool> = const { Cell::new(true) };
+        /// Is a region (the Under posters preview) allowed to be served from its texture? On unless a leg switched it off.
+        static REGION_CACHE: Cell<bool> = const { Cell::new(true) };
+        /// Is a cached region's quad put on whole pixels? Off unless a leg switched it on.
+        static REGION_SNAP: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Switch the resting-card split off (`false`) or back on, for an A/B on one binary
@@ -181,6 +189,29 @@ mod imp {
     #[inline]
     pub fn card_split() -> bool {
         SPLIT.with(|f| f.get())
+    }
+
+    /// Switch the region cache off (`false`) or back on, for an A/B on one binary
+    /// (`/tmp/plxnative-nopreviewcache`). Off, a region is drawn live every frame again.
+    pub fn set_region_cache(on: bool) {
+        REGION_CACHE.with(|f| f.set(on));
+    }
+
+    /// Whether a region may be served from its texture (the shipped answer: always).
+    #[inline]
+    pub fn region_cache() -> bool {
+        REGION_CACHE.with(|f| f.get())
+    }
+
+    /// Put a cached region's quad on whole pixels (`true`), for a leg (`/tmp/plxnative-previewsnap`).
+    pub fn set_region_snap(on: bool) {
+        REGION_SNAP.with(|f| f.set(on));
+    }
+
+    /// Whether a cached region's quad is put on whole pixels (the shipped answer: no).
+    #[inline]
+    pub fn region_snap() -> bool {
+        REGION_SNAP.with(|f| f.get())
     }
 
     /// Book one card draw against the path it took: the quad's screen-visible area (the very
@@ -443,11 +474,25 @@ mod imp {
     pub fn card_split() -> bool {
         true
     }
+    #[inline]
+    pub fn set_region_cache(_on: bool) {}
+    /// A release build always serves a region from its texture: the switch does not exist.
+    #[inline]
+    pub fn region_cache() -> bool {
+        true
+    }
+    #[inline]
+    pub fn set_region_snap(_on: bool) {}
+    /// A release build never snaps the quad: the switch does not exist.
+    #[inline]
+    pub fn region_snap() -> bool {
+        false
+    }
 }
 
 pub use imp::{
-    card_split, frame_end, gate, masked, masked_part, note_card_path, note_px, set_card_split, set_clip, set_ledger,
-    set_mask,
+    card_split, frame_end, gate, masked, masked_part, note_card_path, note_px, region_cache, region_snap,
+    set_card_split, set_clip, set_ledger, set_mask, set_region_cache, set_region_snap,
 };
 
 #[cfg(test)]
@@ -622,5 +667,18 @@ mod tests {
         assert!(!card_split());
         set_card_split(true);
         assert!(card_split());
+    }
+
+    /// The region cache is on and unsnapped by default; each switch moves alone.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn the_region_cache_switch_defaults_on_and_the_snap_defaults_off() {
+        assert!(region_cache() && !region_snap());
+        set_region_cache(false);
+        set_region_snap(true);
+        assert!(!region_cache() && region_snap() && card_split());
+        set_region_cache(true);
+        set_region_snap(false);
+        assert!(region_cache() && !region_snap());
     }
 }
