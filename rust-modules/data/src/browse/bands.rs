@@ -1,0 +1,1297 @@
+//! The bands a value sort's rail shows, and how a probe's COUNTS become rail offsets. Pure data and
+//! functions: no read, no clock, no time zone, no global. Nothing calls it yet; the data job that
+//! asks the counts and the screens that draw the rail come after it.
+//!
+//! The A-Z rail jumps to a letter by the running sum of per-letter counts. PMS has no per-band
+//! directory for a VALUE sort (`/year` and `/decade` carry no `size`), so a band's offset comes from
+//! one count-only probe per band EDGE instead: `GET .../all?<grid's own terms>&<field>>>=<E minus one
+//! unit>` with `Container-Start: 0` and `Container-Size: 0` answers `totalSize` = the number of items
+//! at or above the edge `E`. [`BandFamily::of_sort`] says which sorts have bands, [`plan`] lists a
+//! family's bands (highest first, each with its lower [`Edge`]), [`probes`] renders the probe of every
+//! edge and [`offsets`] turns the counts that came back into each band's start and size in the
+//! listing's own order. `docs/pms-api.md`, "Count probes at band edges", is the measurement behind
+//! every rule below (PMS 1.43.5, one small library of each kind: "exact there, not proven at scale").
+//!
+//! Measured rules this encodes:
+//!
+//! - **A probe is `<field>>>=<E minus one unit>`** (strictly greater, so "at or above `E`"): a rating
+//!   edge minus 0.01 (floats are compared as floats, `rating>>=9.49` is every rating from 9.5 up), a
+//!   duration edge minus 1 ms, a date edge minus 1 s, a count edge minus 1. A rating is held in
+//!   integer hundredths here and never in an `f64`, so the text is exact.
+//! - **A date edge is a civil date turned into an epoch by the CALLER**, once per edge, because
+//!   daylight saving is per edge. `addedAt`, `lastViewedAt` and `episode.addedAt` are instants and
+//!   compare against LOCAL midnight ([`Basis::Local`]); `originallyAvailableAt` is a date and compares
+//!   as the epoch of UTC midnight ([`Basis::Utc`]). The family picks the basis and the caller's
+//!   converter answers for it, so the model never reads a zone and cannot take the wrong one. The
+//!   converter may fail (a 32-bit `time_t` cannot hold every date): then there is no probe, and the
+//!   caller shows no rail.
+//! - **Items with NO value** (unrated, never viewed, no release date) sort FIRST in `:asc` and LAST in
+//!   `:desc`, and `>>=` excludes them. So do items below the lowest edge of a ladder that has no
+//!   tail band (zero unplayed, zero plays). Both are the low end of the value order: an unlabelled
+//!   [`Offsets::tail`] in a descending listing and an unlabelled [`Offsets::lead`] in an ascending
+//!   one, belonging to no band.
+//! - **Offsets.** In `:desc` the first item below `E` sits at `count(>=E)`; in `:asc` the first item at
+//!   or above `E` sits at `total - count(>=E)`. The two are mirror images of one another.
+//! - **`episode.addedAt` is not mirror-symmetric**: `:desc` orders by the NEWEST episode, `:asc` by the
+//!   OLDEST, so [`BandFamily::LastEpisodeAdded`] has bands for a descending sort only.
+//! - **A filter can be silently IGNORED** (a wrong key answers the whole library, no error). A count
+//!   sequence that is all equal to the total, is not monotone, or exceeds the total is therefore
+//!   [`Reject`]ed, and the rail stays hidden as it does today.
+//!
+//! One probe value is NOT measured: a tail band (`<75%`, `<1h`) needs the number of items that have
+//! any value, and the probe used `min - 1 unit` of the data, never a literal below every value. The
+//! floor is probed as `<field>>=0` (the inclusive operator, accepted on int, float and date fields at
+//! one value each, and a plain zero; every field of a ladder with a tail is never negative).
+//! Whether the real server answers it as the non-null count is for the mock and the next measurement
+//! to settle.
+
+use super::SecKind;
+
+/// A civil date as the application's clock hands it out: `[year, month, day]`, month `1..=12`.
+pub type Day = [i32; 3];
+
+/// The first year the model draws a band for. The extent (the oldest year) comes off the server, and a
+/// bogus year (`0`, `1`, a corrupt value) must not become two thousand bands; no real item is older.
+pub const EARLIEST_YEAR: i32 = 1000;
+
+/// The ladder of a Critic rating (`95% 90% 85% 80% 75% <75%`): the percent a band starts at, which is
+/// also the edge in tenths of a point (95 = a rating of 9.5).
+const RATING_PERCENTS: [u8; 5] = [95, 90, 85, 80, 75];
+/// The ladder of a duration (`3h+ 2½h 2h 1½h 1h <1h`), in minutes.
+const DURATION_MINUTES: [u16; 5] = [180, 150, 120, 90, 60];
+/// The ladder of an unplayed count (`12+ 10 8 6 4 2 1`). A show with none left has no band.
+const UNPLAYED_COUNTS: [u32; 7] = [12, 10, 8, 6, 4, 2, 1];
+/// The ladder of a play count (`10+ 5 3 2 1`). An item never played has no band.
+const PLAYS_COUNTS: [u32; 5] = [10, 5, 3, 2, 1];
+
+/// What an edge's civil date is measured against on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Basis {
+    /// An instant (`addedAt`, `lastViewedAt`, `episode.addedAt`): the viewer's LOCAL midnight.
+    Local,
+    /// A date (`originallyAvailableAt`): the epoch of UTC midnight, whatever zone the viewer is in.
+    Utc,
+}
+
+/// The sorts that have bands, one per board table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BandFamily {
+    /// Critic rating (`rating`).
+    Rating,
+    /// Duration (`duration`, milliseconds on the wire).
+    Duration,
+    /// Date added (`addedAt`).
+    DateAdded,
+    /// Date viewed (`lastViewedAt`); an item never viewed has no band.
+    DateViewed,
+    /// Last episode added (`episode.addedAt`), a show sort; descending only.
+    LastEpisodeAdded,
+    /// Unplayed episodes (`unviewedLeafCount`), a show sort.
+    Unplayed,
+    /// Plays (`viewCount`), the sort the application adds itself.
+    Plays,
+    /// Release date (`originallyAvailableAt`), banded by year and decade.
+    Release,
+}
+
+impl BandFamily {
+    /// Every family.
+    pub const ALL: [BandFamily; 8] = [
+        Self::Rating,
+        Self::Duration,
+        Self::DateAdded,
+        Self::DateViewed,
+        Self::LastEpisodeAdded,
+        Self::Unplayed,
+        Self::Plays,
+        Self::Release,
+    ];
+
+    /// The family a sort has bands in, or `None` (the rail stays hidden, or is the letters'): `key` is
+    /// the sort entry's key as the server lists it (`SortEntry::key`), `descending` the direction the
+    /// page asks. The WHOLE key is read, never its table-stripped tail: `episode.addedAt` is another
+    /// family than `addedAt`. A key of the other library kind has no band (`duration` is not a show
+    /// field, `unviewedLeafCount` and `episode.addedAt` are not movie fields: the server would
+    /// silently ignore the filter). `rating` is offered for both kinds, as the server lists it for
+    /// both (a show with no rating has all its items in the unlabelled region).
+    pub fn of_sort(key: &str, descending: bool, kind: SecKind) -> Option<BandFamily> {
+        // Exhaustive on purpose, like `kind_offers_plays_sort`: a third kind must decide here.
+        let (movie, show) = match kind {
+            SecKind::Movie => (true, false),
+            SecKind::Show => (false, true),
+        };
+        match key {
+            "rating" => Some(Self::Rating),
+            "duration" => movie.then_some(Self::Duration),
+            "addedAt" => Some(Self::DateAdded),
+            "lastViewedAt" => Some(Self::DateViewed),
+            "episode.addedAt" => (show && descending).then_some(Self::LastEpisodeAdded),
+            "unviewedLeafCount" => show.then_some(Self::Unplayed),
+            super::PLAYS_SORT_KEY => Some(Self::Plays),
+            "originallyAvailableAt" => Some(Self::Release),
+            _ => None,
+        }
+    }
+
+    /// The field a probe filters on: the sort's own key.
+    pub fn field(self) -> &'static str {
+        match self {
+            Self::Rating => "rating",
+            Self::Duration => "duration",
+            Self::DateAdded => "addedAt",
+            Self::DateViewed => "lastViewedAt",
+            Self::LastEpisodeAdded => "episode.addedAt",
+            Self::Unplayed => "unviewedLeafCount",
+            Self::Plays => super::PLAYS_SORT_KEY,
+            Self::Release => "originallyAvailableAt",
+        }
+    }
+
+    /// What the family's civil-date edges are measured against, or `None` for a family whose edges
+    /// are plain numbers. `Some` also means [`plan`] reads `today` and the oldest year.
+    pub fn basis(self) -> Option<Basis> {
+        match self {
+            Self::DateAdded | Self::DateViewed | Self::LastEpisodeAdded => Some(Basis::Local),
+            Self::Release => Some(Basis::Utc),
+            Self::Rating | Self::Duration | Self::Unplayed | Self::Plays => None,
+        }
+    }
+}
+
+/// A band's lower edge, typed by what it counts. Derived `Ord` is the order of values within ONE
+/// plan (a plan never mixes variants, except that [`Edge::Floor`] is the lowest of all), so a plan
+/// from highest to lowest is strictly decreasing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Edge {
+    /// Every item that has a value at all: the edge of a tail band (`<75%`, `<1h`).
+    Floor,
+    /// A critic rating, in tenths of a point: 95 is a rating of 9.5.
+    Rating(u8),
+    /// A duration in minutes.
+    Minutes(u16),
+    /// A count of episodes or plays.
+    Count(u32),
+    /// The first moment of a civil day, on the basis the caller converts it with.
+    Day { date: Day, basis: Basis },
+}
+
+/// What a band is called: the identity a focus key hangs on and the token the screens layer turns
+/// into a localised label. Unique within a plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Mark {
+    /// The current day, a band of its own.
+    Today,
+    /// A month of the current year, `1..=12`.
+    Month(u8),
+    /// A calendar year.
+    Year(i32),
+    /// A decade by its first year: 2020 is "2020s".
+    Decade(i32),
+    /// `95%`.
+    Percent(u8),
+    /// `<75%`: everything rated, below the lowest percent.
+    BelowPercent(u8),
+    /// `2½h`.
+    Minutes(u16),
+    /// `3h+`: the top of a duration ladder.
+    MinutesOrMore(u16),
+    /// `<1h`: everything with a duration, below the lowest.
+    BelowMinutes(u16),
+    /// `10`: at least this many.
+    Count(u32),
+    /// `12+`: the top of a count ladder.
+    CountOrMore(u32),
+}
+
+/// One band of a rail: its family, its label token and the lower edge of the values it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Band {
+    family: BandFamily,
+    mark: Mark,
+    edge: Edge,
+}
+
+impl Band {
+    fn new(family: BandFamily, mark: Mark, edge: Edge) -> Band {
+        Band { family, mark, edge }
+    }
+
+    /// The family the band belongs to.
+    pub fn family(&self) -> BandFamily {
+        self.family
+    }
+
+    /// The label token (and focus identity).
+    pub fn mark(&self) -> Mark {
+        self.mark
+    }
+
+    /// The lower edge: the band holds the values at or above it, down to the next band's edge.
+    pub fn edge(&self) -> Edge {
+        self.edge
+    }
+
+    /// The count-only probe whose answer is the number of items at or above this band's edge.
+    /// `to_epoch` turns a civil day into epoch seconds on the given basis (the caller's, once per
+    /// edge); `None` from it, or an epoch that cannot be stepped back a second, leaves the band
+    /// without a probe.
+    pub fn probe(&self, to_epoch: &dyn Fn(Basis, Day) -> Option<i64>) -> Option<Probe> {
+        let (op, value) = match self.edge {
+            Edge::Floor => (AT_LEAST, "0".to_owned()),
+            Edge::Rating(tenths) => (AFTER, hundredths(i32::from(tenths) * 10 - 1)),
+            Edge::Minutes(minutes) => (AFTER, (i64::from(minutes) * 60_000 - 1).to_string()),
+            Edge::Count(count) => (AFTER, (i64::from(count) - 1).to_string()),
+            Edge::Day { date, basis } => (AFTER, to_epoch(basis, date)?.checked_sub(1)?.to_string()),
+        };
+        Some(Probe { field: self.family.field(), op, value })
+    }
+}
+
+/// The strictly-greater operator: the one the repo verified first, spelled with one unit less.
+const AFTER: &str = ">>=";
+/// The inclusive operator, used for the floor of a tail band only.
+const AT_LEAST: &str = ">=";
+
+/// A rating of `h` hundredths as the decimal text the server compares as a float: 949 is `9.49`.
+fn hundredths(h: i32) -> String {
+    let sign = if h < 0 { "-" } else { "" };
+    format!("{sign}{}.{:02}", h.abs() / 100, h.abs() % 100)
+}
+
+/// One term of a count-only read: `field`, operator, value. The key side is NOT URL-encoded here
+/// (`>>=` needs `%3E%3E=` in a query string); that is the request builder's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Probe {
+    /// The sort key being filtered (`episode.addedAt` keeps its scope).
+    pub field: &'static str,
+    /// `>>=`, or `>=` for a tail band's floor.
+    pub op: &'static str,
+    /// The decimal value after the operator.
+    pub value: String,
+}
+
+impl Probe {
+    /// The term as one string: `rating>>=9.49`.
+    pub fn term(&self) -> String {
+        format!("{}{}{}", self.field, self.op, self.value)
+    }
+}
+
+/// The probe of every band, in the plan's order, or `None` if any band has none (all or nothing:
+/// a rail built from some of its counts would point at the wrong rows).
+pub fn probes(bands: &[Band], to_epoch: &dyn Fn(Basis, Day) -> Option<i64>) -> Option<Vec<Probe>> {
+    bands.iter().map(|band| band.probe(to_epoch)).collect()
+}
+
+fn is_leap(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_in_month(year: i32, month: i32) -> Option<i32> {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
+        4 | 6 | 9 | 11 => Some(30),
+        2 => Some(if is_leap(year) { 29 } else { 28 }),
+        _ => None,
+    }
+}
+
+/// Is `day` a real date of the calendar the model draws (a year from [`EARLIEST_YEAR`])?
+fn is_valid(day: Day) -> bool {
+    let [year, month, date] = day;
+    year >= EARLIEST_YEAR && days_in_month(year, month).is_some_and(|length| (1..=length).contains(&date))
+}
+
+/// The bands `family` shows, highest first: the order the rail reads in a descending listing, and
+/// the order [`probes`] and [`offsets`] take their counts in. `today` and `oldest_year` (the year of
+/// the oldest item, from an extent read) matter only to a family with a [`BandFamily::basis`]; a
+/// `today` that is not a real date gives no bands.
+///
+/// - Rating, duration, unplayed and plays are fixed ladders (see the constants). Rating and duration
+///   end in a tail band for the lowest values; unplayed and plays end at their lowest count, and an
+///   item below it has no band.
+/// - Date added, date viewed and last episode added: `Today`, then the months of the current year
+///   back to January, then every calendar year back to `oldest_year`. Today is a band of its own and
+///   yesterday falls in its month. The current month is skipped when today is its first (no day of
+///   it is before today), so on 1 January there is `Today` and then years.
+/// - Release date: the current year alone, then decades for everything older (2026, 2020s, 2010s,
+///   ...); the current decade is skipped when the current year opens it.
+///
+/// No band is drawn for a year before [`EARLIEST_YEAR`].
+pub fn plan(family: BandFamily, today: Day, oldest_year: i32) -> Vec<Band> {
+    match family {
+        BandFamily::Rating => {
+            let mut bands: Vec<Band> = RATING_PERCENTS
+                .iter()
+                .map(|&percent| Band::new(family, Mark::Percent(percent), Edge::Rating(percent)))
+                .collect();
+            let lowest = RATING_PERCENTS[RATING_PERCENTS.len() - 1];
+            bands.push(Band::new(family, Mark::BelowPercent(lowest), Edge::Floor));
+            bands
+        }
+        BandFamily::Duration => {
+            let top = DURATION_MINUTES[0];
+            let mut bands: Vec<Band> = DURATION_MINUTES
+                .iter()
+                .map(|&minutes| {
+                    let mark = if minutes == top { Mark::MinutesOrMore(minutes) } else { Mark::Minutes(minutes) };
+                    Band::new(family, mark, Edge::Minutes(minutes))
+                })
+                .collect();
+            let lowest = DURATION_MINUTES[DURATION_MINUTES.len() - 1];
+            bands.push(Band::new(family, Mark::BelowMinutes(lowest), Edge::Floor));
+            bands
+        }
+        BandFamily::Unplayed => counts(family, &UNPLAYED_COUNTS),
+        BandFamily::Plays => counts(family, &PLAYS_COUNTS),
+        BandFamily::DateAdded | BandFamily::DateViewed | BandFamily::LastEpisodeAdded => {
+            calendar(family, Basis::Local, today, oldest_year)
+        }
+        BandFamily::Release => release(family, today, oldest_year),
+    }
+}
+
+/// A ladder of counts: the first rung is open at the top (`12+`).
+fn counts(family: BandFamily, rungs: &[u32]) -> Vec<Band> {
+    rungs
+        .iter()
+        .enumerate()
+        .map(|(i, &count)| {
+            let mark = if i == 0 { Mark::CountOrMore(count) } else { Mark::Count(count) };
+            Band::new(family, mark, Edge::Count(count))
+        })
+        .collect()
+}
+
+fn calendar(family: BandFamily, basis: Basis, today: Day, oldest_year: i32) -> Vec<Band> {
+    let Ok(month) = u8::try_from(today[1]) else { return Vec::new() };
+    if !is_valid(today) {
+        return Vec::new();
+    }
+    let [year, _, date] = today;
+    let day = |date: Day| Edge::Day { date, basis };
+    let mut bands = vec![Band::new(family, Mark::Today, day(today))];
+    // The current month holds the days before today: none when today is its first.
+    let newest_month = if date == 1 { month - 1 } else { month };
+    for month in (1..=newest_month).rev() {
+        bands.push(Band::new(family, Mark::Month(month), day([year, i32::from(month), 1])));
+    }
+    for older in (oldest_year.max(EARLIEST_YEAR)..year).rev() {
+        bands.push(Band::new(family, Mark::Year(older), day([older, 1, 1])));
+    }
+    bands
+}
+
+fn release(family: BandFamily, today: Day, oldest_year: i32) -> Vec<Band> {
+    if !is_valid(today) {
+        return Vec::new();
+    }
+    let year = today[0];
+    let day = |date: Day| Edge::Day { date, basis: Basis::Utc };
+    let mut bands = vec![Band::new(family, Mark::Year(year), day([year, 1, 1]))];
+    // The current decade holds the years before this one: none when this year opens it.
+    let oldest_year = oldest_year.max(EARLIEST_YEAR);
+    if oldest_year < year {
+        let this_decade = year.div_euclid(10) * 10;
+        let mut decade = if year == this_decade { this_decade - 10 } else { this_decade };
+        while decade >= oldest_year.div_euclid(10) * 10 {
+            bands.push(Band::new(family, Mark::Decade(decade), day([decade, 1, 1])));
+            decade -= 10;
+        }
+    }
+    bands
+}
+
+/// Where one band sits in the listing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Start {
+    /// The band.
+    pub band: Band,
+    /// The index of its first item in the listing. An empty band starts where the next one does.
+    pub start: u32,
+    /// How many items it holds.
+    pub size: u32,
+}
+
+/// A rail's layout over one listing, in the listing's own order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offsets {
+    /// Items before the first band that belong to none: the no-value items of an ascending listing.
+    pub lead: u32,
+    /// The bands: highest first for a descending listing, lowest first for an ascending one.
+    pub bands: Vec<Start>,
+    /// Items after the last band that belong to none: the no-value items of a descending listing.
+    pub tail: u32,
+}
+
+impl Offsets {
+    /// How many bands hold at least one item (a rail with fewer than two is not worth showing).
+    pub fn populated(&self) -> usize {
+        self.bands.iter().filter(|start| start.size > 0).count()
+    }
+}
+
+/// Why a count sequence is not trusted. Every one leaves the rail hidden.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reject {
+    /// There is no band to place.
+    NoBands,
+    /// The probes did not answer one count per band.
+    WrongLength { bands: usize, counts: usize },
+    /// A count is more than the listing holds: the counts are of some other listing.
+    AboveTotal { index: usize },
+    /// A count is below the one before it, though a lower edge admits every item a higher one does.
+    NotMonotone { index: usize },
+    /// Every count is the total: the server ignored the filter and answered the whole library.
+    AllEqualTotal,
+}
+
+/// Turn the counts into each band's start and size.
+///
+/// `at_or_above[i]` is the answer of `bands[i]`'s probe, the number of items at or above its edge, with
+/// `bands` in [`plan`]'s order (highest first). `total` is the listing's size, `descending` its
+/// direction. A descending listing starts band `i` at `at_or_above[i - 1]`; an ascending one reads
+/// the bands lowest first and starts band `i` at `total - at_or_above[i]`: the same intervals
+/// mirrored. The items below the lowest edge are `total - at_or_above[last]`, and are the
+/// [`Offsets::tail`] of a descending listing or the [`Offsets::lead`] of an ascending one.
+///
+/// A sequence is rejected (the checks run in this order) if the lengths differ, a count exceeds
+/// `total`, the counts decrease along the plan, or all of them equal `total`.
+pub fn offsets(bands: &[Band], at_or_above: &[u32], total: u32, descending: bool) -> Result<Offsets, Reject> {
+    if bands.len() != at_or_above.len() {
+        return Err(Reject::WrongLength { bands: bands.len(), counts: at_or_above.len() });
+    }
+    let Some(&lowest) = at_or_above.last() else { return Err(Reject::NoBands) };
+    if let Some(index) = at_or_above.iter().position(|&count| count > total) {
+        return Err(Reject::AboveTotal { index });
+    }
+    if let Some(index) = at_or_above.windows(2).position(|pair| pair[1] < pair[0]) {
+        return Err(Reject::NotMonotone { index: index + 1 });
+    }
+    if at_or_above.iter().all(|&count| count == total) {
+        return Err(Reject::AllEqualTotal);
+    }
+    let mut starts = Vec::with_capacity(bands.len());
+    let mut above = 0;
+    for (band, &count) in bands.iter().zip(at_or_above) {
+        let start = if descending { above } else { total - count };
+        starts.push(Start { band: *band, start, size: count - above });
+        above = count;
+    }
+    if !descending {
+        starts.reverse();
+    }
+    let unbanded = total - lowest;
+    let (lead, tail) = if descending { (0, unbanded) } else { (unbanded, 0) };
+    Ok(Offsets { lead, bands: starts, tail })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    const LOCAL_ZONE_SECONDS: i64 = 5 * 3600;
+
+    /// Days since 1970-01-01 of a civil date (Hinnant's algorithm), the test's own reference.
+    fn days(date: Day) -> i64 {
+        let [year, month, day] = date.map(i64::from);
+        let year = if month <= 2 { year - 1 } else { year };
+        let era = year.div_euclid(400);
+        let yoe = year - era * 400;
+        let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146_097 + doe - 719_468
+    }
+
+    /// A viewer five hours behind UTC: local midnight is 05:00 UTC, so the two bases differ.
+    fn fake_zone(basis: Basis, date: Day) -> Option<i64> {
+        let utc = days(date) * 86_400;
+        Some(match basis {
+            Basis::Local => utc + LOCAL_ZONE_SECONDS,
+            Basis::Utc => utc,
+        })
+    }
+
+    fn terms(bands: &[Band]) -> Vec<String> {
+        probes(bands, &fake_zone).expect("every edge converts").iter().map(Probe::term).collect()
+    }
+
+    fn marks(bands: &[Band]) -> Vec<Mark> {
+        bands.iter().map(Band::mark).collect()
+    }
+
+    #[test]
+    fn the_reference_calendar_agrees_with_known_epochs() {
+        assert_eq!(days([1970, 1, 1]), 0);
+        assert_eq!(days([2026, 10, 31]) * 86_400, 1_793_404_800);
+        assert_eq!(days([2026, 1, 1]) * 86_400, 1_767_225_600);
+        assert_eq!(days([1969, 12, 31]) * 86_400, -86_400);
+        assert_eq!(days([2024, 3, 1]) - days([2024, 2, 1]), 29);
+    }
+
+    // ---- of_sort ----
+
+    #[test]
+    fn of_sort_maps_the_applications_sort_keys() {
+        use BandFamily::*;
+        use SecKind::{Movie, Show};
+        let row = |key: &str, desc: bool, kind: SecKind| BandFamily::of_sort(key, desc, kind);
+        for desc in [false, true] {
+            assert_eq!(row("rating", desc, Movie), Some(Rating));
+            assert_eq!(row("rating", desc, Show), Some(Rating));
+            assert_eq!(row("duration", desc, Movie), Some(Duration));
+            assert_eq!(row("addedAt", desc, Movie), Some(DateAdded));
+            assert_eq!(row("addedAt", desc, Show), Some(DateAdded));
+            assert_eq!(row("lastViewedAt", desc, Movie), Some(DateViewed));
+            assert_eq!(row("lastViewedAt", desc, Show), Some(DateViewed));
+            assert_eq!(row("unviewedLeafCount", desc, Show), Some(Unplayed));
+            assert_eq!(row("viewCount", desc, Movie), Some(Plays));
+            assert_eq!(row("viewCount", desc, Show), Some(Plays));
+            assert_eq!(row("originallyAvailableAt", desc, Movie), Some(Release));
+            assert_eq!(row("originallyAvailableAt", desc, Show), Some(Release));
+        }
+        // Last episode added is descending only: ascending orders by the OLDEST episode.
+        assert_eq!(row("episode.addedAt", true, Show), Some(LastEpisodeAdded));
+        assert_eq!(row("episode.addedAt", false, Show), None);
+        // A key of the other library kind would be silently ignored by the server.
+        assert_eq!(row("duration", true, Show), None);
+        assert_eq!(row("unviewedLeafCount", true, Movie), None);
+        assert_eq!(row("episode.addedAt", true, Movie), None);
+    }
+
+    #[test]
+    fn of_sort_leaves_every_other_sort_without_bands() {
+        for kind in [SecKind::Movie, SecKind::Show] {
+            for desc in [false, true] {
+                for key in [
+                    "titleSort",
+                    "random",
+                    "audienceRating",
+                    "mediaHeight",
+                    "userRating",
+                    "year",
+                    "show.titleSort,season.index",
+                    // The whole key is read: a table prefix or a direction suffix is another key.
+                    "show.addedAt",
+                    "addedAt:desc",
+                    "Rating",
+                    "",
+                ] {
+                    assert_eq!(BandFamily::of_sort(key, desc, kind), None, "{key} {desc} {kind:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn of_sort_knows_the_key_the_application_adds_itself() {
+        assert_eq!(BandFamily::of_sort(super::super::PLAYS_SORT_KEY, true, SecKind::Movie), Some(BandFamily::Plays));
+        assert_eq!(BandFamily::Plays.field(), super::super::PLAYS_SORT_KEY);
+    }
+
+    #[test]
+    fn a_family_filters_on_its_sorts_own_key() {
+        for family in BandFamily::ALL {
+            let kind = if matches!(family, BandFamily::Unplayed | BandFamily::LastEpisodeAdded) {
+                SecKind::Show
+            } else {
+                SecKind::Movie
+            };
+            assert_eq!(BandFamily::of_sort(family.field(), true, kind), Some(family), "{family:?}");
+        }
+    }
+
+    // ---- plan: the calendar ----
+
+    fn edge(date: Day, basis: Basis) -> Edge {
+        Edge::Day { date, basis }
+    }
+
+    #[test]
+    fn dates_on_the_last_day_of_october_run_today_months_then_years() {
+        let bands = plan(BandFamily::DateAdded, [2026, 10, 31], 2024);
+        let mut expected = vec![(Mark::Today, edge([2026, 10, 31], Basis::Local))];
+        for month in (1..=10u8).rev() {
+            expected.push((Mark::Month(month), edge([2026, i32::from(month), 1], Basis::Local)));
+        }
+        expected.push((Mark::Year(2025), edge([2025, 1, 1], Basis::Local)));
+        expected.push((Mark::Year(2024), edge([2024, 1, 1], Basis::Local)));
+        let got: Vec<(Mark, Edge)> = bands.iter().map(|band| (band.mark(), band.edge())).collect();
+        assert_eq!(got, expected);
+        assert_eq!(bands.len(), 13);
+    }
+
+    #[test]
+    fn on_new_years_day_there_is_today_then_years_and_no_empty_month() {
+        let bands = plan(BandFamily::DateViewed, [2026, 1, 1], 2024);
+        assert_eq!(marks(&bands), vec![Mark::Today, Mark::Year(2025), Mark::Year(2024)]);
+        assert_eq!(bands[0].edge(), edge([2026, 1, 1], Basis::Local));
+        assert_eq!(bands[1].edge(), edge([2025, 1, 1], Basis::Local));
+    }
+
+    #[test]
+    fn a_month_with_no_day_before_today_is_skipped_but_the_month_before_is_not() {
+        // 1 March: no day of March is before today; February is whole, and its length is the
+        // caller's business (the edge is its first day).
+        for (today, last_february) in [([2026, 3, 1], 28), ([2024, 3, 1], 29)] {
+            let bands = plan(BandFamily::DateAdded, today, today[0]);
+            assert_eq!(marks(&bands), vec![Mark::Today, Mark::Month(2), Mark::Month(1)]);
+            assert_eq!(bands[1].edge(), edge([today[0], 2, 1], Basis::Local));
+            assert_eq!(days([today[0], 3, 1]) - days([today[0], 2, 1]), last_february);
+        }
+    }
+
+    #[test]
+    fn the_second_of_the_month_keeps_the_month_of_one_day() {
+        let bands = plan(BandFamily::DateAdded, [2026, 10, 2], 2026);
+        assert_eq!(bands[1].mark(), Mark::Month(10));
+        assert_eq!(bands.len(), 1 + 10);
+    }
+
+    #[test]
+    fn a_leap_day_is_a_date_and_a_february_29_of_a_common_year_is_not() {
+        let bands = plan(BandFamily::LastEpisodeAdded, [2028, 2, 29], 2026);
+        assert_eq!(
+            marks(&bands),
+            vec![Mark::Today, Mark::Month(2), Mark::Month(1), Mark::Year(2027), Mark::Year(2026)]
+        );
+        assert_eq!(bands[0].edge(), edge([2028, 2, 29], Basis::Local));
+        assert!(!plan(BandFamily::DateAdded, [2000, 2, 29], 1999).is_empty(), "2000 is a leap year");
+        let impossible_days =
+            [[2026, 2, 29], [2100, 2, 29], [2026, 4, 31], [2026, 13, 1], [2026, 0, 1], [2026, 1, 0], [2026, 1, 32]];
+        for impossible in impossible_days {
+            assert!(plan(BandFamily::DateAdded, impossible, 2020).is_empty(), "{impossible:?}");
+            assert!(plan(BandFamily::Release, impossible, 2020).is_empty(), "{impossible:?}");
+        }
+        assert!(plan(BandFamily::DateAdded, [999, 6, 1], 900).is_empty());
+    }
+
+    #[test]
+    fn month_lengths_decide_the_last_valid_day() {
+        let lengths: Vec<i32> = (1..=12).map(|month| days_in_month(2026, month).unwrap()).collect();
+        assert_eq!(lengths, vec![31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]);
+        assert_eq!(days_in_month(2024, 2), Some(29));
+        assert_eq!(days_in_month(1900, 2), Some(28));
+        assert_eq!(days_in_month(2000, 2), Some(29));
+        assert_eq!(days_in_month(2026, 0), None);
+        assert_eq!(days_in_month(2026, 13), None);
+        // Every month of a common year ends where the next one's first day begins.
+        for month in 1..=11 {
+            let end = days([2026, month, days_in_month(2026, month).unwrap()]);
+            assert_eq!(days([2026, month + 1, 1]), end + 1, "month {month}");
+        }
+    }
+
+    #[test]
+    fn the_last_day_of_the_year_and_the_first_month() {
+        let december = plan(BandFamily::DateAdded, [2026, 12, 31], 2026);
+        assert_eq!(december.len(), 1 + 12);
+        assert_eq!(december[1].mark(), Mark::Month(12));
+        assert_eq!(december[12].mark(), Mark::Month(1));
+        let january = plan(BandFamily::DateAdded, [2026, 1, 15], 2025);
+        assert_eq!(marks(&january), vec![Mark::Today, Mark::Month(1), Mark::Year(2025)]);
+    }
+
+    #[test]
+    fn no_year_band_when_the_oldest_item_is_this_year_or_newer() {
+        for oldest in [2026, 2027, i32::MAX] {
+            let bands = plan(BandFamily::DateAdded, [2026, 10, 31], oldest);
+            assert_eq!(bands.len(), 11, "oldest {oldest}");
+            assert!(bands.iter().all(|band| !matches!(band.mark(), Mark::Year(_))));
+        }
+    }
+
+    #[test]
+    fn a_bogus_oldest_year_stops_at_the_first_year_the_model_draws() {
+        for oldest in [0, 1, -5, i32::MIN] {
+            let bands = plan(BandFamily::DateAdded, [2026, 10, 31], oldest);
+            assert_eq!(bands.last().map(Band::mark), Some(Mark::Year(EARLIEST_YEAR)), "oldest {oldest}");
+            assert_eq!(bands.len(), 1 + 10 + (2026 - EARLIEST_YEAR) as usize);
+        }
+    }
+
+    // ---- plan: release date ----
+
+    #[test]
+    fn release_dates_run_this_year_then_decades() {
+        let bands = plan(BandFamily::Release, [2026, 10, 31], 1995);
+        let got: Vec<(Mark, Edge)> = bands.iter().map(|band| (band.mark(), band.edge())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Mark::Year(2026), edge([2026, 1, 1], Basis::Utc)),
+                (Mark::Decade(2020), edge([2020, 1, 1], Basis::Utc)),
+                (Mark::Decade(2010), edge([2010, 1, 1], Basis::Utc)),
+                (Mark::Decade(2000), edge([2000, 1, 1], Basis::Utc)),
+                (Mark::Decade(1990), edge([1990, 1, 1], Basis::Utc)),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_decade_a_year_opens_has_no_band_of_its_own() {
+        let bands = plan(BandFamily::Release, [2030, 5, 5], 2005);
+        assert_eq!(
+            marks(&bands),
+            vec![Mark::Year(2030), Mark::Decade(2020), Mark::Decade(2010), Mark::Decade(2000)]
+        );
+        let bands = plan(BandFamily::Release, [2020, 1, 1], 2020);
+        assert_eq!(marks(&bands), vec![Mark::Year(2020)]);
+        let bands = plan(BandFamily::Release, [2029, 12, 31], 2021);
+        assert_eq!(marks(&bands), vec![Mark::Year(2029), Mark::Decade(2020)]);
+    }
+
+    #[test]
+    fn release_decades_stop_at_the_decade_of_the_oldest_year() {
+        let bands = plan(BandFamily::Release, [2026, 6, 1], 1999);
+        assert_eq!(marks(&bands).last(), Some(&Mark::Decade(1990)));
+        let bands = plan(BandFamily::Release, [2026, 6, 1], 2026);
+        assert_eq!(marks(&bands), vec![Mark::Year(2026)]);
+        let bands = plan(BandFamily::Release, [2026, 6, 1], 2021);
+        assert_eq!(marks(&bands), vec![Mark::Year(2026), Mark::Decade(2020)]);
+        let bands = plan(BandFamily::Release, [2026, 6, 1], i32::MIN);
+        assert_eq!(marks(&bands).last(), Some(&Mark::Decade(EARLIEST_YEAR)));
+    }
+
+    // ---- plan: the fixed ladders ----
+
+    #[test]
+    fn the_rating_ladder_ends_in_a_tail() {
+        let bands = plan(BandFamily::Rating, [0; 3], 0);
+        let got: Vec<(Mark, Edge)> = bands.iter().map(|band| (band.mark(), band.edge())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Mark::Percent(95), Edge::Rating(95)),
+                (Mark::Percent(90), Edge::Rating(90)),
+                (Mark::Percent(85), Edge::Rating(85)),
+                (Mark::Percent(80), Edge::Rating(80)),
+                (Mark::Percent(75), Edge::Rating(75)),
+                (Mark::BelowPercent(75), Edge::Floor),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_duration_ladder_is_open_at_the_top_and_ends_in_a_tail() {
+        let bands = plan(BandFamily::Duration, [0; 3], 0);
+        let got: Vec<(Mark, Edge)> = bands.iter().map(|band| (band.mark(), band.edge())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Mark::MinutesOrMore(180), Edge::Minutes(180)),
+                (Mark::Minutes(150), Edge::Minutes(150)),
+                (Mark::Minutes(120), Edge::Minutes(120)),
+                (Mark::Minutes(90), Edge::Minutes(90)),
+                (Mark::Minutes(60), Edge::Minutes(60)),
+                (Mark::BelowMinutes(60), Edge::Floor),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_count_ladders_have_no_tail_so_zero_has_no_band() {
+        let unplayed = plan(BandFamily::Unplayed, [0; 3], 0);
+        assert_eq!(
+            marks(&unplayed),
+            vec![
+                Mark::CountOrMore(12),
+                Mark::Count(10),
+                Mark::Count(8),
+                Mark::Count(6),
+                Mark::Count(4),
+                Mark::Count(2),
+                Mark::Count(1)
+            ]
+        );
+        assert_eq!(unplayed.last().map(Band::edge), Some(Edge::Count(1)));
+        let plays = plan(BandFamily::Plays, [0; 3], 0);
+        assert_eq!(
+            marks(&plays),
+            vec![Mark::CountOrMore(10), Mark::Count(5), Mark::Count(3), Mark::Count(2), Mark::Count(1)]
+        );
+        assert!(plays.iter().chain(&unplayed).all(|band| band.edge() != Edge::Floor && band.edge() != Edge::Count(0)));
+    }
+
+    #[test]
+    fn a_fixed_ladder_ignores_today_and_the_oldest_year() {
+        for family in [BandFamily::Rating, BandFamily::Duration, BandFamily::Unplayed, BandFamily::Plays] {
+            assert_eq!(plan(family, [2026, 10, 31], 1980), plan(family, [0, 0, 0], i32::MIN), "{family:?}");
+            assert_eq!(family.basis(), None);
+        }
+    }
+
+    // ---- every plan ----
+
+    const TODAYS: [Day; 4] = [[2026, 10, 31], [2026, 1, 1], [2028, 2, 29], [2030, 3, 1]];
+
+    #[test]
+    fn every_plan_is_strictly_ordered_by_its_edges() {
+        for family in BandFamily::ALL {
+            for today in TODAYS {
+                for oldest in [1995, 2026, 2031] {
+                    let bands = plan(family, today, oldest);
+                    assert!(!bands.is_empty(), "{family:?} {today:?}");
+                    for pair in bands.windows(2) {
+                        assert!(
+                            pair[0].edge() > pair[1].edge(),
+                            "{family:?} {today:?} {oldest}: {:?} then {:?}",
+                            pair[0],
+                            pair[1]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_marks_of_a_plan_are_all_different() {
+        for family in BandFamily::ALL {
+            for today in TODAYS {
+                let bands = plan(family, today, 1990);
+                let distinct: HashSet<Mark> = bands.iter().map(Band::mark).collect();
+                assert_eq!(distinct.len(), bands.len(), "{family:?} {today:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_basis_is_the_familys_and_every_date_edge_wears_it() {
+        let expect = [
+            (BandFamily::DateAdded, Some(Basis::Local)),
+            (BandFamily::DateViewed, Some(Basis::Local)),
+            (BandFamily::LastEpisodeAdded, Some(Basis::Local)),
+            (BandFamily::Release, Some(Basis::Utc)),
+            (BandFamily::Rating, None),
+        ];
+        for (family, basis) in expect {
+            assert_eq!(family.basis(), basis);
+            for band in plan(family, [2026, 10, 31], 2000) {
+                if let Edge::Day { basis: wears, .. } = band.edge() {
+                    assert_eq!(Some(wears), basis, "{family:?} {band:?}");
+                }
+            }
+        }
+    }
+
+    // ---- the probe terms ----
+
+    #[test]
+    fn the_numeric_ladders_render_the_terms_of_the_measurement() {
+        assert_eq!(
+            terms(&plan(BandFamily::Rating, [0; 3], 0)),
+            ["rating>>=9.49", "rating>>=8.99", "rating>>=8.49", "rating>>=7.99", "rating>>=7.49", "rating>=0"]
+        );
+        assert_eq!(
+            terms(&plan(BandFamily::Duration, [0; 3], 0)),
+            [
+                "duration>>=10799999",
+                "duration>>=8999999",
+                "duration>>=7199999",
+                "duration>>=5399999",
+                "duration>>=3599999",
+                "duration>=0"
+            ]
+        );
+        assert_eq!(
+            terms(&plan(BandFamily::Unplayed, [0; 3], 0)),
+            [
+                "unviewedLeafCount>>=11",
+                "unviewedLeafCount>>=9",
+                "unviewedLeafCount>>=7",
+                "unviewedLeafCount>>=5",
+                "unviewedLeafCount>>=3",
+                "unviewedLeafCount>>=1",
+                "unviewedLeafCount>>=0"
+            ]
+        );
+        assert_eq!(
+            terms(&plan(BandFamily::Plays, [0; 3], 0)),
+            ["viewCount>>=9", "viewCount>>=4", "viewCount>>=2", "viewCount>>=1", "viewCount>>=0"]
+        );
+    }
+
+    #[test]
+    fn an_instant_family_is_probed_at_local_midnight() {
+        // The fake viewer is five hours behind UTC, so local midnight is UTC midnight + 18000.
+        let added = terms(&plan(BandFamily::DateAdded, [2026, 10, 31], 2025));
+        assert_eq!(added[0], "addedAt>>=1793422799", "Today");
+        assert_eq!(added[1], "addedAt>>=1790830799", "October");
+        assert_eq!(added.last().map(String::as_str), Some("addedAt>>=1735707599"), "2025: 1735689600 + 18000 - 1");
+        assert_eq!(terms(&plan(BandFamily::DateViewed, [2026, 10, 31], 2026))[0], "lastViewedAt>>=1793422799");
+        assert_eq!(terms(&plan(BandFamily::LastEpisodeAdded, [2026, 10, 31], 2026))[0], "episode.addedAt>>=1793422799");
+    }
+
+    #[test]
+    fn a_release_date_is_probed_at_utc_midnight() {
+        let release = terms(&plan(BandFamily::Release, [2026, 10, 31], 1960));
+        // 2026-01-01 is 1767225600 in UTC; the local reading (+18000) would end in ...243599.
+        assert_eq!(release[0], "originallyAvailableAt>>=1767225599");
+        assert_eq!(release[1], "originallyAvailableAt>>=1577836799", "2020s");
+        assert_eq!(release[4], "originallyAvailableAt>>=631151999", "1990s");
+        // Before 1970 the epoch is negative: 1960-01-01 is -315619200.
+        assert_eq!(release[7], "originallyAvailableAt>>=-315619201", "1960s");
+        assert_eq!(release.len(), 8);
+    }
+
+    #[test]
+    fn the_converter_is_asked_once_per_date_edge_with_the_edges_own_basis() {
+        use std::cell::RefCell;
+        let asked = RefCell::new(Vec::new());
+        let spy = |basis: Basis, date: Day| {
+            asked.borrow_mut().push((basis, date));
+            fake_zone(basis, date)
+        };
+        let bands = plan(BandFamily::Release, [2026, 10, 31], 2005);
+        assert!(probes(&bands, &spy).is_some());
+        assert_eq!(
+            *asked.borrow(),
+            vec![
+                (Basis::Utc, [2026, 1, 1]),
+                (Basis::Utc, [2020, 1, 1]),
+                (Basis::Utc, [2010, 1, 1]),
+                (Basis::Utc, [2000, 1, 1])
+            ]
+        );
+        asked.borrow_mut().clear();
+        assert!(probes(&plan(BandFamily::Rating, [0; 3], 0), &spy).is_some());
+        assert!(asked.borrow().is_empty(), "a number edge needs no calendar");
+    }
+
+    #[test]
+    fn a_converter_that_fails_leaves_no_probe_and_no_rail() {
+        let bands = plan(BandFamily::DateAdded, [2026, 10, 31], 2024);
+        let fails_on_2025 = |basis, date: Day| if date[0] == 2025 { None } else { fake_zone(basis, date) };
+        assert!(probes(&bands, &fails_on_2025).is_none());
+        assert!(bands[0].probe(&fails_on_2025).is_some());
+        let overflowing = |_: Basis, _: Day| Some(i64::MIN);
+        assert!(bands[0].probe(&overflowing).is_none());
+    }
+
+    #[test]
+    fn a_probe_names_its_parts_and_a_hundredth_renders_exactly() {
+        let bands = plan(BandFamily::LastEpisodeAdded, [2026, 10, 31], 2026);
+        let probe = bands[0].probe(&fake_zone).unwrap();
+        assert_eq!((probe.field, probe.op, probe.value.as_str()), ("episode.addedAt", ">>=", "1793422799"));
+        assert_eq!(hundredths(949), "9.49");
+        assert_eq!(hundredths(700), "7.00");
+        assert_eq!(hundredths(5), "0.05");
+        assert_eq!(hundredths(-1), "-0.01");
+        assert_eq!(hundredths(-250), "-2.50");
+    }
+
+    // ---- offsets ----
+
+    fn rating() -> Vec<Band> {
+        plan(BandFamily::Rating, [0; 3], 0)
+    }
+
+    /// Counts of items at or above each rating edge, with 100 items of which 10 have no rating.
+    const RATING_COUNTS: [u32; 6] = [5, 12, 30, 41, 55, 90];
+
+    #[test]
+    fn a_descending_listing_starts_each_band_where_the_higher_ones_end() {
+        let layout = offsets(&rating(), &RATING_COUNTS, 100, true).unwrap();
+        let got: Vec<(u32, u32)> = layout.bands.iter().map(|b| (b.start, b.size)).collect();
+        assert_eq!(got, [(0, 5), (5, 7), (12, 18), (30, 11), (41, 14), (55, 35)]);
+        assert_eq!((layout.lead, layout.tail), (0, 10));
+        assert_eq!(marks(&rating()), layout.bands.iter().map(|b| b.band.mark()).collect::<Vec<_>>());
+        assert_eq!(layout.populated(), 6);
+    }
+
+    #[test]
+    fn an_ascending_listing_reads_the_bands_lowest_first_after_the_unrated() {
+        let layout = offsets(&rating(), &RATING_COUNTS, 100, false).unwrap();
+        let got: Vec<(u32, u32)> = layout.bands.iter().map(|b| (b.start, b.size)).collect();
+        assert_eq!(got, [(10, 35), (45, 14), (59, 11), (70, 18), (88, 7), (95, 5)]);
+        assert_eq!((layout.lead, layout.tail), (10, 0));
+        assert_eq!(
+            layout.bands.iter().map(|b| b.band.mark()).collect::<Vec<_>>(),
+            vec![
+                Mark::BelowPercent(75),
+                Mark::Percent(75),
+                Mark::Percent(80),
+                Mark::Percent(85),
+                Mark::Percent(90),
+                Mark::Percent(95)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_two_directions_are_mirror_images_and_cover_the_listing() {
+        let cases: [(BandFamily, &[u32], u32); 4] = [
+            (BandFamily::Rating, &RATING_COUNTS, 100),
+            (BandFamily::Duration, &[0, 0, 3, 3, 17, 60], 75),
+            (BandFamily::Unplayed, &[1, 2, 2, 9, 9, 20, 31], 44),
+            (BandFamily::Plays, &[4, 4, 4, 10, 12], 12),
+        ];
+        for (family, counts, total) in cases {
+            let bands = plan(family, [0; 3], 0);
+            let desc = offsets(&bands, counts, total, true).unwrap();
+            let asc = offsets(&bands, counts, total, false).unwrap();
+            assert_eq!(desc.tail, asc.lead, "{family:?}: the same unlabelled items");
+            assert_eq!((desc.lead, asc.tail), (0, 0));
+            for (i, high_first) in desc.bands.iter().enumerate() {
+                let mirrored = &asc.bands[desc.bands.len() - 1 - i];
+                assert_eq!(high_first.band, mirrored.band, "{family:?} {i}");
+                assert_eq!(high_first.size, mirrored.size, "{family:?} {i}");
+                assert_eq!(high_first.start + high_first.size + mirrored.start, total, "{family:?} {i}");
+            }
+            for layout in [&desc, &asc] {
+                let sized: u32 = layout.bands.iter().map(|b| b.size).sum();
+                assert_eq!(layout.lead + sized + layout.tail, total, "{family:?}");
+                // Each band begins where the one before it ends, from the lead.
+                let mut next = layout.lead;
+                for band in &layout.bands {
+                    assert_eq!(band.start, next, "{family:?} {:?}", band.band.mark());
+                    next += band.size;
+                }
+                assert_eq!(next + layout.tail, total);
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_band_starts_where_the_next_one_does() {
+        let bands = plan(BandFamily::Duration, [0; 3], 0);
+        let layout = offsets(&bands, &[0, 0, 3, 3, 17, 60], 75, true).unwrap();
+        let got: Vec<(u32, u32)> = layout.bands.iter().map(|b| (b.start, b.size)).collect();
+        assert_eq!(got, [(0, 0), (0, 0), (0, 3), (3, 0), (3, 14), (17, 43)]);
+        assert_eq!(layout.populated(), 3);
+        assert_eq!(layout.tail, 15);
+    }
+
+    #[test]
+    fn a_ladder_without_a_tail_leaves_its_zeros_unlabelled() {
+        // 44 shows, 31 with something left to watch: 13 with none belong to no band.
+        let bands = plan(BandFamily::Unplayed, [0; 3], 0);
+        let counts = [1, 2, 2, 9, 9, 20, 31];
+        let desc = offsets(&bands, &counts, 44, true).unwrap();
+        assert_eq!(desc.tail, 13);
+        let asc = offsets(&bands, &counts, 44, false).unwrap();
+        assert_eq!(asc.lead, 13);
+        assert_eq!(asc.bands[0].band.mark(), Mark::Count(1));
+        assert_eq!(asc.bands[0].start, 13);
+    }
+
+    #[test]
+    fn counts_without_any_unlabelled_item_have_neither_lead_nor_tail() {
+        let desc = offsets(&rating(), &[5, 12, 30, 41, 55, 100], 100, true).unwrap();
+        assert_eq!((desc.lead, desc.tail), (0, 0));
+        let asc = offsets(&rating(), &[5, 12, 30, 41, 55, 100], 100, false).unwrap();
+        assert_eq!((asc.lead, asc.tail), (0, 0));
+        assert_eq!(asc.bands[0].start, 0);
+    }
+
+    /// The model against a listing it has to agree with: build the items, order them the way the
+    /// server does (no value last in `:desc`, first in `:asc`), count them the way a probe does, and
+    /// find where each band really begins by reading the order.
+    fn listing_agrees(family: BandFamily, today: Day, oldest: i32, value_of: &dyn Fn(Edge) -> i64, items: &[Option<i64>]) {
+        let bands = plan(family, today, oldest);
+        let counts: Vec<u32> = bands
+            .iter()
+            .map(|band| items.iter().flatten().filter(|&&item| item >= value_of(band.edge())).count() as u32)
+            .collect();
+        let total = items.len() as u32;
+        // The band of an item: the first (highest) whose edge it reaches.
+        let band_of = |item: &Option<i64>| -> Option<usize> {
+            let item = (*item)?;
+            bands.iter().position(|band| item >= value_of(band.edge()))
+        };
+        for descending in [true, false] {
+            let mut listing: Vec<Option<i64>> = items.to_vec();
+            // `None` is the smallest value: last when descending, first when ascending.
+            listing.sort_by(|a, b| if descending { b.cmp(a) } else { a.cmp(b) });
+            let layout = offsets(&bands, &counts, total, descending).expect("a consistent probe");
+            let order: Vec<usize> = if descending { (0..bands.len()).collect() } else { (0..bands.len()).rev().collect() };
+            for (shown, &band_index) in order.iter().enumerate() {
+                let start = &layout.bands[shown];
+                assert_eq!(start.band, bands[band_index]);
+                let members: Vec<usize> =
+                    (0..listing.len()).filter(|&at| band_of(&listing[at]) == Some(band_index)).collect();
+                assert_eq!(start.size as usize, members.len(), "{family:?} desc={descending} {:?}", start.band.mark());
+                if let (Some(&first), Some(&last)) = (members.first(), members.last()) {
+                    assert_eq!(start.start as usize, first, "{family:?} desc={descending} {:?}", start.band.mark());
+                    assert_eq!(last + 1 - first, members.len(), "a band is one run");
+                }
+            }
+            let unbanded: Vec<usize> = (0..listing.len()).filter(|&at| band_of(&listing[at]).is_none()).collect();
+            let (edge_count, expected_at) = if descending { (layout.tail, total - layout.tail) } else { (layout.lead, 0) };
+            assert_eq!(edge_count as usize, unbanded.len(), "{family:?} desc={descending}");
+            if let Some(&first) = unbanded.first() {
+                assert_eq!(first as u32, expected_at, "{family:?} desc={descending}: the unlabelled run");
+            }
+        }
+    }
+
+    #[test]
+    fn rating_offsets_find_the_rows_of_a_listing_with_values_on_the_edges() {
+        // Tenths of a point: 95 is 9.5. Edge values, one below them, a zero rating and unrated items.
+        let items: Vec<Option<i64>> = [99, 95, 95, 94, 90, 89, 85, 85, 84, 80, 79, 75, 74, 50, 0]
+            .iter()
+            .map(|&tenths| Some(tenths))
+            .chain([None, None, None])
+            .collect();
+        let value_of = |edge: Edge| match edge {
+            Edge::Rating(tenths) => i64::from(tenths),
+            Edge::Floor => 0,
+            other => panic!("{other:?}"),
+        };
+        listing_agrees(BandFamily::Rating, [0; 3], 0, &value_of, &items);
+    }
+
+    #[test]
+    fn duration_offsets_find_the_rows_of_a_listing_with_values_a_millisecond_apart() {
+        let minute = 60_000_i64;
+        let items: Vec<Option<i64>> = [
+            200 * minute,
+            180 * minute,
+            180 * minute - 1,
+            150 * minute,
+            150 * minute - 1,
+            91 * minute,
+            90 * minute,
+            61 * minute,
+            60 * minute,
+            60 * minute - 1,
+            minute,
+            0,
+        ]
+        .iter()
+        .map(|&ms| Some(ms))
+        .chain([None])
+        .collect();
+        let value_of = |edge: Edge| match edge {
+            Edge::Minutes(minutes) => i64::from(minutes) * minute,
+            Edge::Floor => 0,
+            other => panic!("{other:?}"),
+        };
+        listing_agrees(BandFamily::Duration, [0; 3], 0, &value_of, &items);
+    }
+
+    #[test]
+    fn count_offsets_leave_the_zeros_to_no_band() {
+        let unplayed: Vec<Option<i64>> =
+            [0, 0, 0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 40].iter().map(|&n| Some(n)).collect();
+        let value_of = |edge: Edge| match edge {
+            Edge::Count(n) => i64::from(n),
+            other => panic!("{other:?}"),
+        };
+        listing_agrees(BandFamily::Unplayed, [0; 3], 0, &value_of, &unplayed);
+        let plays: Vec<Option<i64>> = [0, 0, 1, 2, 2, 3, 4, 5, 9, 10, 11].iter().map(|&n| Some(n)).collect();
+        listing_agrees(BandFamily::Plays, [0; 3], 0, &value_of, &plays);
+    }
+
+    #[test]
+    fn date_offsets_find_the_rows_of_a_listing_with_items_on_either_side_of_midnight() {
+        let today = [2026, 10, 31];
+        let at = |date: Day, extra: i64| days(date) * 86_400 + LOCAL_ZONE_SECONDS + extra;
+        // Added today at local midnight and one second before it, on the first of a month, in a
+        // past year; and never-viewed (no value) items.
+        let items: Vec<Option<i64>> = vec![
+            Some(at(today, 3600)),
+            Some(at(today, 0)),
+            Some(at(today, -1)),
+            Some(at([2026, 10, 1], 0)),
+            Some(at([2026, 9, 30], 86_399)),
+            Some(at([2026, 1, 1], 0)),
+            Some(at([2025, 12, 31], 86_399)),
+            Some(at([2025, 1, 1], 0)),
+            Some(at([2024, 6, 15], 0)),
+            None,
+            None,
+        ];
+        let local = |edge: Edge| match edge {
+            Edge::Day { date, basis } => fake_zone(basis, date).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        listing_agrees(BandFamily::DateViewed, today, 2024, &local, &items);
+    }
+
+    #[test]
+    fn release_offsets_find_the_rows_of_a_listing_in_utc_days() {
+        let utc_day = |date: Day| Some(days(date) * 86_400);
+        let items: Vec<Option<i64>> = vec![
+            utc_day([2026, 3, 1]),
+            utc_day([2026, 1, 1]),
+            utc_day([2025, 12, 31]),
+            utc_day([2020, 1, 1]),
+            utc_day([2019, 12, 31]),
+            utc_day([2001, 5, 5]),
+            utc_day([1999, 12, 31]),
+            utc_day([1995, 7, 7]),
+            utc_day([1969, 12, 31]),
+            None,
+        ];
+        let value_of = |edge: Edge| match edge {
+            Edge::Day { date, basis: Basis::Utc } => days(date) * 86_400,
+            other => panic!("{other:?}"),
+        };
+        // 1969-12-31 is before 1970: its epoch is negative and still falls in the 1960s band.
+        listing_agrees(BandFamily::Release, [2026, 10, 31], 1969, &value_of, &items);
+    }
+
+    // ---- rejection ----
+
+    #[test]
+    fn a_count_sequence_that_is_not_monotone_is_rejected() {
+        assert_eq!(
+            offsets(&rating(), &[5, 12, 11, 41, 55, 90], 100, true),
+            Err(Reject::NotMonotone { index: 2 })
+        );
+        // A rating ladder read in the wrong order (lowest edge first) decreases at once.
+        assert_eq!(offsets(&rating(), &[90, 55, 41, 30, 12, 5], 100, false), Err(Reject::NotMonotone { index: 1 }));
+        // Equal neighbours are fine: an empty band.
+        assert!(offsets(&rating(), &[5, 5, 30, 41, 55, 90], 100, true).is_ok());
+    }
+
+    #[test]
+    fn a_count_above_the_total_is_rejected_before_anything_else() {
+        assert_eq!(offsets(&rating(), &[5, 12, 30, 41, 55, 101], 100, true), Err(Reject::AboveTotal { index: 5 }));
+        // Non-monotone as well, but the listing it counts is the wrong one: that is said first.
+        assert_eq!(offsets(&rating(), &[200, 12, 30, 41, 55, 90], 100, true), Err(Reject::AboveTotal { index: 0 }));
+        assert_eq!(offsets(&rating(), &[0, 0, 0, 0, 0, 1], 0, false), Err(Reject::AboveTotal { index: 5 }));
+    }
+
+    #[test]
+    fn counts_that_all_equal_the_total_are_an_ignored_filter() {
+        assert_eq!(offsets(&rating(), &[44; 6], 44, true), Err(Reject::AllEqualTotal));
+        assert_eq!(offsets(&rating(), &[44; 6], 44, false), Err(Reject::AllEqualTotal));
+        // An empty listing answers zero everywhere: nothing to show either.
+        assert_eq!(offsets(&rating(), &[0; 6], 0, true), Err(Reject::AllEqualTotal));
+        // One count short of the total is a real probe: the lowest band holds every rated item.
+        let ok = offsets(&rating(), &[44, 44, 44, 44, 44, 44], 45, true).unwrap();
+        assert_eq!((ok.tail, ok.populated()), (1, 1));
+        assert_eq!(ok.bands[0].size, 44);
+    }
+
+    #[test]
+    fn a_wrong_number_of_counts_is_rejected() {
+        assert_eq!(
+            offsets(&rating(), &[5, 12, 30, 41, 55], 100, true),
+            Err(Reject::WrongLength { bands: 6, counts: 5 })
+        );
+        assert_eq!(
+            offsets(&rating(), &[5, 12, 30, 41, 55, 90, 90], 100, false),
+            Err(Reject::WrongLength { bands: 6, counts: 7 })
+        );
+        assert_eq!(offsets(&rating(), &[], 100, true), Err(Reject::WrongLength { bands: 6, counts: 0 }));
+    }
+
+    #[test]
+    fn no_bands_and_no_counts_is_rejected_not_accepted_as_everything_equal() {
+        assert_eq!(offsets(&[], &[], 10, true), Err(Reject::NoBands));
+        assert_eq!(offsets(&[], &[], 0, false), Err(Reject::NoBands));
+    }
+
+    #[test]
+    fn a_rail_whose_bands_are_all_empty_is_a_valid_layout_that_shows_nothing() {
+        // Nobody rated anything: monotone, within the total, not all equal to it. The layout is
+        // honest (every item is unlabelled); the caller reads `populated()` to hide the rail.
+        let layout = offsets(&rating(), &[0; 6], 12, false).unwrap();
+        assert_eq!((layout.lead, layout.tail, layout.populated()), (12, 0, 0));
+    }
+}

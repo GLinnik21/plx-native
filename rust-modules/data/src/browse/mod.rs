@@ -538,6 +538,7 @@ pub enum SecFetch {
     Failed,
 }
 
+pub mod bands;
 pub mod discovery_job;
 mod letters;
 pub mod listing_jobs;
