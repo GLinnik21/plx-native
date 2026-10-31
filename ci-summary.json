@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T01:23:37Z",
+ "generated": "2026-10-31T01:43:17Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -4.4,
+   "change30_pct": -4.7,
    "change7_pct": 16.0,
-   "d30": 2517.0,
-   "delta30": -112.0,
+   "d30": 2523,
+   "delta30": -118.0,
    "delta7": 332.0,
    "group": "ci",
    "id": "minutes",
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.0,
-   "change7_pct": 14.6,
+   "change30_pct": -60.1,
+   "change7_pct": 14.4,
    "d30": 953,
-   "delta30": -572,
-   "delta7": 48.5,
+   "delta30": -572.5,
+   "delta7": 48.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 239,
+   "n_now": 240,
    "n_prev": 154,
-   "now": 381,
+   "now": 380.5,
    "prev7": 332.5,
    "shown": true,
    "state": "flat",
@@ -165,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -61.2,
+   "change30_pct": -62.3,
    "change7_pct": 13.8,
-   "d30": 968.5,
-   "delta30": -593.0,
+   "d30": 995.0,
+   "delta30": -619.5,
    "delta7": 45.5,
    "group": "ci",
    "id": "push_wait",
@@ -387,10 +387,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.8,
+   "change30_pct": 33.2,
    "change7_pct": 2.7,
-   "d30": 201,
-   "delta30": 68,
+   "d30": 202.0,
+   "delta30": 67.0,
    "delta7": 7.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -429,10 +429,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -76.5,
+   "change30_pct": -76.6,
    "change7_pct": 4.4,
-   "d30": 907,
-   "delta30": -694,
+   "d30": 911.0,
+   "delta30": -698.0,
    "delta7": 9,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -538,8 +538,8 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -5.3,
-   "d30": 17,
-   "delta30": 1,
+   "d30": 17.0,
+   "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
