@@ -1,4 +1,4 @@
-{"updated":"2026-10-31T01:53:43Z",
+{"updated":"2026-10-31T01:59:09Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4187,7 +4187,8 @@
 {"id":41152849763,"at":"2026-10-31T00:56:37Z","sha":"558ddf716","title":"Person: a retoken that changes whose credential it is rebuilds the page","pr":1137,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":128,"Windows launcher syntax":18,"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":215}},
 {"id":41154338757,"at":"2026-10-31T01:14:12Z","sha":"d8f317c06","title":"Person: a refreshed server list no longer blanks a loaded page","pr":1137,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":229,"macOS tests against bundled FFmpeg and ASS":141,"Linux simulator build + launch":309}},
 {"id":41156166274,"at":"2026-10-31T01:37:23Z","sha":"80daed730","title":"Skip pill: two doc comments say what the activation and the offer's park do now","pr":1161,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":213,"Windows launcher syntax":18,"Linux simulator build + launch":306,"macOS simulator build + launch":154},"wall":356},
-{"id":41156891550,"at":"2026-10-31T01:45:49Z","sha":"f23df1735","title":"Merge origin/main into the sort-value branch","pr":1169,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":326,"macOS simulator build + launch":190,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":223}}
+{"id":41156891550,"at":"2026-10-31T01:45:49Z","sha":"f23df1735","title":"Merge origin/main into the sort-value branch","pr":1169,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":326,"macOS simulator build + launch":190,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":223}},
+{"id":41157491345,"at":"2026-10-31T01:53:50Z","sha":"e382a6be9","title":"Library: sort value under posters, a header sort control, a capsule that carries the sort","pr":1169,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":298,"macOS tests against bundled FFmpeg and ASS":200,"macOS simulator build + launch":211,"Windows launcher syntax":18}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
