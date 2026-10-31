@@ -31,7 +31,10 @@ pub(super) fn label(mark: Mark) -> String {
         Mark::BelowMinutes(minutes) => format!("<{}", msg::library_rail_hours(&hours_text(minutes))),
         Mark::Count(n) => locale.number(i64::from(n)),
         Mark::CountOrMore(n) => format!("{}+", locale.number(i64::from(n))),
-        Mark::Today | Mark::Month(_) | Mark::Year(_) | Mark::Decade(_) => format!("{mark:?}"),
+        Mark::Today | Mark::Month(_) | Mark::Year(_) | Mark::Decade(_) => {
+            debug_assert!(false, "{mark:?} has no label yet: its family is not `rail_ready`");
+            format!("{mark:?}")
+        }
     }
 }
 
