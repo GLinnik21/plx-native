@@ -1487,7 +1487,8 @@ class Library:
         return rows
 
     def first_characters(self, key, q=None):
-        """Counts in ascending titleSort order (the rail's order) of the listing `q` describes: the
+        """Counts in ascending titleSort order (the rail's order; by the SHOW's title for seasons and
+        episodes under `--band-fixture`) of the listing `q` describes: the
         terms that scope `/all` (`type`, `unwatched`, `unwatchedLeaves`, `genre`, ...) scope the counts
         the same way, as PMS does, so the sum is the filtered `totalSize` and prefix sums are the
         offsets of each letter in that listing. `type=18` counts the section's collections."""

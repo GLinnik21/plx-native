@@ -23,9 +23,10 @@ listing, and prints a verdict per family.
 * The token is read from a file (default: the saved Guest token), sent as the `X-Plex-Token`
   header only, and never printed or written. The owner token file is refused by name.
 * Requests are spaced by `--delay-ms` and capped by `--max-requests`.
-* Rows are reduced to their numeric sort fields the moment they are parsed; titles, names, paths
-  and the server's identity are never kept, printed or written. Libraries are labelled by kind
-  and order only ("movie#1").
+* Rows are reduced the moment they are parsed to their numeric sort fields, their ids and indexes and
+  the first glyph of their sort title (the letters check uses it); no title, name or path is printed
+  or written, and the server's identity is never kept, printed or written. The one-glyph letter keys
+  with their sizes may be printed or written. Libraries are labelled by kind and order only ("movie#1").
 
 ## Verdict per family (the first column of the table)
 
@@ -71,9 +72,9 @@ rating, audienceRating, addedAt and lastViewedAt (a titleSort listing is also ch
 grouped by show and for what its order is keyed on); the same family table as above (edge counts,
 straddles, null placement, operators) for the five fields a row can carry; and the
 `/firstCharacter?type=T` letters index against the titleSort order (do the prefix sums of the
-bucket sizes land on the listing's real letter boundaries?). The one exception to "no title ever
-enters memory": a row's FIRST GLYPH is kept (as `ch`) for the letters check, and a letter bucket's
-key is a single glyph; no title is printed or written. Libraries stay labelled "show#1".
+bucket sizes land on the listing's real letter boundaries?). A row keeps the FIRST GLYPH of its sort
+title (as `ch`, in every run) for the letters check, and a letter bucket's key is a single glyph;
+no title is printed or written. Libraries stay labelled "show#1".
 
 Usage:  tools/pms-band-probe.py [--base URL] [--token-file PATH] [--json PATH] [--only a,b]
                                 [--floor-and-negative-only] [--types 3,4 [--letters-under-filters]]
@@ -145,7 +146,8 @@ class Reply:
 
 
 def reduce_item(item):
-    """The numeric sort fields of one listing row, and nothing else (no title ever enters memory)."""
+    """One listing row reduced to its numeric sort fields, its ids and indexes and the first glyph of
+    its sort title (`ch`); the rest of the title is never kept."""
     row = {k: item[k] for k in NUMERIC_FIELDS if isinstance(item.get(k), (int, float))}
     for source, name in (("ratingKey", "rk"), ("grandparentRatingKey", "gp"), ("parentRatingKey", "pk"),
                          ("index", "idx"), ("parentIndex", "pidx")):

@@ -126,11 +126,12 @@ spec's "Media Queries" section documents the full query language.
   the same keys (Letter index, below).
 - **Show granularity:** `?type=2|3|4` on `/all` lists shows/seasons/episodes flat (no
   children-walking). Type ids: movie=1, show=2, season=3, episode=4.
-  Rechecked live 2026-09-26: `includeMeta=1` returns all three `Type` entries and marks the
-  requested one `active`. Seasons and episodes advertise a compound Show sort and its `descKey`;
-  use that descending expression as supplied. Neither advertises a Genre filter. Typed
-  `/firstCharacter?type=2|3|4` counts match the corresponding flat listing totals.
-  Seasons accept `unwatchedLeaves=1`; episodes use `unwatched=1`.
+  `includeMeta=1` returns every `Type` entry (show, season, episode and, on PMS 1.43.5, a folder
+  entry) and marks the requested one `active` (the 2026-09-26 recheck saw three entries, the
+  2026-10-31 one on 1.43.5 four). Seasons and episodes advertise a compound Title sort (the show
+  order) and its `descKey`; use that descending expression as supplied. Neither advertises a
+  Genre filter. Typed `/firstCharacter?type=2|3|4` counts match the corresponding flat listing
+  totals. Seasons accept `unwatchedLeaves=1`; episodes use `unwatched=1`.
 - **Letter index:** `GET /library/sections/{key}/firstCharacter` → per-letter `Directory[]` with
   `size` counts in titleSort order (articles stripped); `/firstCharacter/{L}` returns the items.
   **`?firstCharacter=X` on `/all` is silently IGNORED** — jump = prefix-summed
@@ -309,18 +310,19 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
   `lastViewedAt`, `mediaHeight`, `random`; shows list `titleSort`, `originallyAvailableAt`, `rating`,
   `audienceRating`, `unviewedLeafCount`, `episode.addedAt`, `lastViewedAt`, `random`. `year` and
   `viewCount` are accepted as sorts but are not listed. The same read with `type=3|4` (recorded
-  2026-10-31, `includeMeta=1`, PMS 1.43) lists **seasons**: the compound Show order
-  `show.titleSort,index` (descKey `show.titleSort:desc,index`) and `random`, nothing else; and
-  **episodes**: the compound Show order
+  2026-10-31, `includeMeta=1`, PMS 1.43) lists **seasons**: a Title entry whose key is the compound
+  show order `show.titleSort,index` (descKey `show.titleSort:desc,index`) and `random`, nothing else;
+  and **episodes**: a Title entry whose key is the compound show order
   `show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id`
   (its descKey flips the first term), `originallyAvailableAt` (Release Date), `rating` (Critic
   Rating), `audienceRating`, `addedAt` (Date Added), `lastViewedAt` and `random`. Neither lists a
-  title, duration, plays, resolution or year sort. The Show order is the default of both views.
+  plain `titleSort`, nor a duration, plays, resolution or year sort. The Title entry, the compound
+  show order, is the sort the A-Z letters belong to (Letter index, above) and the default of both views.
   The Library's Sort value line (`screens/src/registry/sort_info.rs`) words, for an episode row,
   the air date, the two scores, Date added and Date viewed from the listing's own fields
   (`originallyAvailableAt`, `rating` + `ratingImage`, `audienceRating` + `audienceRatingImage`,
   `addedAt`, `lastViewedAt`/`viewCount`) and, for a season row, `addedAt`, `lastViewedAt`,
-  `viewCount` and `leafCount - viewedLeafCount`; the Show order and Random show no value, and a
+  `viewCount` and `leafCount - viewedLeafCount`; the Title entry and Random show no value, and a
   Seasons view lists no sort that has one.
 - **The grid's own terms** are honoured by the probes: two edges per family, counted with the terms
   and compared with the same-terms listing, matched. `genre` was probed on both libraries (movie

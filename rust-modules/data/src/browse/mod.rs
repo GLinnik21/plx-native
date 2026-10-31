@@ -622,9 +622,11 @@ struct SecState {
     /// The same for the saved genre: false only while its existence check could not be read, so
     /// the library opened unfiltered but the record still holds the genre.
     genre_resolved: bool,
-    /// per-letter (label, count) in titleSort order, from `/firstCharacter` — the letter rail. They
-    /// count the listing [`Self::letters_for`] names and are shown only while that is the listing the
-    /// grid shows, or the kept list is ([`SecState::shown_letters`], `letters.rs`).
+    /// per-letter (label, count) in the listing's Title order, from `/firstCharacter` (`titleSort` for
+    /// the section's own listing and collections, the declared composite for seasons and episodes:
+    /// `SortEntry::is_title_order`) — the letter rail. They count the listing [`Self::letters_for`]
+    /// names and are shown only while that is the listing the grid shows, or the kept list is
+    /// ([`SecState::shown_letters`], `letters.rs`).
     letters: Arc<Vec<(String, i64)>>,
     /// What `letters` counted; `None` = no list has landed (or it was forgotten).
     letters_for: Option<LettersKey>,
