@@ -61,9 +61,10 @@ pub enum Look {
 /// **Where the card's stills come from.** The memo ([`ScrubPreview::step`]) and the draw ask a
 /// source for two things about a still, named by its ms: whether it can be drawn
 /// ([`Stills::look`], which also STARTS the fetch of one never asked for) and the texture to draw
-/// ([`Stills::tex`]). [`PosterStills`] is the PMS source above; a source whose previews are not
-/// one image each (a sprite sheet, a tile cut out of a larger picture) implements this and draws
-/// through the same card, memo and motion, rather than a card of its own.
+/// ([`Stills::tex`]). [`PosterStills`] is the PMS source above; a source that yields one whole
+/// texture per still implements this and draws through the same card, memo and motion, rather
+/// than a card of its own. The draw samples the whole texture `tex` names, so a still that is a
+/// region of a larger texture is outside this seam.
 pub trait Stills {
     /// Probe the still at `ms`: resident, settled as a miss, or still on its way.
     fn look(&mut self, ms: i64) -> Look;
