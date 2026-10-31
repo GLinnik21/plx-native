@@ -263,3 +263,24 @@ illustrates the mode as a library sorted by Year while the Sort value row has fo
 board's (`cards::SampleFrame`: 660 x 556, Library cards 35 px apart so the outer two are clipped by it and drawn at 35%, their
 value lines with them); the Details picker's frame says "The library you last opened" at its foot, and its Video choice
 carries the one detail line the table can hold without a focus-only mechanism. It never adds sort choices.
+
+## The Library's rail: letters for a title sort, bands for a value sort
+
+`library/rail.rs` (`RailPart`) is ONE rail with one logic: an element is a place in the listing (`starts`, the index
+of its first item), an element no item starts is dimmed and skipped by focus, moving focus inside the rail scrolls the
+grid to the element's first card at once (`LibraryScreen::follow`, no OK), the grid has no focus while the rail has it,
+and Left returns to the grid. A title sort (ascending) has the A-Z letters (`ListingView::rail_available`); a sort with
+a value ladder has its BANDS (`ListingView::bands_available`: rating `95% 90% 85% 80% 75% <75%`, duration `3h+ 2½h 2h
+1½h 1h <1h`, unplayed `12+ 10 8 6 4 2 1`, plays `10+ 5 3 2 1`), never both. What differs:
+
+- **Labels** are `library/rail_bands.rs`, built from the data layer's `Mark` tokens with `fmt::percent`, the locale's
+  numbers and `library_rail.hours` (the language's own short hour unit, spaced as `core.duration_hours` spaces it, `½`
+  for a half hour); `<` and `+` are written by the code. Focus identity is the token, not the text.
+- **Geometry** is `layout::BandRows`: centre x 1834 (the letters keep 1844), rows 40 px apart (letters 32), the first
+  at the grid's top (244), `BAND_STEP_GAP` extra before the rows a scale change names (none for these ladders), the
+  track as wide as the widest label plus the pill's 12 px each side (never under the letters' 44, never into the
+  posters). The grid does not move for it.
+- **Ink**: a band that holds items is `TEXT_SECONDARY`, an empty one the same at 25%, the CURRENT band (the one the
+  grid's card is in, none when the card is among the items the sort leaves without a value, which lie before the first
+  band or after the last) `TEXT_PRIMARY`, and the focused band wears the white focus pill (38 high, built with
+  `widgets::focus_pill`, filled as the letters' disc is). There is no position bar or marker.

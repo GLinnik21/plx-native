@@ -149,8 +149,11 @@ spec's "Media Queries" section documents the full query language.
   while they describe it (`data/src/browse/letters.rs`). A VALUE sort's bands come from count
   probes instead (next section): the data job asks them for the fixed-edge sorts (critic rating,
   duration, unplayed, plays) on a movie or show section's own listing, with the same terms, and
-  `ListingView::bands()` exposes them; `rail_available` is still the letters' alone, and the Library
-  screen does not draw the bands yet.
+  `ListingView::bands()` exposes them; `rail_available` stays the letters' alone and
+  `bands_available` is the value sorts' (the two never both). The Library's rail draws whichever
+  the sort has (`library/rail.rs`, labels in `library/rail_bands.rs`): the bands in listing order,
+  an empty band dimmed and skipped by focus, and the items the sort leaves without a value (the
+  unlabelled lead or tail) in no band.
 - **Collections — two id spaces:** `/library/sections/{key}/collections` → `Metadata[]` with
   **ratingKey** (browse via `/library/collections/{rk}/children`); the `/collection` filter dir
   returns **tag ids** for `/all?collection={tag}`. Don't mix. A collection row's `index` is that
