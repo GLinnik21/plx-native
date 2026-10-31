@@ -802,6 +802,44 @@ fn month_year_is_the_ymmm_skeleton_in_every_shipped_language_and_never_numeric()
     }
 }
 
+#[test]
+fn month_short_is_the_month_year_names_month_in_every_shipped_language() {
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        let tag = cx.language().tag();
+        assert!(cx.month_short(0).is_none() && cx.month_short(13).is_none() && cx.month_short(u8::MAX).is_none(), "{tag}");
+        let mut seen: Vec<String> = Vec::new();
+        for month in 1..=12 {
+            let name = cx.month_short(month).expect("a real month");
+            assert!(!name.is_empty() && name.chars().all(|c| !c.is_ascii_digit() && c != '/'), "{tag} {month}: {name:?}");
+            // The one selection: the month `month_year` writes before the year is this name.
+            let year_text = cx.month_year(2024, month).expect("a real month");
+            assert!(year_text.contains(&name), "{tag} {month}: {name:?} is not the month of {year_text:?}");
+            assert!(!seen.contains(&name), "{tag} {month}: {name:?} repeats a month");
+            seen.push(name);
+        }
+    }
+}
+
+#[test]
+fn month_short_reads_as_the_boards_do_and_is_stand_alone_in_russian_and_belarusian() {
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        match cx.language() {
+            Language::En => assert_eq!(cx.month_short(10).as_deref(), Some("Oct")),
+            Language::Ru => {
+                assert_eq!(cx.month_short(10).as_deref(), Some("окт."));
+                assert_eq!(cx.month_short(5).as_deref(), Some("май"), "stand-alone, not the genitive \"мая\"");
+            }
+            Language::Be => {
+                assert_eq!(cx.month_short(4).as_deref(), Some("кра"));
+                assert_eq!(cx.month_short(5).as_deref(), Some("май"));
+            }
+            _ => {}
+        }
+    }
+}
+
 /// CLDR 47 (the data `icu_datetime` 2.1 is built from) `ru` stand-alone abbreviated months, what its
 /// yMMM skeleton (`LLL y 'г'.`) spells: "март", "май", "июнь" and "июль" differ from the format
 /// forms "мар.", "мая", "июн." and "июл." that follow a day.

@@ -183,13 +183,22 @@ impl LocaleContext {
     /// over stand-alone names identical to its format ones (Polish).
     pub fn month_year(&self, year: i32, month: u8) -> Option<String> {
         icu_calendar::Date::try_new_gregorian(year, month, 1).ok()?;
-        let name = standalone_abbreviated(self.language)[usize::from(month - 1)];
+        let name = self.month_short(month)?;
         Some(match self.language {
             Language::Hu => format!("{year}. {name}"),
             Language::Pt => format!("{name} de {year}"),
             Language::Ru | Language::Be => format!("{name} {year}\u{a0}г."),
             _ => format!("{name} {year}"),
         })
+    }
+    /// The abbreviated month a language writes with nothing beside it, the one name a rail or a chip
+    /// gives a month: "Oct", "okt.", "окт.", "кра". It is [`month_year`](Self::month_year)'s month
+    /// (the same [`standalone_abbreviated`] selection, so the two never disagree), which is the
+    /// format form that follows a day wherever the language has one form, and the nominative in
+    /// Russian and Belarusian. `None` for a month outside `1..=12`.
+    pub fn month_short(&self, month: u8) -> Option<String> {
+        let index = usize::from(month).checked_sub(1)?;
+        standalone_abbreviated(self.language).get(index).map(|name| (*name).to_owned())
     }
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
