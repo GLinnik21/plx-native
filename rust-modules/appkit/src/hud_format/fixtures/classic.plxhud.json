@@ -56,7 +56,7 @@
           ] } }
         ] } }
       ] },
-      { "id": "tabs", "gap_before": { "value": 59, "if": { "panel.chapters": 43, "panel.info": 45 } }, "cells": [
+      { "id": "tabs", "gap_before": { "value": 7, "if": { "panel.chapters": 43, "panel.info": 45 } }, "cells": [
         { "align": "start", "segment": { "id": "tabs", "gap": "SM", "items": [
           { "id": "tab_info", "command": "toggle_section", "section": "info", "widget": "pill", "size": 64 },
           { "id": "tab_chapters", "command": "toggle_section", "section": "chapters", "when": "chapters.present", "widget": "pill", "size": 64 }

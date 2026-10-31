@@ -60,7 +60,8 @@ impl TestBrowse {
                     ran += 1;
                     let (sid, key) = job.req.server();
                     match held(sid, key) {
-                        Some(client) => listing_jobs::finish_browse_directory_job(&port, job.addr, client, job.req),
+                        Some(client) => listing_jobs::finish_browse_directory_job(&port, job.addr, client, job.req,
+                            bands::utc_zone()),
                         None => plx_machine::job::Port::refused(&port, job.addr),
                     }
                 }

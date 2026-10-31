@@ -35,7 +35,7 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
     if item.kind == 3 { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) }
 }
 
-/// The standard focused caption policy; the movie grid can use persistent sort captions instead.
+/// The standard focused caption policy; a grid sorted by a value draws its value line instead.
 pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// A grid card's label under `policy`: the focused caption band shows exactly what the Under
@@ -106,6 +106,8 @@ struct CaptionCache {
     language: Option<plx_platform::i18n::Language>,
     format: String,
     sort: String,
+    /// The calendar date the labels were worded for: "Today" and "Yesterday" go stale at midnight.
+    today: Option<[i32; 3]>,
     labels: HashMap<usize, (usize, ui_cards::TileLabel)>,
 }
 
@@ -219,7 +221,7 @@ impl GridPart {
     pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
         self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
-        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), persistent: self.layout.persistent_captions(), captions: &self.captions };
+        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions };
         let _ = self.grid.on(ev, cx, &src, fx);
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
@@ -255,7 +257,7 @@ impl GridPart {
         self.target_layout = target_layout;
         self.scroll_target = scroll_target;
         self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
-        self.grid.set_persistent_captions(layout.persistent_captions());
+        self.grid.set_value_line(layout.value_line());
         self.grid.set_caption_policy(Some(caption_policy()));
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
@@ -450,7 +452,7 @@ impl GridPart {
 
     /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
     fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
-        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), persistent: self.layout.persistent_captions(), captions: &self.captions }
+        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions }
     }
 
     /// The painter the grid draws and registers stops through: the page's alpha, and the stops
@@ -514,7 +516,10 @@ struct GridSrc<'a, 'v> {
     indexes: &'a GridIndexes,
     view: plx_data::stores::browse::ListingView<'v>,
     policy: CaptionPolicy,
-    persistent: bool,
+    /// The grid draws a sort value line under every poster rather than the Title/Details caption.
+    values: bool,
+    /// The calendar date the application handed in (`LibraryLike::today`).
+    today: Option<[i32; 3]>,
     captions: &'a std::cell::RefCell<CaptionCache>,
 }
 
@@ -526,20 +531,22 @@ impl GridSrc<'_, '_> {
     /// The label the grid draws under tile `i`: the one [`CardSource::label`] answers.
     fn with_tile_label<R>(&self, i: usize, read: impl FnOnce(&ui_cards::TileLabel) -> R) -> R {
         let Some(item) = self.view.item(i) else { return read(&ui_cards::TileLabel::default()) };
-        if self.persistent {
+        if self.values {
             let key = self.view.sorts().get(self.view.sort_index()).map_or("", |sort| sort.key.as_str());
             let locale = plx_platform::i18n::current();
             let mut cache = self.captions.borrow_mut();
-            if cache.language != Some(locale.language()) || cache.format != locale.format_locale() || cache.sort != key {
+            if cache.language != Some(locale.language()) || cache.format != locale.format_locale() || cache.sort != key
+                || cache.today != self.today {
                 cache.labels.clear(); cache.language = Some(locale.language());
                 cache.format = locale.format_locale().to_owned(); cache.sort = key.to_owned();
+                cache.today = self.today;
             }
             let owner = item as *const plx_data::pms::PmsMovie as usize;
             if let Some((_, label)) = cache.labels.get(&i).filter(|(old, _)| *old == owner) {
                 return read(label);
             }
-            let entry = cache.labels.entry(i).or_insert_with(|| (owner, crate::registry::sort_info::label(item, key)));
-            if entry.0 != owner { *entry = (owner, crate::registry::sort_info::label(item, key)); }
+            let entry = cache.labels.entry(i).or_insert_with(|| (owner, crate::registry::sort_info::label(item, key, self.today)));
+            if entry.0 != owner { *entry = (owner, crate::registry::sort_info::label(item, key, self.today)); }
             return read(&entry.1);
         }
         read(&grid_label(item, &self.policy))
@@ -707,8 +714,8 @@ mod caption_cache_review_tests {
         let cache = std::cell::RefCell::new(CaptionCache::default());
         let indexes = GridIndexes::default();
         let mut src = GridSrc { total: 1, windows: &[], indexes: &indexes, view: listing.view(),
-            policy: CaptionPolicy::default(), persistent: true, captions: &cache };
-        let pointer = |label: &ui_cards::TileLabel| label.title.as_ref().unwrap().as_ptr() as usize;
+            policy: CaptionPolicy::default(), values: true, today: Some([2026, 10, 30]), captions: &cache };
+        let pointer = |label: &ui_cards::TileLabel| label.value.as_ref().unwrap().text.as_ptr() as usize;
         let first = src.with_tile_label(0, pointer);
         assert_eq!(first, pointer(&cache.borrow().labels[&0].1), "read the cached CString itself");
         assert_eq!(src.with_tile_label(0, pointer), first);
@@ -723,7 +730,17 @@ mod caption_cache_review_tests {
         }
         let changed = listing.clone().with_page(0, vec![PmsMovie { title: "Replaced".into(), ..Default::default() }]);
         src.view = changed.view();
-        src.with_tile_label(0, |label| assert_eq!(label.title.as_ref().unwrap().to_str().unwrap(), "Replaced"));
+        let owner = cache.borrow().labels[&0].0;
+        src.with_tile_label(0, |_| {});
+        assert_ne!(cache.borrow().labels[&0].0, owner, "a replaced item is worded again, keyed on the item it was worded for");
         assert_eq!(cache.borrow().labels.len(), 1);
+        // The day turning over invalidates the labels: "Today" must not outlive midnight.
+        cache.borrow_mut().labels.get_mut(&0).unwrap().1.value.as_mut().unwrap().text = "stale".into();
+        assert_eq!(src.with_tile_label(0, |label| label.value.as_ref().unwrap().text.clone()), "stale",
+            "the same date reads the cached label");
+        src.today = Some([2026, 10, 31]);
+        assert_ne!(src.with_tile_label(0, |label| label.value.as_ref().unwrap().text.clone()), "stale",
+            "a new date rebuilds the label");
+        assert_eq!(cache.borrow().today, Some([2026, 10, 31]));
     }
 }

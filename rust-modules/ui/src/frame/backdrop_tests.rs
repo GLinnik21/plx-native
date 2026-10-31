@@ -447,6 +447,38 @@ fn shared_chrome_splits_when_its_glasses_overlap() {
     );
 }
 
+/// The top bar's chip (the profile circle) and its centred track: `BAND_AIR`-clear of each other
+/// at every strip width, so they never overlap, but a track of 1432 px or more starts inside the
+/// chip's sampling footprint (its rect grown by `BLUR_REACH`). Footprint contact alone must not
+/// split the shared band: that is a second source job and a second page pass for glass that
+/// samples the page, not each other.
+#[test]
+fn shared_chrome_neighbours_whose_footprints_touch_but_rects_do_not_keep_one_source() {
+    let _guard = plx_base::testlock::serial();
+    let chip = Rect::new(96.0, 54.0, 76.0, 76.0);
+    let track = Rect::new(188.0, 54.0, 1544.0, 76.0);
+    for (name, order) in [("chip then track", [chip, track]), ("track then chip", [track, chip])] {
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            let _band = layer(Z::CHROME, true);
+            for r in order {
+                declare_glass(crate::Painter::root(), r);
+            }
+        }
+        sources.borrow_mut().resolve();
+        assert_eq!(
+            sources.borrow().entries.keys().copied().collect::<Vec<_>>(),
+            vec![Z::CHROME],
+            "{name}: one source in the shared band"
+        );
+        let jobs = sources.borrow().jobs();
+        assert_eq!(jobs.len(), 1, "{name}: one capture");
+        assert!(covers(jobs[0].1, chip) && covers(jobs[0].1, track), "{name}: it covers both");
+    }
+}
+
 #[test]
 fn a_frozen_replacement_hides_lower_damage_but_its_new_image_invalidates() {
     let _guard = plx_base::testlock::serial();

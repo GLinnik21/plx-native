@@ -1954,7 +1954,7 @@ mod tests {
     /// The top of the transport's control row, as the layout reports it (`HudGeometry`): the line the
     /// panel must stay above.
     fn transport_top() -> f32 {
-        plx_appkit::player_hud::classic::frame_geometry().row_anchor.top
+        plx_appkit::player_hud::audit_geometry().row_anchor.top
     }
 
     /// The Audio row's speed suffix says nothing at 1x, names the speed and the pipeline's verdict

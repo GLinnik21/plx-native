@@ -6,9 +6,9 @@
       "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it (default features, dev flavour). The shipped release binary is built with --no-default-features and is smaller; this is the number CI can measure on every PR.",
       "unit": "bytes",
       "mode": "fail",
-      "limit": 15180000,
-      "measured": 13799944,
-      "measured_on": "2026-10-18",
+      "limit": 17000000,
+      "measured": 15451784,
+      "measured_on": "2026-10-30",
       "headroom": "10%"
     },
     "packages_default": {

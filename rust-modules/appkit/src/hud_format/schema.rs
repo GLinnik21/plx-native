@@ -1292,6 +1292,10 @@ pub static CELL_SPACER: Node = Node {
     doc: "Empty width.",
 };
 
+/// The most controls one `segment` holds. The player's row is a segment, and
+/// [`crate::player_hud::geometry::MAX_ROW_ITEMS`], the width of the geometry report's `items`, is this.
+pub const MAX_SEGMENT_ITEMS: usize = 24;
+
 pub static CELL_PLAYBAR: Node = Node {
     name: "playbar",
     kind: NodeKind::Plain,
@@ -1302,7 +1306,7 @@ pub static CELL_PLAYBAR: Node = Node {
         Field::req(
             "thickness",
             Ty::Int { min: 1, max: 64 },
-            "The track's height in px: the band's box. The knob, the clocks and the mark overhang it.",
+            "The track's height in px. The bar's box is the track and the line the clocks are drawn on under it, or this if taller; the knob and the mark overhang the track.",
         )
         .keyable(),
         Field::opt(
@@ -1372,7 +1376,7 @@ pub static CELL_SEGMENT: Node = Node {
             "items",
             Ty::List {
                 of: &Ty::Object("item"),
-                max_len: 24,
+                max_len: MAX_SEGMENT_ITEMS,
             },
             "The controls, in order.",
         ),

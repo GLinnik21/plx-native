@@ -163,7 +163,8 @@ impl Packed for DirectPlayMode {
 }
 
 /// Under posters is one byte: the title switch in bit 0, the details' ladder index in bits 1-3
-/// ([`UnderPosters::pack`]). The seed, 0, is the default (no title, year and length), so a read
+/// and "sort value Off" in bit 4 ([`UnderPosters::pack`]). The seed, 0, is the default (no title,
+/// year and length, sort value On), so a read
 /// before any restore is what the install did before the setting existed.
 impl Packed for UnderPosters {
     const SEED: u8 = 0;

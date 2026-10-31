@@ -40,9 +40,11 @@ header row for sort & filter (including unwatched-only), a Collections page and 
 page. The shelves live on Recommended: what you're partway through, with the time left under
 the focused card, and what just landed
 ([pictured here](docs/screenshots/ux-library-grid.jpg)).
-Settings → Libraries → Under posters also offers **Show sort information** (off by default,
-per profile). In a movie library it keeps each poster's title, year and current sort value visible.
-It uses the existing sort menu; other poster surfaces keep their usual captions.
+Settings → Libraries → Under posters also has a **Sort value** switch (on by default, per
+profile). In a movie or TV show library sorted by something other than Title or Random, every poster shows the
+value it is sorted by on one line under it (a score, a length, a date as Today, Yesterday, 27 Oct or
+Oct 2024), in place of the title and details line. It uses the existing sort menu; other poster
+surfaces keep their usual captions.
 
 ![Search](docs/screenshots/search.jpg)
 

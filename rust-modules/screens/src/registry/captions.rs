@@ -1,6 +1,7 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), except movie grids with Show sort information on
-//! (those use persistent title/year/sort captions): the Library grid, the Collections
+//! (Settings > Libraries > Under posters), except a movie or TV show library grid showing its sort value (Sort
+//! value On and a sort that is not Title or Random: one value line under every poster,
+//! `registry::sort_info`): the Library grid, the Collections
 //! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
@@ -35,17 +36,18 @@
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::cards::TileLabel;
 
-/// Whether movie-library grids show sort information, with the same test override as policy().
-pub fn show_sort_info() -> bool {
+/// Whether library grids sorted by something other than Title or Random show the sort value under
+/// every poster (the Under posters page's Sort value switch), with the same test override as policy().
+pub fn sort_value() -> bool {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
-        return setting.show_sort_info;
+        return setting.sort_value;
     }
-    plx_media::route::under_posters().show_sort_info
+    plx_media::route::under_posters().sort_value
 }
 
-/// The standard focused-poster policy; movie grids with sort information enabled use their
-/// persistent title/year/sort block instead.
+/// The standard focused-poster policy; a movie or TV show library grid showing its sort value (Sort value On, sorted
+/// by something other than Title or Random) draws that one line under every poster instead.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
@@ -279,13 +281,17 @@ pub fn rating_mark(art: plx_data::metadata::RatingArt) -> &'static [plx_ui::widg
 
 #[cfg(test)]
 #[test]
-fn sort_information_reads_the_same_thread_override_as_policy() {
+fn the_sort_value_switch_reads_the_same_thread_override_as_policy() {
     use plx_plex::plex::session::UnderPosters;
     for enabled in [false, true] {
-        let setting = UnderPosters { show_sort_info: enabled, ..UnderPosters::DEFAULT };
+        let setting = UnderPosters { sort_value: enabled, ..UnderPosters::DEFAULT };
         TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
-        assert_eq!(show_sort_info(), enabled);
+        assert_eq!(sort_value(), enabled);
         assert_eq!(policy(), crate::registry::caption_policy_of(setting));
+        // The Sort value switch reaches the Library grid only: every other poster surface reads the
+        // Title/Details policy, which is the same value with the switch On or Off.
+        assert_eq!(crate::registry::caption_policy_of(setting),
+            crate::registry::caption_policy_of(UnderPosters { sort_value: !enabled, ..setting }));
     }
     TEST_UNDER_POSTERS.with(|cell| cell.set(None));
 }

@@ -649,6 +649,7 @@ pub(crate) fn player_requests(
             // arms, both of which presented a panel immediately rather than through the deferred
             // press `ArmControlRow`/`ArmInfoPress` use.
             PlayerReq::OpenOverlay(kind) => {
+                seed_menu_anchor(pages, bridge, kind);
                 super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
             }
             // A pointer click on the control row: dip the same tvOS press `ArmInfoPress` does,
@@ -1191,6 +1192,26 @@ fn go_to_detail(
 // its caller in phase 12 (PX-PLAYER): the loop kept calling this on the screen's own `hud`/`scrub`
 // while the screen answered the same key through the dispatcher.)
 
+/// **Hand the player menu about to open the rect it hangs from**, before `open_player_overlay` asks for it:
+/// the compiled package's anchor for the opener that is asking (`PlayerScreen::menu_anchor`). The mount
+/// consumes it (`AppMounter::player_menu_anchor`). A press that RE-ADDRESSES a menu already up mounts nothing,
+/// and a page with no package or a panel that is not a menu has no anchor: both clear the seed, so a later
+/// mount never inherits an earlier press's rect.
+fn seed_menu_anchor(
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    kind: plx_screens::player::overlay::OverlayKind,
+) {
+    let readdress = super::bridge::player_overlay_kind(pages).is_some_and(|up| up.slot() == kind.slot());
+    let anchor = (!readdress)
+        .then(|| {
+            let chapters = plx_appkit::chapters_panel::has_chapters(bridge.metadata_view());
+            super::bridge::player(pages)?.menu_anchor(kind, chapters)
+        })
+        .flatten();
+    bridge.seed_player_menu_anchor(anchor);
+}
+
 /// **THE performer of a [`HudCommand`](plx_appkit::player_hud::command::HudCommand)**: one `match` over the closed vocabulary, which every route to
 /// a command ends in. A disc pressed with OK (`PlayerReq::Command`), one clicked
 /// ([`activate_player_row`]) and, in a later change, a More-menu row folded from a package all call
@@ -1244,12 +1265,16 @@ pub(crate) fn perform_hud_command(
             queue_transport::step(&mut player.session, pa, QueueStep::Next, pages, bridge);
             return;
         }
-        HudCommand::OpenTracks(tab) => super::bridge::open_player_overlay(
-            &mut player.session, bridge.metadata_view(), pages, OverlayKind::Tracks { tab: tab.index() },
-        ),
-        HudCommand::OpenMore(page) => super::bridge::open_player_overlay(
-            &mut player.session, bridge.metadata_view(), pages, OverlayKind::More { page: page.page() },
-        ),
+        HudCommand::OpenTracks(tab) => {
+            let kind = OverlayKind::Tracks { tab: tab.index() };
+            seed_menu_anchor(pages, bridge, kind);
+            super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
+        }
+        HudCommand::OpenMore(page) => {
+            let kind = OverlayKind::More { page: page.page() };
+            seed_menu_anchor(pages, bridge, kind);
+            super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
+        }
         HudCommand::ToggleSection(section) => {
             let kind = match section {
                 Section::Chapters => OverlayKind::Chapters,
@@ -1321,8 +1346,10 @@ pub(crate) unsafe fn activate_player_row(
     // The cursor is the instance's; read the one field this dispatch turns on, so the container
     // is borrowed once and the arms below are free to present a panel on it.
     let btn = super::bridge::player(pages).map_or(0, |player| player.hud.nav.btn);
-    if let plx_appkit::player_hud::ControlSlot::Discs(controls) = ctrl {
-        if let Some(command) = controls.command(btn) {
+    if let plx_appkit::player_hud::ControlSlot::Discs(_) = ctrl {
+        // the command of the control the PACKAGE placed at the cursor's index, as a press of it asks for
+        let command = super::bridge::player(pages).and_then(|screen| screen.row_command(btn));
+        if let Some(command) = command {
             perform_hud_command(command, player, pa, repause_at, now, refresh_hubs, pages, bridge);
         }
     } else {

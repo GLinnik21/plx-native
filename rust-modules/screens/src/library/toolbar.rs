@@ -62,12 +62,26 @@ impl LibraryScreen {
             .filter(|index| *index < directory.sections().len())
     }
 
-    /// A library's name on the header row: its title, and its owner's handle when someone else's.
-    pub(super) fn library_label<H: LibraryLike>(&self, section: usize, cx: &Cx<'_, H>) -> String {
+    /// A library's name on the header row in its two pieces, borrowed from the directory: its title
+    /// and its owner's handle when someone else's (empty when it is not). Everything
+    /// [`Self::library_label`] reads, so a cache keyed on the pair cannot go stale.
+    pub(super) fn library_name<'a, H: LibraryLike>(&self, section: usize, cx: &Cx<'a, H>) -> (&'a str, &'a str) {
         let directory = H::directory(cx);
-        let Some(section) = directory.sections().get(section) else { return String::new() };
+        let Some(section) = directory.sections().get(section) else { return ("", "") };
         let owner = section.sid.and_then(|sid| directory.sources().iter().find(|(id, _)| *id == sid))
             .map(|(_, source)| source.handle.as_str()).unwrap_or("");
-        if owner.is_empty() { section.row.title.clone() } else { format!("{} {owner}", section.row.title) }
+        (section.row.title.as_str(), owner)
     }
+
+    /// A library's name on the header row: its title, and its owner's handle when someone else's.
+    pub(super) fn library_label<H: LibraryLike>(&self, section: usize, cx: &Cx<'_, H>) -> String {
+        let (title, owner) = self.library_name(section, cx);
+        joined_name(title, owner)
+    }
+}
+
+/// The two pieces of [`LibraryScreen::library_name`] as one name: the title, then the owner's handle
+/// when there is one. The one place the join is spelled; the capsule builds it only when a piece changes.
+pub(super) fn joined_name(title: &str, owner: &str) -> String {
+    if owner.is_empty() { title.to_owned() } else { format!("{title} {owner}") }
 }
