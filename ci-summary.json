@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T04:00:12Z",
+ "generated": "2026-10-31T04:06:30Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 33.1,
+   "change7_pct": 33.5,
    "d30": null,
    "delta30": null,
-   "delta7": 47,
+   "delta7": 47.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 65,
-   "now": 189,
+   "now": 189.5,
    "prev7": 142,
    "shown": true,
    "state": "worse",
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -4.9,
+   "change30_pct": -4.6,
    "change7_pct": 16.3,
-   "d30": 2534,
-   "delta30": -123.0,
+   "d30": 2528.5,
+   "delta30": -117.5,
    "delta7": 338.0,
    "group": "ci",
    "id": "minutes",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.0,
-   "change7_pct": 14.8,
-   "d30": 1023.0,
-   "delta30": -644.0,
-   "delta7": 49,
+   "change30_pct": -63.2,
+   "change7_pct": 14.4,
+   "d30": 1026,
+   "delta30": -648.5,
+   "delta7": 47.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 93,
+   "n_now": 94,
    "n_prev": 77,
-   "now": 379,
+   "now": 377.5,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.2,
+   "change30_pct": 32.5,
    "change7_pct": 2.3,
-   "d30": 202.0,
-   "delta30": 67.0,
-   "delta7": 6,
+   "d30": 203,
+   "delta30": 66.0,
+   "delta7": 6.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 65,
-   "now": 269,
+   "now": 269.0,
    "prev7": 263,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -77.4,
-   "change7_pct": 5.2,
-   "d30": 942.5,
-   "delta30": -729.5,
-   "delta7": 10.5,
+   "change30_pct": -76.8,
+   "change7_pct": 4.9,
+   "d30": 915,
+   "delta30": -702.5,
+   "delta7": 10.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 64,
-   "now": 213,
+   "now": 212.5,
    "prev7": 202.5,
    "shown": true,
    "state": "flat",
@@ -538,16 +538,16 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -5.3,
-   "d30": 17.0,
+   "d30": 17,
    "delta30": 1.0,
-   "delta7": -1,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 65,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -601,8 +601,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 297,
-   "delta30": -294.0,
+   "d30": 295.5,
+   "delta30": -292.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -622,7 +622,7 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 962,
+   "d30": 962.0,
    "delta30": -959.0,
    "delta7": 0.0,
    "group": "ci",
@@ -667,11 +667,6 @@
    "change_pct": 67.4,
    "commits": [
     {
-     "pr": 1151,
-     "sha": "70a7aa66a",
-     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
-    },
-    {
      "pr": 986,
      "sha": "36e5ffea8",
      "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
@@ -715,6 +710,11 @@
      "pr": 1170,
      "sha": "01f101e89",
      "title": "A-Z rail groundwork: a read-only PMS band-count probe, its measured facts, and a mock that answers the same"
+    },
+    {
+     "pr": 1171,
+     "sha": "604dd81b7",
+     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
     }
    ],
    "from": 185.5,
@@ -725,13 +725,8 @@
    "to": 310.5
   },
   {
-   "change_pct": 33.1,
+   "change_pct": 33.5,
    "commits": [
-    {
-     "pr": 1151,
-     "sha": "70a7aa66a",
-     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
-    },
     {
      "pr": 986,
      "sha": "36e5ffea8",
@@ -776,6 +771,11 @@
      "pr": 1170,
      "sha": "01f101e89",
      "title": "A-Z rail groundwork: a read-only PMS band-count probe, its measured facts, and a mock that answers the same"
+    },
+    {
+     "pr": 1171,
+     "sha": "604dd81b7",
+     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
     }
    ],
    "from": 142,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 189
+   "to": 189.5
   },
   {
    "change_pct": 30.6,
    "commits": [
-    {
-     "pr": 1151,
-     "sha": "70a7aa66a",
-     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
-    },
     {
      "pr": 986,
      "sha": "36e5ffea8",
@@ -837,6 +832,11 @@
      "pr": 1170,
      "sha": "01f101e89",
      "title": "A-Z rail groundwork: a read-only PMS band-count probe, its measured facts, and a mock that answers the same"
+    },
+    {
+     "pr": 1171,
+     "sha": "604dd81b7",
+     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
     }
    ],
    "from": 120.3,
@@ -850,11 +850,6 @@
    "change_pct": 16.3,
    "commits": [
     {
-     "pr": 1151,
-     "sha": "70a7aa66a",
-     "title": "HUD plugins: the layout compiler; classic compiles to the hand-written layout's geometry"
-    },
-    {
      "pr": 986,
      "sha": "36e5ffea8",
      "title": "Magic Remote: scroll by the screen's edges and glide rows sideways; a hover never moves the page"
@@ -898,6 +893,11 @@
      "pr": 1170,
      "sha": "01f101e89",
      "title": "A-Z rail groundwork: a read-only PMS band-count probe, its measured facts, and a mock that answers the same"
+    },
+    {
+     "pr": 1171,
+     "sha": "604dd81b7",
+     "title": "A-Z rail bands, step 1: the pure band model and two more measured server facts"
     }
    ],
    "from": 2073.0,
