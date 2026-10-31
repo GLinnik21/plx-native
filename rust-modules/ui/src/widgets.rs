@@ -7780,7 +7780,11 @@ impl StripRender {
         // instrument that says what it read and what it chose is not optional. It is how the first
         // version of this was caught reading Plex's `UltraBlurColors`, which gave (0.30,0.23,0.18)
         // for a hero whose top edge is (0.00,0.68,0.91) and left the bar at its floor.
-        if groundlog {
+        // The VISIBLE walk's draw only: the declaration and source walks draw this bar too, and
+        // `sample_ground` refuses them (`blur_source_pass`), so a count landing on one would print
+        // `src=held` for a draw that was never going to read, and with a whole number of draws per
+        // frame the count lands on the same walk every time.
+        if groundlog && !plx_gfx::gfx::blur_source_pass() {
             // A safe atomic rather than `static mut`: a plain sample counter, same shape as
             // the diagnostic counters.
             static LAST: AtomicU32 = AtomicU32::new(0);

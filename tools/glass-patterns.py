@@ -168,24 +168,31 @@ def lum(c):
 
 
 def label_contrast(shot: Path, rect):
-    """The contrast each label in the tab track MEASURES in a screenshot, left to right.
+    """The contrast each label in the tab track MEASURES in a screenshot, left to right, as
+    (contrast, x0, x1) in authored px.
 
-    The plate under a column is that column's median luminance over the track's middle rows (a
-    label covers a minority of them), so a ground that varies along the bar is read per column. A
-    label is a run of columns holding pixels brighter than the plate; its ink is the brightest 2% of
-    those pixels (the glyph bodies, which reach full ink), and its contrast is (ink + 0.05) / (plate
-    + 0.05) over the columns it spans. The first run is the selected pill and is returned like the
-    rest; the caller decides which are idle."""
+    The plate under a column is the median luminance of that column's rows ABOVE and BELOW the
+    labels (the track's 14-26% and 74-86% bands: a median over the label rows would land on the ink
+    in a glyph stem), so a ground that varies along the bar is read per column. A label is a run of
+    columns whose middle rows hold pixels brighter than the plate; its ink is the brightest 2% of
+    the pixels in those columns (the glyph bodies, which reach full ink), and its contrast is
+    (ink + 0.05) / (plate + 0.05) over the columns it spans. The first run is the selected pill and
+    is returned like the rest; the caller decides which are idle."""
     from PIL import Image
     im = Image.open(shot).convert("RGB")
     k = im.width / 1920.0
     x, y, w, h = rect
     x0, x1 = int(x * k), int((x + w) * k)
-    y0, y1 = int((y + h * 0.3) * k), int((y + h * 0.7) * k)
+    mid = range(int((y + h * 0.3) * k), int((y + h * 0.7) * k))
+    off = list(range(int((y + h * 0.14) * k), int((y + h * 0.26) * k))) + \
+        list(range(int((y + h * 0.74) * k), int((y + h * 0.86) * k)))
     px = im.load()
     cols = list(range(x0, x1))
-    lums = {cx: [lum(px[cx, cy]) for cy in range(y0, y1)] for cx in cols}
-    plate = {cx: sorted(v)[len(v) // 2] for cx, v in lums.items()}
+    lums = {cx: [lum(px[cx, cy]) for cy in mid] for cx in cols}
+    plate = {}
+    for cx in cols:
+        v = sorted(lum(px[cx, cy]) for cy in off)
+        plate[cx] = v[len(v) // 2]
     lit = [cx for cx in cols if max(lums[cx]) - plate[cx] > 0.04]
     runs, cur = [], []
     for cx in lit:
@@ -200,16 +207,23 @@ def label_contrast(shot: Path, rect):
         if len(run) < 6 * k:
             continue
         body = sorted((v for cx in run for v in lums[cx]), reverse=True)
-        ink = sum(body[:max(1, len(body) // 50)]) / max(1, len(body) // 50)
+        n = max(1, len(body) // 50)
+        ink = sum(body[:n]) / n
         under = sum(plate[cx] for cx in run) / len(run)
         out.append(((ink + 0.05) / (under + 0.05), run[0] / k, run[-1] / k))
     return out
 
 
+def idle_labels(runs):
+    """The idle TEXT labels among a track's runs: every run but the first (the selected pill), and
+    not the icons (a run narrower than 60 authored px)."""
+    return [r for r in runs[1:] if r[2] - r[1] >= 60]
+
+
 def table(pkgs, rungs, shots):
     """One row per (ground, build): the last line logged on the rung, whether the bar had arrived,
-    how many of the rung's lines had `src=image` among the settled ones, and the measured contrast
-    of the idle labels (every label but the first)."""
+    how many of the settled lines among the rung's had `src=image`, and the measured contrast of
+    the idle text labels (see [`idle_labels`])."""
     rows = [f"{'ground':<12} {'build':<8} {'L*':>5} {'span':>5} {'want':>6} {'drawn':>6} "
             f"{'src':<6} {'arrived':<7} {'settled-lines':>13} {f'idle contrast (floor {FLOOR:.1f})':>28}"]
     for i, (pat, _) in enumerate(rungs[pkgs[0]]):
@@ -224,7 +238,7 @@ def table(pkgs, rungs, shots):
             span = f"{last['span']:.1f}" if last["span"] is not None else "-"
             shot = shots[pkg][i][1]
             try:
-                labels = label_contrast(shot, last["rect"] or TRACK)[1:] if shot.exists() else []
+                labels = idle_labels(label_contrast(shot, last["rect"] or TRACK)) if shot.exists() else []
             except Exception as e:  # a missing PIL or a bad crop must not lose the log columns
                 labels = []
                 print(f"  (contrast not measured for {pat}/{pkg}: {e})", file=sys.stderr)
