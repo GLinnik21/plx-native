@@ -2557,6 +2557,12 @@ fn loop_requests(app: &mut App) {
             plx_screens::registry::LoopReq::AccountSendDiagnostics => {
                 crate::lab::request_upload("menu", &app.player.session);
             }
+            plx_screens::registry::LoopReq::LibraryFavourites => {
+                super::bridge::open_settings_at(
+                    &mut app.pages,
+                    plx_screens::family::SettingsPage::Favourites,
+                );
+            }
         }
     }
 }

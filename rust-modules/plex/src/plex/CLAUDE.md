@@ -354,7 +354,11 @@ The whole shared-source feature rests on keeping these apart:
   RANKS favourites first, because a browsing preference is not an authorization boundary and
   removing results would invent a false negative for a film the user owns and can play. The
   unscoped list survives as `browse::all_source_rows`, which is the Favorite libraries editor's, and
-  is the only way a non-favourite comes back. The rules are `pins.rs` (pure); the store is keyed by
+  is the only place a library is switched back on. It is no longer the only way to BROWSE a
+  non-favourite: the Library's Sort & Filter menu lists every reachable library of the viewed type,
+  favourite or not, and its header pill shows while that library is on view. Such a pick is not
+  remembered as the profile's last library (`remembered_section` restores favourites only). The
+  `+N` Sources picker and the tab strip stay favourites-only. The rules are `pins.rs` (pure); the store is keyed by
   the profile's `uuid`; the page that asks once is `AppArg::Onboard` (`Route::Onboard` before
   restructure phase 12 (D1) retired `enum Route`), first-run *Favorite
   libraries* — `ui::onboard` through phase 4, `screens::onboard`'s owned `OnboardScreen` since

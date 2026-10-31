@@ -390,7 +390,9 @@ not move with the words: `BrowseSection::pinned`, `HomePins`, `plex/pins.rs` and
 `home_pins` key are all unchanged, deliberately — renaming the persisted key breaks ROLLBACK rather
 than upgrade. What still comes from the GRANT and not from the setting: access itself, the grid,
 sort, the A–Z rail, and Search, which stays grant-wide and only RANKS favourite-library hits first.
-The grant decides what you can reach; the favourite decides what the app offers.
+The grant decides what you can reach; the favourite decides what the app offers, with one
+exception: the Library's Sort & Filter menu lists every reachable library of the viewed type, favourite
+or not, and the header names a non-favourite while it is on view.
 
 **Two divergences between the canvas and main, both because main moved while it was drawn**, neither
 requiring the design to change: its toolbar frames include an `Unwatched` chip that `0d9a4f6f`
