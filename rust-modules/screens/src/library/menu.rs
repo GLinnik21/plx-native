@@ -1,7 +1,7 @@
 //! A registered Library menu surface. Navigation owns its lifetime, phase, and input scope.
-use plx_data::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SrcGroup, SrcRow};
+use plx_data::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SourceState, SrcGroup, SrcRow};
 use crate::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
-use plx_data::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
+use plx_data::stores::browse::{BrowseCmd, DirectoryView, LibraryWork, QueryEdit, SectionAddress};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -126,6 +126,24 @@ fn stamp_tier(stamp: &mut Stamp, tier: Option<plx_plex::plex::probe::Location>) 
     });
 }
 
+/// What pressing a library's row selects, and the identity focus follows across rebuilds: one
+/// spelling for every menu that lists libraries (the Sources picker, the Sort & Filter switcher).
+/// `None` for a library the directory has no address for.
+fn section_target(epoch: u32, section: &plx_data::browse::view::SectionView) -> Option<(String, SectionAddress)> {
+    let sid = section.sid?;
+    Some((
+        format!("section:{}:{}", sid.raw(), section.key),
+        SectionAddress { epoch, sid, section: section.key },
+    ))
+}
+
+/// A library row's target in the change-detection stamp (the epoch is part of what a press means).
+fn stamp_target(stamp: &mut Stamp, target: &SectionAddress) {
+    stamp.u32(u32::from(target.sid.raw()));
+    stamp.i64(target.section);
+    stamp.u32(target.epoch);
+}
+
 fn source_draft(
     epoch: u32,
     current: usize,
@@ -179,17 +197,9 @@ fn source_draft(
                 let Some(candidate) = sections.get(*index) else {
                     continue;
                 };
-                let Some(sid) = candidate.sid else { continue };
-                let target = SectionAddress {
-                    epoch,
-                    sid,
-                    section: candidate.key,
-                };
+                let Some((identity, target)) = section_target(epoch, candidate) else { continue };
                 stamp.tag(4);
-                stamp.u32(u32::from(sid.raw()));
-                stamp.i64(candidate.key);
-                stamp.u32(target.epoch);
-                let identity = format!("section:{}:{}", sid.raw(), candidate.key);
+                stamp_target(&mut stamp, &target);
                 if candidate.row.current {
                     selected = Some(identity.clone());
                 }
@@ -351,7 +361,6 @@ fn filter_section(unwatched: bool, genre: Option<&GenreEntry>, genres_supported:
 /// Show lists the types the library offers besides Collections (which has its own control) and is
 /// absent when only one remains; Sort is the server's declared list; Filter is the genre and the
 /// Unwatched toggle.
-#[cfg(test)]
 fn sort_filter_draft(
     section_kind: SecKind,
     current: LibraryType,
@@ -360,28 +369,7 @@ fn sort_filter_draft(
     sort_desc: bool,
     genre: Option<&GenreEntry>,
     unwatched: bool,
-) -> MenuDraft {
-    sort_filter_draft_with_directory(
-        section_kind,
-        current,
-        sorts,
-        sort_index,
-        sort_desc,
-        genre,
-        unwatched,
-        None,
-    )
-}
-
-fn sort_filter_draft_with_directory(
-    section_kind: SecKind,
-    current: LibraryType,
-    sorts: &[SortEntry],
-    sort_index: usize,
-    sort_desc: bool,
-    genre: Option<&GenreEntry>,
-    unwatched: bool,
-    directory: Option<plx_data::stores::browse::DirectoryView<'_>>,
+    directory: DirectoryView<'_>,
 ) -> MenuDraft {
     let mut stamp = Stamp::default();
     stamp.tag(14);
@@ -395,66 +383,47 @@ fn sort_filter_draft_with_directory(
     }
     form = form.section(sort_section(plx_platform::i18n::msg::browse_library_sort(), sorts, sort_index,
         sort_desc, &mut stamp, &mut selected));
-    let mut filter = filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp)
-        .separator();
-    if let Some(dir) = directory {
-        let epoch = dir.epoch().unwrap_or(0);
-        let current_idx = dir.current();
-        let candidates: Vec<_> = dir
-            .sections()
-            .iter()
-            .filter(|s| {
-                s.kind == section_kind
-                    && s.sid.is_some()
-                    && (s.row.pinned
-                        || dir
-                            .sources()
-                            .get(s.row.src)
-                            .is_some_and(|(_, g)| g.state == plx_data::browse::SourceState::Reachable))
-            })
-            .collect();
-        if candidates.len() > 1 {
-            for s in candidates {
-                let Some(sid) = s.sid else { continue };
-                let active = current_idx == Some(s.row.section) || s.row.current;
-                let handle = dir
-                    .sources()
-                    .get(s.row.src)
-                    .map(|(_, g)| g.handle.as_str())
-                    .unwrap_or("");
-                let mut row = Row::new(&s.row.title).checked(active).server_label();
-                if !handle.is_empty() {
-                    row = row.value(handle).server_value().value_dim(true);
-                }
-                stamp.tag(15);
-                stamp.u32(u32::from(sid.raw()));
-                stamp.i64(s.key);
-                stamp.str(&s.row.title);
-                stamp.str(handle);
-                stamp.bool(active);
-                stamp.u32(epoch);
-                filter = choice(
-                    filter,
-                    format!("section:{}:{}", sid.raw(), s.key),
-                    Action::Select(SectionAddress {
-                        epoch,
-                        sid,
-                        section: s.key,
-                    }),
-                    row,
-                );
-            }
-        }
-    }
+    let filter = filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp).separator();
+    let filter = library_choices(filter, directory, section_kind, &mut stamp);
     stamp.tag(16);
-    stamp.str(plx_platform::i18n::msg::settings_libraries_title());
-    filter = choice(
+    let filter = choice(
         filter,
         "favourites".into(),
         Action::Favourites,
         Row::new(plx_platform::i18n::msg::settings_libraries_title()).chevron(true),
     );
     MenuDraft { stamp: stamp.finish(), form: form.section(filter), selected }
+}
+
+/// The Sort & Filter menu's library switcher, appended to `section`: one `Select` row for every
+/// library of `kind` the reader can reach (a favourite, or any library on a reachable server), the
+/// one on view ticked. Nothing is appended unless there is a choice to make (two or more).
+fn library_choices(mut section: MenuSection, directory: DirectoryView<'_>, kind: SecKind, stamp: &mut Stamp)
+    -> MenuSection
+{
+    let epoch = directory.epoch().unwrap_or(0);
+    let group = |library: &plx_data::browse::view::SectionView| {
+        directory.sources().get(library.row.src).map(|(_, group)| group)
+    };
+    let libraries: Vec<_> = directory.sections().iter()
+        .filter(|library| library.kind == kind
+            && (library.row.pinned || group(library).is_some_and(|group| group.state == SourceState::Reachable)))
+        .filter_map(|library| Some((library, section_target(epoch, library)?)))
+        .collect();
+    if libraries.len() < 2 {
+        return section;
+    }
+    for (library, (identity, target)) in libraries {
+        let handle = group(library).map_or("", |group| group.handle.as_str());
+        stamp.tag(15);
+        stamp_target(stamp, &target);
+        stamp.str(&library.row.title);
+        stamp.str(handle);
+        stamp.bool(library.row.current);
+        let row = source_list::library_row(&library.row.title, handle).checked(library.row.current);
+        section = choice(section, identity, Action::Select(target), row);
+    }
+    section
 }
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
@@ -624,16 +593,9 @@ impl LibraryMenu {
                 return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre(), listing.library_type() == LibraryType::Primary);
             }
             LibraryMenuKind::SortFilter => {
-                return sort_filter_draft_with_directory(
-                    listing_kind(listing, directory),
-                    listing.library_type(),
-                    listing.sorts(),
-                    listing.sort_index(),
-                    listing.sort_desc(),
-                    listing.genre(),
-                    self.desired_unwatched.unwrap_or(listing.unwatched()),
-                    Some(directory),
-                );
+                return sort_filter_draft(listing_kind(listing, directory), listing.library_type(), listing.sorts(),
+                    listing.sort_index(), listing.sort_desc(), listing.genre(),
+                    self.desired_unwatched.unwrap_or(listing.unwatched()), directory);
             }
             LibraryMenuKind::Genre => {
                 return genre_draft(listing.genres(), listing.genre());
@@ -1578,16 +1540,17 @@ mod tests {
     fn sort_and_filter_menu_sections_follow_the_library_kind() {
         let sorts = vec![SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false }];
         let titles = |draft: MenuDraft| -> Vec<String> { lay(draft).sections.iter().map(|s| s.header.clone()).collect() };
-        let show = titles(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false));
-        let movie = titles(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false));
+        let dir = DirectoryView::empty_for_test();
+        let show = titles(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir));
+        let movie = titles(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         assert_eq!(show.len(), 3, "TV libraries open Show, Sort and Filter");
         assert_eq!(show[0], plx_platform::i18n::msg::library_header_show());
         assert_eq!(movie.len(), 2, "a Movies library has one type to show, so no Show section");
         assert_eq!(movie[0], plx_platform::i18n::msg::browse_library_sort());
-        let laid = lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false));
+        let laid = lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         assert!(!laid.rows.iter().any(|(id, ..)| id == &format!("type:{}", LibraryType::Collections.code())), "Collections has its own control");
-        assert_ne!(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false).stamp,
-            sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, true).stamp);
+        assert_ne!(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir).stamp,
+            sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, true, dir).stamp);
     }
 
     #[test]
@@ -1600,110 +1563,35 @@ mod tests {
             title: "Title".into(),
             default_desc: false,
         }];
+        // The two-server fixture of the Sources tests, with the friend's library unpinned: it is
+        // reachable and of the same kind, so the switcher still offers it.
+        let (groups, mut sections) = source_sections();
+        sections[1].key = 8;
+        sections[1].row.title = "Anime Movies".into();
+        sections[1].row.pinned = false;
         let directory = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
             11,
             0,
-            vec![
-                (
-                    ServerId::from_raw(1),
-                    SrcGroup {
-                        name: "Own NAS".into(),
-                        handle: String::new(),
-                        state: SourceState::Reachable,
-                        tier: None,
-                    },
-                ),
-                (
-                    ServerId::from_raw(2),
-                    SrcGroup {
-                        name: "Friend NAS".into(),
-                        handle: "friend".into(),
-                        state: SourceState::Reachable,
-                        tier: None,
-                    },
-                ),
-            ],
-            vec![
-                plx_data::browse::view::SectionView {
-                    sid: Some(ServerId::from_raw(1)),
-                    key: 7,
-                    kind: SecKind::Movie,
-                    row: SrcRow {
-                        src: 0,
-                        section: 0,
-                        title: "Movies".into(),
-                        count_line: "26 films".into(),
-                        pinned: true,
-                        last_pinned: false,
-                        current: true,
-                    },
-                },
-                plx_data::browse::view::SectionView {
-                    sid: Some(ServerId::from_raw(2)),
-                    key: 8,
-                    kind: SecKind::Movie,
-                    row: SrcRow {
-                        src: 1,
-                        section: 1,
-                        title: "Anime Movies".into(),
-                        count_line: "12 films".into(),
-                        pinned: false,
-                        last_pinned: false,
-                        current: false,
-                    },
-                },
-            ],
+            [1, 2].map(ServerId::from_raw).into_iter().zip(groups).collect(),
+            sections,
         );
-        let draft = sort_filter_draft_with_directory(
-            SecKind::Movie,
-            LibraryType::Primary,
-            &sorts,
-            0,
-            false,
-            None,
-            false,
-            Some(directory.view()),
-        );
-        let laid = lay(draft);
+        let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::SortFilter, [0; 4]));
+        menu.apply_draft(sort_filter_draft(
+            SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false, directory.view(),
+        ));
+        let action_of = |id: &str| {
+            let at = menu.form.index_of(&id.to_string())?;
+            menu.form.binding_at(at).map(|binding| binding.action.clone())
+        };
         assert!(
-            laid.rows.iter().any(|(id, action, _)| {
-                id == "section:2:8"
-                    && matches!(action, Action::Select(addr) if addr.sid == ServerId::from_raw(2) && addr.section == 8)
-            }),
+            matches!(action_of("section:2:8"),
+                Some(Action::Select(addr)) if addr.sid == ServerId::from_raw(2) && addr.section == 8),
             "reachable unpinned library of the same kind is listed in Sort & Filter"
         );
         assert!(
-            laid.rows
-                .iter()
-                .any(|(id, action, _)| id == "favourites" && matches!(action, Action::Favourites)),
+            matches!(action_of("favourites"), Some(Action::Favourites)),
             "Favorite libraries entry is offered at the bottom of Sort & Filter"
         );
-
-        let mut menu = LibraryMenu::new(
-            EntryId(7),
-            LibraryMenuArg {
-                host: plx_machine::machine::InstanceId(8),
-                target: SectionAddress {
-                    epoch: 11,
-                    sid: ServerId::from_raw(1),
-                    section: 7,
-                },
-                kind: LibraryMenuKind::SortFilter,
-                anchor: [0; 4],
-                folded: Vec::new(),
-                opener: None,
-            },
-        );
-        menu.apply_draft(sort_filter_draft_with_directory(
-            SecKind::Movie,
-            LibraryType::Primary,
-            &sorts,
-            0,
-            false,
-            None,
-            false,
-            Some(directory.view()),
-        ));
         let fav_idx = menu.form.index_of(&"favourites".to_string()).expect("favourites row");
         let fav_key = menu.form.key_at(fav_idx).expect("favourites key").0;
         let mut output = Vec::new();
@@ -1745,8 +1633,8 @@ mod tests {
                 ("filter no genres", lay(filter_draft(false, None, false))),
                 ("genre all", lay(genre_draft(&genres, None))),
                 ("genre one", lay(genre_draft(&genres, Some(&genres[0])))),
-                ("sort & filter show", lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 1, false, Some(&genres[0]), true))),
-                ("sort & filter movie", lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, true, None, false))),
+                ("sort & filter show", lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 1, false, Some(&genres[0]), true, DirectoryView::empty_for_test()))),
+                ("sort & filter movie", lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, true, None, false, DirectoryView::empty_for_test()))),
             ];
             for (name, draft) in drafts {
                 let mut table = TableView::new();

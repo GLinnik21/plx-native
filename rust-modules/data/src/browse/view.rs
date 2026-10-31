@@ -709,7 +709,8 @@ impl<'a> DirectoryView<'a> {
             .map(|s| &s.row)
     }
 
-    /// Favourite libraries represented by the current type pill, with their table indices.
+    /// The libraries the header names for `section`'s type, with their table indices: its favourites,
+    /// and `section` itself when that library on view is not one.
     pub fn favorite_sections_for(
         self,
         section: usize,
