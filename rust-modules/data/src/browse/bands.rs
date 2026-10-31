@@ -4,32 +4,47 @@
 //!
 //! The A-Z rail jumps to a letter by the running sum of per-letter counts. PMS has no per-band
 //! directory for a VALUE sort (`/year` and `/decade` carry no `size`), so a band's offset comes from
-//! one count-only probe per band EDGE instead: `GET .../all?<grid's own terms>&<field>>>=<E minus one
-//! unit>` with `Container-Start: 0` and `Container-Size: 0` answers `totalSize` = the number of items
-//! at or above the edge `E`. [`BandFamily::of_sort`] says which sorts have bands, [`plan`] lists a
-//! family's bands (highest first, each with its lower [`Edge`]), [`probes`] renders the probe of every
-//! edge and [`offsets`] turns the counts that came back into each band's start and size in the
-//! listing's own order. `docs/pms-api.md`, "Count probes at band edges", is the measurement behind
-//! every rule below (PMS 1.43.5, one small library of each kind: "exact there, not proven at scale").
+//! one count-only probe per band EDGE instead: `GET .../all?<grid's own terms>&<term>` with
+//! `Container-Start: 0` and `Container-Size: 0` answers `totalSize` = the number of items at or above
+//! the edge `E`. [`BandFamily::of_sort`] says which sorts have bands, [`plan`] lists a family's bands
+//! (highest first, each with its lower [`Edge`]), [`probes`] renders the probe of every edge and
+//! [`offsets`] turns the counts that came back into each band's start and size in the listing's own
+//! order. `docs/pms-api.md`, "Count probes at band edges", is the measurement behind every rule below
+//! (PMS 1.43.5, one small library of each kind: "exact there, not proven at scale").
 //!
 //! Measured rules this encodes:
 //!
-//! - **A probe is `<field>>>=<E minus one unit>`** (strictly greater, so "at or above `E`"): a rating
-//!   edge minus 0.01 (floats are compared as floats, `rating>>=9.49` is every rating from 9.5 up), a
-//!   duration edge minus 1 ms, a date edge minus 1 s, a count edge minus 1. A rating is held in
-//!   integer hundredths here and never in an `f64`, so the text is exact.
-//! - **A date edge is a civil date turned into an epoch by the CALLER**, once per edge, because
-//!   daylight saving is per edge. `addedAt`, `lastViewedAt` and `episode.addedAt` are instants and
-//!   compare against LOCAL midnight ([`Basis::Local`]); `originallyAvailableAt` is a date and compares
-//!   as the epoch of UTC midnight ([`Basis::Utc`]). The family picks the basis and the caller's
-//!   converter answers for it, so the model never reads a zone and cannot take the wrong one. The
-//!   converter may fail (a 32-bit `time_t` cannot hold every date): then there is no probe, and the
-//!   caller shows no rail.
+//! - **A number probe is `<field>>>=<E minus one unit>`** (strictly greater, so "at or above `E`"): a
+//!   rating edge minus 0.01 (floats are compared as floats, `rating>>=9.49` is every rating from 9.5
+//!   up), a duration edge minus 1 ms, a count edge minus 1. A rating is held in integer hundredths
+//!   here and never in an `f64`, so the text is exact.
+//! - **A date probe is `<field>>=<E>`**: the inclusive operator with the exact epoch of the edge's
+//!   first moment (accepted and exact on date fields, checked at one value per family). It keeps the
+//!   1970s edge `>=0` and not `>>=-1`. A bare negative number on a date field is an ABSOLUTE epoch,
+//!   not a relative date (`-3w` is one, `-315619200` is not; measured on `originallyAvailableAt` and
+//!   `addedAt`), so the decades before 1970 are probed as `originallyAvailableAt>=-315619200` and the
+//!   Release ladder reaches the oldest item's decade. What no measurement saw is a comparison at a
+//!   real pre-1970 item (neither library held one). Were a server to clamp such an edge to zero, the
+//!   bands before 1970 would come out empty and those items would fall into the unlabelled region,
+//!   which is contiguous at the low end in both directions: never under a wrong label.
+//! - **Which clock a date edge is read on** is the family's ([`Basis`]). `addedAt`, `lastViewedAt` and
+//!   `episode.addedAt` are instants and compare against LOCAL midnight: the CALLER turns the civil
+//!   date into an epoch (a converter taking the [`Day`], once per edge, because daylight saving is
+//!   per edge), so the model never reads a zone. `originallyAvailableAt` is a date and compares as the
+//!   epoch of UTC midnight, which needs no zone: the model computes it itself, so a release date
+//!   before the 32-bit `time_t` range cannot take a probe away. A converter that fails (a 32-bit
+//!   `time_t` cannot hold every local date) leaves that band without a probe, and the caller shows no
+//!   rail.
 //! - **Items with NO value** (unrated, never viewed, no release date) sort FIRST in `:asc` and LAST in
 //!   `:desc`, and `>>=` excludes them. So do items below the lowest edge of a ladder that has no
 //!   tail band (zero unplayed, zero plays). Both are the low end of the value order: an unlabelled
 //!   [`Offsets::tail`] in a descending listing and an unlabelled [`Offsets::lead`] in an ascending
 //!   one, belonging to no band.
+//! - **A stored zero is not a value** to the rail. The listing shows a stored zero as nothing, and a
+//!   probe at zero tells them apart: `>>=0` leaves out the no-value items AND the stored zeros, `>=0`
+//!   counts the stored zeros. A tail band (`<75%`, `<1h`) is therefore probed as `>>=0`
+//!   ([`Edge::Floor`]), so a 0.0 rating or a zero duration joins the unlabelled region, as the line
+//!   under a poster shows it as a dash.
 //! - **Offsets.** In `:desc` the first item below `E` sits at `count(>=E)`; in `:asc` the first item at
 //!   or above `E` sits at `total - count(>=E)`. The two are mirror images of one another.
 //! - **`episode.addedAt` is not mirror-symmetric**: `:desc` orders by the NEWEST episode, `:asc` by the
@@ -38,14 +53,10 @@
 //!   sequence that is all equal to the total, is not monotone, or exceeds the total is therefore
 //!   [`Reject`]ed, and the rail stays hidden as it does today.
 //!
-//! One probe value is NOT measured: a tail band (`<75%`, `<1h`) needs the number of items that have
-//! any value, and the probe used `min - 1 unit` of the data, never a literal below every value. The
-//! floor is probed as `<field>>=0` (the inclusive operator, accepted on int, float and date fields at
-//! one value each, and a plain zero; every field of a ladder with a tail is never negative).
-//! Whether the real server answers it as the non-null count is for the mock and the next measurement
-//! to settle.
+//! Not exercised by any measurement: a stored rating of 0.0 or duration of 0 (none existed), a
+//! comparison at a real pre-1970 item, and `>=` at more than one value per family.
 
-use super::SecKind;
+use super::{LibraryType, SecKind};
 
 /// A civil date as the application's clock hands it out: `[year, month, day]`, month `1..=12`.
 pub type Day = [i32; 3];
@@ -109,13 +120,21 @@ impl BandFamily {
 
     /// The family a sort has bands in, or `None` (the rail stays hidden, or is the letters'): `key` is
     /// the sort entry's key as the server lists it (`SortEntry::key`), `descending` the direction the
-    /// page asks. The WHOLE key is read, never its table-stripped tail: `episode.addedAt` is another
-    /// family than `addedAt`. A key of the other library kind has no band (`duration` is not a show
-    /// field, `unviewedLeafCount` and `episode.addedAt` are not movie fields: the server would
-    /// silently ignore the filter). `rating` is offered for both kinds, as the server lists it for
-    /// both (a show with no rating has all its items in the unlabelled region).
-    pub fn of_sort(key: &str, descending: bool, kind: SecKind) -> Option<BandFamily> {
-        // Exhaustive on purpose, like `kind_offers_plays_sort`: a third kind must decide here.
+    /// page asks, `listing` the type the grid lists. Only a section's own listing
+    /// ([`LibraryType::Primary`]) has bands: Seasons and Episodes order by a compound show key and
+    /// Collections list one sort, and the band tables are the films' and the shows'. The WHOLE key is
+    /// read, never its table-stripped tail: `episode.addedAt` is another family than `addedAt`. A key
+    /// of the other library kind has no band (`duration` is not a show field, `unviewedLeafCount` and
+    /// `episode.addedAt` are not movie fields: the server would silently ignore the filter).
+    /// `rating` is offered for both kinds, as the server lists it for both (a show with no rating
+    /// has all its items in the unlabelled region).
+    pub fn of_sort(key: &str, descending: bool, kind: SecKind, listing: LibraryType) -> Option<BandFamily> {
+        // Exhaustive on purpose, like `kind_offers_plays_sort`: a fourth type must decide here.
+        match listing {
+            LibraryType::Primary => {}
+            LibraryType::Seasons | LibraryType::Episodes | LibraryType::Collections => return None,
+        }
+        // Exhaustive on purpose too: a third kind must decide here.
         let (movie, show) = match kind {
             SecKind::Movie => (true, false),
             SecKind::Show => (false, true),
@@ -163,7 +182,8 @@ impl BandFamily {
 /// from highest to lowest is strictly decreasing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Edge {
-    /// Every item that has a value at all: the edge of a tail band (`<75%`, `<1h`).
+    /// Every item with a value ABOVE ZERO: the edge of a tail band (`<75%`, `<1h`), probed as `>>=0`.
+    /// It leaves out the no-value items and the stored zeros alike.
     Floor,
     /// A critic rating, in tenths of a point: 95 is a rating of 9.5.
     Rating(u8),
@@ -171,7 +191,7 @@ pub enum Edge {
     Minutes(u16),
     /// A count of episodes or plays.
     Count(u32),
-    /// The first moment of a civil day, on the basis the caller converts it with.
+    /// The first moment of a civil day, read on the clock the basis names.
     Day { date: Day, basis: Basis },
 }
 
@@ -232,25 +252,48 @@ impl Band {
     }
 
     /// The count-only probe whose answer is the number of items at or above this band's edge.
-    /// `to_epoch` turns a civil day into epoch seconds on the given basis (the caller's, once per
-    /// edge); `None` from it, or an epoch that cannot be stepped back a second, leaves the band
-    /// without a probe.
-    pub fn probe(&self, to_epoch: &dyn Fn(Basis, Day) -> Option<i64>) -> Option<Probe> {
+    /// `local_midnight` turns a civil day into the epoch of the viewer's LOCAL midnight (the
+    /// caller's, asked once per [`Basis::Local`] edge and never for a UTC one); `None` from it
+    /// leaves the band without a probe.
+    pub fn probe(&self, local_midnight: &dyn Fn(Day) -> Option<i64>) -> Option<Probe> {
         let (op, value) = match self.edge {
-            Edge::Floor => (AT_LEAST, "0".to_owned()),
+            Edge::Floor => (AFTER, "0".to_owned()),
             Edge::Rating(tenths) => (AFTER, hundredths(i32::from(tenths) * 10 - 1)),
             Edge::Minutes(minutes) => (AFTER, (i64::from(minutes) * 60_000 - 1).to_string()),
             Edge::Count(count) => (AFTER, (i64::from(count) - 1).to_string()),
-            Edge::Day { date, basis } => (AFTER, to_epoch(basis, date)?.checked_sub(1)?.to_string()),
+            Edge::Day { date, basis } => {
+                let epoch = match basis {
+                    Basis::Local => local_midnight(date)?,
+                    Basis::Utc => utc_midnight(date),
+                };
+                (AT_LEAST, epoch.to_string())
+            }
         };
         Some(Probe { field: self.family.field(), op, value })
     }
 }
 
-/// The strictly-greater operator: the one the repo verified first, spelled with one unit less.
-const AFTER: &str = ">>=";
-/// The inclusive operator, used for the floor of a tail band only.
-const AT_LEAST: &str = ">=";
+/// The strictly-greater operator `>>=`, minus the `=` the query string supplies: the number probes'.
+const AFTER: &str = ">>";
+/// The inclusive operator `>=`, minus the `=` the query string supplies: the date probes'.
+const AT_LEAST: &str = ">";
+
+/// Days from 1970-01-01 to `date` in the proleptic Gregorian calendar (Howard Hinnant's
+/// `days_from_civil`): negative before 1970. Pure arithmetic, no zone and no `time_t`.
+fn days_from_civil(date: Day) -> i64 {
+    let [year, month, day] = date.map(i64::from);
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// The epoch second of `date`'s first moment in UTC: what `originallyAvailableAt` compares against.
+fn utc_midnight(date: Day) -> i64 {
+    days_from_civil(date) * 86_400
+}
 
 /// A rating of `h` hundredths as the decimal text the server compares as a float: 949 is `9.49`.
 fn hundredths(h: i32) -> String {
@@ -258,29 +301,39 @@ fn hundredths(h: i32) -> String {
     format!("{sign}{}.{:02}", h.abs() / 100, h.abs() % 100)
 }
 
-/// One term of a count-only read: `field`, operator, value. The key side is NOT URL-encoded here
-/// (`>>=` needs `%3E%3E=` in a query string); that is the request builder's.
+/// One term of a count-only read: the field, the operator and the value. The operator is held
+/// WITHOUT its trailing `=`, which is the query string's own (`>>=` is the key `rating>>` and `=`):
+/// the request builder writes `{key}={value}`, so [`Probe::query_pair`] is what it takes. The key is
+/// NOT percent-encoded here (`>>` needs `%3E%3E`); that stays the request builder's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Probe {
     /// The sort key being filtered (`episode.addedAt` keeps its scope).
     pub field: &'static str,
-    /// `>>=`, or `>=` for a tail band's floor.
+    /// `>>` for the strictly-greater `>>=` of the number probes, `>` for the inclusive `>=` of the
+    /// date probes.
     pub op: &'static str,
-    /// The decimal value after the operator.
+    /// The decimal value after the `=`.
     pub value: String,
 }
 
 impl Probe {
+    /// The key and the value of the query pair: `("rating>>", "9.49")`, `("addedAt>", "1793422800")`.
+    pub fn query_pair(&self) -> (String, &str) {
+        (format!("{}{}", self.field, self.op), &self.value)
+    }
+
     /// The term as one string: `rating>>=9.49`.
     pub fn term(&self) -> String {
-        format!("{}{}{}", self.field, self.op, self.value)
+        let (key, value) = self.query_pair();
+        format!("{key}={value}")
     }
 }
 
 /// The probe of every band, in the plan's order, or `None` if any band has none (all or nothing:
-/// a rail built from some of its counts would point at the wrong rows).
-pub fn probes(bands: &[Band], to_epoch: &dyn Fn(Basis, Day) -> Option<i64>) -> Option<Vec<Probe>> {
-    bands.iter().map(|band| band.probe(to_epoch)).collect()
+/// a rail built from some of its counts would point at the wrong rows). `local_midnight` is
+/// [`Band::probe`]'s.
+pub fn probes(bands: &[Band], local_midnight: &dyn Fn(Day) -> Option<i64>) -> Option<Vec<Probe>> {
+    bands.iter().map(|band| band.probe(local_midnight)).collect()
 }
 
 fn is_leap(year: i32) -> bool {
@@ -305,7 +358,9 @@ fn is_valid(day: Day) -> bool {
 /// The bands `family` shows, highest first: the order the rail reads in a descending listing, and
 /// the order [`probes`] and [`offsets`] take their counts in. `today` and `oldest_year` (the year of
 /// the oldest item, from an extent read) matter only to a family with a [`BandFamily::basis`]; a
-/// `today` that is not a real date gives no bands.
+/// `today` that is not a real date gives no bands. `oldest_year` is read on the family's own clock:
+/// the LOCAL year of the oldest item for a [`Basis::Local`] family (the year its local date falls
+/// in), the release year for [`BandFamily::Release`].
 ///
 /// - Rating, duration, unplayed and plays are fixed ladders (see the constants). Rating and duration
 ///   end in a tail band for the lowest values; unplayed and plays end at their lowest count, and an
@@ -493,28 +548,26 @@ mod tests {
 
     const LOCAL_ZONE_SECONDS: i64 = 5 * 3600;
 
-    /// Days since 1970-01-01 of a civil date (Hinnant's algorithm), the test's own reference.
     fn days(date: Day) -> i64 {
-        let [year, month, day] = date.map(i64::from);
-        let year = if month <= 2 { year - 1 } else { year };
-        let era = year.div_euclid(400);
-        let yoe = year - era * 400;
-        let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-        era * 146_097 + doe - 719_468
+        days_from_civil(date)
     }
 
-    /// A viewer five hours behind UTC: local midnight is 05:00 UTC, so the two bases differ.
-    fn fake_zone(basis: Basis, date: Day) -> Option<i64> {
-        let utc = days(date) * 86_400;
-        Some(match basis {
-            Basis::Local => utc + LOCAL_ZONE_SECONDS,
-            Basis::Utc => utc,
-        })
+    /// A viewer five hours behind UTC: local midnight is 05:00 UTC, so it differs from UTC midnight.
+    fn fake_local(date: Day) -> Option<i64> {
+        Some(utc_midnight(date) + LOCAL_ZONE_SECONDS)
+    }
+
+    /// The epoch a date edge is probed at: local midnight of the fake viewer, or UTC midnight.
+    fn epoch_of(edge: Edge) -> i64 {
+        match edge {
+            Edge::Day { date, basis: Basis::Local } => fake_local(date).unwrap(),
+            Edge::Day { date, basis: Basis::Utc } => utc_midnight(date),
+            other => panic!("{other:?}"),
+        }
     }
 
     fn terms(bands: &[Band]) -> Vec<String> {
-        probes(bands, &fake_zone).expect("every edge converts").iter().map(Probe::term).collect()
+        probes(bands, &fake_local).expect("every edge converts").iter().map(Probe::term).collect()
     }
 
     fn marks(bands: &[Band]) -> Vec<Mark> {
@@ -522,11 +575,24 @@ mod tests {
     }
 
     #[test]
-    fn the_reference_calendar_agrees_with_known_epochs() {
-        assert_eq!(days([1970, 1, 1]), 0);
-        assert_eq!(days([2026, 10, 31]) * 86_400, 1_793_404_800);
-        assert_eq!(days([2026, 1, 1]) * 86_400, 1_767_225_600);
-        assert_eq!(days([1969, 12, 31]) * 86_400, -86_400);
+    fn the_calendar_agrees_with_known_epochs() {
+        // Literals from an independent calendar (Python's `calendar.timegm`), not from this code.
+        for (date, epoch) in [
+            ([1970, 1, 1], 0),
+            ([2026, 10, 31], 1_793_404_800),
+            ([2026, 1, 1], 1_767_225_600),
+            ([2020, 1, 1], 1_577_836_800),
+            ([1990, 1, 1], 631_152_000),
+            ([1969, 12, 31], -86_400),
+            ([1960, 1, 1], -315_619_200),
+            ([1900, 3, 1], -2_203_891_200),
+            ([1000, 1, 1], -30_610_224_000),
+            ([2000, 2, 29], 951_782_400),
+            ([2038, 1, 19], 2_147_472_000),
+            ([2100, 3, 1], 4_107_542_400),
+        ] {
+            assert_eq!(utc_midnight(date), epoch, "{date:?}");
+        }
         assert_eq!(days([2024, 3, 1]) - days([2024, 2, 1]), 29);
     }
 
@@ -536,7 +602,7 @@ mod tests {
     fn of_sort_maps_the_applications_sort_keys() {
         use BandFamily::*;
         use SecKind::{Movie, Show};
-        let row = |key: &str, desc: bool, kind: SecKind| BandFamily::of_sort(key, desc, kind);
+        let row = |key: &str, desc: bool, kind: SecKind| BandFamily::of_sort(key, desc, kind, LibraryType::Primary);
         for desc in [false, true] {
             assert_eq!(row("rating", desc, Movie), Some(Rating));
             assert_eq!(row("rating", desc, Show), Some(Rating));
@@ -578,7 +644,7 @@ mod tests {
                     "Rating",
                     "",
                 ] {
-                    assert_eq!(BandFamily::of_sort(key, desc, kind), None, "{key} {desc} {kind:?}");
+                    assert_eq!(BandFamily::of_sort(key, desc, kind, LibraryType::Primary), None, "{key} {desc} {kind:?}");
                 }
             }
         }
@@ -586,8 +652,33 @@ mod tests {
 
     #[test]
     fn of_sort_knows_the_key_the_application_adds_itself() {
-        assert_eq!(BandFamily::of_sort(super::super::PLAYS_SORT_KEY, true, SecKind::Movie), Some(BandFamily::Plays));
+        let plays = BandFamily::of_sort(super::super::PLAYS_SORT_KEY, true, SecKind::Movie, LibraryType::Primary);
+        assert_eq!(plays, Some(BandFamily::Plays));
         assert_eq!(BandFamily::Plays.field(), super::super::PLAYS_SORT_KEY);
+    }
+
+    #[test]
+    fn only_a_sections_own_listing_has_bands() {
+        // Seasons, Episodes and Collections list under the same section, with the same sort keys
+        // (`addedAt`, `rating`, ...): the key alone would give them bands they were never designed for.
+        let keyed = [
+            ("rating", true, SecKind::Show),
+            ("rating", false, SecKind::Movie),
+            ("duration", true, SecKind::Movie),
+            ("addedAt", true, SecKind::Show),
+            ("addedAt", false, SecKind::Movie),
+            ("lastViewedAt", true, SecKind::Show),
+            ("viewCount", true, SecKind::Show),
+            ("originallyAvailableAt", false, SecKind::Show),
+            ("unviewedLeafCount", true, SecKind::Show),
+            ("episode.addedAt", true, SecKind::Show),
+        ];
+        for (key, desc, kind) in keyed {
+            assert!(BandFamily::of_sort(key, desc, kind, LibraryType::Primary).is_some(), "{key}: the control");
+            for listing in [LibraryType::Seasons, LibraryType::Episodes, LibraryType::Collections] {
+                assert_eq!(BandFamily::of_sort(key, desc, kind, listing), None, "{key} {desc} {kind:?} {listing:?}");
+            }
+        }
     }
 
     #[test]
@@ -598,7 +689,7 @@ mod tests {
             } else {
                 SecKind::Movie
             };
-            assert_eq!(BandFamily::of_sort(family.field(), true, kind), Some(family), "{family:?}");
+            assert_eq!(BandFamily::of_sort(family.field(), true, kind, LibraryType::Primary), Some(family), "{family:?}");
         }
     }
 
@@ -879,20 +970,19 @@ mod tests {
     // ---- the probe terms ----
 
     #[test]
-    fn the_numeric_ladders_render_the_terms_of_the_measurement() {
+    fn the_numeric_ladders_render_the_terms_measured_per_family() {
+        // `>>=E-1unit`: rating edges minus 0.01, duration edges minus 1 ms, count edges minus 1.
+        let rating = terms(&plan(BandFamily::Rating, [0; 3], 0));
+        assert_eq!(rating[..5], ["rating>>=9.49", "rating>>=8.99", "rating>>=8.49", "rating>>=7.99", "rating>>=7.49"]);
+        let duration = terms(&plan(BandFamily::Duration, [0; 3], 0));
         assert_eq!(
-            terms(&plan(BandFamily::Rating, [0; 3], 0)),
-            ["rating>>=9.49", "rating>>=8.99", "rating>>=8.49", "rating>>=7.99", "rating>>=7.49", "rating>=0"]
-        );
-        assert_eq!(
-            terms(&plan(BandFamily::Duration, [0; 3], 0)),
+            duration[..5],
             [
                 "duration>>=10799999",
                 "duration>>=8999999",
                 "duration>>=7199999",
                 "duration>>=5399999",
-                "duration>>=3599999",
-                "duration>=0"
+                "duration>>=3599999"
             ]
         );
         assert_eq!(
@@ -914,72 +1004,118 @@ mod tests {
     }
 
     #[test]
-    fn an_instant_family_is_probed_at_local_midnight() {
-        // The fake viewer is five hours behind UTC, so local midnight is UTC midnight + 18000.
-        let added = terms(&plan(BandFamily::DateAdded, [2026, 10, 31], 2025));
-        assert_eq!(added[0], "addedAt>>=1793422799", "Today");
-        assert_eq!(added[1], "addedAt>>=1790830799", "October");
-        assert_eq!(added.last().map(String::as_str), Some("addedAt>>=1735707599"), "2025: 1735689600 + 18000 - 1");
-        assert_eq!(terms(&plan(BandFamily::DateViewed, [2026, 10, 31], 2026))[0], "lastViewedAt>>=1793422799");
-        assert_eq!(terms(&plan(BandFamily::LastEpisodeAdded, [2026, 10, 31], 2026))[0], "episode.addedAt>>=1793422799");
+    fn a_tail_band_is_probed_above_zero_which_leaves_out_stored_zeros_and_no_value_items() {
+        // Measured: `>>=0` counted neither the unrated movies nor a stored zero, `>=0` counted the
+        // stored zeros. The floor is the first of the two.
+        assert_eq!(terms(&plan(BandFamily::Rating, [0; 3], 0))[5], "rating>>=0");
+        assert_eq!(terms(&plan(BandFamily::Duration, [0; 3], 0))[5], "duration>>=0");
+        // No number probe uses the inclusive operator, and the highest rung of a count ladder
+        // (`>>=11`) is the same operator as its lowest (`>>=0`).
+        for family in [BandFamily::Rating, BandFamily::Duration, BandFamily::Unplayed, BandFamily::Plays] {
+            for probe in probes(&plan(family, [0; 3], 0), &fake_local).unwrap() {
+                assert_eq!(probe.op, ">>", "{family:?} {}", probe.term());
+            }
+        }
     }
 
     #[test]
-    fn a_release_date_is_probed_at_utc_midnight() {
-        let release = terms(&plan(BandFamily::Release, [2026, 10, 31], 1960));
-        // 2026-01-01 is 1767225600 in UTC; the local reading (+18000) would end in ...243599.
-        assert_eq!(release[0], "originallyAvailableAt>>=1767225599");
-        assert_eq!(release[1], "originallyAvailableAt>>=1577836799", "2020s");
-        assert_eq!(release[4], "originallyAvailableAt>>=631151999", "1990s");
-        // Before 1970 the epoch is negative: 1960-01-01 is -315619200.
-        assert_eq!(release[7], "originallyAvailableAt>>=-315619201", "1960s");
+    fn an_instant_family_is_probed_at_local_midnight_exactly() {
+        // The fake viewer is five hours behind UTC, so local midnight is UTC midnight + 18000, and
+        // the edge is the epoch itself (`>=`), not the epoch minus a second.
+        let added = terms(&plan(BandFamily::DateAdded, [2026, 10, 31], 2025));
+        assert_eq!(added[0], "addedAt>=1793422800", "Today: 1793404800 + 18000");
+        assert_eq!(added[1], "addedAt>=1790830800", "October: 1790812800 + 18000");
+        assert_eq!(added.last().map(String::as_str), Some("addedAt>=1735707600"), "2025: 1735689600 + 18000");
+        assert_eq!(terms(&plan(BandFamily::DateViewed, [2026, 10, 31], 2026))[0], "lastViewedAt>=1793422800");
+        assert_eq!(terms(&plan(BandFamily::LastEpisodeAdded, [2026, 10, 31], 2026))[0], "episode.addedAt>=1793422800");
+    }
+
+    #[test]
+    fn a_release_date_is_probed_at_utc_midnight_back_to_the_oldest_decade() {
+        let bands = plan(BandFamily::Release, [2026, 10, 31], 1960);
+        assert_eq!(
+            marks(&bands),
+            [Mark::Year(2026)].into_iter().chain((6..=12).rev().map(|n| Mark::Decade(1900 + 10 * n))).collect::<Vec<_>>()
+        );
+        let release = terms(&bands);
+        // 2026-01-01 is 1767225600 in UTC; the local reading (+18000) would end in ...243600.
+        assert_eq!(release[0], "originallyAvailableAt>=1767225600");
+        assert_eq!(release[1], "originallyAvailableAt>=1577836800", "2020s");
+        assert_eq!(release[4], "originallyAvailableAt>=631152000", "1990s");
+        // The 1970s edge is plain zero, and the decades before 1970 are negative absolute epochs
+        // (measured: a bare negative number on a date field is not a relative date).
+        assert_eq!(release[6], "originallyAvailableAt>=0", "1970s");
+        assert_eq!(release[7], "originallyAvailableAt>=-315619200", "1960s");
         assert_eq!(release.len(), 8);
     }
 
     #[test]
-    fn the_converter_is_asked_once_per_date_edge_with_the_edges_own_basis() {
+    fn a_utc_edge_never_asks_the_converter_and_a_local_edge_asks_it_once_without_a_basis() {
         use std::cell::RefCell;
         let asked = RefCell::new(Vec::new());
-        let spy = |basis: Basis, date: Day| {
-            asked.borrow_mut().push((basis, date));
-            fake_zone(basis, date)
+        let spy = |date: Day| {
+            asked.borrow_mut().push(date);
+            fake_local(date)
         };
-        let bands = plan(BandFamily::Release, [2026, 10, 31], 2005);
-        assert!(probes(&bands, &spy).is_some());
-        assert_eq!(
-            *asked.borrow(),
-            vec![
-                (Basis::Utc, [2026, 1, 1]),
-                (Basis::Utc, [2020, 1, 1]),
-                (Basis::Utc, [2010, 1, 1]),
-                (Basis::Utc, [2000, 1, 1])
-            ]
-        );
+        let release = plan(BandFamily::Release, [2026, 10, 31], 1001);
+        assert!(probes(&release, &spy).is_some());
+        assert!(asked.borrow().is_empty(), "release dates need no zone");
+        let added = plan(BandFamily::DateAdded, [2026, 3, 1], 2025);
+        assert!(probes(&added, &spy).is_some());
+        assert_eq!(*asked.borrow(), vec![[2026, 3, 1], [2026, 2, 1], [2026, 1, 1], [2025, 1, 1]]);
         asked.borrow_mut().clear();
         assert!(probes(&plan(BandFamily::Rating, [0; 3], 0), &spy).is_some());
         assert!(asked.borrow().is_empty(), "a number edge needs no calendar");
     }
 
     #[test]
-    fn a_converter_that_fails_leaves_no_probe_and_no_rail() {
+    fn a_failing_local_converter_leaves_no_probe_but_cannot_touch_a_release_date() {
+        // A 32-bit `time_t` fails a local date before 1901: that is one band without a probe, and
+        // `probes` is all or nothing. A release date before 1902 needs no converter at all.
         let bands = plan(BandFamily::DateAdded, [2026, 10, 31], 2024);
-        let fails_on_2025 = |basis, date: Day| if date[0] == 2025 { None } else { fake_zone(basis, date) };
+        let fails_on_2025 = |date: Day| if date[0] == 2025 { None } else { fake_local(date) };
         assert!(probes(&bands, &fails_on_2025).is_none());
         assert!(bands[0].probe(&fails_on_2025).is_some());
-        let overflowing = |_: Basis, _: Day| Some(i64::MIN);
-        assert!(bands[0].probe(&overflowing).is_none());
+        let never = |_: Day| None;
+        let ancient = plan(BandFamily::Release, [2026, 10, 31], 1850);
+        let terms = probes(&ancient, &never).expect("UTC edges are computed here").iter().map(Probe::term).collect::<Vec<_>>();
+        assert_eq!(terms.last().map(String::as_str), Some("originallyAvailableAt>=-3786825600"), "1850s: 1850-01-01");
+        assert_eq!(utc_midnight([1850, 1, 1]), -3_786_825_600);
     }
 
     #[test]
-    fn a_probe_names_its_parts_and_a_hundredth_renders_exactly() {
+    fn a_probe_names_its_parts_and_offers_them_as_a_query_pair() {
         let bands = plan(BandFamily::LastEpisodeAdded, [2026, 10, 31], 2026);
-        let probe = bands[0].probe(&fake_zone).unwrap();
-        assert_eq!((probe.field, probe.op, probe.value.as_str()), ("episode.addedAt", ">>=", "1793422799"));
+        let probe = bands[0].probe(&fake_local).unwrap();
+        assert_eq!((probe.field, probe.op, probe.value.as_str()), ("episode.addedAt", ">", "1793422800"));
+        assert_eq!(probe.query_pair(), ("episode.addedAt>".to_owned(), "1793422800"));
+        // The request builder writes `{key}={value}`: key and value rejoin as the term, with ONE `=`.
+        let rating = plan(BandFamily::Rating, [0; 3], 0);
+        let pairs: Vec<(String, String)> = probes(&rating, &fake_local)
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let (key, value) = p.query_pair();
+                (key, value.to_owned())
+            })
+            .collect();
+        assert_eq!(pairs[0], ("rating>>".to_owned(), "9.49".to_owned()));
+        assert_eq!(pairs[5], ("rating>>".to_owned(), "0".to_owned()), "the tail band's floor");
+        for (key, value) in &pairs {
+            assert!(!key.ends_with('='), "the query string owns the `=`: {key}");
+            assert_eq!(format!("{key}={value}").matches('=').count(), 1);
+        }
+        let release = plan(BandFamily::Release, [2026, 10, 31], 2026);
+        assert_eq!(release[0].probe(&never_asked).unwrap().query_pair(), ("originallyAvailableAt>".to_owned(), "1767225600"));
         assert_eq!(hundredths(949), "9.49");
         assert_eq!(hundredths(700), "7.00");
         assert_eq!(hundredths(5), "0.05");
         assert_eq!(hundredths(-1), "-0.01");
         assert_eq!(hundredths(-250), "-2.50");
+    }
+
+    fn never_asked(date: Day) -> Option<i64> {
+        panic!("a UTC edge asked the converter for {date:?}")
     }
 
     // ---- offsets ----
@@ -1137,7 +1273,8 @@ mod tests {
             .collect();
         let value_of = |edge: Edge| match edge {
             Edge::Rating(tenths) => i64::from(tenths),
-            Edge::Floor => 0,
+            // `>>=0`: a value above zero. The unit is a tenth, so that is 1; a stored 0 is left out.
+            Edge::Floor => 1,
             other => panic!("{other:?}"),
         };
         listing_agrees(BandFamily::Rating, [0; 3], 0, &value_of, &items);
@@ -1166,7 +1303,8 @@ mod tests {
         .collect();
         let value_of = |edge: Edge| match edge {
             Edge::Minutes(minutes) => i64::from(minutes) * minute,
-            Edge::Floor => 0,
+            // `>>=0`: a value above zero. The unit is a millisecond, so that is 1; a stored 0 is left out.
+            Edge::Floor => 1,
             other => panic!("{other:?}"),
         };
         listing_agrees(BandFamily::Duration, [0; 3], 0, &value_of, &items);
@@ -1204,11 +1342,7 @@ mod tests {
             None,
             None,
         ];
-        let local = |edge: Edge| match edge {
-            Edge::Day { date, basis } => fake_zone(basis, date).unwrap(),
-            other => panic!("{other:?}"),
-        };
-        listing_agrees(BandFamily::DateViewed, today, 2024, &local, &items);
+        listing_agrees(BandFamily::DateViewed, today, 2024, &epoch_of, &items);
     }
 
     #[test]
@@ -1226,12 +1360,47 @@ mod tests {
             utc_day([1969, 12, 31]),
             None,
         ];
-        let value_of = |edge: Edge| match edge {
-            Edge::Day { date, basis: Basis::Utc } => days(date) * 86_400,
-            other => panic!("{other:?}"),
-        };
         // 1969-12-31 is before 1970: its epoch is negative and still falls in the 1960s band.
-        listing_agrees(BandFamily::Release, [2026, 10, 31], 1969, &value_of, &items);
+        listing_agrees(BandFamily::Release, [2026, 10, 31], 1969, &epoch_of, &items);
+    }
+
+    #[test]
+    fn releases_before_1970_have_their_own_bands_and_a_clamping_server_would_only_leave_them_unlabelled() {
+        let utc_day = |date: Day| Some(days(date) * 86_400);
+        let items: Vec<Option<i64>> = vec![
+            utc_day([2026, 3, 1]),
+            utc_day([2001, 5, 5]),
+            utc_day([1975, 7, 7]),
+            utc_day([1969, 12, 31]),
+            utc_day([1960, 1, 1]),
+            utc_day([1955, 5, 5]),
+            None,
+        ];
+        let today = [2026, 10, 31];
+        let counts_under = |value_of: &dyn Fn(Edge) -> i64| -> Offsets {
+            let bands = plan(BandFamily::Release, today, 1949);
+            let counts: Vec<u32> = bands
+                .iter()
+                .map(|band| items.iter().flatten().filter(|&&v| v >= value_of(band.edge())).count() as u32)
+                .collect();
+            offsets(&bands, &counts, items.len() as u32, true).expect("a consistent probe")
+        };
+        let size_of = |layout: &Offsets, decade: i32| {
+            layout.bands.iter().find(|b| b.band.mark() == Mark::Decade(decade)).map(|b| b.size)
+        };
+        // Absolute negative epochs (what was measured): the 1960s and 1950s hold their releases.
+        listing_agrees(BandFamily::Release, today, 1949, &epoch_of, &items);
+        let real = counts_under(&epoch_of);
+        assert_eq!((size_of(&real, 1960), size_of(&real, 1950), size_of(&real, 1940)), (Some(2), Some(1), Some(0)));
+        assert_eq!(real.tail, 1, "only the release without a date");
+        // A server that clamped a negative edge to zero: the old bands are empty, the old items fall
+        // into the unlabelled tail with the dateless one, and nothing is mislabelled.
+        let clamped = |edge: Edge| epoch_of(edge).max(0);
+        listing_agrees(BandFamily::Release, today, 1949, &clamped, &items);
+        let flat = counts_under(&clamped);
+        assert_eq!((size_of(&flat, 1960), size_of(&flat, 1950), size_of(&flat, 1940)), (Some(0), Some(0), Some(0)));
+        assert_eq!(flat.tail, 4, "three releases before 1970 and one without a date");
+        assert_eq!(size_of(&flat, 1970), size_of(&real, 1970), "the bands from 1970 on are unchanged");
     }
 
     // ---- rejection ----
