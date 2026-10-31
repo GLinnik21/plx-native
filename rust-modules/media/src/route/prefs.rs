@@ -896,7 +896,6 @@ pub fn restore_instant_dpad_seeking(seeking: InstantDpadSeeking) { restore_live:
 
 pub fn dolby_vision_mode() -> DolbyVisionMode { DolbyVisionModePref::live() }
 pub fn restore_dolby_vision_mode(mode: DolbyVisionMode) { restore_live::<DolbyVisionModePref>(mode) }
-pub fn set_dolby_vision_mode(mode: DolbyVisionMode) -> bool { confirm::<DolbyVisionModePref>(mode) }
 
 pub fn skip_interval() -> SkipInterval { SkipIntervalPref::live() }
 pub fn restore_skip_interval(interval: SkipInterval) { restore_live::<SkipIntervalPref>(interval) }
