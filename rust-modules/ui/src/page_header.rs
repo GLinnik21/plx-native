@@ -123,9 +123,10 @@ pub struct HeaderItem {
     /// A PLACE (the control opens a page): a chevron trails the text, [`PLACE_SIZE`] px at
     /// [`theme::HEADER_PLACE_INK`], [`PLACE_GAP`] after it. "Collections · 24 ›", "Recommended ›".
     pub place: bool,
-    /// `label` is the control's NAME (what it is called aloud, the menu's title, the identity the
-    /// row's swap knows it by) and is NOT drawn: the control reads as its `value` alone. The sort
-    /// control, whose visible text is the chosen criterion and never "Sort & Filter".
+    /// `label` is the control's NAME, its identity in the row (what the row's [`HeaderSwap`] and the
+    /// tests know it by), and is NOT drawn, neither on the control nor as the menu's heading: the
+    /// control reads as its `value` alone. The sort control, whose visible text is the chosen
+    /// criterion and never "Sort & Filter".
     pub value_only: bool,
     /// With `fold_glyph`: the board's quiet down chevron ([`QUIET_FOLD_SIZE`] px at 65%, [`QUIET_FOLD_GAP`]
     /// after the text) in place of the menu fold ([`FOLD_SIZE`] px at full ink, [`FOLD_GAP`]).
@@ -140,9 +141,9 @@ pub struct HeaderItem {
 
 impl HeaderItem {
     /// **The sort control** (the board's "= Date added v"): the sort icon ([`Icon::Sort`]), the chosen
-    /// criterion and a quiet down chevron, and nothing else. `name` is what the control is called
-    /// ("Sort & Filter": its menu's title and its identity in the row, which the row's
-    /// [`HeaderSwap`] knows it by), carried by the item and never drawn ([`Self::value_only`]);
+    /// criterion and a quiet down chevron, and nothing else. `name` is the control's identity in the
+    /// row ("Sort & Filter"), which the row's [`HeaderSwap`] and the tests know it by; it is carried
+    /// by the item and not drawn (neither on the control nor as the menu's heading, [`Self::value_only`]);
     /// `value` is the criterion, the only text it shows (a narrowing filter is the page's read-out,
     /// not part of it). It is a stop and has no slot: it ends at [`TEXT_X1`] and its neighbours
     /// slide as the criterion's width changes. The ONE declaration of it: the Library's row, the
