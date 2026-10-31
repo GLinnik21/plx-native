@@ -184,9 +184,14 @@ impl BandFamily {
     /// page asks, `listing` the type the grid lists. A section's own listing
     /// ([`LibraryType::Primary`]) has the bands of the films' and the shows' tables, and a show
     /// library's EPISODES listing has four of them: date added, date viewed, release date and
-    /// rating, the sorts it declares whose ranges the server filters on exactly (`docs/pms-api.md`,
-    /// "Count probes for seasons and episodes"). Its audience score is rounded by the server (no
-    /// family counts it), its Title has the letters, and `unviewedLeafCount`, `duration`,
+    /// rating (`docs/pms-api.md`, "Count probes for seasons and episodes"). Date added and release
+    /// date were VERIFIED at their edges; the critic rating and the date viewed were accepted as
+    /// filters but no episode had a value on the measured server, so neither was ever checked at an
+    /// edge. They stay mapped, since a library that has values may be exact: a field nobody has a
+    /// value in counts nothing (`bands_available` needs two populated bands: no rail), and a filter
+    /// the server ignored or counts that are not monotone are refused by the read (`count_bands`,
+    /// `BandRail::new`). Its audience score is rounded by the server (no family counts it), its Title has the letters, and
+    /// `unviewedLeafCount`, `duration`,
     /// `episode.addedAt` and the plays are not episode sorts. Seasons declare Title and Random alone,
     /// and Collections list one sort: no bands. The WHOLE key is read, never its table-stripped
     /// tail: `episode.addedAt` is another family than `addedAt`. A key of the other library kind has
@@ -813,8 +818,8 @@ mod tests {
 
     /// **Which listing has which bands** (`docs/pms-api.md`, "Count probes for seasons and episodes"). The
     /// section's own listing has its tables'; the Episodes listing of a show library has the four sorts
-    /// of its menu that the server filters on exactly (date added, date viewed, release date, rating) and
-    /// no other (its audience score is rounded, `unviewedLeafCount`, `duration`, `episode.addedAt` and the
+    /// of its menu that have a family (date added and release date verified at their edges; date viewed
+    /// and rating accepted as filters with no values observed, so no rail where nobody has one) and no other (its audience score is rounded, `unviewedLeafCount`, `duration`, `episode.addedAt` and the
     /// plays are not its sorts, its Title has the letters); Seasons (Title and Random alone) and
     /// Collections have none. Both directions, and the other library kind: Episodes exist for a show
     /// library alone.

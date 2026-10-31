@@ -487,16 +487,17 @@ impl SortEntry {
     /// NOT: the server declares a COMPOSITE (`show.titleSort,index` for seasons,
     /// `show.titleSort,season.index:nullsLast,...` for episodes) and counts the letters by the SHOW's
     /// title, which the prefix sums land on only in that declared order (the default order is the same
-    /// one), never in the literal `titleSort`'s (`docs/pms-api.md`, "Count probes for seasons and episodes"). Their
-    /// Title entry is therefore the one whose first term is a title, [`SortFact::Title`], the table
-    /// that already reads a key by its first term.
+    /// one), never in the literal `titleSort`'s (`docs/pms-api.md`, "Count probes for seasons and
+    /// episodes"). Their Title entry is therefore the one whose FIRST comma-separated term is exactly
+    /// `show.titleSort`, read on the key as the server lists it: not through
+    /// [`crate::sortfacts::SortFact::of_pms_key`], which strips the table prefix and so would take a
+    /// literal `titleSort`, a `title` or an `episode.titleSort,...` key for it too (the letters land
+    /// on none of those orders: 41 of 48 seasons and 125 of 525 episodes over the literal one).
     pub fn is_title_order(&self, listing: LibraryType) -> bool {
         // Exhaustive on purpose: a fifth listing must decide here.
         match listing {
             LibraryType::Primary | LibraryType::Collections => self.key == "titleSort",
-            LibraryType::Seasons | LibraryType::Episodes => {
-                crate::sortfacts::SortFact::of_pms_key(&self.key) == Some(crate::sortfacts::SortFact::Title)
-            }
+            LibraryType::Seasons | LibraryType::Episodes => self.key.split(',').next() == Some("show.titleSort"),
         }
     }
 

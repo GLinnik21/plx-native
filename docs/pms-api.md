@@ -154,7 +154,12 @@ spec's "Media Queries" section documents the full query language.
   duration, unplayed, plays, date added, date viewed, last episode added, release date) on a movie or
   show section's own listing, and for a show library's Episodes listing its date added, date viewed,
   release date and rating (`BandFamily::of_sort`; Seasons have none), with the same terms (`type=4`
-  included), and `ListingView::bands()` exposes them; the
+  included). Of those four, date added and release date were verified at their edges; the critic
+  rating and the date viewed were accepted as filters but no episode had a value on the measured
+  server, so they were never checked at an edge: they stay mapped (a library with values may be
+  exact), and where nobody has a value there is no rail (a rail needs two populated bands), where
+  the server ignores the filter or the counts are not monotone the read refuses them.
+  `ListingView::bands()` exposes the bands; the
   calendar ones also need the day the Library hands over with its ask. `rail_available` stays the
   letters' alone and `bands_available` is the value sorts' (the two never both). The Library's rail
   draws whichever the sort has (`library/rail.rs`, labels in `library/rail_bands.rs`): the bands in

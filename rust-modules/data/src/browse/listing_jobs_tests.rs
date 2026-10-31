@@ -619,8 +619,10 @@ fn a_listing_without_its_menu_yet_is_in_the_servers_default_order() {
 }
 
 /// **One predicate, per listing.** The section's own listing and the collections list `titleSort` and
-/// nothing else is its Title order; a seasons or episodes listing's is the composite whose first term is a
-/// title. A key of another fact never is, on any listing.
+/// nothing else is its Title order; a seasons or episodes listing's is the composite whose first term is
+/// exactly `show.titleSort`, and NOT the literal `titleSort`, a `title` or the episode's own
+/// `episode.titleSort,...` (the letters count by the SHOW's title and land on none of those orders). A key
+/// of another fact never is, on any listing.
 #[test]
 fn the_title_order_of_a_listing_is_its_own_entry() {
     use LibraryType::{Collections, Episodes, Primary, Seasons};
@@ -629,6 +631,10 @@ fn the_title_order_of_a_listing_is_its_own_entry() {
         (Primary, "titleSort", true), (Collections, "titleSort", true),
         (Primary, SEASONS_TITLE.0, false), (Primary, EPISODES_TITLE.0, false),
         (Seasons, SEASONS_TITLE.0, true), (Episodes, EPISODES_TITLE.0, true),
+        (Seasons, "titleSort", false), (Episodes, "titleSort", false),
+        (Seasons, "title", false), (Episodes, "title", false),
+        (Seasons, "episode.titleSort,episode.index", false), (Episodes, "episode.titleSort,episode.index", false),
+        (Seasons, "show.titleSort:desc,index", false),
         (Seasons, "random", false), (Episodes, "random", false),
         (Seasons, "addedAt", false), (Episodes, "addedAt", false), (Episodes, "originallyAvailableAt", false),
         (Episodes, "rating", false), (Episodes, "lastViewedAt", false),

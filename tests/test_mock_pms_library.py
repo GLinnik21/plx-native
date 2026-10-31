@@ -877,6 +877,10 @@ class BandQueries(unittest.TestCase):
         self.assertLess(sum(d["size"] for d in narrowed), self.count(2, 4))
 
     def test_episodes_hold_the_values_their_value_sorts_and_range_terms_read(self):
+        """MOCK MODEL, NOT MEASURED for `rating` and `lastViewedAt`: a real PMS held no value in either on an
+        episode (docs/pms-api.md, "Count probes for seasons and episodes"), so the exact `rating>>=` and
+        `lastViewedAt>=` counts below say what the MOCK does with the values it was given. Only `addedAt` and
+        `originallyAvailableAt` (UTC midnight) were verified on a server; `audienceRating` is rounded there."""
         episodes = [it for it in self.lib.items.values() if it["type"] == "episode" and it["librarySectionID"] == 2]
         for field in ("rating", "audienceRating", "originallyAvailableAt", "lastViewedAt"):
             held = [self.mine(it, field) for it in episodes]

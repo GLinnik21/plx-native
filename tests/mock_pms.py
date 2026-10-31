@@ -812,6 +812,12 @@ class Library:
         # sixth has no audience rating (the others one in tenths, as the listing prints it), every
         # seventh has no air date and the rest one of 1998-2024 (a day, rendered as UTC midnight by the
         # range terms). An episode's `addedAt` and `lastViewedAt` are the ones set above.
+        # MOCK MODEL, NOT MEASURED: a real PMS 1.43.5 was measured with NO value in an episode's critic
+        # `rating` or `lastViewedAt` (docs/pms-api.md, "Count probes for seasons and episodes"; the
+        # filters were accepted, never checked at an edge). The values here exist so the simulator has
+        # bands to draw; the mock compares them with the same rules as every other field, which is a
+        # model of the server, not an observation of it. `addedAt` and `originallyAvailableAt` of an
+        # episode were verified.
         tv = random.Random(BAND_FIXTURE_SEED + self.seed + 1)
         for i, ep in enumerate(sorted((it for rk, it in self.items.items() if rk in generated
                                        and it["type"] == "episode"), key=lambda it: int(it["ratingKey"]))):
