@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 42] = [
+const DIAG: [&str; 44] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -101,6 +101,11 @@ const DIAG: [&str; 42] = [
     "plxnative-overdraw",
     "plxnative-drawmask",
     "plxnative-nocardsplit",
+    // The Under posters preview's texture cache ([`plx_gfx::gfx::region_paint`]): off draws the
+    // preview live every frame again, snap puts the cached quad on whole pixels. The same A/B
+    // control-leg argument as the card split above: both legs must boot to the SAME screen.
+    "plxnative-nopreviewcache",
+    "plxnative-previewsnap",
     "plxnative-heroground",
     // The FRAME BUDGET's A/B control leg (`ui/frame/budget.rs`, spec §8.1): admission as it was
     // before phase 11 — quota only, no time ceiling, no solo rule. DIAG for exactly the argument

@@ -454,8 +454,8 @@ OVERDRAW frames=60 panel=... | card=... image=... | cardpath split=P/D focus=P/D
 ```
 
 `split` is a resting card cut into pieces; `focus` a card with `f > 0` or `dy > 0` (the focus
-program, whole); `clip` a resting, rounded card on a reduced-resolution blur source pass with the
-split on (whole); `nointerior` a card with no certainly-plain interior (a circle, a sliver);
+program, whole); `clip` a resting, rounded card on a reduced-resolution blur source pass, or inside a
+full-resolution `FrameCache::render_region` fill (scale 1), with the split on (whole); `nointerior` a card with no certainly-plain interior (a circle, a sliver);
 `plain` a corner radius under half a pixel (the shader's own whole-quad plain branch); `off` a card
 that would have been split with the split switched off. A card is sorted focus, then plain, then
 off, and only a card that is still to be split has its target checked, so a popped, square-cornered

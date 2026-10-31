@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use plx_base::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 use crate::overdraw::{
-    card_split, gate, masked, masked_part, note_card_path, note_px, set_clip, CardPart, CardPath, Class,
+    card_split, gate, masked, masked_part, note_card_path, note_px, region_cache, region_snap, set_clip, CardPart,
+    CardPath, Class,
 };
 
 // What `gfx` and `text` draw WITH, defined here so this layer names nothing of `ui` beyond the
@@ -20,6 +21,8 @@ mod geom;
 /// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
 /// published state.
 pub mod profile;
+#[cfg(test)]
+mod region_cache_tests;
 /// The design tokens the renderer draws with: the app ground and scrim ink, the card shading
 /// constants its image shader mirrors, and the type-size ladder.
 pub mod tokens;
@@ -345,8 +348,10 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// triple `glViewport` was given, plus the live box a [`clip_clear`] must restore.
 ///
 /// `None` means framebuffer 0, and [`clip_set`] then reads `surface::viewport()`/`scale()` exactly
-/// as it always has. It is `Some` only for the duration of [`blur_snapshot_direct`]'s scene draw,
-/// which renders the page into a small FBO through a scaled, negative-origin viewport. Without
+/// as it always has. It is `Some` only while a page is drawn into a target other than the frame
+/// through a negative-origin viewport: for the duration of [`blur_snapshot_direct`]'s scene draw (a
+/// small, scaled FBO), and for a [`FrameCache::render_region`] fill (the region's own texture, at
+/// scale 1; [`RegionTarget`] puts the previous value back). Without
 /// this, every `Painter::clip` inside that draw would compute a full-resolution screen box — the
 /// scissor is the one drawing call that is not in logical coordinates — and clip a completely
 /// different part of the picture, while `clip_clear`'s bare `glDisable` would additionally throw
@@ -392,8 +397,9 @@ pub fn set_clear_color(r: f32, g: f32, b: f32, a: f32) {
 
 /// Where authored coordinates land in the bound target: its window origin `(vx, vy)` and the window
 /// pixels per authored px. The same triple `glViewport` was given - the main surface's
-/// ([`plx_base::surface`]), or the reduced-resolution source pass's ([`CLIP_TARGET`]) - which is what
-/// keeps a scissor box and the pixel grid of a quad cut along it on the very pixels the viewport maps to.
+/// ([`plx_base::surface`]), or the reduced-resolution source pass's ([`CLIP_TARGET`]) or a
+/// [`FrameCache::render_region`] fill's (scale 1) - which is what keeps a scissor box and the pixel
+/// grid of a quad cut along it on the very pixels the viewport maps to.
 fn target_map() -> (c_int, c_int, f32) {
     match unsafe { CLIP_TARGET } {
         Some((tx, ty, ts, _, _)) => (tx, ty, ts),
@@ -3163,9 +3169,10 @@ fn card_pixel_boxes(hole: [f32; 4], view: PxBox, s: f32) -> CardBoxes {
 }
 
 /// The scissor boxes to draw a resting card's `quad` in pieces, or why it is drawn whole
-/// ([`CardPath::Clipped`]: on a reduced-resolution source pass ([`CLIP_TARGET`]), whose quarter-size
-/// pixels have no shading to save and no draw calls to spare; [`CardPath::NoInterior`]: the card
-/// leaves no certainly-plain part).
+/// ([`CardPath::Clipped`]: in any target [`CLIP_TARGET`] names - a reduced-resolution source pass,
+/// whose quarter-size pixels have no shading to save and no draw calls to spare, and equally a
+/// [`FrameCache::render_region`] fill, whose cards are drawn whole once per key rather than split
+/// every frame; [`CardPath::NoInterior`]: the card leaves no certainly-plain part).
 fn card_boxes(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32) -> Result<CardBoxes, CardPath> {
     if unsafe { CLIP_TARGET }.is_some() {
         return Err(CardPath::Clipped);
@@ -3350,9 +3357,19 @@ pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
     }
 }
 
-/// One full logical-screen snapshot shared by modal hosts and frozen page transitions.
+/// **A texture the renderer fills once and serves as one quad**, in one of two modes. They share the
+/// texture, its FBO and the draw path, and differ in WHAT the texture holds and so in how it is drawn:
 ///
-/// This is deliberately a renderer primitive rather than an Account-menu special case. A modal
+/// * **Whole-viewport snapshot** ([`capture`](Self::capture), [`render_into`](Self::render_into)): the
+///   viewport's size, a straight copy of the frame (opaque, over the app ground), bottom-up. Drawn
+///   with [`draw`](Self::draw) / [`draw_alpha`](Self::draw_alpha), which lift [`page_frozen`] and
+///   blend it straight. This is the modal hosts' and the page transitions' snapshot, below.
+/// * **Rect** ([`render_region`](Self::render_region), through [`region_paint`]): a texture of exactly
+///   one rect of the canvas, drawn onto a TRANSPARENT clear, so it holds PREMULTIPLIED colour. Drawn
+///   ONLY by [`draw_region`](Self::draw_region), which blends it premultiplied and does not lift
+///   [`page_frozen`]; never by `draw`/`draw_alpha`, which would composite it as an opaque snapshot.
+///
+/// Whole-viewport snapshot, in more words: this is deliberately a renderer primitive rather than an Account-menu special case. A modal
 /// may freeze a page's *state* and still accidentally redraw its hero, shelves and text on every
 /// swap because double buffering needs complete pixels. `FrameCache` makes the lifecycle explicit:
 /// capture the completed host once, draw one textured quad while the modal owns input, invalidate
@@ -3368,11 +3385,13 @@ pub struct FrameCache {
     valid: bool,
     checked: bool,
     off: bool,
-    /// The framebuffer object over [`tex`](Self::tex) that [`render_into`](Self::render_into)
-    /// draws the page through; 0 until first asked for, and dropped with the texture it names.
+    /// The framebuffer object over [`tex`](Self::tex) that [`render_into`](Self::render_into) and
+    /// [`render_region`](Self::render_region) draw through; 0 until first asked for, and dropped
+    /// with the texture it names.
     fbo: c_uint,
-    /// The FBO came back incomplete once: [`render_into`](Self::render_into) declines from then
-    /// on and the capture falls back to [`capture`](Self::capture)'s copy.
+    /// The FBO came back incomplete once: [`render_into`](Self::render_into) and
+    /// [`render_region`](Self::render_region) decline from then on, and a whole-viewport capture
+    /// falls back to [`capture`](Self::capture)'s copy.
     fbo_off: bool,
     /// **The retained second slot**: a copy of an earlier frame that [`draw_prev`](Self::draw_prev)
     /// fades away over the new capture (a glass menu's look before and after its page reflowed).
@@ -3381,12 +3400,19 @@ pub struct FrameCache {
     prev: c_uint,
     prev_w: c_int,
     prev_h: c_int,
+    /// **The canvas rect this texture holds** (`x, y, w, h`, whole logical px) while it was filled by
+    /// [`render_region`](Self::render_region) rather than as the whole viewport; all zero otherwise.
+    /// The texture is then exactly that rect's size, [`draw_region`](Self::draw_region) puts it back
+    /// where it was drawn, and the pixels are PREMULTIPLIED (the frame is drawn onto a transparent
+    /// clear, so what the blend leaves is `(rgb * a, a)`).
+    region: [c_int; 4],
 }
 
 #[cfg_attr(test, allow(dead_code))]
 impl FrameCache {
     pub const fn new() -> Self {
         Self {
+            region: [0; 4],
             tex: 0,
             w: 0,
             h: 0,
@@ -3437,6 +3463,23 @@ impl FrameCache {
         }
     }
 
+    /// Give the main texture (and its framebuffer) back: whatever it held is gone, the next
+    /// [`render_into`](Self::render_into) / [`render_region`](Self::render_region) makes it again.
+    pub fn release(&mut self) {
+        if self.fbo != 0 {
+            // SAFETY: render thread, current context, like every GL resource here.
+            unsafe { glDeleteFramebuffers(1, &self.fbo) };
+            self.fbo = 0;
+        }
+        delete_tex(self.tex);
+        self.tex = 0;
+        self.w = 0;
+        self.h = 0;
+        self.valid = false;
+        self.checked = false;
+        self.region = [0; 4];
+    }
+
     /// Draw the second slot across the canvas at `alpha`, over what is drawn so far.
     pub fn draw_prev(&self, alpha: f32) -> bool {
         if self.prev == 0 {
@@ -3464,7 +3507,10 @@ impl FrameCache {
     }
 
     /// The captured texture, while it holds a capture: the drawable's viewport as
-    /// `glCopyTexSubImage2D` left it (bottom-up, full size).
+    /// `glCopyTexSubImage2D` left it (bottom-up, full size). A rect-mode fill
+    /// ([`render_region`](Self::render_region)) is premultiplied and rect-sized, not this: it is
+    /// only ever drawn through [`draw_region`](Self::draw_region), and a caller of `tex()` meaning a
+    /// whole-viewport snapshot must not be handed one.
     pub fn tex(&self) -> Option<c_uint> {
         (self.valid && self.tex != 0).then_some(self.tex)
     }
@@ -3504,7 +3550,8 @@ impl FrameCache {
         true
     }
 
-    /// A texture of the viewport's size, re-made (and its FBO with it) when the viewport moved.
+    /// A texture of the size asked for (the viewport's for a whole-viewport snapshot, the rect's for
+    /// a region), re-made (and its FBO with it) when that size changed.
     unsafe fn ensure_tex(&mut self, vw: c_int, vh: c_int) {
         if self.tex == 0 || self.w != vw || self.h != vh {
             if self.fbo != 0 {
@@ -3517,6 +3564,121 @@ impl FrameCache {
             self.h = vh;
             self.checked = false;
         }
+    }
+
+    /// The framebuffer object over [`tex`](Self::tex), made once per texture. `false` once it has
+    /// come back incomplete (latched: the cache then declines and the caller copies or draws live).
+    unsafe fn ensure_fbo(&mut self) -> bool {
+        if self.fbo != 0 {
+            return true;
+        }
+        let (w, h) = (self.w, self.h);
+        let mut f: c_uint = 0;
+        glGenFramebuffers(1, &mut f);
+        glBindFramebuffer(GL_FRAMEBUFFER, f);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self.tex, 0);
+        let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        if st != GL_FRAMEBUFFER_COMPLETE {
+            log(&format!("frame cache: FBO {w}x{h} incomplete (status=0x{st:x}) — copying instead"));
+            glDeleteFramebuffers(1, &f);
+            self.fbo_off = true;
+            return false;
+        }
+        self.fbo = f;
+        true
+    }
+
+    /// **Draw one RECT of the canvas into the cache**, a texture of exactly that rect's size, rather
+    /// than the whole viewport ([`render_into`](Self::render_into)). `rect` is `x, y, w, h` in whole
+    /// logical px. Whatever is then drawn lands in the texture at the position it would have on the
+    /// canvas: the target is reached with the mechanism the blur's direct source pass uses
+    /// ([`blur_snapshot_direct`]) at scale 1 - a NEGATIVE-ORIGIN viewport the size of the canvas, the
+    /// scissor box and [`CLIP_TARGET`] of the target (so a `Painter::clip` inside lands on the very
+    /// texels), and [`CULL_RECT`] (so a primitive outside it is refused) - and no shader changes.
+    /// The texture is cleared to TRANSPARENT black first, so it keeps what the frame's own blend
+    /// leaves over a transparent clear: premultiplied colour ([`draw_region`](Self::draw_region)
+    /// composites it as such).
+    ///
+    /// The guard puts back the viewport, the clip target, the cull rect, the scissor box and the clear
+    /// colour the frame held, and rebinds the frame's framebuffer; [`finish_region`](Self::finish_region)
+    /// closes the fill. `None` (the caller draws live): inside a blur source pass, on a video-plane
+    /// frame, with another page target already bound (a page being drawn into the modal host's
+    /// snapshot: `PageTarget`s do not nest), on a drawable that is not the canvas at scale 1, and
+    /// once the FBO has proved incomplete.
+    pub fn render_region(&mut self, rect: [c_int; 4]) -> Option<RegionTarget> {
+        if self.off || self.fbo_off || blur_source_pass() || backdrop::discovering() {
+            return None;
+        }
+        if video_plane_refuses("FrameCache::render_region") {
+            return None;
+        }
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
+        let [x, y, w, h] = rect;
+        if w <= 0 || h <= 0 || vx != 0 || vy != 0 || plx_base::surface::scale() != 1.0 {
+            return None;
+        }
+        if vw != SCR_W as c_int || vh != SCR_H as c_int || plx_base::surface::default_fb() != plx_base::surface::frame_fb() {
+            return None;
+        }
+        unsafe {
+            self.ensure_tex(w, h);
+            if !self.ensure_fbo() {
+                return None;
+            }
+            self.valid = false;
+            self.region = rect;
+            let page = plx_base::surface::PageTarget::enter(self.fbo);
+            let guard = RegionTarget {
+                _page: page,
+                scissor: LIVE_SCISSOR,
+                clip_target: CLIP_TARGET,
+                cull: CULL_RECT,
+                clear: CLEAR_COLOR,
+            };
+            // Authored y counts down from the canvas top and GL's rows count up, so the rect's bottom
+            // edge sits `vh - y - h` rows above the canvas bottom, which must land on the target's row 0.
+            let (ox, oy) = (-x, -(vh - y - h));
+            glViewport(ox, oy, vw, vh);
+            scissor_box(0, 0, w, h);
+            CLIP_TARGET = Some((ox, oy, 1.0, w, h));
+            CULL_RECT = Some([x as f32, y as f32, w as f32, h as f32]);
+            set_clear_color(0.0, 0.0, 0.0, 0.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            Some(guard)
+        }
+    }
+
+    /// Close a [`render_region`](Self::render_region): the frame's state is back and the texture
+    /// holds the rect.
+    pub fn finish_region(&mut self, target: RegionTarget) {
+        drop(target);
+        self.valid = true;
+    }
+
+    /// The rect a [`render_region`](Self::render_region) filled, `[x, y, w, h]` logical px (all zero
+    /// for a whole-viewport cache).
+    pub fn region(&self) -> [c_int; 4] {
+        self.region
+    }
+
+    /// Put the region on the frame as ONE textured quad with its top-left at `at`, `tint` being the
+    /// PREMULTIPLIED group tint `[g, g, g, a]` (`g` = the colour gain times the alpha): the texture
+    /// holds `(rgb * a, a)`, so the blend is `(ONE, ONE_MINUS_SRC_ALPHA)` ([`StillBlend`]) and the
+    /// tint scales colour AND alpha. Unlike [`draw_alpha`](Self::draw_alpha) this is page CONTENT, not
+    /// the page itself: it does not lift [`page_frozen`], so a frozen host refuses it as it refuses
+    /// every other primitive.
+    pub fn draw_region(&self, at: [f32; 2], tint: [f32; 4]) -> bool {
+        if !self.valid || self.tex == 0 || self.region[2] <= 0 {
+            return false;
+        }
+        let (w, h) = (self.region[2] as f32, self.region[3] as f32);
+        let _blend = StillBlend::enter();
+        draw_tex_core(
+            Class::Image, self.tex, at[0], at[1], w, h, frame_cache_uv(), 0.0, tint.as_ptr(), 0.0,
+            NO_RIM.as_ptr(), w * 0.5, h * 0.5, 0.0, NO_RIM.as_ptr(), 0.0, 0.0, None,
+        );
+        true
     }
 
     /// **Draw the page INTO the cache rather than copying it out afterwards.** Binds an FBO over
@@ -3546,24 +3708,11 @@ impl FrameCache {
         }
         unsafe {
             self.ensure_tex(vw, vh);
-            if self.fbo == 0 {
-                let mut f: c_uint = 0;
-                glGenFramebuffers(1, &mut f);
-                glBindFramebuffer(GL_FRAMEBUFFER, f);
-                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self.tex, 0);
-                let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-                glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
-                if st != GL_FRAMEBUFFER_COMPLETE {
-                    log(&format!(
-                        "frame cache: FBO {vw}x{vh} incomplete (status=0x{st:x}) — copying instead"
-                    ));
-                    glDeleteFramebuffers(1, &f);
-                    self.fbo_off = true;
-                    return None;
-                }
-                self.fbo = f;
+            if !self.ensure_fbo() {
+                return None;
             }
             self.valid = false;
+            self.region = [0; 4];
             let target = plx_base::surface::PageTarget::enter(self.fbo);
             // A fresh pass over the texture: a clear is what tells a tiler it need not load the
             // previous capture's tiles first. The page's own `frame_clear` lays its ground next.
@@ -3594,7 +3743,9 @@ impl FrameCache {
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
-    /// [`frame_cache_uv`] is the one orientation rule shared by every future owner.
+    /// [`frame_cache_uv`] is the one orientation rule shared by every future owner. For a
+    /// whole-viewport snapshot ONLY: a rect-mode fill ([`render_region`](Self::render_region)) is
+    /// drawn by [`draw_region`](Self::draw_region), never this.
     ///
     /// **It lifts [`page_frozen`] around its own quad.** This is the one draw in the app that
     /// exists BECAUSE the page is frozen, so it cannot be subject to the refusal — and lifting it
@@ -3639,6 +3790,223 @@ impl FrameCache {
 #[inline]
 fn frame_cache_uv() -> [f32; 4] {
     [0.0, 1.0, 1.0, -1.0]
+}
+
+/// A [`FrameCache::render_region`] in progress: dropping it puts back everything the fill borrowed
+/// (the viewport, [`CLIP_TARGET`], [`CULL_RECT`], the scissor box, the clear colour) and rebinds the
+/// frame's framebuffer. `BLUR_IN_PASS` is never touched: the region is drawn at full resolution, as
+/// the frame is.
+pub struct RegionTarget {
+    _page: plx_base::surface::PageTarget,
+    scissor: Option<[c_int; 4]>,
+    clip_target: Option<(c_int, c_int, f32, c_int, c_int)>,
+    cull: Option<[f32; 4]>,
+    clear: [f32; 4],
+}
+
+impl Drop for RegionTarget {
+    fn drop(&mut self) {
+        // SAFETY: render thread, current context, like every other restore in this module.
+        unsafe {
+            CLIP_TARGET = self.clip_target;
+            CULL_RECT = self.cull;
+            let (vx, vy, vw, vh) = plx_base::surface::viewport();
+            glViewport(vx, vy, vw, vh);
+            match self.scissor {
+                Some(b) => scissor_box(b[0], b[1], b[2] - b[0], b[3] - b[1]),
+                None => scissor_off(),
+            }
+            let [r, g, b, a] = self.clear;
+            set_clear_color(r, g, b, a);
+        }
+    }
+}
+
+/// **The one texture slot behind [`region_paint`]**, as a pure table: no GL, so the rule is pinned on
+/// the host by the very function the renderer calls ([`serve`](Self::serve)). It remembers the key of
+/// the picture the texture holds. Both Under posters pages ask for the SAME picture (a page whose art
+/// is still dissolving has no key and draws live, it never asks for a different one), so one slot
+/// serves a push and a pop; a picture that changes is a new key and one fill.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RegionSlot {
+    key: Option<u64>,
+}
+
+impl RegionSlot {
+    pub const fn new() -> Self {
+        Self { key: None }
+    }
+
+    /// **The slot step.** `key` is the picture asked for. The key the slot holds is `draw`n from the
+    /// texture; any other `fill`s the texture first (`fill` returns whether it landed) and then
+    /// `draw`s. `state` is whatever the two touch (the texture), lent to each in turn. A fill that did
+    /// not land leaves the slot empty, so the next ask fills again rather than serving a texture that
+    /// holds something else. Returns whether the picture was drawn.
+    pub fn serve<S>(
+        &mut self,
+        state: &mut S,
+        key: u64,
+        fill: impl FnOnce(&mut S) -> bool,
+        draw: impl FnOnce(&S) -> bool,
+    ) -> bool {
+        if self.key != Some(key) {
+            self.key = None;
+            if !fill(state) {
+                return false;
+            }
+            self.key = Some(key);
+        }
+        draw(state)
+    }
+
+    /// The slot gave its texture back: it holds nothing now.
+    pub fn forget(&mut self) {
+        self.key = None;
+    }
+}
+
+/// The slot and its texture, on the render thread (a GL resource, like [`FrameCache`] itself).
+struct RegionSet {
+    slot: RegionSlot,
+    cache: FrameCache,
+    /// Did any page ask for the region since the last frame end? A frame that asked for none gives the
+    /// texture back ([`region_frame_end`]).
+    asked: bool,
+}
+
+thread_local! {
+    static REGION: std::cell::RefCell<RegionSet> = const {
+        std::cell::RefCell::new(RegionSet { slot: RegionSlot::new(), cache: FrameCache::new(), asked: false })
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    static REGION_ASKS: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Test-support: the asks [`region_paint`] has had on this thread, ever, as `(keyed, unkeyed)`. Counted
+/// at the door, before any gate, so a host test (no GL: every ask declines) can still say what a
+/// caller ASKED for - a picture it named, or one it was not ready to name. Two readings bracket a span.
+#[cfg(any(test, feature = "test-support"))]
+pub fn region_asks() -> (u32, u32) {
+    REGION_ASKS.with(|n| n.get())
+}
+
+/// The whole-pixel canvas rect a region of `rect` (`x, y, w, h` logical px) is drawn into: the rect
+/// grown by [`REGION_SLACK`] on every side, outward to whole pixels.
+fn region_extent(rect: [f32; 4]) -> [c_int; 4] {
+    let x0 = (rect[0] - REGION_SLACK).floor();
+    let y0 = (rect[1] - REGION_SLACK).floor();
+    let x1 = (rect[0] + rect[2] + REGION_SLACK).ceil();
+    let y1 = (rect[1] + rect[3] + REGION_SLACK).ceil();
+    [x0 as c_int, y0 as c_int, (x1 - x0) as c_int, (y1 - y0) as c_int]
+}
+
+/// The margin a region keeps around the rect it was asked for: the anti-aliasing bleed and rim of a
+/// primitive painted just outside its nominal rect, and a transparent texel for the bilinear taps of
+/// a quad drawn at a fractional position to read at its edge.
+const REGION_SLACK: f32 = 4.0;
+
+#[inline]
+fn region_mix(key: u64, extent: [c_int; 4]) -> u64 {
+    extent.iter().fold(key, |h, v| (h ^ (*v as u32 as u64)).wrapping_mul(0x0000_0100_0000_01b3))
+}
+
+/// **Paint a rect of the page once, then serve it as one textured quad.** `key` names the picture:
+/// it must change with everything `paint` draws (`None`: the picture is not settled, draw it live).
+/// `rect` is where the picture stands on the PAGE (`x, y, w, h` logical px), `shift` the painter's
+/// translation of the page this frame, and `tint` the group tint ([`FrameCache::draw_region`]).
+///
+/// The key the texture holds is one quad. Another key draws `paint` into the texture ONCE
+/// ([`FrameCache::render_region`]; `paint` then draws as if for the canvas, with an identity painter)
+/// and puts that on the frame. Every call, keyed or not, counts as the frame asking for the region:
+/// a frame that asks for none gives the texture back ([`region_frame_end`]). Returns whether the region
+/// was drawn: `false` means `paint` did NOT run and the caller draws it live - with the cache switched
+/// off, with no key, with no GL, on a frozen page, in a blur or discovery pass, in another page target,
+/// under a clip the caller holds (a scissor is up), or when the fill declined.
+///
+/// **`paint` must draw no glass and no blur.** A glass or blur pass ends by rebinding
+/// [`plx_base::surface::default_fb`] and resetting the viewport, [`CLIP_TARGET`] and the scissor to the
+/// frame's: that would pull the rest of `paint` out of the region's texture and onto the frame. A
+/// plain page's rects, rings, textures, cards and text are fine; the fill asserts (debug builds) that
+/// no such pass ran inside it.
+pub fn region_paint(
+    key: Option<u64>,
+    rect: [f32; 4],
+    shift: [f32; 2],
+    tint: [f32; 4],
+    paint: &mut dyn FnMut(),
+) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    REGION_ASKS.with(|n| {
+        let (keyed, unkeyed) = n.get();
+        n.set(if key.is_some() { (keyed + 1, unkeyed) } else { (keyed, unkeyed + 1) });
+    });
+    REGION.with(|cell| {
+        let Ok(mut set) = cell.try_borrow_mut() else { return false };
+        set.asked = true;
+        let Some(key) = key else { return false };
+        if !region_cache() || page_frozen() || blur_source_pass() || backdrop::discovering() {
+            return false;
+        }
+        // A clip the caller holds (a scrolling list's `ClipScope`, a bare `Painter::clip`) is a scissor on
+        // the frame: the fill would intersect it into the texture's own box and bake a clip that is then
+        // served at every offset. Both spellings go through `clip_set`, so `LIVE_SCISSOR` sees them.
+        if unsafe { LIVE_SCISSOR }.is_some() {
+            return false;
+        }
+        // No image shader, no GL context (a host test): nothing here may call GL.
+        if unsafe { IPROG } == 0 || plx_base::surface::default_fb() != plx_base::surface::frame_fb() {
+            return false;
+        }
+        let extent = region_extent(rect);
+        let key = region_mix(key, extent);
+        let mut at = [extent[0] as f32 + shift[0], extent[1] as f32 + shift[1]];
+        if region_snap() {
+            at = [snap(at[0]), snap(at[1])];
+        }
+        let set = &mut *set;
+        set.slot.serve(
+            &mut set.cache,
+            key,
+            |cache| {
+                let Some(target) = cache.render_region(extent) else { return false };
+                let passes = region_glass_passes();
+                paint();
+                debug_assert_eq!(passes, region_glass_passes(), "a region fill drew a glass or blur pass");
+                cache.finish_region(target);
+                log(&format!(
+                    "region cache: fill key {key:016x} {}x{} at ({}, {})",
+                    extent[2], extent[3], extent[0], extent[1]
+                ));
+                true
+            },
+            |cache| cache.draw_region(at, tint),
+        )
+    })
+}
+
+/// A frame ended: if no page asked for the region during it, the texture goes back to the driver
+/// (1.4 MiB that nothing is showing), and the next ask fills again. Called once per presented frame,
+/// beside the other frame-end hooks. A push, a pop and a transition between the two pages ask on every
+/// frame (one page or the other always draws), so it never frees mid-transition.
+pub fn region_frame_end() {
+    REGION.with(|cell| {
+        let Ok(mut set) = cell.try_borrow_mut() else { return };
+        if !std::mem::replace(&mut set.asked, false) && set.cache.resident_bytes() > 0 {
+            let set = &mut *set;
+            set.cache.release();
+            set.slot.forget();
+        }
+    });
+}
+
+/// Bytes the region's texture holds right now, for the render set's ledger.
+pub fn region_resident_bytes() -> usize {
+    REGION.with(|cell| cell.try_borrow().map_or(0, |set| set.cache.resident_bytes()))
+}
+
+/// Glass and blur passes begun since boot, read by the region fill's debug check.
+fn region_glass_passes() -> u32 {
+    BLUR_SNAPSHOTS.load(Ordering::Relaxed)
 }
 
 /// [`draw_tex`] plus the focus edge-sheen baked into the same pass (rim only, no shadow), and now
@@ -3729,8 +4097,9 @@ fn still_fusion_eligible(tex: c_uint, tint: [f32; 4], available: bool) -> bool {
     tex != 0 && tint == [1.0; 4] && available
 }
 
-/// The still program emits premultiplied RGB. Restore the ordinary blend even during unwinding;
-/// no caller and no following text/overlay draw inherits this primitive's private state.
+/// The still program emits premultiplied RGB, and so does a region cache's quad
+/// ([`FrameCache::draw_region`]): its texture holds `(rgb * a, a)`. Restore the ordinary blend even
+/// during unwinding; no caller and no following text/overlay draw inherits this primitive's private state.
 struct StillBlend;
 impl StillBlend {
     fn enter() -> Self {
@@ -6271,7 +6640,8 @@ unsafe fn dither_uniforms(prog: c_uint) -> c_int {
     glGetUniformLocation(prog, c"u_dither".as_ptr())
 }
 
-/// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
+/// The authored rect a blur source pass or a [`FrameCache::render_region`] fill may draw into; nothing
+/// outside it can affect the result.
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
 // **Is the host page being served from [`FrameCache`] rather than rasterized?** The flag, its doc
@@ -6356,7 +6726,8 @@ pub fn video_plane_refuses(what: &str) -> bool {
 /// backdrop is a crop of the page, so a quad that misses the region cannot contribute a fragment
 /// to it.
 ///
-/// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
+/// Always `false` outside a source pass or a region fill ([`CULL_RECT`] is `None`), so the visible
+/// frame is drawn exactly as it always was.
 #[inline]
 pub fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
     if page_frozen() || backdrop::suppressed() {

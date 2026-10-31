@@ -810,7 +810,9 @@ each blur source job, the visible pass) and each walk ticks. **A page shown as a
 `PageDip` push's IN half and its quiescence hold) draws nothing, so its capture's placeholders are
 recorded (`placeholder::since`) and re-noted on every frame the image is painted; the pixel oracle
 cannot see a placeholder inside a blended image, so the counter alone vouches for those frames
-(`Dispatcher::held_page_image`). A frame dump holds no image (every dip frame re-captures the page
+(`Dispatcher::held_page_image`). A picture drawn once into the region texture and then served as one
+quad (`Painter::cached_region`, the Settings Under posters preview) keeps the same books itself: it records
+the fill's debt with the key and re-notes it on every frame the texture is served, so its caller books nothing. A frame dump holds no image (every dip frame re-captures the page
 live, `PageImage::step_filmed`), so there the capture's own draw is the debt.
 
 **The demo-video driver's contract** (full text: `placeholder.rs` module docs, "What the dump driver
