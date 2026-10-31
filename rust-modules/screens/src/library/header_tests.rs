@@ -784,6 +784,47 @@ fn the_scrolled_capsule_carries_the_sort_the_header_shows() {
     assert!(last.at.x + last.at.w + plx_ui::scroll_capsule::PAD_R <= SCR_W, "the capsule stays on the screen");
 }
 
+/// **The scrolled capsule builds its strings when its text changes, not on every frame it is up**
+/// (`CapsuleText::get_keyed`, keyed on the library's title and owner pieces, the total and the
+/// criterion): any number of frames on one library build them once, and a renamed library or another
+/// section on view builds them once more, naming what is on view.
+#[test]
+fn the_capsule_builds_its_strings_only_when_the_library_on_view_or_its_name_changes() {
+    use plx_ui::screen::Screen;
+    let _guard = plx_base::testlock::serial();
+    let (mut fixture, mut page, engine) = grid_page(2);
+    let pitch = page.layout.grid_pitch();
+    page.scroll.jump(pitch);
+    page.scroll_target = pitch;
+    let worn = page.capsule_wanted();
+    page.handoff.step(0.0, pitch, pitch, pitch, worn);
+    // The capsule's words as one draw says them, the library's name first.
+    let words = |fixture: &Fixture, page: &mut LibraryScreen| -> Vec<String> {
+        let cx = fixture.cx(&engine);
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_ui::frame::backdrop::Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let _walk = plx_ui::frame::backdrop::discover(sources.clone());
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        let (top, bottom) = (plx_ui::scroll_capsule::Y, plx_ui::scroll_capsule::Y + plx_ui::scroll_capsule::H);
+        plx_ui::draw_census::capture_runs(|| page.draw(&mut frame)).into_iter()
+            .filter(|run| run.at.y >= top && run.at.y + run.at.h <= bottom + 1.0).map(|run| run.text).collect()
+    };
+    assert_eq!(page.capsule_text.builds(), 0, "premise: nothing drawn yet");
+    assert_eq!(words(&fixture, &mut page).first().map(String::as_str), Some("Library 0"), "premise: the capsule names the library on view");
+    assert_eq!(page.capsule_text.builds(), 1);
+    for _ in 0..5 { assert_eq!(words(&fixture, &mut page).first().map(String::as_str), Some("Library 0")); }
+    assert_eq!(page.capsule_text.builds(), 1, "five more frames on the same library build nothing");
+    // The library is renamed (the same section, another title): built once more.
+    fixture.sections[0].row.title = "Renamed".into();
+    fixture.publish(0, 36);
+    for _ in 0..3 { assert_eq!(words(&fixture, &mut page).first().map(String::as_str), Some("Renamed")); }
+    assert_eq!(page.capsule_text.builds(), 2, "a renamed library builds its strings once");
+    // Another section is on view: built once more.
+    fixture.publish(1, 36);
+    for _ in 0..3 { assert_eq!(words(&fixture, &mut page).first().map(String::as_str), Some("Library 1")); }
+    assert_eq!(page.capsule_text.builds(), 3, "another section on view builds its strings once");
+}
+
 /// **Whatever a language calls its criterion, the capsule stays on the screen and clear of the
 /// page's right margin**: the longest label every shipped language has for a sort, beside a long
 /// library name and a five-figure count, measured the way the device sums advances. The criterion

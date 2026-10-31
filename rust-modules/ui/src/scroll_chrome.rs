@@ -268,24 +268,43 @@ pub fn capsule_parts(name: &str, total: i64, criterion: Option<&str>) -> (CStrin
 /// switch builds the next library's strings once.
 #[derive(Default)]
 pub struct CapsuleText {
-    /// What `parts` was built for: the name, the total, the criterion and the language.
-    key: Option<(String, i64, Option<String>, usize)>,
+    /// What `parts` was built for: the pieces the name is made of, the total, the criterion and
+    /// the language.
+    key: Option<(Vec<String>, i64, Option<String>, usize)>,
     parts: (CString, CString, Option<CString>),
+    /// How many times the strings were built: the probe that says "built when the text changes,
+    /// not every frame" without reading addresses.
+    builds: u32,
 }
 
 impl CapsuleText {
     /// The strings for `name`, `total` and the sort `criterion`: the held ones when nothing
     /// changed, else [`capsule_parts`] of them.
     pub fn get(&mut self, name: &str, total: i64, criterion: Option<&str>) -> (&CStr, &CStr, Option<&CStr>) {
+        self.get_keyed(&[name], || name.to_owned(), total, criterion)
+    }
+
+    /// [`Self::get`] for a name that costs a heap string to put together: `key` is the borrowed
+    /// pieces the name is made of (a library's title and its owner's handle), compared as they
+    /// are, and `build` makes the name from them only when they, the total, the criterion or the
+    /// language differ. A `build` must read nothing the key does not name, or the held strings go
+    /// stale: it takes the pieces by capture, never the page.
+    pub fn get_keyed(&mut self, key: &[&str], build: impl FnOnce() -> String, total: i64, criterion: Option<&str>) -> (&CStr, &CStr, Option<&CStr>) {
         let language = std::ptr::from_ref(plx_platform::i18n::current()) as usize;
-        let held = self.key.as_ref()
-            .is_some_and(|(n, t, c, l)| n == name && *t == total && c.as_deref() == criterion && *l == language);
+        let held = self.key.as_ref().is_some_and(|(pieces, t, c, l)| {
+            pieces.len() == key.len() && pieces.iter().zip(key).all(|(piece, now)| piece == now)
+                && *t == total && c.as_deref() == criterion && *l == language
+        });
         if !held {
-            self.parts = capsule_parts(name, total, criterion);
-            self.key = Some((name.to_owned(), total, criterion.map(str::to_owned), language));
+            self.parts = capsule_parts(&build(), total, criterion);
+            self.key = Some((key.iter().map(|piece| (*piece).to_owned()).collect(), total, criterion.map(str::to_owned), language));
+            self.builds += 1;
         }
         (&self.parts.0, &self.parts.1, self.parts.2.as_deref())
     }
+
+    /// How many times the strings have been built (see the field).
+    pub fn builds(&self) -> u32 { self.builds }
 }
 
 #[cfg(test)]
@@ -608,6 +627,40 @@ mod tests {
             let want = capsule_parts(name, total, criterion);
             assert_eq!((parts.0, parts.1, parts.2), (want.0.as_c_str(), want.1.as_c_str(), want.2.as_deref()), "{label}: rebuilt for the new text");
             assert_eq!(before.to_str().unwrap(), "Films");
+        }
+    }
+
+    /// **A name made of pieces is built only when a piece changes**: the pieces are compared as
+    /// they stand, `build` does not run while they, the total and the criterion are the same, and it
+    /// runs once for a changed title, a changed owner, a different split of the same text, a new
+    /// total or a new criterion.
+    #[test]
+    fn a_name_made_of_pieces_is_built_when_a_piece_changes() {
+        let _g = plx_base::testlock::serial();
+        let mut text = CapsuleText::default();
+        let built = std::cell::Cell::new(0);
+        let ask = |text: &mut CapsuleText, key: &[&str], total: i64, criterion: Option<&str>| {
+            let name = key.join(" ");
+            let parts = text.get_keyed(key, || { built.set(built.get() + 1); name }, total, criterion);
+            (parts.0.to_owned(), parts.1.to_owned(), parts.2.map(CStr::to_owned))
+        };
+        let first = ask(&mut text, &["Films", "friend"], 1284, Some("Year"));
+        assert_eq!(first.0.to_str().unwrap(), "Films friend");
+        for _ in 0..3 { assert_eq!(ask(&mut text, &["Films", "friend"], 1284, Some("Year")), first); }
+        assert_eq!((built.get(), text.builds()), (1, 1), "the same pieces: nothing built again");
+        for (label, key, total, criterion) in [
+            ("title", &["Movies", "friend"][..], 1284, Some("Year")), ("owner", &["Movies", "pal"][..], 1284, Some("Year")),
+            ("split", &["Movies pal"][..], 1284, Some("Year")), ("no owner", &["Movies", ""][..], 1284, Some("Year")),
+            ("total", &["Movies", ""][..], 1285, Some("Year")), ("criterion", &["Movies", ""][..], 1285, Some("Plays")),
+        ] {
+            let before = built.get();
+            let parts = ask(&mut text, key, total, criterion);
+            assert_eq!(built.get(), before + 1, "{label}: built once for the change");
+            assert_eq!(text.builds(), built.get(), "{label}: the probe counts the same builds");
+            let want = capsule_parts(&key.join(" "), total, criterion);
+            assert_eq!((parts.0.as_c_str(), parts.1.as_c_str(), parts.2.as_deref()), (want.0.as_c_str(), want.1.as_c_str(), want.2.as_deref()), "{label}");
+            assert_eq!(ask(&mut text, key, total, criterion), parts, "{label}: and then held");
+            assert_eq!(built.get(), before + 1);
         }
     }
 
