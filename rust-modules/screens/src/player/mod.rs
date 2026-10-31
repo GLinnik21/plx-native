@@ -1078,7 +1078,7 @@ impl PlayerScreen {
                 && self.hud.nav.focus == GROUP_ROW
                 && let Some(marker) = self.slot.marker() =>
             {
-                self.dismiss_offer(marker, ps, now, fx);
+                self.dismiss_offer(marker, now, fx);
                 Handled::Yes
             }
             Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
@@ -1334,12 +1334,11 @@ impl PlayerScreen {
     fn dismiss_offer<H: AppLike>(
         &mut self,
         marker: plx_data::metadata::Marker,
-        ps: &plx_media::route::PlaybackSession,
         now: u32,
         fx: &mut Effects<'_, H>,
     ) {
         Self::ask(fx, PlayerReq::DismissOffer(marker));
-        self.slot = ControlSlot::Discs(player_hud::Controls::now(ps));
+        self.slot = ControlSlot::Discs(self.model.controls);
         let primary = self.row_primary();
         self.hud.nav.btn = primary;
         // `follow_control_row` runs later this frame (update, after content_requests) and reads
