@@ -1,4 +1,4 @@
-{"updated":"2026-10-31T12:58:27Z",
+{"updated":"2026-10-31T14:14:40Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4229,7 +4229,8 @@
 {"id":41198322351,"at":"2026-10-31T11:47:39Z","sha":"5227d07d8","title":"screens: a show's sort value table drops the sorts its row cannot carry","pr":1176,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":209,"Linux simulator build + launch":252,"macOS simulator build + launch":251,"Windows launcher syntax":22}},
 {"id":41199045695,"at":"2026-10-31T11:58:28Z","sha":"fef93ffab","title":"The Seasons and Episodes views show the sort value under their cards","pr":1176,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":258,"macOS tests against bundled FFmpeg and ASS":140,"Windows launcher syntax":18,"macOS simulator build + launch":151}},
 {"id":41202021411,"at":"2026-10-31T12:38:38Z","sha":"588238282","title":"Docs: say the Title entry is the compound show order, the probe keeps a first glyph","pr":1177,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"macOS tests against bundled FFmpeg and ASS":185,"macOS simulator build + launch":212,"Linux simulator build + launch":301}},
-{"id":41202876308,"at":"2026-10-31T12:50:25Z","sha":"12cbaebb8","title":"A-Z rail for a TV library's Seasons and Episodes views","pr":1177,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":303,"macOS tests against bundled FFmpeg and ASS":226,"macOS simulator build + launch":310,"Windows launcher syntax":20}}
+{"id":41202876308,"at":"2026-10-31T12:50:25Z","sha":"12cbaebb8","title":"A-Z rail for a TV library's Seasons and Episodes views","pr":1177,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":303,"macOS tests against bundled FFmpeg and ASS":226,"macOS simulator build + launch":310,"Windows launcher syntax":20}},
+{"id":41207167292,"at":"2026-10-31T14:09:23Z","sha":"e967221f9","title":"Merge remote-tracking branch 'origin/main' into feat/skip-keeps-discs","pr":1161,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"Linux simulator build + launch":302,"macOS simulator build + launch":133,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":222},"wall":1611}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
