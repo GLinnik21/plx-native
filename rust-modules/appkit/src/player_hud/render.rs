@@ -6,7 +6,8 @@
 //! A package with no state for the frame draws nothing: [`draw`] returns `false`.
 //!
 //! **What it walks.** The state [`Compiled::lookup`] answers for the frame ([`draw`]: the frame's real open bits,
-//! `Frame::open`, from the screen's `HudState::sections`), then its [`Span`]s in draw
+//! `Frame::open`, from the screen's `HudState::sections`, and for an inline package the sections still fading out
+//! as well: [`HudMotion::presented`]), then its [`Span`]s in draw
 //! order, through [`draw_state`], which walks any state, an open section's included. A `Fades` span draws on
 //! the scrub's chrome alpha and is skipped when that alpha is spent; a `Steady` one draws at full alpha.
 //! In a Skip state it walks [`CompiledState::skip_variant`], because the two labels have two widths. A MODAL
@@ -18,6 +19,14 @@
 //!
 //! **Motion stays here.** The focus springs, the title marquee, the scrub preview and the knob's spring
 //! are the renderer's, read from the [`HudMotion`] the page owns.
+//!
+//! **A section appears and fades as the panels did** (`docs/hud-plugins.md`, D6). Its appear spring is the
+//! page's ([`HudMotion::section_appear`], stepped by the screen's tick, never here); the spans a section owns
+//! ([`Span::section`]) are painted as ONE layer, faded by it and raised by `Popover::RISE * (1 - appear)`, and the
+//! tabs, the scrim and the title/bar/row stay outside it. A MODAL package draws the logical state whole and lays a
+//! section still fading out over it; an INLINE one draws the block of the presented sections, with each band above an
+//! appearing or fading section `(1 - appear)` of its lift lower than its rest place (`lift`). A `Shelf` stands at a
+//! screen y whatever its painter translates by, so the strip is told the layer's translate.
 //!
 //! **A section is drawn from its state.** The state's own bits say which sections are open, so a
 //! `toggle_section` control reads selected (a pill: `TabPill`'s selected face; a disc: its `solid` rest face)

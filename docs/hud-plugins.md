@@ -311,6 +311,20 @@ Other subsystems the plan touches
   first action when the package places one, and a failed playback closes every section (today's
   `survives_failure` is false for both, F18). Without a stated policy the FocusEngine would just move focus
   to the tabs and leave classic's strip open, a behaviour change.
+  **Sections move as the panels did.** Each section has its own `PopoverMotion` (the appear spring the panels'
+  surfaces ran), pointed at the logical set (`HudState::sections`) and stepped at the screen's tick, never in a
+  draw. The frame that presents a section draws it at appear 0 (`hold_one_frame`); everything the section paints is
+  ONE layer, faded by the appear and raised by `Popover::RISE * (1 - appear)`; the tabs, the scrim and the
+  title/bar/row stay outside it. A close drops the section from the logical set at once (stops, hit rects,
+  FocusEngine groups and keys read that set) and the draw keeps it, fading, until its spring is out (the
+  Chapters Shelf with it). A failed playback, a stop and the page leaving cut it (`PopoverMotion::at(0.0)`),
+  as `ModalStack::hide` did. A **modal** package gives the transport and any stand-in back at the dismissal
+  frame. An **inline** package lays the section's bands under the transport's, so the ops stacked above an
+  appearing or fading section are drawn `(1 - appear) * h` lower than their rest position in the
+  presented-mask state, `h` being the lift the compiler's own layout gives that band (its box with the section
+  against its box without it, a keyed `gap_before` included): at appear 0 the block stands where the closed
+  state puts it and the mask drops without a jump. Their hit rects and focus stay at rest, and an inline
+  package keeps the discs, not a stand-in, until the last section has faded.
 - D7. **Stand-ins draw only with no section open, as today.** `slot_for` depends only on the marker
   (F19), so Skip or Up Next can become due while a section is open; today such a stand-in waits, because
   the row only draws under `transport` (F1, F2). That rule is kept: while any section is open the row
