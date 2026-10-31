@@ -1,4 +1,4 @@
-{"updated":"2026-10-31T01:16:08Z",
+{"updated":"2026-10-31T01:20:53Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4181,7 +4181,8 @@
 {"id":41152336612,"at":"2026-10-31T00:50:30Z","sha":"680c8a3c2","title":"Top bar: the glass is never dropped for the strip's width","pr":1165,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":248,"Windows launcher syntax":22,"Linux simulator build + launch":300,"macOS tests against bundled FFmpeg and ASS":240}},
 {"id":41152384703,"at":"2026-10-31T00:51:01Z","sha":"37c8aba4f","title":"Record #1165 (680c8a3c2) as merged, keeping this tree","pr":1168,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":115,"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":221,"Linux simulator build + launch":312}},
 {"id":41152695914,"at":"2026-10-31T00:54:45Z","sha":"5302af105","title":"HUD sections: say in the docs how a section moves, and where an inline package's ops stand","pr":1164,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":323,"macOS simulator build + launch":202,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":171}},
-{"id":41152849763,"at":"2026-10-31T00:56:37Z","sha":"558ddf716","title":"Person: a retoken that changes whose credential it is rebuilds the page","pr":1137,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":128,"Windows launcher syntax":18,"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":215}}
+{"id":41152849763,"at":"2026-10-31T00:56:37Z","sha":"558ddf716","title":"Person: a retoken that changes whose credential it is rebuilds the page","pr":1137,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":128,"Windows launcher syntax":18,"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":215}},
+{"id":41154338757,"at":"2026-10-31T01:14:12Z","sha":"d8f317c06","title":"Person: a refreshed server list no longer blanks a loaded page","pr":1137,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":229,"macOS tests against bundled FFmpeg and ASS":141,"Linux simulator build + launch":309}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
