@@ -269,5 +269,12 @@
   "browse.clock.notice_year": "TV-Uhr scheint falsch zu gehen ({year}). Über den gespeicherten Schlüssel verbunden.",
   "browse.clock.notice": "TV-Uhr scheint falsch zu gehen. Über den gespeicherten Schlüssel verbunden.",
   "browse.clock.no_key": "Die Uhr dieses Fernsehers scheint falsch zu gehen. Verbinde den Fernseher einmal mit dem Internet und versuche es erneut.",
-  "browse.clock.key_changed": "Der Schlüssel deines Servers hat sich geändert. Verbinde den Fernseher einmal mit dem Internet, damit die App ihn neu prüfen kann."
+  "browse.clock.key_changed": "Der Schlüssel deines Servers hat sich geändert. Verbinde den Fernseher einmal mit dem Internet, damit die App ihn neu prüfen kann.",
+  "browse.kind.other_videos": "Andere Videos",
+  "browse.kind.videos": "Videos",
+  "browse.library.videos": {
+    "one": "{count} Video",
+    "other": "{count} Videos"
+  },
+  "browse.library.no_videos": "Keine Videos in {library}"
 }

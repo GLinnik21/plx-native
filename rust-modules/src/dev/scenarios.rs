@@ -116,6 +116,8 @@ pub(crate) struct Scenarios {
     pub(crate) auto_tried: bool,
     pub(crate) replay_left: u32,
     pub(crate) grid_tried: bool,
+    /// `plxnative-library=2`'s wait for the Other Videos section to land (see [`LibraryBoot`]).
+    pub(crate) library_boot: LibraryBoot,
     pub(crate) settings_tried: bool,
     pub(crate) seek_tried: bool,
     pub(crate) seek_script: Vec<String>,
@@ -1183,14 +1185,16 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
             app.bridge.home_command(HomeCmd::FocusGrid { row, col });
         }
         if let Some(s) = plx_base::devtrig::read("library") {
-            let kind = match s.parse::<usize>().unwrap_or(0) {
-                1 => plx_data::stores::browse::SecKind::Show,
-                _ => plx_data::stores::browse::SecKind::Movie,
-            };
-            app.bridge.enter_library(kind);
-            // Same pill semantics as the search trigger above: boot has already rooted Home,
-            // so this is `SelectTab`, not a `Root` that would discard it.
-            crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Library);
+            let kind = library_trigger_kind(s.parse::<usize>().unwrap_or(0));
+            if library_trigger_waits(kind) {
+                // The section may not have landed yet: wait for it (`library_boot_arm`, each frame).
+                app.scenarios.library_boot.arm(kind, _fr.now);
+            } else {
+                app.bridge.enter_library(kind);
+                // Same pill semantics as the search trigger above: boot has already rooted Home,
+                // so this is `SelectTab`, not a `Root` that would discard it.
+                crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Library);
+            }
         }
         if let Some(q) = plx_base::devtrig::read("search") {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
@@ -1222,6 +1226,22 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
                 app.bridge.home_command(HomeCmd::PinHero(n));
             }
         }
+    }
+}
+
+/// `plxnative-library=2` (Other Videos): see [`LibraryBoot`]. Dev-only, like every arm here.
+fn library_boot_arm(app: &mut App, fr: &mut Frame) {
+    let Some(kind) = app.scenarios.library_boot.kind() else { return };
+    let sections: Vec<(plx_data::stores::browse::SecKind, bool)> = app.bridge.browse_directory()
+        .sections().iter().map(|section| (section.kind, section.row.pinned)).collect();
+    match app.scenarios.library_boot.step(fr.now, &sections) {
+        LibraryBootStep::Wait => {}
+        LibraryBootStep::Enter => {
+            app.bridge.enter_library(kind);
+            crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Library);
+        }
+        LibraryBootStep::GiveUp => plx_base::eventlog::log(
+            "BADTRIGGER library boot: no favourite library of that kind after 10 s (the server has none, or the profile hid it); nothing was opened"),
     }
 }
 
@@ -2151,6 +2171,140 @@ pub(crate) fn maybe_replay_after_eos(app: &mut App, handed_off_to_up_next: bool)
     }
 }
 
+/// `plxnative-library=<n>` for Other Videos: the boot waits for the section to land, because the
+/// one-shot library trigger runs at 400 ms, usually before discovery has.
+///
+/// Each frame it is shown the directory's `(kind, favourite)` rows and answers what to do: enter
+/// once the kind has a favourite, give up after [`LibraryBoot::GIVE_UP_MS`] with a log line, so a
+/// mock without such a library (or a profile that hid it) is a message and not a silent no-op. It
+/// never switches a library on: the library is on by default and the trigger plays no user.
+/// Movies and TV Shows keep the one-shot path and their exact timing.
+#[derive(Default)]
+pub(crate) struct LibraryBoot {
+    armed: Option<(plx_data::stores::browse::SecKind, u32)>,
+}
+
+/// What [`LibraryBoot::step`] asks the frame to do.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LibraryBootStep {
+    Wait,
+    /// `enter_library` and select the Library tab
+    Enter,
+    GiveUp,
+}
+
+impl LibraryBoot {
+    const GIVE_UP_MS: u32 = 10_000;
+    pub(crate) fn arm(&mut self, kind: plx_data::stores::browse::SecKind, now: u32) {
+        self.armed = Some((kind, now));
+    }
+    pub(crate) fn kind(&self) -> Option<plx_data::stores::browse::SecKind> {
+        self.armed.map(|(kind, _)| kind)
+    }
+    /// One frame's answer, given the directory's `(kind, favourite)` rows in table order.
+    pub(crate) fn step(&mut self, now: u32, sections: &[(plx_data::stores::browse::SecKind, bool)]) -> LibraryBootStep {
+        let Some((kind, since)) = self.armed else { return LibraryBootStep::Wait };
+        if sections.iter().any(|&(k, favourite)| k == kind && favourite) {
+            self.armed = None;
+            return LibraryBootStep::Enter;
+        }
+        if now.wrapping_sub(since) > Self::GIVE_UP_MS {
+            self.armed = None;
+            return LibraryBootStep::GiveUp;
+        }
+        LibraryBootStep::Wait
+    }
+}
+
+/// Whether the library trigger waits for the section of this kind to land (Other Videos, which a
+/// mock may serve only after the one-shot trigger has run) instead of entering at once.
+fn library_trigger_waits(kind: plx_data::stores::browse::SecKind) -> bool {
+    kind == plx_data::stores::browse::SecKind::Video
+}
+
+/// `plxnative-library=<n>`: which library type the boot opens, by the strip's type order (0 Movies,
+/// 1 TV Shows, 2 Other Videos). Anything else is Movies, as an unparsed value always was.
+fn library_trigger_kind(n: usize) -> plx_data::stores::browse::SecKind {
+    use plx_data::stores::browse::SecKind;
+    match n {
+        1 => SecKind::Show,
+        2 => SecKind::Video,
+        _ => SecKind::Movie,
+    }
+}
+
+#[cfg(test)]
+mod library_trigger_tests {
+    use super::library_trigger_kind;
+    use plx_data::browse::TAB_KINDS;
+    use plx_data::stores::browse::SecKind;
+
+    /// The trigger's number is the kind's position in the strip's type order, so 2 is Other Videos
+    /// and `tests/README.md` / `tools/tv-session.sh` name the same three.
+    #[test]
+    fn the_library_trigger_numbers_follow_the_strip_order() {
+        for (n, kind) in TAB_KINDS.into_iter().enumerate() {
+            assert_eq!(library_trigger_kind(n), kind, "plxnative-library={n}");
+        }
+        assert_eq!(library_trigger_kind(2), SecKind::Video);
+        assert_eq!(library_trigger_kind(9), SecKind::Movie, "an unknown number is Movies, as before");
+    }
+
+    use super::{LibraryBoot, LibraryBootStep::{self, *}};
+
+    const MOVIES: (SecKind, bool) = (SecKind::Movie, true);
+
+    /// **The Other Videos trigger no longer plays a user who switches the library on**: the library
+    /// is On by default, so the trigger only waits for the section to land and enters it once it is
+    /// a favourite. A section the profile hid is never switched on by the trigger; the wait ends
+    /// with the give-up line after ten seconds, then the trigger is spent.
+    #[test]
+    fn the_video_boot_trigger_waits_for_a_favourite_and_never_switches_one_on() {
+        let mut boot = LibraryBoot::default();
+        boot.arm(SecKind::Video, 1_000);
+        assert_eq!(boot.step(1_100, &[MOVIES]), Wait, "the section has not landed yet");
+        let hidden = [MOVIES, (SecKind::Video, false)];
+        assert_eq!(boot.step(1_300, &hidden), Wait, "a hidden library is waited for, never switched on");
+        assert_eq!(boot.step(1_316, &hidden), Wait);
+        assert_eq!(boot.step(11_000, &hidden), Wait, "ten seconds are not over yet");
+        assert_eq!(boot.step(11_001, &hidden), LibraryBootStep::GiveUp);
+        assert_eq!(boot.step(11_017, &hidden), Wait, "spent");
+
+        let mut boot = LibraryBoot::default();
+        boot.arm(SecKind::Video, 0);
+        assert_eq!(boot.step(16, &[MOVIES, (SecKind::Video, true)]), Enter, "an On library is entered");
+        assert_eq!(boot.step(32, &[MOVIES, (SecKind::Video, true)]), Wait, "…once");
+    }
+
+    /// A section that is a favourite on the first frame that sees it is entered at once.
+    #[test]
+    fn a_library_that_is_already_on_is_entered_at_once() {
+        let mut boot = LibraryBoot::default();
+        boot.arm(SecKind::Video, 0);
+        assert_eq!(boot.step(16, &[(SecKind::Video, true)]), Enter);
+    }
+
+    /// A mock without such a library is a log line after ten seconds, not a trigger that waits for
+    /// ever; after it the trigger is spent.
+    #[test]
+    fn the_boot_trigger_gives_up_after_ten_seconds() {
+        let mut boot = LibraryBoot::default();
+        boot.arm(SecKind::Video, 2_000);
+        assert_eq!(boot.step(11_999, &[MOVIES]), Wait);
+        assert_eq!(boot.step(12_001, &[MOVIES]), LibraryBootStep::GiveUp);
+        assert_eq!(boot.step(12_017, &[MOVIES, (SecKind::Video, true)]), Wait, "spent");
+    }
+
+    /// Only Other Videos takes the waiting path; Movies and TV Shows keep the one-shot trigger at
+    /// its exact timing.
+    #[test]
+    fn only_other_videos_waits_for_its_section() {
+        for n in 0..3 {
+            assert_eq!(super::library_trigger_waits(library_trigger_kind(n)), n == 2, "plxnative-library={n}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod replay_after_eos_tests {
     use super::should_replay_after_eos;
@@ -2181,6 +2335,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     phcount::tick(fr.now);
     autoplay_arm(app, fr);
     grid_library_search_heroidx_arm(app, fr);
+    library_boot_arm(app, fr);
     settings_boot_arm(app, fr);
     press_arm(app, fr);
     itemmenu_arm(app, fr);
@@ -2284,11 +2439,7 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
             AppArg::Content(_) => crate::app::bridge::nav_pop(&mut app.pages),
             AppArg::Home => {
                 if let Some(kind) = app.bridge.browse_directory().tab_kind(0) {
-                    let tab = match kind {
-                        plx_data::stores::browse::SecKind::Show => HomeTab::Shows,
-                        _ => HomeTab::Movies,
-                    };
-                    crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, None);
+                    crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::of_kind(kind), None, None);
                 }
             }
             AppArg::Library => {
@@ -2514,11 +2665,7 @@ fn push_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarge
         }
         bench::PushTarget::Library => {
             if let Some(kind) = app.bridge.browse_directory().tab_kind(0) {
-                let tab = match kind {
-                    plx_data::stores::browse::SecKind::Show => HomeTab::Shows,
-                    _ => HomeTab::Movies,
-                };
-                crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, None);
+                crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::of_kind(kind), None, None);
             }
             bench::PushTarget::Library
         }

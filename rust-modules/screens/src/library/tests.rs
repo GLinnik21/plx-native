@@ -1290,6 +1290,31 @@ fn a_single_favourite_library_draws_no_selector() {
         "no pointer stop is registered for the selector row");
 }
 
+/// **The Other Videos page carries its libraries as the sub-choice** (issue #599): with two
+/// favourite libraries of the kind the header draws one name per library and folds none (no `+N`,
+/// hence no Libraries popover, which exists only behind it); with one it draws no names. This is the
+/// kind-generic header, characterised here for the third type.
+#[test]
+fn the_other_videos_page_names_its_libraries_only_when_there_are_two() {
+    let _guard = plx_base::testlock::serial();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let page_with = |libraries: usize| {
+        let mut fixture = Fixture::new();
+        fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, (0..libraries).map(|i|
+            plx_data::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1, kind: SecKind::Video,
+                row: plx_data::browse::SrcRow { section: i, title: format!("Clips {i}"), pinned: true,
+                    current: i == 0, ..Default::default() } }).collect());
+        let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Video);
+        page.sync(&fixture.cx(None));
+        page
+    };
+    let two = page_with(2);
+    assert_eq!(two.libraries.iter().map(|(_, section)| *section).collect::<Vec<_>>(), vec![0, 1],
+        "two favourite libraries are two names in the header");
+    assert!(two.folded.is_empty(), "…and nothing is folded, so there is no +N and no popover");
+    assert!(page_with(1).libraries.is_empty(), "a single library draws no names");
+}
+
 #[test]
 fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
     let _guard = plx_base::testlock::serial();

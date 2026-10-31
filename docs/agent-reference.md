@@ -2493,7 +2493,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   repeatable — the hero advances on its own clock and two simulators launched together drift apart
   within seconds — and two comparisons were silently mis-paired that way before it did.
   And the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
-  library on section N), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
+  library of type N: 0 Movies, 1 TV Shows, 2 Other Videos, which the trigger waits for), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
   whole DOCUMENT — the library pill strip at the head where there is one (two or more eligible
   libraries; a lone favourite draws no selector at all), each published shelf, the grid's control
   row, then the poster grid — reversing at the document's own ENDS rather than on a clock, which is

@@ -497,3 +497,83 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
         assert_eq!(ground_of(rel), (false, true), "{rel} is a SHEET: `Ground::Sheet` and nothing else");
     }
 }
+
+// ---- the fourth pill (Other Videos, #599) -------------------------------------------------------
+
+/// The faces of a household with all three library types: Home, the three type pills, the Watchlist
+/// bookmark and Search, in the strip's order (`app::chrome::strip_keys`).
+fn full_strip_faces() -> Vec<TabFace> {
+    use plx_platform::i18n::msg;
+    vec![
+        TabFace::Label(msg::browse_chrome_home().into()),
+        TabFace::Label(msg::browse_kind_movies().into()),
+        TabFace::Label(msg::browse_kind_tv_shows().into()),
+        TabFace::Label(msg::browse_kind_other_videos().into()),
+        TabFace::Icon(crate::icons::Icon::Bookmark),
+        TabFace::Icon(crate::icons::Icon::Search),
+    ]
+}
+
+/// **The strip of all three library types keeps the glass in every language.** The Other Videos
+/// pill widens the bar past what the retired track cap (`GLASS_TRACK_MAX`) allowed in every
+/// language, which is why #599 once recorded a per-language table of who kept the material and who
+/// lost it; the material no longer depends on the strip's width (`tab_glass_on` takes none), so the
+/// test draws the real six-face strip in each shipped language ([`drawn_strip`]) and asks the band
+/// what it published, the same instrument `the_belarusian_five_pill_strip_keeps_the_glass` uses.
+#[test]
+fn the_three_type_strip_keeps_the_glass_in_every_language() {
+    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    for (generation, language) in (100u32..).zip(SHIPPED) {
+        let _guard = language_on_this_thread_for_test(language);
+        let drawn = drawn_strip(generation, &full_strip_faces());
+        assert!(drawn.glass, "{}: a {} px track lost the material", language.tag(), drawn.track);
+    }
+}
+
+/// **The six-pill strip fits in every shipped language** without scrolling, and the unfurled
+/// profile chip is left a name's room. The strip is not one of `docs/localization.md`'s measured
+/// slots, so this is its measurement: the widest label is Other Videos' (Russian "Другие видео",
+/// German "Andere Videos"), measured with the TV's own glyph advances. [`chip_name_room`] is the
+/// name width the centred track leaves the capsule (the closed circle, the name's gap and tail and
+/// [`BAND_AIR`] to the track's left end); [`chip_name_budget`] elides the name to it, so a longer
+/// name is cut and never reaches the track. This pins how much room an ordinary name has in the
+/// worst language (the issue author's "expanding username overlaps the wider menu" worry,
+/// quantified).
+#[test]
+fn the_full_strip_fits_every_language_and_leaves_an_ordinary_chip_name_room() {
+    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    let measure = plx_base::fontcov::advances::ShippedMeasure;
+    let mut room = Vec::new();
+    // Once with the translated type word, once with a 40-plus character library title on the pill:
+    // the title is elided to what the strip leaves, so the chip's room must not move.
+    let title = "Family videos from the summers at the lake";
+    assert!(title.chars().count() > 40);
+    for with_title in [false, true] {
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let mut faces = full_strip_faces();
+            if with_title {
+                assert!(fit_title_face(&mut faces, 3, title, &measure), "{}: the title has room", language.tag());
+            }
+            let widths = tab_widths(&faces, &measure);
+            let tag = language.tag();
+            assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "{tag}: {} past the viewport", tab_content_w(&widths));
+            for stop in 0..widths.len() {
+                assert_eq!(tab_scroll_target(&widths, stop, 0.0), 0.0, "{tag}: stop {stop} scrolls the strip");
+            }
+            let track = tab_track_w(&widths);
+            assert_eq!(chip_name_budget(track), chip_name_room(track).min(CHIP_NAME_MAX),
+                "{tag}: the chip's name budget is the room the bar leaves");
+            room.push((tag, chip_name_room(track)));
+        }
+    }
+    // Measured with the TV's glyph advances: about 278 px in Russian (the tightest) with the
+    // translated type word, 310 in English; a library title on the pill spends room only down to
+    // TAB_TITLE_ROOM. So a name of up to TAB_TITLE_ROOM clears the track in every language, and the
+    // widest names the ceiling allows (CHIP_NAME_MAX, 320) are elided by `chip_name_budget` where
+    // the room is less, never drawn over the track.
+    // Pinned: a wider label that eats this room fails here instead of on a television.
+    for (tag, clear) in &room {
+        assert!(*clear >= TAB_TITLE_ROOM, "{tag}: the chip clears the track up to a {clear:.0} px name");
+    }
+}

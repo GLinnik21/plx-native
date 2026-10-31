@@ -283,7 +283,8 @@ fn household_verdict(source: &BrowseSource, household: &[i64]) -> bool {
 
 // ---- section table (discovered per source) ---------------------------------------------------
 
-/// One browsable library section (movie or show), from one source's `GET /library/sections`.
+/// One browsable library section (movies, TV shows or Other Videos: [`SecKind`]), from one source's
+/// `GET /library/sections`.
 #[derive(Clone)]
 pub struct BrowseSection {
     /// index into [`BrowseState`]'s source table — the server half of this row's address. A bare `key` names two
@@ -314,16 +315,17 @@ pub struct BrowseSection {
     /// favourite-library hits first.
     ///
     /// Your HOUSEHOLD's libraries start favourite and a friend's start favourite only where the
-    /// household has no library of that type ([`plx_plex::plex::pins::default_on`]); the last
-    /// favourite cannot be turned off, or the app has nothing. The household and not the account
+    /// household has no library of that type ([`plx_plex::plex::pins::default_on`]), Other Videos
+    /// libraries included: they follow the same rule as Movies and TV Shows, and the user hides one
+    /// here; the last favourite cannot be turned off, or the app has nothing. The household and not the account
     /// — see [`BrowseSource::household`] and [`BrowseState::lib_refs`] for why plex.tv's raw
     /// `owned` cannot answer this for a Plex Home managed profile.
     pub pinned: bool,
 }
 
 /// **What a library lists** — the TYPE menu's value. Separate from the section's kind: choosing
-/// episodes or collections changes the query, while the section stays a movie or TV library in
-/// the tab strip.
+/// episodes or collections changes the query, while the section keeps its kind (and so its pill)
+/// in the tab strip.
 ///
 /// [`LibraryType::Primary`] is the section's own metadata type — films in a movie library, shows
 /// in a TV library — and the only type the user's Unwatched/Genre filters and the client-side
@@ -345,7 +347,9 @@ impl LibraryType {
     /// The TYPE menu's rows for a section of `kind`, in menu order.
     pub fn offered(kind: SecKind) -> &'static [LibraryType] {
         match kind {
-            SecKind::Movie => &[Self::Primary, Self::Collections],
+            // Other Videos lists its clips and its collections (measured on PMS 1.43.5: `type=18`
+            // answers a list on such a library), exactly a movie library's two types.
+            SecKind::Movie | SecKind::Video => &[Self::Primary, Self::Collections],
             SecKind::Show => &[Self::Primary, Self::Seasons, Self::Episodes, Self::Collections],
         }
     }
@@ -363,6 +367,7 @@ impl LibraryType {
         match (self, kind) {
             (Self::Primary, SecKind::Movie) => msg::browse_person_films(n),
             (Self::Primary, SecKind::Show) => msg::browse_person_shows(n),
+            (Self::Primary, SecKind::Video) => msg::browse_library_videos(n),
             (Self::Seasons, _) => msg::browse_detail_seasons(n),
             (Self::Episodes, _) => msg::browse_detail_episodes(n),
             (Self::Collections, _) => msg::browse_search_items(n),
@@ -373,6 +378,7 @@ impl LibraryType {
         match (self, kind) {
             (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_kind_movies_in(locale),
             (Self::Primary, SecKind::Show) => plx_platform::i18n::msg::browse_kind_tv_shows_in(locale),
+            (Self::Primary, SecKind::Video) => plx_platform::i18n::msg::browse_kind_other_videos_in(locale),
             (Self::Seasons, _) => plx_platform::i18n::msg::browse_kind_seasons_in(locale),
             (Self::Episodes, _) => plx_platform::i18n::msg::browse_kind_episodes_in(locale),
             (Self::Collections, _) => plx_platform::i18n::msg::browse_kind_collections_in(locale),
@@ -386,6 +392,7 @@ impl LibraryType {
         match (self, kind) {
             (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_library_no_movies(library),
             (Self::Primary, SecKind::Show) => plx_platform::i18n::msg::browse_library_no_shows(library),
+            (Self::Primary, SecKind::Video) => plx_platform::i18n::msg::browse_library_no_videos(library),
             (Self::Seasons, _) => plx_platform::i18n::msg::browse_library_no_seasons(library),
             (Self::Episodes, _) => plx_platform::i18n::msg::browse_library_no_episodes(library),
             (Self::Collections, _) => plx_platform::i18n::msg::browse_library_no_collections(library),
@@ -394,10 +401,11 @@ impl LibraryType {
 
     /// The `type=` a listing of this type sends in a section of `kind`, or `None` for the
     /// section's own default listing. A movie library's films have always been asked for without
-    /// one, and still are; a TV library's shows name `type=2` explicitly, as they always did.
+    /// one, and still are, and so are an Other Videos library's clips (they are movie rows); a TV
+    /// library's shows name `type=2` explicitly, as they always did.
     pub fn plex_type(self, kind: SecKind) -> Option<i64> {
         match (self, kind) {
-            (Self::Primary, SecKind::Movie) => None,
+            (Self::Primary, SecKind::Movie | SecKind::Video) => None,
             (Self::Primary, SecKind::Show) => Some(2),
             (Self::Seasons, _) => Some(3),
             (Self::Episodes, _) => Some(4),
@@ -910,9 +918,11 @@ impl SecState {
             return filters;
         }
         if self.unwatched {
+            // Only a TV library counts unwatched LEAVES (episodes). A movie library's films and an
+            // Other Videos library's clips are leaves themselves: plain `unwatched`.
             let key = match (section_kind, self.library_type) {
                 (SecKind::Show, LibraryType::Primary | LibraryType::Seasons) => "unwatchedLeaves",
-                _ => "unwatched",
+                (SecKind::Movie | SecKind::Video | SecKind::Show, _) => "unwatched",
             };
             filters.push((key.into(), "1".into()));
         }
@@ -981,6 +991,11 @@ pub struct BrowseState {
     src_facts_gen: u32,
     tabs_gen: u32,
     tab_shape: u32,
+    /// The strip's label component, beside [`tab_shape`](Self::tab_shape) and moved by the same
+    /// call: for each of [`TAB_KINDS`], the library name its pill wears now (`None` for a kind
+    /// that wears none, or one without exactly one favourite). `tabs_gen` is the strip's label
+    /// generation, so a rename or a second library must move it exactly as a new pill does.
+    tab_titles: [Option<String>; TAB_KINDS.len()],
     retry_cd: u32,
     remembered: Vec<(SecKind, String, i64)>,
     /// This profile's remembered library views ([`plx_plex::plex::session::Preferences::library_views`]):
@@ -1102,6 +1117,7 @@ impl Default for BrowseState {
             src_facts_gen: 0,
             tabs_gen: 1,
             tab_shape: u32::MAX,
+            tab_titles: Default::default(),
             retry_cd: 0,
             remembered: Vec::new(),
             view_memory: Default::default(),
@@ -2341,15 +2357,42 @@ impl BrowseState {
         let session = plx_plex::plex::session::peek();
         self.append_sections_with(source, list, &session, &plx_plex::plex::session::current_profile_key());
     }
-    /// Append the sections a discovery found, then re-resolve the pins from `session` for `user`: the
-    /// live landing hands the profile key and the session the Bridge read, the controlled one hands its
-    /// `preferences` under the `""` key.
+    /// **Rediscovery's one door into the table:** adopt the sections not seen yet and take a new
+    /// title for one already known.
+    ///
+    /// The table is append-only for its INDICES (the page mailbox leans on them), and
+    /// identity is `(source, key)`: a section already present keeps its index, kind, pin and
+    /// state. Its TITLE is the one field that follows the server, because the Other Videos pill
+    /// wears it (`refresh_tab_shape`): a rename is applied here, at the next rediscovery (a
+    /// restart, a profile or server switch, a token change, the Sources panel's re-check), not
+    /// instantly, because nothing polls. A rename to a blank title is ignored, so a server that
+    /// answers one never blanks a name already shown. A library deleted on the server is NOT
+    /// removed (pre-existing: it stays until the table resets). Anything that caches a title by
+    /// index must follow [`sections_gen`](Self::sections_gen), which every rename bumps.
+    ///
+    /// The fresh rows are then re-resolved from `session` for `user`: the live landing hands the
+    /// profile key and the session the Bridge read, the controlled one hands the registry's
+    /// current pair (`append_sections_for_test`).
     fn append_sections_with(&mut self, source: usize, list: Vec<(i64, String, SecKind)>,
         session: &plx_plex::plex::session::Session, user: &str) {
-        let fresh: Vec<_> = list.into_iter().filter(|(key, _, _)| {
-            !self.sections.iter().any(|section| section.src == source && section.key == *key)
-        }).collect();
+        let mut renamed = false;
+        let mut fresh = Vec::new();
+        for (key, title, kind) in list {
+            match self.sections.iter_mut().find(|section| section.src == source && section.key == key) {
+                Some(known) => {
+                    if known.title != title && !title.trim().is_empty() {
+                        known.title = title;
+                        renamed = true;
+                    }
+                }
+                None => fresh.push((key, title, kind)),
+            }
+        }
         if fresh.is_empty() {
+            if renamed {
+                self.bump_sections_gen();
+                plx_machine::idle::invalidate();
+            }
             return;
         }
         let first_fresh = self.sections.len();
@@ -2570,6 +2613,10 @@ impl BrowseState {
         }
         crate::stores::StoreOutcome { changed: true, endpoints }
     }
+    /// Recompute the strip's shape (which kinds have a pill) AND its label component (the library
+    /// name a pill wears), and move [`tabs_gen`](Self::tabs_gen) when either differs from the stamp.
+    /// Called on every table bump, so the common case, nothing changed, compares borrowed
+    /// strings and allocates nothing; a changed title is cloned once into the stamp.
     fn refresh_tab_shape(&mut self) {
         let mask = TAB_KINDS.iter().enumerate().fold(0u32, |mask, (i, &kind)| {
             if self.tab_has_favorite(kind) {
@@ -2578,7 +2625,19 @@ impl BrowseState {
                 mask
             }
         });
-        if mask != self.tab_shape {
+        let titles = TAB_KINDS.map(|kind| sole_favorite_title(
+            self.sections.iter().map(|section| (section.kind, section.pinned, section.title.as_str())),
+            kind,
+        ));
+        let titles_moved = titles.iter().zip(&self.tab_titles).any(|(now, stamp)| *now != stamp.as_deref());
+        if titles_moved {
+            for (stamp, now) in self.tab_titles.iter_mut().zip(titles) {
+                if now != stamp.as_deref() {
+                    *stamp = now.map(str::to_owned);
+                }
+            }
+        }
+        if mask != self.tab_shape || titles_moved {
             self.tab_shape = mask;
             self.tabs_gen = self.tabs_gen.wrapping_add(1);
         }
@@ -2604,6 +2663,7 @@ impl BrowseState {
         self.remembered = Vec::new();
         self.view_memory = Default::default();
         self.tab_shape = u32::MAX;
+        self.tab_titles = Default::default();
         self.cur = 0;
         self.left = Vec::new();
         self.retry_cd = 0;
@@ -3489,19 +3549,16 @@ fn ensure_sections_with(
 /// projection, shared by the blocking discovery above and the worker below, so the two can never
 /// disagree about which sections exist.
 ///
-/// `artist`/`photo` are KEPT. They used to be dropped here as "not browsable", and that quietly
-/// disabled the one growth case the tab projection is written for: a friend sharing a type you do
-/// not own can only add a pill if that type reaches the table at all. They browse like any other
-/// section (the listing, its server-driven sorts and the A–Z rail are type-agnostic), and this
-/// account's own `/hubs` already puts a *Recently Added Music* shelf on Home, so the content was at
-/// the top level before it had a tab. What is still missing is the level BELOW the grid — an artist
-/// opens the movie detail page, which has nothing to play — and that belongs to whoever builds the
-/// music level, not to the strip.
+/// A section's kind is [`SecKind::of_section`]: its Plex `type`, and for a `movie` library its agent
+/// and scanner, which tell Plex's Other Videos from a Movies library. A `type` this product has no
+/// level for (`artist`, `photo`, everything else) is dropped here: it would otherwise reach the
+/// strip, the Sources panel and the grid as a library that opens the movie detail page, which has
+/// nothing to play (see [`SecKind`]).
 fn project_sections(mc: &plx_plex::plex::MediaContainer) -> Vec<(i64, String, SecKind)> {
     mc.directory
         .iter()
         .filter_map(|d| {
-            let kind = SecKind::from_wire(&d.kind)?; // a type this product has no level for at all
+            let kind = SecKind::of_section(d)?; // a type this product has no level for at all
             d.key
                 .parse::<i64>()
                 .ok()
@@ -3518,41 +3575,70 @@ fn project_sections(mc: &plx_plex::plex::MediaContainer) -> Vec<(i64, String, Se
 /// pill, and with one value a second type would silently ride the *Movies* pill and its content
 /// would be unreachable from the strip.
 ///
-/// **Movies and shows are the whole list, deliberately.** `artist` and `photo` briefly appeared
-/// here — the reasoning was that a friend sharing a type you do not own is the growth case the tab
-/// projection exists for, and dropping those at the wire made that case unreachable. It shipped, and
-/// a *Music* tab duly appeared on the dev set (owner verdict, 2026-08-14: "Music was just a tab in a
-/// mockup — remove it completely"). The reasoning was sound and the conclusion was still wrong,
-/// because the growth case is only worth reaching for a type the app can actually PLAY: below the
-/// grid an artist opens the movie detail page, which has nothing to play, so the pill led to a dead
-/// end that looked like a feature. Re-add a variant here in the commit that builds its level, not
-/// before — the projection is ready for it and needs no change.
+/// **Movies, shows and Other Videos are the whole list, deliberately.** `artist` and `photo` briefly
+/// appeared here — the reasoning was that a friend sharing a type you do not own is the growth case
+/// the tab projection exists for, and dropping those at the wire made that case unreachable. It
+/// shipped, and a *Music* tab duly appeared on the dev set (owner verdict, 2026-08-14: "Music was
+/// just a tab in a mockup — remove it completely"). The reasoning was sound and the conclusion was
+/// still wrong, because the growth case is only worth reaching for a type the app can actually PLAY:
+/// below the grid an artist opens the movie detail page, which has nothing to play, so the pill led
+/// to a dead end that looked like a feature. Re-add a variant here in the commit that builds its
+/// level, not before — the projection is ready for it and needs no change.
+///
+/// **`Video` is Plex's "Other Videos" library** (personal media, home movies, clips), issue #599.
+/// Its wire `type` is `movie`, so it is not told apart by [`from_wire`](Self::from_wire) but by
+/// [`of_section`](Self::of_section), from the section's agent and scanner. It earns its level
+/// because its rows ARE movies (`type: movie`, `subtype: clip`): the detail page and Play are the
+/// movie ones, and it browses with the same listing, sorts, rail and collections.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SecKind {
     Movie,
     Show,
+    /// Plex's "Other Videos": a `movie`-typed library filed with no metadata agent.
+    Video,
 }
 
 impl SecKind {
-    /// The wire's `Directory.type`, or `None` for a type this product draws no level for —
-    /// `artist`, `photo`, and everything else PMS can serve. See the type's own doc: this returning
-    /// `None` is what keeps an unplayable library out of the strip, the Sources panel and the grid
-    /// in one place, rather than at three call sites that can disagree.
-    pub fn from_wire(s: &str) -> Option<SecKind> {
-        match s {
+    /// The kind of a `/library/sections` row, or `None` for a type this product draws no level for.
+    /// The Plex `type` decides `show`; a `movie` library is Other Videos when it is filed the way
+    /// Plex files that library (no metadata agent, the Plex Video Files scanner: see
+    /// [`LibrarySection::is_other_videos`](plx_plex::plex::LibrarySection::is_other_videos)) and
+    /// Movies otherwise, so a row that does not say (an older server) is Movies, as before. This is
+    /// the one classification point; [`from_wire`](Self::from_wire) reads the app's own codes only.
+    pub fn of_section(section: &plx_plex::plex::LibrarySection) -> Option<SecKind> {
+        match section.kind.as_str() {
+            "movie" if section.is_other_videos() => Some(SecKind::Video),
             "movie" => Some(SecKind::Movie),
             "show" => Some(SecKind::Show),
             _ => None,
         }
     }
-    /// The wire code this type was parsed FROM — the inverse of [`from_wire`](Self::from_wire), and
+    /// The app's closed code for a kind, back to the kind — NOT the Plex `Directory.type`: Other
+    /// Videos has the wire type `movie` and is classified by [`of_section`](Self::of_section)
+    /// instead. This reads what the app itself wrote ([`wire`](Self::wire)): the remembered library
+    /// of a profile and a discovery recording. `None` for a code this build has no level for —
+    /// `artist`, `photo`, and everything else — which is what keeps an unplayable library out of
+    /// the strip, the Sources panel and the grid in one place, rather than at three call sites that
+    /// can disagree.
+    pub fn from_wire(s: &str) -> Option<SecKind> {
+        match s {
+            "movie" => Some(SecKind::Movie),
+            "show" => Some(SecKind::Show),
+            "video" => Some(SecKind::Video),
+            _ => None,
+        }
+    }
+    /// The code this type was parsed FROM — the inverse of [`from_wire`](Self::from_wire), and
     /// the key `plex::session::TypedLib` records a remembered library under. A `&'static str` from
     /// this table rather than an enum discriminant, so a reordered `SecKind` cannot silently
-    /// repoint a record an older build wrote.
+    /// repoint a record an older build wrote. An older build ignores a `"video"` entry and keeps it
+    /// when it rewrites the session (`LastLibrary::set` retains only its own kind), so the code is
+    /// additive and rollback-safe.
     pub fn wire(self) -> &'static str {
         match self {
             SecKind::Movie => "movie",
             SecKind::Show => "show",
+            SecKind::Video => "video",
         }
     }
     /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
@@ -3560,6 +3646,35 @@ impl SecKind {
         match self {
             SecKind::Movie => plx_platform::i18n::msg::browse_kind_films(),
             SecKind::Show => plx_platform::i18n::msg::browse_kind_tv_shows_sentence(),
+            SecKind::Video => plx_platform::i18n::msg::browse_kind_videos(),
+        }
+    }
+    /// Whether this kind's strip pill may be named after its library: Other Videos only. A Movies or
+    /// TV Shows pill is a TYPE (the library behind it is whichever one the profile prefers, and
+    /// the words are the type's own in the UI language); the Other Videos library is a personal
+    /// collection with a name its owner chose, and when it is the only one the pill says it.
+    /// The Type menu and the counts keep the translated type word either way.
+    pub const fn pill_wears_library_title(self) -> bool {
+        matches!(self, SecKind::Video)
+    }
+    /// This kind's position in [`TAB_KINDS`] — the index of the per-kind arrays (`preferred`,
+    /// `kind_fetch`). One definition instead of a `Movie => 0, Show => 1` copy per array.
+    pub const fn slot(self) -> usize {
+        match self {
+            SecKind::Movie => 0,
+            SecKind::Show => 1,
+            SecKind::Video => 2,
+        }
+    }
+    /// The number a kind is hashed into recordings and menu stamps as (`LogicalState`, the replay
+    /// shapes). Pinned: Movie 0 and Show 1 are what every committed recording carries, and a kind
+    /// is added with the next number, never renumbered — it is deliberately not [`slot`](Self::slot),
+    /// whose order is the strip's and may change.
+    pub const fn canon(self) -> u32 {
+        match self {
+            SecKind::Movie => 0,
+            SecKind::Show => 1,
+            SecKind::Video => 2,
         }
     }
 }
@@ -3581,13 +3696,13 @@ fn orders_by_viewing(key: &str) -> bool {
 }
 
 /// Whether the server is proven to honour [`PLAYS_SORT_KEY`] for this section kind. An
-/// exhaustive match rather than a wildcard default: [`SecKind`]'s own doc says a third variant
-/// (`Artist`/`Photo`) belongs in "the commit that builds its level", and when that lands this
-/// match must fail to compile until someone decides whether the new kind belongs here too,
-/// rather than silently inheriting `true`.
+/// exhaustive match rather than a wildcard default: when a new variant lands this match must fail
+/// to compile until someone decides whether the new kind belongs here too, rather than silently
+/// inheriting `true`. Other Videos is proven: `sort=viewCount:desc|asc` answers 200 on such a
+/// library (PMS 1.43.5).
 fn kind_offers_plays_sort(kind: SecKind) -> bool {
     match kind {
-        SecKind::Movie | SecKind::Show => true,
+        SecKind::Movie | SecKind::Show | SecKind::Video => true,
     }
 }
 
@@ -3651,6 +3766,10 @@ fn activate_source_of(_i: usize) {
 // The consequence is the property B was written for: the strip is a constant width at one friend
 // or at ten. Put source in the strip instead and three friends measure 2133px against a 1540 track.
 // Source rides inside the library pill's own label instead, so adding people never reshapes this strip.
+// The one exception to "a pill is a TYPE" is a lone Other Videos library: its pill wears that
+// library's own title (`sole_favorite_title`), and goes back to the type word the moment a second
+// favourite library of the type appears. Like every type it has a pill only while one of its libraries is
+// a favourite, and a library of it arrives On by the same rule as Movies and TV Shows.
 //
 // **What DOES reshape it is the favourite switch, and that is the change of 2026-09-05.** Movies
 // and TV Shows were permanent destinations — `tab_count` was a constant 2 and `tabs_gen` a
@@ -3665,7 +3784,29 @@ fn activate_source_of(_i: usize) {
 
 /// Every type this product has a pill for, in strip order. A pill is only DRAWN when the
 /// favourite set can fill it — see [`tab_kinds`] — so this is the vocabulary, not the strip.
-pub const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
+/// Other Videos comes last: a type most households do not own sits after the two everybody has.
+pub const TAB_KINDS: [SecKind; 3] = [SecKind::Movie, SecKind::Show, SecKind::Video];
+
+/// **The library name a kind's pill wears**, over `(kind, favourite, title)` rows: the title of the
+/// ONE favourite library of `kind`, trimmed, when `kind` wears a title
+/// ([`SecKind::pill_wears_library_title`]) and the title is not blank. `None` is "use the type
+/// word": no favourite, two or more (a favourite on a friend's server counts like any other), a
+/// kind that never wears one, or a title that names nothing. The single place the rule lives:
+/// [`BrowseState::refresh_tab_shape`] stamps it and `DirectoryView::tab_library_title` publishes
+/// it, so what the strip draws cannot disagree with what bumped it. Nothing here excludes a library
+/// the user has hidden or disguised: that rule would belong in this one function.
+fn sole_favorite_title<'a>(
+    rows: impl Iterator<Item = (SecKind, bool, &'a str)>,
+    kind: SecKind,
+) -> Option<&'a str> {
+    if !kind.pill_wears_library_title() {
+        return None;
+    }
+    let mut favourites = rows.filter(|&(candidate, pinned, _)| candidate == kind && pinned);
+    let (_, _, title) = favourites.next()?;
+    let title = title.trim();
+    (favourites.next().is_none() && !title.is_empty()).then_some(title)
+}
 
 // ---- favourites: the ONE control, it governs the WHOLE APP, and it is PER PROFILE ------------
 //
@@ -4086,6 +4227,14 @@ pub fn seed_two_source_table_for_owner_test(state: &mut BrowseState) {
     );
 }
 
+/// [`seed_two_source_table_for_owner_test`] plus the household's Other Videos library
+/// ("Family Clips", section key 3, the fifth row), which arrives On.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_two_source_table_with_other_videos_for_owner_test(state: &mut BrowseState) {
+    seed_two_source_table_for_owner_test(state);
+    state.append_sections_for_test(0, vec![(3, "Family Clips".into(), SecKind::Video)]);
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_registered_table_for_owner_test(
     state: &mut BrowseState,
@@ -4378,17 +4527,21 @@ mod localized_type_tests {
     fn library_type_titles_translate_without_changing_the_pms_query_type() {
         use plx_platform::i18n::{LocaleContext, Preference};
         for (preference, expected) in [
-            (Preference::En, ["Movies", "Collections", "TV Shows", "Seasons", "Episodes", "Collections"]),
-            (Preference::Es, ["Películas", "Colecciones", "Series", "Temporadas", "Episodios", "Colecciones"]),
-            (Preference::Be, ["Фільмы", "Калекцыі", "Серыялы", "Сезоны", "Серыі", "Калекцыі"]),
-            (Preference::Fr, ["Films", "Collections", "Séries", "Saisons", "Épisodes", "Collections"]),
-            (Preference::De, ["Filme", "Sammlungen", "Serien", "Staffeln", "Episoden", "Sammlungen"]),
-            (Preference::Hu, ["Filmek", "Gyűjtemények", "Sorozatok", "Évadok", "Epizódok", "Gyűjtemények"]),
+            (Preference::En, ["Movies", "Collections", "TV Shows", "Seasons", "Episodes", "Collections", "Other Videos", "Collections"]),
+            (Preference::Es, ["Películas", "Colecciones", "Series", "Temporadas", "Episodios", "Colecciones", "Otros vídeos", "Colecciones"]),
+            (Preference::Be, ["Фільмы", "Калекцыі", "Серыялы", "Сезоны", "Серыі", "Калекцыі", "Іншае відэа", "Калекцыі"]),
+            (Preference::Fr, ["Films", "Collections", "Séries", "Saisons", "Épisodes", "Collections", "Autres vidéos", "Collections"]),
+            (Preference::De, ["Filme", "Sammlungen", "Serien", "Staffeln", "Episoden", "Sammlungen", "Andere Videos", "Sammlungen"]),
+            (Preference::Hu, ["Filmek", "Gyűjtemények", "Sorozatok", "Évadok", "Epizódok", "Gyűjtemények", "Egyéb videók", "Gyűjtemények"]),
+            (Preference::It, ["Film", "Raccolte", "Serie TV", "Stagioni", "Episodi", "Raccolte", "Altri video", "Raccolte"]),
+            (Preference::Pt, ["Filmes", "Coleções", "Séries", "Temporadas", "Episódios", "Coleções", "Outros vídeos", "Coleções"]),
+            (Preference::Ru, ["Фильмы", "Коллекции", "Сериалы", "Сезоны", "Серии", "Коллекции", "Другие видео", "Коллекции"]),
         ] {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
             let rows = LibraryType::offered(SecKind::Movie).iter().map(|&t| (t, SecKind::Movie))
-                .chain(LibraryType::offered(SecKind::Show).iter().map(|&t| (t, SecKind::Show)));
-            let wire = [None, Some(18), Some(2), Some(3), Some(4), Some(18)];
+                .chain(LibraryType::offered(SecKind::Show).iter().map(|&t| (t, SecKind::Show)))
+                .chain(LibraryType::offered(SecKind::Video).iter().map(|&t| (t, SecKind::Video)));
+            let wire = [None, Some(18), Some(2), Some(3), Some(4), Some(18), None, Some(18)];
             for (((kind, section), wire_type), title) in rows.zip(wire).zip(expected) {
                 assert_eq!(kind.title_in(section, &locale), title);
                 assert_eq!(kind.plex_type(section), wire_type);
@@ -4396,6 +4549,10 @@ mod localized_type_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "browse_section_kind_tests.rs"]
+mod section_kind_tests;
 
 #[cfg(test)]
 #[path = "browse_view_ledger_tests.rs"]

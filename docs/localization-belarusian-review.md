@@ -150,3 +150,19 @@ here (a list kept in this note drifted from it as the page grew).
 | `captions.new_episodes` | few | {count} новыя серыі |
 | `captions.new_episodes` | many | {count} новых серый |
 | `captions.new_episodes` | other | {count} новай серыі |
+
+## Pending native review: Other Videos library type (#599)
+
+These strings were written without a dictionary lookup (skarnik.by / verbum.by) and need native
+review, in particular the word forms **відэа** (indeclinable neuter, as in the existing
+`browse.home.hub.recently_added_videos`) and **іншае** ("other", agreeing with it). Plex calls the
+library type "Other Videos".
+
+`locales/be/browse.json`:
+
+| Key | Form | String |
+| --- | --- | --- |
+| `browse.kind.other_videos` | | Іншае відэа |
+| `browse.kind.videos` | | Відэа |
+| `browse.library.videos` | one, few, many, other | {count} відэа |
+| `browse.library.no_videos` | | У бібліятэцы {library} няма відэа |

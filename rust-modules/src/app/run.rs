@@ -3877,6 +3877,7 @@ mod lifecycle_regression_tests {
                 auto_tried: Default::default(),
                 replay_left: Default::default(),
                 grid_tried: Default::default(),
+                library_boot: Default::default(),
                 settings_tried: Default::default(),
                 seek_tried: Default::default(),
                 seek_script: Default::default(),

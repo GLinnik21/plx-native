@@ -293,5 +293,14 @@
   "browse.clock.notice_year": "Zegar TV jest chyba błędny ({year}). Połączono zapamiętanym kluczem.",
   "browse.clock.notice": "Zegar TV jest chyba błędny. Połączono zapamiętanym kluczem.",
   "browse.clock.no_key": "Zegar TV jest chyba błędny. Połącz raz TV z internetem i spróbuj ponownie.",
-  "browse.clock.key_changed": "Klucz Twojego serwera się zmienił. Połącz raz TV z internetem, aby aplikacja mogła go ponownie sprawdzić."
+  "browse.clock.key_changed": "Klucz Twojego serwera się zmienił. Połącz raz TV z internetem, aby aplikacja mogła go ponownie sprawdzić.",
+  "browse.kind.other_videos": "Inne wideo",
+  "browse.kind.videos": "Wideo",
+  "browse.library.videos": {
+    "one": "{count} wideo",
+    "few": "{count} wideo",
+    "many": "{count} wideo",
+    "other": "{count} wideo"
+  },
+  "browse.library.no_videos": "Brak wideo w bibliotece {library}"
 }

@@ -132,14 +132,24 @@ there.
 
 *Settings → Manage → Libraries → Add Library*, twice:
 
-| | type | folder | **agent** |
-|---|---|---|---|
-| 1 | Movies | `~/plxnative-fixtures/Movies` | **Personal Media** (a.k.a. *Other Videos*) |
-| 2 | TV Shows | `~/plxnative-fixtures/TV Shows` | **Personal Media Shows** |
+| | type | folder | **agent** | **scanner** |
+|---|---|---|---|---|
+| 1 | Movies | `~/plxnative-fixtures/Movies` | **Personal Media** | **Plex Movie** |
+| 2 | TV Shows | `~/plxnative-fixtures/TV Shows` | **Personal Media Shows** | the default (Plex TV Series) |
 
 The agent matters. These clips match nothing online. With the normal Plex Movie agent the
 items still scan, still get a ratingKey and still play — they just sit there unmatched with
 wrong-looking posters, and a stray match onto a real film would be worse than none.
+
+**The Movies library's scanner matters too, for the app.** PlxNative shows a library of type movie as
+*Other Videos* (its own pill, not Movies, on by default like any other library and hideable in Favorite libraries) when its agent is "none" AND its scanner is
+**Plex Video Files** — Plex's own definition of the Other Videos library type. Keep the
+integration Movies library on the **Plex Movie** scanner (type *Movies*, as in the table), or the
+scenes that seat the Movies library (`plxnative-library` `true` or `"0"` in `tests/manifest.json`, and
+the Movies pill routes) find no Movies pill. A library that already uses the Video Files scanner is
+reached with `plxnative-library=2` instead (the trigger waits for it), or re-scan it with the Plex Movie scanner. Before the TV suite runs on a lab
+server, confirm that no library the manifest scenes seat as Movies uses the Video Files scanner:
+the app files such a library under Other Videos, so its films leave the Movies pill.
 
 Then **wait for the scan and the analysis pass to finish** (*Settings → Manage →
 Console/Activity*). A ratingKey exists the moment the file is scanned, but the *stream

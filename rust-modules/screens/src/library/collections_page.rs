@@ -62,6 +62,7 @@ pub fn root_label(library: &str, kind: SecKind) -> String {
     match kind {
         SecKind::Movie => msg::browse_kind_films(),
         SecKind::Show => msg::browse_kind_shows(),
+        SecKind::Video => msg::browse_kind_videos(),
     }.to_owned()
 }
 

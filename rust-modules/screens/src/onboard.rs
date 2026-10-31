@@ -879,6 +879,12 @@ mod tests {
             self.stores.browse.borrow_mut().seed_two_source_table_for_test();
         }
 
+        /// The two-source table plus the household's Other Videos library, "Family Clips" (section
+        /// 4 of the table), which arrives on like any other library.
+        fn seed_two_sources_with_other_videos(&mut self) {
+            self.stores.browse.borrow_mut().seed_two_source_table_with_other_videos_for_test();
+        }
+
         fn set_pinned(&mut self, index: usize, on: bool) {
             self.stores.browse.borrow_mut().set_pinned_for_test(index, on);
             // This seam deliberately models live drift without moving the store generation.
@@ -1922,15 +1928,91 @@ mod tests {
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
-            let mut browse = BrowseFixture::new();
-            browse.seed_two_sources();
-            let first = OnboardScreen::first_run(EntryId(0), browse.capture());
-            let inside = OnboardScreen::settings(EntryId(0), browse.capture());
-            for (mounting, screen) in [("first run", &first), ("settings", &inside)] {
-                assert!(screen.form.table.n_rows() > 0, "the fixture must put rows in the table");
-                out.extend(screen.form.table.app_fit_failures(frame_w, &format!("{} {mounting}", language.tag())));
+            // …and with an Other Videos row, on by default, and, as the only favourite left, the
+            // "needs one library" line on this kind's row
+            for (fixture, videos, only_videos) in [
+                ("two sources", false, false),
+                ("other videos on", true, false),
+                ("other videos last", true, true),
+            ] {
+                let mut browse = BrowseFixture::new();
+                if videos {
+                    browse.seed_two_sources_with_other_videos();
+                } else {
+                    browse.seed_two_sources();
+                }
+                if only_videos {
+                    for index in 0..4 {
+                        browse.set_pinned(index, false);
+                    }
+                    browse.set_pinned(4, true);
+                }
+                let first = OnboardScreen::first_run(EntryId(0), browse.capture());
+                let inside = OnboardScreen::settings(EntryId(0), browse.capture());
+                for (mounting, screen) in [("first run", &first), ("settings", &inside)] {
+                    assert!(screen.form.table.n_rows() > 0, "the fixture must put rows in the table");
+                    out.extend(screen.form.table.app_fit_failures(frame_w, &format!("{} {mounting} {fixture}", language.tag())));
+                }
             }
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// The row of the library titled `title`, as the table draws it: `(detail, toggle)`.
+    fn row_of(screen: &OnboardScreen, title: &str) -> (String, Option<bool>) {
+        let row = screen.form.table.sections.iter().flat_map(|section| section.rows.iter())
+            .find(|row| row.label == title).expect("the library has a row");
+        (row.detail.clone(), row.toggle)
+    }
+
+    /// **The Other Videos row is On by default, shows its count line like any other row, and a press
+    /// hides it**, on both mountings (issue #599). The page answers nothing for the untouched row;
+    /// the press records the Off as an answer, and the row never carries a hint.
+    #[test]
+    fn an_other_videos_row_is_on_by_default_shows_its_count_line_and_a_press_hides_it() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        let _g = plx_base::testlock::serial();
+        let _en = language_on_this_thread_for_test(Preference::En);
+        let mut browse = BrowseFixture::new();
+        browse.seed_two_sources_with_other_videos();
+        for (mounting, make) in [
+            ("first run", OnboardScreen::first_run as fn(EntryId, DirectoryView<'_>) -> OnboardScreen),
+            ("settings", OnboardScreen::settings),
+        ] {
+            let mut s = make(EntryId(0), browse.capture());
+            let (count_line, toggle) = row_of(&s, "Family Clips");
+            assert_eq!(toggle, Some(true), "{mounting}: On by default");
+            assert_ne!(count_line, "The app needs one library", "{mounting}: a plain count line, not the last-library rule");
+            assert!(!count_line.is_empty(), "{mounting}: the row shows its count line");
+            assert!(s.answered().is_empty(), "{mounting}: an untouched row answers nothing");
+
+            let (handled, _) = step_ev(&mut s, &ScreenEvent::Activate(SrcTarget::Library(4).key().0), None, browse.capture());
+            assert_eq!(handled, Handled::Yes);
+            assert_eq!(s.answered(), vec![(4, false)], "{mounting}: the press records Off");
+            let (detail, toggle) = row_of(&s, "Family Clips");
+            assert_eq!(toggle, Some(false));
+            assert_eq!(detail, count_line, "{mounting}: hidden, the row still shows its count line");
+        }
+    }
+
+    /// **The last-library rule holds for this kind too**: the Other Videos library as the only
+    /// favourite says the app needs one library, and refuses to be unpinned.
+    #[test]
+    fn the_last_favourite_other_videos_row_keeps_the_last_library_line_and_stays_on() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        let _g = plx_base::testlock::serial();
+        let _en = language_on_this_thread_for_test(Preference::En);
+        let mut browse = BrowseFixture::new();
+        browse.seed_two_sources_with_other_videos();
+        for index in 0..4 {
+            browse.set_pinned(index, false);
+        }
+        browse.set_pinned(4, true);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        assert_eq!(row_of(&s, "Family Clips").0, "The app needs one library");
+        let (handled, _) = step_ev(&mut s, &ScreenEvent::Activate(SrcTarget::Library(4).key().0), None, browse.capture());
+        assert_eq!(handled, Handled::Yes);
+        assert!(s.answered().is_empty(), "the refused press answers nothing");
+        assert_eq!(row_of(&s, "Family Clips").1, Some(true));
     }
 }

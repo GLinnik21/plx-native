@@ -6493,13 +6493,16 @@ impl Drop for InkClipScope {
 }
 
 // ---- The shared top tab row: profile chip leads at the margin, the global destinations
-// (Home | Movies | TV Shows | Search) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
+// (Home | Movies | TV Shows | Other Videos | Watchlist | Search) sit CENTERED — the tvOS tab-bar idiom. Drawn by BOTH the Home screen and the
 // Library screen so they read as one global tab bar; the pill rects live here so both
 // screens' pointer paths share [`tab_pill_at`]. ----
-/// The global destinations: **Home, then a pill per type that HAS a favourite library, then
-/// Search** — two to four of them.
+/// The global destinations: **Home, then a pill per type that HAS a favourite library, then the
+/// Watchlist mark and Search** — three to six of them (the types are Movies, TV Shows and Plex's
+/// Other Videos, in that order; `browse::TAB_KINDS`).
 ///
-/// Movies and TV Shows are still TYPE pills rather than discovered Plex sections, so discovery,
+/// The types are still TYPE pills rather than discovered Plex sections (Movies and TV Shows always
+/// wear their type word; the one exception is the Other Videos pill, which wears the title of its
+/// library when exactly one is a favourite, [`fit_title_face`]), so discovery,
 /// failure and roster changes never REORDER navigation and a friend's tenth film library never adds
 /// a stop. **What changed on 2026-09-05 is that they can be REMOVED**: the Favorite libraries
 /// switch governs the strip, so a type left with no favourite draws no pill at all
@@ -6513,18 +6516,52 @@ const TAB_ICON_PILL_W: f32 = TAB_PILL_H;
 /// The mark inside it, at 1.15× the strip's own type rung (BODY 28 → 32) — the design system's
 /// `--btn-icon-ratio`, the same ratio every icon-and-label control in the app uses.
 const TAB_ICON_D: f32 = 32.0;
-/// The strip's control keys, by destination identity. A destination is looked up by its key, never
-/// by its position among the captured faces: Search is always `+3` and the profile chip `+4`,
-/// whatever type pills sit between Home and Search.
-pub const TAB_KEY_HOME: u32 = crate::dispatch::STRIP_BASE;
-pub const TAB_KEY_MOVIES: u32 = crate::dispatch::STRIP_BASE + 1;
-pub const TAB_KEY_SHOWS: u32 = crate::dispatch::STRIP_BASE + 2;
-pub const TAB_KEY_SEARCH: u32 = crate::dispatch::STRIP_BASE + 3;
-pub const TAB_KEY_CHIP: u32 = crate::dispatch::STRIP_BASE + 4;
-/// The Watchlist mark, `+5`: appended after the chip's `+4` so no existing key moves, and placed
-/// BEFORE Search in the strip's visual order (`app::chrome::strip_keys`) — a key is a destination's
-/// identity, never its position.
-pub const TAB_KEY_WATCHLIST: u32 = crate::dispatch::STRIP_BASE + 5;
+/// Declares the strip's control keys and the one list of them. A key is a destination's IDENTITY,
+/// `STRIP_BASE` + a stable offset, never its position among the captured faces; a new destination is
+/// one line here, and only here: the list [`TAB_KEYS`] is built from the same lines, so a key cannot
+/// be declared and left out of it. A `pub const TAB_KEY_*` written outside this macro is a test
+/// failure (`widgets_strip_key_tests.rs`), and two keys with one value are a build error.
+macro_rules! strip_keys {
+    ($($(#[$meta:meta])* $name:ident = $offset:expr;)+) => {
+        $($(#[$meta])* pub const $name: u32 = crate::dispatch::STRIP_BASE + $offset;)+
+        /// Every strip control key, in declaration order.
+        pub const TAB_KEYS: &[u32] = &[$($name),+];
+    };
+}
+
+strip_keys! {
+    /// The strip's control keys, by destination identity. A destination is looked up by its key,
+    /// never by its position among the captured faces: Search is always `+3` and the profile chip
+    /// `+4`, whatever type pills sit between Home and Search.
+    TAB_KEY_HOME = 0;
+    TAB_KEY_MOVIES = 1;
+    TAB_KEY_SHOWS = 2;
+    TAB_KEY_SEARCH = 3;
+    TAB_KEY_CHIP = 4;
+    /// The Watchlist mark, `+5`: appended after the chip's `+4` so no existing key moves, and placed
+    /// BEFORE Search in the strip's visual order (`app::chrome::strip_keys`) — a key is a
+    /// destination's identity, never its position.
+    TAB_KEY_WATCHLIST = 5;
+    /// Other Videos, `+7`. Open pull request #993 (Live TV) holds `+6`; the pair is kept distinct by
+    /// the assert below, whichever lands first.
+    TAB_KEY_VIDEOS = 7;
+}
+
+/// Two destinations with one key would be one pill answering for both; the second to land (two
+/// open pull requests each take "the next free offset") fails the build instead.
+const _: () = {
+    let mut i = 0;
+    while i < TAB_KEYS.len() {
+        assert!(TAB_KEYS[i] >= crate::dispatch::STRIP_BASE);
+        let mut j = i + 1;
+        while j < TAB_KEYS.len() {
+            // the build error names this line: two strip destinations share one key
+            assert!(TAB_KEYS[i] != TAB_KEYS[j]);
+            j += 1;
+        }
+        i += 1;
+    }
+};
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 ///
 /// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
@@ -6593,8 +6630,8 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     out.push(("profile chip, focused capsule", CHIP_CAP_MAX));
 }
 
-/// The overscan rect and the strip's real geometry agree at the widest the strip is shown: six
-/// focus stops (Home, both type pills, the Watchlist and Search marks, the chip) fit without scrolling.
+/// The overscan rect and the strip's real geometry agree at the widest the strip is shown: seven
+/// focus stops (Home, the three type pills, the Watchlist and Search marks, the chip) fit without scrolling.
 #[cfg(test)]
 mod overscan_strip_tests {
     use super::*;
@@ -6622,6 +6659,33 @@ mod overscan_strip_tests {
         let track = geometry.track;
         assert!(track.x >= outer.x && track.x + track.w <= outer.x + outer.w + 0.5,
             "the drawn track must sit inside the widest track the audit checks");
+        assert!(track.y >= outer.y && track.y + track.h <= outer.y + outer.h + 0.5);
+    }
+
+    /// The widest the strip is now shown: Home, ALL THREE type pills, the Watchlist and Search marks
+    /// (seven stops with the chip). At a generous 20 px a glyph it is 944 wide against a viewport of
+    /// 1528, so it still never scrolls, and its track still sits inside the audit's widest track.
+    #[test]
+    fn seven_stops_with_three_type_pills_do_not_scroll_and_clear_the_overscan_rect() {
+        let faces = [
+            TabFace::Label("Home".into()),
+            TabFace::Label("Movies".into()),
+            TabFace::Label("TV Shows".into()),
+            TabFace::Label("Other Videos".into()),
+            TabFace::Icon(crate::icons::Icon::Bookmark),
+            TabFace::Icon(crate::icons::Icon::Search),
+        ];
+        let widths = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 20.0).1;
+        assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "six pills must fit the strip's viewport");
+        for idx in 0..faces.len() {
+            assert_eq!(tab_scroll_target(&widths, idx, 0.0), 0.0, "stop {idx} must not scroll the strip");
+        }
+        let track = tab_geometry(&widths, 0.0).track;
+        let mut rects = Vec::new();
+        overscan_rects(&mut rects);
+        let (_, outer) = rects.iter().copied().find(|(name, _)| *name == "top tab track (widest)")
+            .expect("the strip publishes its widest track to the audit");
+        assert!(track.x >= outer.x && track.x + track.w <= outer.x + outer.w + 0.5);
         assert!(track.y >= outer.y && track.y + track.h <= outer.y + outer.h + 0.5);
     }
 }
@@ -7371,14 +7435,23 @@ pub const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
 /// the strip's widths with `tabs_generation`, the label with the profile), because the elision
 /// belongs to its captured publication and drawing measures nothing.
 pub fn chip_name_budget(track_w: f32) -> f32 {
-    let circle = chip_cap(0.0, 0.0);
-    let track_left = (crate::consts::SCR_W - track_w) * 0.5;
-    let room = track_left - BAND_AIR - (circle.x + circle.w) - (CHIP_NAME_GAP + CHIP_NAME_TAIL);
+    let room = chip_name_room(track_w);
     if room < CHIP_NAME_MIN {
         0.0
     } else {
         room.min(CHIP_NAME_MAX)
     }
+}
+
+/// **The name width the bar leaves the unfurled chip, before the ceiling and the floor of
+/// [`chip_name_budget`] are applied** (negative when the track reaches the closed circle): the
+/// centred track's left edge, less [`BAND_AIR`], the closed circle and the name's gap and tail. The
+/// one expression the budget and the strip's own graders ([`TAB_TITLE_ROOM`], the glass-budget and
+/// chrome tests) read the room with.
+pub fn chip_name_room(track_w: f32) -> f32 {
+    let circle = chip_cap(0.0, 0.0);
+    let track_left = (crate::consts::SCR_W - track_w) * 0.5;
+    track_left - BAND_AIR - (circle.x + circle.w) - (CHIP_NAME_GAP + CHIP_NAME_TAIL)
 }
 
 /// Is the shared tab track wearing glass this frame?
@@ -7465,6 +7538,116 @@ fn tab_metrics_from(faces: &[TabFace], measure: impl Fn(&std::ffi::CStr) -> f32)
 /// input geometry; the capability keeps host fixtures independent of a loaded SDL font.
 pub fn tab_widths(faces: &[TabFace], measure: &dyn plx_machine::machine::Measure) -> Vec<f32> {
     tab_metrics_from(faces, |word| measure.width(word, theme::size::BODY, true)).1
+}
+
+/// **The profile name width every shipped language must keep clear of the strip** while the
+/// chip is unfurled: [`chip_name_room`] of the shipped six-pill strip is at least this in every
+/// language (Russian, about 278 px, is the tightest), pinned by
+/// `the_full_strip_fits_every_language_and_leaves_an_ordinary_chip_name_room`, and a library
+/// title that names a pill is budgeted against it rather than against a free constant: past it the
+/// pill would take the room [`chip_name_budget`] gives an ordinary name.
+pub const TAB_TITLE_ROOM: f32 = 270.0;
+/// The most text a library title may take on its pill, whatever room the strip has left, so a
+/// wide-open language does not draw a long pill for a long name.
+pub const TAB_TITLE_MAX: f32 = 240.0;
+/// Below this much text room (about four letters and the ellipsis) a title is not used at all and
+/// the pill keeps its translated type word.
+pub const TAB_TITLE_FLOOR: f32 = 60.0;
+/// The most characters of a library title that are measured at all, so a hostile name bounds the
+/// elision's binary search.
+const TAB_TITLE_CHARS: usize = 128;
+/// The strip's content width that still leaves [`TAB_TITLE_ROOM`] to the chip's name: the track
+/// is centred, so `SCR_W - 2 * (the capsule of a TAB_TITLE_ROOM name's right edge + BAND_AIR +
+/// TAB_TRACK_PAD)`. The same arithmetic as [`chip_name_room`], solved for the width.
+const TAB_VIEW_FOR_ROOM: f32 = crate::consts::SCR_W
+    - 2.0 * (chip_cap(1.0, TAB_TITLE_ROOM).x + chip_cap(1.0, TAB_TITLE_ROOM).w + BAND_AIR
+        + TAB_TRACK_PAD);
+
+/// **The text room a library title has on its pill:** what [`TAB_VIEW_FOR_ROOM`] leaves after the
+/// other `faces - 1` pills (`others_w` in all) and the gaps between all `faces` of them, less the
+/// title pill's own padding, at most [`TAB_TITLE_MAX`]. `None` below [`TAB_TITLE_FLOOR`], which
+/// includes every non-positive remainder: `elide_by` answers its input UNCHANGED for a budget of
+/// zero or less, so a crowded strip must never reach it with one. `None` means "use the type word".
+fn title_budget(others_w: f32, faces: usize) -> Option<f32> {
+    let gaps = faces.saturating_sub(1) as f32 * TAB_GAP;
+    let room = TAB_VIEW_FOR_ROOM - others_w - gaps - 2.0 * TAB_PILL_PAD;
+    (room >= TAB_TITLE_FLOOR).then_some(room.min(TAB_TITLE_MAX))
+}
+
+/// A server-supplied title made fit to draw on a pill: control characters (NUL included, which
+/// would otherwise blank the pill, `CString` refusing it) become spaces, format characters that
+/// draw nothing are dropped, runs of white space are one space, the ends are trimmed, and at most
+/// [`TAB_TITLE_CHARS`] characters are kept. Empty when nothing visible is left.
+///
+/// The format characters are an explicit list (no `icu_properties` in `Cargo.lock`): the soft
+/// hyphen, the zero-width and bidi marks U+200B-U+200F, U+202A-U+202E, U+2060-U+2064 and
+/// U+2066-U+206F, and the byte-order mark.
+fn clean_title(raw: &str) -> String {
+    let mut out = String::new();
+    let (mut gap, mut kept) = (false, 0usize);
+    for ch in raw.chars() {
+        if matches!(ch, '\u{AD}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}')
+        {
+            continue;
+        }
+        if ch.is_whitespace() || ch.is_control() {
+            gap = !out.is_empty();
+            continue;
+        }
+        let need = usize::from(gap) + 1;
+        if kept + need > TAB_TITLE_CHARS {
+            break;
+        }
+        if gap {
+            out.push(' ');
+            gap = false;
+        }
+        out.push(ch);
+        kept += need;
+    }
+    out
+}
+
+/// **Put a library's own title on the pill at `index`**, replacing the type word it holds, when it
+/// can: the cleaned title is not empty, no OTHER label pill says the same (a Unicode-lowercase
+/// comparison, so `ФИЛЬМЫ` is `Фильмы`: two identical pills would be one destination twice), and
+/// the strip leaves it at least [`TAB_TITLE_FLOOR`] of text ([`title_budget`]). It is then elided
+/// by character with the same measure and size [`tab_widths`] lays the strip out with, so the
+/// width the strip draws is the width the title was fitted to. Returns whether the title was used;
+/// on `false` the face is untouched and keeps the translated word, which is app text and is never
+/// elided.
+///
+/// Elision is by `char`: it never splits a UTF-8 scalar, but it can cut a base letter from a
+/// following combining mark or inside an emoji sequence (no grapheme segmenter without a new
+/// crate); what remains is a plain prefix and the ellipsis. Arabic and Hebrew have no glyph in
+/// any shipped face (upstream #760), here as in the Sources panel.
+pub fn fit_title_face(faces: &mut [TabFace], index: usize, title: &str,
+    measure: &dyn plx_machine::machine::Measure) -> bool {
+    let title = clean_title(title);
+    if title.is_empty() || index >= faces.len() {
+        return false;
+    }
+    let lowered = title.to_lowercase();
+    let collides = faces.iter().enumerate().any(|(i, face)| {
+        i != index && matches!(face, TabFace::Label(other) if other.to_lowercase() == lowered)
+    });
+    if collides {
+        return false;
+    }
+    let others_w: f32 = faces.iter().enumerate().filter(|&(i, _)| i != index)
+        .map(|(_, face)| tab_widths(std::slice::from_ref(face), measure)[0]).sum();
+    let Some(budget) = title_budget(others_w, faces.len()) else {
+        return false;
+    };
+    let fitted = plx_gfx::text::elide_by(&title, budget, false, |t| {
+        measure.width_str(t, theme::size::BODY, true)
+    });
+    if fitted == "\u{2026}" {
+        return false;
+    }
+    faces[index] = TabFace::Label(fitted);
+    true
 }
 
 /// Publish control geometry from the strip's actual scroll and its current destination. Keys
@@ -9233,8 +9416,16 @@ mod control_face_tests;
 mod measure_tests;
 
 #[cfg(test)]
+#[path = "widgets_strip_key_tests.rs"]
+mod strip_key_tests;
+
+#[cfg(test)]
 #[path = "widgets_glass_budget_tests.rs"]
 mod glass_budget_tests;
+
+#[cfg(test)]
+#[path = "widgets_tab_title_tests.rs"]
+mod tab_title_tests;
 
 #[cfg(test)]
 #[path = "widgets_tab_capsule_motion_tests.rs"]

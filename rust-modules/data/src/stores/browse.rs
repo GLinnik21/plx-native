@@ -467,6 +467,11 @@ impl BrowseStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_two_source_table_with_other_videos_for_test(&mut self) {
+        crate::browse::seed_two_source_table_with_other_videos_for_owner_test(&mut self.state);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seed_registered_table_for_test(&mut self, sids: [ServerId; 2]) {
         crate::browse::seed_registered_table_for_owner_test(&mut self.state, sids);
     }

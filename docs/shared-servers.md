@@ -557,14 +557,16 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   state; it performs no HTTP. A dead share becomes a recoverable failed source without parking SDL.
 - **Pinning** is the design's one control and, since 2026-09-05, governs the whole app rather than
   Home alone (above): your HOUSEHOLD's libraries start favourite, a friend's start favourite only
-  if the household has no library of that type, and the last favourite cannot be turned off.
+  if the household has no library of that type, Other Videos libraries included (they follow the
+  same rule, with no kind-specific exception, and the user hides one in Favorite libraries); the
+  last favourite cannot be turned off, and the never-empty floor raises the first machine's libraries.
   `pinned_libraries()` is its read side. The household and not the account, because plex.tv grades
   a Plex Home managed profile's own family server `owned:false` — read on ownership, such a profile
   had nothing of its own, no type of its own, and therefore every library it could see starting
   favourite, a stranger's included.
 - **The tab strip's vocabulary is permanent; its LENGTH is not.** A library pill names a type, never
   a discovered row, so it survives reset and failed/delayed discovery — but a type with no favourite
-  library draws no pill at all, so the row is `Home … Search` (the Watchlist bookmark sits before Search) with the row three to five stops in all.
+  library draws no pill at all, so the row is `Home … Search` (the Watchlist bookmark sits before Search) with the row three to six stops in all.
   Store a `Pill`, never a `usize`. The
   selected type resolves to the library this profile last chose, else household-first, then to the
   first usable outside section; the Source panel

@@ -281,5 +281,13 @@
   "browse.clock.notice_year": "O relógio do televisor parece errado ({year}). Ligado com a chave memorizada.",
   "browse.clock.notice": "O relógio do televisor parece errado. Ligado com a chave memorizada.",
   "browse.clock.no_key": "O relógio deste televisor parece errado. Ligue o televisor à Internet uma vez e tente novamente.",
-  "browse.clock.key_changed": "A chave do seu servidor mudou. Ligue o televisor à Internet uma vez para que a app a possa verificar novamente."
+  "browse.clock.key_changed": "A chave do seu servidor mudou. Ligue o televisor à Internet uma vez para que a app a possa verificar novamente.",
+  "browse.kind.other_videos": "Outros vídeos",
+  "browse.kind.videos": "Vídeos",
+  "browse.library.videos": {
+    "one": "{count} vídeo",
+    "many": "{count} de vídeos",
+    "other": "{count} vídeos"
+  },
+  "browse.library.no_videos": "Não há vídeos em {library}"
 }

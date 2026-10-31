@@ -1169,3 +1169,16 @@ fn the_header_row_is_built_once_per_key_not_once_per_question() {
     h.draw();
     assert_eq!(h.screen.probe_header_builds(), built + 1, "and the frames after it build none");
 }
+
+/// **Every strip destination is a request from the Watchlist page** but its own mark, through the
+/// one `HomeTab` table: a destination the page dropped would be a pill that does nothing here.
+#[test]
+fn every_strip_destination_is_pressable_from_the_watchlist_page() {
+    use crate::registry::HomeTab;
+    let mut h = Harness::new(tiles(3));
+    for tab in HomeTab::ALL {
+        let (fx, _) = h.step_fx(plx_ui::screen::ScreenEvent::Activate(tab.strip_key()));
+        let want = if tab == HomeTab::Watchlist { vec![] } else { vec![WatchlistOut::Tab(tab)] };
+        assert_eq!(requests(fx), want, "{tab:?}");
+    }
+}

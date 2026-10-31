@@ -795,11 +795,7 @@ impl Bridge {
     }
 
     pub(crate) fn search_tab_available(&self, tab: HomeTab) -> bool {
-        match tab {
-            HomeTab::Movies => self.directory.view().preferred(plx_data::browse::SecKind::Movie).is_some(),
-            HomeTab::Shows => self.directory.view().preferred(plx_data::browse::SecKind::Show).is_some(),
-            _ => true,
-        }
+        tab.section().is_none_or(|kind| self.directory.view().preferred(kind).is_some())
     }
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
@@ -3650,26 +3646,18 @@ pub(crate) fn nav_tab(
     focus_pill: Option<crate::app::chrome::Pill>,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
-    use crate::app::chrome::Pill;
     let arg = match tab {
         HomeTab::Home => {
             // Keep the pill the user was standing on under focus. An IDENTITY, not an index: a
             // pill can appear or disappear while the dip runs, and `HomeCmd::FocusStrip` is
             // delivered when Home MOUNTS, not now.
             if let Some(pill) = focus_pill.filter(|pill| crate::app::chrome::pill_of(rig.directory.view(), *pill).is_some()) {
-                let want = match pill {
-                    Pill::Home => HomeTab::Home,
-                    Pill::Search => HomeTab::Search,
-                    Pill::Watchlist => HomeTab::Watchlist,
-                    Pill::Section(plx_data::browse::SecKind::Movie) => HomeTab::Movies,
-                    Pill::Section(plx_data::browse::SecKind::Show) => HomeTab::Shows,
-                };
-                rig.home_command(HomeCmd::FocusStrip(want));
+                rig.home_command(HomeCmd::FocusStrip(pill.tab()));
             }
             AppArg::Home
         }
-        HomeTab::Movies | HomeTab::Shows => {
-            let kind = if tab == HomeTab::Movies { plx_data::browse::SecKind::Movie } else { plx_data::browse::SecKind::Show };
+        HomeTab::Movies | HomeTab::Shows | HomeTab::Videos => {
+            let Some(kind) = tab.section() else { return };
             rig.enter_library(kind);
             if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
             AppArg::Library
@@ -4600,6 +4588,42 @@ mod preference_effect_tests {
         assert_eq!(plx_media::route::quality(), quality);
         assert_eq!(plx_media::route::direct_play_mode(), mode);
         assert_eq!(std::fs::read(temp.path()).unwrap(), before);
+    }
+}
+
+#[cfg(test)]
+mod type_pill_route_tests {
+    use super::*;
+    use plx_data::stores::browse::{DirectorySnapshot, SecKind, SectionView, SrcRow};
+
+    /// **Each type pill enters a library of its own type**, Other Videos included: the press queues
+    /// the Library's `Enter` for the kind the pill names, never Movies by default.
+    #[test]
+    fn a_press_on_a_type_pill_enters_a_library_of_that_type() {
+        let _serial = plx_base::testlock::serial();
+        for (tab, kind) in [(HomeTab::Movies, SecKind::Movie), (HomeTab::Shows, SecKind::Show), (HomeTab::Videos, SecKind::Video)] {
+            let mut d = Dispatcher::<AppHost>::new();
+            let mut rig = Bridge::for_test(|| 0);
+            nav_tab(&mut d, &mut rig, tab, None, None);
+            assert_eq!(rig.mounter.library_kind, Some(kind), "{tab:?}");
+        }
+    }
+
+    /// The Search page offers a type pill only while the profile has a favourite library of that type.
+    #[test]
+    fn the_search_page_offers_a_type_pill_only_for_a_type_the_profile_has() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Bridge::for_test(|| 0);
+        let sid = plx_plex::plex::ServerId::from_raw(0);
+        let sections = |kinds: &[SecKind]| DirectorySnapshot::fixture(1, 0, kinds.iter().enumerate().map(|(i, &kind)| SectionView {
+            sid: Some(sid), key: i as i64 + 1, kind,
+            row: SrcRow { section: i, title: format!("Library {i}"), pinned: true, current: i == 0, ..Default::default() },
+        }).collect());
+        rig.directory = sections(&[SecKind::Movie, SecKind::Video]);
+        assert!(rig.search_tab_available(HomeTab::Movies));
+        assert!(rig.search_tab_available(HomeTab::Videos));
+        assert!(!rig.search_tab_available(HomeTab::Shows));
+        assert!(rig.search_tab_available(HomeTab::Search) && rig.search_tab_available(HomeTab::Home));
     }
 }
 

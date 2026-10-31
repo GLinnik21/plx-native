@@ -173,3 +173,13 @@ fn the_empty_sentence_exists_in_every_language_and_fit_a_centred_line() {
         }
     }
 }
+
+/// With no library title the crumb's root falls back to what the library holds, per kind.
+#[test]
+fn the_crumb_root_falls_back_to_the_word_of_the_kind() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    assert_eq!(root_label("", SecKind::Movie), "Films");
+    assert_eq!(root_label("", SecKind::Show), "Shows");
+    assert_eq!(root_label("", SecKind::Video), "Videos");
+    assert_eq!(root_label("Home Clips", SecKind::Video), "Home Clips", "a titled library names itself");
+}

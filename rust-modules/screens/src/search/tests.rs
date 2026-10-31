@@ -1653,6 +1653,26 @@ fn empty_state_pair_is_one_md_apart_and_centred_in_its_area() {
     assert!(((top + bottom) * 0.5 - (area.y + area.h * 0.5)).abs() < 0.01, "the pair is centred");
 }
 
+/// **Every strip destination is a request from the Search page** but its own mark, through the one
+/// `HomeTab` table: this page once ended its own copy of the map in a silent `_ => Handled::No`.
+#[test]
+fn every_strip_destination_is_pressable_from_the_search_page() {
+    use crate::registry::HomeTab;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut screen = fixture.screen();
+    for tab in HomeTab::ALL {
+        let (handled, out, _) = deliver(&mut screen, &fixture, None, ScreenEvent::Activate(tab.strip_key()));
+        let asked = out.iter().any(|effect| matches!(&effect.fx,
+            Fx::App(AppFx::Search(SearchReq::Tab(asked))) if *asked == tab));
+        if tab == HomeTab::Search {
+            assert!(handled == Handled::Yes && !asked, "the Search mark is this page");
+        } else {
+            assert!(handled == Handled::Yes && asked, "{tab:?} asks for its page");
+        }
+    }
+}
+
 /// **The pointer's edge glide moves Search's results by poster rows, the unit every page glides
 /// by.** The glide hands the page a fraction of a row every frame; by the 60 px table row Search's
 /// wheel uses, the results crawled at a seventh of the speed of every other page. A notch of the

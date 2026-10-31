@@ -360,6 +360,10 @@ length with the language, so no strip drops to the flat capsule for being wide (
 scrolls inside a track that stays glass, and the unfurled profile chip is kept off the track by
 eliding its name to the room the bar leaves (`widgets::chip_name_budget`).
 It ships, and `/tmp/plxnative-flattabs` is the way back to the flat capsule for a comparison.
+The Other Videos pill (a household with such a favourite library) widens the strip further, and the material
+stays: the six-face strip fits the viewport in every UI language and draws glass
+(`the_three_type_strip_keeps_the_glass_in_every_language`). How it looks on a television is not
+verified here.
 Its density is not a constant — see §6.
 
 **No:** anything on the player route (§1), and a second far-away glass cluster that the frame walk merges

@@ -174,6 +174,15 @@ fn every_tab_pill_round_trips_through_the_focus_packing() {
     }
 }
 
+/// Every destination is a request from Home, and the strip focus command seats the key the same
+/// map names: the Home page's two uses of the one `HomeTab` table.
+#[test]
+fn every_strip_destination_is_pressable_from_the_home_page() {
+    for tab in HomeTab::ALL {
+        assert_eq!(HomeScreen::request_for_strip(tab.strip_key()), Some(HomeReq::Tab(tab)), "{tab:?}");
+    }
+}
+
 #[test]
 fn top_band_focus_walks_to_the_last_section_whatever_the_count() {
     assert_eq!(STRIP_MOVIES_ELEM - STRIP_HOME_ELEM, 1);

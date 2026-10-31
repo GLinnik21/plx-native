@@ -473,6 +473,9 @@ mod tests {
                 pinned: true, last_pinned: true, current: false },
             plx_data::browse::SrcRow { src: 2, section: 2, title: "Home Videos".into(), count_line: "12 films".into(),
                 pinned: true, last_pinned: false, current: true },
+            // an Other Videos library is a row like any other
+            plx_data::browse::SrcRow { src: 2, section: 3, title: "Family Clips".into(), count_line: "9 videos".into(),
+                pinned: false, last_pinned: false, current: false },
         ];
         let mut out = Vec::new();
         for language in SHIPPED {

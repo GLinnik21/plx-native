@@ -157,3 +157,34 @@ fn the_restart_hint_fits_the_language_narrative_in_every_language() {
     }
     assert!(out.is_empty(), "{}", out.join("\n"));
 }
+
+/// **The Favorite libraries row keeps its usual line whatever the libraries are** (issue #599): an
+/// Other Videos library is an ordinary favourite, on by default, so the row has nothing extra to say
+/// when one is on, hidden or absent. Mounted through the real signed-in root page and the browse
+/// directory.
+#[test]
+fn the_libraries_row_keeps_its_usual_line_whatever_the_libraries_are() {
+    let _guard = plx_base::testlock::serial();
+    let _session = test_support::multi_user_session("root-libraries-line");
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let usual = plx_platform::i18n::msg::settings_libraries_detail().to_string();
+    for (case, other_videos, shown) in [("absent", false, true), ("on", true, true), ("hidden", true, false)] {
+        let stores = plx_data::stores::Stores::default();
+        {
+            let mut browse = stores.browse.borrow_mut();
+            if other_videos {
+                browse.seed_two_source_table_with_other_videos_for_test();
+                browse.set_pinned_for_test(4, shown);
+            } else {
+                browse.seed_two_source_table_for_test();
+            }
+        }
+        let mut snapshot = Default::default();
+        stores.capture_browse(&mut snapshot);
+        let page = RootPage::new(EntryId(0), snapshot.view());
+        let i = page.form.index_of_key(RootId::Favourites.key()).expect("the row is on a signed-in root");
+        let detail = page.form.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i)
+            .expect("the row exists").detail.clone();
+        assert_eq!(detail, usual, "{case}: the row's line");
+    }
+}

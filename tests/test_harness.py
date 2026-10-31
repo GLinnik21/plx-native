@@ -8844,6 +8844,8 @@ class FpsMock(unittest.TestCase):
         shows = {"triggers": {"plxnative-library": "1"}, "walk": {"landed": "library"}}
         self.assertEqual(self.mf.library_section_index(movies), 0)
         self.assertEqual(self.mf.library_section_index(shows), 1)
+        videos = {"triggers": {"plxnative-library": "2"}, "walk": {"landed": "library"}}
+        self.assertEqual(self.mf.library_section_index(videos), 2, "Other Videos is the third library")
         self.assertEqual(self.mf.library_section_index({"triggers": {"plxnative-library": "0"}}), 0)
         # not the last matching line (that is the Shows section's 4)
         self.assertEqual(self.mf.landed_library(lines, 0), 12)

@@ -200,9 +200,11 @@ impl BandFamily {
     /// kinds, as the server lists it for both (a show with no rating has all its items in the
     /// unlabelled region).
     pub fn of_sort(key: &str, descending: bool, kind: SecKind, listing: LibraryType) -> Option<BandFamily> {
-        // Exhaustive on purpose, like `kind_offers_plays_sort`: a third kind must decide here.
+        // Exhaustive on purpose, like `kind_offers_plays_sort`: a fourth kind must decide here. An Other
+        // Videos library lists movie rows (`type=1`, subtype `clip`), so its sorts and fields are the
+        // films'; a probe the server ignores is `Reject`ed like any other, and the rail stays hidden.
         let (movie, show) = match kind {
-            SecKind::Movie => (true, false),
+            SecKind::Movie | SecKind::Video => (true, false),
             SecKind::Show => (false, true),
         };
         // Exhaustive on purpose too: a fifth type must decide here.
@@ -760,7 +762,7 @@ mod tests {
     #[test]
     fn of_sort_maps_the_applications_sort_keys() {
         use BandFamily::*;
-        use SecKind::{Movie, Show};
+        use SecKind::{Movie, Show, Video};
         let row = |key: &str, desc: bool, kind: SecKind| BandFamily::of_sort(key, desc, kind, LibraryType::Primary);
         for desc in [false, true] {
             assert_eq!(row("rating", desc, Movie), Some(Rating));
@@ -783,11 +785,20 @@ mod tests {
         assert_eq!(row("duration", true, Show), None);
         assert_eq!(row("unviewedLeafCount", true, Movie), None);
         assert_eq!(row("episode.addedAt", true, Movie), None);
+        // An Other Videos library lists movie rows, so it has the films' families and not the shows'.
+        for desc in [false, true] {
+            for key in ["rating", "duration", "addedAt", "lastViewedAt", "viewCount", "originallyAvailableAt"] {
+                assert_eq!(row(key, desc, Video), row(key, desc, Movie), "{key} {desc}: Video is a film");
+                assert!(row(key, desc, Video).is_some(), "{key} {desc}");
+            }
+            assert_eq!(row("unviewedLeafCount", desc, Video), None);
+            assert_eq!(row("episode.addedAt", desc, Video), None);
+        }
     }
 
     #[test]
     fn of_sort_leaves_every_other_sort_without_bands() {
-        for kind in [SecKind::Movie, SecKind::Show] {
+        for kind in [SecKind::Movie, SecKind::Show, SecKind::Video] {
             for desc in [false, true] {
                 for key in [
                     "titleSort",
@@ -827,8 +838,8 @@ mod tests {
     fn which_listing_has_which_bands() {
         use BandFamily::{DateAdded, DateViewed, Duration, LastEpisodeAdded, Plays, Rating, Release, Unplayed};
         use LibraryType::{Collections, Episodes, Primary, Seasons};
-        use SecKind::{Movie, Show};
-        let table: [(&str, SecKind, [Option<BandFamily>; 4]); 14] = [
+        use SecKind::{Movie, Show, Video};
+        let table: [(&str, SecKind, [Option<BandFamily>; 4]); 17] = [
             // key,                  kind,  [Primary,          Seasons, Episodes,          Collections]
             ("rating", Show, [Some(Rating), None, Some(Rating), None]),
             ("rating", Movie, [Some(Rating), None, None, None]),
@@ -844,6 +855,11 @@ mod tests {
             ("viewCount", Show, [Some(Plays), None, None, None]),
             ("audienceRating", Show, [None, None, None, None]),
             ("titleSort", Show, [None, None, None, None]),
+            // An Other Videos library lists movie rows: the films' families on its own listing, and no
+            // other listing (`LibraryType::offered`).
+            ("rating", Video, [Some(Rating), None, None, None]),
+            ("duration", Video, [Some(Duration), None, None, None]),
+            ("unviewedLeafCount", Video, [None, None, None, None]),
         ];
         for (key, kind, want) in table {
             for desc in [false, true] {

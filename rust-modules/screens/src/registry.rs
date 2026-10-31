@@ -272,9 +272,73 @@ pub enum HomeTab {
     Home,
     Movies,
     Shows,
+    /// Plex's Other Videos library type, after TV Shows (issue #599).
+    Videos,
     /// The Watchlist mark, before Search (docs/watchlist-plan.md §2.4 W45).
     Watchlist,
     Search,
+}
+
+impl HomeTab {
+    /// Every destination, for a test that walks the strip. [`ordinal`](Self::ordinal) is an
+    /// exhaustive match, so a variant added without joining this list fails a test.
+    pub const ALL: [HomeTab; 6] =
+        [HomeTab::Home, HomeTab::Movies, HomeTab::Shows, HomeTab::Videos, HomeTab::Watchlist, HomeTab::Search];
+
+    #[cfg(test)]
+    fn ordinal(self) -> usize {
+        match self {
+            HomeTab::Home => 0,
+            HomeTab::Movies => 1,
+            HomeTab::Shows => 2,
+            HomeTab::Videos => 3,
+            HomeTab::Watchlist => 4,
+            HomeTab::Search => 5,
+        }
+    }
+
+    /// The strip control key this destination answers to (`plx_ui::widgets::TAB_KEY_*`): the ONE
+    /// map between a destination and its key, for every page that presses the strip. The profile
+    /// chip is not a destination and has no tab.
+    pub fn strip_key(self) -> u32 {
+        use plx_ui::widgets as keys;
+        match self {
+            HomeTab::Home => keys::TAB_KEY_HOME,
+            HomeTab::Movies => keys::TAB_KEY_MOVIES,
+            HomeTab::Shows => keys::TAB_KEY_SHOWS,
+            HomeTab::Videos => keys::TAB_KEY_VIDEOS,
+            HomeTab::Watchlist => keys::TAB_KEY_WATCHLIST,
+            HomeTab::Search => keys::TAB_KEY_SEARCH,
+        }
+    }
+
+    /// The destination a strip key names, or `None` for the profile chip and for any key that is not
+    /// on the strip. The inverse of [`strip_key`](Self::strip_key).
+    pub fn from_strip_key(key: u32) -> Option<HomeTab> {
+        Self::ALL.into_iter().find(|tab| tab.strip_key() == key)
+    }
+
+    /// The library type this destination opens, for the type pills; `None` for Home, the Watchlist
+    /// mark and Search.
+    pub fn section(self) -> Option<plx_data::stores::browse::SecKind> {
+        use plx_data::stores::browse::SecKind;
+        match self {
+            HomeTab::Movies => Some(SecKind::Movie),
+            HomeTab::Shows => Some(SecKind::Show),
+            HomeTab::Videos => Some(SecKind::Video),
+            HomeTab::Home | HomeTab::Watchlist | HomeTab::Search => None,
+        }
+    }
+
+    /// The type pill of a library type. The inverse of [`section`](Self::section).
+    pub fn of_kind(kind: plx_data::stores::browse::SecKind) -> HomeTab {
+        use plx_data::stores::browse::SecKind;
+        match kind {
+            SecKind::Movie => HomeTab::Movies,
+            SecKind::Show => HomeTab::Shows,
+            SecKind::Video => HomeTab::Videos,
+        }
+    }
 }
 
 /// Addressed bootstrap/diagnostic intentions. They use the same owned step and focus engine as
@@ -2962,6 +3026,64 @@ mod compaction_tests {
         let mut table = vec![1, 2, 3];
         assert!(Compaction::remove(&mut table, Vec::new()).is_none());
         assert_eq!(table, vec![1, 2, 3]);
+    }
+}
+
+#[cfg(test)]
+mod home_tab_tests {
+    use super::HomeTab;
+    use plx_data::browse::TAB_KINDS;
+    use plx_ui::dispatch::STRIP_BASE;
+    use plx_ui::widgets::{TAB_KEYS, TAB_KEY_CHIP};
+
+    /// **The destination <-> key map, golden.** Six pages used to carry their own copy of it; this
+    /// is the one, and its values are the keys the recordings carry.
+    #[test]
+    fn the_destination_key_map_is_the_one_every_page_used_to_copy() {
+        let golden = [
+            (HomeTab::Home, STRIP_BASE),
+            (HomeTab::Movies, STRIP_BASE + 1),
+            (HomeTab::Shows, STRIP_BASE + 2),
+            (HomeTab::Videos, STRIP_BASE + 7),
+            (HomeTab::Search, STRIP_BASE + 3),
+            (HomeTab::Watchlist, STRIP_BASE + 5),
+        ];
+        for (tab, key) in golden {
+            assert_eq!(tab.strip_key(), key, "{tab:?}");
+            assert_eq!(HomeTab::from_strip_key(key), Some(tab), "{tab:?}");
+        }
+        assert_eq!(HomeTab::from_strip_key(TAB_KEY_CHIP), None, "the chip is not a destination");
+        assert_eq!(HomeTab::from_strip_key(STRIP_BASE + 99), None);
+        assert_eq!(HomeTab::from_strip_key(0), None);
+    }
+
+    /// `ALL` lists every variant once (the exhaustive `ordinal` match is what fails to compile for
+    /// a new one), and every strip key but the chip's belongs to exactly one destination.
+    #[test]
+    fn every_destination_is_listed_and_every_strip_key_but_the_chip_has_one() {
+        for (at, tab) in HomeTab::ALL.into_iter().enumerate() {
+            assert_eq!(tab.ordinal(), at, "{tab:?} sits at its ordinal in ALL");
+        }
+        let owned: Vec<u32> = HomeTab::ALL.iter().map(|tab| tab.strip_key()).collect();
+        for key in TAB_KEYS {
+            let want = if *key == TAB_KEY_CHIP { 0 } else { 1 };
+            assert_eq!(owned.iter().filter(|k| *k == key).count(), want, "{key:#x}");
+        }
+    }
+
+    /// A library type has a pill, and the pill names its type back.
+    #[test]
+    fn every_library_type_has_a_pill_that_names_it_back() {
+        for kind in TAB_KINDS {
+            let tab = HomeTab::of_kind(kind);
+            assert!(HomeTab::ALL.contains(&tab), "{kind:?}");
+            assert_eq!(tab.section(), Some(kind), "{kind:?}");
+        }
+        for tab in HomeTab::ALL {
+            if let Some(kind) = tab.section() {
+                assert_eq!(HomeTab::of_kind(kind), tab);
+            }
+        }
     }
 }
 

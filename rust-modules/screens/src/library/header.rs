@@ -235,7 +235,7 @@ impl LibraryScreen {
     }
 
     /// A fingerprint of everything [`Self::refresh_header`] reads, cheap enough for every frame.
-    fn header_key<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> u64 {
+    pub(super) fn header_key<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let listing = H::listing(cx);
@@ -245,7 +245,7 @@ impl LibraryScreen {
         self.collections.hash(&mut h);
         self.listing.hash(&mut h);
         self.listed.code().hash(&mut h);
-        matches!(self.kind, SecKind::Movie).hash(&mut h);
+        self.kind.canon().hash(&mut h);
         self.switched.hash(&mut h);
         for section in directory.sections() {
             (section.sid.map(|sid| sid.raw()), section.key, section.row.title.as_str(), section.row.pinned).hash(&mut h);

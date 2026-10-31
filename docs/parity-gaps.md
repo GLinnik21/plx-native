@@ -4,7 +4,7 @@ Audited 2026-07-29 against reference screenshots of the **official webOS Plex cl
 home, show/episode detail, movie detail, library grid, card context menu) and **Plex HTPC** (player
 HUD, Quality picker, queue overlay, Settings tree). Branch `home-ui-polish`, working tree included.
 
-**Scope: movies and TV shows only.** Music, photos, Live TV/DVR and podcasts are out of scope and
+**Scope: movies, TV shows and Other Videos libraries only.** Music, photos, Live TV/DVR and podcasts are out of scope and
 are not counted as gaps. Plex Discover / "Movies & Shows on Plex" is movie/show content but is an
 *adjacent catalog* (plex.tv, not the user's server) and is tagged as such throughout. The Watchlist
 began as one of those entries and has since shipped (`docs/watchlist.md`); the entries that still say
@@ -139,7 +139,7 @@ tagline/studio (parsed, never drawn), Play→Resume, and Play-from-Start. **And 
 the Magic Remote pointer entirely** — no hit-tests exist in `ui/detail.rs`, on the device's primary
 input, while every other screen handles clicks.
 
-**C. Library browse is a permanent type destination.** We ship Movies and TV Shows grids; the
+**C. Library browse is a permanent type destination.** We ship Movies, TV Shows and Other Videos grids; the
 reference ships Recommended (the
 section's own hubs), Library, Collections and Categories. Collections are reached through the
 Library header's Collections control (a pushed "Films > Collections" page) rather than a tab of their own; there is no category
@@ -483,11 +483,11 @@ player, transport and tracks auditors, and is counted once in the themes above.
   Plex Discover/catalog results and optional `sectionId` scoping remain outside that surface.
 
 - **Library sections past the 4th were unreachable from Home** — **closed 2026-09-01.**
-  The global row is `Home`, one pill per type, the Watchlist bookmark, then `Search`; Movies and TV Shows name
-  types rather than individual Plex sections. (Its VOCABULARY is permanent, its LENGTH is not: since
-  2026-09-05 a type with no favourite library draws no pill, so the row holds three to five stops (the bookmark and Search always draw) and
+  The global row is `Home`, one pill per type, the Watchlist bookmark, then `Search`; Movies, TV Shows and Other Videos name
+  types rather than individual Plex sections (the one exception: a lone favourite Other Videos library names its own pill; that type has a pill only while a library of it is a favourite, on by default and hideable in Favorite libraries). (Its VOCABULARY is permanent, its LENGTH is not: since
+  2026-09-05 a type with no favourite library draws no pill, so the row holds three to six stops (the bookmark and Search always draw) and
   a pill's index is not its identity — store a `Pill`.) The Library Source panel selects additional owned or
-  shared sections of that type, so discovery no longer changes the row and no section is hidden by
+  shared sections of that type, so discovery can add the Other Videos stop when a library of that type lands (the fourth pill appears with its section) and rename its pill (a rename, or a second favourite library, moves it between the library's name and the type word), but it never reorders a stop, and no section is hidden by
   a tab cap.
 
 - **Hero/preview region does not follow the focused card** — `major` / `medium`
@@ -549,7 +549,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* Confirmed: the data layer is one PMS Client keyed to host/port/token (plex/client.rs install/client, installed only from app.rs:349/412 and the auth take_ready path); every screen resolves items through pms.rs/browse.rs, which call only that client. route.rs's stream URL builder is built on a PMS part key + PMS session (plex/library.rs:115 direct_play_url), and the whole playback decision chain (transcoder.rs /video/:/transcode/universal/decision) is PMS-only. If anything 'large' understates it: beyond a catalog screen it needs a second content-source abstraction through route.rs AND an ad-sup
 
 - **Discover top tabs (Trending / Activity / Find Friends / Profile) are absent (adjacent social surfaces)** — `minor` / `large`
-  The official content area carries a top tab bar of Home | Trending | Activity | Find Friends | Profile, where everything but Home is a plex.tv Discover/social surface. Our top row is Home | Movies | TV Shows | bookmark (Watchlist) | Search.
+  The official content area carries a top tab bar of Home | Trending | Activity | Find Friends | Profile, where everything but Home is a plex.tv Discover/social surface. Our top row is Home | Movies | TV Shows | Other Videos (when such a library is a favourite) | bookmark (Watchlist) | Search.
   *Where:* rust-modules/src/ui/widgets.rs draw_tab_row (tab model) + new screens under rust-modules/src/ui/, backed by a new plex.tv Discover client (see the Watchlist gap).
   *Verified:* Still open: no Trending, Activity, Find Friends or Profile destinations exist. The
   local tab vocabulary is fixed and no longer coupled to the discovered section count.
@@ -861,7 +861,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED, and the DTO layer explicitly defers it. plex/models.rs:83-88 `MetaType` parses only `active` + `Sort[]`, with the doc comment at :80-82 saying verbatim "The wire also carries a `Filter[]` menu — docs/pms-api.md §2b — modelled again when the v1.5 facet menu consumes it; DTOs here keep only consumed fields." browse.rs:583-595 reads only `t.sort` off the landed `Meta`; browse.rs:550-559 builds `filters` from exactly two sources (the unwatched flag → `unwatched`/`unwatchedLeaves`, and `st.genre` → `genre`); browse.rs:339-344 `set_genre` is single-select by construction. ui/library.rs:54
 
 - **Libraries past the fourth were unreachable** — **closed 2026-09-01.**
-  Movies and TV Shows are permanent type destinations; every matching library remains selectable
+  Movies and TV Shows are permanent type destinations (Other Videos too, while a library of it is a favourite); every matching library remains selectable
   through the Source panel. There is no longer a one-pill-per-section cap.
 
 - **Adjacent catalog: no Plex Discover / "Movies & Shows on Plex"** — `major` / `large` — **the Watchlist half closed 2026-10.**

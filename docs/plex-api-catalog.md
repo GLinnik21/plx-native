@@ -94,8 +94,9 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
 - **App calls:** `GET /library/sections`  ← **path divergence (D-3)**
 - **Params:** none required (X-Plex-Token via header/query for auth).
 - **Response:** `MediaContainer.Directory[]` of `librarySection` (+ `allowSync`, `title1`).
-- **App reads:** `Directory[].type` (select `movie`, then `show`), `Directory[].key` → i64
-  section id. Both fields exist on `librarySection`.
+- **App reads:** `Directory[].type` (select `movie`, then `show`; a `movie` section whose `agent` is a
+  "none" agent and whose `scanner` is `Plex Video Files` is Plex's Other Videos library), `Directory[].key` → i64
+  section id. All of these fields exist on the section row.
 - **Divergences:**
   - **D-3:** App hits bare `/library/sections`; the spec documents this list under
     `/library/sections/all` (operationId `libraryGetSections`). Both resolve to the library
@@ -134,7 +135,9 @@ and `Directory[].key` — **confirmed** (Directory items are `librarySection`, n
   | `identifier` | query | no | array | filter to specific hub identifiers |
 
 - **Response:** `MediaContainer.Hub[]` of `hub`, each with `Metadata[]` of `metadata`.
-- **App reads:** `Hub[].type` (skips album/artist/track/photo/clip/playlist), `Hub[].title`,
+- **App reads:** `Hub[].type` (a hub is a Home row when it is `mixed`, `clip` or of a listable item
+  type; album/artist/track/photo/playlist hubs are skipped, and the cards are admitted by their own
+  item type, which still refuses a `clip`-typed extra), `Hub[].title`,
   `Hub[].Metadata[]` (same parse as section-all). Confirmed.
 - **Divergences:**
   - **D-4:** App sends `excludeContinueWatching=0`. **Not a documented param** on `hubsGetSlash`.

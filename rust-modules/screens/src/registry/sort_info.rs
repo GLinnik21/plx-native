@@ -1,5 +1,5 @@
 //! **The sort value of a Library grid** (Settings > Libraries > Under posters > Sort value): while a
-//! movie or TV show library's grid (its movies, shows, seasons or episodes) is sorted by something
+//! movie, TV show or Other Videos library's grid (its movies, shows, videos, seasons or episodes) is sorted by something
 //! other than Title or Random, every card shows the one fact it is sorted by on one line under it
 //! ([`label`], drawn by `plx_ui::card_row::draw_sort_value`).
 //! The facts come from the listing the grid already holds (`PmsMovie` and its `SortInfo`, which a show,

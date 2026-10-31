@@ -519,6 +519,24 @@ fn under_posters_round_trips_and_packs_into_one_byte() {
     }
 }
 
+/// **Rollback safety of the `video` code.** A build that does not know `video` rewrites the profile's
+/// remembered libraries when it records its own pick; `set` replaces only the entry of ITS kind, so
+/// the `video` entry (and one of any other code) rides through untouched, and a build that does
+/// know it finds the pick again.
+#[test]
+fn recording_a_pick_keeps_the_entries_of_other_codes() {
+    let mut last = LastLibrary::default();
+    last.set("video", "mac-mini", 3);
+    last.set("movie", "mac-mini", 1);
+    last.set("music", "mac-mini", 9);
+    last.set("movie", "nas-home", 2);
+    assert_eq!(last.get("movie"), Some(("nas-home", 2)), "the pick replaced its own entry");
+    assert_eq!(last.get("video"), Some(("mac-mini", 3)), "…and left the video entry alone");
+    assert_eq!(last.get("music"), Some(("mac-mini", 9)));
+    last.set("show", "mac-mini", 4);
+    assert_eq!(last.libs.len(), 4);
+}
+
 #[test]
 fn sort_value_is_on_by_default_stored_as_its_off_state_and_soft_parsed() {
     // Everyone starts On: the default, the packed seed and a profile that never chose it.

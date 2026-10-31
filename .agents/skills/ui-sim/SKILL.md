@@ -160,7 +160,7 @@ owns the screen-to-trigger recipes.
 
 ```sh
 touch $SIM_DIR/plxnative-library            # boot into the browse grid
-echo 3 > $SIM_DIR/plxnative-library         # ...on section 3
+echo 1 > $SIM_DIR/plxnative-library         # ...on the TV Shows type (0 Movies, 2 Other Videos)
 make sim-macos-shot SIM_DIR=$SIM_DIR
 ```
 

@@ -278,4 +278,38 @@ mod tests {
         assert!(requests[4].contains("/library/sections/2/firstCharacter?type=4"));
         server.join().unwrap();
     }
+
+    /// **Other Videos is a movie-shaped listing.** Its clips are `movie` rows: the type menu offers
+    /// the library's own list and its collections (measured: `type=18` answers on such a library),
+    /// the default listing sends no `type=`, and its unwatched filter is the plain one — only a TV
+    /// library counts unwatched LEAVES.
+    #[test]
+    fn an_other_videos_library_offers_what_a_movie_library_offers() {
+        assert_eq!(LibraryType::offered(SecKind::Video), LibraryType::offered(SecKind::Movie));
+        assert_eq!(LibraryType::offered(SecKind::Video), &[LibraryType::Primary, LibraryType::Collections]);
+        assert_eq!(LibraryType::Primary.plex_type(SecKind::Video), None);
+        assert_eq!(LibraryType::Collections.plex_type(SecKind::Video), Some(18));
+    }
+
+    #[test]
+    fn unwatched_key_for_video_is_unwatched_not_unwatchedleaves() {
+        let state = SecState { unwatched: true, ..Default::default() };
+        assert_eq!(state.query_filters(SecKind::Video), vec![("unwatched".into(), "1".into())]);
+        assert_eq!(state.query_filters(SecKind::Movie), vec![("unwatched".into(), "1".into())]);
+        assert_eq!(state.query_filters(SecKind::Show), vec![("type".into(), "2".into())].into_iter()
+            .chain([("unwatchedLeaves".into(), "1".into())]).collect::<Vec<_>>());
+    }
+
+    /// The noun beside an Other Videos count, in the words of its own catalog entry.
+    #[test]
+    fn an_other_videos_count_and_empty_readout_wear_their_own_nouns() {
+        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        assert_eq!(LibraryType::Primary.count_label(SecKind::Video, 12), "12 videos");
+        assert_eq!(LibraryType::Primary.count_label(SecKind::Video, 1), "1 video");
+        assert_eq!(LibraryType::Collections.count_label(SecKind::Video, 3), "3 items");
+        assert_eq!(count_line(-1, SecKind::Video), "Videos", "before the count lands: the plural word");
+        assert_eq!(LibraryType::Primary.empty_readout(SecKind::Video, "Home Clips"), "No videos in Home Clips");
+        assert_eq!(LibraryType::Primary.title(SecKind::Video), "Other Videos");
+    }
 }
+
