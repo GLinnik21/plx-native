@@ -290,7 +290,7 @@ Before each behavior piece, audit prose made false by the change: `P_READY` term
 
 ## 5. What this does not fix
 
-**Two workers remain two workers. Their count is frozen until per-image imgtrace measurement exists.** The agreed order supplied for this task is **resident-eviction bug → imgtrace → lookahead/worker-count tuning from measurements → disk cache**. This design is preparation for that measured work, not permission to skip ahead or bundle those projects together.
+**Two workers remain two workers. Their count is frozen until per-image imgtrace measurement exists.** (Overtaken: that measurement now exists, and `workers_for` in `poster.rs` gives a set with at least four cores and 2 GiB three workers, every other set two.) The agreed order supplied for this task is **resident-eviction bug → imgtrace → lookahead/worker-count tuning from measurements → disk cache**. This design is preparation for that measured work, not permission to skip ahead or bundle those projects together.
 
 A scheduler cannot make two workers decode faster, shorten a slow server response, remove texture-upload stalls, or make 64 logical identities fit under the texture byte budget. `Delivered` does not repair the source/cache residency contract: `TexCache::evict_for` can drop residency independently of the adapter slot. That boundary is why resident-eviction work comes first. The scheduler also does not add transport cancellation, cure playback's blocking control paths, or establish a process-wide network budget.
 

@@ -25,7 +25,7 @@
 //! recycled by [`victim`] frees its cache entry on the way out.
 //!
 //! Rust port of the old src/posters.c; rewritten on std::sync (a `Mutex<Store>` + `Condvar` +
-//! two `task::spawn` workers). The decoded-pixel pointer is stored as an address (usize) so the
+//! two or three `task::spawn` workers, [`workers_for`]). The decoded-pixel pointer is stored as an address (usize) so the
 //! shared `Store` stays `Send`.
 //!
 //! ## Every entry point names a SERVER, and none of them assumes one
@@ -136,8 +136,8 @@ const P_EVICTED: c_int = 8;
 /// an HTTP answer that is not transient, or bytes the decoder could not read.
 const P_RETRY: c_int = 7;
 
-/// Speculation may occupy one worker, never both. That leaves capacity for a visible miss that
-/// arrives after the prefetch began; workers cannot interrupt a fetch already off-lock.
+/// Speculation may occupy one worker, never all of them. That leaves capacity for a visible miss
+/// that arrives after the prefetch began; workers cannot interrupt a fetch already off-lock.
 const PREFETCH_OUTSTANDING_MAX: usize = 1;
 
 /// How a store lookup treats the slot it lands on. The difference IS the prefetch's safety story.
@@ -1231,8 +1231,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             trace::lost_id(trace::current(), if s.cache_gen != cache_gen { "cache_gen" } else { "grant_epoch" });
         }
     }
-    // Admit speculation only into a quiet visible queue, and never enough of it to occupy both
-    // workers. `Full` tells the caller this frame's one prefetch attempt is spent without claiming
+    // Admit speculation only into a quiet visible queue, and never enough of it to occupy every
+    // worker. `Full` tells the caller this frame's one prefetch attempt is spent without claiming
     // a slot.
     if touch != Touch::Draw && !warm_admissible(&g.slots) {
         return (None, Warm::Full);
@@ -1558,7 +1558,7 @@ pub(crate) fn drain_decoded() {
             trace::handoff(i, s.gen);
             let current = s.cache_gen == plx_platform::imgcache::generation();
             // Retain the decoded-byte charge until tex::accept publishes its pending bytes.
-            // A brief double charge is safe; a gap would let both workers over-admit decodes.
+            // A brief double charge is safe; a gap would let the workers over-admit decodes.
             if !current { s.state = P_FAILED; }
             (i, px, w, h, current)
         };
@@ -1700,7 +1700,7 @@ fn first_failure(srv: ServerId, cause: ArtFail) -> bool {
         Mutex::new(std::collections::BTreeMap::new());
     let bit = 1u32 << cause as u32;
     // One lock, not load-then-store: this loop runs on more than one thread (`posters_init` spawns
-    // two), so two workers can reach the same cause for the same server at once and only the one
+    // two or three), so two workers can reach the same cause for the same server at once and only the one
     // that flipped the bit may write the line.
     let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
     let word = logged.entry(srv.raw()).or_insert(0);
@@ -1766,7 +1766,7 @@ fn disk_namespace(client: &plx_plex::plex::Client) -> String {
 }
 
 /// Diagnostic snapshot only: reading counters must never initialize or scan the disk cache
-/// on the frame thread. The two demand workers are the only callers that open it.
+/// on the frame thread. The demand workers are the only callers that open it.
 pub(crate) fn log_cache_stats() {
     let s = plx_platform::imgcache::stats();
     let queued = note_backlog(&store().slots);
@@ -2027,6 +2027,37 @@ fn poster_worker() {
     }
 }
 
+/// Fetch + decode workers on a set with fewer than [`ROOMY_CORES`] cores or [`ROOMY_MEM_KIB`] of RAM
+/// (and when either could not be read).
+const WORKERS_DEFAULT: usize = 2;
+/// Fetch + decode workers on a roomier set. Measured on a four-core, 2.7 GB set against a slow
+/// server (100 ms per image, 377 uncached posters scrolled a row every 120 ms): three workers got
+/// about a fifth more posters on screen within half a second than two, for roughly 8 MB less free
+/// RAM and about a frame per second less while scrolling. The slot holds a finished decode until
+/// the upload queue takes it, so the decoded-byte backlog ([`DECODE_BACKLOG_MAX`]) stays
+/// the bound it was: it gates when a decode STARTS, and one more worker adds one more decode in
+/// flight, not a bigger queue (the peak queued bytes read 7.4 MB with two workers and 7.8 MB with three).
+const WORKERS_ROOMY: usize = 3;
+/// The core count from which a set gets [`WORKERS_ROOMY`].
+const ROOMY_CORES: usize = 4;
+/// The RAM (`MemTotal`, in KiB) from which a set gets [`WORKERS_ROOMY`]: 2 GiB.
+const ROOMY_MEM_KIB: u64 = 2 * 1024 * 1024;
+
+/// How many poster workers a set gets: three on a set with at least [`ROOMY_CORES`] cores and
+/// [`ROOMY_MEM_KIB`] of RAM, two on anything smaller or anything that could not be read.
+fn workers_for(cores: Option<usize>, mem_total_kib: Option<u64>) -> usize {
+    match (cores, mem_total_kib) {
+        (Some(c), Some(m)) if c >= ROOMY_CORES && m >= ROOMY_MEM_KIB => WORKERS_ROOMY,
+        _ => WORKERS_DEFAULT,
+    }
+}
+
+/// `MemTotal` in KiB from the text of `/proc/meminfo`.
+fn mem_total_kib(meminfo: &str) -> Option<u64> {
+    let line = meminfo.lines().find(|l| l.starts_with("MemTotal:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// Spawn the poster workers. No config is threaded in: each request carries its own server
 /// (the slot's [`Pslot::srv`]), and the address behind it comes from the registry
 /// (`plx_plex::plex::install` or a `register` must have run before a fetch can resolve).
@@ -2038,9 +2069,13 @@ pub(crate) fn init() {
         g.slots = [Pslot::ZERO; PT_CAP];
         g.workers.clear();
     }
+    let cores = std::thread::available_parallelism().ok().map(std::num::NonZeroUsize::get);
+    let mem = std::fs::read_to_string("/proc/meminfo").ok().and_then(|t| mem_total_kib(&t));
+    let workers = workers_for(cores, mem);
+    plx_base::eventlog::log(&format!("posters: workers={workers} cores={cores:?} mem_kib={mem:?}"));
     // filter_map, not map: a refused worker is one fewer decoder, not a dead app. Artwork degrades
-    // to whatever the survivors can fetch (and to nothing at all if both are refused).
-    let handles: Vec<JoinHandle<()>> = (0..2)
+    // to whatever the survivors can fetch (and to nothing at all if every one is refused).
+    let handles: Vec<JoinHandle<()>> = (0..workers)
         .filter_map(|_| plx_base::task::spawn("poster", poster_worker))
         .collect();
     store().workers = handles;
@@ -4001,8 +4036,30 @@ mod tests {
         assert_eq!(builds.get(), 4);
     }
 
+    /// The worker count is a tier on what the set reports, and anything unreadable is the small tier.
+    #[test]
+    fn workers_for_gives_three_only_to_a_roomy_set() {
+        assert_eq!(workers_for(Some(4), Some(2_678_680)), 3, "four cores and 2.7 GB");
+        assert_eq!(workers_for(Some(8), Some(2 * 1024 * 1024)), 3, "2 GiB is the floor, inclusive");
+        assert_eq!(workers_for(Some(2), Some(4 * 1024 * 1024)), 2, "two cores");
+        assert_eq!(workers_for(Some(4), Some(1024 * 1024)), 2, "four cores but 1 GB");
+        assert_eq!(workers_for(Some(4), Some(2 * 1024 * 1024 - 1)), 2, "just under 2 GiB");
+        assert_eq!(workers_for(None, Some(4 * 1024 * 1024)), 2, "cores unknown");
+        assert_eq!(workers_for(Some(4), None), 2, "memory unknown");
+        assert_eq!(workers_for(None, None), 2, "nothing known");
+    }
+
+    #[test]
+    fn mem_total_kib_reads_the_meminfo_line() {
+        assert_eq!(mem_total_kib("MemTotal:        2678680 kB\nMemFree:          145440 kB\n"), Some(2_678_680));
+        assert_eq!(mem_total_kib("MemFree: 1 kB\nMemTotal: 7 kB\n"), Some(7), "not only the first line");
+        assert_eq!(mem_total_kib("MemFree: 1 kB\n"), None);
+        assert_eq!(mem_total_kib("MemTotal: lots kB\n"), None);
+        assert_eq!(mem_total_kib(""), None);
+    }
+
     /// The prefetch gate sees every stage of a fetch. If this ever loosens, the prefetch quietly
-    /// starts competing with the tiles on screen for the two workers.
+    /// starts competing with the tiles on screen for the workers.
     #[test]
     fn idle_of_sees_every_stage_of_a_fetch() {
         assert!(
