@@ -331,6 +331,56 @@ fn a_rail(family: BandFamily) -> bands::BandRail {
     bands::BandRail::new(&ladder, &counts, 40).expect("a trusted rail")
 }
 
+/// The rail of `family` planned for `today`, 1 to n films in each band.
+fn a_rail_on(family: BandFamily, today: bands::Day) -> bands::BandRail {
+    let ladder = bands::plan(family, today, 2025);
+    let counts: Vec<u32> = (1..=ladder.len() as u32).collect();
+    bands::BandRail::new(&ladder, &counts, 400).expect("a trusted rail")
+}
+
+/// Midnight re-keys a calendar rail and asks it once more; until that read lands the rail on screen is
+/// the previous day's (a focus seated in it must not lose it to a second of nothing), and landing the new
+/// day's drops yesterday's instead of keeping it. Another family or other terms never get a stale rail.
+#[test]
+fn a_day_turn_keeps_the_previous_days_rail_on_screen_until_the_new_days_lands() {
+    use crate::browse::test_support::TestBrowse;
+    use std::sync::Arc;
+    let _g = plx_base::testlock::serial();
+    let kind = SecKind::Movie;
+    let (_cleanup, mut browse, _sid, _client) = banded_source(kind, &["rating", "addedAt"]);
+    assert!(browse.state.set_sort_by_key("addedAt", true));
+    let on = |browse: &mut TestBrowse, today| browse.state.state_mut(0).unwrap().today = Some(today);
+    on(&mut browse, TODAY);
+    let key = browse.state.states()[0].bands_key(BandFamily::DateAdded);
+    browse.state.state_mut(0).unwrap().land_bands(key, Some(a_rail_on(BandFamily::DateAdded, TODAY)));
+    let yesterday = browse.state.states()[0].shown_bands(kind).expect("the day's rail").clone();
+    assert!(!browse.state.states()[0].bands_owed(kind));
+
+    on(&mut browse, [2026, 11, 1]);
+    let state = &browse.state.states()[0];
+    assert!(state.bands_owed(kind) && state.bands_verdict_for(BandFamily::DateAdded).is_none(), "the new day's bands are asked for");
+    assert!(Arc::ptr_eq(state.shown_bands(kind).expect("the rail stays up while they are read"), &yesterday));
+    assert!(state.bands_current(kind), "…and it is on screen, so a watch that moves it is noticed");
+
+    // other terms are no rail of the day before: Unwatched, and then another sort
+    browse.state.state_mut(0).unwrap().unwatched = true;
+    assert!(browse.state.states()[0].shown_bands(kind).is_none(), "counted without Unwatched");
+    browse.state.state_mut(0).unwrap().unwatched = false;
+    assert!(browse.state.states()[0].shown_bands(kind).is_some());
+
+    // the new day's read lands: its rail is shown, yesterday's is gone and not kept
+    let key = browse.state.states()[0].bands_key(BandFamily::DateAdded);
+    browse.state.state_mut(0).unwrap().land_bands(key, Some(a_rail_on(BandFamily::DateAdded, [2026, 11, 1])));
+    let state = &browse.state.states()[0];
+    assert!(!state.bands_owed(kind));
+    assert!(!Arc::ptr_eq(state.shown_bands(kind).expect("today's rail"), &yesterday));
+    assert!(state.bands_kept.is_none(), "yesterday's list is not kept beside today's");
+
+    // a sort of another family has no use for it either
+    assert!(browse.state.set_sort_by_key("rating", true));
+    assert!(browse.state.states()[0].shown_bands(kind).is_none(), "the rating's bands are not read yet");
+}
+
 /// The key: a calendar family's carries the day (a day turn asks once more), no other does; the
 /// direction is in none; a watch moves the date viewed and no other date.
 #[test]

@@ -1728,6 +1728,35 @@ fn a_release_sorted_listing_gets_the_year_then_the_decades_with_a_step_before_th
 }
 
 #[test]
+fn a_key_seated_in_the_rail_survives_a_day_turn_and_never_lands_on_an_empty_band() {
+    use plx_data::browse::bands::BandFamily;
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = dated_fixture(BandFamily::DateAdded, "addedAt", THE_TWENTY_SIXTH, 2024, &OCTOBER_COUNTS, true);
+    let mut page = fixture.screen();
+    // focus on October
+    let october = page.key(page.pair.master.elems[1]);
+    let reconcile = |page: &LibraryScreen, fixture: &Fixture, want| <LibraryScreen as Focusable<HostFixture>>::reconcile(page, want, &fixture.cx(Some(want)));
+    assert_eq!(reconcile(&page, &fixture, october), october);
+    // midnight: the data layer still holds yesterday's rail until today's lands, then 1 November has the
+    // same bands (October is the month before this one) and the key it is on stays where it is
+    fixture = dated_fixture(BandFamily::DateAdded, "addedAt", [2026, 11, 1], 2024, &OCTOBER_COUNTS, true);
+    page.sync(&fixture.cx(Some(october)));
+    assert_eq!(labels_of(&page)[..3], ["Today", "Oct", "Sep"], "the rail is still there");
+    assert_eq!(reconcile(&page, &fixture, october), october, "a key in the rail does not fall through to the header row");
+    // …and when the band it is on is gone (31 December to 1 January: no month has gone by, so the months
+    // are gone) it lands on the first band that holds films, not on `Today` when that is empty
+    let may = page.key(page.pair.master.elems[6]);
+    fixture = dated_fixture(BandFamily::DateAdded, "addedAt", [2027, 1, 1], 2025, &[0, 6, 12], true);
+    page.sync(&fixture.cx(Some(may)));
+    assert_eq!(labels_of(&page), ["Today", "2026", "2025"]);
+    let (bands, _) = page.probe_rail(None);
+    assert!(bands[0].1 && !bands[1].1, "Today holds no film and 2026 does: {bands:?}");
+    let recovered = reconcile(&page, &fixture, may);
+    assert_eq!(page.probe_rail(Some(recovered)).1, Some(1), "the first band focus can stop on, not the empty Today");
+    assert_ne!(recovered, may);
+}
+
+#[test]
 fn a_day_turn_changes_the_rails_labels_and_where_its_step_falls() {
     use plx_data::browse::bands::BandFamily;
     let _guard = plx_base::testlock::serial();

@@ -288,7 +288,8 @@ impl<'a> ListingView<'a> {
     /// (`lead`, the no-value items of an ascending sort) and after the last (`tail`). `None` while the
     /// counts on hand were made for other terms or another sort, or when there is no ladder for the
     /// sort, so a stale list can never size a jump. Only the sorts the rail is ready for have one
-    /// (`BandFamily::rail_ready`).
+    /// (`BandFamily::rail_ready`). The one exception is a calendar sort's previous-day bands, shown
+    /// until the new day's read lands (the rail does not blink out at midnight).
     pub fn bands(self) -> Option<&'a super::bands::Offsets> {
         let rail = self.0.data.as_ref()?.bands.as_deref()?;
         Some(rail.listed(self.sort_desc()))

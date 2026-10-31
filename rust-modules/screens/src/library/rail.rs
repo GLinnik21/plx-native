@@ -377,7 +377,9 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
     }
     fn reconcile(&self, want: FocusKey<u32>, _: &Cx<'_, H>) -> FocusKey<u32> {
         if self.elems.contains(&want.elem) { want } else {
-            self.elems.first().map(|elem| FocusKey { entry: self.entry, elem: *elem }).unwrap_or(want)
+            // A key the rail no longer holds lands on the first element focus can stop on: on a calendar
+            // rail the first is `Today`, often an empty band `neighbour` never rests on.
+            self.elems.get(self.skip_empty(0)).map(|elem| FocusKey { entry: self.entry, elem: *elem }).unwrap_or(want)
         }
     }
     fn seat(&self, _: GroupId, from: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
