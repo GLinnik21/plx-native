@@ -4013,35 +4013,33 @@ pub(crate) fn player_mut(
 /// A no-op when no player page is mounted. The engine acts on an `Enter` only for the page that owns
 /// input at the moment it drains; for a page under a panel it only reaches the screen, which mirrors it.
 pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
-    let Some(instance) = d.top_page() else { return };
-    let Some(group) = player(d).map(|player| player.hud.nav.focus) else { return };
-    let page = MachineId::Instance(instance);
-    d.emit(
-        page,
-        Fx::Deliver(
-            page,
-            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(group) })),
-        ),
-    );
+    reseat_player(d, |player, _| Some(FocusTarget::ContainerGroup(player.hud.nav.focus)));
 }
 
 /// Re-seat the player's ring on the element its row currently calls primary — the APP's half of a
 /// row swap, used after it re-resolves a slot the page changed while the frame was in flight
 /// (BACK over an offer), so the engine lands on the primary of the row the loop will draw.
 pub(crate) fn reseat_player_focus_on_primary(d: &mut Dispatcher<AppHost>) {
+    reseat_player(d, |player, entry| {
+        let elem = plx_appkit::player_hud::control_elem(player.row_primary());
+        entry.map(|entry| FocusTarget::Elem(FocusKey { entry, elem }))
+    });
+}
+
+/// The one delivery both re-seats make: hand the top page the `Enter::Fresh` that `target` names
+/// for the mounted player (given the page's entry, when it has one). Nothing is delivered when no
+/// player page is mounted or `target` answers `None`.
+fn reseat_player(
+    d: &mut Dispatcher<AppHost>,
+    target: impl FnOnce(&plx_screens::player::PlayerScreen, Option<EntryId>) -> Option<FocusTarget<u32>>,
+) {
     let Some(instance) = d.top_page() else { return };
-    let Some(entry) = d.nav.entry_of_instance(instance) else { return };
-    let Some(elem) = player(d).map(|player| plx_appkit::player_hud::control_elem(player.row_primary()))
-    else { return };
+    let entry = d.nav.entry_of_instance(instance);
+    let Some(focus) = player(d).and_then(|player| target(player, entry)) else { return };
     let page = MachineId::Instance(instance);
     d.emit(
         page,
-        Fx::Deliver(
-            page,
-            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                focus: FocusTarget::Elem(FocusKey { entry, elem }),
-            })),
-        ),
+        Fx::Deliver(page, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))),
     );
 }
 
