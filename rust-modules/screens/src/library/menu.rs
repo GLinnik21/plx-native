@@ -36,6 +36,7 @@ enum Action {
     Genre,
     Select(SectionAddress),
     Recheck,
+    Favourites,
 }
 
 /// A menu's rows: identity string per focusable row (the stable name focus follows across a
@@ -350,6 +351,7 @@ fn filter_section(unwatched: bool, genre: Option<&GenreEntry>, genres_supported:
 /// Show lists the types the library offers besides Collections (which has its own control) and is
 /// absent when only one remains; Sort is the server's declared list; Filter is the genre and the
 /// Unwatched toggle.
+#[cfg(test)]
 fn sort_filter_draft(
     section_kind: SecKind,
     current: LibraryType,
@@ -358,6 +360,28 @@ fn sort_filter_draft(
     sort_desc: bool,
     genre: Option<&GenreEntry>,
     unwatched: bool,
+) -> MenuDraft {
+    sort_filter_draft_with_directory(
+        section_kind,
+        current,
+        sorts,
+        sort_index,
+        sort_desc,
+        genre,
+        unwatched,
+        None,
+    )
+}
+
+fn sort_filter_draft_with_directory(
+    section_kind: SecKind,
+    current: LibraryType,
+    sorts: &[SortEntry],
+    sort_index: usize,
+    sort_desc: bool,
+    genre: Option<&GenreEntry>,
+    unwatched: bool,
+    directory: Option<plx_data::stores::browse::DirectoryView<'_>>,
 ) -> MenuDraft {
     let mut stamp = Stamp::default();
     stamp.tag(14);
@@ -371,7 +395,65 @@ fn sort_filter_draft(
     }
     form = form.section(sort_section(plx_platform::i18n::msg::browse_library_sort(), sorts, sort_index,
         sort_desc, &mut stamp, &mut selected));
-    let filter = filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp);
+    let mut filter = filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp)
+        .separator();
+    if let Some(dir) = directory {
+        let epoch = dir.epoch().unwrap_or(0);
+        let current_idx = dir.current();
+        let candidates: Vec<_> = dir
+            .sections()
+            .iter()
+            .filter(|s| {
+                s.kind == section_kind
+                    && s.sid.is_some()
+                    && (s.row.pinned
+                        || dir
+                            .sources()
+                            .get(s.row.src)
+                            .is_some_and(|(_, g)| g.state == plx_data::browse::SourceState::Reachable))
+            })
+            .collect();
+        if candidates.len() > 1 {
+            for s in candidates {
+                let Some(sid) = s.sid else { continue };
+                let active = current_idx == Some(s.row.section) || s.row.current;
+                let handle = dir
+                    .sources()
+                    .get(s.row.src)
+                    .map(|(_, g)| g.handle.as_str())
+                    .unwrap_or("");
+                let mut row = Row::new(&s.row.title).checked(active).server_label();
+                if !handle.is_empty() {
+                    row = row.value(handle).server_value().value_dim(true);
+                }
+                stamp.tag(15);
+                stamp.u32(u32::from(sid.raw()));
+                stamp.i64(s.key);
+                stamp.str(&s.row.title);
+                stamp.str(handle);
+                stamp.bool(active);
+                stamp.u32(epoch);
+                filter = choice(
+                    filter,
+                    format!("section:{}:{}", sid.raw(), s.key),
+                    Action::Select(SectionAddress {
+                        epoch,
+                        sid,
+                        section: s.key,
+                    }),
+                    row,
+                );
+            }
+        }
+    }
+    stamp.tag(16);
+    stamp.str(plx_platform::i18n::msg::settings_libraries_title());
+    filter = choice(
+        filter,
+        "favourites".into(),
+        Action::Favourites,
+        Row::new(plx_platform::i18n::msg::settings_libraries_title()).chevron(true),
+    );
     MenuDraft { stamp: stamp.finish(), form: form.section(filter), selected }
 }
 
@@ -542,9 +624,16 @@ impl LibraryMenu {
                 return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre(), listing.library_type() == LibraryType::Primary);
             }
             LibraryMenuKind::SortFilter => {
-                return sort_filter_draft(listing_kind(listing, directory), listing.library_type(), listing.sorts(),
-                    listing.sort_index(), listing.sort_desc(), listing.genre(),
-                    self.desired_unwatched.unwrap_or(listing.unwatched()));
+                return sort_filter_draft_with_directory(
+                    listing_kind(listing, directory),
+                    listing.library_type(),
+                    listing.sorts(),
+                    listing.sort_index(),
+                    listing.sort_desc(),
+                    listing.genre(),
+                    self.desired_unwatched.unwrap_or(listing.unwatched()),
+                    Some(directory),
+                );
             }
             LibraryMenuKind::Genre => {
                 return genre_draft(listing.genres(), listing.genre());
@@ -626,6 +715,12 @@ impl LibraryMenu {
                 StoreId::Browse,
                 StoreCmd::Browse(BrowseCmd::RecheckShares),
             ))),
+            Action::Favourites => {
+                fx.push(Fx::App(AppFx::Loop(
+                    crate::registry::LoopReq::LibraryFavourites,
+                )));
+                fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+            }
         }
     }
 }
@@ -1493,6 +1588,136 @@ mod tests {
         assert!(!laid.rows.iter().any(|(id, ..)| id == &format!("type:{}", LibraryType::Collections.code())), "Collections has its own control");
         assert_ne!(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false).stamp,
             sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, true).stamp);
+    }
+
+    #[test]
+    fn sort_and_filter_menu_offers_library_switching_and_favorite_libraries() {
+        let _guard = plx_base::testlock::serial();
+        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let sorts = vec![SortEntry {
+            key: "titleSort".into(),
+            desc_key: String::new(),
+            title: "Title".into(),
+            default_desc: false,
+        }];
+        let directory = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
+            11,
+            0,
+            vec![
+                (
+                    ServerId::from_raw(1),
+                    SrcGroup {
+                        name: "Own NAS".into(),
+                        handle: String::new(),
+                        state: SourceState::Reachable,
+                        tier: None,
+                    },
+                ),
+                (
+                    ServerId::from_raw(2),
+                    SrcGroup {
+                        name: "Friend NAS".into(),
+                        handle: "friend".into(),
+                        state: SourceState::Reachable,
+                        tier: None,
+                    },
+                ),
+            ],
+            vec![
+                plx_data::browse::view::SectionView {
+                    sid: Some(ServerId::from_raw(1)),
+                    key: 7,
+                    kind: SecKind::Movie,
+                    row: SrcRow {
+                        src: 0,
+                        section: 0,
+                        title: "Movies".into(),
+                        count_line: "26 films".into(),
+                        pinned: true,
+                        last_pinned: false,
+                        current: true,
+                    },
+                },
+                plx_data::browse::view::SectionView {
+                    sid: Some(ServerId::from_raw(2)),
+                    key: 8,
+                    kind: SecKind::Movie,
+                    row: SrcRow {
+                        src: 1,
+                        section: 1,
+                        title: "Anime Movies".into(),
+                        count_line: "12 films".into(),
+                        pinned: false,
+                        last_pinned: false,
+                        current: false,
+                    },
+                },
+            ],
+        );
+        let draft = sort_filter_draft_with_directory(
+            SecKind::Movie,
+            LibraryType::Primary,
+            &sorts,
+            0,
+            false,
+            None,
+            false,
+            Some(directory.view()),
+        );
+        let laid = lay(draft);
+        assert!(
+            laid.rows.iter().any(|(id, action, _)| {
+                id == "section:2:8"
+                    && matches!(action, Action::Select(addr) if addr.sid == ServerId::from_raw(2) && addr.section == 8)
+            }),
+            "reachable unpinned library of the same kind is listed in Sort & Filter"
+        );
+        assert!(
+            laid.rows
+                .iter()
+                .any(|(id, action, _)| id == "favourites" && matches!(action, Action::Favourites)),
+            "Favorite libraries entry is offered at the bottom of Sort & Filter"
+        );
+
+        let mut menu = LibraryMenu::new(
+            EntryId(7),
+            LibraryMenuArg {
+                host: plx_machine::machine::InstanceId(8),
+                target: SectionAddress {
+                    epoch: 11,
+                    sid: ServerId::from_raw(1),
+                    section: 7,
+                },
+                kind: LibraryMenuKind::SortFilter,
+                anchor: [0; 4],
+                folded: Vec::new(),
+                opener: None,
+            },
+        );
+        menu.apply_draft(sort_filter_draft_with_directory(
+            SecKind::Movie,
+            LibraryType::Primary,
+            &sorts,
+            0,
+            false,
+            None,
+            false,
+            Some(directory.view()),
+        ));
+        let fav_idx = menu.form.index_of(&"favourites".to_string()).expect("favourites row");
+        let fav_key = menu.form.key_at(fav_idx).expect("favourites key").0;
+        let mut output = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(
+            &mut output,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
+            &mut present,
+        );
+        with_cx(|cx| menu.activate(fav_key, cx, &mut fx));
+        assert!(output.iter().any(|effect| matches!(
+            &effect.fx,
+            Fx::App(AppFx::Loop(crate::registry::LoopReq::LibraryFavourites))
+        )));
     }
 
     /// **The Sort, Filter and Genre popovers' app text fits the popover, in every shipped language**
