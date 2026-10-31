@@ -11,7 +11,9 @@
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
-//!   [`TEST_UNDER_POSTERS`] instead of writing the process-wide cell.
+//!   [`TEST_UNDER_POSTERS`] instead of writing the process-wide cell; a test that holds neither the
+//!   pin nor `testlock::serial()` (the lock every writer of that cell holds) reads the default, so
+//!   it never sees the value of another thread's Settings test.
 //! - [`label`] words the focused block from `(policy, facts)`: the Title switch decides whether the
 //!   title line shows, the Details picker what the second line says. **A line the setting turns on
 //!   is never drawn empty, for any kind of tile** (`plx_ui::caption_policy::caption_lines`): the title
@@ -41,7 +43,7 @@ use plx_ui::cards::TileLabel;
 /// sort value under every card (the Under posters page's Sort value switch), with the same test override as policy().
 pub fn sort_value() -> bool {
     #[cfg(test)]
-    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
+    if let Some(setting) = test_setting() {
         return setting.sort_value;
     }
     plx_media::route::under_posters().sort_value
@@ -52,10 +54,22 @@ pub fn sort_value() -> bool {
 /// every card instead.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]
-    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
+    if let Some(setting) = test_setting() {
         return crate::registry::caption_policy_of(setting);
     }
     crate::registry::caption_policy_of(plx_media::route::under_posters())
+}
+
+/// The setting a test reads: its thread's pin, else (when the thread holds neither the pin nor the
+/// `testlock::serial()` guard that every writer of the process-wide cell holds) the default, so an
+/// unlocked test cannot see a value another thread's test has put in the cell for the length of its
+/// own run. A thread that holds `serial()` has the live cell to itself and reads it (the Settings
+/// tests write it and read it back); a pin wins over both.
+#[cfg(test)]
+fn test_setting() -> Option<plx_plex::plex::session::UnderPosters> {
+    TEST_UNDER_POSTERS
+        .with(|cell| cell.get())
+        .or_else(|| (!plx_base::testlock::held()).then_some(plx_plex::plex::session::UnderPosters::DEFAULT))
 }
 
 #[cfg(test)]
@@ -297,4 +311,50 @@ fn the_sort_value_switch_reads_the_same_thread_override_as_policy() {
             crate::registry::caption_policy_of(UnderPosters { sort_value: !enabled, ..setting }));
     }
     TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+}
+
+/// The test-only reader's isolation from the process-wide cell (its own module: it starts a thread).
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+
+    /// Puts the live Under posters setting back to the default when it drops, on a panic too, so a
+    /// failing assertion cannot leave the non-default value in the process-wide cell for the Settings
+    /// tests that run after it. Declare it AFTER the `serial()` guard: it drops first, under the lock.
+    struct DefaultOnDrop;
+
+    impl Drop for DefaultOnDrop {
+        fn drop(&mut self) {
+            plx_media::route::restore_under_posters(plx_plex::plex::session::UnderPosters::DEFAULT);
+        }
+    }
+
+    #[test]
+    fn an_unlocked_unpinned_reader_sees_the_default_while_a_locked_one_sees_the_live_setting() {
+        use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+        let held = UnderPosters { title: true, details: UnderPostersDetails::None, sort_value: false };
+        let (ready_tx, ready) = std::sync::mpsc::channel::<bool>();
+        let (done_tx, done) = std::sync::mpsc::channel::<()>();
+        // Another test, as the Settings tests are: holds `serial()` and has the live cell off the default.
+        let other = std::thread::spawn(move || {
+            let _serial = plx_base::testlock::serial();
+            let _back = DefaultOnDrop;
+            plx_media::route::restore_under_posters(held);
+            let locked_reader_sees_the_live_setting = policy() == crate::registry::caption_policy_of(held) && !sort_value();
+            ready_tx.send(locked_reader_sees_the_live_setting).unwrap();
+            // A closed channel means the test thread panicked: fall through to the guard either way.
+            let _ = done.recv();
+        });
+        let locked_saw_live = ready.recv().unwrap();
+        // This thread holds neither the lock nor a pin, as a screen test that builds a page does not.
+        let unlocked = (policy(), sort_value());
+        done_tx.send(()).unwrap();
+        other.join().unwrap();
+        assert!(locked_saw_live, "a thread holding serial() reads the live cell its writers set");
+        assert_eq!(
+            unlocked,
+            (crate::registry::caption_policy_of(UnderPosters::DEFAULT), UnderPosters::DEFAULT.sort_value),
+            "an unlocked, unpinned thread must not see another test's setting"
+        );
+    }
 }
