@@ -2,8 +2,9 @@
 //! `episode.addedAt`) and the release date, counted by the production body over a MODEL of the server
 //! (`bands_job_tests::Server`) that holds generated dates, answers `>=` range reads and the
 //! `:asc:nullsLast` extent read the way the measured rules say, and records what it was asked. The
-//! screens draw none of these families yet (`BandFamily::rail_ready`), so the body, the key and the
-//! landing are driven directly with the family as a parameter.
+//! screens draw all of these families (`BandFamily::rail_ready`; `library/tests.rs` drives the rail over
+//! the bands this body lands), so the body, the key and the landing are driven directly here with the
+//! family as a parameter.
 //!
 //! Edges and expected starts are computed here from an independent calendar (a day counter, not
 //! `bands.rs`'s arithmetic), so an off-by-one edge, a wrong clock, one zone offset for every edge or a

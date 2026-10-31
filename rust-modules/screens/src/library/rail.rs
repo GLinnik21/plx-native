@@ -1,13 +1,14 @@
 //! The rail owned by MasterDetail: the A-Z letters of a title sort, or the BANDS of a value sort
-//! (`95% 90% ... <75%`, `Rating`, `Duration`, `Unplayed`, `Plays`). Only Input owns its focused or
-//! remembered element.
+//! (`95% 90% ... <75%`, `Rating`, `Duration`, `Unplayed`, `Plays`, and the calendar sorts `Today Oct
+//! ... Jan 2025 ...` and `2026 2020s ...`). Only Input owns its focused or remembered element.
 //!
 //! One part serves both because the logic is the same: an element is a place in the listing
 //! (`starts`, the index of its first item, with one trailing entry where the last one ends), an element
 //! no item starts is dimmed and focus steps over it, and a move inside the rail scrolls the grid to the
 //! element's first card at once (`LibraryScreen::follow`). What differs is only where the elements come
 //! from (`/firstCharacter` counts, or the data job's band offsets), their labels, their geometry
-//! ([`BandRows`]: a 40 px pitch, centred on 1834, in a column as wide as its widest label) and what
+//! ([`BandRows`]: a 40 px pitch, centred on 1834, one 8 px step where a calendar's scale changes, in a
+//! column as wide as its widest label) and what
 //! wears the focus (a disc behind a letter, a pill around a band's label). The items a value sort
 //! leaves out (no rating, never viewed) lie before the first band or after the last and belong to
 //! none, so a grid card among them marks no current band.

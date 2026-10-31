@@ -271,18 +271,31 @@ of its first item), an element no item starts is dimmed and skipped by focus, mo
 grid to the element's first card at once (`LibraryScreen::follow`, no OK), the grid has no focus while the rail has it,
 and Left returns to the grid. A title sort (ascending) has the A-Z letters (`ListingView::rail_available`); a sort with
 a value ladder has its BANDS (`ListingView::bands_available`: rating `95% 90% 85% 80% 75% <75%`, duration `3h+ 2½h 2h
-1½h 1h <1h`, unplayed `12+ 10 8 6 4 2 1`, plays `10+ 5 3 2 1`), never both. What differs:
+1½h 1h <1h`, unplayed `12+ 10 8 6 4 2 1`, plays `10+ 5 3 2 1`, and the CALENDAR sorts: date added, date viewed and
+last episode added (newest first only) read `Today Oct Sep ... Jan 2025 2024 ...`, release date reads `2026 2020s
+2010s ...`), never both. A calendar rail needs the day, which the Library's ask hands the data layer
+(`LibraryLike::today`), and its bands follow it: a day turn re-plans them. What differs:
 
 - **Labels** are `library/rail_bands.rs`, built from the data layer's `Mark` tokens with `fmt::percent`, the locale's
   numbers and the catalog's `library_rail.hours` and `library_rail.hours_or_more` (the language's own short hour unit,
   spaced as `core.duration_hours` spaces it, `½` for a half hour). `<` is written by the code, and so is the `+` of the
   count ladders (`12+`, `10+`); the Duration ladder's `3h+` is `library_rail.hours_or_more`, a catalog string, so a
-  language can put the `+` after its own unit. Focus identity is the token, not the text.
+  language can put the `+` after its own unit. A calendar band is `library_rail.today` (the word under a poster, or
+  its abbreviation where that is too wide for the column: French `Auj.`), a month is `LocaleContext::month_short`
+  (the stand-alone abbreviation), a year is its plain digits (never the grouped `locale.number`) and a decade is
+  `library_rail.decade` over the digits of its first year (`2020s`, `2020er`, `2020-е`, `lata 2020`). The longest
+  label the column holds is the track limit less the pill's padding (about 100 px at `MICRO`), so a new language's
+  Today and decade strings are checked against it by `rail_bands`' fit test, which loops every family of every
+  shipped language through the real measure. Focus identity is the token, not the text.
 - **Geometry** is `layout::BandRows`: centre x 1834 (the letters keep 1844), rows 40 px apart (the letters' pitch is
   `layout::rail_pitch`: 32 at most, squeezed toward 26 for a long alphabet), the first
-  at the grid's top (244), `BAND_STEP_GAP` extra before the rows a scale change names (none for these ladders), the
+  at the grid's top (244), `BAND_STEP_GAP` extra before the rows a scale change names (`rail_bands::steps`, from the
+  marks: between a month and a year, a year and a decade, in either direction of the sort; `Today` is on no scale, so
+  `Today 2025` on the first of January has none), the
   track as wide as the widest label plus the pill's 12 px each side (never under the letters' 44, never into the
-  posters). The grid does not move for it.
+  posters). A calendar rail can hold some 35 rows (twelve months and every year back), more than the column's
+  window: it scrolls in whole rows, the driving band one row clear of both fades, like a long alphabet. The grid
+  does not move for it.
 - **Ink**: a band that holds items is `TEXT_SECONDARY`, an empty one the same at 25%, the CURRENT band (the one the
   grid's card is in, none when the card is among the items the sort leaves without a value, which lie before the first
   band or after the last) `TEXT_PRIMARY`, and the focused band wears the white focus pill (38 high, built with

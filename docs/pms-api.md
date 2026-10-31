@@ -147,13 +147,15 @@ spec's "Media Queries" section documents the full query language.
   sort, so the app offers the title-sort A-Z rail for movie and show listings (and collections) only.
   The app sends `firstCharacter` the very terms of the grid's page request and shows the counts only
   while they describe it (`data/src/browse/letters.rs`). A VALUE sort's bands come from count
-  probes instead (next section): the data job asks them for the fixed-edge sorts (critic rating,
-  duration, unplayed, plays) on a movie or show section's own listing, with the same terms, and
-  `ListingView::bands()` exposes them; `rail_available` stays the letters' alone and
-  `bands_available` is the value sorts' (the two never both). The Library's rail draws whichever
-  the sort has (`library/rail.rs`, labels in `library/rail_bands.rs`): the bands in listing order,
-  an empty band dimmed and skipped by focus, and the items the sort leaves without a value (the
-  unlabelled lead or tail) in no band.
+  probes instead (next section): the data job asks them for every banded sort (critic rating,
+  duration, unplayed, plays, date added, date viewed, last episode added, release date) on a movie or
+  show section's own listing, with the same terms, and `ListingView::bands()` exposes them; the
+  calendar ones also need the day the Library hands over with its ask. `rail_available` stays the
+  letters' alone and `bands_available` is the value sorts' (the two never both). The Library's rail
+  draws whichever the sort has (`library/rail.rs`, labels in `library/rail_bands.rs`): the bands in
+  listing order, an empty band dimmed and skipped by focus, and the items the sort leaves without a
+  value (the unlabelled lead or tail) in no band. Last episode added has bands for a descending
+  sort only (see `episode.addedAt` below), so an ascending one shows no rail.
 - **Collections — two id spaces:** `/library/sections/{key}/collections` → `Metadata[]` with
   **ratingKey** (browse via `/library/collections/{rk}/children`); the `/collection` filter dir
   returns **tag ids** for `/all?collection={tag}`. Don't mix. A collection row's `index` is that

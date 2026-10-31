@@ -283,7 +283,7 @@ pad back to the roster.
 Reached from any library pill in the top strip. A poster grid, four-way navigable, with:
 
 - one **sort** control at the right of the header row, reading its current choice (the sort icon, the criterion and a down chevron; its Sort & Filter menu also holds the filters), beside the **Collections** and **Recommended** places;
-- an **A–Z rail** down the right edge, which jumps the grid to a letter, or on a value sort (Score, Duration, Unplayed, Plays) to a band;
+- an **A–Z rail** down the right edge, which jumps the grid to a letter, or on a value sort (Score, Duration, Unplayed, Plays, Date added, Date viewed, Release date, and Last episode added when sorted newest first) to a band: a date sort's bands are `Today`, the months of this year, then each earlier year, and Release date's are the year then the decades;
 - watched check marks on the cards.
 
 **CH ▲ / CH ▼ page the grid**, which is the fast way through a large library.
