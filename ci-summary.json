@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T08:18:53Z",
+ "generated": "2026-10-31T08:19:54Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -85,14 +85,14 @@
    "change7_pct": 31.9,
    "d30": null,
    "delta30": null,
-   "delta7": 46.0,
+   "delta7": 46,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 67,
-   "now": 190.0,
+   "now": 190,
    "prev7": 144,
    "shown": true,
    "state": "worse",
@@ -166,17 +166,17 @@
   },
   {
    "change30_pct": -62.8,
-   "change7_pct": 15.0,
+   "change7_pct": 14.8,
    "d30": 1020,
-   "delta30": -640.5,
-   "delta7": 49.5,
+   "delta30": -641,
+   "delta7": 49,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 79,
-   "now": 379.5,
+   "now": 379,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.3,
-   "change7_pct": 2.1,
+   "change30_pct": 32.0,
+   "change7_pct": 1.9,
    "d30": 203,
-   "delta30": 65.5,
-   "delta7": 5.5,
+   "delta30": 65,
+   "delta7": 5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 67,
-   "now": 268.5,
+   "now": 268,
    "prev7": 263,
    "shown": true,
    "state": "flat",
@@ -430,17 +430,17 @@
   },
   {
    "change30_pct": -76.8,
-   "change7_pct": 6.0,
+   "change7_pct": 5.7,
    "d30": 915,
-   "delta30": -702.5,
-   "delta7": 12.0,
+   "delta30": -703,
+   "delta7": 11.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 66,
-   "now": 212.5,
+   "now": 212,
    "prev7": 200.5,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1.0,
-   "delta7": -1.0,
+   "delta30": 1,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 67,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 67.8,
    "commits": [
     {
-     "pr": 1159,
-     "sha": "8b634f436",
-     "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
-    },
-    {
      "pr": 1154,
      "sha": "533991f84",
      "title": "HUD plugins: one renderer, and the built-in HUD draws from the embedded builtin:classic package"
@@ -715,6 +710,11 @@
      "pr": 1173,
      "sha": "83bd902b1",
      "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
+    },
+    {
+     "pr": 1174,
+     "sha": "d03081ccf",
+     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
     }
    ],
    "from": 186.5,
@@ -728,11 +728,6 @@
    "change_pct": 31.9,
    "commits": [
     {
-     "pr": 1159,
-     "sha": "8b634f436",
-     "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
-    },
-    {
      "pr": 1154,
      "sha": "533991f84",
      "title": "HUD plugins: one renderer, and the built-in HUD draws from the embedded builtin:classic package"
@@ -776,6 +771,11 @@
      "pr": 1173,
      "sha": "83bd902b1",
      "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
+    },
+    {
+     "pr": 1174,
+     "sha": "d03081ccf",
+     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
     }
    ],
    "from": 144,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 190.0
+   "to": 190
   },
   {
    "change_pct": 30.6,
    "commits": [
-    {
-     "pr": 1159,
-     "sha": "8b634f436",
-     "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
-    },
     {
      "pr": 1154,
      "sha": "533991f84",
@@ -837,6 +832,11 @@
      "pr": 1173,
      "sha": "83bd902b1",
      "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
+    },
+    {
+     "pr": 1174,
+     "sha": "d03081ccf",
+     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
     }
    ],
    "from": 120.3,
@@ -850,11 +850,6 @@
    "change_pct": 16.4,
    "commits": [
     {
-     "pr": 1159,
-     "sha": "8b634f436",
-     "title": "Shelf: a page that returns keeps its seat lifted under the BACK image"
-    },
-    {
      "pr": 1154,
      "sha": "533991f84",
      "title": "HUD plugins: one renderer, and the built-in HUD draws from the embedded builtin:classic package"
@@ -898,6 +893,11 @@
      "pr": 1173,
      "sha": "83bd902b1",
      "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
+    },
+    {
+     "pr": 1174,
+     "sha": "d03081ccf",
+     "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
     }
    ],
    "from": 2074.0,
