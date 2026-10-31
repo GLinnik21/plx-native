@@ -251,6 +251,16 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
   epoch of UTC midnight (4 of 4 edges in both libraries; the local-midnight reading 0 of 4, on a host
   that is not in UTC), so its edge must be built with UTC arithmetic. `year` equalled the release
   date's year for every item in both libraries.
+- **The extent of a date rail is one more read, by design.** The bands of a date sort run back to the
+  year of the oldest item, which the app finds as the first row of `sort=<field>:asc:nullsLast` with
+  `Start=0, Size=1` over the grid's own terms, read from the row's `addedAt`, `lastViewedAt` or
+  `originallyAvailableAt` (`Client::section_oldest`). `nullsLast` is what puts the oldest VALUE first
+  (a plain `:asc` leads with the items that have none, see "Items with no value"); that it does so for
+  these three fields on a small library is the measurement above, not a run of this read. A show row
+  carries no `episode.addedAt`, so the last episode added reads the section's oldest EPISODE
+  (`type=4`, `sort=addedAt:asc:nullsLast`, no other filter), which is never newer than any show's
+  newest one. The app judges the year it gets: before 1900 or after the current year gives the sort
+  no rail, rather than a probe for every year in between.
 - **`episode.addedAt` is not mirror-symmetric.** With `type=2`, `episode.addedAt>>=E` is the shows
   that have ANY episode newer than E, which equals "whose newest episode is newer" (checked against
   the per-show maximum of 525 episodes: 4 of 4 edges, 2 of 2 straddles), and
