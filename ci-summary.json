@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T01:03:40Z",
+ "generated": "2026-10-31T01:08:01Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 30.8,
+   "change7_pct": 31.5,
    "d30": null,
    "delta30": null,
-   "delta7": 44.0,
+   "delta7": 45.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 64,
-   "now": 187,
+   "now": 188.0,
    "prev7": 143.0,
    "shown": true,
    "state": "worse",
@@ -144,19 +144,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.2,
-   "change7_pct": 14.0,
+   "change30_pct": -60.1,
+   "change7_pct": 14.3,
    "d30": 953,
-   "delta30": -573.5,
-   "delta7": 46.5,
+   "delta30": -573,
+   "delta7": 47.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 240,
-   "n_prev": 151,
-   "now": 379.5,
-   "prev7": 333,
+   "n_now": 241,
+   "n_prev": 152,
+   "now": 380,
+   "prev7": 332.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -61.2,
-   "change7_pct": 13.8,
+   "change30_pct": -61.3,
+   "change7_pct": 13.6,
    "d30": 968.5,
-   "delta30": -593.0,
-   "delta7": 45.5,
+   "delta30": -593.5,
+   "delta7": 45.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 90,
+   "n_now": 91,
    "n_prev": 76,
-   "now": 375.5,
+   "now": 375,
    "prev7": 330.0,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.3,
-   "change7_pct": 2.3,
+   "change30_pct": 33.6,
+   "change7_pct": 2.5,
    "d30": 201,
-   "delta30": 67,
-   "delta7": 6.0,
+   "delta30": 67.5,
+   "delta7": 6.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 64,
-   "now": 268,
+   "now": 268.5,
    "prev7": 262.0,
    "shown": true,
    "state": "flat",
@@ -430,17 +430,17 @@
   },
   {
    "change30_pct": -76.6,
-   "change7_pct": 3.9,
+   "change7_pct": 4.2,
    "d30": 907,
-   "delta30": -695,
-   "delta7": 8,
+   "delta30": -694.5,
+   "delta7": 8.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 63,
-   "now": 212,
+   "now": 212.5,
    "prev7": 204,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1,
+   "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 64,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 66.5,
    "commits": [
     {
-     "pr": 1150,
-     "sha": "58876a0f5",
-     "title": "HUD plugins: control identity and the command vocabulary; one shared command performer; OK on the engine"
-    },
-    {
      "pr": 1146,
      "sha": "9c1c600c1",
      "title": "CI: Bump Swatinem/rust-cache in the actions group"
@@ -715,6 +710,11 @@
      "pr": 1160,
      "sha": "11f714dc9",
      "title": "Add Dutch (nl) UI language"
+    },
+    {
+     "pr": 1165,
+     "sha": "680c8a3c2",
+     "title": "Top bar: the glass is never dropped for the strip's width"
     }
    ],
    "from": 185,
@@ -725,13 +725,8 @@
    "to": 308.0
   },
   {
-   "change_pct": 30.8,
+   "change_pct": 31.5,
    "commits": [
-    {
-     "pr": 1150,
-     "sha": "58876a0f5",
-     "title": "HUD plugins: control identity and the command vocabulary; one shared command performer; OK on the engine"
-    },
     {
      "pr": 1146,
      "sha": "9c1c600c1",
@@ -776,23 +771,23 @@
      "pr": 1160,
      "sha": "11f714dc9",
      "title": "Add Dutch (nl) UI language"
+    },
+    {
+     "pr": 1165,
+     "sha": "680c8a3c2",
+     "title": "Top bar: the glass is never dropped for the strip's width"
     }
    ],
    "from": 143.0,
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "since": "2026-10-30",
+   "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 187
+   "to": 188.0
   },
   {
    "change_pct": 30.6,
    "commits": [
-    {
-     "pr": 1150,
-     "sha": "58876a0f5",
-     "title": "HUD plugins: control identity and the command vocabulary; one shared command performer; OK on the engine"
-    },
     {
      "pr": 1146,
      "sha": "9c1c600c1",
@@ -837,6 +832,11 @@
      "pr": 1160,
      "sha": "11f714dc9",
      "title": "Add Dutch (nl) UI language"
+    },
+    {
+     "pr": 1165,
+     "sha": "680c8a3c2",
+     "title": "Top bar: the glass is never dropped for the strip's width"
     }
    ],
    "from": 120.3,
@@ -850,11 +850,6 @@
    "change_pct": 15.8,
    "commits": [
     {
-     "pr": 1150,
-     "sha": "58876a0f5",
-     "title": "HUD plugins: control identity and the command vocabulary; one shared command performer; OK on the engine"
-    },
-    {
      "pr": 1146,
      "sha": "9c1c600c1",
      "title": "CI: Bump Swatinem/rust-cache in the actions group"
@@ -898,6 +893,11 @@
      "pr": 1160,
      "sha": "11f714dc9",
      "title": "Add Dutch (nl) UI language"
+    },
+    {
+     "pr": 1165,
+     "sha": "680c8a3c2",
+     "title": "Top bar: the glass is never dropped for the strip's width"
     }
    ],
    "from": 2073,
