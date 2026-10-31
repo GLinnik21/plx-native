@@ -470,7 +470,11 @@ mod held_feature_tests {
     }
 }
 
-pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
+/// Drain what every owned page decided this frame. A request can change the metadata store's
+/// skipped set, which the player's control row is resolved from; the row was sampled at the top
+/// of the frame, before the dispatcher ran, so re-resolve it here before `update` hands it to the
+/// page — otherwise the offer BACK just dismissed is drawn once more.
+pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
     halt_preview_off_its_page(app);
     drain_held_feature(app);
     home_requests(app, fr.now);
@@ -485,8 +489,9 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
         matches!(app.rec, super::recorder::Recplay::Replaying(_)), app.bridge.is_controlled_replay()) {
         app.rec.refuse("replay cannot authorize sandbox repair");
     }
+    let mut slot_refresh = false;
     if !player_reqs.is_empty() {
-        super::playback::player_requests(&mut app.player,
+        slot_refresh = super::playback::player_requests(&mut app.player,
             &mut app.adapters.player,
             &mut app.repause_at,
             player_reqs,
@@ -623,6 +628,18 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 }
             }
         }
+    }
+    if slot_refresh {
+        if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+            fr.ctrl = plx_appkit::player_hud::slot(&app.player.session, app.bridge.metadata_view());
+            // Hand the page the row it will draw and park the ring on THAT row's primary. The
+            // page already swapped its own row, but the queue's neighbour answer can settle
+            // between its key and this re-resolve; the app's element seat is what keeps the ring,
+            // the engine and OK on the same control.
+            player.slot = fr.ctrl;
+            player.hud.nav.btn = player.row_primary();
+        }
+        super::bridge::reseat_player_focus_on_primary(&mut app.pages);
     }
 }
 
