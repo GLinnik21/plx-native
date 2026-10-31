@@ -58,9 +58,13 @@ pub(super) fn recorder_end_frame(
 }
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
-/// (`Frame::begin`); every field is written by exactly one phase and read by the ones after it.
+/// (`Frame::begin`); every field is written by one phase and read by the ones after it, except
+/// `ctrl`, which `content_requests` may re-resolve once after a player request changes the
+/// metadata store's skipped set.
 pub(crate) struct Frame {
-    /// The HUD's control slot for this frame, sampled once before input is read.
+    /// The HUD's control slot for this frame, sampled by `Frame::begin` for input and the pump.
+    /// `content_requests` re-resolves it once, and pushes it to the page, on a frame where BACK
+    /// dismissed an offer; `update` and `report` read the refreshed value.
     pub(crate) ctrl: plx_appkit::player_hud::ControlSlot,
     /// `clock::now()` at the ingest boundary — THE frame time every phase after it uses.
     pub(crate) now: u32,
@@ -2134,10 +2138,6 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // `Tick` now — `step_scrub_hold`, formula for formula, and the debounce gone with
         // click-to-confirm (a key target waits for OK) — which is what makes the field have one
         // owner. Phase 12, PX-PLAYER.)
-        // A BACK-dismissed offer is gone for the rest of its SEGMENT even though `slot()` keeps
-        // resolving it from the playhead: resolve the latch here, once, before focus follows the
-        // row and before the bottom of the frame hands the page this slot.
-        fr.ctrl = resolve_offer_dismissal(app, fr.ctrl);
         follow_control_row(app, fr.ctrl, fr.now);
         // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to the
         // next episode out of nowhere. `hud.dismissed` has to clear with it, not just the
@@ -2561,29 +2561,6 @@ fn loop_requests(app: &mut App) {
     }
 }
 
-/// **Turn the frame's raw `slot()` into what the viewer asked to see.** A BACK over an offer
-/// latches that segment in `HudState::dismissed_offer`; the slot is recomputed from the playhead
-/// every frame, so the latch has to be applied here — once, before focus follows the row and
-/// before the page is handed its slot for the frame.
-///
-/// Clearing `was_standin` is half of the operation: `follow_control_row` reads it as "a stand-in
-/// was under the ring last frame", and without this the dismissal would look like the segment
-/// ending under the ring and send the cursor to the scrubber. BACK dismissed an offer; it did not
-/// walk away from the row.
-fn resolve_offer_dismissal(
-    app: &mut App,
-    ctrl: plx_appkit::player_hud::ControlSlot,
-) -> plx_appkit::player_hud::ControlSlot {
-    let Some(player) = super::bridge::player_mut(&mut app.pages) else {
-        return ctrl;
-    };
-    let shown = player.hud.slot_after_dismissal(ctrl, &app.player.session);
-    if shown != ctrl {
-        player.hud.was_standin = false;
-    }
-    shown
-}
-
 /// Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
 /// rather than a "was something shown" bool, because the two edges have different jobs
 /// and the previous bool implemented neither of the ones its comment promised.
@@ -2750,10 +2727,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // are stepped from its own `Tick` for the reason `HudMotion::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
         // rate that depended on which panel was open. What the loop still owes the instance is
-        // this frame's ONE resolve of the control-row slot (`slot()`'s own doc: `playpos_ns` is
-        // written by LG's media thread and `player::pump` runs between the input handlers and
-        // the draw, so re-deriving it per call site let a keypress dispatch to a control the
-        // same frame then declined to draw).
+        // this frame's resolved control-row slot (`content_requests` re-resolves it after a
+        // dismissal; `slot()`'s own doc: `playpos_ns` is written by LG's media thread and
+        // `player::pump` runs between the input handlers and the draw, so re-deriving it per
+        // call site let a keypress dispatch to a control the same frame then declined to draw).
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.slot = fr.ctrl;
         }
@@ -4044,9 +4021,9 @@ mod lifecycle_regression_tests {
         assert!(app.route() == AppArg::Watchlist);
         let instance = app.pages.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
         let hex = [0x5d, 0x77, 0x6b, 0x1d, 0x96, 0xb6, 0x55, 0x00, 0x1f, 0x2a, 0x9c, 0x3e];
-        let fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         app.bridge.push_watchlist_req_for_test(MachineId::Instance(instance), WatchlistOut::OpenCatalog("plex://movie/not-a-hex".into()));
-        content_requests(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
         for i in 40..80 {
             frame(&mut app, i * 16);
         }
@@ -4055,7 +4032,7 @@ mod lifecycle_regression_tests {
             MachineId::Instance(instance),
             WatchlistOut::OpenCatalog("plex://movie/5d776b1d96b655001f2a9c3e".into()),
         );
-        content_requests(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
         for i in 80..140 {
             frame(&mut app, i * 16);
         }
@@ -4081,7 +4058,7 @@ mod lifecycle_regression_tests {
                 fr.now = *t;
                 let inputs = if n == 0 { keys.clone() } else { vec![] };
                 super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
-                content_requests(app, &fr);
+                content_requests(app, &mut fr);
                 loop_requests(app);
             }
         };
@@ -4133,7 +4110,7 @@ mod lifecycle_regression_tests {
                     fr.now = *t;
                     let inputs = if n == 0 { keys.clone() } else { vec![] };
                     super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
-                    content_requests(app, &fr);
+                    content_requests(app, &mut fr);
                     loop_requests(app);
                 }
             };
@@ -4597,44 +4574,56 @@ mod lifecycle_regression_tests {
         assert_eq!(app.pages.focus().map(|k| k.elem), Some(ELEM_TAB_BASE), "…for the tab the pin named");
     }
 
-    /// The BACK latch is resolved before the page is handed the frame's slot. A stand-in that is
-    /// still under the playhead would otherwise reappear on the very next frame, and
-    /// `was_standin` would make its disappearance look like a segment ending under the ring.
+    /// **BACK over an offer swaps the discs in on the frame that took it.** The frame's slot is
+    /// sampled before the dispatcher runs, so the page asks the metadata store to retire the
+    /// segment and the loop re-resolves the row after draining that request. Without the re-resolve
+    /// the offer would be handed back to the page once more; without the store the next frame's
+    /// `slot()` would offer it again. Both are asserted here, on a mounted player whose slot the
+    /// REAL `player_hud::slot` produced.
     #[test]
-    fn a_dismissed_offer_resolves_to_the_discs_before_the_page_is_handed_the_slot() {
-        use plx_appkit::player_hud::{ControlSlot, Controls};
-        use plx_data::metadata::{Marker, MarkerKind};
+    fn back_over_an_offer_swaps_in_the_discs_on_the_same_frame() {
+        use plx_appkit::player_hud::{control_elem, geometry::GROUP_ROW, ControlSlot};
         let _serial = plx_base::testlock::serial();
-        let mut app = app();
-        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
-        frame(&mut app, 16);
-        let intro = Marker {
-            kind: MarkerKind::Intro,
-            start_ms: 1_000,
-            end_ms: 60_000,
-            final_seg: false,
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED back_over_an_offer_swaps_in_the_discs_on_the_same_frame: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
         };
-        let skip = plx_appkit::player_hud::slot_for(
-            Some(intro),
-            false,
-            plx_media::route::NextEpisodeMode::Countdown,
-        );
+        let mut t = playing_inside_final_credits(&mut rig);
         {
-            let player = super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted");
-            player.hud.dismissed_offer = Some((MarkerKind::Intro, intro.start_ms));
-            player.hud.was_standin = true;
-            player.hud.nav.focus = plx_appkit::player_hud::geometry::GROUP_ROW;
+            let player = super::super::bridge::player_mut(&mut rig.app.pages).expect("the player page is mounted");
+            assert!(matches!(player.slot, ControlSlot::UpNext(_)), "the credits offer is up");
+            assert_eq!(player.hud.nav.focus, GROUP_ROW, "the offer parked the ring on the row");
+            // This harness injects a key straight into the dispatcher, so it stands in for
+            // `note_global_press`, which the real input path runs before the page sees the press.
+            player.hud.visible_at_press = true;
         }
-        let shown = resolve_offer_dismissal(&mut app, skip);
+        let back = back_key(t);
+        step(&mut rig.app, &mut t, vec![back]);
+        let player = super::super::bridge::player(&rig.app.pages).expect("the player page is mounted");
         assert!(
-            matches!(shown, ControlSlot::Discs(Controls::NONE)),
-            "the dismissed offer resolves to the discs, with their live controls"
+            matches!(player.slot, ControlSlot::Discs(_)),
+            "the frame that took BACK draws the discs, not the offer it just dismissed"
         );
-        let player = super::super::bridge::player(&app.pages).expect("the player page is mounted");
-        assert!(!player.hud.was_standin, "the stand-in edge is spent, not mistaken for a departure");
-
-        let off = resolve_offer_dismissal(&mut app, ControlSlot::Discs(Controls::NONE));
-        assert!(matches!(off, ControlSlot::Discs(_)), "a plain row is untouched");
+        assert_eq!(player.hud.nav.btn, player.row_primary(), "the cursor is on a real disc");
+        let primary = player.row_primary();
+        // The app's re-seat is a delivery, drained at the top of the next frame — before any key
+        // that frame can be read. No press can land between these two frames.
+        step(&mut rig.app, &mut t, vec![]);
+        assert_eq!(
+            rig.app.pages.focus().map(|k| k.elem),
+            Some(control_elem(primary)),
+            "the FocusEngine followed the cursor, so OK presses what is drawn"
+        );
+        assert!(
+            plx_media::player::is_playing(&rig.app.player.session),
+            "the rig is still Playing, so a Discs row below can only come from the store"
+        );
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(
+            fr.ctrl.is_discs(),
+            "the segment is retired in the store, so the next frame's row is the discs, not the offer again"
+        );
     }
 
     /// Offer `standin` on a mounted player, let the offer seat the engine, retire it for `discs`,
@@ -5575,7 +5564,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe {
             update(app, &mut fr);
@@ -6836,7 +6825,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
         app.bridge.assert_no_store_jobs_left_for_test();
@@ -7585,7 +7574,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
     }
