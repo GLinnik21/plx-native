@@ -98,8 +98,8 @@
 //! opacity (a `GlassFace` is not cascaded by the painter's alpha, so [`widgets::chip_face`] scales it,
 //! as the chip's unfurl does) — and a hidden hint draws nothing, so it declares no surface and costs
 //! no capture or composite at rest. The weight is the FIXED [`theme::HINT_GLASS_TOP`]/`BOT`: the
-//! track solves its density per frame from a framebuffer readback, and a standing hint does not
-//! take one.
+//! track solves its density from a readback of its band's backdrop image (twice a second), and a
+//! standing hint does not take one.
 //!
 //! **Where "learned" and "read" live.** Frame-thread `thread_local`s, backed by the install's
 //! session preference record without this crate naming it: the application seeds the per-surface

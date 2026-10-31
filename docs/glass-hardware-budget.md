@@ -906,11 +906,18 @@ below, and they are consistent with it.
 > per reading: at 679 px `GPU_ACTIVE` p95 read 10.54M against 8.82M with the probe disabled, with
 > 93 period-31 gaps and 7 frames over one refresh. The probe now copies five 13-texel boxes from the
 > band's retained image at the frame boundary (`GroundProbe::kick_queued`), behind the same fence
-> and read-back. At 679 px `GPU_ACTIVE` reads p50 8.70M, p95 8.83M, p99 10.64M, with 0 frames over
-> one refresh and no period-31 gaps. At 1544 px it reads p50 9.73M, p95 9.87M, p99 11.64M, with
-> 3.7% of frames over one refresh; the old probe read p50 9.65M, p95 11.47M, 6.8%. Missed refreshes
-> in cycles 2-60 read 8 on `hero-pong` and 13 on `grid-pong`, both inside the control spread
-> (`profile-tv`, fact (b)), so no change is claimed.
+> and read-back; a reading now repeats every `GROUND_SAMPLE_EVERY` + 2 frames. At 679 px
+> `GPU_ACTIVE` reads p50 8.70M, p95 8.83M, p99 10.64M, with 0 frames over one refresh. At 1544 px
+> it reads p50 9.73M, p95 9.87M, p99 11.64M, with 3.7% of frames over one refresh; the old probe
+> read p50 9.65M, p95 11.47M, 6.8%. Missed refreshes in cycles 2-60 read 8 on `hero-pong` and 13
+> on `grid-pong`, both inside the control spread (`profile-tv`, fact (b)), so no change is claimed.
+>
+> The p99 sits about 1.9M over the p50 at 679 px, and that is not the probe. With the probe
+> disabled the 679 px p99 was 10.65M against 10.64M now. It is the hero flips, which make up the
+> 4.2% upper mode in both legs: the upper mode's gap histogram is gap 1 (the flips) and scattered
+> 15-18 and 440-450, with neither 31 nor 32, and the `GPU_ACTIVE` of the frame after a kick equals
+> the all-frames value (8.70M against 8.70M at 679 px, 9.73M against 9.73M at 1544 px). No probe-off
+> leg exists at 1544 px, so its 11.64M p99 has no baseline to be compared with.
 >
 > The copy now lands in the gap between frames. A kick-and-read repeats every
 > `GROUND_SAMPLE_EVERY` + 2 frames (copied at one boundary, read at the next), and the gap at that

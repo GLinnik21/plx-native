@@ -189,22 +189,15 @@ struct DrawnStrip {
     track: f32,
 }
 
-/// **DRAW the shared strip for `faces`** (a recording painter, the ground read answered from a
-/// frozen page) and report the material the draw published on the band, with the widths it stood
+/// **DRAW the shared strip for `faces`** (a recording painter, the ground read answered by the
+/// last reading) and report the material the draw published on the band, with the widths it stood
 /// on. [`tab_glass_on`] takes no width, so asking it says nothing about any strip: the band's
 /// published material is what the chip, the account menu's lift and the planner read, and it is
 /// the answer that changes if the draw ever decides the material by width again.
 fn drawn_strip(generation: u32, faces: &[TabFace]) -> DrawnStrip {
     let _g = serial_for_motion();
-    // the draw queues a framebuffer read of the ground under the track, which needs GL; a frozen
-    // page answers from the last reading (as `the_top_bar_draws_every_label_at_full_ink…` does)
-    struct Frozen(bool);
-    impl Drop for Frozen {
-        fn drop(&mut self) {
-            plx_gfx::gfx::set_page_frozen(self.0);
-        }
-    }
-    let _frozen = Frozen(plx_gfx::gfx::set_page_frozen(true));
+    // the draw calls `gfx::sample_ground`, which reads a band image and so needs a walk; with none
+    // it answers the last reading and copies nothing
     let labels = TabLabels { generation, faces };
     let mut strip = StripRender::new();
     let mut band = TabBand::new();

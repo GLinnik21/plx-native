@@ -5353,10 +5353,33 @@ static mut GROUND_SPAN: f32 = 0.0;
 pub fn ground_span() -> f32 {
     unsafe { *std::ptr::addr_of!(GROUND_SPAN) }
 }
-/// Did the bar's latest [`sample_ground`] call find a current band image to read? `false`: the
-/// answer it gave was the last reading (or none) — see [`ground_taps`] for why a call finds none.
-pub fn ground_sourced() -> bool {
-    unsafe { (*std::ptr::addr_of!(GROUND_PROBE)).sourced }
+/// What a [`GroundProbe`] call stood on — the bar's is `groundlog`'s `src=` word.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GroundSource {
+    /// The call was refused before it looked (`may_read` false, a blur source pass, a frozen page):
+    /// the answer is the last reading, and no source was asked for.
+    Held,
+    /// The call looked and found nothing to copy from — see [`ground_taps`] for why a call finds
+    /// none. The answer is the last reading (or none).
+    Absent,
+    /// The call found a source: for the bar, a current band image holding its rect.
+    Found,
+}
+
+impl GroundSource {
+    /// The word `groundlog` prints for the bar's: `src=held`, `src=none` or `src=image`.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Held => "held",
+            Self::Absent => "none",
+            Self::Found => "image",
+        }
+    }
+}
+
+/// What the bar's latest [`sample_ground`] call stood on.
+pub fn ground_source() -> GroundSource {
+    unsafe { (*std::ptr::addr_of!(GROUND_PROBE)).source }
 }
 /// The bar's probe: its cadence, its target, and the reading in flight.
 static mut GROUND_PROBE: GroundProbe<GROUND_TAPS> = GroundProbe::new(GROUND_SAMPLE_EVERY, GROUND_TAP_PX);
@@ -5578,9 +5601,9 @@ pub struct GroundProbe<const N: usize> {
     reader: c_uint,
     /// The composite terms of the image reading in flight (identity until the first copy).
     composite: (f32, [[f32; 3]; N]),
-    /// Did the latest sampler call have something to copy from? What `groundlog` reports as `src`,
-    /// so "the bar reads flat" and "the bar never found its band" are different lines.
-    sourced: bool,
+    /// What the latest sampler call stood on. What `groundlog` reports as `src`, so "the bar reads
+    /// flat", "the bar never found its band" and "the call was refused" are different lines.
+    source: GroundSource,
 }
 
 impl<const N: usize> GroundProbe<N> {
@@ -5595,7 +5618,7 @@ impl<const N: usize> GroundProbe<N> {
             queued: None,
             reader: 0,
             composite: (1.0, [[0.0; 3]; N]),
-            sourced: false,
+            source: GroundSource::Absent,
         }
     }
 
@@ -5645,9 +5668,16 @@ impl<const N: usize> GroundProbe<N> {
     /// Nothing of framebuffer 0 is pending after the swap, so binding the reader framebuffer here
     /// adds no render pass to it, which is the whole point of the move: the same five copies made
     /// inside the page split the frame's pass on the Mali (period-31 spikes, television 2026-10-31).
+    ///
+    /// The copy is wrapped in the `gndkick` span, as the framebuffer probe's is, so a FRAMEDROP line
+    /// can name it. It lands on the line of the frame whose swap has just returned (when that frame
+    /// prints one): `report()` takes the spans in the same loop iteration, after `present_and_swap`
+    /// and so after this. The copy runs after the swap's `Phase::Swap` stamp, so its time is in that
+    /// line's `spans=` and in none of its legs or its `total=`; the next frame's present interval
+    /// (swap to swap) is the one that includes it.
     unsafe fn kick_queued(&mut self, who: &str) {
         let Some(taps) = self.queued.take() else { return };
-        if !self.copy_image(&taps, who) {
+        if !plx_base::diag::spans::span("gndkick", || self.copy_image(&taps, who)) {
             self.cadence.abandon();
             return;
         }
@@ -5724,7 +5754,7 @@ impl<const N: usize> GroundProbe<N> {
     /// only queues the copy for the frame boundary. `src` is `None` when there is nothing to copy
     /// from this call; a due reading is then owed ([`ProbeCadence::step`]).
     unsafe fn step(&mut self, have: bool, src: Option<TapSource<N>>, who: &str) -> Option<Vec<u8>> {
-        self.sourced = src.is_some();
+        self.source = if src.is_some() { GroundSource::Found } else { GroundSource::Absent };
         if self.off {
             return None;
         }
@@ -5890,15 +5920,19 @@ fn ground_taps(r: [f32; 4]) -> Option<ImageTaps<GROUND_TAPS>> {
 
 pub fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
+        let probe = &mut *std::ptr::addr_of_mut!(GROUND_PROBE);
         // A caller can refuse a FRESH reading while still wanting the last one — the route
         // cross-fade's case. `ui::nav` dips the whole page toward `SURFACE_APP` while the chrome
         // holds still, so for the length of a transition the pixels under this bar are not the
         // page's colour at all, and a reading queued there latches a ground the screen is not on
-        // for the next thirty drawn frames.
+        // for the next thirty drawn frames. A refused call returns before `step`, so it says so
+        // itself: `groundlog` would otherwise repeat the last call's `src=`.
         if !may_read {
+            probe.source = GroundSource::Held;
             return *std::ptr::addr_of!(GROUND_RGB);
         }
         if blur_source_pass() || !may_read_ground() {
+            probe.source = GroundSource::Held;
             return *std::ptr::addr_of!(GROUND_RGB);
         }
         let have = (*std::ptr::addr_of!(GROUND_RGB)).is_some();
@@ -5906,7 +5940,6 @@ pub fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
         // fills the screen), a band whose source did not refresh, or one that does not hold the
         // track. The answer is then the last reading, and the cadence keeps the reading owed.
         let src = ground_taps(r).map(TapSource::Image);
-        let probe = &mut *std::ptr::addr_of_mut!(GROUND_PROBE);
         let Some(buf) = probe.step(have, src, "ground") else {
             return *std::ptr::addr_of!(GROUND_RGB);
         };
@@ -7497,8 +7530,7 @@ fn field_run_finished(run: u32) -> bool {
 /// The refusals, and why each one is not a guess:
 ///
 /// * **Inside a blur source pass** ([`BLUR_IN_PASS`]) the bound framebuffer is a quarter-resolution
-///   crop of the page, not the page — the same reason [`sample_ground`] and
-///   [`sample_control_ground`] refuse there.
+///   crop of the page, not the page — the same reason [`sample_control_ground`] refuses there.
 /// * **On a video-plane frame** framebuffer 0 is the punch-through hole the television composites
 ///   the plane through, so a read returns transparent black; [`video_plane_refuses`] is the shared
 ///   gate, and it is why this returns `None` here rather than a photograph of the hole —
@@ -9187,13 +9219,45 @@ mod tests {
         set_page_frozen(was);
         unsafe {
             let probe = &*std::ptr::addr_of!(GROUND_PROBE);
-            assert!(!ground_sourced(), "no band image: the tell says so");
+            assert_eq!(ground_source(), GroundSource::Absent, "no band image: the tell says so");
             assert!(probe.queued.is_none() && probe.target.is_none(), "no copy was owed or made");
             assert_eq!(probe.cadence.pending, None);
             GROUND_RGB = None;
             (*std::ptr::addr_of_mut!(GROUND_PROBE)).invalidate();
         }
         assert!(backdrop::member_image(Rect::new(620.5, 36.0, 679.0, 76.0)).is_none(), "no walk, no band");
+    }
+
+    /// A refused call is not a call that found nothing: it returns before the probe's `step`, and
+    /// `groundlog` printed whichever `src=` the last unrefused call left. Each refusal (the caller's
+    /// `may_read`, a frozen page) says `held`; the next unrefused call says what it found.
+    #[test]
+    fn a_refused_call_reads_held_and_not_the_last_calls_source() {
+        let _g = plx_base::testlock::serial();
+        let r = [620.5f32, 36.0, 679.0, 76.0];
+        unsafe {
+            GROUND_RGB = Some([0.25, 0.5, 0.75]);
+            (*std::ptr::addr_of_mut!(GROUND_PROBE)).invalidate();
+        }
+        let was = set_page_frozen(false);
+        sample_ground(r, true);
+        assert_eq!(ground_source(), GroundSource::Absent, "no walk: looked, found no band");
+        sample_ground(r, false);
+        assert_eq!(ground_source(), GroundSource::Held, "the caller refused");
+        sample_ground(r, true);
+        assert_eq!(ground_source(), GroundSource::Absent, "held does not stick");
+        set_page_frozen(true);
+        sample_ground(r, true);
+        assert_eq!(ground_source(), GroundSource::Held, "a frozen page refused");
+        set_page_frozen(was);
+        assert_eq!(
+            [GroundSource::Held, GroundSource::Absent, GroundSource::Found].map(GroundSource::word),
+            ["held", "none", "image"]
+        );
+        unsafe {
+            GROUND_RGB = None;
+            (*std::ptr::addr_of_mut!(GROUND_PROBE)).invalidate();
+        }
     }
 
     /// The region and image size the chain produces for a band holding `track`, at a 1920x1080
