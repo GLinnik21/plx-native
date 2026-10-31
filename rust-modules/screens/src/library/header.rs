@@ -47,6 +47,15 @@ pub(super) fn pack_names(widths: &[f32], selected: usize, budget: f32, more_w: f
     vec![selected]
 }
 
+/// What the read-out's filtered count was taken under: the library listing (the key `unfiltered`
+/// carries) and the filter terms in force. A count is only ever shown for the key it was counted under.
+#[derive(Clone, PartialEq)]
+pub(super) struct FilterKey {
+    library: (LibrarySectionIdentity, u32, plx_data::browse::LibraryType),
+    genre: Option<String>,
+    unwatched: bool,
+}
+
 fn item(label: impl Into<String>) -> HeaderItem {
     HeaderItem { label: label.into(), focusable: true, ..Default::default() }
 }
@@ -112,18 +121,41 @@ impl LibraryScreen {
         genre || unwatched
     }
 
-    /// Remember the total of the unfiltered listing the page last saw: the data layer publishes
-    /// only the filtered total, and the read-out needs both.
-    fn note_unfiltered<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+    /// What a filtered total belongs to: this listing's library and the filter terms it was asked
+    /// with. `None` while the listing has no identity or the page no section.
+    fn filter_key<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<FilterKey> {
         let listing = H::listing(cx);
-        let (Some(id), Some(section)) = (listing.id(), self.section.clone()) else { return };
-        if listing.total() < 0 || listing.fetch() != SecFetch::Ready { return; }
-        let unfiltered = !listing.unwatched() && listing.genre().is_none();
-        let key = (section, id.epoch, listing.library_type());
-        if unfiltered {
-            self.unfiltered = Some((key, listing.total()));
-        } else if self.unfiltered.as_ref().is_some_and(|(seen, _)| *seen != key) {
-            self.unfiltered = None;
+        let (id, section) = (listing.id()?, self.section.clone()?);
+        Some(FilterKey {
+            library: (section, id.epoch, listing.library_type()),
+            genre: listing.genre().map(|genre| genre.id.clone()),
+            unwatched: listing.unwatched(),
+        })
+    }
+
+    /// Remember the totals the read-out is made of: the data layer publishes only the filtered
+    /// total, and the read-out needs the unfiltered one beside it.
+    ///
+    /// **The filtered total is held across a reload that keeps its terms.** A sort pick forgets the
+    /// listing (`reset_listing`: loading, no total) under the same genre and Unwatched terms, and
+    /// the count of what those terms match has not changed; so the read-out keeps saying it, and
+    /// stays on the row to glide with its neighbours instead of leaving and coming back when the
+    /// listing lands. The held count is dropped the first time the page sees any other library or
+    /// other terms, and when the listing lands unfiltered, so it is never shown for a filter it
+    /// was not counted under.
+    fn note_totals<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        let listing = H::listing(cx);
+        let Some(key) = self.filter_key(cx) else { return };
+        if listing.total() < 0 || listing.fetch() != SecFetch::Ready {
+            if self.filtered.as_ref().is_some_and(|(held, _)| *held != key) { self.filtered = None; }
+            return;
+        }
+        if key.genre.is_none() && !key.unwatched {
+            self.unfiltered = Some((key.library, listing.total()));
+            self.filtered = None;
+        } else {
+            if self.unfiltered.as_ref().is_some_and(|(seen, _)| *seen != key.library) { self.unfiltered = None; }
+            self.filtered = Some((key, listing.total()));
         }
     }
 
@@ -134,10 +166,18 @@ impl LibraryScreen {
         if !self.filter_active(cx) { return None; }
         let listing = H::listing(cx);
         let (_, total) = self.unfiltered.as_ref()?;
-        if listing.total() < 0 || listing.fetch() != SecFetch::Ready { return None; }
+        // The listing's own count once it has one; while it reloads under the same terms, the count
+        // held for them (see [`Self::note_totals`]).
+        let matching = if listing.total() >= 0 && listing.fetch() == SecFetch::Ready {
+            listing.total()
+        } else {
+            let (held, matching) = self.filtered.as_ref()?;
+            if self.filter_key(cx).as_ref() != Some(held) { return None; }
+            *matching
+        };
         let locale = plx_platform::i18n::current();
         let of_total = listing.library_type().count_label(self.kind, *total);
-        Some(plx_platform::i18n::msg::library_header_filtered_of(&locale.number(listing.total()), &of_total))
+        Some(plx_platform::i18n::msg::library_header_filtered_of(&locale.number(matching), &of_total))
     }
 
     /// The right cluster as it is now, and in its widest case (every value at its longest), which
@@ -213,7 +253,8 @@ impl LibraryScreen {
         for (id, source) in directory.sources() { (id.raw(), source.handle.as_str()).hash(&mut h); }
         (listing.id().map(|id| (id.epoch, id.section, id.query)), listing.sort_index(), listing.sort_desc(),
             listing.unwatched(), listing.genre().map(|genre| genre.id.as_str()), listing.total(),
-            listing.fetch() == SecFetch::Ready, listing.sorts().len(), self.unfiltered.as_ref().map(|(_, total)| *total)).hash(&mut h);
+            listing.fetch() == SecFetch::Ready, listing.sorts().len(), self.unfiltered.as_ref().map(|(_, total)| *total),
+            self.filtered.as_ref().map(|(_, total)| *total)).hash(&mut h);
         match self.pending.grid().filter(|(target, _)| target.matches(listing)).map(|(_, action)| action) {
             Some(GridAction::Sort { key, desc }) => (1u8, key.as_str(), *desc).hash(&mut h),
             Some(GridAction::Unwatched { desired }) => (2u8, *desired).hash(&mut h),
@@ -248,7 +289,7 @@ impl LibraryScreen {
             (CollectionsControl::Unknown, held @ CollectionsControl::Count(_)) if of == self.header_of => held,
             (read, _) => read,
         };
-        self.note_unfiltered(cx);
+        self.note_totals(cx);
         // `sync` runs every frame; the row (text measurement, packing) is rebuilt only when one
         // of the things it is made of changed.
         let key = self.header_key(cx);

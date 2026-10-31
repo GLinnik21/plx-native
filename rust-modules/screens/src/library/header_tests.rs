@@ -566,6 +566,135 @@ fn a_picked_sort_swaps_its_criterion_through_the_opener_lift() {
     assert_eq!(lifted(&page, &engine), (0.0, 1.0), "the settled lift draws the new criterion alone");
 }
 
+/// The sorts the read-out tests' listing offers: the first is the one in force.
+const READOUT_SORTS: [(&str, &str); 2] = [("titleSort", "Title"), ("addedAt", "Date added")];
+
+/// A settled two-library page of 36 films with its Collections count known, whose listing the
+/// Unwatched filter then narrows to 12 (the unfiltered total is learnt first, as the real page
+/// learns it): the row carries its "12 of 36" read-out. Returns the next tick's time too.
+fn filtered_page() -> (Fixture, LibraryScreen, FocusEngine<u32>, u32) {
+    knows_collections(&[(1, Ok(7))]);
+    let (mut fixture, mut page, mut engine) = grid_page(2);
+    fixture.listing = fixture.listing.clone().with_sorts(&READOUT_SORTS, 0);
+    let mut ms = 0;
+    let mut settle = |fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, frames: u32| {
+        for _ in 0..frames { ms += 16; fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 })); }
+    };
+    settle(&fixture, &mut page, &mut engine, 30);
+    assert!(page.header.row().is_some_and(|row| row.readout().is_none()), "premise: unfiltered, no read-out");
+    fixture.listing = fixture.listing.clone().with_unwatched(true).with_query(2).with_total(12);
+    settle(&fixture, &mut page, &mut engine, 120);
+    assert!(page.header.row().is_some_and(|row| row.readout().is_some()), "premise: the filter puts the read-out on the row");
+    (fixture, page, engine, ms)
+}
+
+/// What the header row draws now.
+fn drawn_header(fixture: &Fixture, page: &LibraryScreen, engine: &FocusEngine<u32>) -> Vec<plx_ui::draw_census::Run> {
+    let cx = fixture.cx(engine);
+    let frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+    plx_ui::draw_census::capture_runs(|| page.draw_header(&frame))
+}
+
+/// A query edit as the menu delivers it, to the listing the page shows.
+fn pick(fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, edit: plx_data::stores::browse::QueryEdit) {
+    let id = fixture.listing.view().id().unwrap();
+    let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+    fixture.step(page, engine, ScreenEvent::App(AppMsg::LibraryEdit { target, edit }));
+}
+
+fn commits(effects: &[AppFx]) -> bool {
+    effects.iter().any(|fx| matches!(fx, AppFx::Store(_, StoreCmd::Browse(BrowseCmd::Addressed { work: LibraryWork::Commit { .. }, .. }))))
+}
+
+/// **A sort picked under a filter keeps the "12 of 36" read-out on the row and gliding with its
+/// neighbours through the reload.** The pick fades the grid out, then commits: the store forgets
+/// the listing (`Loading`, total -1) under the SAME filter terms, and the read-out cannot be read
+/// off a listing that has no total. It used to leave the row there, ~4 frames into the criterion's
+/// slide (it left through the swap's leaving face at the previous row's x) and fade back in when the
+/// listing landed, beside neighbours that travelled on the slide's spring. Driven through the real
+/// ticks, the real commit effect and a `Loading` listing, then the landing: on every frame the
+/// read-out is drawn ONCE at its resting opacity, as far along its way as Collections is along its.
+#[test]
+fn the_filter_readout_stays_and_glides_while_a_picked_sort_reloads_the_listing() {
+    use plx_data::stores::browse::QueryEdit;
+    let _guard = plx_base::testlock::serial();
+    let (mut fixture, mut page, mut engine, mut ms) = filtered_page();
+    let readout = page.header.row().and_then(|row| row.readout()).unwrap().to_owned();
+    let collections = plx_platform::i18n::msg::library_header_collections();
+    let x_of = |runs: &[plx_ui::draw_census::Run], text: &str, frame: &str| {
+        runs.iter().find(|run| run.text == text).unwrap_or_else(|| panic!("{frame}: {text} is drawn")).at.x
+    };
+    let rest = drawn_header(&fixture, &page, &engine);
+    let from = (x_of(&rest, &readout, "at rest"), x_of(&rest, collections, "at rest"));
+    let ink = plx_ui::theme::COUNT_FILTERED_INK[3];
+
+    pick(&fixture, &mut page, &mut engine, QueryEdit::Sort { key: "addedAt".into(), desc: false });
+    let reloading = fixture.listing.clone().with_sorts(&READOUT_SORTS, 1).with_query(3).with_total(0).with_fetch(SecFetch::Loading, -1);
+    let landed = fixture.listing.clone().with_sorts(&READOUT_SORTS, 1).with_query(3).with_total(12).with_fetch(SecFetch::Ready, 12);
+    let (mut committed, mut positions) = (None, Vec::new());
+    for frame in 0..240u32 {
+        ms += 16;
+        let effects = fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        if committed.is_none() && commits(&effects) {
+            committed = Some(frame);
+            // `browse::requery`: the same section under the new sort, forgotten and loading.
+            fixture.listing = reloading.clone();
+        }
+        if committed.is_some_and(|at| frame == at + 8) { fixture.listing = landed.clone(); }
+        let runs = drawn_header(&fixture, &page, &engine);
+        let said: Vec<_> = runs.iter().filter(|run| run.text == readout).collect();
+        assert_eq!(said.len(), 1, "frame {frame} (committed at {committed:?}): the read-out is drawn once: {said:?}");
+        assert!((said[0].ink[3] - ink).abs() < 1e-4, "frame {frame}: at its resting opacity, not fading: {}", said[0].ink[3]);
+        let label = format!("frame {frame}");
+        positions.push((x_of(&runs, &readout, &label), x_of(&runs, collections, &label)));
+        if committed.is_some_and(|at| frame > at + 8) && !page.header_swap.is_active() { break; }
+    }
+    assert!(committed.is_some(), "premise: the pick committed");
+    assert!(!page.header_swap.is_active(), "the swap landed");
+    let to = *positions.last().unwrap();
+    assert!((to.0 - from.0).abs() > 1.0 && ((to.0 - from.0) - (to.1 - from.1)).abs() < 0.01,
+        "premise: the new criterion moves the read-out as far as Collections ({from:?} to {to:?})");
+    for (frame, (readout_x, collections_x)) in positions.iter().enumerate() {
+        let (a, b) = ((readout_x - from.0) / (to.0 - from.0), (collections_x - from.1) / (to.1 - from.1));
+        assert!((a - b).abs() < 1e-3, "frame {frame}: the read-out is {a} of the way, Collections {b}");
+    }
+}
+
+/// **A held read-out belongs to its library and its filter terms.** The count the read-out keeps
+/// across a reload (above) is dropped the moment the reload is for other terms: with the filter
+/// turned off the read-out is gone, and a filter turned on again does not bring the old count back
+/// while its own listing loads; and it is gone for good when the listing lands unfiltered.
+#[test]
+fn a_held_readout_is_dropped_when_the_filter_terms_change() {
+    use plx_data::stores::browse::QueryEdit;
+    let _guard = plx_base::testlock::serial();
+    let (mut fixture, mut page, mut engine, mut ms) = filtered_page();
+    let readout = |page: &LibraryScreen| page.header.row().and_then(|row| row.readout()).map(str::to_owned);
+    let tick = |fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, ms: &mut u32, frames: u32| {
+        for _ in 0..frames { *ms += 16; fixture.step(page, engine, ScreenEvent::Tick(Tick { ms: *ms, dt_us: 16_667 })); }
+    };
+    let held = readout(&page).expect("premise: 12 of 36");
+    // The same terms reloading (a sort pick's requery) keep it.
+    let base = fixture.listing.clone();
+    fixture.listing = base.clone().with_query(3).with_total(0).with_fetch(SecFetch::Loading, -1);
+    tick(&fixture, &mut page, &mut engine, &mut ms, 10);
+    assert_eq!(readout(&page), Some(held.clone()), "the same terms, reloading: the read-out holds");
+    // The filter is turned off: its requery is for other terms, and nothing is held.
+    pick(&fixture, &mut page, &mut engine, QueryEdit::Unwatched(false));
+    fixture.listing = base.clone().with_unwatched(false).with_query(4).with_total(0).with_fetch(SecFetch::Loading, -1);
+    tick(&fixture, &mut page, &mut engine, &mut ms, 60);
+    assert_eq!(readout(&page), None, "the filter is off: no read-out while the listing loads");
+    // The filter is put back: ITS listing is loading, and the count of the one before is not shown.
+    fixture.listing = base.clone().with_unwatched(true).with_query(5).with_total(0).with_fetch(SecFetch::Loading, -1);
+    tick(&fixture, &mut page, &mut engine, &mut ms, 60);
+    assert_eq!(readout(&page), None, "a filter turned on again shows no count until its own listing lands");
+    // And it lands: the read-out is the new listing's own.
+    fixture.listing = base.with_query(5).with_total(9).with_fetch(SecFetch::Ready, 9);
+    tick(&fixture, &mut page, &mut engine, &mut ms, 60);
+    let landed = readout(&page).expect("the landed listing carries its read-out");
+    assert_ne!(landed, held, "and it counts the landed listing");
+}
+
 /// The kinds one descriptive draw of `page`, scrolled one grid pitch (the chrome fully tucked),
 /// declares: a capsule is a `glass` paint (the nav pill's live material).
 fn tucked_draw_kinds(fixture: &Fixture, page: &mut LibraryScreen, engine: &FocusEngine<u32>) -> Vec<(String, [f32; 4])> {

@@ -227,6 +227,10 @@ pub struct LibraryScreen {
     /// The total of the library's unfiltered listing the page last saw, keyed by the listing it
     /// belongs to: the "312 of 1,284" read-out's denominator. A projection, not canon.
     unfiltered: Option<((LibrarySectionIdentity, u32, plx_data::browse::LibraryType), i64)>,
+    /// The total the filter in force matched when its listing last landed, with the library and
+    /// terms it was counted under: the read-out's numerator, held while a sort pick reloads the
+    /// listing under the same terms (`header::note_totals`). A projection, not canon.
+    filtered: Option<(header::FilterKey, i64)>,
     /// A library was just chosen with OK: the page seats the name the reader pressed and shows the
     /// top of the page, where the header is, instead of restoring the new library's scroll.
     switched: bool,
@@ -316,7 +320,7 @@ impl LibraryScreen {
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
             libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), header_of: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
-            type_before_collections: None, unfiltered: None,
+            type_before_collections: None, unfiltered: None, filtered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
             scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), capsule_text: plx_ui::scroll_chrome::CapsuleText::default(), restore_scroll: None,
