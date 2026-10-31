@@ -343,7 +343,11 @@ impl<H: Host> Navigation<H> {
         if previous != current {
             if let Some(host) = previous {
                 if !self.modals.surfaces.is_empty() || !self.modals.retired.is_empty() {
-                    let modal = std::mem::take(&mut self.modals);
+                    let mut modal = std::mem::take(&mut self.modals);
+                    // A surface already closing (an item menu's "Go to": it dismisses, the page
+                    // opens) is over: covering it would bring it back on BACK, and its host would
+                    // be covered again with nothing left to uncover it.
+                    out.extend(modal.retire_where(|s| s.phase == modal::Phase::Closing));
                     out.extend(modal.surfaces.iter().map(|s| Life::Ev(s.entry.id, ScreenEvent::Cover)));
                     self.covered_modals.push((host, modal));
                 }
@@ -376,7 +380,11 @@ impl<H: Host> Navigation<H> {
                 .is_some_and(|i| i.screen.covered_surfaces_ready());
             if !needs_body || ready {
                 self.modals = self.covered_modals.remove(i).1;
-                if let Some(host) = current { out.push(Life::Ev(host, ScreenEvent::Cover)); }
+                // Only a surface that is still up covers its host again; one that was retired
+                // while the page was away leaves the host as BACK left it, uncovered.
+                if let Some(host) = current.filter(|_| !self.modals.surfaces.is_empty()) {
+                    out.push(Life::Ev(host, ScreenEvent::Cover));
+                }
                 for surface in &self.modals.surfaces {
                     if surface.entry.inst.is_none() { out.push(Life::Mount(surface.entry.id)); }
                     out.push(Life::Ev(surface.entry.id, ScreenEvent::Uncover));

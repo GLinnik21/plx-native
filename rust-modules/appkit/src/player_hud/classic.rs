@@ -748,9 +748,11 @@ fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
 /// at the knob's position, floated above the knob; after it, the same still fading out. Draws
 /// nothing for a part with no BIF index, and nothing until the first still lands.
 pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
-    use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, still_path, Look, REQ_H, REQ_W};
-    let part = plx_media::route::cur_part_id(ps);
-    let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw();
+    use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, PosterStills, Stills};
+    let mut stills = PosterStills {
+        sid: plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
+        part: plx_media::route::cur_part_id(ps),
+    };
     let show = if model.scrub_ns < 0 {
         row.preview.motion.exit(bar.now)
     } else if bar.dur_ns <= 0 {
@@ -758,30 +760,17 @@ pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSess
     } else {
         let generation = plx_media::route::sess(ps);
         let target = still_ms(bar.pos_ns);
-        let look = |ms: i64| {
-            let path = still_path(part, ms);
-            if plx_ui::tex::resolve_on(sid, &path, REQ_W, REQ_H, false) != 0 {
-                Look::Ready
-            } else if plx_ui::tex::failed_on(sid, &path, REQ_W, REQ_H, false) {
-                Look::Failed
-            } else {
-                Look::Waiting
-            }
-        };
-        let shown = row.preview.step((part, &generation), target, bar.now, look);
+        let shown = row.preview.step((stills.part, &generation), target, bar.now, |ms| stills.look(ms));
         let absent = row.preview.absent();
         row.preview.motion.observe(shown, target, absent, bar_x(bar.pos_ns, bar.dur_ns), bar.now)
     };
     let Some(sh) = show else { return };
-    let (tex, tw, th) = plx_ui::tex::resolve_wh_on(sid, &still_path(part, sh.ms), REQ_W, REQ_H, false);
-    if tex == 0 || tw <= 0.0 || th <= 0.0 {
-        return;
-    }
+    let Some((tex, tw, th)) = stills.tex(sh.ms) else { return };
     // In-place crossfade only between two resident stills of the same aspect; otherwise the swap is
     // immediate (the card's width would have to jump mid-fade).
     let prev = sh.prev.and_then(|(old, t)| {
-        let (otex, ow, oh) = plx_ui::tex::resolve_wh_on(sid, &still_path(part, old), REQ_W, REQ_H, false);
-        (otex != 0 && oh > 0.0 && ((ow / oh) - (tw / th)).abs() < 0.01).then_some((otex, t))
+        let (otex, ow, oh) = stills.tex(old)?;
+        ((ow / oh - tw / th).abs() < 0.01).then_some((otex, t))
     });
     let (w, _) = card_size(tw, th);
     let rest = card_rect(sh.knob_x, SB_X, sb_w(), SB_Y, w);
