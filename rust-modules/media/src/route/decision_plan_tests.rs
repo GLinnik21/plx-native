@@ -678,7 +678,10 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
             plx_data::metadata::DvPresentation::NotDv,
         );
         assert!(plan.dv_decision.presentation.declared().is_none());
-        assert_ne!(plan.dv_decision.capability, plx_platform::devcaps::dv::DvCapability::Supported, "{mode:?}");
+        // The source decision the resolve froze: the set's own answer, whatever the setting, and
+        // the unsupported column's verdict on a Profile 5 (refuse direct play).
+        assert_eq!(plan.src_dv_decision.capability, capability, "{mode:?}");
+        assert!(plan.src_dv_decision.presentation.refusal().is_some(), "{capability:?} {mode:?}");
         plx_plex::plex::reset_servers_for_test();
     }
 }

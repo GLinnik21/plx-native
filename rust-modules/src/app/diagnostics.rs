@@ -3332,6 +3332,37 @@ mod tests {
         assert!(video.contains("declare (supported)"), "{video}");
     }
 
+    /// Settings > Playback > Dolby Vision Off plays the base layer on a set that reports support.
+    /// The Video row still names what the set reported: `unsupported` there would be a false
+    /// statement about the television and read like a failed probe.
+    #[test]
+    fn an_off_profile_on_a_supported_set_reads_the_sets_answer_in_the_video_row() {
+        use plx_plex::plex::session::DolbyVisionMode;
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        let dovi = plx_data::metadata::Dovi {
+            present: true,
+            profile: 8,
+            bl_compat: 1,
+            el_present: false,
+            ..plx_data::metadata::Dovi::NONE
+        };
+        let decision = plx_media::route::frozen_dv_decision(
+            DolbyVisionMode::Off,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+            dovi,
+            "hevc",
+        );
+        assert!(plx_media::route::set_stream_declaration_decided_for_test(
+            &mut ps, "hevc", "eac3", 23.976, dovi, false, decision,
+        ));
+        let video = rows(&ps, &plx_media::player::Diag::default(), (0, 0, 0), 1_000)
+            .into_iter()
+            .find(|field| field.key == "Video")
+            .and_then(|field| field.val)
+            .expect("Video row");
+        assert!(video.contains("base-layer (supported)"), "{video}");
+    }
+
     /// Row keys are right-aligned into a [`FIELD_KEY_W`] gutter at the dense diagnostic size, so a
     /// key that grows past about a dozen characters runs into the panel's edge. The keys are
     /// English-only (no translation can widen them), so the English wording is the whole budget:

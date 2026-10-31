@@ -671,10 +671,14 @@ pub enum DvPresentation {
     Refuse(&'static str),
 }
 
-/// The capability a route planned from and the presentation derived from it at one route
-/// boundary. The capability is the probe passed through the seated profile's `DolbyVisionMode`
-/// gate, so it reads `Unsupported` under Off whatever the set said; the set's own answer is
-/// `devcaps::dv::capability()`, which Diagnostics' header prints. Both are copyable so reload, recovery and rollback preserve the installed decision exactly.
+/// The television's Dolby Vision answer a route planned from and the presentation derived from it at
+/// one route boundary. The capability is the probe's own answer, exactly what `devcaps::dv::capability()`
+/// held when the route was planned, and it is for READING OUT only (Diagnostics and the `dv:` log
+/// lines print it): nothing decides behaviour from it. The seated profile's `DolbyVisionMode` is
+/// applied to the presentation alone, so an Off profile on a set that reports support carries
+/// `Supported` with `NotDv` (the base layer) and a quoted line can tell it from a failed probe or a
+/// set without Dolby Vision. Both are copyable so reload, recovery and rollback preserve the
+/// installed decision exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DvDecision {
     pub capability: plx_platform::devcaps::dv::DvCapability,

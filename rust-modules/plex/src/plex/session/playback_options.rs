@@ -64,10 +64,11 @@ impl DolbyVisionMode {
         *self == Self::default()
     }
 
-    /// The capability a route plans from: `Auto` is the set's own answer, `Off` is `Unsupported`
-    /// whatever the set reports. Applied where a route is planned, never to the probe itself, so
-    /// Diagnostics' capability line still shows what the television said (a playing route's
-    /// `DvDecision` carries the gated value).
+    /// The capability a route's presentation is planned from: `Auto` is the set's own answer, `Off`
+    /// is `Unsupported` whatever the set reports. Applied where a route is planned
+    /// (`route::frozen_dv_decision`), to the presentation only: never to the probe itself and never
+    /// to the capability a playing route's `DvDecision` stores, so Diagnostics and the `dv:` log
+    /// lines still show what the television said.
     pub fn gate(self, probed: plx_platform::devcaps::dv::DvCapability) -> plx_platform::devcaps::dv::DvCapability {
         match self {
             DolbyVisionMode::Auto => probed,

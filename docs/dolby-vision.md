@@ -22,8 +22,10 @@ The seated profile's Settings > Playback > Dolby Vision is the second input. `Of
 route as Unsupported (`DolbyVisionMode::gate`, captured in `ResolveEnv` beside the probe), so a
 confirmed-support set follows the unsupported column for that profile: no node, the base layer
 for P8/P7, P5 refused direct play and asked of the server, which may refuse it as well (code 2000,
-`docs/pms-api.md`). A `dv: capability=unsupported` line from an Off profile reads exactly like a set
-without Dolby Vision, so check the setting before suspecting the probe.
+`docs/pms-api.md`). Only the presentation is gated: the route's `DvDecision` keeps the probe's own
+answer, so Off on a confirmed-support set logs `dv: capability=supported presentation=base-layer` and
+Diagnostics' Video row reads `base-layer (supported)`, which a failed probe or a set without Dolby
+Vision cannot produce (they read `unknown` and `unsupported`).
 
 **On webOS 3 a configd `true` is overridden to unsupported** (`webos::caps::platform_gate`, logged
 as `webos-caps: … answer=unsupported source=webos3`). Device-measured 2026-10-14 on an LG OLED C7

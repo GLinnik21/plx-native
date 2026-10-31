@@ -111,8 +111,9 @@ something.
 - **Dolby Vision and Dolby Atmos have their own document: `docs/dolby-vision.md`.** A DV node is
   emitted only when the boot-time configd probe definitely confirms hardware support and the seated
   profile's Dolby Vision setting is Auto (`ResolveEnv::dolby_vision_mode`, applied by
-  `DolbyVisionMode::gate` where the route plans). The route freezes that gated capability +
-  presentation decision, and every Load/reload/recovery consumes the
+  `DolbyVisionMode::gate` where the route plans, to the presentation only). The route freezes the
+  probe's own capability (for read-outs) + that gated presentation decision, and every
+  Load/reload/recovery consumes the
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
   exception. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.

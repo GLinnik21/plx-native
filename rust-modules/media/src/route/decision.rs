@@ -6184,34 +6184,28 @@ pub fn set_stream_declaration(
     dovi: plx_data::metadata::Dovi,
     immersive: bool,
 ) -> bool {
-    set_stream_declaration_with_capability(
+    install_stream_declaration(
         ps,
         vc,
         ac,
         fps,
         dovi,
         immersive,
-        dolby_vision_mode().gate(plx_platform::devcaps::dv::capability()),
+        frozen_dv_decision(dolby_vision_mode(), plx_platform::devcaps::dv::capability(), dovi, vc),
     )
 }
 
-fn set_stream_declaration_with_capability(
+/// The write [`set_stream_declaration`] makes once its Dolby Vision decision is frozen, shared with
+/// the test helpers below so they exercise the same refusal and the same single assignment.
+fn install_stream_declaration(
     ps: &mut PlaybackSession,
     vc: &str,
     ac: &str,
     fps: f64,
     dovi: plx_data::metadata::Dovi,
     immersive: bool,
-    capability: plx_platform::devcaps::dv::DvCapability,
+    decision: plx_data::metadata::DvDecision,
 ) -> bool {
-    let decision = plx_data::metadata::DvDecision {
-        capability,
-        presentation: dovi.presentation(
-            !plx_data::metadata::dv_withheld(),
-            capability,
-            plx_data::metadata::dv_video_codec(vc),
-        ),
-    };
     if decision.presentation.refusal().is_some() {
         crate::player::log(&format!(
             "playurl: refusing Dolby Vision declaration capability={} presentation={}",
@@ -6241,7 +6235,23 @@ pub fn set_stream_declaration_for_test(
     immersive: bool,
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
-    set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
+    let decision = frozen_dv_decision(plx_plex::plex::session::DolbyVisionMode::Auto, capability, dovi, vc);
+    install_stream_declaration(ps, vc, ac, fps, dovi, immersive, decision)
+}
+
+/// [`set_stream_declaration_for_test`] with the Dolby Vision decision supplied, so a test can plant
+/// what the profile's setting makes of the probe (`frozen_dv_decision(Off, Supported, ..)`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_stream_declaration_decided_for_test(
+    ps: &mut PlaybackSession,
+    vc: &str,
+    ac: &str,
+    fps: f64,
+    dovi: plx_data::metadata::Dovi,
+    immersive: bool,
+    decision: plx_data::metadata::DvDecision,
+) -> bool {
+    install_stream_declaration(ps, vc, ac, fps, dovi, immersive, decision)
 }
 
 /// Begin an attempt on `caps`, so [`stream_pcm`] and the planner read that value (tests).
