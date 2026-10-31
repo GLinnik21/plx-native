@@ -709,7 +709,12 @@ pub fn local_calendar_today() -> Option<[i32; 3]> {
 /// matters on the 32-bit television: an unrepresentable date remains unknown.
 pub fn local_calendar_date(seconds: i64) -> Option<[i32; 3]> {
     if seconds <= 0 { return None; }
-    let stamp = libc::time_t::try_from(seconds).ok()?;
+    civil_date_of(libc::time_t::try_from(seconds).ok()?)
+}
+
+/// The civil date `stamp` falls on in the operating system's timezone, for any `time_t` (a stamp
+/// before 1970 included, which [`local_calendar_date`] refuses).
+fn civil_date_of(stamp: libc::time_t) -> Option<[i32; 3]> {
     let mut out = std::mem::MaybeUninit::<libc::tm>::uninit();
     // SAFETY: both pointers are valid for localtime_r; the result is read only on success.
     if unsafe { libc::localtime_r(&stamp, out.as_mut_ptr()) }.is_null() { return None; }
@@ -717,13 +722,21 @@ pub fn local_calendar_date(seconds: i64) -> Option<[i32; 3]> {
     Some([date.tm_year.checked_add(1900)?, date.tm_mon + 1, date.tm_mday])
 }
 
-/// The Unix timestamp of the first moment of a calendar date in the operating system's timezone
-/// (`mktime`, `tm_isdst = -1`): the twin of [`local_calendar_date`], the other way round. Daylight
-/// saving is decided by the OS FOR THIS DATE, so two dates a day apart across a clock change are 23
-/// or 25 hours apart, and a midnight a zone skips (its clocks jump from 23:59 to 01:00) reads as the
-/// 01:00 that starts that day. `None` for a date that is not on the calendar (month 13, 30 February)
-/// and where `time_t` cannot hold the result, which on the 32-bit television is every date outside
-/// 1901-2038. A date before 1970 gives a negative stamp, which is a real instant.
+/// The Unix timestamp of the FIRST instant of a calendar date in the operating system's timezone: the
+/// twin of [`local_calendar_date`], the other way round. What is guaranteed is exactly this: the stamp
+/// falls on `date` and the second before it does not, or the answer is `None`. A day that begins at
+/// 00:00 gets its 00:00; a day whose midnight the zone skips (the clocks jump from 23:59 to 01:00)
+/// gets the 01:00 that begins it; a day whose midnight happens twice (the clocks fall back across it)
+/// gets the first. Daylight saving is the OS's, decided for this date, so two dates a day apart across
+/// a clock change are 23 or 25 hours apart. `None` also for a date that is not on the calendar (month
+/// 13, 30 February) and where `time_t` cannot hold the result, which on the 32-bit television is every
+/// date outside 1901-2038. A date before 1970 gives a negative stamp, which is a real instant.
+///
+/// `mktime` alone does not promise that. With `tm_isdst = -1` it must pick one reading of a midnight
+/// that does not exist or exists twice, and which one is the C library's: it may answer 23:00 of the
+/// PREVIOUS day, or the second 00:00. The three `tm_isdst` readings (-1, 0, 1) are therefore all tried
+/// and the smallest answer that passes the check above is returned. A host test cannot settle what the
+/// television's own `mktime` says for these days, which is why its answer is verified and not trusted.
 ///
 /// Like [`local_calendar_date`] this is the platform layer's read of the OS time zone, not a
 /// machine's: its caller is the application's runner, which hands it to a data job as a plain `fn`
@@ -733,17 +746,25 @@ pub fn local_midnight(date: [i32; 3]) -> Option<i64> {
     let [year, month, day] = date;
     // `mktime` normalises 30 February to 2 March: a date that is not on the calendar has no midnight.
     icu_calendar::Date::try_new_gregorian(year, u8::try_from(month).ok()?, u8::try_from(day).ok()?).ok()?;
-    // SAFETY: `tm` is plain integers (and, on glibc, a zone pointer that zero is valid for).
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    tm.tm_year = year.checked_sub(1900)?;
-    tm.tm_mon = month - 1;
-    tm.tm_mday = day;
-    tm.tm_isdst = -1;
-    // `mktime` answers -1 for "cannot represent" and -1 is also 23:59:59 on 31 Dec 1969 UTC; the day of
-    // the week is only filled in on success, so a -1 there tells the two apart.
-    tm.tm_wday = -1;
-    // SAFETY: `tm` is a valid, initialised `libc::tm` that `mktime` reads and normalises.
-    let stamp = unsafe { libc::mktime(&mut tm) };
-    if stamp == -1 && tm.tm_wday == -1 { return None; }
-    Some(i64::from(stamp))
+    [-1, 0, 1]
+        .into_iter()
+        .filter_map(|isdst| {
+            // SAFETY: `tm` is plain integers (and, on glibc, a zone pointer that zero is valid for).
+            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+            tm.tm_year = year.checked_sub(1900)?;
+            tm.tm_mon = month - 1;
+            tm.tm_mday = day;
+            tm.tm_isdst = isdst;
+            // `mktime` answers -1 for "cannot represent" and -1 is also 23:59:59 on 31 Dec 1969 UTC; the
+            // day of the week is only filled in on success, so a -1 there tells the two apart.
+            tm.tm_wday = -1;
+            // SAFETY: `tm` is a valid, initialised `libc::tm` that `mktime` reads and normalises.
+            let stamp = unsafe { libc::mktime(&mut tm) };
+            if stamp == -1 && tm.tm_wday == -1 { return None; }
+            // the first instant of the day: on it, and the second before it is not
+            (civil_date_of(stamp) == Some(date) && civil_date_of(stamp.checked_sub(1)?).is_some_and(|before| before != date))
+                .then_some(stamp)
+        })
+        .min()
+        .map(i64::from)
 }
