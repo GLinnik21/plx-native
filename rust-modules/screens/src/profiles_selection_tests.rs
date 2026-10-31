@@ -160,3 +160,16 @@ fn constructor_and_ticks_retain_coherent_rosters_per_instance_before_first_tick(
     );
 }
 
+
+/// **The roster opens on the user who is watching**, not on the first tile.
+#[test]
+fn the_roster_opens_on_the_seated_users_tile() {
+    let tile = |uuid: &str| auth::UserTile { uuid: uuid.into(), title: uuid.into(), ..Default::default() };
+    let mut snap = snapshot(Phase::Profiles, vec![tile("ana"), tile("bea")]);
+    snap.seated = Arc::from("bea");
+    assert_eq!(ProfilesScreen::new(EntryId(0), auth::SessionRead(&snap)).seated_tile(), Some(1));
+    snap.seated = Arc::from("");
+    assert_eq!(ProfilesScreen::new(EntryId(0), auth::SessionRead(&snap)).seated_tile(), None);
+    snap.seated = Arc::from("nobody");
+    assert_eq!(ProfilesScreen::new(EntryId(0), auth::SessionRead(&snap)).seated_tile(), None);
+}
