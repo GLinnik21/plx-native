@@ -26,7 +26,7 @@
 //! and their providers, length, play state, dates and media), so an episode is worded for every term a
 //! movie is, from ITS row: `originallyAvailableAt` is the air date, never the show's. A season's row
 //! carries only the container facts (dates added and viewed, plays, the episode counts), so a season is
-//! worded for those four. PMS lists, for a TV library (recorded 2026-10 on 1.43.x, `docs/pms-api.md`),
+//! worded for those four. PMS lists, for a TV library (recorded 2026-10-31 on 1.43, `docs/pms-api.md` "Sort[]"),
 //! Seasons: the compound Show order and Random; Episodes: the compound Show order, Release date,
 //! Critic and Audience rating, Date added, Date viewed and Random. The Show order is the default and,
 //! like Title and Random, shows no value; the others are worded. `episode.` and `season.` are the
@@ -664,7 +664,7 @@ mod tests {
             ..Default::default() }
     }
 
-    /// The sort keys a real PMS (1.43.x, recorded in `docs/pms-api.md`) lists for a TV library's Seasons
+    /// The sort keys a real PMS (1.43, recorded in `docs/pms-api.md`, "Sort[]") lists for a TV library's Seasons
     /// and Episodes views, in the form the app holds them (`SortEntry::key`).
     const SHOW_ORDER_SEASONS: &str = "show.titleSort,index";
     const SHOW_ORDER_EPISODES: &str = "show.titleSort,season.index:nullsLast,episode.index:nullsLast,\

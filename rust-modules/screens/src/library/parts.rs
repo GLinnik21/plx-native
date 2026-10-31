@@ -516,7 +516,8 @@ struct GridSrc<'a, 'v> {
     indexes: &'a GridIndexes,
     view: plx_data::stores::browse::ListingView<'v>,
     policy: CaptionPolicy,
-    /// The grid draws a sort value line under every poster rather than the Title/Details caption.
+    /// The grid draws a sort value line under every card rather than the Title/Details caption (an
+    /// Episodes view's legacy two-line caption included).
     values: bool,
     /// The calendar date the application handed in (`LibraryLike::today`).
     today: Option<[i32; 3]>,

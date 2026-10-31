@@ -726,8 +726,9 @@ screen's members; `Shelf::set_caption_policy(Some(policy))` sizes the band a she
 `caption_policy::band_h`, and a `Stack` page hands it to a shelf or grid section through `StackPage::caption_policy`; a shelf or grid with
 no policy (`None`: a landscape still row or a headshot row, and the Library's Episodes listing, a grid of stills) keeps the legacy 114 px
 band and its two-line block, under every setting; the band must follow the label, never the setting):
-only the focused row opens its caption (the one exception: the Movies and TV Shows primary grids while they show their
-sort value, Sort value On, draw one value line under EVERY poster, `card_row::draw_sort_value`, in place of the caption); a bounded set of springs closes rows left behind, and
+only the focused row opens its caption (the one exception: the Library's Movies, TV Shows, Seasons and Episodes grids while they show their
+sort value, Sort value On, draw one value line under EVERY card, a poster or an episode still, `card_row::draw_sort_value`, in place of the caption, whatever the grid's policy, the
+Episodes view's `None` included); a bounded set of springs closes rows left behind, and
 each LINE of a row's caption is drawn only once the room under its card holds the line's box, and
 never beyond its band's own expansion (`card_row::line_reveal_for`, one rule for a shelf and a grid), so
 a move hands the title over from the departing row to the arriving one with no line over what is under

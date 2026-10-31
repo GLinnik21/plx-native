@@ -1,7 +1,7 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), except a movie or TV show library grid showing its sort value (Sort
-//! value On and a sort that is not Title or Random: one value line under every poster,
-//! `registry::sort_info`): the Library grid, the Collections
+//! (Settings > Libraries > Under posters), except a movie or TV show library grid (movies, shows, seasons or
+//! episodes) showing its sort value (Sort value On and a sort that has a value for that kind of row: one value
+//! line under every card, `registry::sort_info`): the Library grid, the Collections
 //! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
@@ -36,8 +36,8 @@
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::cards::TileLabel;
 
-/// Whether library grids sorted by something other than Title or Random show the sort value under
-/// every poster (the Under posters page's Sort value switch), with the same test override as policy().
+/// Whether library grids sorted by something that has a value (not Title, Random or the Show order) show the
+/// sort value under every card (the Under posters page's Sort value switch), with the same test override as policy().
 pub fn sort_value() -> bool {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
@@ -46,8 +46,9 @@ pub fn sort_value() -> bool {
     plx_media::route::under_posters().sort_value
 }
 
-/// The standard focused-poster policy; a movie or TV show library grid showing its sort value (Sort value On, sorted
-/// by something other than Title or Random) draws that one line under every poster instead.
+/// The standard focused-poster policy; a movie or TV show library grid (movies, shows, seasons or episodes) showing
+/// its sort value (Sort value On, sorted by something that has a value for that kind of row) draws that one line under
+/// every card instead.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {

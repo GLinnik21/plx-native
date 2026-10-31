@@ -298,7 +298,20 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
   `titleSort`, `originallyAvailableAt`, `rating`, `audienceRating`, `duration`, `addedAt`,
   `lastViewedAt`, `mediaHeight`, `random`; shows list `titleSort`, `originallyAvailableAt`, `rating`,
   `audienceRating`, `unviewedLeafCount`, `episode.addedAt`, `lastViewedAt`, `random`. `year` and
-  `viewCount` are accepted as sorts but are not listed.
+  `viewCount` are accepted as sorts but are not listed. The same read with `type=3|4` (recorded
+  2026-10-31, `includeMeta=1`, PMS 1.43) lists **seasons**: the compound Show order
+  `show.titleSort,index` (descKey `show.titleSort:desc,index`) and `random`, nothing else; and
+  **episodes**: the compound Show order
+  `show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id`
+  (its descKey flips the first term), `originallyAvailableAt` (Release Date), `rating` (Critic
+  Rating), `audienceRating`, `addedAt` (Date Added), `lastViewedAt` and `random`. Neither lists a
+  title, duration, plays, resolution or year sort. The Show order is the default of both views.
+  The Library's Sort value line (`screens/src/registry/sort_info.rs`) words, for an episode row,
+  the air date, the two scores, Date added and Date viewed from the listing's own fields
+  (`originallyAvailableAt`, `rating` + `ratingImage`, `audienceRating` + `audienceRatingImage`,
+  `addedAt`, `lastViewedAt`/`viewCount`) and, for a season row, `addedAt`, `lastViewedAt`,
+  `viewCount` and `leafCount - viewedLeafCount`; the Show order and Random show no value, and a
+  Seasons view lists no sort that has one.
 - **The grid's own terms** are honoured by the probes: two edges per family, counted with the terms
   and compared with the same-terms listing, matched. `genre` was probed on both libraries (movie
   `rating` and `addedAt`, show `unviewedLeafCount`), `inProgress=1` on the movie library only (`rating`
