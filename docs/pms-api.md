@@ -146,9 +146,11 @@ spec's "Media Queries" section documents the full query language.
   every letter's offset checked, none off. Seasons and episodes advertise no plain `titleSort`
   sort, so the app offers the title-sort A-Z rail for movie and show listings (and collections) only.
   The app sends `firstCharacter` the very terms of the grid's page request and shows the counts only
-  while they describe it (`data/src/browse/letters.rs`). A VALUE sort's rail is built from count
+  while they describe it (`data/src/browse/letters.rs`). A VALUE sort's bands come from count
   probes instead (next section): the data job asks them for the fixed-edge sorts (critic rating,
-  duration, unplayed, plays) on a movie or show section's own listing, with the same terms.
+  duration, unplayed, plays) on a movie or show section's own listing, with the same terms, and
+  `ListingView::bands()` exposes them; `rail_available` is still the letters' alone, and the Library
+  screen does not draw the bands yet.
 - **Collections — two id spaces:** `/library/sections/{key}/collections` → `Metadata[]` with
   **ratingKey** (browse via `/library/collections/{rk}/children`); the `/collection` filter dir
   returns **tag ids** for `/all?collection={tag}`. Don't mix. A collection row's `index` is that

@@ -14,9 +14,10 @@
 //! key without a term changing and both bump [`LettersKey::gen`]: the server's membership changed
 //! under the section ([`SecState::membership_changed`] and the stale flag spent by
 //! [`SecState::reset_listing`]), which every key carries; and a title of the section's server had
-//! its watched state read back ([`SecState::viewing_changed`]), which only a key counted under
-//! Unwatched carries ([`SecState::key_gen`]), because only those counts move with a watch. Nothing
-//! else does. A library TYPE change forgets the list outright ([`SecState::forget_letters`]); the
+//! its watched state read back ([`SecState::viewing_changed`]), which only a key whose counts move
+//! with a watch carries ([`SecState::key_gen`]): one counted under Unwatched, or a bands family a
+//! watch changes (plays, unplayed; `BandFamily::moves_with_viewing`). Nothing else does. A library
+//! TYPE change forgets the list outright ([`SecState::forget_letters`]); the
 //! Collections page's loan does not carry it.
 //!
 //! A VALUE sort's rail (rating, duration, unplayed, plays) is the same shape with another payload: one
@@ -26,7 +27,9 @@
 //! of both directions, so a flip of the direction asks the server nothing. A family that a watch
 //! moves (`BandFamily::moves_with_viewing`) takes the viewing generation as an Unwatched key does.
 //! A read whose counts were not trusted lands as a list with no rail, not as a failure
-//! ([`SecState::land_bands`]): the answer would not change on a retry, so only a moved key asks again.
+//! ([`SecState::land_bands`]): over a listing that held still the answer would not change on a retry,
+//! so only a moved key asks again (a listing that moved under the reads is a failure, and is asked
+//! again after the back-off).
 //!
 //! A read that FAILED leaves the list as it was (not current, so hidden: never shown over a grid it
 //! does not describe) and holds the same key back for [`LETTERS_RETRY_STEPS`] steps, as the page
@@ -220,10 +223,11 @@ impl SecState {
     /// server, not a section, and the counts are cheap to ask again, so every section of the server
     /// answers. Every list counted under Unwatched is stale from here on, whether or not Unwatched
     /// is applied now: the one behind a shown unfiltered list is brought back by the switch, and
-    /// the read that is out was asked before the title changed. Only Unwatched counts depend on
-    /// viewing, so an unfiltered or genre-only list stands ([`Self::key_gen`]); so do the counts of a
-    /// family a watch moves, whatever the terms. Returns true when the rail on screen lost its list,
-    /// so the store publishes a change. `kind` is the section's, which says the family of the sort.
+    /// the read that is out was asked before the title changed. Only the counts that move with a watch
+    /// depend on viewing: those counted under Unwatched, and a bands family a watch changes (plays,
+    /// unplayed), whatever its terms. An unfiltered or genre-only list of the letters, or of another
+    /// family, stands ([`Self::key_gen`]). Returns true when the rail on screen lost its list, so the
+    /// store publishes a change. `kind` is the section's, which says the family of the sort.
     pub(super) fn viewing_changed(&mut self, kind: SecKind) -> bool {
         let (letters, bands) = (self.letters_current(), self.bands_current(kind));
         self.viewing_gen = self.viewing_gen.wrapping_add(1);
@@ -291,7 +295,8 @@ impl SecState {
     }
 
     /// A bands read asked under `key` came back: with a rail, or with none (`None`: an empty listing
-    /// or counts not trusted, a verdict that a retry would not change). It becomes the landed list and
+    /// or counts not trusted over a listing that held still, a verdict that a retry would not change
+    /// until the key moves). It becomes the landed list and
     /// the one it replaces is kept in the one slot, as [`Self::land_letters`] keeps its own, unless it
     /// moves with a watch.
     pub(super) fn land_bands(&mut self, key: LettersKey, rail: Option<BandRail>) {
