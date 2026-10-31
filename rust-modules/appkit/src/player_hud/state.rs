@@ -597,10 +597,22 @@ pub const ELEM_SCRUB: u32 = 0;
 /// can grow without meeting one of them. `hud.nav.btn` holds the ordinal; [`control_elem`] and
 /// [`row_index`] are the two directions of the mapping.
 pub const ELEM_CONTROL_BASE: u32 = 0x1_0000;
-/// The first element of the chapter strip's own range, at the top of `u32` (the strip's cards
-/// are addressed `ELEM_CHAPTER_BASE + index`, a later change of this plan). Reserved here so the
-/// open-ended control range ends before it and the two can never collide.
-pub const ELEM_CHAPTER_BASE: u32 = 0xFFFF_0000;
+/// The first element of the chapter strip's own range: the strip's cards are addressed
+/// `ELEM_CHAPTER_BASE + index` (`strip::Cards`), so the Shelf's `neighbour`, `seat` and `place` all speak this
+/// range. The open-ended control range ends before it and the two can never collide.
+///
+/// It sits above `NAMESPACE_FLOOR` (a key there is no widget's index) and BELOW `dispatch::STRIP_BASE`, where the
+/// container's tab strip lives: the dispatcher routes every key at or above that to the strip's members
+/// (`PageWithStrip::group_of`), so a chapter card up there would belong to no group and the engine could not move
+/// off it.
+pub const ELEM_CHAPTER_BASE: u32 = 0xF000_0000;
+// A build error here means the base left the band above: between the widget-index floor and the container strip's.
+const _: () = assert!(ELEM_CHAPTER_BASE >= plx_ui::geom::NAMESPACE_FLOOR && ELEM_CHAPTER_BASE < plx_ui::dispatch::STRIP_BASE);
+/// `+ 0..` an open section's own buttons (`actions`: the Info card's two), in the order the state places them.
+/// The range is open-ended up to [`ELEM_SECTION_END`], below the control range and the repair card.
+pub const ELEM_SECTION_BASE: u32 = 100;
+/// One past the last element a section's buttons can take.
+pub const ELEM_SECTION_END: u32 = 0x1000;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub const ELEM_TAB_BASE: u32 = 20;
 /// The element of the control with this ordinal.

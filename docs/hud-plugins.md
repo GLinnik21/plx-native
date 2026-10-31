@@ -311,6 +311,20 @@ Other subsystems the plan touches
   first action when the package places one, and a failed playback closes every section (today's
   `survives_failure` is false for both, F18). Without a stated policy the FocusEngine would just move focus
   to the tabs and leave classic's strip open, a behaviour change.
+  **Sections move as the panels did.** Each section has its own `PopoverMotion` (the appear spring the panels'
+  surfaces ran), pointed at the logical set (`HudState::sections`) and stepped at the screen's tick, never in a
+  draw. The frame that presents a section draws it at appear 0 (`hold_one_frame`); everything the section paints is
+  ONE layer, faded by the appear and raised by `Popover::RISE * (1 - appear)`; the tabs, the scrim and the
+  title/bar/row stay outside it. A close drops the section from the logical set at once (stops, hit rects,
+  FocusEngine groups and keys read that set) and the draw keeps it, fading, until its spring is out (the
+  Chapters Shelf with it). A failed playback, a stop and the page leaving cut it (`PopoverMotion::at(0.0)`),
+  as `ModalStack::hide` did. A **modal** package gives the transport and any stand-in back at the dismissal
+  frame. An **inline** package lays the section's bands under the transport's, so the ops stacked above an
+  appearing or fading section are drawn `(1 - appear) * h` lower than their rest position in the
+  presented-mask state, `h` being the lift the compiler's own layout gives that band (its box with the section
+  against its box without it, a keyed `gap_before` included): at appear 0 the block stands where the closed
+  state puts it and the mask drops without a jump. Their hit rects and focus stay at rest, and an inline
+  package keeps the discs, not a stand-in, until the last section has faded.
 - D7. **Stand-ins draw only with no section open, as today.** `slot_for` depends only on the marker
   (F19), so Skip or Up Next can become due while a section is open; today such a stand-in waits, because
   the row only draws under `transport` (F1, F2). That rule is kept: while any section is open the row
@@ -394,9 +408,11 @@ ui/popover               the shared anchored placer (D9), used by the player men
   Unloadable(Meta, Unloadable), Invalid }` (`Meta` is id, name, version, format; `Unloadable` is
   `NewerFormat`, `OlderFormat` or `AppRange`). The supported format range stays with the runner, which owns the
   validator: the store is handed no range.
-- Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing, allocation or
-  hashing; all text goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each
-  text draw.
+- Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing or hashing; all text
+  goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each text draw. The one
+  deliberate exception is an open section's text group (`CompiledState::groups`, `sections::group`): it re-stacks
+  from the heights it really wraps at draw time and allocates its item list each frame, so the PR8 section ceilings
+  in "Cost" are calibrated with it in the loop.
 - Package icons are rasterized through the same `plx_gfx::svg::rasterize` (F36); their textures belong to
   the `CompiledHud` instance `App` hands the player screen and are released when the HUD changes. The
   icon draw API takes `IconRef { Builtin(Icon), Pack(PackIcon) }`; no second cache, no new global.
@@ -448,7 +464,13 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `badges` (ordered subset of `content_rating audio_format cc sdh ad`), `size`}: content rating appears
   in `order` OR `badges`, never both; all of it is fitted by `ChipRow` (moved out of `info_panel.rs` into a
   shared appkit module), which drops whole chips tail first;
-- `vstack` {`gap`, `w`, `cells`}; `spacer` {`w`};
+- `vstack` {`gap`, `w`, `cells`}; `spacer` {`w`}. The compiler places a `vstack`'s children at their WORST case
+  (a `text` at `max_lines` x `leading`, a `facts` row at the badge height `BADGE_H` or its line, whichever is taller), which
+  is what lint, Cost and the census read. A `vstack` of text, `facts` and static children in an open section is also
+  a GROUP (`CompiledState::groups`): the renderer restacks it at draw time through the shared `VStack`, in cap-top
+  coordinates, from the heights it really wraps, so a block with no text (`max_lines` above 1, empty) and a `facts`
+  row that keeps no chip take no room and no gap, as the Info card's own stack does, and the group never leaves
+  its worst-case rect. A `vstack` that holds the title pair, a control or a nested cell stays static;
 - `playbar` {`w`, `fill`, `track`, `thickness`, `knob` (`tick` classic, `always`), `clocks` (`follow_head`
   classic, `ends`), `clock_size`, `mark` (`after_elapsed`, `busy_only`: the paused glyph may go when a
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
@@ -491,9 +513,10 @@ or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
 glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`ui/src/widgets.rs:1394`).
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
-A `toggle_section` item draws a SELECTED face while its section is open (`hud_tab_state`'s second flag,
-`player_hud.rs:1587-1590`): `pill` uses `TabPill`'s own selected face, `disc` its `solid` face; the focus face wins when
-both hold. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
+A `toggle_section` item draws a SELECTED face while its section is open: `pill` uses `TabPill`'s own selected face,
+`disc` its `solid` face; the focus face wins when both hold. The face is read from the compiled state's own open bits
+(`render::section_open`), so it holds under both policies, with the transport live or hidden; `hud_tab_state`'s second
+flag (`player_hud.rs:1587-1590`) is only the hand-written tab strip's, and the classic path ORs it in. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
 in PR5d from the narrowest seat the app's own screens place and pinned by a test, see "Unverified items"; it admits the
 reference's 52). A control has no alpha key and the palette is `#rrggbb` (D12), but an allow-list ink
 can be translucent (`HAIRLINE` is `with_a(WHITE, 0.10)`, `ui/src/theme.rs:949`), so a rest face's GLYPH ink, composited
@@ -1025,7 +1048,7 @@ a package is never the default.
 Classic's compact state, tabs, scrim and Up Next, as the `layout` of `classic.plxhud.json` (every number is a constant
 cited in the table below; faces are omitted, so each control draws its command's classic glyph; the file in the repo
 (`appkit/src/hud_format/fixtures/classic.plxhud.json`) already has the two section bands of the table and the tabs
-band's keyed `gap_before` (its chapters value is a placeholder, below), and PR6's `--hud-export builtin:classic` prints the
+band's keyed `gap_before` (its chapters value takes `item.start`'s one-pixel leading, below), and PR6's `--hud-export builtin:classic` prints the
 whole file):
 
 ```json
@@ -1087,7 +1110,7 @@ at 768 and the title at 802.
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
 | Skip | `ctrl_slot` of its own label (`skip_pill.rs:75-77`) | the Skip rule (Package format) |
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |
-| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left (`chapters_panel.rs:27-40`); cards past `SAFE` culled at the screen edge (`:140-147`); an empty name draws "Chapter N" (`:176-179`) | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 43 = 949 - 684 - (162 + 26 + 34), takes the `item.start` line as zero-height as `chapters_panel::label_ys` does; a one-line text's box is its rung's line height, so PR8 recomputes it from the compiled strip box and the fixture's number is a placeholder until then); scroll and marquee per D11 |
+| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left (`chapters_panel.rs:27-40`); cards past `SAFE` culled at the screen edge (`:140-147`); an empty name draws "Chapter N" (`:176-179`) | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 42 = 949 - 684 - (162 + 26 + 34 + 1): `item.start` carries `leading: 1`, the smallest leading, as the stand-in for `chapters_panel::label_ys`'s zero-height origin, because a one-line text's box is its measurer's line height and no gap lands the top on 684 for the fixture, the shipped and the television's measure at once); scroll and marquee per D11 |
 | Info card | ground x 80, w 1760, h 236, top `SCR_H - 176 - 236` = 668, pad 28 (`info_panel.rs:581-588`); still radius 16 (`:216`); text 34 from the still and from the buttons (`:252-255`); title to synopsis 6, tags `before(12)` (`:436-446`); synopsis `leading(29)` (`:386-389`); buttons a column 70 tall, 16 apart, centred, width max(352, widest of all three labels) (`:594-608`), right edge 1812 inside `SAFE`'s 1824 | band `info`, `when: panel.info`: `rect {bleed: 16, pad: 28, h: 236, gap: 34, ink: PANEL_TOP, radius: 28}` holding `image info.still` 320 x 180 radius 16; a `vstack {gap: 6, w: fill, valign: center}` of the title (`max_lines: 1`), the synopsis (`leading: 29`, `max_lines: 2`) and `facts` with `gap_before: 12` (`order: [genres, year, duration]`, `genres_max: 2`, `bold: true`, `ink: TEXT_PRIMARY`, `playback_fact: true`, `badges: [content_rating, audio_format, cc, sdh, ad]`); `actions {axis: column, gap: 16, item_h: 70, min_w: 352, items: [from_beginning, go_to_detail]}`, `align: end`, `valign: center`; the tabs band's `gap_before` 45 under `panel.info` (949 - 904) |
 | Captions | ceiling 780 whenever the HUD is up (F28) | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
 

@@ -30,7 +30,9 @@ pub mod model;
 pub mod motion;
 pub mod render;
 pub mod seek_jump;
+mod sections;
 pub mod state;
+pub mod strip;
 use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
 // The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,
@@ -410,7 +412,7 @@ impl SubtitleBitmaps {
 #[cfg(any(test, feature = "test-support"))]
 pub fn audit_geometry() -> geometry::HudGeometry {
     let hud = loaded::load_classic("audit", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure);
-    geometry::geometry(&hud.compiled, ControlSlot::Discs(Controls::NONE), false, false)
+    geometry::geometry(&hud.compiled, 0, ControlSlot::Discs(Controls::NONE), false, false)
 }
 
 /// **The transport's outermost drawn chrome, for the overscan audit**

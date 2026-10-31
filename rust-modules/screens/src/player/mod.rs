@@ -33,14 +33,17 @@ mod compiled_geometry_tests;
 
 use std::borrow::Cow;
 
-use crate::registry::{AppFx, AppLike, PlayerLike, PlayerReq};
+use crate::registry::{AppFx, AppLike, AppMsg, PlayerLike, PlayerReq, RepeatGate, PANEL_REPEAT_MS};
 use plx_ui::consts;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     By, Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
-    LogicalState, Machine,
+    LogicalState, Machine, Host,
 };
-use plx_appkit::player_hud::geometry::{HudGeometry, GROUP_FAILURE, GROUP_ROW, GROUP_SCRUB, GROUP_TABS};
+use plx_ui::cards::{CardEvent, CardSource, SectionFrame};
+use plx_ui::geom::IndexElem;
+use plx_appkit::player_hud::command::{HudCommand, Section};
+use plx_appkit::player_hud::geometry::{HudGeometry, GROUP_FAILURE, GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP, GROUP_TABS};
 use plx_appkit::player_hud::model::HudModel;
 use plx_appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, motion::HudMotion};
 use plx_ui::screen::{
@@ -50,7 +53,7 @@ use plx_ui::screen::{
 use plx_appkit::up_next::Countdown;
 use plx_ui::Rect;
 
-use input::{HudState, Scrub};
+use input::{HudState, Scrub, Sections};
 
 /// The player's heartbeat word — byte-identical to `app::words::route_word(&AppArg::Player)`, and
 /// what `tests/run.py` selects fps samples by (`tests/manifest.json`'s `route` field).
@@ -123,15 +126,19 @@ pub struct PlayerScreen {
     seek_burst: player_hud::seek_jump::SeekBurst,
     /// A dedicated FF/REW press that has not yet repeated or been released.
     transport_tap: bool,
+    /// **The cadence a HELD Left/Right walks the open Chapters strip at.** The remote streams `Edge::Repeat` at
+    /// roughly 50 ms and a list walked at that rate reads as a blur, so the strip admits one repeat per
+    /// [`PANEL_REPEAT_MS`], the same `RepeatGate` the overlay's panels pace a held direction with. The press
+    /// restarts it from itself. The bare transport's directions run the continuous scrub instead, which is a
+    /// ramp rather than a discrete move, and are never gated.
+    repeat: RepeatGate,
     // (`held: HeldKey` stood here — "the client-side hold-repeat for the bare transport's
     // directions". Nothing armed it after phase 9 put the panels' input on the dispatcher, so it
     // wrote two constant zeros into this screen's canonical state; the type is deleted with the
     // loop's timer in phase 10 and this field with it.
     //
-    // `repeat: RepeatGate` is NOT here either, and spec §9's target shape lists it: the paced
-    // 110 ms admission is the OVERLAY's — `PlayerOverlayScreen` is what has a list to walk under
-    // a held key. The bare transport's own directions run the continuous scrub instead, which is
-    // a ramp rather than a discrete move and was never gated.)
+    // (The cadence is not in the canonical state. Like the HUD's other timing fields (the row's springs, the
+    // countdown, the section set) it is derived from the clock and read by no replay shape.)
     /// The control row's focus springs, its label-width memo and the resume clock
     /// (`player_hud`'s `ROW_POP`/`MEMO`/`PLAY_AT`/`PAUSE_SEEN`).
     pub row: HudMotion,
@@ -145,8 +152,10 @@ pub struct PlayerScreen {
     /// Who owns the "pipeline is working" signal this frame — resolved once, after `player::pump`,
     /// and handed to both the transport and the read-out so they can never both light.
     pub busy: plx_appkit::player_hud::Busy,
-    /// Is the transport's MIDDLE drawn at all this frame? False while an Info card or Chapters
-    /// strip has taken it — which panel is up is the container's answer, so the loop pushes it.
+    /// The container's per-frame fact: is the transport's picture bare (no surface over it)? It says nothing about
+    /// sections: an open section is the page's own state, and [`PlayerScreen::middle_up`] withholds the middle
+    /// for a MODAL one only. It is false only while the retained Info/Chapters OVERLAY is presented, which no live
+    /// path does, so it is always true on the shipped path until stage 2b removes that overlay.
     pub transport: bool,
     /// What the surfaces over this page do to the transport this frame — see [`HudPolicy`].
     /// Pushed once per frame by `app/run.rs` through [`Self::set_hud_policy`].
@@ -187,6 +196,7 @@ impl PlayerScreen {
             scrub: Scrub::IDLE,
             seek_burst: player_hud::seek_jump::SeekBurst::IDLE,
             transport_tap: false,
+            repeat: RepeatGate::IDLE,
             row: HudMotion::new(),
             up_next: Countdown::default(),
             slot: ControlSlot::Discs(player_hud::Controls::NONE),
@@ -255,6 +265,9 @@ impl PlayerScreen {
             self.hud.until = 0;
             self.hud.dismissed = false;
             self.hud.last_offer = None;
+            // a section does not outlive the film it was opened over
+            self.hud.sections = Sections::NONE;
+            self.row.cut_sections();
             self.up_next.reset();
         }
         self.publish();
@@ -273,28 +286,33 @@ impl PlayerScreen {
     /// frame `builtin:classic` is never in, `classic_answers_every_frame_the_player_can_be_in`), and says so
     /// ONCE in the event log rather than every frame; its geometry is the same empty report
     /// (`player_hud::geometry::geometry`), so what is drawn and what is hit stay one statement.
-    pub fn draw_hud(
+    pub fn draw_hud<H: Host>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         now: u32,
-        measure: &dyn plx_machine::machine::Measure,
+        df: &DrawFrame<'_, '_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
-    ) {
+    ) where
+        H::Elem: IndexElem,
+    {
+        let measure = df.measure;
         let frame = plx_appkit::player_hud::render::Frame {
+            entry: self.entry,
             ps,
             model: &self.model,
             up: &self.up_next,
-            slot: self.slot,
+            open: self.hud.sections.bits(),
+            slot: self.draw_slot(),
             busy: self.busy,
             focus: self.hud.nav.focus,
             btn: self.hud.nav.btn,
             tab: self.hud.nav.tab,
             now,
-            transport: self.transport,
+            transport: self.middle_up(),
             measure,
             meta,
         };
-        let drew = plx_appkit::player_hud::render::draw(&self.compiled, &frame, &mut self.row, plx_ui::Painter::root());
+        let drew = plx_appkit::player_hud::render::draw(&self.compiled, &frame, df, &mut self.row, plx_ui::Painter::root());
         if !drew && !self.render.no_state_logged {
             self.render.no_state_logged = true;
             plx_base::eventlog::log("hud: the package has no state for this frame; nothing is drawn or placed for it");
@@ -329,9 +347,17 @@ impl PlayerScreen {
         let mut groups = Vec::new();
         self.groups_in(&geo, f.cx, &mut groups);
         for g in groups.iter().filter(|g| self.group_drawn(g.id, hud_drawn)) {
+            // The strip's stops are the Shelf's own: the rects it paints its cards at, registered where it
+            // paints them (`Shelf::record_stops`), so a card's stop is its drawn rect at every scroll.
+            if g.id == GROUP_STRIP {
+                if let (Some((geo, src)), Some(shelf)) = (self.strip_source(f.cx), self.row.strip_shelf()) {
+                    shelf.record_stops(f, plx_ui::Painter::root(), &src, Self::strip_frame(&geo));
+                }
+                continue;
+            }
             // The repair alert's buttons are ordinary pressable controls (hover parks focus, the
             // press dips and commits on release); the transport's are `Direct` — see `draw`.
-            let (hover, activate) = if g.id == GROUP_REPAIR {
+            let (hover, activate) = if g.id == GROUP_REPAIR || g.id == GROUP_SECTION {
                 (Hover::Focus, Activate::Press)
             } else {
                 (Hover::Ignore, Activate::Direct)
@@ -356,17 +382,20 @@ impl PlayerScreen {
 
     /// Is group `g` on screen this frame — the same gates `player_hud::render::draw`/`draw_readout`
     /// paint behind. A failure owns the frame outright; the scrubber and control row are the
-    /// transport's MIDDLE, which an open Info card or Chapters strip hides.
+    /// transport's MIDDLE, which an open MODAL section hides (an inline package keeps the row live beside the page).
     fn group_drawn(&self, g: GroupId, hud_drawn: bool) -> bool {
         let failed = player_hud::readout_owns_frame(self.busy);
         match g {
             GROUP_REPAIR => self.repair_alert.is_open() && self.repair_alert.settled(),
             GROUP_FAILURE => !self.repair_alert.visible() && player_hud::failure_row_drawn(self.busy),
-            GROUP_SCRUB => hud_drawn && !failed && self.transport,
+            GROUP_SCRUB => hud_drawn && !failed && self.middle_up(),
             // faded away by a live scrub (and until they are back) means not hoverable or
             // clickable: `Motion::chrome_interactive`
-            GROUP_ROW => hud_drawn && !failed && self.transport && self.row.chrome_interactive(),
+            GROUP_ROW => hud_drawn && !failed && self.middle_up() && self.row.chrome_interactive(),
             GROUP_TABS => hud_drawn && !failed && self.row.chrome_interactive(),
+            // an open section's page: its stops exist while it is drawn (a failure takes the frame outright)
+            GROUP_STRIP => hud_drawn && !failed && self.hud.sections.contains(Section::Chapters),
+            GROUP_SECTION => hud_drawn && !failed && self.hud.sections.contains(Section::Info),
             _ => false,
         }
     }
@@ -378,6 +407,8 @@ impl PlayerScreen {
             GROUP_ROW => player_hud::control_elem(i as i32),
             GROUP_TABS => player_hud::ELEM_TAB_BASE + i,
             GROUP_FAILURE => player_hud::ELEM_FAILURE_BASE + i,
+            GROUP_SECTION => player_hud::geometry::section_elem(i),
+            GROUP_STRIP => player_hud::ELEM_CHAPTER_BASE + i,
             _ => REPAIR_CANCEL + i,
         }
     }
@@ -451,7 +482,9 @@ impl PlayerScreen {
                 .since_play_ms(now)
                 .is_some_and(|d| d < plx_appkit::player_hud::PLAY_MARK_MS),
         ));
-        mix(match self.slot {
+        // opening or closing a section is a whole-page change with no spring behind it
+        mix(u64::from(self.hud.sections.bits()));
+        mix(match self.eff_slot() {
             ControlSlot::Discs(controls) => 4 + u64::from(controls.pair()) + 2 * u64::from(controls.previous) + 4 * u64::from(controls.next) + 8 * u64::from(controls.restart),
             ControlSlot::Skip(_) => 2,
             ControlSlot::UpNext(_) => 3,
@@ -484,9 +517,9 @@ impl PlayerScreen {
     /// hiding it. It stays down until a bound key raises it, exactly like an UP-hide.
     ///
     /// **A pending scrub target ends with the page being the viewer's**: on a surface taking it
-    /// (the rising edge out of [`HudPolicy::Normal`]) — Chapters and *From Beginning* seek from
-    /// inside their panel, and the panel's own BACK is not the scrub's, and OK there is not the
-    /// scrub's confirmation — and on that dismissal, since a transport that is not on screen has
+    /// (the rising edge out of [`HudPolicy::Normal`]) — the track menu's picks and the Timing capsule act
+    /// from inside their panel, and the panel's own BACK is not the scrub's, and OK there is not the
+    /// scrub's confirmation (an open section cancels the target itself, in `toggle_section`) — and on that dismissal, since a transport that is not on screen has
     /// nothing to confirm. The target is CANCELLED there, never committed.
     pub fn set_hud_policy(&mut self, policy: HudPolicy) {
         if self.hud_policy == HudPolicy::Hidden && policy != HudPolicy::Hidden {
@@ -523,14 +556,16 @@ impl PlayerScreen {
 }
 
 /// The focus groups [`PlayerScreen`] registers (restructure phase 12, D2): the scrubber, the
-/// control row (discs, or the one region a Skip/Up Next stand-in occupies), the bottom tabs, and —
-/// only while a failure owns the frame — the read-out's row of actions. The first four are the
+/// control row (discs, or the one region a Skip/Up Next stand-in occupies), the bottom tabs, an open
+/// section's own stops (the Info buttons, and the Chapters strip's cards, only while that section is open),
+/// and — only while a failure owns the frame — the read-out's row of actions. All but the repair card's are the
 /// HUD's own and live in `appkit::player_hud::geometry` ([`GROUP_SCRUB`], [`GROUP_ROW`],
-/// [`GROUP_TABS`], [`GROUP_FAILURE`]), because the HUD's motion and drawing compare a focus against
-/// the same numbers; element addresses within each are [`player_hud::ELEM_SCRUB`]/
-/// [`player_hud::ELEM_CONTROL_BASE`]/[`player_hud::ELEM_TAB_BASE`]/[`player_hud::ELEM_FAILURE_BASE`].
+/// [`GROUP_TABS`], [`GROUP_FAILURE`], [`GROUP_SECTION`], [`GROUP_STRIP`]), because the HUD's motion and drawing
+/// compare a focus against the same numbers; element addresses within each are [`player_hud::ELEM_SCRUB`]/
+/// [`player_hud::ELEM_CONTROL_BASE`]/[`player_hud::ELEM_TAB_BASE`]/[`player_hud::ELEM_FAILURE_BASE`]/
+/// [`player_hud::ELEM_SECTION_BASE`]/[`player_hud::ELEM_CHAPTER_BASE`]. `PlayerScreen::groups_in` is the source.
 /// The sandbox-repair confirmation's group is this page's alone.
-const GROUP_REPAIR: GroupId = GroupId(4);
+const GROUP_REPAIR: GroupId = GroupId(6);
 const REPAIR_CANCEL: u32 = 40_000;
 const REPAIR_CONFIRM: u32 = REPAIR_CANCEL + 1;
 
@@ -624,7 +659,15 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 _ => {}
             }
         }
+        // The open Chapters strip's Shelf steps on every event this screen receives (its springs on the Tick, its
+        // pop and scroll on the focus moves, a committed press as `CardEvent::Activate`); the draw only paints it.
+        let strip_ev = self.step_strip(ev, cx, fx);
         match ev {
+            // The app performed a `toggle_section` command (a tab's OK or click, a package's disc).
+            ScreenEvent::App(AppMsg::HudSection(section)) => {
+                self.toggle_section(*section, cx, fx);
+                Handled::Yes
+            }
             // **The engine moved focus: `hud.nav` follows.** The engine is the authority on where
             // focus is; `nav` is the mirror the HUD's motion, drawing and published state read. A
             // re-seat (`By::Restore`, `By::Reconcile`: the app's and this screen's own writes to
@@ -644,6 +687,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     if group == GROUP_TABS {
                         self.hud.nav.tab = (to.elem - player_hud::ELEM_TAB_BASE) as i32;
                     }
+                    if group == GROUP_SECTION {
+                        // the open section's button the engine holds: the pop the motion lifts
+                        self.hud.nav.btn = (to.elem - player_hud::ELEM_SECTION_BASE) as i32;
+                    }
                 }
                 if *by == By::Dir && from.and_then(|f| Self::hud_group_of(f.elem)) != Some(group) {
                     if group != GROUP_SCRUB {
@@ -657,7 +704,18 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
             // **The engine's press on the control row committed** — the dip has played, on the
             // spring-back. What the control the engine holds means is asked of the app.
             ScreenEvent::PressCommit(_) => {
-                self.row_pressed(cx.focus.current.map(|k| k.elem), fx);
+                let focused = cx.focus.current.map(|k| k.elem);
+                match focused.and_then(Self::hud_group_of) {
+                    // a chapter's card: seek to its start and put the strip away
+                    Some(GROUP_STRIP) => {
+                        if let Some(CardEvent::Activate(elem)) = strip_ev {
+                            self.chapter_pressed(elem, cx, fx);
+                        }
+                    }
+                    // an open section's button: its command, and the section closes
+                    Some(GROUP_SECTION) => self.section_pressed(focused, cx, fx),
+                    _ => self.row_pressed(focused, fx),
+                }
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {
@@ -672,6 +730,13 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     self.failure_sel = 0;
                 }
                 self.failure_up = failed;
+                if failed && self.hud.sections.any() {
+                    // a failure owns the frame outright: the sections go with the picture they were over
+                    self.hud.sections = Sections::NONE;
+                    self.row.cut_sections();
+                    self.hud.nav.focus = GROUP_SCRUB;
+                    Self::repair_focus(fx, GROUP_SCRUB);
+                }
                 let stale = !H::session(cx).jail_load_blocked;
                 if self.repair_alert.visible() && stale { self.repair_alert.close(); }
                 self.repair_alert.update(tick.dt());
@@ -680,7 +745,11 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // spring advanced in the draw would run at a rate that depended on which overlay
                 // was open (`HudMotion::step`'s own doc).
                 self.row
-                    .step(self.slot, self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms);
+                    .step(self.eff_slot(), self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms);
+                // …and the sections' appear springs, pointed at the sections that are open (a write to
+                // `hud.sections` that did not tell them is caught up here) and stepped once per frame.
+                self.row.follow(self.hud.sections.bits());
+                self.row.step_appear(*tick, &mut fx.present());
                 // …and the Up Next countdown, which arms on APPEARANCE and is dropped with the
                 // segment. Stepped for the whole route, not per-overlay: the countdown must keep
                 // running whichever panel is up (`up_next::tick`).
@@ -847,6 +916,11 @@ impl PlayerScreen {
             }
             self.hud.dismissed = false;
             self.hud.extend(now, input::HUD_LINGER_MS);
+            // a click beside an open section's page puts the page away rather than pausing under it
+            if let Some(latest) = self.hud.sections.latest() {
+                self.close_section(latest, chapters, now, fx);
+                return Handled::Yes;
+            }
             self.publish();
             Self::ask(fx, PlayerReq::Transport(None));
             return Handled::Yes;
@@ -894,14 +968,13 @@ impl PlayerScreen {
                 self.hud.nav.focus = GROUP_TABS;
                 self.hud.nav.tab = tab as i32;
                 self.seat_elem(fx, e);
-                let kind = if tab == 0 {
-                    overlay::OverlayKind::Info
-                } else {
-                    overlay::OverlayKind::Chapters
-                };
-                Self::ask(fx, PlayerReq::OpenOverlay(kind));
+                if let Some(section) = Section::of_tab(tab as i32) {
+                    Self::ask(fx, PlayerReq::Command(HudCommand::ToggleSection(section)));
+                }
                 Handled::Yes
             }
+            // an open section's own stops are pressed by the engine (`PressCommit`), not clicked
+            e if matches!(Self::hud_group_of(e), Some(GROUP_STRIP | GROUP_SECTION)) => Handled::Yes,
             _ => Handled::No,
         }
     }
@@ -1015,11 +1088,25 @@ impl PlayerScreen {
             // Swallowed either way: that is what "the read-out owns the frame" means.
             return Handled::Yes;
         }
+        // FAST-FORWARD and REWIND under a MODAL page drive a bar the page has taken the middle from: they do nothing
+        // (the overlay's panel ignored them: they are not D-pad arrows). An inline page leaves the bar live.
+        if self.hud.sections.any() && self.modal() && matches!(key, Key::Left { alt: true } | Key::Right { alt: true }) {
+            return Handled::Yes;
+        }
         if self.jump_key(ps, key, edge, now, fx) {
             return Handled::Yes;
         }
-        if self.hud.visible_at_press && self.hud.nav.focus == GROUP_ROW
+        if self.hud.visible_at_press && matches!(self.hud.nav.focus, GROUP_ROW | GROUP_STRIP)
             && matches!(key, Key::Left { alt: false } | Key::Right { alt: false }) {
+            // The strip is a list walked a card at a time, so a held direction is paced; the control row's own
+            // steps are not (its focus lands on the next disc at the remote's rate, as it always did).
+            if self.hud.nav.focus == GROUP_STRIP {
+                match edge {
+                    Edge::Down => self.repeat.rearm(now),
+                    Edge::Repeat if !self.repeat.ready_every(now, PANEL_REPEAT_MS) => return Handled::Yes,
+                    _ => {}
+                }
+            }
             self.hud.extend(now, input::HUD_LINGER_MS);
             return if edge == Edge::Up { Handled::Yes } else { Handled::No };
         }
@@ -1036,6 +1123,17 @@ impl PlayerScreen {
                 }
                 Handled::Yes
             }
+            // **BACK closes the latest open section** (D6) before it means anything else, and STOP is swallowed
+            // while one is open: neither hides the transport nor leaves the film from under a page.
+            Key::Back if self.hud.sections.any() => {
+                if edge == Edge::Down {
+                    if let Some(latest) = self.hud.sections.latest() {
+                        self.close_section(latest, plx_appkit::chapters_panel::has_chapters(meta), now, fx);
+                    }
+                }
+                Handled::Yes
+            }
+            Key::Stop if self.hud.sections.any() => Handled::Yes,
             // The STOP key and a plain BACK (nothing else open — an overlay's own BACK is answered
             // by `PlayerOverlayScreen::key` before this screen ever sees the press, since the
             // overlay is a SURFACE and owns input while it is up) both perform the same ritual
@@ -1087,7 +1185,7 @@ impl PlayerScreen {
             // that is hidden spends the press on being raised, and moves nothing.
             Key::Up | Key::Down => {
                 if at_edge {
-                    return self.answer_edge(key, focused, now, fx);
+                    return self.answer_edge(key, focused, plx_appkit::chapters_panel::has_chapters(meta), now, fx);
                 }
                 if edge != Edge::Down {
                     return Handled::Yes;
@@ -1132,11 +1230,13 @@ impl PlayerScreen {
     /// **OK, off a panel** — a pending target is taken first; a hidden transport asks for the
     /// plain play/pause toggle. Otherwise the ENGINE's focus decides what was pressed: a control
     /// row element is left to the engine (`Handled::No`), whose press machinery dips the control
-    /// and delivers `PressCommit` on the spring-back ([`Self::row_pressed`] performs it), a tab
-    /// opens its panel (Info for the first, Chapters for the second), and everything else, the
-    /// scrubber included, is the toggle — exactly as the old ladder's `else` arm. The scrubber and
-    /// the tabs stay `Handled::Yes`: the scrubber's OK means the toggle or a target, which a bare
-    /// press cannot carry, and a tab opens at once with no dip to wait for.
+    /// and delivers `PressCommit` on the spring-back ([`Self::row_pressed`] performs it), an open section's card
+    /// or button is the engine's press too (`Handled::No`, committed as [`Self::chapter_pressed`] /
+    /// [`Self::section_pressed`]), a tab TOGGLES its section (Info for the first, Chapters for the second: open
+    /// or close, asked as `HudCommand::ToggleSection`), and everything else, the scrubber included, is the
+    /// play/pause toggle — as the old ladder's `else` arm. The scrubber and the tabs stay `Handled::Yes`: the
+    /// scrubber's OK means the toggle or a target, which a bare press cannot carry, and a tab asks at once with
+    /// no dip to wait for.
     fn key_ok<H: AppLike>(&mut self, now: u32, focused: Option<u32>, fx: &mut Effects<'_, H>) -> Handled {
         let vis = self.hud.visible_at_press;
         let focused = focused.filter(|_| vis);
@@ -1147,17 +1247,15 @@ impl PlayerScreen {
             // the press takes the page from the scrubber, so a pending target goes with it
             self.scrub.cancel();
             handled = Handled::No;
+        } else if focused.and_then(Self::hud_group_of).is_some_and(|g| matches!(g, GROUP_STRIP | GROUP_SECTION)) {
+            // an open section's card or button: the engine's press dips it and commits (`PressCommit`)
+            handled = Handled::No;
         } else if let Some(tab) = focused
             .filter(|e| Self::hud_group_of(*e) == Some(GROUP_TABS))
             .map(|e| e - player_hud::ELEM_TAB_BASE)
         {
-            let kind = match tab {
-                0 => Some(overlay::OverlayKind::Info),
-                1 => Some(overlay::OverlayKind::Chapters),
-                _ => None,
-            };
-            if let Some(kind) = kind {
-                Self::ask(fx, PlayerReq::OpenOverlay(kind));
+            if let Some(section) = Section::of_tab(tab as i32) {
+                Self::ask(fx, PlayerReq::Command(HudCommand::ToggleSection(section)));
             }
         } else {
             let req = self.toggle_play(None, now);
@@ -1220,12 +1318,15 @@ impl PlayerScreen {
     ///   hide that extended its own linger would not hide.
     /// * DOWN off the bottom of the tabs has nowhere to go and stays: the target is dropped and the
     ///   press re-arms the linger like any other.
+    /// * DOWN off a MODAL section's page (the strip, or the Info buttons) CLOSES that section and seats its
+    ///   opener's tab (D6). Only a modal package takes this arm (`self.modal()`); an inline page keeps its links to the row.
     ///
     /// Anything else swallows the press; an edge nobody answers would be dropped as a dead key.
     fn answer_edge<H: AppLike>(
         &mut self,
         key: consts::Key,
         focused: Option<u32>,
+        chapters: bool,
         now: u32,
         fx: &mut Effects<'_, H>,
     ) -> Handled {
@@ -1241,6 +1342,13 @@ impl PlayerScreen {
                 self.scrub.ns = -1;
                 self.scrub.disengage();
                 self.hud.extend(now, input::HUD_LINGER_MS);
+            }
+            // **Down off the bottom of a modal section's page puts the page away** and lands on the control that
+            // opened it (D6); an inline page has the row beside it and nothing below, so the edge stays put.
+            (Some(GROUP_STRIP | GROUP_SECTION), consts::Key::Down) if self.modal() => {
+                if let Some(latest) = self.hud.sections.latest() {
+                    self.close_section(latest, chapters, now, fx);
+                }
             }
             _ => {}
         }
@@ -1498,13 +1606,253 @@ impl PlayerScreen {
 }
 
 impl PlayerScreen {
+    /// **The package's section policy** (D6): modal sections replace one another and take the middle of the
+    /// transport; inline sections open beside the row.
+    fn modal(&self) -> bool {
+        self.compiled.sections_modal()
+    }
+
+    /// **The control-row occupant everything reads this frame.** An open section's state is looked up over the
+    /// discs (D7: a Skip or Up Next stand-in waits behind the page), so while one is open the draw, the
+    /// stops, the press and the geometry all read the discs the model sampled, never the stand-in.
+    fn eff_slot(&self) -> ControlSlot {
+        if self.hud.sections.any() {
+            ControlSlot::Discs(self.model.controls)
+        } else {
+            self.slot
+        }
+    }
+
+    /// **The control-row occupant the DRAW reads.** An inline package keeps drawing the discs while a section fades out
+    /// (its block is laid out by the presented sections, and the stand-in comes back when the last has gone); a modal
+    /// one is the logical [`Self::eff_slot`] at once, the transport coming back the moment the page is put away.
+    fn draw_slot(&self) -> ControlSlot {
+        if !self.modal() && self.row.presented() != 0 {
+            ControlSlot::Discs(self.model.controls)
+        } else {
+            self.eff_slot()
+        }
+    }
+
+    /// Is the transport's MIDDLE (the scrubber and the control row) on screen? Not while a modal section holds it.
+    fn middle_up(&self) -> bool {
+        self.transport && !(self.hud.sections.any() && self.modal())
+    }
+
+    /// Where the strip's cards sit in screen space, as the Shelf's frame.
+    fn strip_frame(geo: &player_hud::strip::Geometry) -> SectionFrame {
+        SectionFrame::new(geo.card.y, geo.rect)
+    }
+
+    /// **The open Chapters strip's geometry and cards**, read the one way the draw reads them
+    /// (`player_hud::strip::{strip_of, cards_for}` over the state the open bits select). `None` while Chapters is
+    /// closed, where the package has no strip for the frame and where the item has no chapters.
+    fn strip_source<'a, H: PlayerLike + crate::registry::MetadataLike>(
+        &self,
+        cx: &Cx<'a, H>,
+    ) -> Option<(player_hud::strip::Geometry, player_hud::strip::Cards<'a, u32>)> {
+        self.strip_source_in(cx, self.hud.sections.bits())
+    }
+
+    /// [`Self::strip_source`] over the state the bits `open` select: the strip's geometry and cards, `None` when
+    /// they do not name Chapters.
+    fn strip_source_in<'a, H: PlayerLike + crate::registry::MetadataLike>(
+        &self,
+        cx: &Cx<'a, H>,
+        open: u8,
+    ) -> Option<(player_hud::strip::Geometry, player_hud::strip::Cards<'a, u32>)> {
+        if open & Section::Chapters.open_bit() == 0 {
+            return None;
+        }
+        let meta = H::metadata(cx);
+        let (state, skip) = player_hud::geometry::frame_state(
+            &self.compiled,
+            open,
+            self.eff_slot(),
+            plx_appkit::chapters_panel::has_chapters(meta),
+            self.model.paused,
+        )?;
+        let geo = player_hud::strip::strip_of(state.skip_variant(skip))?;
+        let src = player_hud::strip::cards_for::<u32>(geo, meta, H::session(cx))?;
+        Some((geo, src))
+    }
+
+    /// The rects of the open section's own buttons (Info's two), in the order its group addresses them.
+    fn section_rects(&self, chapters: bool) -> Vec<Rect> {
+        if !self.hud.sections.contains(Section::Info) {
+            return Vec::new();
+        }
+        let Some((state, skip)) = player_hud::geometry::frame_state(
+            &self.compiled,
+            self.hud.sections.bits(),
+            self.eff_slot(),
+            chapters,
+            self.model.paused,
+        ) else {
+            return Vec::new();
+        };
+        player_hud::geometry::section_buttons(state.skip_variant(skip)).map(|c| c.rect).collect()
+    }
+
+    /// The Chapters strip's Shelf takes its turn at an event: its Tick, the focus moves that lift and scroll it,
+    /// and a committed press, which it answers as the card that was pressed.
+    fn step_strip<H: PlayerLike + crate::registry::MetadataLike>(
+        &mut self,
+        ev: &ScreenEvent<H>,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) -> Option<CardEvent<u32>> {
+        // …and keeps stepping while the strip fades out after the section was put away, so it fades as it was, not frozen
+        let open = match self.hud.sections.contains(Section::Chapters) {
+            true => self.hud.sections.bits(),
+            false => self.row.presented() & Section::Chapters.open_bit(),
+        };
+        let (geo, src) = self.strip_source_in(cx, open)?;
+        self.row.strip(self.entry, &geo).on(ev, cx, &src, fx)
+    }
+
+    /// Mirror the cursor onto `elem` and seat the engine there: the pairing every write to `hud.nav` makes.
+    fn park_on<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
+        if let Some(btn) = player_hud::row_index(elem) {
+            self.hud.nav.focus = GROUP_ROW;
+            self.hud.nav.btn = btn;
+        } else if let Some(group) = Self::hud_group_of(elem) {
+            self.hud.nav.focus = group;
+            if group == GROUP_TABS {
+                self.hud.nav.tab = (elem - player_hud::ELEM_TAB_BASE) as i32;
+            }
+            if group == GROUP_SECTION {
+                self.hud.nav.btn = (elem - player_hud::ELEM_SECTION_BASE) as i32;
+            }
+        }
+        self.seat_elem(fx, elem);
+    }
+
+    /// **A `toggle_section` was performed**: close the section if it is open, else open it under the package's
+    /// policy and seat focus inside it: on the chapter that holds the position the bar shows (Chapters), on the
+    /// first button (Info).
+    fn toggle_section<H: PlayerLike + crate::registry::MetadataLike>(
+        &mut self,
+        section: Section,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) {
+        let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+        let now = cx.tick.ms;
+        if self.hud.sections.contains(section) {
+            self.close_section(section, chapters, now, fx);
+            return;
+        }
+        // Chapters needs chapters, and nothing opens over a failure that owns the frame
+        if (section == Section::Chapters && !chapters) || player_hud::readout_owns_frame(self.busy) {
+            return;
+        }
+        self.hud.sections = self.hud.sections.toggled(section, self.modal());
+        // the springs start now: the presented frame draws the section at appear 0
+        self.row.follow(self.hud.sections.bits());
+        // The page takes the transport: a pending scrub target ends with it, never committed.
+        self.scrub.cancel();
+        self.end_jump_gesture();
+        self.hud.dismissed = false;
+        self.hud.extend(now, input::HUD_LINGER_MS);
+        let seat = match section {
+            Section::Chapters => {
+                self.row.drop_strip();
+                self.strip_source(cx).map(|(geo, src)| {
+                    let seat = src.seat_at(&self.model);
+                    self.row.strip(self.entry, &geo);
+                    player_hud::ELEM_CHAPTER_BASE + seat as u32
+                })
+            }
+            // opening Info seats its first action when the package places one; else the ring stays on the opener
+            Section::Info => (!self.section_rects(chapters).is_empty()).then(|| player_hud::geometry::section_elem(0)),
+        };
+        if let Some(elem) = seat {
+            self.park_on(elem, fx);
+        }
+        self.publish();
+    }
+
+    /// **Close `section`** and hand focus back: to the control that opened it (its tab or its disc, whichever the
+    /// package drew), else to the latest page still open, else to the scrubber. The transport lingers from here.
+    fn close_section<H: AppLike>(&mut self, section: Section, chapters: bool, now: u32, fx: &mut Effects<'_, H>) {
+        self.hud.sections = self.hud.sections.closed(section);
+        // the section stays on screen, fading, until its spring is out (its Shelf with it): only the logical set changed
+        self.row.follow(self.hud.sections.bits());
+        self.hud.extend(now, input::HUD_LINGER_MS);
+        let opener = player_hud::geometry::frame_state(
+            &self.compiled,
+            self.hud.sections.bits(),
+            self.eff_slot(),
+            chapters,
+            self.model.paused,
+        )
+        .and_then(|(state, skip)| player_hud::geometry::opener_elem(state.skip_variant(skip), section));
+        match (opener, self.hud.sections.latest()) {
+            (Some(elem), _) => self.park_on(elem, fx),
+            (None, Some(latest)) => {
+                self.hud.nav.focus = Sections::group_of(latest);
+                Self::repair_focus(fx, self.hud.nav.focus);
+            }
+            (None, None) => {
+                self.hud.nav.focus = GROUP_SCRUB;
+                Self::repair_focus(fx, GROUP_SCRUB);
+            }
+        }
+        self.publish();
+    }
+
+    /// **A chapter's card was pressed**: seek to where it starts, and the strip goes away.
+    fn chapter_pressed<H: PlayerLike + crate::registry::MetadataLike>(
+        &mut self,
+        elem: u32,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) {
+        let Some((_, src)) = self.strip_source(cx) else { return };
+        let Some(ns) = elem.checked_sub(player_hud::ELEM_CHAPTER_BASE).and_then(|i| src.start_ns(i as usize)) else {
+            return;
+        };
+        let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+        Self::ask(fx, PlayerReq::SeekTo(ns));
+        self.close_section(Section::Chapters, chapters, cx.tick.ms, fx);
+    }
+
+    /// **An open section's button was pressed**: its command goes to the app's performer, and the section closes.
+    fn section_pressed<H: PlayerLike + crate::registry::MetadataLike>(
+        &mut self,
+        focused: Option<u32>,
+        cx: &Cx<'_, H>,
+        fx: &mut Effects<'_, H>,
+    ) {
+        let Some(i) = focused.and_then(|e| e.checked_sub(player_hud::ELEM_SECTION_BASE)) else { return };
+        let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+        let command = player_hud::geometry::frame_state(
+            &self.compiled,
+            self.hud.sections.bits(),
+            self.eff_slot(),
+            chapters,
+            self.model.paused,
+        )
+        .and_then(|(state, skip)| player_hud::geometry::section_command(state.skip_variant(skip), i as usize));
+        // A command that is not meaningful now (Go to details with no detail page) is not asked, but the press still
+        // puts the page away: the overlay's card closed on `InfoAction::None` too.
+        let Some(command) = command else { return };
+        if command.enabled(&self.model) {
+            Self::ask(fx, PlayerReq::Command(command));
+        }
+        self.close_section(Section::Info, chapters, cx.tick.ms, fx);
+    }
+}
+
+impl PlayerScreen {
     /// **Where the layout puts the HUD this frame**, as the `HudGeometry` the compiled package reports for
     /// the row's occupant and the content (`player_hud::geometry::geometry`). It copies what the compile
     /// placed, so it needs no measurer: the callers that need several facts of one frame
     /// ([`Self::record_stops`]) ask once and read it through [`Self::groups_in`] and [`Self::place_in`];
     /// a pointer event and the caption draw ask for their own.
     fn geometry_for(&self, chapters: bool) -> HudGeometry {
-        player_hud::geometry::geometry(&self.compiled, self.slot, chapters, self.model.paused)
+        player_hud::geometry::geometry(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)
     }
 
     /// [`Self::geometry_for`] for the content the `Cx` holds.
@@ -1524,7 +1872,7 @@ impl PlayerScreen {
             overlay::OverlayKind::More { .. } => "open_more",
             _ => return None,
         };
-        let (state, skip) = player_hud::geometry::frame_state(&self.compiled, self.slot, chapters, self.model.paused)?;
+        let (state, skip) = player_hud::geometry::frame_state(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)?;
         let state = state.skip_variant(skip);
         let index_of = |id: &str| state.controls.iter().position(|c| c.id == id);
         let held = (self.hud.nav.focus == GROUP_ROW)
@@ -1540,24 +1888,24 @@ impl PlayerScreen {
     /// Does item `i` of the row have a stop? The command's own predicate for a package's discs, the slot's
     /// elsewhere (`player_hud::geometry::row_enabled`).
     fn row_enabled(&self, i: i32) -> bool {
-        player_hud::geometry::row_enabled(&self.compiled, self.slot, &self.model, i)
+        player_hud::geometry::row_enabled(&self.compiled, self.hud.sections.bits(), self.eff_slot(), &self.model, i)
     }
 
     /// What a press of item `i` performs (`player_hud::geometry::row_command`): the command of the control the
     /// package placed there, with its parameters.
     pub fn row_command(&self, i: i32) -> Option<player_hud::command::HudCommand> {
-        player_hud::geometry::row_command(&self.compiled, self.slot, &self.model, i)
+        player_hud::geometry::row_command(&self.compiled, self.hud.sections.bits(), self.eff_slot(), &self.model, i)
     }
 
     /// Where the cursor parks when the row appears (`player_hud::geometry::row_primary`).
     fn row_primary(&self) -> i32 {
-        player_hud::geometry::row_primary(&self.compiled, self.slot, &self.model)
+        player_hud::geometry::row_primary(&self.compiled, self.hud.sections.bits(), self.eff_slot(), &self.model)
     }
 
     /// How many stops the row group holds this frame (`player_hud::geometry::row_len`): the package's
     /// declared row for the discs, the stand-ins' own counts otherwise.
     fn row_len(&self, chapters: bool) -> usize {
-        player_hud::geometry::row_len(&self.compiled, self.slot, chapters, self.model.paused)
+        player_hud::geometry::row_len(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)
     }
 
     /// **The caption band the layout occupies**: ONE value of the package (`Compiled::band`), the same one
@@ -1576,6 +1924,8 @@ impl PlayerScreen {
             e if e == ELEM_SCRUB => Some(GROUP_SCRUB),
             e if player_hud::row_index(e).is_some() => Some(GROUP_ROW),
             e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => Some(GROUP_TABS),
+            e if (player_hud::ELEM_SECTION_BASE..player_hud::ELEM_SECTION_END).contains(&e) => Some(GROUP_SECTION),
+            e if (player_hud::ELEM_CHAPTER_BASE..plx_ui::dispatch::STRIP_BASE).contains(&e) => Some(GROUP_STRIP),
             _ => None,
         }
     }
@@ -1592,31 +1942,35 @@ impl PlayerScreen {
                 reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false, cx.measure).union(self.repair_rect(true, cx.measure)), len, elem: plx_ui::screen::ElemKind::Control });
             return;
         }
-        out.push(GroupSpec {
-            id: GROUP_SCRUB,
-            kind: GroupKind::Free,
-            seat: Seat::First,
-            reachable: AxisMask::BOTH,
-            edge: [EdgeRule::Screen; 4],
-            extent: geo.grab,
-            len: 1,
-            elem: plx_ui::screen::ElemKind::Control,
-        });
-        // Every item of whatever occupies the row — the Up Next PAIR included, which is two
-        // controls the D-pad walks and so two stops (the compile's `items`).
-        let row_len = self.row_len(plx_appkit::chapters_panel::has_chapters(H::metadata(cx))).max(1);
-        out.push(GroupSpec {
-            id: GROUP_ROW,
-            kind: GroupKind::Row { wrap: false },
-            seat: Seat::First,
-            reachable: AxisMask::BOTH,
-            // Up off the row's top is the screen's to answer (`answer_edge`: it hides the HUD);
-            // Down is a declared link back to the scrubber (`links`), and the row's ends stay put.
-            edge: [EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
-            extent: geo.row,
-            len: row_len,
-            elem: plx_ui::screen::ElemKind::Control,
-        });
+        // A modal section holds the middle of the transport: the scrubber and the row are not on screen, so they
+        // have no group (`middle_up`).
+        if self.middle_up() {
+            out.push(GroupSpec {
+                id: GROUP_SCRUB,
+                kind: GroupKind::Free,
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                edge: [EdgeRule::Screen; 4],
+                extent: geo.grab,
+                len: 1,
+                elem: plx_ui::screen::ElemKind::Control,
+            });
+            // Every item of whatever occupies the row — the Up Next PAIR included, which is two
+            // controls the D-pad walks and so two stops (the compile's `items`).
+            let row_len = self.row_len(plx_appkit::chapters_panel::has_chapters(H::metadata(cx))).max(1);
+            out.push(GroupSpec {
+                id: GROUP_ROW,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                // Up off the row's top is the screen's to answer (`answer_edge`: it hides the HUD);
+                // Down is a declared link back to the scrubber (`links`), and the row's ends stay put.
+                edge: [EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
+                extent: geo.row,
+                len: row_len,
+                elem: plx_ui::screen::ElemKind::Control,
+            });
+        }
         let has_ch = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
         out.push(GroupSpec {
             id: GROUP_TABS,
@@ -1628,6 +1982,28 @@ impl PlayerScreen {
             len: if has_ch { 2 } else { 1 },
             elem: plx_ui::screen::ElemKind::Control,
         });
+        // An open section's page. Both take Up as the page's own top (nothing above it but a declared link), and
+        // Down off the bottom as the screen's to answer (`answer_edge`): a modal page is put away there.
+        let page_edge = [EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop];
+        if let (Some((sgeo, src)), Some(shelf)) = (self.strip_source(cx), self.row.strip_shelf()) {
+            let mut spec = shelf.group_spec(GROUP_STRIP, CardSource::<H>::len(&src), sgeo.rect);
+            spec.edge = page_edge;
+            spec.reachable = AxisMask::HORIZONTAL;
+            out.push(spec);
+        }
+        let buttons = self.section_rects(has_ch);
+        if let Some(extent) = buttons.iter().copied().reduce(|a, b| a.union(b)) {
+            out.push(GroupSpec {
+                id: GROUP_SECTION,
+                kind: GroupKind::Column,
+                seat: Seat::Remembered,
+                reachable: AxisMask::VERTICAL,
+                edge: page_edge,
+                extent,
+                len: buttons.len(),
+                elem: plx_ui::screen::ElemKind::Control,
+            });
+        }
         if matches!(
             self.busy,
             plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, _)
@@ -1674,6 +2050,10 @@ impl PlayerScreen {
             e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => {
                 player_hud::FailureReadout::now(H::session(cx)).frames(cx.measure)[(e - ELEM_FAILURE_BASE) as usize]?
             }
+            e if (player_hud::ELEM_SECTION_BASE..player_hud::ELEM_SECTION_END).contains(&e) => {
+                let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+                self.section_rects(chapters).get((e - player_hud::ELEM_SECTION_BASE) as usize).copied()?
+            }
             _ => return None,
         };
         Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None })
@@ -1712,6 +2092,30 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             };
             return Step::Move(FocusKey { entry: self.entry, elem });
         }
+        match Self::hud_group_of(key.elem) {
+            // the strip's cards are walked by the Shelf that paints them
+            Some(GROUP_STRIP) => {
+                return match (self.strip_source(cx), self.row.strip_shelf()) {
+                    (Some((_, src)), Some(shelf)) => shelf.neighbour::<H, _>(&src, key, dir),
+                    _ => Step::Edge,
+                };
+            }
+            // an open section's buttons are a column
+            Some(GROUP_SECTION) => {
+                let index = (key.elem - player_hud::ELEM_SECTION_BASE) as usize;
+                let to = match dir {
+                    Dir::Up => index.checked_sub(1),
+                    Dir::Down => Some(index + 1),
+                    _ => None,
+                };
+                let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+                let count = self.section_rects(chapters).len();
+                return to.filter(|&i| i < count).map_or(Step::Edge, |i| {
+                    Step::Move(FocusKey { entry: self.entry, elem: player_hud::geometry::section_elem(i as u32) })
+                });
+            }
+            _ => {}
+        }
         if let Some(index) = player_hud::row_index(key.elem) {
             let forward = match dir { Dir::Left => false, Dir::Right => true, _ => return Step::Edge };
             let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
@@ -1722,7 +2126,11 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         }
         Step::Edge
     }
-    fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        if Self::hud_group_of(*key) == Some(GROUP_STRIP) {
+            let (geo, src) = self.strip_source(cx)?;
+            return self.row.strip_shelf()?.place(cx, &src, key, Self::strip_frame(&geo), at);
+        }
         let geo = self.hud_geometry(cx);
         self.place_in(&geo, key, cx)
     }
@@ -1731,8 +2139,17 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             FocusKey { entry: self.entry, elem: player_hud::control_elem(self.row_primary()) }
         } else { want }
     }
-    fn seat(&self, g: GroupId, _from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
+    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         let elem = match g {
+            // the card nearest where the move came from, else the first; Info's first button
+            GROUP_STRIP => match (self.strip_source(cx), self.row.strip_shelf()) {
+                (Some((_, src)), Some(shelf)) => return shelf.seat::<H, _>(&src, from).unwrap_or(FocusKey {
+                    entry: self.entry,
+                    elem: player_hud::ELEM_CHAPTER_BASE,
+                }),
+                _ => player_hud::ELEM_CHAPTER_BASE,
+            },
+            GROUP_SECTION => player_hud::geometry::section_elem(0),
             GROUP_SCRUB => player_hud::ELEM_SCRUB,
             GROUP_ROW => player_hud::control_elem(self.row_primary()),
             // the tab the user last stood on (Down from the scrubber returns to it), held to the
@@ -1799,6 +2216,24 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
     /// `EdgeRule::Screen`, which the dispatcher re-delivers to [`PlayerScreen::step`] as the key
     /// with `at_edge` set — [`PlayerScreen::answer_edge`] is the screen's answer.
     fn links(&self, out: &mut Vec<Link>) {
+        // **An open section changes the travel** (D6/D8). A modal one has taken the middle: the one way into it
+        // is Up from the tab that opened it, and the way out is Down off its bottom edge (`answer_edge`) or BACK.
+        // An inline one lives beside the row: Down from the row enters the latest open section and Up from it
+        // returns to the row (the scrubber is reached by closing the section; a pointer still reaches it).
+        if let Some(latest) = self.hud.sections.latest() {
+            if self.modal() {
+                out.push(Link { from: GROUP_TABS, dir: Dir::Up, to: Sections::group_of(latest) });
+            } else {
+                out.extend([
+                    Link { from: GROUP_SCRUB, dir: Dir::Up, to: GROUP_ROW },
+                    Link { from: GROUP_SCRUB, dir: Dir::Down, to: GROUP_TABS },
+                    Link { from: GROUP_TABS, dir: Dir::Up, to: GROUP_SCRUB },
+                    Link { from: GROUP_ROW, dir: Dir::Down, to: Sections::group_of(latest) },
+                ]);
+                out.extend(self.hud.sections.iter().map(|s| Link { from: Sections::group_of(s), dir: Dir::Up, to: GROUP_ROW }));
+            }
+            return;
+        }
         out.extend([
             Link { from: GROUP_SCRUB, dir: Dir::Up, to: GROUP_ROW },
             Link { from: GROUP_SCRUB, dir: Dir::Down, to: GROUP_TABS },
@@ -1811,7 +2246,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
     /// `draw`'s own (`hud_drawn` and the transport's middle).
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
         let ps = H::session(cx);
-        if self.transport && self.hud_drawn(ps, cx.tick.ms) {
+        if self.middle_up() && self.hud_drawn(ps, cx.tick.ms) {
             // `model` is the app's snapshot of the PREVIOUS frame, and a held scrub moves the
             // target by seconds a frame: the one field the page already holds fresher (its `Tick`
             // ran before this pass), so the prewarm and the draw agree on it.
@@ -1825,8 +2260,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         let now = f.cx.tick.ms;
         // Both subtitle paths lift clear of the transport for the same reason and by the same
         // test — an open track menu counts, since that is exactly when the user is reading the
-        // bottom of the screen. `transport` is false while the Info card or Chapters strip owns
-        // the middle, and the lift follows the panel rather than the transport there. The Timing
+        // bottom of the screen. An open section counts too (`HudState::visible` ORs
+        // `sections.any()`), whether or not the transport's middle is drawn. The Timing
         // capsule is the exception: it HIDES the transport rather than sharing its read time, so
         // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
         let subs_lift = self.subs_lift(ps, now);
@@ -1857,10 +2292,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // spring-back), which the hit census pins; both converge on `perform_hud_command`. Direct
         // delivery, and the screen decides what the element means — including the scrubber, whose
         // meaning needs the click's `x` and so cannot be carried by a bare `ScreenEvent::Activate`
-        // at all, and the tabs, which open a panel at once with no dip to wait for.
+        // at all, and the tabs, which ask their section's toggle at once with no dip to wait for.
         let hud_drawn = self.hud_drawn(ps, now);
         if hud_drawn {
-            self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
+            self.draw_hud(ps, now, f, H::metadata(f.cx));
         } else {
             self.row.reset_title();
         }
@@ -2712,7 +3147,7 @@ mod step_ladder_tests {
                     assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
                 }
                 if elem == ELEM_TAB_BASE {
-                    assert_eq!(reqs, vec![PlayerReq::OpenOverlay(overlay::OverlayKind::Info)], "{name}: Info");
+                    assert_eq!(reqs, vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Info))], "{name}: Info");
                 }
             }
         }
@@ -3089,7 +3524,7 @@ mod step_ladder_tests {
     /// OK on the tabs row opens the named overlay AT ONCE — port of `key_ok`'s `focus == 2` arm,
     /// now read off the element the engine holds.
     #[test]
-    fn ok_on_the_tabs_row_opens_the_named_overlay() {
+    fn ok_on_the_tabs_row_asks_to_toggle_the_named_section() {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         fresh(&mut page);
@@ -3099,7 +3534,7 @@ mod step_ladder_tests {
         let (_, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
         assert_eq!(
             reqs,
-            vec![PlayerReq::OpenOverlay(overlay::OverlayKind::Info)]
+            vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Info))]
         );
     }
 

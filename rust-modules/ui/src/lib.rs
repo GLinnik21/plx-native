@@ -351,6 +351,27 @@ pub mod draw_census {
     }
 
     thread_local! {
+        static RINGS: RefCell<Option<Vec<(Rect, f32)>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was handed a hollow ring ([`Painter::rring`]) of corner radius `rad` in `r`:
+    /// [`note`] carries the rect and no radius, and a rim that should follow a card's corner needs it.
+    pub fn note_ring(r: Rect, rad: f32) {
+        RINGS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((r, rad));
+            }
+        });
+    }
+    /// Every ring a recording painter is handed while `f` runs, as `(screen rect, corner radius)`, in
+    /// draw order. A separate log, so the census [`capture`] returns (and the hashes frozen from it) is
+    /// unchanged.
+    pub fn capture_rings(f: impl FnOnce()) -> Vec<(Rect, f32)> {
+        RINGS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        RINGS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
         static GROUNDS: RefCell<Option<Vec<[[f32; 3]; 4]>>> = const { RefCell::new(None) };
     }
     /// A recording painter was handed an opaque wash ([`Painter::ambient`](super::Painter::ambient))
@@ -987,6 +1008,8 @@ impl Painter {
     /// card's edge sheen; against a knockout that is wrong while the screen is STILL, it is the far
     /// better trade.
     pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ring(self.place(r), rad); }
         if self.declare(r, 3, |data| {
             use frame::backdrop::Value;
             rad.record(data);

@@ -2861,8 +2861,19 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         };
         let infolast = matches!(surface.map(|s| s.panel()), Some(Panel::Info(p)) if p.at_last());
         let menu = is(|k| matches!(k, OverlayKind::Tracks { .. }));
-        let info = is(|k| matches!(k, OverlayKind::Info));
-        let chap = is(|k| matches!(k, OverlayKind::Chapters));
+        // Info and Chapters are the page's own sections now (`hud.sections`); the spellings stay so a recording
+        // taken before and one taken after remain comparable.
+        let sections = player.map(|p| p.hud.sections).unwrap_or(plx_screens::player::input::Sections::NONE);
+        let info = is(|k| matches!(k, OverlayKind::Info)) || sections.contains(plx_appkit::player_hud::command::Section::Info);
+        let chap = is(|k| matches!(k, OverlayKind::Chapters)) || sections.contains(plx_appkit::player_hud::command::Section::Chapters);
+        // the section's own cursor: Info's button, or the chapter card the engine holds
+        let section_sel = if sections.contains(plx_appkit::player_hud::command::Section::Chapters) {
+            d.input.engine.current(InputOwner::Entry(page.id))
+                .and_then(|k| k.elem.checked_sub(plx_appkit::player_hud::ELEM_CHAPTER_BASE)).unwrap_or(0) as usize
+        } else {
+            player.map_or(0, |p| p.hud.nav.btn.max(0) as usize)
+        };
+        let sel = if sections.any() { section_sel as i32 } else { sel };
         let more = is(|k| matches!(k, OverlayKind::More { .. }));
         let _ = write!(
             out,
@@ -3978,12 +3989,37 @@ pub(crate) fn player_mut(
         .downcast_mut::<plx_screens::player::PlayerScreen>()
 }
 
+/// **Ask the player page to toggle a section** (Chapters, Info): the `toggle_section` command's performer
+/// (`app::playback::perform_hud_command`) addresses the page with `AppMsg::HudSection`. The page owns the
+/// sections, so it opens or closes under the package's policy and seats its own focus; the app writes nothing of
+/// it. A no-op when no player page is mounted.
+pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_appkit::player_hud::command::Section) {
+    let Some(instance) = d.top_page() else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(
+        page,
+        Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section)))),
+    );
+}
+
+/// **Close every open HUD section of the player page** — one `toggle_player_section` per open one, so each closes
+/// the way a press on its opener does (focus handed back through the screen's own `close_section`). The app
+/// switch and the decoder park use it where the overlay panels' `dismiss_player_overlays` once took the Info card
+/// and the Chapters strip down: a section is the page's state, not a surface, and the page stays mounted.
+pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
+    let open: Vec<plx_appkit::player_hud::command::Section> =
+        player(d).map(|p| p.hud.sections.iter().collect()).unwrap_or_default();
+    for section in open {
+        toggle_player_section(d, section);
+    }
+}
+
 /// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half
 /// of an APP-SIDE write to `hud.nav.focus`.
 ///
 /// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
 /// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in five
-/// places — a Chapters / Info panel handing the ring back to the tabs (`PlayerReq::FocusTabs`), the
+/// places — a retained Chapters / Info overlay panel handing the ring back to the tabs (`PlayerReq::FocusTabs`; an open section hands it back through `close_section`), the
 /// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, the auto-hide
 /// park (in `run::update`) and the Skip / Up Next stand-in's departure (`run::follow_control_row`: the
 /// ring goes back to the scrubber, `standin_left_the_ring`'s contract) — and a bare write would leave

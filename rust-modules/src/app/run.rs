@@ -1721,6 +1721,7 @@ fn park_playback(app: &mut App) {
         player.transport_reset(true);
     }
     close_player_overlays(&mut app.pages);
+    super::bridge::close_player_sections(&mut app.pages);
     plx_media::player::suspend_bufferfeed(&mut app.player.session, &mut app.adapters.player);
     // Also retire the resolve generation: its worker may finish after backgrounding,
     // including before the accepted start's Player page has ever mounted.
@@ -2144,7 +2145,10 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // decides.
         // `bare` is the rule's third input and is the CONTAINER's answer now: "no panel is
         // up". It used to be `matches!(route, Route::Player { overlay: Overlay::None })`.
-        let bare = !app.pages.surface_up();
+        // …and a SECTION is the page's own state, not a surface (D7: the countdown cannot run behind an open one):
+        // with the ring on the row beside an inline page the tile is not drawn, so its clock must not run.
+        let section_up = super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.any());
+        let bare = !app.pages.surface_up() && !section_up;
         if matches!(app.route(), AppArg::Player) {
             let paused_now = paused();
             let mut parked = false;
@@ -2311,7 +2315,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     // see either route.
                     // the transport's control row (discs or a stand-in)
                     //
-                    // The Info card's own action column is the SURFACE's press, so it is asked
+                    // (The retained Info OVERLAY's) action column is the SURFACE's press, so it is asked
                     // first and by identity rather than by a second `Route::Player` arm — the two
                     // used to be two arms of one route, which reads as an ordering and compiles as
                     // an unreachable branch.
@@ -2999,8 +3003,11 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // be the post-pump value.
                         //
                         // `transport` is the other per-frame fact the instance cannot resolve for
-                        // itself: the transport's MIDDLE is hidden behind an open Info card or
-                        // Chapters strip, and which panel is up is the container's answer.
+                        // itself: whether a surface is over the bare picture. An open Info card or Chapters
+                        // strip is a SECTION, the page's own state, and `PlayerScreen::middle_up` withholds the
+                        // middle for it. The `bare_middle` below is false only while the RETAINED Info/Chapters
+                        // overlay is presented, which no live path does: it is always true on the shipped path
+                        // until stage 2b removes that overlay.
                         let busy = plx_appkit::player_hud::busy(&app.player.session);
                         let bare_middle = !matches!(
                             super::bridge::player_overlay_kind(&app.pages),
@@ -4789,20 +4796,19 @@ mod lifecycle_regression_tests {
         assert_eq!(globals.seek_to(), 60_000_000_000, "the second press accumulates");
     }
 
-    /// **Section commands toggle**: `toggle_section` opens its panel and dismisses it when the same
-    /// panel is already up, the way the Info card's own tab does.
+    /// **Section commands toggle**: `toggle_section` opens the section on the player PAGE (its own state,
+    /// `hud.sections`) and a second one closes it. Nothing reaches the overlay stack for it: no panel is pushed.
     #[test]
-    fn toggle_section_opens_its_panel_and_a_second_press_closes_it() {
+    fn toggle_section_opens_the_page_section_and_a_second_press_closes_it() {
         use plx_appkit::player_hud::command::{HudCommand, Section};
-        use plx_screens::player::overlay::OverlayKind;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         let mut now = 100;
-        for want in [Some(OverlayKind::Chapters), None] {
+        for want in [true, false] {
             super::playback::perform_hud_command(
-                HudCommand::ToggleSection(Section::Chapters),
+                HudCommand::ToggleSection(Section::Info),
                 &mut app.player,
                 &mut app.adapters.player,
                 &mut app.repause_at,
@@ -4815,9 +4821,75 @@ mod lifecycle_regression_tests {
                 now += 16;
                 frame(&mut app, now);
             }
-            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), want);
+            let open = super::super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.contains(Section::Info));
+            assert_eq!(open, want, "Info {}", if want { "opens" } else { "closes" });
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None, "no overlay is pushed for a section");
             now += 100;
         }
+    }
+
+    /// **An app switch or a decoder park closes the open sections**, as it closed the Info card and the Chapters
+    /// strip when they were overlay panels (`close_player_overlays`): the viewer returns to the film, not to a page
+    /// whose first press the restore would spend.
+    #[test]
+    fn parking_playback_closes_the_open_sections() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::playback::perform_hud_command(
+            HudCommand::ToggleSection(Section::Info),
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            100,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        let mut now = 100;
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(super::super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.contains(Section::Info)));
+        park_playback(&mut app);
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(
+            super::super::bridge::player(&app.pages).is_some_and(|p| !p.hud.sections.any()),
+            "the page is closed when the film is parked",
+        );
+    }
+
+    /// Chapters opens only for an item that has chapters: with none playing, `toggle_section` is a no-op.
+    #[test]
+    fn toggle_section_chapters_does_nothing_for_an_item_without_chapters() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::playback::perform_hud_command(
+            HudCommand::ToggleSection(Section::Chapters),
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            100,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        let mut now = 100;
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(super::super::bridge::player(&app.pages).is_some_and(|p| !p.hud.sections.any()));
+        assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None);
     }
 
     /// **The app ladder's player OK arm is unreachable.** A mounted player page owns the keys

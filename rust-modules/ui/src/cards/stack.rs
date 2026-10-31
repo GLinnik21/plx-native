@@ -555,7 +555,7 @@ impl<K: Copy + Eq> Stack<K> {
                 match (s.kind, kept) {
                     (Kind::Shelf { .. }, Some((_, b @ Body::Shelf(_)))) => b,
                     (Kind::Grid { .. }, Some((_, b @ Body::Grid(_)))) => b,
-                    (Kind::Shelf { style, .. }, _) => Body::Shelf(Shelf::new(self.entry, style)),
+                    (Kind::Shelf { style, .. }, _) => Body::Shelf(Shelf::new(self.entry, *style)),
                     (Kind::Grid { spec }, _) => Body::Grid(Grid::new(self.entry, spec.external())),
                     _ => Body::Plain,
                 }

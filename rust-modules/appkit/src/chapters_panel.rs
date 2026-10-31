@@ -37,7 +37,7 @@ const CH_TIME_DROP: f32 = 34.0;
 /// white and a thicker stroke are what keep "which chapter" readable from the couch while scrolling.
 /// Colour is the unkeyed focus edge ([`theme::CONTROL_RIM_FOCUS_UNKEYED`]); width is deliberately a
 /// step over that control's 1.25 so a 288-wide still reads as selected, not merely edged.
-const CH_FOCUS_RING_W: f32 = 2.5;
+pub(crate) const CH_FOCUS_RING_W: f32 = 2.5;
 use plx_ui::widgets::CARD_FOCUS_SCALE;
 
 /// The strip's whole state, owned by the container that mounts this panel — the modal PHASE and
@@ -209,7 +209,7 @@ pub(crate) fn label_ys() -> (f32, f32) {
 /// the playing leaf's chapters — the ONE read, so within a frame the count, the open, the seek and
 /// the draw cannot end up describing different items. ACROSS frames the store can still be replaced
 /// (a new play retires it, `route::request_play`), which is why `update` re-clamps the selection.
-fn chapters<'a>(meta: metadata::MetadataView<'a>) -> &'a [metadata::Chapter] {
+pub(crate) fn chapters<'a>(meta: metadata::MetadataView<'a>) -> &'a [metadata::Chapter] {
     meta.playing_chapters()
 }
 fn n(meta: metadata::MetadataView<'_>) -> c_int {

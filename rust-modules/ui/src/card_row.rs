@@ -49,6 +49,38 @@ pub struct RowStyle {
     /// A reserve from the physical edge, intersected with the shared safe area;
     /// [`RowStyle::with_right_reserve`] is how a screen declares one.
     pub right_reserve: f32,
+    /// **Where a focused tile's label block starts**: centred on the card whenever the block sits
+    /// inside the panel (every row but the HUD's chapter strip), or at the card's own leading edge
+    /// ([`LabelStart::Leading`]). See [`anchor_label`].
+    pub label_start: LabelStart,
+    /// **A rim drawn over the focused tile** ([`Rim`]), `None` for every row but a strip of tiles
+    /// laid over the video plane (the HUD's chapters, `docs/hud-plugins.md` D11), where the tile's
+    /// own sheen does not read against moving picture.
+    pub rim: Option<Rim>,
+    /// **A label block that hangs `Some(d)` px under the card's UNSCALED bottom edge and is whole from
+    /// the first frame**, `None` for every row but the HUD's chapter strip (`docs/hud-plugins.md` D11):
+    /// the shelf's block hangs [`UNDER_DROP`] below and rides its band, which opens when the row takes
+    /// focus because a row stands under it that the band makes room for. A strip over the video plane has
+    /// nothing under it for a band to open for, and its name stands where the strip's persistent labels do.
+    pub label_drop: Option<f32>,
+}
+
+/// Where a label block starts under its tile: [`RowStyle::label_start`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelStart {
+    /// Centred on the card when the block fits the panel there ([`anchor_label`]'s first case): the
+    /// default every shelf keeps.
+    Centre,
+    /// From the card's own leading edge: [`anchor_label`]'s centred case is skipped, so the name
+    /// and the time under a chapter card stand at its left as the card's own text does.
+    Leading,
+}
+
+/// A ring painted over the focused tile at its popped rect ([`RowStyle::rim`]): `width` px of `ink`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rim {
+    pub width: f32,
+    pub ink: [f32; 4],
 }
 impl RowStyle {
     /// The furthest a row of `n` cells scrolls: the content past the viewport, 0 for a row that
@@ -56,6 +88,21 @@ impl RowStyle {
     pub fn max_scroll(&self, n: usize) -> f32 {
         let viewport = SCR_W - 2.0 * self.margin_x;
         (n as f32 * (self.w + self.gap) - self.gap - viewport).max(0.0)
+    }
+
+    /// This style with its focused tile ringed by `rim` ([`RowStyle::rim`]).
+    pub const fn with_rim(self, rim: Rim) -> RowStyle {
+        RowStyle { rim: Some(rim), ..self }
+    }
+
+    /// This style with its label block hung `drop` px under the card and shown whole ([`RowStyle::label_drop`]).
+    pub const fn with_label_drop(self, drop: f32) -> RowStyle {
+        RowStyle { label_drop: Some(drop), ..self }
+    }
+
+    /// This style with its label blocks started at the card's leading edge ([`LabelStart::Leading`]).
+    pub const fn with_leading_labels(self) -> RowStyle {
+        RowStyle { label_start: LabelStart::Leading, ..self }
     }
 
     /// This style with `r` px of the panel's right edge reserved — see [`RowStyle::right_reserve`].
@@ -82,6 +129,9 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: false,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        label_drop: None,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
     /// the scroll, the glow ring and the heading lift are all one vocabulary — and a different
@@ -108,6 +158,9 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: false,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        label_drop: None,
     };
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
     /// magnification + scroll), so cast animates like the poster shelves.
@@ -129,6 +182,9 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: true,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        label_drop: None,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -149,6 +205,9 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: true,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        label_drop: None,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop.
@@ -1179,12 +1238,25 @@ pub fn draw_focused_tile_led(
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }
+    // over the video plane the tile's sheen is not a mark: the rim is, at full strength on the popped rect
+    // the rim follows the style's own corner, not the pop's: `radius * s` grows the ring's corner with the
+    // lift while the card the ring is meant to frame keeps its radius (a circle's is half its width)
+    if let Some(rim) = sty.rim {
+        p.rring(rect, if sty.circular { rad } else { sty.radius }, rim.width, rim.ink);
+    }
 }
 
 /// The bottom edge of the card drawn at `rect` (scale `s`) at its UNSCALED size, about the same
 /// centre: the line a label block hangs from, which a pop or a press never moves.
 pub fn unscaled_bottom(rect: Rect, s: f32) -> f32 {
     rect.y + rect.h * 0.5 + (rect.h / s) * 0.5
+}
+
+/// The y a label block under the tile drawn at `rect` (scale `s`) hangs from: the unscaled bottom, moved by how
+/// far the style's own drop ([`RowStyle::label_drop`]) stands from the shelf's [`UNDER_DROP`] (not at all
+/// when it sets none).
+pub fn label_bottom(rect: Rect, s: f32, sty: &RowStyle) -> f32 {
+    unscaled_bottom(rect, s) + sty.label_drop.map_or(0.0, |d| d - UNDER_DROP)
 }
 
 /// The label block under a tile drawn at `rect` (scale `s`) alone, without the tile: what
@@ -1218,7 +1290,7 @@ fn draw_label_mode(
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
     // the label into the next shelf's title.
-    let bottom = unscaled_bottom(rect, s);
+    let bottom = label_bottom(rect, s, sty);
     // …and each LINE of the block rides the band's reveal ([`line_reveal_for`]). The card, its ring
     // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
     // only about whether the room under it holds the line yet.
@@ -1593,9 +1665,16 @@ pub struct LabelRoom {
 /// The trailing edge is the card's, but never past `hi`: a card whose right edge is inside a
 /// reserved band (the Library's rail) ends its block where the band starts.
 pub fn anchor_label(lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -> LabelPlace {
+    anchor_label_from(LabelStart::Centre, lead, trail, w, want, room)
+}
+
+/// [`anchor_label`] for a row whose [`RowStyle::label_start`] is `start`: [`LabelStart::Leading`] skips
+/// the centred first case and so starts the block at the card's leading edge, still keeping the
+/// trailing and gliding cases for a card with no room to its right.
+pub fn anchor_label_from(start: LabelStart, lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -> LabelPlace {
     let cx = (lead + trail) * 0.5;
     let x = cx - w * 0.5;
-    if x >= room.lo && x + w <= room.hi {
+    if start == LabelStart::Centre && x >= room.lo && x + w <= room.hi {
         return LabelPlace { x, w, align: LabelAlign::Centre };
     }
     // Whole pixels: the room left before the panel edge is what the runs marquee against, and a
@@ -1721,7 +1800,7 @@ pub fn place_label_wide(p: Painter, rect: Rect, sty: &RowStyle, w: f32, want: f3
         floor: sty.margin_x - settled_dx,
     };
     let lead = rect.cx() - sty.w * 0.5;
-    anchor_label(lead, lead + sty.w, w, want, room)
+    anchor_label_from(sty.label_start, lead, lead + sty.w, w, want, room)
 }
 
 /// The focused tile's single-line title, drawn in the block `at`: plain whenever the run fits the
@@ -2403,6 +2482,88 @@ mod tests {
 
     /// A 1920 panel with the usual air at both edges and the 96px content margin.
     const ROOM: LabelRoom = LabelRoom { lo: EDGE_PAD, hi: SCR_W - EDGE_PAD, floor: MARGIN_X };
+
+    /// **`RowStyle::label_start`** (`docs/hud-plugins.md` D11): `Leading` skips the centred first case,
+    /// so a block that WOULD sit centred under its card starts at the card's own leading edge instead;
+    /// `Centre`, the default every row keeps, is `anchor_label` itself.
+    #[test]
+    fn a_leading_label_start_skips_the_centred_case_and_the_default_is_unchanged() {
+        // 288 wide card at x 700, a 200 wide block: centred it would start at 744
+        let (lead, trail) = (700.0, 988.0);
+        let centred = anchor_label(lead, trail, 200.0, 200.0, ROOM);
+        assert_eq!((centred.x, centred.align), (744.0, LabelAlign::Centre));
+        assert_eq!(anchor_label_from(LabelStart::Centre, lead, trail, 200.0, 200.0, ROOM), centred, "the default is the old function");
+        let leading = anchor_label_from(LabelStart::Leading, lead, trail, 200.0, 200.0, ROOM);
+        assert_eq!((leading.x, leading.w, leading.align), (lead, 200.0, LabelAlign::Leading));
+        // every shipped style keeps the centred case, and none carries a rim
+        for sty in [RowStyle::HOME, RowStyle::EPISODE, RowStyle::CAST] {
+            assert_eq!((sty.label_start, sty.rim), (LabelStart::Centre, None));
+        }
+        let strip = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME }.with_leading_labels();
+        let p = Painter::root();
+        let rect = Rect::new(lead, 700.0, 288.0, 162.0);
+        assert_eq!(place_label(p, rect, &strip, 200.0, 0.0).align, LabelAlign::Leading);
+        assert_eq!(place_label(p, rect, &RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME }, 200.0, 0.0).align, LabelAlign::Centre);
+    }
+
+    /// **`RowStyle::rim`**: a focused tile of a style with a rim paints one `rring` over its popped
+    /// rect; the same tile of any other style paints none (so no other Shelf's frame changes).
+    #[test]
+    fn a_rim_rings_the_focused_tile_only_when_the_style_asks() {
+        let rings = |sty: &RowStyle| {
+            crate::draw_census::capture(|| {
+                draw_focused_tile_led(Painter::recording(), Art::Poster(None), Rect::new(100.0, 100.0, 288.0, 162.0), 1.07, sty, None, None)
+            })
+            .iter()
+            .filter(|(tag, _)| *tag == 3)
+            .count()
+        };
+        let plain = RowStyle { w: 288.0, h: 162.0, ..RowStyle::HOME };
+        assert_eq!(rings(&plain), 0, "no style but the HUD strip's rings its tile");
+        let rimmed = plain.with_rim(Rim { width: 2.5, ink: theme::CONTROL_RIM_FOCUS_UNKEYED });
+        assert_eq!(rings(&rimmed), 1, "one rim over the popped rect");
+    }
+
+    /// **The rim follows the style's corner, not the pop's**: the ring records its radius, and a rimmed tile
+    /// popped to 1.07 rings at the style's own radius (the card it frames), where `radius * s` grew the corner
+    /// with the lift. A circle keeps half its width.
+    #[test]
+    fn a_rim_rings_at_the_styles_radius_not_the_pops() {
+        let rimmed = RowStyle { w: 288.0, h: 162.0, radius: 10.0, ..RowStyle::HOME }
+            .with_rim(Rim { width: 2.5, ink: theme::CONTROL_RIM_FOCUS_UNKEYED });
+        let rect = Rect::new(100.0, 100.0, 288.0, 162.0).scaled(1.07);
+        let ring = |sty: &RowStyle| {
+            crate::draw_census::capture_rings(|| draw_focused_tile_led(Painter::recording(), Art::Poster(None), rect, 1.07, sty, None, None))
+        };
+        assert_eq!(ring(&rimmed), vec![(rect, 10.0)], "the ring's corner is the style's 10, not 10 * 1.07");
+        let round = RowStyle { circular: true, ..rimmed };
+        assert_eq!(ring(&round), vec![(rect, rect.w * 0.5)], "a circle's ring keeps half its width");
+    }
+
+    /// **`RowStyle::label_drop`**: a block of a style that sets one hangs that far under the card's UNSCALED
+    /// bottom and is whole from the first frame; a style that sets none keeps `UNDER_DROP` (so no other row's
+    /// frame moves).
+    #[test]
+    fn a_label_drop_moves_the_block_and_the_default_does_not() {
+        let rect = Rect::new(100.0, 700.0, 288.0, 162.0).scaled(1.07);
+        let plain = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME };
+        assert_eq!(label_bottom(rect, 1.07, &plain), unscaled_bottom(rect, 1.07), "the default is the old bottom");
+        let dropped = plain.with_label_drop(26.0);
+        assert_eq!(label_bottom(rect, 1.07, &dropped) + UNDER_DROP, unscaled_bottom(rect, 1.07) + 26.0);
+        let label = TileLabel { title: std::ffi::CString::new("Opening").ok(), ..TileLabel::default() };
+        let name_y = |sty: &RowStyle| {
+            let runs = crate::draw_census::capture_runs(|| {
+                crate::record_walk(|| draw_label(Painter::root(), rect, 1.07, sty, &label, &crate::fixture::FixtureMeasure))
+            });
+            runs.iter().find(|r| r.text == "Opening").map(|r| r.at.y).expect("the title is drawn")
+        };
+        let card_bottom = 700.0 + 162.0;
+        assert_eq!(name_y(&plain), card_bottom + 30.0);
+        assert_eq!(name_y(&dropped), card_bottom + 26.0, "the strip's name stands 26 under the unscaled card");
+        for sty in [RowStyle::HOME, RowStyle::EPISODE, RowStyle::CAST, RowStyle::PROFILES] {
+            assert_eq!(sty.label_drop, None);
+        }
+    }
 
     /// A block that fits centred under its card is exactly where it always was: nothing is
     /// clipped, so nothing moves.

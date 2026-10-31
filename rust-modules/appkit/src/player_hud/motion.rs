@@ -9,11 +9,14 @@
 //! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
 //! because the app's snapshot is a frame old by then.
 use super::classic::fmt_time;
-use super::geometry::GROUP_ROW;
+use super::geometry::{GROUP_ROW, GROUP_SECTION, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
 use crate::knob_spring::KnobSpring;
-use plx_machine::machine::GroupId;
+use super::command::Section;
+use plx_machine::machine::{EntryId, GroupId, PresentHandle, Tick};
+use plx_ui::cards::Shelf;
+use plx_ui::containers::modal::PopoverMotion;
 use plx_ui::theme;
 use std::ffi::CString;
 use std::os::raw::{c_int};
@@ -124,6 +127,10 @@ fn row_pops(slot: ControlSlot) -> usize {
 /// exactly where [`step`](Self::step)'s doc says they must be.
 pub struct HudMotion {
     pub(super) pop: RowPop,
+    /// An open section's own buttons' focus pop ([`super::geometry::GROUP_SECTION`]), one spring per button:
+    /// the renderer's twin of `InfoPanelState::ctl_pop`. It is stepped while the screen focuses
+    /// `GROUP_SECTION` (the open Info page is the section; `info_panel.rs`'s pop belongs to the retained overlay).
+    pub(super) section_pop: RowPop,
     /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
     pub(super) title_clock: plx_ui::marquee::Clock,
     /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
@@ -140,7 +147,29 @@ pub struct HudMotion {
     pub(super) preview: crate::scrub_preview::ScrubPreview,
     /// The knob's return to the playhead when a scrub is cancelled ([`crate::knob_spring`]).
     pub(super) spring: KnobSpring,
+    /// **The chapters strip's Shelf** ([`super::strip`]): its pop, scroll and caption springs are LOGICAL state
+    /// the screen's tick steps (`Shelf::on`), so the shelf is held here with the rest of the HUD's motion and a
+    /// draw only paints it. Built by [`strip`](Self::strip) on first use.
+    strip: Option<Shelf>,
+    /// **Each section's appear spring**, the shared `PopoverMotion` the panels' surfaces ran (Chapters, then Info;
+    /// [`section_index`]): at 1 when the section is up and at rest, `0` when it is not, and in between while it
+    /// opens or fades. LOGICAL state like the Shelf's springs, stepped by [`step_appear`](Self::step_appear) from
+    /// the screen's tick and only read by a draw. Its target follows `HudState::sections` ([`follow`](Self::follow)).
+    appear: [PopoverMotion; 2],
+    /// The sections the springs were last told are open (`StateKey::open` bits).
+    wants: u8,
 }
+
+/// Which spring is `section`'s.
+fn section_index(section: Section) -> usize {
+    match section {
+        Section::Chapters => 0,
+        Section::Info => 1,
+    }
+}
+
+/// Both sections, in spring order.
+const SECTIONS: [Section; 2] = [Section::Chapters, Section::Info];
 
 impl Default for HudMotion {
     fn default() -> Self {
@@ -152,12 +181,114 @@ impl HudMotion {
     pub fn new() -> Self {
         Self {
             pop: RowPop::new(),
+            section_pop: RowPop::new(),
             title_clock: plx_ui::marquee::Clock::new(),
             play_at: None,
             pause_seen: None,
             preview: crate::scrub_preview::ScrubPreview::new(),
             spring: KnobSpring::new(),
+            strip: None,
+            appear: [PopoverMotion::at(0.0); 2],
+            wants: 0,
         }
+    }
+
+    /// **Point the appear springs at the sections that are open now** (`StateKey::open` bits, the screen's
+    /// `HudState::sections`). A section that opens from nothing starts at appear 0 and holds that one frame
+    /// (`PopoverMotion::hold_one_frame`): the presented frame draws it invisible and the spring runs from the
+    /// next, as a surface's does. One that opens while still fading out is turned round where it is. A section
+    /// that closed fades back down. A call with nothing changed does nothing.
+    pub fn follow(&mut self, open: u8) {
+        let changed = open ^ self.wants;
+        for section in SECTIONS {
+            if changed & section.open_bit() == 0 {
+                continue;
+            }
+            let spring = &mut self.appear[section_index(section)];
+            if open & section.open_bit() != 0 {
+                let fresh = spring.gone();
+                spring.to(1.0);
+                if fresh {
+                    spring.hold_one_frame();
+                }
+            } else {
+                spring.to(0.0);
+            }
+        }
+        self.wants = open;
+    }
+
+    /// **Take every section away at once**, nothing composited of them again (`PopoverMotion::at(0.0)`, the jump
+    /// `ModalStack::hide` makes): a failed playback, a new film, the page leaving. The strip's Shelf goes with them.
+    pub fn cut_sections(&mut self) {
+        self.appear = [PopoverMotion::at(0.0); 2];
+        self.wants = 0;
+        self.strip = None;
+    }
+
+    /// Step the sections' appear springs, once per frame from the screen's tick and never from a draw. A frame is
+    /// owed for as long as one moves: the spring notes `PresentEvent::Motion` on the handle the dispatcher gives
+    /// every machine and its surfaces alike, so no fingerprint term is needed. The Chapters strip's Shelf is
+    /// forgotten once its section has faded out.
+    pub fn step_appear(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
+        for spring in &mut self.appear {
+            spring.tick(t, present);
+        }
+        if self.appear[section_index(Section::Chapters)].gone() && self.wants & Section::Chapters.open_bit() == 0 {
+            self.strip = None;
+        }
+    }
+
+    /// `section`'s appear this frame: `0` held or gone, `1` at rest.
+    pub fn section_appear(&self, section: Section) -> f32 {
+        self.appear[section_index(section)].appear
+    }
+
+    /// Put `section` at appear `a`, opening: the springs a test draws at a chosen point of the motion instead of
+    /// stepping to it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_section_appear_for_test(&mut self, section: Section, a: f32) {
+        let mut spring = PopoverMotion::at(a);
+        spring.to(1.0);
+        self.appear[section_index(section)] = spring;
+        self.wants |= section.open_bit();
+    }
+
+    /// **The sections that are PRESENTED**: open, or closed and still fading out (`StateKey::open` bits). The
+    /// draw's mask; the logical one, the screen's `HudState::sections`, still decides stops, groups and keys.
+    pub fn presented(&self) -> u8 {
+        SECTIONS
+            .into_iter()
+            .filter(|s| !self.appear[section_index(*s)].gone())
+            .fold(0, |bits, s| bits | s.open_bit())
+    }
+
+    /// The strip's Shelf for a strip of this `geo`, under `entry`: held across frames so its springs live, and
+    /// rebuilt when the strip it drew is not this one (another entry or another card geometry).
+    pub fn strip(&mut self, entry: EntryId, geo: &super::strip::Geometry) -> &mut Shelf {
+        let style = geo.style();
+        let same = |s: &Shelf| {
+            let old = s.style();
+            s.entry() == entry
+                && (old.w, old.h, old.gap, old.margin_x, old.radius) == (style.w, style.h, style.gap, style.margin_x, style.radius)
+                && old.label_drop == style.label_drop
+        };
+        if !self.strip.as_ref().is_some_and(same) {
+            self.strip = Some(Shelf::new(entry, style));
+        }
+        self.strip.as_mut().expect("the strip's shelf was just built")
+    }
+
+    /// The strip's Shelf as it is, for a read that must not build one (the screen's `Focusable` and its stops).
+    /// `None` until [`strip`](Self::strip) has built it, which the screen does when the Chapters section opens.
+    pub fn strip_shelf(&self) -> Option<&Shelf> {
+        self.strip.as_ref()
+    }
+
+    /// Forget the strip's Shelf: the Chapters section closed, so the next opening builds one at rest rather than
+    /// resuming the last opening's scroll.
+    pub fn drop_strip(&mut self) {
+        self.strip = None;
     }
 
     /// Step the control row's focus pop AND the resume clock — once per FRAME, from the player
@@ -170,7 +301,8 @@ impl HudMotion {
     /// overlay was open, and a resume pressed with the Info card open would stamp its 2 s from the
     /// moment the card CLOSED, or never.
     ///
-    /// `focus == GROUP_ROW` is the control column; anything else closes every pop. The index is bounded by
+    /// `focus == GROUP_ROW` pops the control column's `pop` and `focus == GROUP_SECTION` pops
+    /// [`section_pop`](Self::section_pop); any other group closes both. The index is bounded by
     /// the CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a
     /// control the narrower one does not have.
     pub fn step(&mut self, slot: ControlSlot, focus: GroupId, btn: i32, dt: f32, now: u32) {
@@ -189,6 +321,14 @@ impl HudMotion {
             .flatten()
             .filter(|&i| i < row_pops(slot));
         self.pop.step(f, dt);
+        // an open section's buttons pop on `GROUP_SECTION`; the index is bounded by what a segment can hold
+        let section = (focus == GROUP_SECTION).then(|| usize::try_from(btn).ok()).flatten().filter(|&i| i < MAX_ROW_ITEMS);
+        self.section_pop.step(section, dt);
+    }
+
+    /// Section button `i`'s focus pop this frame.
+    pub fn section_scale(&self, i: usize) -> f32 {
+        self.section_pop.scale(i)
     }
 
     /// Do the title block, control row and bottom tabs take the pointer? Not while a scrub has

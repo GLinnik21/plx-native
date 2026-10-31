@@ -1549,6 +1549,21 @@ mod fragments {
         assert_eq!(pairs(&found), want, "{node}: {json}\n{}", dump(&found));
     }
 
+    /// `rect.h` and `text.leading` are bounded integers (PR8 stage 1 audit: both were in the table and
+    /// the compiler since PR5 but no parser row held their bounds).
+    #[test]
+    fn rect_h_and_text_leading_are_bounded_integers() {
+        let cells = r##""cells": []"##;
+        expect("rect", &format!(r##"{{ "ink": "TEXT_PRIMARY", "h": 236, {cells} }}"##), &[]);
+        expect("rect", &format!(r##"{{ "ink": "TEXT_PRIMARY", "h": 0, {cells} }}"##), &[(&codes::E0105, "/h")]);
+        expect("rect", &format!(r##"{{ "ink": "TEXT_PRIMARY", "h": 1081, {cells} }}"##), &[(&codes::E0105, "/h")]);
+        let text = |leading: &str| format!(r##"{{ "bind": "title.main", "size": "LABEL", "ink": "TEXT_PRIMARY", "leading": {leading} }}"##);
+        expect("text", &text("54"), &[]);
+        expect("text", &text("0"), &[(&codes::E0105, "/leading")]);
+        expect("text", &text("401"), &[(&codes::E0105, "/leading")]);
+        expect("text", &text("29.5"), &[(&codes::E0104, "/leading")]);
+    }
+
     #[test]
     fn rect_pad_and_bleed() {
         let cells = r##""cells": []"##;

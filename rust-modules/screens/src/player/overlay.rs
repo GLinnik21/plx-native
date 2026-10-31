@@ -8,6 +8,10 @@
 //! owning its panel's state as a field. The container owns the PHASE and the appear spring; the
 //! surface owns input while it is `Opening | Open`.
 //!
+//! (The Info card and the Chapters strip are no longer presented here: they are sections of the player page
+//! (`HudState::sections`). Their `OverlayKind`s are retained for the heartbeat word and the replay shapes until
+//! stage 2b of the HUD-plugin series removes them.)
+//!
 //! **One screen type with an inner enum, not one type per panel**, because they differ only in which
 //! panel they hold and share every rule that matters here: what a transport key does, how a held
 //! direction is paced, when a panel dismisses itself, and how a decision reaches the loop. A copy
