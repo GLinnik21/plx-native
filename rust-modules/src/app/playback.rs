@@ -676,9 +676,7 @@ pub(crate) fn player_requests(
             // store's `skipped` set is read by `active_marker` and `synthesized_tail_marker`, so
             // the row becomes the discs on the next resolve.
             PlayerReq::DismissOffer(marker) => {
-                bridge
-                    .metadata_mut()
-                    .run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(marker));
+                bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(marker));
                 slot_refresh = true;
             }
             // The STOP key, a BACK with nothing else open and the failure read-out's own BACK
