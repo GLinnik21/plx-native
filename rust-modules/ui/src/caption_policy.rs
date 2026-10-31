@@ -20,7 +20,7 @@
 //! line is off, since the face is the only other place it is told.
 //!
 //! **Poster tiles follow this policy except a movie or TV show library grid showing its sort value**
-//! (one value line under every poster, `card_row::draw_sort_value`): the Library grid, the Collections page, the
+//! (one value line under every card, `card_row::draw_sort_value`): the Library grid, the Collections page, the
 //! Watchlist, Home's shelves, the Library's Recommended shelves, Search's poster rows, the person
 //! page's filmography, Detail's Related and collection shelves and the Collection screen's members
 //! (the screens build the focused block through `registry::captions`, and hand a
@@ -28,7 +28,11 @@
 //! **Landscape tiles and headshots are not posters and are not on it**: an episode still (the
 //! Library's Episodes listing, Search's Episode row, Recommended's landscape rows, Detail's Extras)
 //! and a cast or search-result headshot keep their own block, in their own height (the legacy band,
-//! `Grid::set_caption_policy(None)` for a grid), under every setting. The types and the two function signatures are what the
+//! `Grid::set_caption_policy(None)` for a grid), under every setting. The one exception is the
+//! Library's Episodes grid: while Sort value is On and the sort has a value for episodes it draws its
+//! sort value line under every still INSTEAD of that block (rows 60 px apart, the focused one opening
+//! 26 px), whatever its policy; the `None` policy sizes only the Off / no-value case (the legacy
+//! 114 px band). The types and the two function signatures are what the
 //! library, collection and settings packages compile against. [`band_h`] sizes the band;
 //! [`caption_lines`] words the lines in the given locale, with the catalog's plurals.
 

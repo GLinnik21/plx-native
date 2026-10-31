@@ -52,8 +52,11 @@ pub(crate) use plx_base::hold::{clamp_hold, HOLD_ROWS};
 /// raw index names. Holding the window to this size keeps the two from ever disagreeing.
 pub const MAX_SHELF_ITEMS: usize = 24;
 
-/// `PmsMovie::kind` of a TV show (a movie is 0, a season 2, an episode 3).
+/// `PmsMovie::kind` of a movie, a TV show, a season and an episode (a collection is 4).
+pub const KIND_MOVIE: c_int = 0;
 pub const KIND_SHOW: c_int = 1;
+pub const KIND_SEASON: c_int = 2;
+pub const KIND_EPISODE: c_int = 3;
 pub const KIND_COLLECTION: c_int = 4;
 
 pub fn listable(type_str: &str) -> bool {
@@ -176,7 +179,8 @@ pub struct PmsMovie {
     /// item menu's Play Version row; empty for a single-version item.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<MediaVersion>,
-    /// Listing-only sort facts. No detail fetch is needed to caption a movie grid.
+    /// Listing-only sort facts of a movie, show, season or episode row. No detail fetch is needed
+    /// to caption a library grid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_info: Option<SortInfo>,
 }
@@ -624,9 +628,10 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         m.child_count = it.child_count.max(0);
     }
     fill_caption_facts(&mut m, it);
-    // A show's listing row carries the same sort facts a movie's does (`lastViewedAt`, `viewCount`,
-    // the scores and their providers); its episode counts are `leaf_count` / `viewed_leaf_count` above.
-    if matches!(m.kind, 0 | KIND_SHOW) { m.sort_info = Some(SortInfo::of(it)); }
+    // A show's, a season's and an episode's listing row carries the same sort facts a movie's does
+    // (`lastViewedAt`, `viewCount`, the scores and their providers, an episode's media); a container's
+    // episode counts are `leaf_count` / `viewed_leaf_count` above. Only a collection keeps none.
+    if matches!(m.kind, 0 | KIND_SHOW | KIND_SEASON | KIND_EPISODE) { m.sort_info = Some(SortInfo::of(it)); }
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);
@@ -4613,11 +4618,56 @@ mod sort_info_tests {
         assert_eq!((facts.view_count, facts.last_viewed_at), (Some(5), Some(1791619274)));
         assert_eq!(facts.audience_image, "themoviedb://image.rating");
         assert_eq!((row.leaf_count, row.viewed_leaf_count, row.added_at, row.aired.as_str()), (Some(37), Some(28), Some(1788473416), "2013-09-29"));
-        // Seasons and episodes keep none: their grids word no sort value.
+        // A collection keeps none: its grid words no sort value.
+        let other: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({"type":"collection","ratingKey":"9","title":"x"})).unwrap();
+        assert!(parse_item(&other, ServerId::UNSET).sort_info.is_none());
+    }
+
+    /// An episode's listing row (a `type=4` row, trimmed) carries the facts its sorts read: the scores and
+    /// their providers, its own air date, the dates the library recorded, its play state and its media.
+    /// A season's row carries the dates and play state it has and its episode counts. Soft: a row that
+    /// sends none of them still parses, every fact unknown rather than a zero a reader could mistake
+    /// for a value.
+    #[test]
+    fn episode_and_season_rows_keep_their_sort_facts() {
+        let ep: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({
+            "type":"episode","ratingKey":"31","title":"Pilot","grandparentTitle":"Series","parentIndex":1,"index":22,
+            "rating":7.5,"ratingImage":"rottentomatoes://image.rating.ripe",
+            "audienceRating":8.4,"audienceRatingImage":"themoviedb://image.rating","userRating":9.0,
+            "originallyAvailableAt":"2014-05-12","year":2014,"duration":1320000,"viewCount":2,
+            "addedAt":1700000000,"lastViewedAt":1700000010,"contentRating":"TV-14",
+            "Media":[{"id":1,"videoResolution":"1080","width":1920,"height":1080,"bitrate":6500}]
+        })).unwrap();
+        let row = parse_item(&ep, ServerId::UNSET);
+        assert_eq!(row.kind, KIND_EPISODE);
+        let facts = row.sort_info.as_ref().expect("an episode row carries sort facts");
+        assert_eq!((facts.rating, facts.user_rating), (Some(7.5), Some(9.0)));
+        assert_eq!((facts.rating_image.as_str(), facts.audience_image.as_str()), ("rottentomatoes://image.rating.ripe", "themoviedb://image.rating"));
+        assert_eq!((facts.view_count, facts.last_viewed_at), (Some(2), Some(1700000010)));
+        assert_eq!((facts.bitrate_kbps, facts.width, facts.height, facts.media_count), (Some(6500), 1920, 1080, 1));
+        assert_eq!((row.audience_rating, row.aired.as_str(), row.added_at, row.rating.as_str()), (Some(8.4), "2014-05-12", Some(1700000000), "TV-14"));
+        let season: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({
+            "type":"season","ratingKey":"32","title":"Season 1","index":1,"leafCount":22,"viewedLeafCount":22,
+            "viewCount":9,"addedAt":1700000000,"lastViewedAt":1700000020
+        })).unwrap();
+        let row = parse_item(&season, ServerId::UNSET);
+        assert_eq!(row.kind, KIND_SEASON);
+        let facts = row.sort_info.as_ref().expect("a season row carries sort facts");
+        assert_eq!((facts.view_count, facts.last_viewed_at), (Some(9), Some(1700000020)));
+        assert_eq!((row.leaf_count, row.viewed_leaf_count, row.added_at), (Some(22), Some(22), Some(1700000000)));
+        // A row that sends none of it: nothing invented.
         for kind in ["season", "episode"] {
-            let other: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({"type":kind,"ratingKey":"9","title":"x"})).unwrap();
-            assert!(parse_item(&other, ServerId::UNSET).sort_info.is_none(), "{kind}");
+            let bare: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({"type":kind,"ratingKey":"9","title":"x"})).unwrap();
+            let row = parse_item(&bare, ServerId::UNSET);
+            let facts = row.sort_info.as_ref().expect(kind);
+            assert_eq!((facts.rating, facts.user_rating, facts.last_viewed_at, facts.bitrate_kbps), (None, None, None, None), "{kind}");
+            assert_eq!((row.audience_rating, row.added_at), (None, None), "{kind}");
         }
+        // An older recorded row, which has no `sort_info` key at all, still parses: the field is soft.
+        let mut old = serde_json::to_value(&parse_item(&ep, ServerId::UNSET)).unwrap();
+        old.as_object_mut().unwrap().remove("sort_info");
+        let old: PmsMovie = serde_json::from_value(old).unwrap();
+        assert!(old.sort_info.is_none());
     }
 
     /// Marking a show watched or unwatched moves its episode counts with the mark, so a grid sorted by

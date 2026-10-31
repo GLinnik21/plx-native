@@ -181,25 +181,46 @@ impl BandFamily {
 
     /// The family a sort has bands in, or `None` (the rail stays hidden, or is the letters'): `key` is
     /// the sort entry's key as the server lists it (`SortEntry::key`), `descending` the direction the
-    /// page asks, `listing` the type the grid lists. Only a section's own listing
-    /// ([`LibraryType::Primary`]) has bands: Seasons and Episodes order by a compound show key and
-    /// Collections list one sort, and the band tables are the films' and the shows'. The WHOLE key is
-    /// read, never its table-stripped tail: `episode.addedAt` is another family than `addedAt`. A key
-    /// of the other library kind has no band (`duration` is not a show field, `unviewedLeafCount` and
-    /// `episode.addedAt` are not movie fields: the server would silently ignore the filter).
-    /// `rating` is offered for both kinds, as the server lists it for both (a show with no rating
-    /// has all its items in the unlabelled region).
+    /// page asks, `listing` the type the grid lists. A section's own listing
+    /// ([`LibraryType::Primary`]) has the bands of the films' and the shows' tables, and a show
+    /// library's EPISODES listing has four of them: date added, date viewed, release date and
+    /// rating (`docs/pms-api.md`, "Count probes for seasons and episodes"). Date added and release
+    /// date were VERIFIED at their edges; the critic rating and the date viewed were accepted as
+    /// filters but no episode had a value on the measured server, so neither was ever checked at an
+    /// edge. They stay mapped, since a library that has values may be exact: a field nobody has a
+    /// value in counts nothing (`bands_available` needs two populated bands: no rail), and a filter
+    /// the server ignored or counts that are not monotone are refused by the read (`count_bands`,
+    /// `BandRail::new`). Its audience score is rounded by the server (no family counts it), its Title has the letters, and
+    /// `unviewedLeafCount`, `duration`,
+    /// `episode.addedAt` and the plays are not episode sorts. Seasons declare Title and Random alone,
+    /// and Collections list one sort: no bands. The WHOLE key is read, never its table-stripped
+    /// tail: `episode.addedAt` is another family than `addedAt`. A key of the other library kind has
+    /// no band (`duration` is not a show field, `unviewedLeafCount` and `episode.addedAt` are not
+    /// movie fields: the server would silently ignore the filter). `rating` is offered for both
+    /// kinds, as the server lists it for both (a show with no rating has all its items in the
+    /// unlabelled region).
     pub fn of_sort(key: &str, descending: bool, kind: SecKind, listing: LibraryType) -> Option<BandFamily> {
-        // Exhaustive on purpose, like `kind_offers_plays_sort`: a fourth type must decide here.
-        match listing {
-            LibraryType::Primary => {}
-            LibraryType::Seasons | LibraryType::Episodes | LibraryType::Collections => return None,
-        }
-        // Exhaustive on purpose too: a third kind must decide here.
+        // Exhaustive on purpose, like `kind_offers_plays_sort`: a third kind must decide here.
         let (movie, show) = match kind {
             SecKind::Movie => (true, false),
             SecKind::Show => (false, true),
         };
+        // Exhaustive on purpose too: a fifth type must decide here.
+        match listing {
+            LibraryType::Primary => {}
+            // Episodes exist in a show library only (`LibraryType::offered`); the sorts below are the
+            // four of the episode menu that have a family, and nothing else of it does.
+            LibraryType::Episodes => {
+                return match key {
+                    "rating" => show.then_some(Self::Rating),
+                    "addedAt" => show.then_some(Self::DateAdded),
+                    "lastViewedAt" => show.then_some(Self::DateViewed),
+                    "originallyAvailableAt" => show.then_some(Self::Release),
+                    _ => None,
+                };
+            }
+            LibraryType::Seasons | LibraryType::Collections => return None,
+        }
         match key {
             "rating" => Some(Self::Rating),
             "duration" => movie.then_some(Self::Duration),
@@ -795,27 +816,50 @@ mod tests {
         assert_eq!(BandFamily::Plays.field(), super::super::PLAYS_SORT_KEY);
     }
 
+    /// **Which listing has which bands** (`docs/pms-api.md`, "Count probes for seasons and episodes"). The
+    /// section's own listing has its tables'; the Episodes listing of a show library has the four sorts
+    /// of its menu that have a family (date added and release date verified at their edges; date viewed
+    /// and rating accepted as filters with no values observed, so no rail where nobody has one) and no other (its audience score is rounded, `unviewedLeafCount`, `duration`, `episode.addedAt` and the
+    /// plays are not its sorts, its Title has the letters); Seasons (Title and Random alone) and
+    /// Collections have none. Both directions, and the other library kind: Episodes exist for a show
+    /// library alone.
     #[test]
-    fn only_a_sections_own_listing_has_bands() {
-        // Seasons, Episodes and Collections list under the same section, with the same sort keys
-        // (`addedAt`, `rating`, ...): the key alone would give them bands they were never designed for.
-        let keyed = [
-            ("rating", true, SecKind::Show),
-            ("rating", false, SecKind::Movie),
-            ("duration", true, SecKind::Movie),
-            ("addedAt", true, SecKind::Show),
-            ("addedAt", false, SecKind::Movie),
-            ("lastViewedAt", true, SecKind::Show),
-            ("viewCount", true, SecKind::Show),
-            ("originallyAvailableAt", false, SecKind::Show),
-            ("unviewedLeafCount", true, SecKind::Show),
-            ("episode.addedAt", true, SecKind::Show),
+    fn which_listing_has_which_bands() {
+        use BandFamily::{DateAdded, DateViewed, Duration, LastEpisodeAdded, Plays, Rating, Release, Unplayed};
+        use LibraryType::{Collections, Episodes, Primary, Seasons};
+        use SecKind::{Movie, Show};
+        let table: [(&str, SecKind, [Option<BandFamily>; 4]); 14] = [
+            // key,                  kind,  [Primary,          Seasons, Episodes,          Collections]
+            ("rating", Show, [Some(Rating), None, Some(Rating), None]),
+            ("rating", Movie, [Some(Rating), None, None, None]),
+            ("addedAt", Show, [Some(DateAdded), None, Some(DateAdded), None]),
+            ("addedAt", Movie, [Some(DateAdded), None, None, None]),
+            ("lastViewedAt", Show, [Some(DateViewed), None, Some(DateViewed), None]),
+            ("originallyAvailableAt", Show, [Some(Release), None, Some(Release), None]),
+            ("originallyAvailableAt", Movie, [Some(Release), None, None, None]),
+            ("duration", Movie, [Some(Duration), None, None, None]),
+            ("duration", Show, [None, None, None, None]),
+            ("unviewedLeafCount", Show, [Some(Unplayed), None, None, None]),
+            ("episode.addedAt", Show, [Some(LastEpisodeAdded), None, None, None]),
+            ("viewCount", Show, [Some(Plays), None, None, None]),
+            ("audienceRating", Show, [None, None, None, None]),
+            ("titleSort", Show, [None, None, None, None]),
         ];
-        for (key, desc, kind) in keyed {
-            assert!(BandFamily::of_sort(key, desc, kind, LibraryType::Primary).is_some(), "{key}: the control");
-            for listing in [LibraryType::Seasons, LibraryType::Episodes, LibraryType::Collections] {
-                assert_eq!(BandFamily::of_sort(key, desc, kind, listing), None, "{key} {desc} {kind:?} {listing:?}");
+        for (key, kind, want) in table {
+            for desc in [false, true] {
+                for (listing, family) in [Primary, Seasons, Episodes, Collections].into_iter().zip(want) {
+                    // the last-episode sort is descending only, in the one listing that has it
+                    let family = if key == "episode.addedAt" && !desc { None } else { family };
+                    assert_eq!(BandFamily::of_sort(key, desc, kind, listing), family, "{key} desc={desc} {kind:?} {listing:?}");
+                }
             }
+        }
+        // the Episodes menu's Title entry (a composite) and Random: the letters' sort, and none
+        for key in [
+            "show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id",
+            "random",
+        ] {
+            assert_eq!(BandFamily::of_sort(key, false, Show, Episodes), None, "{key}");
         }
     }
 

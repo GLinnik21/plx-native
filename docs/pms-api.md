@@ -126,11 +126,12 @@ spec's "Media Queries" section documents the full query language.
   the same keys (Letter index, below).
 - **Show granularity:** `?type=2|3|4` on `/all` lists shows/seasons/episodes flat (no
   children-walking). Type ids: movie=1, show=2, season=3, episode=4.
-  Rechecked live 2026-09-26: `includeMeta=1` returns all three `Type` entries and marks the
-  requested one `active`. Seasons and episodes advertise a compound Show sort and its `descKey`;
-  use that descending expression as supplied. Neither advertises a Genre filter. Typed
-  `/firstCharacter?type=2|3|4` counts match the corresponding flat listing totals.
-  Seasons accept `unwatchedLeaves=1`; episodes use `unwatched=1`.
+  `includeMeta=1` returns every `Type` entry (show, season, episode and, on PMS 1.43.5, a folder
+  entry) and marks the requested one `active` (the 2026-09-26 recheck saw three entries, the
+  2026-10-31 one on 1.43.5 four). Seasons and episodes advertise a compound Title sort (the show
+  order) and its `descKey`; use that descending expression as supplied. Neither advertises a
+  Genre filter. Typed `/firstCharacter?type=2|3|4` counts match the corresponding flat listing
+  totals. Seasons accept `unwatchedLeaves=1`; episodes use `unwatched=1`.
 - **Letter index:** `GET /library/sections/{key}/firstCharacter` → per-letter `Directory[]` with
   `size` counts in titleSort order (articles stripped); `/firstCharacter/{L}` returns the items.
   **`?firstCharacter=X` on `/all` is silently IGNORED** — jump = prefix-summed
@@ -144,12 +145,22 @@ spec's "Media Queries" section documents the full query language.
   `sort=titleSort:desc`). Measured 2026-10-25 on PMS 1.43.5: movies (none, `unwatched`, `genre`, both,
   and `unwatched` descending), shows (`type=2` with `unwatchedLeaves`, with `genre`, with both);
   every letter's offset checked, none off. Seasons and episodes advertise no plain `titleSort`
-  sort, so the app offers the title-sort A-Z rail for movie and show listings (and collections) only.
+  sort but a composite Title key, which the letters land on (measured 2026-10-31, "Count probes for
+  seasons and episodes" below): the app offers the title-sort A-Z rail for the section's own listing
+  and collections by the literal `titleSort`, and for seasons and episodes by the declared Title entry
+  (`SortEntry::is_title_order`), ascending, sending that entry's `key` and never `titleSort`.
   The app sends `firstCharacter` the very terms of the grid's page request and shows the counts only
   while they describe it (`data/src/browse/letters.rs`). A VALUE sort's bands come from count
   probes instead (next section): the data job asks them for every banded sort (critic rating,
   duration, unplayed, plays, date added, date viewed, last episode added, release date) on a movie or
-  show section's own listing, with the same terms, and `ListingView::bands()` exposes them; the
+  show section's own listing, and for a show library's Episodes listing its date added, date viewed,
+  release date and rating (`BandFamily::of_sort`; Seasons have none), with the same terms (`type=4`
+  included). Of those four, date added and release date were verified at their edges; the critic
+  rating and the date viewed were accepted as filters but no episode had a value on the measured
+  server, so they were never checked at an edge: they stay mapped (a library with values may be
+  exact), and where nobody has a value there is no rail (a rail needs two populated bands), where
+  the server ignores the filter or the counts are not monotone the read refuses them.
+  `ListingView::bands()` exposes the bands; the
   calendar ones also need the day the Library hands over with its ask. `rail_available` stays the
   letters' alone and `bands_available` is the value sorts' (the two never both). The Library's rail
   draws whichever the sort has (`library/rail.rs`, labels in `library/rail_bands.rs`): the bands in
@@ -298,7 +309,21 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
   `titleSort`, `originallyAvailableAt`, `rating`, `audienceRating`, `duration`, `addedAt`,
   `lastViewedAt`, `mediaHeight`, `random`; shows list `titleSort`, `originallyAvailableAt`, `rating`,
   `audienceRating`, `unviewedLeafCount`, `episode.addedAt`, `lastViewedAt`, `random`. `year` and
-  `viewCount` are accepted as sorts but are not listed.
+  `viewCount` are accepted as sorts but are not listed. The same read with `type=3|4` (recorded
+  2026-10-31, `includeMeta=1`, PMS 1.43) lists **seasons**: a Title entry whose key is the compound
+  show order `show.titleSort,index` (descKey `show.titleSort:desc,index`) and `random`, nothing else;
+  and **episodes**: a Title entry whose key is the compound show order
+  `show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id`
+  (its descKey flips the first term), `originallyAvailableAt` (Release Date), `rating` (Critic
+  Rating), `audienceRating`, `addedAt` (Date Added), `lastViewedAt` and `random`. Neither lists a
+  plain `titleSort`, nor a duration, plays, resolution or year sort. The Title entry, the compound
+  show order, is the sort the A-Z letters belong to (Letter index, above) and the default of both views.
+  The Library's Sort value line (`screens/src/registry/sort_info.rs`) words, for an episode row,
+  the air date, the two scores, Date added and Date viewed from the listing's own fields
+  (`originallyAvailableAt`, `rating` + `ratingImage`, `audienceRating` + `audienceRatingImage`,
+  `addedAt`, `lastViewedAt`/`viewCount`) and, for a season row, `addedAt`, `lastViewedAt`,
+  `viewCount` and `leafCount - viewedLeafCount`; the Title entry and Random show no value, and a
+  Seasons view lists no sort that has one.
 - **The grid's own terms** are honoured by the probes: two edges per family, counted with the terms
   and compared with the same-terms listing, matched. `genre` was probed on both libraries (movie
   `rating` and `addedAt`, show `unviewedLeafCount`), `inProgress=1` on the movie library only (`rating`
@@ -311,6 +336,57 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
 `tests/mock_pms.py` reproduces these rules (range operators, null placement, the `Size: 0` quirk and
 the `episode.addedAt` asymmetry; the spread data and the per-type `Sort[]` lists behind
 `--band-fixture`), so the data layer can be tested without a server.
+
+### Count probes for seasons and episodes (measured 2026-10-31, PMS 1.43.5.11029, Guest, 15 shows / 48 seasons / 525 episodes)
+
+The same probes against `type=3` (seasons) and `type=4` (episodes) of the one show library, read-only
+by `tools/pms-band-probe.py --types 3,4`. **Exact there, not proven at scale** (one small library; four
+data-driven edges per field).
+
+- **The count probe works on both** (`Start: 0` + `Size: 0`): `totalSize` 48 and 525, no rows, equal to the
+  unfiltered listing's size.
+- **`Sort[]` differs per type, and only the entry marked `active` in `Meta.Type[]` is the listing's** (the
+  array lists the show, season, episode and folder types). Seasons declare only Title and `random`.
+  Episodes declare Title, `originallyAvailableAt`, `rating`, `audienceRating`, `addedAt`, `lastViewedAt`
+  and `random`. Every entry carries a `descKey`, which for Title is a separate string.
+- **The Title key of both types is a COMPOSITE, not `titleSort`**: seasons `show.titleSort,index`, episodes
+  the show's title, then season index, episode index, release date, the episode's own sort title and id:
+  `show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id`.
+  The literal `sort=titleSort` is accepted (HTTP 200) but orders differently: episodes come out not grouped
+  by show (330 runs for 15 shows), seasons grouped by show in another show order. For a descending Title
+  listing use the entry's `descKey`; appending `:desc` to the episode key does not reverse the shows.
+
+Verdicts per field (four data-driven edges; the other operators exact at one value where VERIFIED):
+
+| field | seasons | episodes |
+|---|---|---|
+| `addedAt` | VERIFIED (sort works although undeclared) | VERIFIED |
+| `lastViewedAt` | VERIFIED, but 5 of 48 rows have a value (sort works although undeclared) | UNTESTABLE (no row has one under the Guest; the key is a real filter, `>>=-1` counted 0) |
+| `originallyAvailableAt` | UNTESTABLE (no season carries one) | VERIFIED as UTC-midnight epochs, like movies |
+| `rating` | UNTESTABLE (none) | UNTESTABLE (none of 525; a real filter, `>>=-1` counted 0) |
+| `audienceRating` | UNTESTABLE (none) | ROUNDED (listing 0.1-rounded; 3 of 4 edges missed by 1 to 4 rows) |
+
+- **Null placement is the same as for movies and shows** (no value sorts first `:asc`, last `:desc`, last both
+  ways with `:nullsLast`; `>>=`/`>=` exclude, `<<=`/`<=` include). A sort with no value on any row
+  (`rating`, `lastViewedAt` on episodes; `rating`, `audienceRating`, `originallyAvailableAt` on seasons) is
+  accepted and changes nothing, so its rail has no band to draw.
+- **The letters index counts by the SHOW's title for both types.** `/firstCharacter?type=3` and `type=4` each
+  answered 9 buckets whose `size`s sum to the type's total (48, 525) and equal the number of rows whose
+  show's first sort-title glyph is that letter, not the row's own. Laid end to end they land on the real
+  letter boundaries of the listing in the DECLARED Title order or the default order (48 of 48 and 525 of
+  525 rows in their bucket; descending with the `descKey` and the buckets reversed, the same), and NOT of
+  `sort=titleSort` (41 of 48, 125 of 525). `firstCharacter=<letter>` is no filter on these listings (nor on
+  `type=2`): it answered the whole type for every letter, so a letter jump takes the prefix-sum offset.
+- **Does the letters index follow the grid's terms on these listings?** Asked with
+  `tools/pms-band-probe.py --types 3,4 --letters-under-filters` (26 requests, counts only), the letters' sizes
+  summed to the `Size=0` count of the SAME terms every time, for the terms that could tell a followed term from
+  an ignored one: `year=<the most common year>`, a proper subset (seasons 3 of 48 in 2 buckets, episodes 54 of
+  525 in 3 buckets), and the app's Unwatched key spelled `=0` (`unwatchedLeaves=0` on seasons, `unwatched=0` on
+  episodes: 0 and 0, no bucket). The app's own `unwatchedLeaves=1` (seasons) and `unwatched=1` (episodes) both
+  matched the WHOLE type here (48 and 525: nothing was watched through), so they could not tell. Genre is
+  UNMEASURED: this library's `/genre?type=3` and `type=4` list no values. The application therefore does not
+  compare the letters' sum with the listing's total; a server that ignored a term would put the jumps off.
+- **Cost** (loopback): count probe median 3.4 ms (seasons) and 5.1 ms (episodes); a 200-row episode page 36.5 ms.
 
 ---
 

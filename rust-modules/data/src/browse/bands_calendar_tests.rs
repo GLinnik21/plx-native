@@ -576,3 +576,59 @@ fn an_extent_before_1900_starts_the_release_bands_at_1900_and_leaves_the_older_i
         assert_eq!(unlabelled, 2 + 3, "no value, 1, 1850 and 1899 are in no band");
     }
 }
+
+/// **The Episodes listing of a show library has date bands** (`BandFamily::of_sort`): sorted by date added or
+/// by release date, the step asks for the family's bands with the page's own terms (`type=4`, which every read
+/// carries, the extent read included), the production body counts them over the model of the server, the answer
+/// lands under the key it was asked with, and the view lays the bands out in the grid's order in both directions.
+/// The letters are not this sort's rail.
+#[test]
+fn an_episodes_listing_counts_its_date_bands_over_type_4() {
+    use crate::browse::SortEntry;
+    use std::sync::Arc;
+    for (family, oldest_year, sort_key) in [
+        (BandFamily::DateAdded, 2003, "addedAt"), (BandFamily::Release, 1965, "originallyAvailableAt"),
+    ] {
+        let _g = plx_base::testlock::serial();
+        let (_cleanup, mut browse, sid, client) = banded_source(SecKind::Show, &[]);
+        assert!(browse.state.set_library_type(LibraryType::Episodes));
+        let entry = |key: &str, default_desc| SortEntry { key: key.into(), desc_key: format!("{key}:desc"), title: key.into(), default_desc };
+        let state = browse.state.state_mut(0).unwrap();
+        state.sorts = Arc::new(vec![
+            entry("show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.id", false),
+            entry(sort_key, true),
+        ]);
+        let letters = state.letters_key();
+        state.land_letters(letters, vec![("A".into(), 1), ("B".into(), 1)]);
+        assert!(browse.state.set_sort_by_key(sort_key, true));
+        tick_directory(&mut browse, sid, LibraryWork::Letters { today: Some(TODAY) });
+        let (job, port) = the_directory_job(&mut browse);
+        assert_eq!(job.req.library_type, LibraryType::Episodes);
+        assert_eq!(job.req.letters.as_ref().and_then(|key| key.family), Some(family), "{family:?}: the sort's own family");
+        let page = vec![("type".to_owned(), "4".to_owned())];
+        assert_eq!(job.req.filters, page, "{family:?}: the bands are counted over the Episodes listing");
+
+        let items = items(&edges(family, oldest_year, flat_shift), 120, 7);
+        let edges = edges_for(family, &items, &page, flat_shift);
+        let server = Server::new(items.clone(), field(family), 1);
+        let extents = RefCell::new(Vec::<Vec<(String, String)>>::new());
+        finish_bands_with(&port, job.addr, client, job.req, flat_zone(), |terms| server.count(terms),
+            |terms, _| { extents.borrow_mut().push(terms.to_vec()); Some(oldest_of(family, &server, terms)) });
+        let _ = browse.pump();
+        browse.jobs.clear();
+
+        let reads = server.seen.borrow();
+        assert_eq!(reads.len(), 2 + edges.len(), "{family:?}: the size, one read per band, the size");
+        assert!(reads.iter().all(|read| read[0] == page[0]), "{family:?}: every count carries type=4: {reads:?}");
+        assert_eq!(*extents.borrow(), vec![page.clone()], "{family:?}: one extent read, over the same listing");
+        let snapshot = browse.state.listing_snapshot();
+        assert!(snapshot.view().bands_available() && !snapshot.view().rail_available(), "{family:?}: bands, not letters");
+        for descending in [true, false] {
+            assert!(browse.state.set_sort_by_key(sort_key, descending));
+            let snapshot = browse.state.listing_snapshot();
+            let shown = snapshot.view().bands().expect("the counted bands, in this direction");
+            let rows = rows(&edges, &items, &page, descending);
+            assert_layout(edges.len(), &rows, shown, descending, &format!("{family:?} descending {descending}"));
+        }
+    }
+}

@@ -1,12 +1,13 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), except a movie or TV show library grid showing its sort value (Sort
-//! value On and a sort that is not Title or Random: one value line under every poster,
-//! `registry::sort_info`): the Library grid, the Collections
+//! (Settings > Libraries > Under posters), except a movie or TV show library grid (movies, shows, seasons or
+//! episodes) showing its sort value (Sort value On and a sort that has a value for that kind of row: one value
+//! line under every card, `registry::sort_info`): the Library grid, the Collections
 //! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
 //! Episodes listing, Search's Episode and Person rows, Detail's Extras and Cast and Recommended's
-//! landscape rows keep the legacy block, [`still_label`] / [`still_block`].)
+//! landscape rows keep the legacy block, [`still_label`] / [`still_block`], except while the
+//! Library's Episodes view shows its sort value, which reads `sort_info::label` instead.)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -36,8 +37,8 @@
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::cards::TileLabel;
 
-/// Whether library grids sorted by something other than Title or Random show the sort value under
-/// every poster (the Under posters page's Sort value switch), with the same test override as policy().
+/// Whether library grids sorted by something that has a value (not Title, Random or the Show order) show the
+/// sort value under every card (the Under posters page's Sort value switch), with the same test override as policy().
 pub fn sort_value() -> bool {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
@@ -46,8 +47,9 @@ pub fn sort_value() -> bool {
     plx_media::route::under_posters().sort_value
 }
 
-/// The standard focused-poster policy; a movie or TV show library grid showing its sort value (Sort value On, sorted
-/// by something other than Title or Random) draws that one line under every poster instead.
+/// The standard focused-poster policy; a movie or TV show library grid (movies, shows, seasons or episodes) showing
+/// its sort value (Sort value On, sorted by something that has a value for that kind of row) draws that one line under
+/// every card instead.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
@@ -112,7 +114,8 @@ pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_co
 
 /// **A landscape STILL's focused block** (an episode's 16:9 art): NOT a poster and so off the Under
 /// posters policy, in its own legacy band (114 px, [`plx_ui::cards::LEGACY_BAND_H`]: this 92 px
-/// block and its air), under every setting: the episode's own title (its address when it has none,
+/// block and its air), under every setting except while the Library's Episodes view shows its sort
+/// value, which reads `sort_info::label` instead: the episode's own title (its address when it has none,
 /// or when it only repeats the show's name) over one fact, the time it has left on the Continue
 /// Watching deck (`is_continue`), else its release date. `credit` is the server a result is borrowed
 /// from (Search's results), named after the fact. The Library's Episodes listing, the Recommended

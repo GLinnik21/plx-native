@@ -758,7 +758,9 @@ class BandQueries(unittest.TestCase):
             status, _, data = pms.handle(
                 "GET", f"/library/sections/{section}/all?{typed}includeMeta=1"
                        "&X-Plex-Container-Start=0&X-Plex-Container-Size=0")
-            return [s["key"] for s in json.loads(data)["MediaContainer"]["Meta"]["Type"][0]["Sort"]]
+            active = [t for t in json.loads(data)["MediaContainer"]["Meta"]["Type"] if t["active"]]
+            self.assertEqual(len(active), 1)
+            return [s["key"] for s in active[0]["Sort"]]
         self.assertEqual(keys(self.pms, 1, 1), [
             "titleSort", "originallyAvailableAt", "rating", "audienceRating", "duration", "addedAt",
             "lastViewedAt", "mediaHeight", "random"])
@@ -767,12 +769,164 @@ class BandQueries(unittest.TestCase):
             "episode.addedAt", "lastViewedAt", "random"])
         short = ["titleSort", "addedAt", "originallyAvailableAt", "rating", "lastViewedAt", "random"]
         self.assertEqual(keys(MockPms(Library()), 1, 1), short)
-        # no `type` takes the section's own; seasons and episodes keep the short list, the show list
-        # being one `section_items` cannot apply to them
+        # no `type` takes the section's own; seasons and episodes have the lists measured for them
         self.assertEqual(keys(self.pms, 2, None), keys(self.pms, 2, 2))
         self.assertEqual(keys(self.pms, 1, None), keys(self.pms, 1, 1))
+        self.assertEqual(len(keys(self.pms, 2, 3)), 2)
+        self.assertEqual(len(keys(self.pms, 2, 4)), 7)
         for kind in (3, 4):
-            self.assertEqual(keys(self.pms, 2, kind), short, kind)
+            self.assertNotEqual(keys(MockPms(Library()), 2, kind), keys(self.pms, 2, kind), kind)
+        self.assertEqual(keys(MockPms(Library()), 2, 4), short, "the default library keeps its short list")
+
+    # --- a show library's SEASONS (type 3) and EPISODES (type 4) listings --------------------------
+
+    TV_TITLE_EPISODES = ("show.titleSort,season.index:nullsLast,episode.index:nullsLast,"
+                         "episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id")
+    TV_TITLE_EPISODES_DESC = TV_TITLE_EPISODES.replace("show.titleSort", "show.titleSort:desc", 1)
+
+    _rail_library = None
+
+    def use_a_library_with_letters(self):
+        """This test reads a band-fixture library whose shows' sort titles start with five different letters
+        (`rail_fixture`): the generated names all share one, so a letters index would have a single bucket."""
+        cls = type(self)
+        if cls._rail_library is None:
+            lib = Library(seed=3, movies=60, shows=15, band_fixture=True, rail_fixture=True)
+            cls._rail_library = (lib, MockPms(lib))
+        self.lib, self.pms = cls._rail_library
+        self.shows = [it for it in self.lib.items.values() if it["type"] == "show" and it["librarySectionID"] == 2]
+
+    def tv_meta(self, kind):
+        """`Meta.Type[]` of an `includeMeta=1` read of type `kind`: every entry, and the active one's sorts."""
+        mc = self.container(f"/library/sections/2/all?type={kind}&includeMeta=1",
+                            {"X-Plex-Container-Start": "0", "X-Plex-Container-Size": "0"})
+        types = mc["Meta"]["Type"]
+        return types, [t for t in types if t["active"]]
+
+    def test_the_seasons_and_episodes_menus_are_the_two_and_the_seven_the_server_declares(self):
+        sort_rows = lambda t: [(s["key"], s["descKey"], s["defaultDirection"]) for s in t["Sort"]]
+        types, active = self.tv_meta(3)
+        self.assertEqual(([t["type"] for t in types], [t["type"] for t in active]),
+                         (["show", "season", "episode"], ["season"]), "only the listing's own type is active")
+        self.assertEqual(sort_rows(active[0]), [
+            ("show.titleSort,index", "show.titleSort:desc,index", "asc"), ("random", "random:desc", "desc")])
+        types, active = self.tv_meta(4)
+        self.assertEqual([t["type"] for t in active], ["episode"])
+        self.assertEqual(sort_rows(active[0]), [
+            (self.TV_TITLE_EPISODES, self.TV_TITLE_EPISODES_DESC, "asc"),
+            ("originallyAvailableAt", "originallyAvailableAt:desc", "desc"), ("rating", "rating:desc", "desc"),
+            ("audienceRating", "audienceRating:desc", "desc"), ("addedAt", "addedAt:desc", "desc"),
+            ("lastViewedAt", "lastViewedAt:desc", "desc"), ("random", "random:desc", "desc")])
+
+    def tv_expected_order(self, kind, desc):
+        """The ratingKeys of the seasons (3) or episodes (4) in the Title order the server declares, built the
+        other way round from the mock: show by show (reversed for the `descKey`), each show's seasons by
+        index, each season's episodes by index."""
+        out = []
+        for show in sorted(self.shows, key=lambda s: s["titleSort"], reverse=desc):
+            seasons = sorted((it for it in self.lib.items.values() if it["type"] == "season"
+                              and it["parentRatingKey"] == show["ratingKey"]), key=lambda s: s["index"])
+            for season in seasons:
+                if kind == 3:
+                    out.append(season["ratingKey"])
+                else:
+                    out += [e["ratingKey"] for e in sorted(
+                        (it for it in self.lib.items.values() if it["type"] == "episode"
+                         and it["parentRatingKey"] == season["ratingKey"]), key=lambda e: e["index"])]
+        return out
+
+    def test_seasons_and_episodes_are_ordered_by_the_declared_title_key_and_not_by_the_literal_one(self):
+        self.use_a_library_with_letters()
+        keys = lambda sort, kind: [r["ratingKey"] for r in self.rows(2, kind, sort)]
+        titles = {3: ("show.titleSort,index", "show.titleSort:desc,index"),
+                  4: (self.TV_TITLE_EPISODES, self.TV_TITLE_EPISODES_DESC)}
+        for kind, (asc, desc) in titles.items():
+            quote = lambda sort: urllib.parse.quote(sort, safe=":,.")
+            self.assertGreater(len(keys(None, kind)), 20)
+            self.assertEqual(keys(None, kind), self.tv_expected_order(kind, False), "the default order")
+            self.assertEqual(keys(quote(asc), kind), self.tv_expected_order(kind, False), "the declared key")
+            self.assertEqual(keys(quote(desc), kind), self.tv_expected_order(kind, True), "the declared descKey")
+            self.assertNotEqual(keys("titleSort:asc", kind), self.tv_expected_order(kind, False),
+                                f"type {kind}: the literal titleSort is another order, as measured")
+        # `:desc` appended to the composite key is not its descKey: the shows do not reverse
+        wrong = urllib.parse.quote(self.TV_TITLE_EPISODES + ":desc", safe=":,.")
+        self.assertNotEqual(keys(wrong, 4), self.tv_expected_order(4, True))
+
+    def test_the_letters_of_seasons_and_episodes_count_by_show_and_land_on_the_listings_boundaries(self):
+        self.use_a_library_with_letters()
+        shows = {s["ratingKey"]: s for s in self.shows}
+        for kind, unwatched_key in ((3, "unwatchedLeaves"), (4, "unwatched")):
+            for terms in ((), (f"{unwatched_key}=1",)):
+                path = f"/library/sections/2/firstCharacter?type={kind}" + "".join("&" + t for t in terms)
+                letters = [(d["title"], d["size"]) for d in self.container(path)["Directory"]]
+                counted = self.count(2, kind, *terms)
+                self.assertEqual(sum(size for _, size in letters), counted, (kind, terms, "sum == count"))
+                self.assertGreater(len(letters), 1)
+                for desc in (False, True):
+                    sort = urllib.parse.quote({(3, False): "show.titleSort,index", (3, True): "show.titleSort:desc,index",
+                                               (4, False): self.TV_TITLE_EPISODES, (4, True): self.TV_TITLE_EPISODES_DESC}[kind, desc],
+                                              safe=":,.")
+                    rows = self.rows(2, kind, sort + "".join("&" + t for t in terms))
+                    walk = letters[::-1] if desc else letters
+                    boundaries = [title for title, size in walk for _ in range(size)]
+                    group = "grandparentRatingKey" if kind == 4 else "parentRatingKey"
+                    glyphs = [shows[r[group]]["titleSort"][0].upper() for r in rows]
+                    self.assertEqual(glyphs, boundaries, (kind, terms, desc))
+        # the Unwatched episodes are fewer than the episodes: the term narrows the letters too
+        narrowed = self.container("/library/sections/2/firstCharacter?type=4&unwatched=1")["Directory"]
+        self.assertLess(sum(d["size"] for d in narrowed), self.count(2, 4))
+
+    def test_episodes_hold_the_values_their_value_sorts_and_range_terms_read(self):
+        """MOCK MODEL, NOT MEASURED for `rating` and `lastViewedAt`: a real PMS held no value in either on an
+        episode (docs/pms-api.md, "Count probes for seasons and episodes"), so the exact `rating>>=` and
+        `lastViewedAt>=` counts below say what the MOCK does with the values it was given. Only `addedAt` and
+        `originallyAvailableAt` (UTC midnight) were verified on a server; `audienceRating` is rounded there."""
+        episodes = [it for it in self.lib.items.values() if it["type"] == "episode" and it["librarySectionID"] == 2]
+        for field in ("rating", "audienceRating", "originallyAvailableAt", "lastViewedAt"):
+            held = [self.mine(it, field) for it in episodes]
+            self.assertTrue(any(v is None for v in held) and any(v is not None for v in held), field)
+        self.assertTrue(all("addedAt" in it for it in episodes), "an episode is always added at some time")
+        for it in episodes:
+            for field in ("rating", "audienceRating"):
+                if field in it:
+                    self.assertEqual(it[field], round(it[field], 1), "tenths, as the listing prints them")
+        # a range term compares the number the row holds: ratings as floats, air dates as UTC midnight
+        for field, op, edge in (("rating", ">>=", 6.0), ("audienceRating", "<<=", 5.0), ("addedAt", ">>=", 1_640_995_200),
+                                ("lastViewedAt", ">=", 1_640_995_200),
+                                ("originallyAvailableAt", ">>=", calendar.timegm((2010, 6, 1, 0, 0, 0)))):
+            expected = sum(self.passes(op, self.mine(it, field), edge) for it in episodes)
+            self.assertEqual(self.count(2, 4, self.term(field, op, edge)), expected, (field, op))
+            self.assertGreater(expected, 0)
+            self.assertLess(expected, len(episodes))
+        # sort=audienceRating: no-value rows first ascending, last descending; the rest in order
+        asc = self.rows(2, 4, "audienceRating:asc")
+        desc = self.rows(2, 4, "audienceRating:desc")
+        self.assertEqual(len(asc), len(episodes))
+        values = lambda rows: [r.get("audienceRating") for r in rows]
+        bare = sum(v is None for v in values(asc))
+        self.assertGreater(bare, 0)
+        self.assertEqual(values(asc)[:bare], [None] * bare)
+        self.assertEqual(values(desc)[-bare:], [None] * bare)
+        held = values(asc)[bare:]
+        self.assertEqual(held, sorted(held))
+        self.assertEqual(values(desc)[:-bare], held[::-1])
+        self.assertEqual([r["ratingKey"] for r in self.rows(2, 4, "audienceRating")], [r["ratingKey"] for r in asc],
+                         "no direction is ascending")
+
+    def test_the_tv_listings_of_a_default_library_keep_their_own_order_and_letters(self):
+        lib = Library()
+        self.assertNotIn("band_fixture", lib.__dict__)
+        for kind in ("season", "episode"):
+            got = lib.section_items("2", {"type": "3" if kind == "season" else "4"})
+            rows = [it for it in lib.items.values() if it["type"] == kind and it["librarySectionID"] == 2]
+            self.assertEqual([it["ratingKey"] for it in got],
+                             [it["ratingKey"] for it in sorted(rows, key=lambda it: it["titleSort"])], kind)
+        letters = lib.first_characters("2", {"type": "4"})
+        own = {}
+        for it in lib.items.values():
+            if it["type"] == "episode" and it["librarySectionID"] == 2:
+                own[it["titleSort"][0].upper()] = own.get(it["titleSort"][0].upper(), 0) + 1
+        self.assertEqual({d["title"]: d["size"] for d in letters}, own, "counted by the row's own title, as before")
 
     def test_off_by_default_and_the_older_sorts_order_as_they_always_did(self):
         lib = Library()

@@ -23,9 +23,10 @@ listing, and prints a verdict per family.
 * The token is read from a file (default: the saved Guest token), sent as the `X-Plex-Token`
   header only, and never printed or written. The owner token file is refused by name.
 * Requests are spaced by `--delay-ms` and capped by `--max-requests`.
-* Rows are reduced to their numeric sort fields the moment they are parsed; titles, names, paths
-  and the server's identity are never kept, printed or written. Libraries are labelled by kind
-  and order only ("movie#1").
+* Rows are reduced the moment they are parsed to their numeric sort fields, their ids and indexes and
+  the first glyph of their sort title (the letters check uses it); no title, name or path is printed
+  or written, and the server's identity is never kept, printed or written. The one-glyph letter keys
+  with their sizes may be printed or written. Libraries are labelled by kind and order only ("movie#1").
 
 ## Verdict per family (the first column of the table)
 
@@ -62,8 +63,29 @@ Two questions the family run does not ask, answered with a few dozen more counts
 
 Counts only: no title, name or date of any item is printed (only how many items are older than 1970).
 
+## `--types 3,4` (a third run: the SEASONS and EPISODES listings of the show libraries)
+
+For `type=3` / `type=4` of each show library it measures: the count probe against the unfiltered
+listing; the `Sort[]` the server declares (`includeMeta=1`, key names only); whether
+`sort=<key>:asc|desc` is accepted and orders the rows, for titleSort, originallyAvailableAt,
+rating, audienceRating, addedAt and lastViewedAt (a titleSort listing is also checked for being
+grouped by show and for what its order is keyed on); the same family table as above (edge counts,
+straddles, null placement, operators) for the five fields a row can carry; and the
+`/firstCharacter?type=T` letters index against the titleSort order (do the prefix sums of the
+bucket sizes land on the listing's real letter boundaries?). A row keeps the FIRST GLYPH of its sort
+title (as `ch`, in every run) for the letters check, and a letter bucket's key is a single glyph;
+no title is printed or written. Libraries stay labelled "show#1".
+
 Usage:  tools/pms-band-probe.py [--base URL] [--token-file PATH] [--json PATH] [--only a,b]
-                                [--floor-and-negative-only]
+                                [--floor-and-negative-only] [--types 3,4 [--letters-under-filters]]
+
+## `--types 3,4 --letters-under-filters` (a fourth, small run)
+
+Whether `/firstCharacter?type=T&<terms>` counts under the grid's own terms: for each type it asks the
+`Size=0` count and the letters index with no term, with the application's Unwatched key (`unwatchedLeaves=1`
+for seasons, `unwatched=1` for episodes) and, when the type's `/genre` list has a value that is neither empty
+nor the whole type, with that genre alone and with both, and prints whether the letters' sizes SUM to the
+count of the same terms. Sums, bucket numbers and totals only; no letter, per-letter size or id.
 """
 
 import argparse
@@ -120,16 +142,22 @@ class Reply:
         self.rows = [reduce_item(item) for item in container.get("Metadata") or []]
         self.dirs = [reduce_dir(entry) for entry in container.get("Directory") or []]
         self.types = [entry.get("type") for entry in container.get("Directory") or []]
+        self.meta_types = reduce_meta(container.get("Meta"))
 
 
 def reduce_item(item):
-    """The numeric sort fields of one listing row, and nothing else (no title ever enters memory)."""
+    """One listing row reduced to its numeric sort fields, its ids and indexes and the first glyph of
+    its sort title (`ch`); the rest of the title is never kept."""
     row = {k: item[k] for k in NUMERIC_FIELDS if isinstance(item.get(k), (int, float))}
-    for source, name in (("ratingKey", "rk"), ("grandparentRatingKey", "gp")):
+    for source, name in (("ratingKey", "rk"), ("grandparentRatingKey", "gp"), ("parentRatingKey", "pk"),
+                         ("index", "idx"), ("parentIndex", "pidx")):
         try:
             row[name] = int(item[source])
         except (KeyError, TypeError, ValueError):
             pass
+    glyph = first_glyph(item)
+    if glyph:
+        row["ch"] = glyph
     released = item.get("originallyAvailableAt")
     if isinstance(released, str):
         try:
@@ -140,6 +168,27 @@ def reduce_item(item):
             row["oa_utc"] = calendar.timegm(day.timetuple())
             row["oa_local"] = int(time.mktime(day.timetuple()))
     return row
+
+
+def first_glyph(item):
+    """The first character of a row's sort title, upper-cased: the only piece of a title ever kept."""
+    text = item.get("titleSort") or item.get("title")
+    return text.upper()[:1] if isinstance(text, str) and text else None
+
+
+def reduce_meta(meta):
+    """`Meta.Type[]` reduced to its type name, whether it is the active one, and its Sort/Filter key names."""
+    out = []
+    for entry in (meta or {}).get("Type") or []:
+        sorts = [s for s in entry.get("Sort") or [] if isinstance(s, dict)]
+        out.append({
+            "type": entry.get("type"), "active": bool(entry.get("active")),
+            "sorts": [s.get("key") for s in sorts],
+            "sort_desc_keys": [s.get("descKey") for s in sorts],
+            "sort_default_direction": [s.get("defaultDirection") for s in sorts],
+            "filters": [f.get("filter") for f in entry.get("Filter") or [] if isinstance(f, dict)],
+        })
+    return out
 
 
 def reduce_dir(entry):
@@ -793,6 +842,313 @@ def floor_and_negative_library(pms, section, kind, label):
     return lib
 
 
+# -- seasons and episodes (the `--types` run) -------------------------------------------------------
+
+TYPE_NAMES = {3: "season", 4: "episode"}
+TYPE_FAMILIES = ("rating", "audienceRating", "addedAt", "lastViewedAt", "originallyAvailableAt")
+SORT_KEYS = ("titleSort", "originallyAvailableAt", "rating", "audienceRating", "addedAt", "lastViewedAt")
+SORT_FIELD = {"titleSort": None, "originallyAvailableAt": "oa_utc"}  # every other sort reads its own name
+PRESENCE_FIELDS = ("rating", "audienceRating", "addedAt", "lastViewedAt", "oa_utc", "viewCount", "year")
+
+
+def type_families(ptype):
+    """The five fields a season or episode row can carry, as the movie families, pointed at `ptype`."""
+    out = []
+    for fam in movie_families():
+        if fam.name in TYPE_FAMILIES:
+            fam.ptype = ptype
+            out.append(fam)
+    return out
+
+
+def bucket(glyph):
+    """The letters-index bucket a first glyph is expected in: a letter is its own, anything else is '#'."""
+    return glyph if glyph and glyph.isalpha() else "#"
+
+
+def runs(ids):
+    """(runs of equal neighbours, distinct ids): the two are equal exactly when the listing is grouped."""
+    return (1 + sum(1 for a, b in zip(ids, ids[1:]) if a != b) if ids else 0), len(set(ids))
+
+
+def prefix_match(buckets, glyphs):
+    """Lay the directory's buckets end to end over the listing: (rows in their bucket, rows, first bad key).
+
+    `buckets` is `[(key, size)]` in directory order, `glyphs` the first glyph of each listing row in
+    listing order. A bucket is right when every row in its slice `[prefix, prefix + size)` belongs to it.
+    """
+    pos, matched, first_bad = 0, 0, None
+    for key, size in buckets:
+        hit = sum(1 for g in glyphs[pos:pos + size] if bucket(g) == key)
+        matched += hit
+        if hit != size and first_bad is None:
+            first_bad = key
+        pos += size
+    return matched, len(glyphs), first_bad
+
+
+def tally(glyphs):
+    """{bucket: rows} for a list of first glyphs."""
+    counts = {}
+    for g in glyphs:
+        counts[bucket(g)] = counts.get(bucket(g), 0) + 1
+    return counts
+
+
+def sort_test(pms, section, ptype, key, default_ids):
+    """Is `sort=<key>:asc|desc` accepted, and does it order the rows by that field? -> (result, rows by direction)"""
+    field = SORT_FIELD.get(key, key)
+    out, rows_by, series = {"sort": key}, {}, {}
+    for direction in ("asc", "desc"):
+        rows, total, status = pms.read_all(section, ptype, [], "%s:%s" % (key, direction))
+        entry = {"status": status}
+        if status == 200:
+            rows_by[direction] = rows
+            entry.update(total=total, order_changed=[r.get("rk") for r in rows] != default_ids)
+            if field:
+                values = [r.get(field) for r in rows]
+                nulls, place = placement(values)
+                entry.update(nulls=nulls, placement=place, distinct=len({v for v in values if v is not None}),
+                             ordered=ordered(values, direction == "desc"))
+                series[direction] = [v for v in values if v is not None]
+        out[direction] = entry
+    if len(series) == 2:
+        out["desc_is_reverse_of_asc"] = series["asc"] == series["desc"][::-1]
+    entries = [out["asc"], out["desc"]]
+    if any(e["status"] != 200 for e in entries):
+        out["verdict"] = "REFUSED (HTTP %s/%s)" % (out["asc"]["status"], out["desc"]["status"])
+    elif not field:
+        out["verdict"] = "ACCEPTED"
+    elif max(e["distinct"] for e in entries) < 2:
+        out["verdict"] = "ACCEPTED, untestable (%d distinct)" % max(e["distinct"] for e in entries)
+    elif all(e["ordered"] for e in entries):
+        out["verdict"] = "ACCEPTED, ORDERS"
+    else:
+        out["verdict"] = "ACCEPTED, NOT ORDERED"
+    return out, rows_by
+
+
+def title_keying(rows, ptype, show_order, show_glyph, descending=False):
+    """What a Title-ordered listing of seasons/episodes is keyed on: the row's own title, or its show's?"""
+    group = "gp" if ptype == 4 else "pk"
+    ids = [r.get(group) for r in rows]
+    n_runs, n_groups = runs(ids)
+    seen = [i for k, i in enumerate(ids) if k == 0 or ids[k - 1] != i]
+    wanted = [i for i in (show_order[::-1] if descending else show_order) if i in set(seen)]
+    index_key = (lambda r: (r.get("pidx", -1), r.get("idx", -1))) if ptype == 4 else (lambda r: (r.get("idx", -1),))
+    bad_index_runs, start = 0, 0
+    while start < len(rows):
+        end = start
+        while end < len(rows) and ids[end] == ids[start]:
+            end += 1
+        keys = [index_key(r) for r in rows[start:end]]
+        bad_index_runs += 0 if keys == sorted(keys) else 1
+        start = end
+    return {
+        "group_runs": n_runs, "groups": n_groups, "grouped_by_show": n_runs == n_groups,
+        "group_order_is_show_titleSort_order": seen == wanted,
+        "own_glyph_monotone": ordered([bucket(r.get("ch")) for r in rows], descending),
+        "show_glyph_monotone": ordered([bucket(show_glyph.get(i)) for i in ids], descending),
+        "runs_not_in_index_order": bad_index_runs,
+        "rows_without_show_id": sum(1 for i in ids if i is None),
+    }
+
+
+def letters_index(pms, section, ptype, terms=()):
+    """`/firstCharacter?type=T[&terms]` as [(key, size)] in directory order, plus whether the sizes sum to the total."""
+    path = "/library/sections/%d/firstCharacter?%s" % (section, "&".join(["type=%d" % ptype] + list(terms)))
+    reply = pms.get(path, 0, 1000, kind="dir")
+    out = {"status": reply.status}
+    if reply.status == 200:
+        out["buckets"] = [(d["key"], d["size"]) for d in reply.dirs if "size" in d and d.get("key") is not None]
+        out["sum_of_sizes"] = sum(size for _, size in out["buckets"])
+    return out
+
+
+def letters_vs_order(buckets, rows, show_glyph, ptype, descending=False):
+    """Do the directory's buckets, laid end to end, land on the letter boundaries of a Title-ordered listing?
+
+    Judged by the row's OWN first glyph and by its SHOW's; a descending listing meets the buckets reversed.
+    """
+    group = "gp" if ptype == 4 else "pk"
+    walk = buckets[::-1] if descending else buckets
+    out = {}
+    for name, glyphs in (("own", [r.get("ch") for r in rows]), ("show", [show_glyph.get(r.get(group)) for r in rows])):
+        matched, n, first_bad = prefix_match(walk, glyphs)
+        out[name] = {"rows_in_bucket": matched, "of": n, "first_bad_bucket": first_bad,
+                     "bucket_sizes_equal_directory": tally(glyphs) == dict(buckets)}
+    return out
+
+
+def letters_filter_terms(pms, section, ptype, buckets):
+    """A `firstCharacter=<key>` filter term must count what the directory says (or be seen to be ignored)."""
+    counted = {key: pms.count(section, ptype, ["firstCharacter=%s" % urllib.parse.quote(str(key), safe="")]).total
+               for key, _ in buckets}
+    return {"agree": sum(1 for k, n in buckets if counted[k] == n), "of": len(buckets),
+            "disagree": {k: (n, counted[k]) for k, n in buckets if counted[k] != n}}
+
+
+# The terms the application sends with a Seasons / Episodes listing under its Unwatched switch
+# (`SecState::query_filters`): the show-level key for seasons, the plain one for episodes.
+APP_UNWATCHED = {3: "unwatchedLeaves=1", 4: "unwatched=1"}
+
+
+def pick_type_genre(pms, section, ptype, total):
+    """One genre id of this type's `/genre` list whose listing count is neither empty nor the whole type, or None."""
+    reply = pms.get("/library/sections/%d/genre?type=%d" % (section, ptype), 0, 1000, kind="dir")
+    out = {"status": reply.status, "values": len(reply.dirs), "id": None}
+    for entry in reply.dirs[:5]:
+        if entry["key"] is None:
+            continue
+        term_ = "genre=%s" % urllib.parse.quote(str(entry["key"]), safe="")
+        count = pms.count(section, ptype, [term_]).total
+        if isinstance(count, int) and 0 < count < total:
+            out["id"] = term_
+            break
+    return out
+
+
+def measure_letters_under_filters(pms, section, label, ptypes):
+    """Do the letters of `/firstCharacter?type=T&<terms>` sum to the SAME terms' `Size=0` count?
+
+    The Library asks the letters with the grid's own terms and trusts the sum to equal the listing it shows
+    (a letter jump is a prefix sum). If a filter is ignored by the directory the sums differ. Counts only:
+    the sums, the bucket numbers and the totals; no key, size per letter or id is printed.
+    """
+    lib = {"label": label, "kind": "show", "types": {}}
+    print("\n#### %s: letters under the grid's terms" % label)
+    for ptype in ptypes:
+        total = pms.count(section, ptype).total
+        genre = pick_type_genre(pms, section, ptype, total or 0)
+        # The app's Unwatched key matches the whole type on a library nothing was watched in, which cannot tell a
+        # directory that honours a term from one that ignores it. So the same key with `=0` (the watched ones, a
+        # subset or nothing) and a `year=` term (a real episode / season filter, a proper subset) are asked too:
+        # they are not terms the app sends, they tell whether the DIRECTORY follows a filter term at all.
+        sets = [("none", []), ("unwatched", [APP_UNWATCHED[ptype]]), ("unwatched=0", [APP_UNWATCHED[ptype][:-1] + "0"])]
+        years = {}
+        for row in pms.read_all(section, ptype)[0]:
+            if isinstance(row.get("year"), (int, float)):
+                years[int(row["year"])] = years.get(int(row["year"]), 0) + 1
+        if years:
+            sets.append(("year (subset)", ["year=%d" % max(years, key=years.get)]))
+        if genre["id"]:
+            sets += [("genre", [genre["id"]]), ("genre+unwatched", [genre["id"], APP_UNWATCHED[ptype]])]
+        rows = []
+        for name, terms in sets:
+            count = pms.count(section, ptype, terms)
+            letters = letters_index(pms, section, ptype, terms)
+            rows.append({"terms": name, "count_status": count.status, "listing_total": count.total,
+                         "letters_status": letters["status"], "buckets": len(letters.get("buckets", [])),
+                         "sum_of_sizes": letters.get("sum_of_sizes"),
+                         "sum_equals_total": letters.get("sum_of_sizes") == count.total})
+        lib["types"][str(ptype)] = {"name": TYPE_NAMES[ptype], "type_total": total,
+                                    "genre_values": genre["values"], "genre_picked": bool(genre["id"]), "sets": rows}
+        print("== type=%d (%s): %d in the type; genre list status %s with %d values, one picked: %s" % (
+            ptype, TYPE_NAMES[ptype], total or 0, genre["status"], genre["values"], bool(genre["id"])))
+        print(table(["terms", "listing total", "letters sum", "buckets", "sum == total"],
+                    [[r["terms"], r["listing_total"], r["sum_of_sizes"], r["buckets"], r["sum_equals_total"]] for r in rows]))
+    return lib
+
+
+def measure_types_library(pms, section, label, ptypes):
+    """The seasons / episodes measurements for one show library; prints the family tables as it goes."""
+    shows, show_total, _ = pms.read_all(section, 2, [], "titleSort:asc")
+    show_order = [r["rk"] for r in shows if "rk" in r]
+    show_glyph = {r["rk"]: r.get("ch") for r in shows if "rk" in r}
+    lib = {"label": label, "kind": "show", "shows": show_total, "types": {}}
+    print("\n#### %s: %d shows" % (label, show_total))
+    for ptype in ptypes:
+        res = lib["types"][str(ptype)] = {"name": TYPE_NAMES[ptype]}
+        counts_before, pages_before = len(pms.count_ms), len(pms.page_ms)
+        probe = pms.count(section, ptype)
+        rows, total, status = pms.read_all(section, ptype)
+        default_ids = [r.get("rk") for r in rows]
+        res["count_probe"] = {"status": probe.status, "totalSize": probe.total, "size": probe.size,
+                              "rows_returned": len(probe.rows), "offset": probe.offset}
+        res["unfiltered"] = {"status": status, "totalSize": total, "rows_read": len(rows)}
+        res["presence"] = {name: sum(1 for r in rows if r.get(name) is not None) for name in PRESENCE_FIELDS}
+        res["presence"]["of"] = len(rows)
+        meta = pms.get("/library/sections/%d/all?type=%d&includeMeta=1" % (section, ptype), 0, 0, kind="count")
+        entries = [m for m in meta.meta_types if m["type"] == TYPE_NAMES[ptype]]
+        declared = entries[0] if entries else {}
+        res["declared"] = {"status": meta.status, "types_in_meta": [m["type"] for m in meta.meta_types],
+                           "sorts": declared.get("sorts"), "sort_desc_keys": declared.get("sort_desc_keys"),
+                           "sort_default_direction": declared.get("sort_default_direction"),
+                           "filters": declared.get("filters")}
+        print("\n== type=%d (%s): count probe totalSize=%s size=%s rows=%d; unfiltered read %d rows (totalSize %s)"
+              % (ptype, TYPE_NAMES[ptype], probe.total, probe.size, len(probe.rows), len(rows), total))
+        print("-- declared sorts (key, descKey, defaultDirection): %s" % list(zip(
+            res["declared"]["sorts"] or [], res["declared"]["sort_desc_keys"] or [],
+            res["declared"]["sort_default_direction"] or [])))
+        print("-- declared filters: %s" % (res["declared"]["filters"],))
+        print("-- field presence: %s" % json.dumps(res["presence"], sort_keys=True))
+
+        res["sorts"], plain_title = [], {}
+        for key in SORT_KEYS:
+            sres, rows_by = sort_test(pms, section, ptype, key, default_ids)
+            res["sorts"].append(sres)
+            if key == "titleSort":
+                plain_title = rows_by
+        # the server's own Title sort is the first declared key (a composite for seasons and episodes)
+        title_key = (res["declared"]["sorts"] or [None])[0]
+        title_desc = (res["declared"]["sort_desc_keys"] or [None])[0]
+        orders = {"default order": (rows, False), "sort=titleSort:asc": (plain_title.get("asc"), False),
+                  "sort=titleSort:desc": (plain_title.get("desc"), True)}
+        if title_key and title_key != "titleSort":
+            for name, sort_by, descending in (("declared Title key", title_key, False), ("declared Title descKey", title_desc, True),
+                                              ("declared Title key + ':desc'", title_key + ":desc", True)):
+                got, _, st = pms.read_all(section, ptype, [], sort_by)
+                orders[name] = (got if st == 200 else None, descending)
+                res["sorts"].append({"sort": name, "verdict": "ACCEPTED" if st == 200 else "REFUSED (HTTP %d)" % st,
+                                     "asc": {"status": st}, "desc": {"status": st}})
+        print(table(["sort", "verdict", "asc nulls", "desc nulls", "distinct", "order changed a/d", "desc=rev(asc)"], [
+            [s["sort"], s["verdict"],
+             "%s(%s)" % (s["asc"].get("placement", "-"), s["asc"].get("nulls", "-")),
+             "%s(%s)" % (s["desc"].get("placement", "-"), s["desc"].get("nulls", "-")),
+             s["asc"].get("distinct", "-"),
+             "%s/%s" % (s["asc"].get("order_changed", "-"), s["desc"].get("order_changed", "-")),
+             s.get("desc_is_reverse_of_asc", "-")] for s in res["sorts"]]))
+
+        letters = res["letters"] = letters_index(pms, section, ptype)
+        letters["listing_total"] = total
+        letters["sum_equals_total"] = letters.get("sum_of_sizes") == total
+        print("-- letters index: %s" % json.dumps(letters, sort_keys=True))
+        res["title_orders"] = {}
+        for name, (got, descending) in orders.items():
+            if got is None:
+                res["title_orders"][name] = None
+                continue
+            entry = res["title_orders"][name] = {"keying": title_keying(got, ptype, show_order, show_glyph, descending)}
+            if letters["status"] == 200:
+                entry["letters"] = letters_vs_order(letters["buckets"], got, show_glyph, ptype, descending)
+            print("-- Title order [%s]: %s" % (name, json.dumps(entry, sort_keys=True)))
+        if letters["status"] == 200:
+            res["letters"]["filter_term_counts"] = letters_filter_terms(pms, section, ptype, letters["buckets"])
+            print("-- firstCharacter filter term: %s" % json.dumps(res["letters"]["filter_term_counts"], sort_keys=True))
+            if "control_shows" not in lib:  # once per library: the same term on the shows listing, as a control
+                control = letters_index(pms, section, 2)
+                lib["control_shows"] = (letters_filter_terms(pms, section, 2, control["buckets"])
+                                        if control["status"] == 200 else {"status": control["status"]})
+                print("-- firstCharacter filter term on type=2 (control): %s" % json.dumps(lib["control_shows"], sort_keys=True))
+
+        res["families"] = [measure_family(pms, fam, section, [], True) for fam in type_families(ptype)]
+        print(family_table("%s type=%d" % (label, ptype), res["families"]))
+        for fam_res in res["families"]:
+            print("-- %s: probe below every value=%s; edges(edge,count,expected)=%s" % (
+                fam_res["family"], fam_res.get("nonnull_probe"),
+                [(e["edge"], e["count"], e["expected"]) for e in fam_res.get("edges") or []]))
+        # one full page and one two-row read, timed on their own (the medians below mix every page size)
+        full = pms.get(pms.listing_path(section, ptype), 0, PAGE)
+        two = pms.get(pms.listing_path(section, ptype), max(min(100, total - 2), 0), 2)
+        res["paged_read_ms"] = {"%d rows" % len(full.rows): round(full.ms, 1), "%d rows (second)" % len(two.rows): round(two.ms, 1)}
+        counts, pages = pms.count_ms[counts_before:], pms.page_ms[pages_before:]
+        res["ms"] = {"count_probes": {"n": len(counts), "median": round(statistics.median(counts), 1) if counts else None},
+                     "row_pages": {"n": len(pages), "median": round(statistics.median(pages), 1) if pages else None,
+                                   "max": round(max(pages), 1) if pages else None}}
+        print("-- cost: %s; timed reads %s" % (json.dumps(res["ms"], sort_keys=True), json.dumps(res["paged_read_ms"], sort_keys=True)))
+    return lib
+
+
 # -- reporting ------------------------------------------------------------------------------------
 
 def table(headers, rows):
@@ -932,6 +1288,34 @@ def selftest():
     assert reading_of(10, 10, 4, 12) == "absolute" and reading_of(12, 10, 4, 12) == "ignored"
     assert reading_of(0, 10, 4, 12) == "zero" and reading_of(4, 10, 4, 12) == "relative-seconds"
     assert reading_of(7, 10, 4, 12) == "other" and reading_of(12, 12, 4, 12) == "absolute/ignored"
+    # the `--types` run reaches only routes the guard already allowed; its extra routes stay refused
+    for good in ("/library/sections/3/firstCharacter?type=4", "/library/sections/3/all?type=3&includeMeta=1",
+                 "/library/sections/3/all?type=4&firstCharacter=A"):
+        Pms.check(good)
+    for bad in ("/library/sections/3/firstCharacter/extra", "/library/sections/3/all/1", "/library/sections/3/collection",
+                "/library/sections/3/folder", "/library/sections/3/firstCharacter?type=4&X-Plex-Token=x",
+                "/library/sections/3/all?type=4&url=/:/scrobble", "/library/sections/3/../../:/scrobble"):
+        try:
+            Pms.check(bad)
+        except ValueError:
+            continue
+        raise SystemExit("guard accepted %s" % bad)
+    assert first_glyph({"titleSort": "alpha", "title": "Zulu"}) == "A" and first_glyph({"title": "beta"}) == "B"
+    assert first_glyph({}) is None and first_glyph({"title": ""}) is None
+    assert reduce_item({"title": "secret", "titleSort": "secret", "parentRatingKey": "7", "index": 2, "parentIndex": 1}) == {
+        "pk": 7, "idx": 2, "pidx": 1, "ch": "S"}
+    meta = reduce_meta({"Type": [{"type": "episode", "active": True, "Filter": [{"filter": "genre", "title": "y"}],
+                                  "Sort": [{"key": "titleSort", "descKey": "titleSort:desc", "defaultDirection": "asc",
+                                            "title": "x"}]}]})
+    assert meta == [{"type": "episode", "active": True, "sorts": ["titleSort"], "sort_desc_keys": ["titleSort:desc"],
+                     "sort_default_direction": ["asc"], "filters": ["genre"]}]
+    assert bucket("A") == "A" and bucket("7") == "#" and bucket(None) == "#" and bucket("Ж") == "Ж"
+    assert runs([1, 1, 2, 2, 3]) == (3, 3) and runs([1, 2, 1]) == (3, 2) and runs([]) == (0, 0)
+    letters = ["1", "A", "A", "B", "C", "C", "C"]
+    assert prefix_match([("#", 1), ("A", 2), ("B", 1), ("C", 3)], letters) == (7, 7, None)
+    assert prefix_match([("#", 1), ("A", 3), ("B", 0), ("C", 3)], letters) == (6, 7, "A")
+    assert tally(letters) == {"#": 1, "A": 2, "B": 1, "C": 3}
+    assert [f.ptype for f in type_families(4)] == [4] * len(TYPE_FAMILIES) and type_families(3)[0].ptype == 3
     print("selftest ok")
 
 
@@ -948,12 +1332,23 @@ def main():
     parser.add_argument("--json", default=None, help="also write the numbers here (a path OUTSIDE the repository)")
     parser.add_argument("--floor-and-negative-only", action="store_true",
                         help="run only the zero-floor and negative-date-edge checks (a few dozen counts)")
+    parser.add_argument("--types", default="",
+                        help="comma-separated listing types of the SHOW libraries to measure instead (3 = seasons, "
+                             "4 = episodes): count probe, sorts, ranges, letters index")
+    parser.add_argument("--letters-under-filters", action="store_true",
+                        help="with --types: only ask, per type, whether the /firstCharacter sizes sum to the Size=0 count "
+                             "under the grid's own Unwatched and genre terms (a few dozen requests)")
     parser.add_argument("--selftest", action="store_true", help="check the guard and the arithmetic offline")
     args = parser.parse_args()
     if args.selftest:
         selftest()
         return
 
+    ptypes = [int(t) for t in args.types.split(",") if t.strip().isdigit()]
+    if args.letters_under_filters and not args.types:
+        parser.error("--letters-under-filters needs --types")
+    if args.types and (not ptypes or any(t not in TYPE_NAMES for t in ptypes)):
+        parser.error("--types takes 3 (seasons) and/or 4 (episodes)")
     token_path = os.path.expanduser(args.token_file)
     if os.path.basename(token_path) in OWNER_TOKEN_NAMES:
         parser.error("refusing the owner token; use the Guest token file")
@@ -985,6 +1380,11 @@ def main():
         print("PMS %s; %d request-able libraries (%s)" % (report["version"], len(sections), ", ".join(s[2] for s in sections)))
 
         for section, kind, label in sections:
+            if ptypes:
+                if kind == "show":
+                    measure = measure_letters_under_filters if args.letters_under_filters else measure_types_library
+                    report["libraries"].append(measure(pms, section, label, ptypes))
+                continue
             if args.floor_and_negative_only:
                 lib = floor_and_negative_library(pms, section, kind, label)
                 report["libraries"].append(lib)

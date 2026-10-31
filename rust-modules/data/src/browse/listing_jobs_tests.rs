@@ -524,6 +524,126 @@ fn the_rail_is_hidden_by_the_sort_and_the_list_and_not_by_the_filters() {
     assert!(!rail_shown(&browse), "a single letter has nothing to jump to");
 }
 
+/// The Title entries a PMS 1.43.5 declares for seasons and episodes, as measured (`docs/pms-api.md`,
+/// "Count probes for seasons and episodes"): a COMPOSITE key, and a `descKey` that reverses the show alone.
+const SEASONS_TITLE: (&str, &str) = ("show.titleSort,index", "show.titleSort:desc,index");
+const EPISODES_TITLE: (&str, &str) = (
+    "show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id",
+    "show.titleSort:desc,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id",
+);
+
+fn declared_sort(key: &str, desc_key: &str, default_desc: bool) -> SortEntry {
+    SortEntry { key: key.into(), desc_key: desc_key.into(), title: key.into(), default_desc }
+}
+
+/// The `sort=` value the page read of the listing as it stands would send.
+#[track_caller]
+fn page_sort(browse: &mut TestBrowse) -> String {
+    browse.maybe_spawn();
+    let (job, port) = the_page_job(browse);
+    let sort = job.req.sort.clone();
+    // never started: hands the claim back, so the next read of the test can be asked
+    plx_machine::job::Port::refused(&port, job.addr);
+    sort
+}
+
+/// **The letters rail of a TV library's Seasons and Episodes views** ("no ruler"): their Title sort is the
+/// server's declared COMPOSITE, not `titleSort`, and the letters sum in that order only, so the rail is
+/// offered for that entry ascending, and never for its `descKey` order, a value sort or `random`.
+#[test]
+fn seasons_and_episodes_offer_the_letters_for_their_declared_title_sort_ascending_only() {
+    for (listing, (title, title_desc), others) in declared_menus() {
+        let _g = plx_base::testlock::serial();
+        let (_cleanup, mut browse, sid, client) = loopback_source_at(9, SecKind::Show);
+        assert!(browse.state.set_library_type(listing));
+        browse.state.state_mut(0).unwrap().sorts = Arc::new(menu_of(title, title_desc, others));
+        land_letters(&mut browse, sid, client, &[("C", 3), ("M", 4)]);
+
+        assert!(rail_shown(&browse), "{listing:?}: ordered by its declared Title entry, ascending");
+        assert!(browse.state.set_sort_by_key(title, true));
+        assert!(!rail_shown(&browse), "{listing:?}: the rail needs the order the counts sum in");
+        assert!(browse.state.set_sort_by_key(title, false));
+        assert!(rail_shown(&browse), "{listing:?}: ascending again");
+        for (key, _) in others {
+            assert!(browse.state.set_sort_by_key(key, false));
+            assert!(!rail_shown(&browse), "{listing:?}: {key} has no letters (bands, or none)");
+        }
+    }
+}
+
+/// The Title entries and the value sorts a PMS declares for each, as `(listing, (key, descKey), others)`.
+fn declared_menus() -> [(LibraryType, (&'static str, &'static str), &'static [(&'static str, &'static str)]); 2] {
+    [
+        (LibraryType::Seasons, SEASONS_TITLE, &[("random", "random:desc")]),
+        (LibraryType::Episodes, EPISODES_TITLE, &[("originallyAvailableAt", "originallyAvailableAt:desc"),
+            ("addedAt", "addedAt:desc"), ("random", "random:desc")]),
+    ]
+}
+
+fn menu_of(title: &str, title_desc: &str, others: &[(&str, &str)]) -> Vec<SortEntry> {
+    let mut menu = vec![declared_sort(title, title_desc, false)];
+    menu.extend(others.iter().map(|(key, desc_key)| declared_sort(key, desc_key, true)));
+    menu
+}
+
+/// The page read of a seasons or episodes listing sends the declared Title key ascending and the declared
+/// `descKey` descending, never the literal `titleSort` (whose order the letters' prefix sums do not land
+/// on) and never `:desc` appended to the composite: the grid is in the order the rail's counts sum in.
+#[test]
+fn the_page_sends_the_declared_title_keys_for_seasons_and_episodes() {
+    for (listing, (title, title_desc), others) in declared_menus() {
+        let _g = plx_base::testlock::serial();
+        let (_cleanup, mut browse, _sid, _client) = loopback_source_at(9, SecKind::Show);
+        assert!(browse.state.set_library_type(listing));
+        browse.state.state_mut(0).unwrap().sorts = Arc::new(menu_of(title, title_desc, others));
+        assert_eq!(page_sort(&mut browse), title, "{listing:?}: the declared key as it stands");
+        assert!(browse.state.set_sort_by_key(title, true));
+        assert_eq!(page_sort(&mut browse), title_desc, "{listing:?}: the declared descKey");
+        assert!(browse.state.set_sort_by_key(title, false));
+        assert_eq!(page_sort(&mut browse), title, "{listing:?}: ascending again");
+    }
+}
+
+/// Before the menu has landed no sort is sent (the server's default order is the declared Title order,
+/// measured), so a listing of seasons or episodes offers its letters then too, as the section's own
+/// listing always did.
+#[test]
+fn a_listing_without_its_menu_yet_is_in_the_servers_default_order() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_source_at(9, SecKind::Show);
+    assert!(browse.state.set_library_type(LibraryType::Episodes));
+    assert_eq!(page_sort(&mut browse), "", "the page sends no sort");
+    land_letters(&mut browse, sid, client, &[("C", 3), ("M", 4)]);
+    assert!(browse.state.cur_state().unwrap().sorts.is_empty(), "premise: no menu yet");
+    assert!(rail_shown(&browse));
+}
+
+/// **One predicate, per listing.** The section's own listing and the collections list `titleSort` and
+/// nothing else is its Title order; a seasons or episodes listing's is the composite whose first term is
+/// exactly `show.titleSort`, and NOT the literal `titleSort`, a `title` or the episode's own
+/// `episode.titleSort,...` (the letters count by the SHOW's title and land on none of those orders). A key
+/// of another fact never is, on any listing.
+#[test]
+fn the_title_order_of_a_listing_is_its_own_entry() {
+    use LibraryType::{Collections, Episodes, Primary, Seasons};
+    let entry = |key: &str| declared_sort(key, "", false);
+    for (listing, key, want) in [
+        (Primary, "titleSort", true), (Collections, "titleSort", true),
+        (Primary, SEASONS_TITLE.0, false), (Primary, EPISODES_TITLE.0, false),
+        (Seasons, SEASONS_TITLE.0, true), (Episodes, EPISODES_TITLE.0, true),
+        (Seasons, "titleSort", false), (Episodes, "titleSort", false),
+        (Seasons, "title", false), (Episodes, "title", false),
+        (Seasons, "episode.titleSort,episode.index", false), (Episodes, "episode.titleSort,episode.index", false),
+        (Seasons, "show.titleSort:desc,index", false),
+        (Seasons, "random", false), (Episodes, "random", false),
+        (Seasons, "addedAt", false), (Episodes, "addedAt", false), (Episodes, "originallyAvailableAt", false),
+        (Episodes, "rating", false), (Episodes, "lastViewedAt", false),
+        (Primary, "addedAt", false), (Primary, "rating", false), (Collections, "addedAt", false),
+    ] {
+        assert_eq!(entry(key).is_title_order(listing), want, "{listing:?} {key}");
+    }
+}
+
 /// Navigation round trip through the Collections page, the one place the section's membership can
 /// change without the section hearing of it: Unwatched is on, a title is watched while Collections
 /// is listed (the player's read-back finds no loaded row of this listing to flag), and on the way

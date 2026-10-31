@@ -320,17 +320,20 @@ impl<'a> ListingView<'a> {
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
-    /// Is the A-Z LETTERS rail offered? The sort is the title, ascending (the order the counts sum in), and
-    /// there are letters of THIS listing to jump to. Unwatched and a genre do not hide it: the letters
-    /// are asked with the grid's own terms and shown only while they describe them ([`Self::letters`]).
-    /// A value sort has no letters rail, whatever the letters on hand; its bands are
-    /// [`Self::bands_available`].
+    /// Is the A-Z LETTERS rail offered? The sort is the listing's Title entry
+    /// ([`SortEntry::is_title_order`]: `titleSort` for the section's own listing, the server's declared
+    /// composite for seasons and episodes), ascending (the order the counts sum in), and there are
+    /// letters of THIS listing to jump to. Before the menu has landed no sort is sent and the server's
+    /// default order is that Title order (measured for seasons and episodes), so it counts as one.
+    /// Unwatched and a genre do not hide it: the letters are asked with the grid's own terms and shown
+    /// only while they describe them ([`Self::letters`]). A value sort has no letters rail, whatever
+    /// the letters on hand; its bands are [`Self::bands_available`].
     pub fn rail_available(self) -> bool {
         self.id().is_some()
             && self
                 .sorts()
                 .get(self.sort_index())
-                .is_none_or(|s| s.key == "titleSort" && !self.sort_desc())
+                .is_none_or(|s| s.is_title_order(self.library_type()) && !self.sort_desc())
             && self.letters().len() > 1
     }
     /// Is a rail of BANDS offered? The grid is ordered by a value sort with bands

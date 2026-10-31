@@ -82,8 +82,13 @@ as a real PMS 1.43.5 was measured to (`docs/pms-api.md`, "Count probes at band e
 queries" block above `Library` says which rules, in every mode. `--band-fixture` (seeded library only,
 default off) is the data and the menus for them: movie, show and episode dates spread over 2019-2024,
 unrated movies and movies with no release date, movies and shows nobody viewed, shows with every
-number of watched episodes, and the per-type `Sort[]` lists a real PMS offers (a movie list and a
-show list), which the short default list is not. Without it every answer is byte-identical.
+number of watched episodes, and the per-type `Sort[]` lists a real PMS offers (a movie list, a show
+list, the two sorts of a seasons listing and the seven of an episodes listing, whose Title key is the
+composite `show.titleSort,...`), which the short default list is not. The seasons and episodes
+listings (`type=3|4`) are ordered by that Title key when it is asked for or no sort is, and
+`/firstCharacter?type=3|4` counts them by their SHOW's title, as a real PMS does (`docs/pms-api.md`,
+"Count probes for seasons and episodes"). Episodes also get a critic and an audience rating (some
+missing) and an air date (some missing). Without it every answer is byte-identical.
 
     python3 tests/mock_pms.py --port 32499              # serve until Ctrl-C
     python3 tests/mock_pms.py --port 32499 --selftest   # prove the shapes without an app
@@ -563,6 +568,26 @@ BAND_SORT_MENUS = {
              ("episode.addedAt", "desc", "Last Episode Added"),
              ("lastViewedAt", "desc", "Date Viewed"), ("random", "asc", "Randomly")),
 }
+# The `Sort[]` of a show library's SEASONS (type 3) and EPISODES (type 4) listings, as PMS 1.43.5 was
+# measured to declare them (docs/pms-api.md, "Count probes for seasons and episodes"): (key, descKey,
+# defaultDirection, title), and ONLY these (seasons: two; episodes: seven, the audience score among them).
+# The Title key is a COMPOSITE (the show's title, then the season, then the episode) and its `descKey`
+# reverses the show alone; neither is the literal `titleSort`. Served under `--band-fixture` only.
+BAND_TV_TITLE = "show.titleSort"
+BAND_TV_SORT_MENUS = {
+    "season": (("show.titleSort,index", "show.titleSort:desc,index", "asc", "Title"),
+               ("random", "random:desc", "desc", "Randomly")),
+    "episode": (("show.titleSort,season.index:nullsLast,episode.index:nullsLast,"
+                 "episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id",
+                 "show.titleSort:desc,season.index:nullsLast,episode.index:nullsLast,"
+                 "episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id", "asc", "Title"),
+                ("originallyAvailableAt", "originallyAvailableAt:desc", "desc", "Release Date"),
+                ("rating", "rating:desc", "desc", "Critic Rating"),
+                ("audienceRating", "audienceRating:desc", "desc", "Audience Rating"),
+                ("addedAt", "addedAt:desc", "desc", "Date Added"),
+                ("lastViewedAt", "lastViewedAt:desc", "desc", "Date Viewed"),
+                ("random", "random:desc", "desc", "Randomly")),
+}
 # `--band-fixture` spreads dates over these years (UTC): addedAt, lastViewedAt and episode dates.
 BAND_FIXTURE_FROM = 1_546_300_800  # 2019-01-01
 BAND_FIXTURE_TO = 1_735_689_600  # 2025-01-01
@@ -782,6 +807,29 @@ class Library:
             show.pop("lastViewedAt", None)
             if latest is not None:
                 show["lastViewedAt"] = latest
+        # The EPISODES listing's own values (a real PMS lists seven sorts for it, `BAND_TV_SORT_MENUS`),
+        # from a second `random.Random` so nothing above moves: every fourth episode is unrated, every
+        # sixth has no audience rating (the others one in tenths, as the listing prints it), every
+        # seventh has no air date and the rest one of 1998-2024 (a day, rendered as UTC midnight by the
+        # range terms). An episode's `addedAt` and `lastViewedAt` are the ones set above.
+        # MOCK MODEL, NOT MEASURED: a real PMS 1.43.5 was measured with NO value in an episode's critic
+        # `rating` or `lastViewedAt` (docs/pms-api.md, "Count probes for seasons and episodes"; the
+        # filters were accepted, never checked at an edge). The values here exist so the simulator has
+        # bands to draw; the mock compares them with the same rules as every other field, which is a
+        # model of the server, not an observation of it. `addedAt` and `originallyAvailableAt` of an
+        # episode were verified.
+        tv = random.Random(BAND_FIXTURE_SEED + self.seed + 1)
+        for i, ep in enumerate(sorted((it for rk, it in self.items.items() if rk in generated
+                                       and it["type"] == "episode"), key=lambda it: int(it["ratingKey"]))):
+            if i % 4 != 3:
+                ep["rating"] = round(2.0 + tv.randrange(80) / 10.0, 1)
+            if i % 6 != 5:
+                ep["audienceRating"] = round(2.0 + tv.randrange(80) / 10.0, 1)
+            if i % 7 == 6:
+                ep.pop("originallyAvailableAt", None)
+            else:
+                ep["originallyAvailableAt"] = "%d-%02d-%02d" % (
+                    1998 + tv.randrange(27), 1 + tv.randrange(12), 1 + tv.randrange(28))
         self._roll_up()
 
     def _add_resume_fixture(self):
@@ -1421,7 +1469,10 @@ class Library:
         episodes = Episodes(self.items)
         for values, suffix, edge in band_terms(kind, q):
             rows = [it for it in rows if band_keeps(values(it, episodes), suffix, edge)]
-        field, _, rest = q.get("sort", "titleSort").partition(":")
+        sort = q.get("sort")
+        if self.band_fixture and kind in ("season", "episode") and (sort is None or sort.startswith(BAND_TV_TITLE)):
+            return self._tv_title_order(rows, kind, sort is not None and sort.startswith(BAND_TV_TITLE + ":desc"))
+        field, _, rest = (sort or "titleSort").partition(":")
         direction, _, modifier = rest.partition(":")
         desc = direction == "desc"
         band = BAND_FIELDS.get(field) or BAND_SORT_ONLY.get(field)
@@ -1436,7 +1487,8 @@ class Library:
         return rows
 
     def first_characters(self, key, q=None):
-        """Counts in ascending titleSort order (the rail's order) of the listing `q` describes: the
+        """Counts in ascending titleSort order (the rail's order; by the SHOW's title for seasons and
+        episodes under `--band-fixture`) of the listing `q` describes: the
         terms that scope `/all` (`type`, `unwatched`, `unwatchedLeaves`, `genre`, ...) scope the counts
         the same way, as PMS does, so the sum is the filtered `totalSize` and prefix sums are the
         offsets of each letter in that listing. `type=18` counts the section's collections."""
@@ -1446,11 +1498,35 @@ class Library:
                 if q.get("type") == "18"
                 else self.section_items(key, {k: v for k, v in q.items()
                                               if k != "sort" and not k.startswith("X-Plex-")}))
+        # Seasons and episodes are counted by their SHOW's title under `--band-fixture`, as a real PMS
+        # counts them (docs/pms-api.md, "Count probes for seasons and episodes"): the order of the
+        # listing is the show's title first, so the counts laid end to end land on its letters.
+        by_show = self.band_fixture and q.get("type") in ("3", "4")
         for item in rows:
-            letter = item["titleSort"][0].upper()
+            letter = (self._show_of(item) if by_show else item)["titleSort"][0].upper()
             counts[letter] = counts.get(letter, 0) + 1
         return [{"key": letter.lower(), "title": letter, "size": count}
                 for letter, count in counts.items()]
+
+    def _show_of(self, it):
+        """The show a season or an episode belongs to."""
+        return self.items[int(it["grandparentRatingKey"] if it["type"] == "episode" else it["parentRatingKey"])]
+
+    def _tv_title_order(self, rows, kind, show_desc):
+        """`rows` (seasons or episodes) in the order of the Title entry a real PMS declares for them
+        (`BAND_TV_SORT_MENUS`): the show's title, then the season, then the episode (a missing index
+        and a missing air date last, then the episode's own title and id). The entry's `descKey`
+        reverses the show alone, so the rest of the key keeps its ascending order inside each show;
+        a stable sort on the show alone, descending, after the ascending one is exactly that."""
+        def inner(it):
+            if kind == "season":
+                return (it["index"],)
+            return (it.get("parentIndex", 1 << 30), it.get("index", 1 << 30),
+                    it.get("originallyAvailableAt") is None, it.get("originallyAvailableAt") or "",
+                    it["titleSort"], int(it["ratingKey"]))
+        ordered = sorted(rows, key=inner)
+        ordered.sort(key=lambda it: self._show_of(it)["titleSort"], reverse=show_desc)
+        return ordered
 
     def _watched(self, it):
         if it["type"] in ("movie", "episode"):
@@ -2845,8 +2921,21 @@ class MockPms:
     def sort_meta(self, kind=None, lib=None, section=None):
         if kind != "18" and lib is not None and lib.band_fixture:
             # `--band-fixture`: the lists a real PMS offers, one per type (a movie list and a show
-            # list differ). A request with no `type` takes its section's type; seasons and episodes
-            # (types 3 and 4) keep the short list below, which `section_items` can apply to them.
+            # list differ). A request with no `type` takes its section's type. A seasons or episodes
+            # listing (types 3 and 4) gets the show, season and episode entries with `active` on its
+            # own alone, as the server lists them, and the two TV lists are `BAND_TV_SORT_MENUS`.
+            if kind in ("3", "4"):
+                active = {"3": "season", "4": "episode"}[kind]
+                entries = [{"key": f"/library/sections/{section}/all?type=2", "type": "show", "title": "show",
+                            "active": False,
+                            "Sort": [{"key": key, "defaultDirection": direction, "title": title}
+                                     for key, direction, title in BAND_SORT_MENUS["show"]]}]
+                entries += [{"key": f"/library/sections/{section}/all?type={type_id}", "type": name,
+                             "title": name, "active": name == active,
+                             "Sort": [{"key": key, "descKey": desc_key, "defaultDirection": direction, "title": title}
+                                      for key, desc_key, direction, title in BAND_TV_SORT_MENUS[name]]}
+                            for name, type_id in (("season", 3), ("episode", 4))]
+                return {"Type": entries}
             name = {"1": "movie", "2": "show"}.get(kind) if kind is not None else \
                 next((s["type"] for s in lib.sections if s["key"] == section), None)
             if name in BAND_SORT_MENUS:
