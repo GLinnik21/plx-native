@@ -144,12 +144,17 @@ spec's "Media Queries" section documents the full query language.
   `sort=titleSort:desc`). Measured 2026-10-25 on PMS 1.43.5: movies (none, `unwatched`, `genre`, both,
   and `unwatched` descending), shows (`type=2` with `unwatchedLeaves`, with `genre`, with both);
   every letter's offset checked, none off. Seasons and episodes advertise no plain `titleSort`
-  sort, so the app offers the title-sort A-Z rail for movie and show listings (and collections) only.
+  sort but a composite Title key, which the letters land on (measured 2026-10-31, "Count probes for
+  seasons and episodes" below): the app offers the title-sort A-Z rail for the section's own listing
+  and collections by the literal `titleSort`, and for seasons and episodes by the declared Title entry
+  (`SortEntry::is_title_order`), ascending, sending that entry's `key` and never `titleSort`.
   The app sends `firstCharacter` the very terms of the grid's page request and shows the counts only
   while they describe it (`data/src/browse/letters.rs`). A VALUE sort's bands come from count
   probes instead (next section): the data job asks them for every banded sort (critic rating,
   duration, unplayed, plays, date added, date viewed, last episode added, release date) on a movie or
-  show section's own listing, with the same terms, and `ListingView::bands()` exposes them; the
+  show section's own listing, and for a show library's Episodes listing its date added, date viewed,
+  release date and rating (`BandFamily::of_sort`; Seasons have none), with the same terms (`type=4`
+  included), and `ListingView::bands()` exposes them; the
   calendar ones also need the day the Library hands over with its ask. `rail_available` stays the
   letters' alone and `bands_available` is the value sorts' (the two never both). The Library's rail
   draws whichever the sort has (`library/rail.rs`, labels in `library/rail_bands.rs`): the bands in
@@ -352,6 +357,15 @@ Verdicts per field (four data-driven edges; the other operators exact at one val
   525 rows in their bucket; descending with the `descKey` and the buckets reversed, the same), and NOT of
   `sort=titleSort` (41 of 48, 125 of 525). `firstCharacter=<letter>` is no filter on these listings (nor on
   `type=2`): it answered the whole type for every letter, so a letter jump takes the prefix-sum offset.
+- **Does the letters index follow the grid's terms on these listings?** Asked with
+  `tools/pms-band-probe.py --types 3,4 --letters-under-filters` (26 requests, counts only), the letters' sizes
+  summed to the `Size=0` count of the SAME terms every time, for the terms that could tell a followed term from
+  an ignored one: `year=<the most common year>`, a proper subset (seasons 3 of 48 in 2 buckets, episodes 54 of
+  525 in 3 buckets), and the app's Unwatched key spelled `=0` (`unwatchedLeaves=0` on seasons, `unwatched=0` on
+  episodes: 0 and 0, no bucket). The app's own `unwatchedLeaves=1` (seasons) and `unwatched=1` (episodes) both
+  matched the WHOLE type here (48 and 525: nothing was watched through), so they could not tell. Genre is
+  UNMEASURED: this library's `/genre?type=3` and `type=4` list no values. The application therefore does not
+  compare the letters' sum with the listing's total; a server that ignored a term would put the jumps off.
 - **Cost** (loopback): count probe median 3.4 ms (seasons) and 5.1 ms (episodes); a 200-row episode page 36.5 ms.
 
 ---
