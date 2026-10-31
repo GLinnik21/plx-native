@@ -145,5 +145,14 @@ fn the_bands_track_is_the_widest_pill_never_narrower_than_the_letters_and_never_
     assert_eq!(band_track_w(20.0), RAIL_TRACK_W);
     assert_eq!(band_track_w(33.0), 33.0 + 24.0, "12 px each side of the widest label");
     assert_eq!(band_track_w(400.0), BAND_TRACK_LIMIT_W);
+    // a label too wide for 12 px each side gives air back, down to 4, so its pill still ends at the limit
+    use super::layout::{band_pill_pad, BAND_PILL_PAD, BAND_PILL_PAD_MIN};
+    assert_eq!((band_pill_pad(40.0), band_pill_pad(BAND_TRACK_LIMIT_W - 2.0 * BAND_PILL_PAD)), (BAND_PILL_PAD, BAND_PILL_PAD), "the board's 12 while it fits");
+    assert_eq!(band_pill_pad(BAND_TRACK_LIMIT_W - 2.0 * BAND_PILL_PAD + 6.0), BAND_PILL_PAD - 3.0, "6 px over gives back 3 each side");
+    assert_eq!((band_pill_pad(BAND_TRACK_LIMIT_W - 2.0 * BAND_PILL_PAD_MIN), band_pill_pad(400.0)), (BAND_PILL_PAD_MIN, BAND_PILL_PAD_MIN), "never under 4");
+    for label in [60.0, 100.0, 105.0, 111.0, 113.0, 116.0] {
+        assert!(label + 2.0 * band_pill_pad(label) <= BAND_TRACK_LIMIT_W + 0.01, "{label}");
+        assert_eq!(band_track_w(label), label + 2.0 * band_pill_pad(label), "{label}");
+    }
     assert!((BAND_RAIL_CX - BAND_TRACK_LIMIT_W * 0.5 - GRID_RIGHT).abs() < 0.01, "the widest track's left edge meets the posters' edge and not past it");
 }

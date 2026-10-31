@@ -14,7 +14,7 @@
 //! none, so a grid card among them marks no current band.
 use std::ffi::CString;
 use super::identity::{KeyRegistry, KeyRegion, region_of_elem};
-use super::layout::{band_track_w, rail_geom, rail_pitch, rail_scroll_target, BandRows, BAND_PILL_H, BAND_PILL_PAD, RAIL_TRACK_W};
+use super::layout::{band_pill_pad, band_track_w, rail_geom, rail_pitch, rail_scroll_target, BandRows, BAND_PILL_H, RAIL_TRACK_W};
 use super::rail_bands;
 use crate::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use plx_ui::consts::K_SCROLL;
@@ -36,7 +36,7 @@ fn focus_fill(p: plx_ui::Painter, rect: Rect) {
 /// The focused band's pill, centred on its row `slot`: the board's 38 high with 12 px each side of the
 /// label, built as the shared [`focus_pill`] around the plate it grows from.
 fn band_pill(slot: Rect, label_w: f32) -> Rect {
-    let plate_w = label_w + 2.0 * (BAND_PILL_PAD - PILL_FOCUS_OUTSET);
+    let plate_w = label_w + 2.0 * (band_pill_pad(label_w) - PILL_FOCUS_OUTSET);
     let plate_h = BAND_PILL_H - 2.0 * PILL_FOCUS_OUTSET;
     focus_pill(Rect::new(slot.cx() - plate_w * 0.5, slot.cy() - plate_h * 0.5, plate_w, plate_h))
 }
@@ -744,6 +744,19 @@ mod tests {
         let lead = ascending.rail();
         let first = lead.seat(lead.group, placed(2), &ascending.cx(lead.entry, None));
         assert_eq!(first, FocusKey { entry: lead.entry, elem: lead.elems[0] }, "a leading unrated item seats on the first band");
+    }
+
+    #[test]
+    fn a_pill_around_a_wide_label_gives_air_back_and_stays_inside_the_track() {
+        let _guard = plx_base::testlock::serial();
+        for label_w in [60.0f32, 100.0, 111.0, 113.0, 116.0] {
+            let track = band_track_w(label_w);
+            let pill = band_pill(Rect::new(0.0, 0.0, track, 40.0), label_w);
+            assert!((pill.w - (label_w + 2.0 * band_pill_pad(label_w))).abs() < 0.01, "{label_w}: pill {} wide", pill.w);
+            assert!(pill.x >= -0.01 && pill.x + pill.w <= track + 0.01, "{label_w}: the pill {pill:?} leaves its {track} track");
+            assert!((pill.cx() - track * 0.5).abs() < 0.01 && pill.h == BAND_PILL_H, "{label_w}: centred and 38 high");
+        }
+        assert!((band_pill(Rect::new(0.0, 0.0, 84.0, 40.0), 60.0).w - 84.0).abs() < 0.01, "a label that fits keeps the board's 12 each side");
     }
 
     #[test]

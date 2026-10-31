@@ -1,5 +1,5 @@
 {
-  "library_rail.decade": "{decade}s",
+  "library_rail.decade": "años {decade}",
   "library_rail.hours": "{hours}h",
   "library_rail.hours_or_more": "{hours}h+",
   "library_rail.today": "Hoy"

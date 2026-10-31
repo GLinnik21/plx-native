@@ -283,17 +283,21 @@ last episode added (newest first only) read `Today Oct Sep ... Jan 2025 2024 ...
   language can put the `+` after its own unit. A calendar band is `library_rail.today` (the word under a poster, or
   its abbreviation where that is too wide for the column: French `Auj.`), a month is `LocaleContext::month_short`
   (the stand-alone abbreviation), a year is its plain digits (never the grouped `locale.number`) and a decade is
-  `library_rail.decade` over the digits of its first year (`2020s`, `2020er`, `2020-е`, `lata 2020`). The longest
-  label the column holds is the track limit less the pill's padding (about 100 px at `MICRO`), so a new language's
-  Today and decade strings are checked against it by `rail_bands`' fit test, which loops every family of every
-  shipped language through the real measure. Focus identity is the token, not the text.
+  `library_rail.decade` over the digits of its first year and the last two of its last (`{decade}` and `{end}`; the
+  English entry lists `end` under `"optional"`, so a language reads the ones it needs): `2020s`, `2020er`, `años 2020`,
+  `lata 2020.`, `2020-е`, and `2020–29` for a language whose phrase does not fit (French `années 2020` is 137 px;
+  Hungarian's suffix alternates by vowel harmony, `2020-as` but `2010-es`). The widest label the column holds is
+  the track limit less the least pill air each side (116 px at `MICRO`), so a new language's Today and decade
+  strings are checked against it by `rail_bands`' fit test, which loops every family of every shipped language
+  through the real measure. Focus identity is the token, not the text.
 - **Geometry** is `layout::BandRows`: centre x 1834 (the letters keep 1844), rows 40 px apart (the letters' pitch is
   `layout::rail_pitch`: 32 at most, squeezed toward 26 for a long alphabet), the first
   at the grid's top (244), `BAND_STEP_GAP` extra before the rows a scale change names (`rail_bands::steps`, from the
   marks: between a month and a year, a year and a decade, in either direction of the sort; `Today` is on no scale, so
   `Today 2025` on the first of January has none), the
   track as wide as the widest label plus the pill's 12 px each side (never under the letters' 44, never into the
-  posters). A calendar rail can hold some 35 rows (twelve months and every year back), more than the column's
+  posters: a label wider than the limit allows 12 each side gives air back, `layout::band_pill_pad`, down to 4).
+  A calendar rail can hold some 35 rows (twelve months and every year back), more than the column's
   window: it scrolls in whole rows, the driving band one row clear of both fades, like a long alphabet. The grid
   does not move for it.
 - **Ink**: a band that holds items is `TEXT_SECONDARY`, an empty one the same at 25%, the CURRENT band (the one the

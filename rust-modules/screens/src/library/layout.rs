@@ -274,16 +274,28 @@ pub(super) const BAND_STEP_GAP: f32 = theme::space::XS;
 /// The height of the focused band's white pill: the board's 38, which is [`BAND_PITCH`] less the two
 /// px the row keeps above and below it.
 pub(super) const BAND_PILL_H: f32 = 38.0;
-/// The air each side of a band's label inside its pill.
+/// The air each side of a band's label inside its pill: the board's 12 for every label that leaves
+/// room for it ([`band_pill_pad`] gives some of it back to a wider one).
 pub(super) const BAND_PILL_PAD: f32 = 12.0;
+/// The least air each side of a label in its pill. A label too wide for [`BAND_PILL_PAD`] either side
+/// within the track limit gives air back down to this and no further.
+pub(super) const BAND_PILL_PAD_MIN: f32 = 4.0;
 /// The widest the rail of bands may be, pill and all: its left edge stays clear of the posters,
 /// which end at [`GRID_RIGHT`] (the grid does not move for it).
 pub(super) const BAND_TRACK_LIMIT_W: f32 = 2.0 * (BAND_RAIL_CX - GRID_RIGHT);
 
+/// The air each side of a label `label_w` wide inside its pill: [`BAND_PILL_PAD`], or what the track limit
+/// leaves of it for a label too wide to have that much, never under [`BAND_PILL_PAD_MIN`]. So a label up to
+/// [`BAND_TRACK_LIMIT_W`] less 24 keeps the board's pill, and one up to the limit less 8 (116 px) is the
+/// widest any band's label may be.
+pub(super) fn band_pill_pad(label_w: f32) -> f32 {
+    ((BAND_TRACK_LIMIT_W - label_w) * 0.5).clamp(BAND_PILL_PAD_MIN, BAND_PILL_PAD)
+}
+
 /// The width of a rail of bands whose widest label is `widest` wide: the letters' [`RAIL_TRACK_W`] at
 /// least, and wide enough for the focus pill around the widest label, never past [`BAND_TRACK_LIMIT_W`].
 pub(super) fn band_track_w(widest: f32) -> f32 {
-    (widest + 2.0 * BAND_PILL_PAD).clamp(RAIL_TRACK_W, BAND_TRACK_LIMIT_W.max(RAIL_TRACK_W))
+    (widest + 2.0 * band_pill_pad(widest)).clamp(RAIL_TRACK_W, BAND_TRACK_LIMIT_W.max(RAIL_TRACK_W))
 }
 
 /// Where the rows of a rail of bands stand: [`BAND_PITCH`] apart, with [`BAND_STEP_GAP`] more before

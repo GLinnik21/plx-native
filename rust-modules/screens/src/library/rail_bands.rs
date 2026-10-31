@@ -21,7 +21,9 @@
 //! - **A year is its plain digits**, as the Year sort's line under a poster writes it: never
 //!   `LocaleContext::number`, which would group it (`2,025`).
 //! - **A decade is `library_rail.decade`** over the plain digits of its first year (`2020s`, `2020er`,
-//!   `2020-е`, `lata 2020`): the shortest form the language has that still fits the column.
+//!   `años 2020`, `2020-е`) and the last two digits of its last (`end`): a language with no short
+//!   phrase that fits the column writes the span (`2020–29`, French and Hungarian). The app hands every
+//!   language both; a language reads the ones it needs (`"optional": ["end"]` in the English entry).
 //!
 //! [`Mark`]: plx_data::browse::bands::Mark
 use plx_data::browse::bands::Mark;
@@ -46,8 +48,14 @@ pub(super) fn label(mark: Mark) -> String {
         Mark::Month(month) => locale.month_short(month).unwrap_or_else(|| locale.number(i64::from(month))),
         // Plain digits, as the Year sort's line under a poster writes a year: `locale.number` would group it.
         Mark::Year(year) => year.to_string(),
-        Mark::Decade(decade) => msg::library_rail_decade(&decade.to_string()),
+        Mark::Decade(decade) => msg::library_rail_decade(&decade.to_string(), &decade_end(decade)),
     }
+}
+
+/// The last two digits of the last year of the decade that starts at `decade`: 2020 -> `29`, 1990 -> `99`,
+/// 1900 -> `09`. A language that writes a decade as a span (`2020–29`) reads it; the others leave it out.
+fn decade_end(decade: i32) -> String {
+    format!("{:02}", (decade + 9).rem_euclid(100))
 }
 
 /// A length in minutes as the number of hours the rail names, with the half hour as `½`: 150 is
@@ -99,7 +107,10 @@ pub(super) fn steps(marks: &[Mark]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::layout::{BAND_PILL_PAD, BAND_TRACK_LIMIT_W};
+    use super::super::layout::{band_pill_pad, BAND_PILL_PAD, BAND_PILL_PAD_MIN, BAND_TRACK_LIMIT_W};
+
+    /// The widest a band's label may be: the track limit less the least air each side.
+    const BAND_LABEL_LIMIT_W: f32 = BAND_TRACK_LIMIT_W - 2.0 * BAND_PILL_PAD_MIN;
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_data::browse::bands::{plan, BandFamily};
     use plx_machine::machine::Measure;
@@ -166,6 +177,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_decade_ends_where_its_last_year_does_and_a_span_reads_start_and_end() {
+        let _guard = plx_base::testlock::serial();
+        assert_eq!([2020, 2010, 2000, 1990, 1900].map(decade_end), ["29", "19", "09", "99", "09"]);
+        for language in SHIPPED {
+            let _language = language_on_this_thread_for_test(language);
+            let tag = language.tag();
+            // every language is handed both, and one that writes a span puts the end after an en dash
+            for decade in [2020, 2000, 1990, 1900] {
+                let text = label(Mark::Decade(decade));
+                if let Some((start, end)) = text.split_once('\u{2013}') {
+                    assert_eq!((start, end), (decade.to_string().as_str(), decade_end(decade).as_str()), "{tag}: {text:?}");
+                }
+            }
+            // 2000 and 1900 end in the same two digits and are two different bands
+            assert_ne!(label(Mark::Decade(2000)), label(Mark::Decade(1900)), "{tag}");
+        }
+    }
+
     fn steps_of(family: BandFamily, today: [i32; 3], oldest: i32, reversed: bool) -> Vec<usize> {
         let mut marks: Vec<Mark> = plan(family, today, oldest).iter().map(|band| band.mark()).collect();
         if reversed { marks.reverse(); }
@@ -205,7 +235,7 @@ mod tests {
     fn every_family_in_every_shipped_language_is_distinct_and_fits_the_rail_beside_the_posters() {
         let _guard = plx_base::testlock::serial();
         let mut out = Vec::new();
-        let mut checked = 0;
+        let (mut checked, mut squeezed) = (0, 0);
         for language in SHIPPED {
             let _language = language_on_this_thread_for_test(language);
             let tag = language.tag();
@@ -217,14 +247,18 @@ mod tests {
                     if text.is_empty() || text.contains('\u{fffd}') { out.push(format!("{tag} {family:?} #{index}: {text:?} is empty or broken")); }
                     if labels[..index].contains(text) { out.push(format!("{tag} {family:?}: {text:?} appears twice")); }
                     let width = ShippedMeasure.width(&std::ffi::CString::new(text.as_str()).unwrap(), plx_ui::theme::size::MICRO, false);
-                    if width + 2.0 * BAND_PILL_PAD > BAND_TRACK_LIMIT_W {
-                        out.push(format!("{tag} {family:?}: {text:?} is {width} wide; its pill passes the {BAND_TRACK_LIMIT_W} the posters leave"));
+                    // a label gives pill air back, down to the least, to stay inside the posters' limit
+                    if width > BAND_LABEL_LIMIT_W || width + 2.0 * band_pill_pad(width) > BAND_TRACK_LIMIT_W + 0.01 {
+                        out.push(format!("{tag} {family:?}: {text:?} is {width} wide; its pill passes the {BAND_TRACK_LIMIT_W} the posters leave, even with only {BAND_PILL_PAD_MIN} px each side"));
                     }
+                    if width + 2.0 * BAND_PILL_PAD > BAND_TRACK_LIMIT_W { squeezed += 1; }
                 }
             }
         }
         assert!(checked > SHIPPED.len() * BandFamily::ALL.len() * 5, "the loop saw every family in every language ({checked} labels)");
         assert!(out.is_empty(), "labels that do not fit the rail:\n  {}", out.join("\n  "));
+        // the clamp is in use: some shipped decade phrases are wider than the board's 12 px pill leaves
+        assert!(squeezed > 0, "no label needs the squeezed pill; the native decade phrases were meant to");
     }
 
     #[test]
