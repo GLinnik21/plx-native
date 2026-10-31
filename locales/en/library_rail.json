@@ -1,0 +1,16 @@
+{
+  "library_rail.hours": {
+    "value": "{hours}h",
+    "args": {
+      "hours": "str"
+    },
+    "description": "The Library rail's band for a length in whole or half hours (3h, 2½h, 1h) when the list is sorted by Duration. {hours} arrives formatted for the language and already carries the half (2½); the unit and its spacing are the language's own short hour, the same as core.duration_hours writes it. Keep it short: it stands in a narrow column beside the posters."
+  },
+  "library_rail.hours_or_more": {
+    "value": "{hours}h+",
+    "args": {
+      "hours": "str"
+    },
+    "description": "The Library rail's top Duration band (3h+): at least this many hours. {hours} arrives formatted; the unit is the language's own short hour, as in library_rail.hours, and the + follows it. Keep it short."
+  }
+}
