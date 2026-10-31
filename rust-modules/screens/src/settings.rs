@@ -346,8 +346,9 @@ impl RouteSurface {
     /// libraries → Done/Cancel). Both are correct at the depth the ROOT surface puts them at —
     /// pushed over the Settings root, so the pop reveals it — and both empty the stack when the
     /// surface was booted ROOTED at that page, which `/tmp/plxnative-settings=privacy|home` does
-    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `devtrig::read` out and always
-    /// roots at `SettingsPage::Root`, so this was never a shipping bug — but a Pop with nothing
+    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `devtrig::read` out and roots
+    /// at `SettingsPage::Root`, except for the Library's Favorite libraries row, which roots at
+    /// that page and relies on exactly this — but a Pop with nothing
     /// under it is a statement the page means ("close me"), not an accident to be guarded against
     /// at each emitter, and the surface is the only thing that knows there is nothing under it.
     ///

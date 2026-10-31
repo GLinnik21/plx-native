@@ -1589,6 +1589,12 @@ impl BrowseState {
         let (Some(kind), Some(section)) = (self.section_kind(i), self.sections.get(i)) else {
             return;
         };
+        // Only a favourite can be restored (`remembered_section`), so remembering any other pick
+        // (the Sort & Filter switcher offers every reachable library) would only forget the
+        // favourite it replaces.
+        if !section.pinned {
+            return;
+        }
         let Some(machine) = self
             .sources
             .get(section.src)
@@ -3678,8 +3684,9 @@ pub const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 // setting affects the whole app. Three browsing surfaces read it now — Home's shelves
 // (`pms::item_pinned`), the top tab STRIP (`tab_has_favorite`: a type with no favourite draws no
 // pill at all) and the Library's own Sources picker (`source_rows`). `all_source_rows` stays
-// unscoped and is the Favorite libraries editor's list, which is the one way a non-favourite comes
-// back. Search deliberately stays GRANT-scoped and only RANKS by this: a browsing preference is not
+// unscoped and is the Favorite libraries editor's list, the only place a library is switched back
+// on (the Library's Sort & Filter menu also lets a reader browse any reachable library, favourite
+// or not). Search deliberately stays GRANT-scoped and only RANKS by this: a browsing preference is not
 // an authorization boundary, and removing results would turn "I don't browse this often" into
 // "this does not exist".
 //

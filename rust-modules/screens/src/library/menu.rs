@@ -360,7 +360,8 @@ fn filter_section(unwatched: bool, genre: Option<&GenreEntry>, genres_supported:
 /// **The one Sort & Filter menu** (redesign spec, "Header"): Show, Sort and Filter in one popover.
 /// Show lists the types the library offers besides Collections (which has its own control) and is
 /// absent when only one remains; Sort is the server's declared list; Filter is the genre and the
-/// Unwatched toggle.
+/// Unwatched toggle, then (under a separator) one row per reachable library of the kind when there
+/// are two or more, and a Favorite libraries row that opens Settings on that page.
 fn sort_filter_draft(
     section_kind: SecKind,
     current: LibraryType,
