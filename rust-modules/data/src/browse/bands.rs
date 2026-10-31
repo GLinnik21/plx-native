@@ -3,7 +3,7 @@
 //! families [`BandFamily::rail_ready`] names (`listing_jobs.rs`, `letters.rs`) and hands the screens a
 //! [`BandRail`]. A calendar family's job also gets `today` on the ask, the viewer's [`Zone`] from the
 //! runner and the oldest year from one extent read ([`BandFamily::extent_read`]); the screens draw
-//! none of them until they have labels, and [`BandFamily::rail_ready`] says so.
+//! all eight families' bands (`screens/src/library/rail_bands.rs` labels every [`Mark`]).
 //!
 //! The A-Z rail jumps to a letter by the running sum of per-letter counts. PMS has no per-band
 //! directory for a VALUE sort (`/year` and `/decade` carry no `size`), so a band's offset comes from
@@ -227,24 +227,31 @@ impl BandFamily {
         }
     }
 
-    /// Does the A-Z rail draw this family's bands yet? THE gate, and the only place to widen: the
-    /// four families whose edges are fixed numbers need nothing from the viewer's clock or the
-    /// server's extent. The calendar families (dates, last episode added, release year) are counted by
-    /// the data job now (`today` on the ask, the [`Zone`], the extent read), but the screens have no
-    /// label for their bands yet, so they stay off until they do.
+    /// Does the A-Z rail draw this family's bands? THE gate, and the only place to narrow or widen.
+    /// Every family is drawn: the four whose edges are fixed numbers (rating, duration, unplayed,
+    /// plays) need nothing from the viewer's clock or the server's extent, and the calendar ones (date
+    /// added, date viewed, last episode added, release year) are counted with `today` on the ask, the
+    /// [`Zone`] and the extent read, so a calendar family shows no rail until the application has
+    /// handed the Library the day (`rail_family` in `letters.rs` asks for both). The match stays
+    /// exhaustive: a ninth family must decide here.
     pub fn rail_ready(self) -> bool {
-        // Exhaustive on purpose: a ninth family must decide here.
         match self {
-            Self::Rating | Self::Duration | Self::Unplayed | Self::Plays => true,
-            Self::DateAdded | Self::DateViewed | Self::LastEpisodeAdded | Self::Release => false,
+            Self::Rating
+            | Self::Duration
+            | Self::Unplayed
+            | Self::Plays
+            | Self::DateAdded
+            | Self::DateViewed
+            | Self::LastEpisodeAdded
+            | Self::Release => true,
         }
     }
 
-    /// The bands of a [`Self::rail_ready`] family, highest first, or `None` for one that is not.
-    /// A fixed ladder reads neither `today` nor the oldest year, so a caller with no clock gets its
-    /// plan here instead of inventing a date for [`plan`].
+    /// The bands of a family whose edges are fixed numbers, highest first, or `None` for a calendar
+    /// family ([`Self::basis`]), whose bands need `today` and the oldest year ([`plan`]). A fixed
+    /// ladder reads neither, so a caller with no clock gets its plan here instead of inventing a date.
     pub fn fixed_ladder(self) -> Option<Vec<Band>> {
-        self.rail_ready().then(|| plan(self, [EARLIEST_YEAR, 1, 1], EARLIEST_YEAR))
+        self.basis().is_none().then(|| plan(self, [EARLIEST_YEAR, 1, 1], EARLIEST_YEAR))
     }
 
     /// Does a watch move this family's counts? A play count and an unplayed count change with every
@@ -1595,15 +1602,17 @@ mod tests {
         assert_eq!((layout.lead, layout.tail, layout.populated()), (12, 0, 0));
     }
 
-    /// The rail draws exactly the four fixed ladders; every family with a calendar edge stays off,
-    /// and a fixed ladder is the plan the model makes for it.
+    /// The rail draws every family, the calendar ones included; only the families whose edges are
+    /// plain numbers have a ladder that needs no clock, and that ladder is the plan the model makes.
     #[test]
-    fn the_rail_is_ready_for_the_fixed_ladders_only() {
-        let ready: Vec<BandFamily> = BandFamily::ALL.into_iter().filter(|f| f.rail_ready()).collect();
-        assert_eq!(ready, [BandFamily::Rating, BandFamily::Duration, BandFamily::Unplayed, BandFamily::Plays]);
+    fn the_rail_is_ready_for_every_family_and_only_the_fixed_ones_have_a_ladder_without_a_day() {
+        assert_eq!(BandFamily::ALL.into_iter().filter(|f| f.rail_ready()).count(), BandFamily::ALL.len());
         for family in BandFamily::ALL {
-            assert_eq!(family.rail_ready(), family.basis().is_none(), "{family:?}: ready is `no calendar edge`");
-            assert_eq!(family.fixed_ladder().is_some(), family.rail_ready(), "{family:?}");
+            assert!(family.rail_ready(), "{family:?}");
+            assert_eq!(family.fixed_ladder().is_some(), family.basis().is_none(), "{family:?}: a ladder without a day is `no calendar edge`");
+        }
+        for family in [BandFamily::DateAdded, BandFamily::DateViewed, BandFamily::LastEpisodeAdded, BandFamily::Release] {
+            assert_eq!(family.fixed_ladder(), None, "{family:?} needs today and the oldest year, never year 1000");
         }
         assert_eq!(BandFamily::Rating.fixed_ladder(), Some(rating()));
         assert_eq!(BandFamily::Plays.fixed_ladder().unwrap().len(), 5);

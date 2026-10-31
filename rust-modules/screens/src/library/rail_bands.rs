@@ -64,6 +64,38 @@ pub(super) fn identity(mark: Mark) -> String {
     format!("band {mark:?}")
 }
 
+/// The scale of the calendar a band stands on: a month, a year, a decade. The rest of the ladders
+/// (`Today` included, a band of its own) are on none.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scale {
+    Months,
+    Years,
+    Decades,
+}
+
+fn scale(mark: Mark) -> Option<Scale> {
+    // Exhaustive on purpose: a new mark must say which scale it is on.
+    match mark {
+        Mark::Month(_) => Some(Scale::Months),
+        Mark::Year(_) => Some(Scale::Years),
+        Mark::Decade(_) => Some(Scale::Decades),
+        Mark::Today | Mark::Percent(_) | Mark::BelowPercent(_) | Mark::Minutes(_) | Mark::MinutesOrMore(_)
+        | Mark::BelowMinutes(_) | Mark::Count(_) | Mark::CountOrMore(_) => None,
+    }
+}
+
+/// The rows (indices into `marks`, the bands top to bottom in the listing's own order) that start a new
+/// scale and so stand one step lower (`BandRows::new`): where the months give way to the years, and the
+/// years to the decades, `Jan` then `2025`, `2026` then `2020s`. Read between neighbours, so a rail that
+/// reads the other way (an ascending sort: `2020s` then `2026`, `2025` then `Jan`) steps at the same
+/// seam. `Today` is on no scale and starts none: it and the band after it stand a pitch apart, whether
+/// that is `Oct` or, on the first of January, `2025`.
+pub(super) fn steps(marks: &[Mark]) -> Vec<usize> {
+    (1..marks.len())
+        .filter(|&row| matches!((scale(marks[row - 1]), scale(marks[row])), (Some(above), Some(here)) if above != here))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +164,41 @@ mod tests {
             let (a, b) = (label(Mark::Decade(2020)), label(Mark::Decade(1990)));
             assert!(a.contains("2020") && b.contains("1990") && a != "2020" && b != "1990", "{tag}: {a:?} {b:?}");
         }
+    }
+
+    fn steps_of(family: BandFamily, today: [i32; 3], oldest: i32, reversed: bool) -> Vec<usize> {
+        let mut marks: Vec<Mark> = plan(family, today, oldest).iter().map(|band| band.mark()).collect();
+        if reversed { marks.reverse(); }
+        steps(&marks)
+    }
+
+    #[test]
+    fn a_step_stands_where_the_scale_changes_and_never_beside_today() {
+        // Today, Oct..Jan (rows 1-10), 2025 (row 11): the step is before the first year
+        assert_eq!(steps_of(BandFamily::DateAdded, [2026, 10, 31], 2024, false), [11]);
+        // Today, Jan, 2025: row 2 is the first year after a month
+        assert_eq!(steps_of(BandFamily::DateViewed, [2026, 1, 5], 2025, false), [2]);
+        // Today, 2025, 2024 on the first of January: a year straight after Today is no scale change
+        assert_eq!(steps_of(BandFamily::DateAdded, [2026, 1, 1], 2024, false), Vec::<usize>::new());
+        // a year's last day has twelve months and the same one step; a rail with no year has none
+        assert_eq!(steps_of(BandFamily::LastEpisodeAdded, [2026, 12, 31], 1900, false), [13]);
+        assert_eq!(steps_of(BandFamily::DateAdded, [2026, 10, 31], 2026, false), Vec::<usize>::new());
+        // Release: the year, then the decades, one step before the first decade
+        assert_eq!(steps_of(BandFamily::Release, [2026, 10, 31], 1950, false), [1]);
+        assert_eq!(steps_of(BandFamily::Release, [2026, 10, 31], 2026, false), Vec::<usize>::new());
+        // the fixed ladders have no scale to change
+        for family in [BandFamily::Rating, BandFamily::Duration, BandFamily::Unplayed, BandFamily::Plays] {
+            assert!(steps_of(family, [2026, 10, 31], 1900, false).is_empty(), "{family:?}");
+        }
+    }
+
+    #[test]
+    fn an_ascending_rail_steps_at_the_same_seams() {
+        // 2024, 2025, then the months: the step is before Jan (row 2), and Today ends the rail
+        assert_eq!(steps_of(BandFamily::DateAdded, [2026, 10, 31], 2024, true), [2]);
+        // the decades, then the year: the step is before 2026 (row 4, after 1990s..2020s)
+        assert_eq!(steps_of(BandFamily::Release, [2026, 10, 31], 1990, true), [4]);
+        assert_eq!(steps_of(BandFamily::DateAdded, [2026, 1, 1], 2024, true), Vec::<usize>::new());
     }
 
     #[test]

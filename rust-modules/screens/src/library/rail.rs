@@ -177,7 +177,8 @@ impl RailPart {
     /// survives a language change and never collides with a letter of the same text.
     fn refresh_bands<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry, section: &LibrarySectionIdentity) {
         let Some(offsets) = H::listing(cx).bands() else { self.clear_projection(); return };
-        let mut widths = Vec::with_capacity(offsets.bands.len());
+        let marks: Vec<_> = offsets.bands.iter().map(|band| band.band.mark()).collect();
+        let mut widths = Vec::with_capacity(marks.len());
         for (index, band) in offsets.bands.iter().enumerate() {
             self.starts.push(band.start as usize);
             let identity = rail_bands::identity(band.band.mark());
@@ -187,7 +188,7 @@ impl RailPart {
             self.labels.push(label);
         }
         self.starts.push(offsets.bands.last().map_or(0, |last| (last.start + last.size) as usize));
-        let rows = BandRows::new(self.elems.len(), &[]);
+        let rows = BandRows::new(self.elems.len(), &rail_bands::steps(&marks));
         let (y, cx_rail, height, max) = rows.geom();
         let track_w = band_track_w(widths.iter().copied().fold(0.0, f32::max));
         self.rect = Rect::new(cx_rail - track_w * 0.5, y, track_w, height);

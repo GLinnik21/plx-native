@@ -370,21 +370,56 @@ fn a_calendar_key_carries_the_day_and_a_watch_moves_only_the_date_viewed() {
     assert_eq!((before[2], before[3]), (after[2], after[3]), "…and the last episode and the release date");
 }
 
-/// The day reaches the key from the Library's ask, and the calendar sorts still ask nothing and show
-/// nothing (`rail_ready`): the fixed ones are unaffected.
+/// The day reaches the key from the Library's ask. A calendar sort is asked for its bands only once the
+/// application has handed over the day (`rail_family`), and then its key carries it; a fixed family's
+/// key never does.
 #[test]
-fn the_ask_hands_the_day_to_the_state_and_the_calendar_families_stay_off() {
+fn the_ask_hands_the_day_to_the_state_and_a_calendar_sort_asks_for_its_bands_once_it_has_it() {
     let _g = plx_base::testlock::serial();
     for family in BandFamily::ALL {
-        assert_eq!(family.rail_ready(), family.basis().is_none(), "{family:?}");
+        assert!(family.rail_ready(), "{family:?}: the rail draws every family");
         assert_eq!(family.extent_read().is_some(), family.basis().is_some(), "{family:?}");
     }
     let (_cleanup, mut browse, sid, _client) = banded_source(SecKind::Movie, &["rating", "addedAt"]);
     assert!(browse.state.set_sort_by_key("addedAt", true));
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
+    assert!(browse.jobs.is_empty(), "a calendar sort asks nothing without a day: {:?}", browse.jobs);
+    assert!(browse.state.states()[0].rail_family(SecKind::Movie).is_none());
     tick_directory(&mut browse, sid, LibraryWork::Letters { today: Some(TODAY) });
     assert_eq!(browse.state.states()[0].today, Some(TODAY));
-    assert!(browse.jobs.is_empty(), "a calendar sort asks nothing while the rail is off: {:?}", browse.jobs);
-    assert!(browse.state.states()[0].rail_family(SecKind::Movie).is_none());
+    assert_eq!(browse.state.states()[0].rail_family(SecKind::Movie), Some(BandFamily::DateAdded));
+    let (job, _port) = the_directory_job(&mut browse);
+    assert_eq!(job.req.letters.as_ref().map(|key| (key.family, key.today)), Some((Some(BandFamily::DateAdded), Some(TODAY))),
+        "a calendar family's key carries the day");
+}
+
+/// Last episode added counts the newest episode of a show, which only a DESCENDING sort orders by
+/// (`episode.addedAt:asc` orders by the oldest), so the rail's bands exist for a descending sort only:
+/// the screens draw whatever bands the data layer lands, and this is where an ascending one is kept off.
+#[test]
+fn last_episode_added_asks_for_its_bands_descending_with_the_day_and_never_ascending() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _client) = banded_source(SecKind::Show, &["episode.addedAt"]);
+    assert!(browse.state.set_sort_by_key("episode.addedAt", true));
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: None });
+    assert!(browse.jobs.is_empty() && browse.state.states()[0].rail_family(SecKind::Show).is_none(), "no day, no bands");
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: Some(TODAY) });
+    assert_eq!(browse.state.states()[0].rail_family(SecKind::Show), Some(BandFamily::LastEpisodeAdded));
+    let (job, _port) = the_directory_job(&mut browse);
+    assert_eq!(job.req.letters.as_ref().map(|key| (key.family, key.today)), Some((Some(BandFamily::LastEpisodeAdded), Some(TODAY))));
+
+    let (_cleanup, mut browse, sid, _client) = banded_source(SecKind::Show, &["episode.addedAt"]);
+    assert!(browse.state.set_sort_by_key("episode.addedAt", false));
+    tick_directory(&mut browse, sid, LibraryWork::Letters { today: Some(TODAY) });
+    assert!(browse.state.states()[0].rail_family(SecKind::Show).is_none(), "ascending has no bands");
+    assert!(browse.jobs.is_empty(), "…and asks for none: {:?}", browse.jobs);
+}
+
+/// …and a fixed family's key does not carry it, whatever day the ask hands over.
+#[test]
+fn a_fixed_familys_key_does_not_carry_the_day_the_ask_hands_over() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _client) = banded_source(SecKind::Movie, &["rating", "addedAt"]);
     assert!(browse.state.set_sort_by_key("rating", true));
     tick_directory(&mut browse, sid, LibraryWork::Letters { today: Some([2026, 11, 1]) });
     let (job, _port) = the_directory_job(&mut browse);
