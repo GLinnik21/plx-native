@@ -312,6 +312,48 @@ movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNO
 the `episode.addedAt` asymmetry; the spread data and the per-type `Sort[]` lists behind
 `--band-fixture`), so the data layer can be tested without a server.
 
+### Count probes for seasons and episodes (measured 2026-10-31, PMS 1.43.5.11029, Guest, 15 shows / 48 seasons / 525 episodes)
+
+The same probes against `type=3` (seasons) and `type=4` (episodes) of the one show library, read-only
+by `tools/pms-band-probe.py --types 3,4`. **Exact there, not proven at scale** (one small library; four
+data-driven edges per field).
+
+- **The count probe works on both** (`Start: 0` + `Size: 0`): `totalSize` 48 and 525, no rows, equal to the
+  unfiltered listing's size.
+- **`Sort[]` differs per type, and only the entry marked `active` in `Meta.Type[]` is the listing's** (the
+  array lists the show, season, episode and folder types). Seasons declare only Title and `random`.
+  Episodes declare Title, `originallyAvailableAt`, `rating`, `audienceRating`, `addedAt`, `lastViewedAt`
+  and `random`. Every entry carries a `descKey`, which for Title is a separate string.
+- **The Title key of both types is a COMPOSITE, not `titleSort`**: seasons `show.titleSort,index`, episodes
+  the show's title, then season index, episode index, release date, the episode's own sort title and id:
+  `show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id`.
+  The literal `sort=titleSort` is accepted (HTTP 200) but orders differently: episodes come out not grouped
+  by show (330 runs for 15 shows), seasons grouped by show in another show order. For a descending Title
+  listing use the entry's `descKey`; appending `:desc` to the episode key does not reverse the shows.
+
+Verdicts per field (four data-driven edges; the other operators exact at one value where VERIFIED):
+
+| field | seasons | episodes |
+|---|---|---|
+| `addedAt` | VERIFIED (sort works although undeclared) | VERIFIED |
+| `lastViewedAt` | VERIFIED, but 5 of 48 rows have a value (sort works although undeclared) | UNTESTABLE (no row has one under the Guest; the key is a real filter, `>>=-1` counted 0) |
+| `originallyAvailableAt` | UNTESTABLE (no season carries one) | VERIFIED as UTC-midnight epochs, like movies |
+| `rating` | UNTESTABLE (none) | UNTESTABLE (none of 525; a real filter, `>>=-1` counted 0) |
+| `audienceRating` | UNTESTABLE (none) | ROUNDED (listing 0.1-rounded; 3 of 4 edges missed by 1 to 4 rows) |
+
+- **Null placement is the same as for movies and shows** (no value sorts first `:asc`, last `:desc`, last both
+  ways with `:nullsLast`; `>>=`/`>=` exclude, `<<=`/`<=` include). A sort with no value on any row
+  (`rating`, `lastViewedAt` on episodes; `rating`, `audienceRating`, `originallyAvailableAt` on seasons) is
+  accepted and changes nothing, so its rail has no band to draw.
+- **The letters index counts by the SHOW's title for both types.** `/firstCharacter?type=3` and `type=4` each
+  answered 9 buckets whose `size`s sum to the type's total (48, 525) and equal the number of rows whose
+  show's first sort-title glyph is that letter, not the row's own. Laid end to end they land on the real
+  letter boundaries of the listing in the DECLARED Title order or the default order (48 of 48 and 525 of
+  525 rows in their bucket; descending with the `descKey` and the buckets reversed, the same), and NOT of
+  `sort=titleSort` (41 of 48, 125 of 525). `firstCharacter=<letter>` is no filter on these listings (nor on
+  `type=2`): it answered the whole type for every letter, so a letter jump takes the prefix-sum offset.
+- **Cost** (loopback): count probe median 3.4 ms (seasons) and 5.1 ms (episodes); a 200-row episode page 36.5 ms.
+
 ---
 
 ## 2c. People — cast/crew tags and the person page (verified live 2026-07-29, PMS 1.43.2)
