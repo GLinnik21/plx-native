@@ -783,6 +783,104 @@ fn numeric_dates_match_icu_without_month_name_data() {
 }
 
 #[test]
+fn month_year_is_the_ymmm_skeleton_in_every_shipped_language_and_never_numeric() {
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        let tag = cx.language().tag();
+        assert!(cx.month_year(2024, 13).is_none() && cx.month_year(2024, 0).is_none(), "{tag}");
+        let mut seen: Vec<String> = Vec::new();
+        for month in 1..=12 {
+            let text = cx.month_year(2024, month).expect("a real month");
+            // The year is the only number in it: the month is a name, in the language's own letters.
+            assert!(text.contains("2024"), "{tag} {month}: {text}");
+            let name = text.replacen("2024", "", 1);
+            assert!(!name.chars().any(|c| c.is_ascii_digit() || c == '/'), "{tag} {month}: {text}");
+            assert!(name.chars().any(char::is_alphabetic), "{tag} {month}: {text}");
+            assert!(!seen.contains(&text), "{tag} {month}: {text} repeats a month");
+            seen.push(text);
+        }
+    }
+}
+
+#[test]
+fn month_short_is_the_month_year_names_month_in_every_shipped_language() {
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        let tag = cx.language().tag();
+        assert!(cx.month_short(0).is_none() && cx.month_short(13).is_none() && cx.month_short(u8::MAX).is_none(), "{tag}");
+        let mut seen: Vec<String> = Vec::new();
+        for month in 1..=12 {
+            let name = cx.month_short(month).expect("a real month");
+            assert!(!name.is_empty() && name.chars().all(|c| !c.is_ascii_digit() && c != '/'), "{tag} {month}: {name:?}");
+            // The one selection: the month `month_year` writes before the year is this name.
+            let year_text = cx.month_year(2024, month).expect("a real month");
+            assert!(year_text.contains(&name), "{tag} {month}: {name:?} is not the month of {year_text:?}");
+            assert!(!seen.contains(&name), "{tag} {month}: {name:?} repeats a month");
+            seen.push(name);
+        }
+    }
+}
+
+#[test]
+fn month_short_reads_as_the_boards_do_and_is_stand_alone_in_russian_and_belarusian() {
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        match cx.language() {
+            Language::En => assert_eq!(cx.month_short(10).as_deref(), Some("Oct")),
+            Language::Ru => {
+                assert_eq!(cx.month_short(10).as_deref(), Some("окт."));
+                assert_eq!(cx.month_short(5).as_deref(), Some("май"), "stand-alone, not the genitive \"мая\"");
+            }
+            Language::Be => {
+                assert_eq!(cx.month_short(4).as_deref(), Some("кра"));
+                assert_eq!(cx.month_short(5).as_deref(), Some("май"));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// CLDR 47 (the data `icu_datetime` 2.1 is built from) `ru` stand-alone abbreviated months, what its
+/// yMMM skeleton (`LLL y 'г'.`) spells: "март", "май", "июнь" and "июль" differ from the format
+/// forms "мар.", "мая", "июн." and "июл." that follow a day.
+const MONTHS_RU_STANDALONE: [&str; 12] =
+    ["янв.", "февр.", "март", "апр.", "май", "июнь", "июль", "авг.", "сент.", "окт.", "нояб.", "дек."];
+/// CLDR 47 `be` stand-alone abbreviated months (yMMM is `LLL y`): only May differs from the format
+/// form ("май", where "мая" follows a day). "май" is the nominative of skarnik.by and verbum.by.
+const MONTHS_BE_STANDALONE: [&str; 12] =
+    ["сту", "лют", "сак", "кра", "май", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
+
+#[test]
+fn month_year_names_the_month_stand_alone_where_the_language_declines_it() {
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        let standalone = match cx.language() {
+            Language::Ru => &MONTHS_RU_STANDALONE,
+            Language::Be => &MONTHS_BE_STANDALONE,
+            // Every other shipped language writes the same abbreviated month after a day and before a
+            // year (CLDR yMMM is `MMM y` or `LLL y` over identical format and stand-alone names).
+            _ => continue,
+        };
+        let tag = cx.language().tag();
+        for (i, name) in standalone.iter().enumerate() {
+            let month = u8::try_from(i + 1).unwrap();
+            let expected = format!("{name} 2024\u{a0}г.");
+            assert_eq!(cx.month_year(2024, month).as_deref(), Some(expected.as_str()), "{tag} {month}");
+        }
+        // May is the month whose two forms differ in both languages: the nominative before a year,
+        // the genitive "мая" after a day, and the caption after a day is not touched.
+        assert_eq!(cx.month_year(2024, 5).as_deref(), Some("май 2024\u{a0}г."), "{tag}");
+        assert_eq!(cx.month_day(5, 9, MonthWidth::Medium).as_deref(), Some("9 мая"), "{tag}");
+    }
+}
+
+#[test]
+fn today_is_a_calendar_date_from_the_wall_clock() {
+    let [year, month, day] = local_calendar_today().expect("a representable date");
+    assert!(year >= 2026 && (1..=12).contains(&month) && (1..=31).contains(&day));
+}
+
+#[test]
 fn dutch_month_day_captions_cover_every_month_at_both_widths() {
     const MEDIUM: [&str; 12] =
         ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
@@ -825,4 +923,71 @@ fn dutch_system_locale_resolves_with_regional_formatting() {
     let nl = LocaleContext::resolve(Preference::Nl, None, None, None, None);
     assert_eq!(nl.format_locale(), "nl-NL");
     assert_eq!(nl.decimal(45, 1), "4,5");
+}
+
+#[test]
+fn a_local_midnight_is_refused_for_a_date_that_is_not_on_the_calendar() {
+    for date in [[2026, 0, 1], [2026, 13, 1], [2026, 1, 0], [2026, 1, 32], [2026, 2, 29], [2026, 4, 31], [2026, -1, 5],
+        [2026, 6, -3], [i32::MIN, 1, 1]] {
+        assert_eq!(local_midnight(date), None, "{date:?}");
+    }
+    assert!(local_midnight([2024, 2, 29]).is_some(), "a leap day exists");
+}
+
+/// The first moment of a date in the zone under test, read in a child process: libc's zone state is
+/// process-wide, so each zone gets a fresh process (the Library's sort-date test does the same) and the
+/// other tests of this crate never see `TZ` change. The child is this very test with `TZ` and the
+/// expected stamps in its environment; the parent runs it once per zone and checks that it passed.
+#[test]
+fn local_midnight_follows_the_zone_and_the_clock_change_of_each_date() {
+    // Literals from an independent calendar (Python's `calendar.timegm`), shifted by hand by the zone's
+    // offset on that date: never from this code. Each case is `TZ`, then date and stamp pairs.
+    type Case = (&'static str, &'static [([i32; 3], i64)]);
+    const CASES: [Case; 5] = [
+        ("UTC0", &[([2026, 3, 8], 1_772_928_000), ([2026, 3, 9], 1_773_014_400)]),
+        ("JST-9", &[([2026, 3, 8], 1_772_895_600), ([2026, 3, 9], 1_772_982_000)]),
+        // The US clock change of 2026: forward on 8 March (the 8th starts at -5, the 9th at -4, so the
+        // two midnights are 23 hours apart) and back on 1 November (-4 on the 1st, -5 on the 2nd: 25).
+        ("EST5EDT,M3.2.0,M11.1.0", &[
+            ([2026, 3, 8], 1_772_946_000), ([2026, 3, 9], 1_773_028_800),
+            ([2026, 11, 1], 1_793_505_600), ([2026, 11, 2], 1_793_595_600),
+        ]),
+        // Zones whose clocks change AT MIDNIGHT, where `mktime(00:00, tm_isdst = -1)` has no single right
+        // answer. Chile-shaped (UTC-4, DST -3, both changes at 24:00 on a Saturday): Sunday 6 September
+        // has no 00:00 (04:00Z, std, is 01:00 DST) so its first instant is that 04:00Z, and the Saturday
+        // before it begins at its own 00:00 (04:00Z, unshifted); 23:00 of Saturday 4 April happens twice
+        // and Sunday 5 April begins at 04:00Z once, the Saturday at 00:00 DST (03:00Z).
+        ("<-04>4<-03>,M9.1.6/24,M4.1.6/24", &[
+            ([2026, 9, 5], 1_788_580_800), ([2026, 9, 6], 1_788_667_200),
+            ([2026, 4, 4], 1_775_271_600), ([2026, 4, 5], 1_775_361_600),
+        ]),
+        // US Central with the fall-back at 01:00 DST: 00:00-01:00 of 1 November happens twice, 05:00Z
+        // (CDT) and 06:00Z (CST); the day begins at the first.
+        ("CST6CDT,M3.2.0,M11.1.0/1", &[([2026, 11, 1], 1_793_509_200), ([2026, 11, 2], 1_793_599_200)]),
+    ];
+    const CHILD: &str = "PLX_LOCAL_MIDNIGHT_CASE";
+    if let Ok(case) = std::env::var(CHILD) {
+        let (_, expected) = CASES[case.parse::<usize>().unwrap()];
+        for &(date, stamp) in expected {
+            assert_eq!(local_midnight(date), Some(stamp), "{date:?}");
+            // …and it is the first moment of that date, to the second, in the zone the OS reads
+            assert_eq!(local_calendar_date(stamp), Some(date), "{date:?} at its midnight");
+            assert_eq!(local_calendar_date(stamp - 1).map(|day| day != date), Some(true), "{date:?} a second before");
+        }
+        return;
+    }
+    // libtest names a test without its crate, and exits 0 when the name matches nothing: the child must
+    // say it ran one test and passed it.
+    let name = format!(
+        "{}::local_midnight_follows_the_zone_and_the_clock_change_of_each_date",
+        module_path!().split_once("::").unwrap().1
+    );
+    for (index, (zone, _)) in CASES.iter().enumerate() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--test-threads=1"])
+            .env("TZ", zone).env(CHILD, index.to_string()).output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && stdout.contains("1 passed"),
+            "local midnight failed (or ran nothing) under {zone}:\n{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    }
 }

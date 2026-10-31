@@ -9,7 +9,7 @@
   },
   "library_header.sort_filter": {
     "value": "Sort & Filter",
-    "description": "Library header control that opens the one menu holding the type to show, the sort order and the filters. The current sort follows it after a middle dot and a fold arrow ends it, so keep the label short."
+    "description": "The name of the Library header's sort control (it opens the one menu holding the type to show, the sort order and the filters). Not drawn: the control reads as the sort icon, the chosen criterion and a down chevron, so there is no width to fit."
   },
   "library_header.filtered_of": {
     "value": "{shown} of {total}",

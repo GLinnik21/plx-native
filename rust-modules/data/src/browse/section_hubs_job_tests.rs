@@ -135,7 +135,7 @@ fn a_landing_from_another_client_instance_is_not_ours_even_with_the_same_token()
     browse.hubs_kick(0);
     let (job, port) = browse.take_hubs_job();
     let current = ClientKey::of(client);
-    let other = ClientKey { instance: current.instance.wrapping_add(1), token: current.token };
+    let other = ClientKey { instance: current.instance.wrapping_add(1), token: current.token, grant: current.grant };
     port.done(job.addr, BrowseHubsAnswer::list_for_test(&job, vec![Shelf::default()]).from_client_for_test(other));
     assert!(!browse.hubs_land(), "nothing landed");
     assert!(browse.state.states()[0].hubs.staged.is_none(), "the other client's shelves were dropped");

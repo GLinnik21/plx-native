@@ -2,5 +2,8 @@
   "settings.playback.instant_dpad_seeking": "Мгновенная перемотка стрелками",
   "settings.playback.instant_dpad_seeking.copy": "При скрытом управлении стрелки перематывают на выбранный интервал. При видимом — подтвердите кнопкой OK. Если выключено, сначала показывается управление.",
   "settings.playback.instant_dpad_seeking.off": "Выкл.",
-  "settings.playback.instant_dpad_seeking.on": "Вкл."
+  "settings.playback.instant_dpad_seeking.on": "Вкл.",
+  "settings.playback.dolby_vision": "Dolby Vision",
+  "settings.playback.dolby_vision.copy": "«Авто» использует Dolby Vision, если телевизор его поддерживает. «Выкл.» воспроизводит слой HDR10. Файлы без слоя HDR10 преобразует сервер Plex, и они могут не воспроизвестись.",
+  "settings.playback.dolby_vision.off": "Выкл."
 }

@@ -2,5 +2,8 @@
   "settings.playback.instant_dpad_seeking": "Saut direct avec la croix",
   "settings.playback.instant_dpad_seeking.copy": "Commandes masquées, Gauche/Droite saute de l’intervalle choisi. Commandes visibles, OK confirme. Désactivé, le premier appui affiche les commandes.",
   "settings.playback.instant_dpad_seeking.off": "Désactivées",
-  "settings.playback.instant_dpad_seeking.on": "Activées"
+  "settings.playback.instant_dpad_seeking.on": "Activées",
+  "settings.playback.dolby_vision": "Dolby Vision",
+  "settings.playback.dolby_vision.copy": "Auto utilise Dolby Vision si le téléviseur le prend en charge. Désactivé lit la couche HDR10. Les fichiers sans couche HDR10 sont convertis par votre serveur Plex et risquent de ne pas être lus.",
+  "settings.playback.dolby_vision.off": "Désactivé"
 }

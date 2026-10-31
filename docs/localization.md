@@ -45,7 +45,10 @@ phrase. Never translate protocol identifiers, URLs, brand names or server-return
 Double braces (`{{` and `}}`) render literal braces. A placeholder accepts `str` or `i64`;
 integers are formatted with the TV's regional settings. A plural message's `count` selects a
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
-may be omitted when the form spells it out. Each language needs exactly the categories its
+may be omitted when the form spells it out. The one exception is an argument the English entry
+lists under `"optional"`: the app hands every language all of them, and a language writes the
+message with the ones its grammar wants (the Library rail's decade is "2020s" in English and
+"2020–29" in French, which reads the `{end}` the English leaves out). Each language needs exactly the categories its
 `plurals` entry in `locales/languages.json` declares, no more: Belarusian, Russian and Polish `one`, `few`, `many`, and
 `other`; Spanish, French, Italian and Portuguese `one`, `many`, and `other`; English, German, Hungarian and Dutch `one` and `other`.
 

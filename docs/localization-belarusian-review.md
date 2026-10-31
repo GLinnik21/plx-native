@@ -121,27 +121,8 @@ Dictionary correction (2026-10-19): the first draft wrote the word for "poster" 
 is "pastor" (skarnik.by: "пастор — церк. пастар"). The correct word is **постэр** (verbum.by,
 Булыка, "Слоўнік іншамоўных слоў": по́стэр, англ. poster); every form below uses it.
 
-`locales/be/under_posters.json`:
-
-| Key suffix | String |
-| --- | --- |
-| `title` | Пад постэрамі |
-| `detail` | Што паказана пад постэрам. |
-| `copy` | Большасць постэраў ужо паказваюць назву. Выберыце, што з’яўляецца пад постэрам, на якім вы знаходзіцеся. |
-| `title_row` | Назва |
-| `title_detail` | Назва тоўстым шрыфтам. |
-| `details_row` | Звесткі |
-| `details_detail` | Адзін радок звестак. |
-| `details_copy` | Пачатыя, будучыя назвы і калекцыі паказваюць замест гэтага: час, які застаўся, дату выхаду, колькасць фільмаў. |
-| `year_length` | Год · Працягласць |
-| `genre` | Жанр |
-| `video` | Відэа |
-| `age_rating_score` | Узроставы рэйтынг · Ацэнка |
-| `none` | Нічога |
-| `reset` | Скінуць па змаўчанні |
-| `reset_detail` | Год і працягласць, без назвы. |
-| `sample_title` | Фільм |
-| `sample_genre` | Драма |
+`locales/be/under_posters.json` holds the strings under review; read the catalogue file, not a copy
+here (a list kept in this note drifted from it as the page grew).
 
 `locales/be/library_header.json`:
 

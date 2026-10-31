@@ -1412,9 +1412,12 @@ synchronous `glReadPixels` once every thirty frames. That frame cost 27–29 ms:
 **Fix: a ground reading never waits on the frame** (`gfx::GroundProbe`, cadence in the pure
 `gfx::ProbeCadence`). A due call copies the tap boxes GPU-side into a small probe target and
 inserts a fence. `gfx::ground_probes_frame_end` reads the target right after the swap, once the
-fence has signalled. The sampler's next call reduces it. Both samplers take this path: the tab
-track's `sample_ground` and the Hero row's `sample_control_ground`. Two intermediate steps were
-measured and rejected:
+fence has signalled. The sampler's next call reduces it. Both samplers took this path: the tab
+track's `sample_ground` and the Hero row's `sample_control_ground`. (The track's copy has since
+moved off framebuffer 0: it copies the band's retained backdrop image at the frame boundary, and
+only the Hero row still copies framebuffer 0 on its call; see `gfx::sample_ground`, and
+`docs/glass-hardware-budget.md`, "What to index on instead", for what the move took out of the
+frame.) Two intermediate steps were measured and rejected:
 
 - **Reading the probe mid-page, at the sampler's next call.** `gndread` fell to 0.2 ms, but the
   frame still ran ~12 ms over its neighbours.

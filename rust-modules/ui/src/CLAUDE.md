@@ -578,8 +578,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   glass's own and higher layers, checks occlusion and compares the ordered draw arguments beneath
   each sampling region.
 
-- **Two live glasses whose blur footprints meet never share a frame; a page that hands a place from
-  one to another sequences them.** The upper glass has a lower live glass inside its footprint, so
+- **Two live glasses in different bands whose blur footprints meet never share a frame; a page that
+  hands a place from one to another sequences them.** The upper glass has a lower live glass inside its footprint, so
   the engine drops it from `jobs()` (`composite_capture`: a "composite" band) and it captures
   INLINE in the visible pass: a mid-frame `glCopyTexSubImage2D` and the six-pass chain, where a
   direct job replays the page at 1/4 in three. Measured on the television (2026-10-19): the inline
@@ -593,10 +593,15 @@ tried first. None of it is reconstructable from the code without repeating the m
   clock, in sequence in both directions (the departing glass fades to exactly 0 and only then does
   the arriving one start), so no frame has both. Home keeps its nav and chip shown and owns no
   `Handoff`; a heading that rides under them fades by where it stands through the same spatial rule
-  (`scroll_chrome::clearance_under_shown_chrome`). The chip and the
-  tab track (`GLASS_TRACK_MAX`, `BAND_AIR`) and the hold hint and the band (`hold_hint.rs`) keep
-  apart the same way. Any new live glass that can stand within a band's blur reach of another
-  (68 px past the visible members) must be sequenced with it, or it prices ~1.4M a frame.
+  (`scroll_chrome::clearance_under_shown_chrome`). The hold hint and the band (`hold_hint.rs`) keep
+  apart the same way. The chip and the tab track do not have to: they are one band in the shared
+  chrome layer, so a track wide enough to reach inside the chip's footprint costs no inline capture,
+  and all `chip_name_budget` has to keep is `BAND_AIR` between the drawn rects, at ANY strip width
+  (the bar's width never takes its glass away, a strip past `TAB_VIEW_MAX` scrolls inside a track
+  that stays glass). Any new live glass in ANOTHER layer that can stand within a band's blur reach
+  (68 px past the visible members) must be sequenced with it, or it prices ~1.4M a frame; a
+  neighbour in the shared chrome layer joins the band instead, and only overlapping drawn rects
+  split it (`backdrop::surface_with`). Sequencing a chrome-layer neighbour buys nothing.
 
 - **A MENU is glass on the frozen ground (DS6); nothing else is glass.** The scope is
   MENUS ONLY (owner decision, wave 2 review): Sort & Filter, the account menu, the item hold menu,
@@ -721,7 +726,9 @@ screen's members; `Shelf::set_caption_policy(Some(policy))` sizes the band a she
 `caption_policy::band_h`, and a `Stack` page hands it to a shelf or grid section through `StackPage::caption_policy`; a shelf or grid with
 no policy (`None`: a landscape still row or a headshot row, and the Library's Episodes listing, a grid of stills) keeps the legacy 114 px
 band and its two-line block, under every setting; the band must follow the label, never the setting):
-only the focused row opens its caption; a bounded set of springs closes rows left behind, and
+only the focused row opens its caption (the one exception: the Library's Movies, TV Shows, Seasons and Episodes grids while they show their
+sort value, Sort value On, draw one value line under EVERY card, a poster or an episode still, `card_row::draw_sort_value`, in place of the caption, whatever the grid's policy, the
+Episodes view's `None` included); a bounded set of springs closes rows left behind, and
 each LINE of a row's caption is drawn only once the room under its card holds the line's box, and
 never beyond its band's own expansion (`card_row::line_reveal_for`, one rule for a shelf and a grid), so
 a move hands the title over from the departing row to the arriving one with no line over what is under

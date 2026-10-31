@@ -245,6 +245,11 @@ pub enum Icon {
     /// A ring with a bar through it — the Watchlist's on-no-server mark, the universal "unavailable"
     /// sign at the inline weight.
     CircleSlash,
+    /// Three centred bars, long to short — the sort mark. Worn by
+    /// the Library header's sort control, where it leads the chosen criterion
+    /// ("= Date added v"); it says "ordered by", not "filter". The Design System's own `sort.svg`
+    /// byte for byte (`M4 7L20 7M7 12L17 12M10 17L14 17`, stroke 2.2, round caps), so it has no third-party entry.
+    Sort,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -273,6 +278,8 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
         Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
         Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
+        // The sort bars: path x 4..20 plus the 2.2-unit stroke's 1.1 each side.
+        Icon::Sort => (2.9 / 24.0, 21.1 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -291,6 +298,20 @@ pub const fn band(id: Icon) -> f32 {
         Icon::Bookmark | Icon::BookmarkFill => 19.5 / 24.0,
         Icon::Clock | Icon::CircleSlash => 20.2 / 24.0,
         Icon::ServerSlash => 21.0 / 24.0,
+        _ => 1.0,
+    }
+}
+
+/// How far a review-score mark is drawn PAST the box its caller gives it, about the box's centre, so
+/// the mark's body fills the box the way the Library board draws it. The tomato's body is a disc of
+/// 15.2 units in a 26-unit viewBox (58% of the box: the viewBox leaves room for the stem above it),
+/// where the board's disc is 15 px in a 20 px box (75%): a tomato handed a 20 px box is enlarged by
+/// 0.75 / 0.585 so its body is the board's 15 px, the stem rising past the box. The art itself is
+/// unchanged; every layer of one mark takes the same zoom (they share a viewBox and register).
+/// 1.0 for every other glyph.
+pub const fn mark_zoom(id: Icon) -> f32 {
+    match id {
+        Icon::Tomato | Icon::TomatoCalyx | Icon::TomatoHollow => (15.0 / 20.0) / (15.2 / 26.0),
         _ => 1.0,
     }
 }
@@ -348,6 +369,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Clock => include_str!("../../../assets/icons/clock.svg"),
         Icon::ServerSlash => include_str!("../../../assets/icons/server-slash.svg"),
         Icon::CircleSlash => include_str!("../../../assets/icons/circle-slash.svg"),
+        Icon::Sort => include_str!("../../../assets/icons/sort.svg"),
     }
 }
 
@@ -592,6 +614,7 @@ mod ink_tests {
             Icon::ChevronDown,
             Icon::ChevronUp,
             Icon::Check,
+            Icon::Sort,
         ] {
             let (l, r) = ink_x(id);
             assert!(
@@ -621,6 +644,37 @@ mod ink_tests {
         assert!(src(Icon::ChevronUp).contains(r#"d="M6 15l6-6 6 6""#));
         let (l, r) = ink_x(Icon::ChevronDown);
         assert!((l - (6.0 - 1.5) / 24.0).abs() < 1e-6 && (r - (18.0 + 1.5) / 24.0).abs() < 1e-6);
+    }
+
+    /// The sort mark's `ink_x` is its asset's own bounds (the long bar's path x 4..20 and the
+    /// 2.2-unit stroke's 1.1 each side), and it rasterizes clean at the header's 26 px (and 4x):
+    /// full opacity reached, no ink on the border, the board's three decreasing bars.
+    #[test]
+    fn the_sort_mark_matches_its_asset_and_rasterizes_clean() {
+        let svg = src(Icon::Sort);
+        // The Design System's own `sort.svg`, byte for byte (its one source of truth for the geometry).
+        assert_eq!(svg.trim_end(), concat!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" "##,
+            r#"stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7L20 7M7 12L17 12M10 17L14 17"></path></svg>"#));
+        assert!(svg.contains(r#"d="M4 7L20 7M7 12L17 12M10 17L14 17""#));
+        assert!(svg.contains(r#"stroke-width="2.2""#) && svg.contains(r#"stroke-linecap="round""#));
+        let (l, r) = ink_x(Icon::Sort);
+        assert!((l - (4.0 - 1.1) / 24.0).abs() < 1e-6 && (r - (20.0 + 1.1) / 24.0).abs() < 1e-6);
+        for px in [26, 104] {
+            let px = icon_raster_px(px);
+            let rgba = plx_gfx::svg::rasterize(svg, px, px).expect("the sort mark rasterizes");
+            assert_eq!(rgba.len(), (px * px * 4) as usize);
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            assert_eq!((0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max(), Some(255), "never full at {px}px");
+            for i in 0..px {
+                for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "ink on the border at {px}px ({x},{y})");
+                }
+            }
+            // Three bars, each shorter than the last: the ink in the middle row of each bar's band
+            // is wider for the top bar than the middle, and for the middle than the bottom.
+            let ink_in_row = |unit: f32| (0..px).filter(|&x| alpha(x, (unit / 24.0 * px as f32) as i32) > 127).count();
+            assert!(ink_in_row(7.0) > ink_in_row(12.0) && ink_in_row(12.0) > ink_in_row(17.0));
+        }
     }
 
     #[test]
@@ -759,6 +813,26 @@ mod ink_tests {
                 }
             }
         }
+    }
+
+    /// [`mark_zoom`] is derived from the tomato asset's own disc and viewBox, so a re-drawn body
+    /// (a different `r`, a different viewBox) fails here instead of drifting from the board's 15 px.
+    #[test]
+    fn the_tomato_zoom_puts_its_body_at_the_boards_15_px_in_a_20_px_box() {
+        let number_after = |svg: &str, key: &str| -> Vec<f32> {
+            let at = svg.find(key).expect(key) + key.len();
+            svg[at..].split('"').next().unwrap().split_whitespace().map(|n| n.parse().unwrap()).collect()
+        };
+        let svg = src(Icon::Tomato);
+        let (view, r) = (number_after(svg, "viewBox=\""), number_after(svg, " r=\"")[0]);
+        assert_eq!(view[2], view[3], "a square viewBox");
+        for id in [Icon::Tomato, Icon::TomatoCalyx, Icon::TomatoHollow] {
+            assert_eq!(src(id).split("viewBox=\"").nth(1).unwrap().split('"').next(), svg.split("viewBox=\"").nth(1).unwrap().split('"').next(),
+                "the layers of one mark share a viewBox and a zoom");
+            let body = 20.0 * mark_zoom(id) * (2.0 * r) / view[2];
+            assert!((body - 15.0).abs() < 0.05, "{id:?}: the body of a 20 px tomato box is {body} px");
+        }
+        assert_eq!(mark_zoom(Icon::Crowd), 1.0);
     }
 
     /// The Watchlist marks' `ink_x` and `band` entries are the bounds of their own assets, not

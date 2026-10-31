@@ -1,0 +1,6 @@
+{
+  "library_rail.decade": "{decade}–{end}",
+  "library_rail.hours": "{hours} ó",
+  "library_rail.hours_or_more": "{hours} ó+",
+  "library_rail.today": "Ma"
+}

@@ -861,3 +861,36 @@ fn copied_video_dv_declares_only_a_copy_of_a_usable_base_layer() {
     );
     assert_eq!(copied_video_dv(None, &contract(true, true), src.0, src.1), none);
 }
+
+/// The decision a route freezes stores the SET's answer as its `capability` and applies the
+/// profile's Dolby Vision setting to the `presentation` only. Diagnostics and the `dv:` log lines
+/// print that capability, so an Off profile on a Supported set must not read `unsupported`: a
+/// quoted line has to tell it from a failed probe and from a set without Dolby Vision.
+#[test]
+fn off_on_a_supported_set_keeps_the_probe_answer_and_plays_the_base_layer() {
+    use plx_plex::plex::session::DolbyVisionMode;
+
+    let off = frozen_dv_decision(DolbyVisionMode::Off, DvCapability::Supported, p8(), "hevc");
+    assert_eq!(off.capability, DvCapability::Supported, "the probe's answer, whatever the setting");
+    assert_eq!(off.presentation, DvPresentation::NotDv, "Off plays the base layer");
+
+    let auto = frozen_dv_decision(DolbyVisionMode::Auto, DvCapability::Supported, p8(), "hevc");
+    assert_eq!(auto.capability, DvCapability::Supported);
+    assert!(auto.presentation.declared().is_some(), "Auto trusts the probe and declares");
+
+    for probed in [DvCapability::Unknown, DvCapability::Unsupported, DvCapability::Supported] {
+        for mode in DolbyVisionMode::LADDER {
+            assert_eq!(
+                frozen_dv_decision(mode, probed, p8(), "hevc").capability,
+                probed,
+                "{mode:?} must not rewrite what the set said",
+            );
+        }
+        // Off derives its presentation as an unsupported set would, on every answer the set gave.
+        assert_eq!(
+            frozen_dv_decision(DolbyVisionMode::Off, probed, p5(), "hevc").presentation,
+            frozen_dv_decision(DolbyVisionMode::Auto, DvCapability::Unsupported, p5(), "hevc").presentation,
+            "{probed:?}",
+        );
+    }
+}

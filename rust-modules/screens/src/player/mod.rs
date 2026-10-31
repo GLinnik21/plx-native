@@ -66,7 +66,7 @@ pub const WORD: &str = "player";
 /// The fields [`PlayerScreen::write`] canonicalises, for the recorder's shape pin (§5.4).
 pub const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
-     exit_armed:bool,back_leaves_at_press:bool,offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
+     exit_armed:bool,back_leaves_at_press:bool,offer:Option<(u32,i64)>,dismissed_offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
      ns:i64},seek_burst:Option<(i64,u32)>,transport_tap:bool,origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
@@ -255,6 +255,7 @@ impl PlayerScreen {
             self.hud.until = 0;
             self.hud.dismissed = false;
             self.hud.last_offer = None;
+            self.hud.dismissed_offer = None;
             self.up_next.reset();
         }
         self.publish();
@@ -1065,6 +1066,21 @@ impl PlayerScreen {
                 Self::ask(fx, PlayerReq::Exit);
                 Handled::Yes
             }
+            // **BACK over an offered stand-in dismisses the OFFER, not the transport.** A Skip
+            // pill or Up Next tile replaces the discs, and without this the only way to reach
+            // Subtitles/Audio during a 60–90 s intro was to wait the segment out. With the ring
+            // on the row (the offer auto-parks it there), BACK puts the discs back and leaves
+            // the transport — and the film — alone; a second BACK is then an ordinary
+            // transport-hide. The ring is deliberately kept on the row and moved to the new
+            // primary: this press was about the offer, not about leaving the controls.
+            Key::Back if edge == Edge::Down
+                && self.hud.visible_at_press
+                && self.hud.nav.focus == GROUP_ROW
+                && self.slot.offer().is_some() =>
+            {
+                self.dismiss_offer(ps, now);
+                Handled::Yes
+            }
             Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
                 self.hud.nav.focus = GROUP_SCRUB;
                 Self::repair_focus(fx, GROUP_SCRUB);
@@ -1305,6 +1321,22 @@ impl PlayerScreen {
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
         Some(target)
+    }
+
+    /// **BACK's "not now" for a Skip / Up Next offer.** Latch the SEGMENT (not the slot: the
+    /// slot is recomputed every frame and would put the offer straight back), swap this frame's
+    /// row to the discs, and leave the cursor on the row at the new primary so the next press is
+    /// a disc rather than a trip back up from the scrubber. The app resolves the same latch in
+    /// `run::update` before its next `slot()`, so the swap survives the frame.
+    fn dismiss_offer(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
+        let Some(offer) = self.slot.offer() else { return; };
+        self.hud.dismissed_offer = Some(offer);
+        self.slot = self.hud.slot_after_dismissal(self.slot, ps);
+        if self.hud.nav.focus == GROUP_ROW {
+            self.hud.nav.btn = self.slot.primary_btn();
+        }
+        self.hud.extend(now, input::HUD_LINGER_MS);
+        self.publish();
     }
 
     /// **BACK while a scrub is live**: the scrub is cancelled — no seek, the preview gone, the knob
@@ -1761,6 +1793,9 @@ impl LogicalState for PlayerScreen {
             .bool(self.hud.back_leaves_at_press)
             .bool(self.hud.was_standin);
         c.option(self.hud.last_offer.as_ref(), |c, (kind, at)| {
+            c.u32(*kind as u32).u64(*at as u64);
+        });
+        c.option(self.hud.dismissed_offer.as_ref(), |c, (kind, at)| {
             c.u32(*kind as u32).u64(*at as u64);
         });
         c.u32(self.scrub.key.dir as u32)
@@ -2771,6 +2806,78 @@ mod step_ladder_tests {
         assert!(!page.hud.visible_at_press, "a hand-hidden transport is not on screen at the press");
         let (_, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(reqs, vec![PlayerReq::Exit], "the second BACK leaves");
+    }
+
+    /// **BACK over a Skip / Up Next offer puts the discs back and keeps the film playing.** The
+    /// offer replaces the transport row, so without this the Subtitles/Audio discs are unreachable
+    /// for the whole intro. The latch is the SEGMENT, and the ring stays on the row at the new
+    /// primary: this press was "not now" for the offer, not a walk away from the controls.
+    #[test]
+    fn back_over_a_skip_or_up_next_offer_restores_the_discs_without_hiding_the_transport() {
+        use plx_data::metadata::{Marker, MarkerKind};
+        let _g = plx_base::testlock::serial();
+        let intro = Marker {
+            kind: MarkerKind::Intro,
+            start_ms: 0,
+            end_ms: 60_000,
+            final_seg: false,
+        };
+        let credits = Marker {
+            kind: MarkerKind::Credits,
+            start_ms: 60_000,
+            end_ms: 120_000,
+            final_seg: true,
+        };
+        for (marker, has_next, offer) in [
+            (intro, false, (MarkerKind::Intro, intro.start_ms)),
+            (credits, true, (MarkerKind::Credits, credits.start_ms)),
+        ] {
+            let mut page =
+                PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+            page.slot = player_hud::slot_for(
+                Some(marker),
+                has_next,
+                plx_media::route::NextEpisodeMode::Countdown,
+            );
+            page.hud.nav.focus = GROUP_ROW;
+            page.hud.nav.btn = page.slot.primary_btn();
+            page.hud.until = 5_000; // the transport is up, so BACK is about what is drawn
+            let (handled, reqs) = bound_press(&mut page, 0, WCODE_BACK);
+            assert_eq!(handled, Handled::Yes);
+            assert!(reqs.is_empty(), "{marker:?}: dismissing an offer does not leave the film");
+            assert_eq!(page.hud.dismissed_offer, Some(offer), "{marker:?}");
+            assert!(matches!(page.slot, ControlSlot::Discs(_)), "{marker:?}: the discs are back");
+            assert!(!page.hud.dismissed, "{marker:?}: the transport itself is still up");
+            assert_eq!(page.hud.nav.focus, GROUP_ROW, "{marker:?}: the ring stays on the row");
+            assert_eq!(page.hud.nav.btn, page.slot.primary_btn(), "{marker:?}: on a real disc");
+        }
+    }
+
+    /// BACK elsewhere on the transport keeps its ordinary meaning: only a BACK over the row's
+    /// offer dismisses it. From the scrubber, the press hides the transport as it always did.
+    #[test]
+    fn back_off_the_offer_row_still_hides_the_transport() {
+        use plx_data::metadata::{Marker, MarkerKind};
+        let _g = plx_base::testlock::serial();
+        let intro = Marker {
+            kind: MarkerKind::Intro,
+            start_ms: 0,
+            end_ms: 60_000,
+            final_seg: false,
+        };
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        page.slot = player_hud::slot_for(
+            Some(intro),
+            false,
+            plx_media::route::NextEpisodeMode::Countdown,
+        );
+        page.hud.nav.focus = GROUP_SCRUB;
+        page.hud.until = 5_000;
+        let (_, reqs) = bound_press(&mut page, 0, WCODE_BACK);
+        assert!(reqs.is_empty(), "the first BACK only hides the transport");
+        assert!(page.hud.dismissed, "the transport is hidden");
+        assert_eq!(page.hud.dismissed_offer, None, "the offer was not dismissed");
+        assert_eq!(page.slot.offer(), Some((MarkerKind::Intro, intro.start_ms)), "it is still offered");
     }
 
     /// **BACK leaves a stalled load, on the second press.** While the pipeline is busy the transport

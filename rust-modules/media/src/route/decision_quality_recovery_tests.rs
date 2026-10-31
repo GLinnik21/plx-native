@@ -16,7 +16,7 @@ use super::test_support::apply_plan;
 fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let caps = plx_platform::devcaps::Caps::assumed();
-    let dv = plx_data::metadata::Dovi::default().presentation_now(true);
+    let dv = plx_data::metadata::Dovi::default().presentation(true, plx_platform::devcaps::dv::DvCapability::Unknown, true);
     // The two ends of the gate, at a UHD raster this device's table admits.
     assert!(
         video_direct_plays("hevc", 3840, 2160, dv, &caps),

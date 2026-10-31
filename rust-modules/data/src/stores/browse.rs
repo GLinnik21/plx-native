@@ -191,7 +191,7 @@ impl BrowseStore {
                 | LibraryWork::Requery, ..
         }) || matches!(&cmd, BrowseCmd::ApplyView { edit: ViewEdit::Facts { .. } | ViewEdit::Offset { .. }, .. });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
-            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
+            work: LibraryWork::Want { .. } | LibraryWork::Letters { .. } | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
         });
         let roster_changed = if matches!(&cmd, BrowseCmd::RecheckShares) {
             self.sync_roster()
@@ -700,7 +700,12 @@ pub enum LibraryWork {
         /// however far the wanted window has moved from it.
         focus: Option<usize>,
     },
-    Letters,
+    /// The A-Z rail's data (the letters, or a value sort's bands). `today` is the calendar date the
+    /// host handed the screen this frame (`LibraryLike::today`): the INPUT a calendar sort's bands are
+    /// worded and counted by, `None` when the host has none.
+    Letters {
+        today: Option<[i32; 3]>,
+    },
     Genres,
     Hubs {
         may_publish: bool,

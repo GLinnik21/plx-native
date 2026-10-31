@@ -552,8 +552,8 @@ pub fn rating_score(scale: RatingScale, value: f64) -> String {
     }
 }
 
-/// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (Spanish and
-/// Belarusian set it off with a no-break space; English does not).
+/// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (German,
+/// Spanish and Belarusian set it off with a no-break space; English does not).
 pub fn percent(value: i64) -> String {
     plx_platform::i18n::msg::core_percent(&plx_platform::i18n::current().number(value))
 }

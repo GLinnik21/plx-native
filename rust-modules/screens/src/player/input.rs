@@ -19,6 +19,7 @@
 
 use plx_appkit::held_key::HeldKey;
 use plx_appkit::player_hud::geometry::{GROUP_ROW, GROUP_SCRUB, GROUP_TABS};
+use plx_appkit::player_hud::{ControlSlot, Controls};
 use plx_machine::machine::GroupId;
 use std::os::raw::c_int;
 
@@ -243,6 +244,12 @@ pub struct HudState {
     /// so each segment raises the HUD exactly once per playback however often the row
     /// flickers.
     pub last_offer: Option<(plx_data::metadata::MarkerKind, i64)>,
+    /// The SEGMENT whose offer the viewer dismissed with BACK. `None` until they do, and keyed
+    /// on the segment rather than the row so it covers an intro and its later credits as two
+    /// independent decisions: dismissing Skip Intro must not silently hide Up Next at the end
+    /// of the same episode. The row falls back to the discs while the playhead is still inside
+    /// this segment, and a different segment offers normally.
+    pub dismissed_offer: Option<(plx_data::metadata::MarkerKind, i64)>,
     /// Did a stand-in own the control row last frame? The reset below is the EDGE of a
     /// stand-in vanishing under the focus ring — see `player_hud::standin_left_the_ring`,
     /// which is where that rule is written down and tested.
@@ -258,8 +265,28 @@ impl HudState {
         exit_armed: false,
         back_leaves_at_press: false,
         last_offer: None,
+        dismissed_offer: None,
         was_standin: false,
     };
+
+    /// **The row to DRAW once BACK has dismissed its offer.** The slot is recomputed every frame
+    /// from the playhead, so a dismissal has to be applied at the one place the frame's slot is
+    /// resolved, not by remembering a replacement `Discs` value: the next frame's `slot()` would
+    /// put the offer straight back. Keyed on the SEGMENT (`ControlSlot::offer`) so it lapses by
+    /// itself when the marker does, and reusing [`Controls::now`] gives the returning discs the
+    /// same live Previous/Next pair they have outside a segment.
+    pub fn slot_after_dismissal(
+        &self,
+        slot: ControlSlot,
+        ps: &plx_media::route::PlaybackSession,
+    ) -> ControlSlot {
+        match slot.offer() {
+            Some(offer) if self.dismissed_offer == Some(offer) => {
+                ControlSlot::Discs(Controls::now(ps))
+            }
+            _ => slot,
+        }
+    }
 
     /// Is the transport on screen right now, by this HUD's own state?
     #[inline]
@@ -557,6 +584,46 @@ mod hud_visibility_tests {
             assert!(!hud.visible_at_press, "the press found a hand-hidden HUD");
             assert!(!hud.dismissed, "the same bound press wakes it for the next decision");
         });
+    }
+
+    /// BACK's dismissal is keyed on the SEGMENT. It hides the offer that was up and shows the
+    /// discs, and it must not carry over to the next marker: an intro dismissed at 0:30 says
+    /// nothing about whether the viewer wants Up Next at the end of the episode.
+    #[test]
+    fn a_dismissed_offer_shows_the_discs_and_another_segment_still_offers() {
+        use plx_data::metadata::{Marker, MarkerKind};
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let intro = Marker {
+            kind: MarkerKind::Intro,
+            start_ms: 0,
+            end_ms: 60_000,
+            final_seg: false,
+        };
+        let credits = Marker {
+            kind: MarkerKind::Credits,
+            start_ms: 60_000,
+            end_ms: 120_000,
+            final_seg: true,
+        };
+        let skip = plx_appkit::player_hud::slot_for(
+            Some(intro),
+            false,
+            plx_media::route::NextEpisodeMode::Countdown,
+        );
+        let up_next = plx_appkit::player_hud::slot_for(
+            Some(credits),
+            true,
+            plx_media::route::NextEpisodeMode::Countdown,
+        );
+        let mut hud = HudState::IDLE;
+        assert!(hud.slot_after_dismissal(skip, &ps) == skip, "nothing dismissed yet");
+
+        hud.dismissed_offer = Some((MarkerKind::Intro, intro.start_ms));
+        assert!(matches!(hud.slot_after_dismissal(skip, &ps), ControlSlot::Discs(_)));
+        assert!(
+            hud.slot_after_dismissal(up_next, &ps) == up_next,
+            "a different segment gets its own chance"
+        );
     }
 
     /// The exit arming is sampled BEFORE the press un-dismisses, and the press spends it: only the
