@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T23:09:57Z",
+ "generated": "2026-10-31T23:16:42Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -90,9 +90,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 86,
-   "now": 198.0,
+   "now": 198,
    "prev7": 143.0,
    "shown": true,
    "state": "worse",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.3,
-   "change7_pct": 16.8,
+   "change30_pct": -63.4,
+   "change7_pct": 16.6,
    "d30": 1054.5,
-   "delta30": -668.0,
-   "delta7": 55.5,
+   "delta30": -668.5,
+   "delta7": 55.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 100,
-   "now": 386.5,
+   "now": 386,
    "prev7": 331.0,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.6,
-   "change7_pct": 4.9,
+   "change30_pct": 33.8,
+   "change7_pct": 5.1,
    "d30": 207,
-   "delta30": 69.5,
-   "delta7": 13.0,
+   "delta30": 70,
+   "delta7": 13.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 86,
-   "now": 276.5,
+   "now": 277,
    "prev7": 263.5,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -78.2,
-   "change7_pct": 7.5,
+   "change30_pct": -78.1,
+   "change7_pct": 8.0,
    "d30": 988,
-   "delta30": -773.0,
-   "delta7": 15.0,
+   "delta30": -772,
+   "delta7": 16,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 85,
-   "now": 215.0,
+   "now": 216,
    "prev7": 200,
    "shown": true,
    "state": "flat",
@@ -560,15 +560,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1.0,
+   "delta30": 1,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 86,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.9,
    "commits": [
     {
-     "pr": 1173,
-     "sha": "83bd902b1",
-     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
-    },
-    {
      "pr": 1174,
      "sha": "d03081ccf",
      "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
@@ -715,6 +710,11 @@
      "pr": 1188,
      "sha": "5a6e155c8",
      "title": "The Under posters preview is rendered once: smooth Details push and pop"
+    },
+    {
+     "pr": 1187,
+     "sha": "42077a1e0",
+     "title": "HUD: dismiss an offer through the metadata store's skipped set"
     }
    ],
    "from": 188.5,
@@ -728,11 +728,6 @@
    "change_pct": 38.5,
    "commits": [
     {
-     "pr": 1173,
-     "sha": "83bd902b1",
-     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
-    },
-    {
      "pr": 1174,
      "sha": "d03081ccf",
      "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
@@ -776,6 +771,11 @@
      "pr": 1188,
      "sha": "5a6e155c8",
      "title": "The Under posters preview is rendered once: smooth Details push and pop"
+    },
+    {
+     "pr": 1187,
+     "sha": "42077a1e0",
+     "title": "HUD: dismiss an offer through the metadata store's skipped set"
     }
    ],
    "from": 143.0,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 198.0
+   "to": 198
   },
   {
    "change_pct": 21.5,
    "commits": [
-    {
-     "pr": 1173,
-     "sha": "83bd902b1",
-     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
-    },
     {
      "pr": 1174,
      "sha": "d03081ccf",
@@ -837,6 +832,11 @@
      "pr": 1188,
      "sha": "5a6e155c8",
      "title": "The Under posters preview is rendered once: smooth Details push and pop"
+    },
+    {
+     "pr": 1187,
+     "sha": "42077a1e0",
+     "title": "HUD: dismiss an offer through the metadata store's skipped set"
     }
    ],
    "from": 270,
@@ -850,11 +850,6 @@
    "change_pct": 18.4,
    "commits": [
     {
-     "pr": 1173,
-     "sha": "83bd902b1",
-     "title": "A-Z rail bands, step 3: the rail draws and navigates a value sort's bands (rating, duration, unplayed, plays)"
-    },
-    {
      "pr": 1174,
      "sha": "d03081ccf",
      "title": "A-Z rail bands, step 4a: the data side for date added, date viewed, last episode added and release year"
@@ -898,6 +893,11 @@
      "pr": 1188,
      "sha": "5a6e155c8",
      "title": "The Under posters preview is rendered once: smooth Details push and pop"
+    },
+    {
+     "pr": 1187,
+     "sha": "42077a1e0",
+     "title": "HUD: dismiss an offer through the metadata store's skipped set"
     }
    ],
    "from": 2089,
