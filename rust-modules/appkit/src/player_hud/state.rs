@@ -150,8 +150,8 @@ impl ControlSlot {
     pub fn offer(self) -> Option<(plx_data::metadata::MarkerKind, i64)> {
         self.marker().map(|m| (m.kind, m.start_ms))
     }
-    /// The segment this row is offering, if any — what BACK hands the metadata store so the
-    /// store's own `skipped` set, not a HUD copy of it, is what withdraws the offer.
+    /// The segment this row is offering, if any — what BACK hands the metadata store, whose
+    /// `skipped` set withdraws the offer.
     pub fn marker(self) -> Option<plx_data::metadata::Marker> {
         match self {
             ControlSlot::Discs(_) => None,
@@ -189,8 +189,9 @@ pub fn slot_for(marker: Option<plx_data::metadata::Marker>, has_next: bool, mode
     }
 }
 
-/// Sample the live globals ONCE and resolve the row. Call this once per frame and pass the result
-/// around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
+/// Sample the live globals ONCE and resolve the row. Call this once per frame (and again only when
+/// a request has changed the store the row is resolved from: `content_requests` after
+/// `DismissOffer`) and pass the result around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
 pub fn slot(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> ControlSlot {

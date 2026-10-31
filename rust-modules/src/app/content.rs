@@ -632,10 +632,8 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
     if slot_refresh {
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             fr.ctrl = plx_appkit::player_hud::slot(&app.player.session, app.bridge.metadata_view());
-            // Hand the page the row it will draw and park the ring on THAT row's primary. The
-            // page already swapped its own row, but the queue's neighbour answer can settle
-            // between its key and this re-resolve; the app's element seat is what keeps the ring,
-            // the engine and OK on the same control.
+            // Hand the page the row it will draw and park the ring on THAT row's primary; the
+            // app's element seat keeps the ring, the engine and OK on the same control.
             player.slot = fr.ctrl;
             player.hud.nav.btn = player.row_primary();
         }

@@ -674,7 +674,7 @@ pub(crate) fn player_requests(
             }
             // BACK over an offer: retire the segment in the store that resolves offers. The
             // store's `skipped` set is read by `active_marker` and `synthesized_tail_marker`, so
-            // the row becomes the discs on the next resolve with no HUD-side latch to keep.
+            // the row becomes the discs on the next resolve.
             PlayerReq::DismissOffer(marker) => {
                 bridge
                     .metadata_mut()

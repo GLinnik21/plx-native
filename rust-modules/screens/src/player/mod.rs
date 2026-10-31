@@ -137,10 +137,11 @@ pub struct PlayerScreen {
     pub row: HudMotion,
     /// The Up Next auto-advance countdown (`up_next`'s `DEADLINE`/`CANCELLED`).
     pub up_next: Countdown,
-    /// This frame's control-row occupant, sampled ONCE by the loop and pushed here (`slot()`'s own
+    /// This frame's control-row occupant, sampled by the loop and pushed here (`slot()`'s own
     /// doc: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
     /// handlers and the draw, so re-deriving it per call site let a keypress dispatch to a control
-    /// that the same frame then declined to draw).
+    /// that the same frame then declined to draw). The page also swaps its own row in
+    /// `dismiss_offer`, and the loop re-resolves it right after.
     pub slot: ControlSlot,
     /// Who owns the "pipeline is working" signal this frame — resolved once, after `player::pump`,
     /// and handed to both the transport and the read-out so they can never both light.
@@ -1324,9 +1325,9 @@ impl PlayerScreen {
 
     /// **BACK's "not now" for a Skip / Up Next offer.** Retire the segment in the metadata
     /// store's skipped set — the same set that already retires a server marker after a skip, and
-    /// that `metadata::synthesized_tail_marker` now consults too. The store is the identity: the
-    /// row is recomputed from the playhead every frame, so remembering a replacement slot here
-    /// would be a second source of truth that the next frame's `slot()` overwrites. The local row
+    /// that `metadata::synthesized_tail_marker` now consults too. The store's skipped set is the
+    /// identity; the row is recomputed from the playhead every frame, so the local swap below
+    /// only covers the frame that took BACK and the next `slot()` replaces it. The local row
     /// switches to the discs at once, and the ring moves to their new primary (through
     /// `row_primary`, which is also what the FocusEngine's re-seat lands on) so the very next OK
     /// is a disc rather than a trip back from the scrubber.
@@ -1343,6 +1344,10 @@ impl PlayerScreen {
         if self.hud.nav.focus == GROUP_ROW {
             self.hud.nav.btn = primary;
         }
+        // `follow_control_row` runs later this frame (update, after content_requests) and reads
+        // `was_standin` as "a stand-in was under the ring last frame". Clear it so BACK's swap
+        // to the discs is not read as the segment ending under the ring, which would park the
+        // ring on the scrubber.
         self.hud.was_standin = false;
         self.hud.extend(now, input::HUD_LINGER_MS);
         plx_base::eventlog::log(&format!(

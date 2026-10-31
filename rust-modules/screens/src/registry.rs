@@ -235,10 +235,10 @@ pub enum PlayerReq {
     /// the committing frame (`app::playback::activate_ctrl_row`), so it carries no command.
     StandIn,
     /// **BACK over a Skip / Up Next offer** — retire this exact segment in the metadata store's
-    /// skipped set (`MetadataCmd::MarkSkipped`). The row is recomputed from the playhead every
-    /// frame, so the store, not a HUD latch, is what turns the offer into the discs; the same
-    /// set also retires a synthesized tail, which is what keeps a silent credits marker from
-    /// coming back.
+    /// skipped set (`MetadataCmd::MarkSkipped`). The store's skipped set is the only dismissal
+    /// state and the row is re-resolved from it every frame, which is what turns the offer into
+    /// the discs; the same set also retires a synthesized tail, which is what keeps a silent
+    /// credits marker from coming back.
     DismissOffer(plx_data::metadata::Marker),
     /// **Leave the player** — the one ritual the STOP key, a BACK with nothing else open, and the
     /// failure read-out's own BACK escape all perform (`exit_player`; restructure phase 12,

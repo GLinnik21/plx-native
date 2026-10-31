@@ -6689,7 +6689,7 @@ mod skipped_offer_tests {
         mark_skipped(&mut state, marker);
         assert!(
             view(&state, &adapter).synthesized_tail_marker(head, true).is_none(),
-            "BACK dismissed this tail: the discs stay up until the playhead leaves it"
+            "BACK dismissed this tail: the discs stay up for the rest of this playback"
         );
     }
 
