@@ -52,7 +52,7 @@ pub(super) fn identity(mark: Mark) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::layout::{BAND_PILL_PAD, BAND_TRACK_MAX_W};
+    use super::super::layout::{BAND_PILL_PAD, BAND_TRACK_LIMIT_W};
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_data::browse::bands::BandFamily;
     use plx_machine::machine::Measure;
@@ -88,8 +88,8 @@ mod tests {
                     if text.is_empty() || text.contains('\u{fffd}') { out.push(format!("{tag} {family:?} #{index}: {text:?} is empty or broken")); }
                     if labels[..index].contains(text) { out.push(format!("{tag} {family:?}: {text:?} appears twice")); }
                     let width = ShippedMeasure.width(&std::ffi::CString::new(text.as_str()).unwrap(), plx_ui::theme::size::MICRO, false);
-                    if width + 2.0 * BAND_PILL_PAD > BAND_TRACK_MAX_W {
-                        out.push(format!("{tag} {family:?}: {text:?} is {width} wide; its pill passes the {BAND_TRACK_MAX_W} the posters leave"));
+                    if width + 2.0 * BAND_PILL_PAD > BAND_TRACK_LIMIT_W {
+                        out.push(format!("{tag} {family:?}: {text:?} is {width} wide; its pill passes the {BAND_TRACK_LIMIT_W} the posters leave"));
                     }
                 }
             }

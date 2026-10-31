@@ -87,10 +87,10 @@ fn a_ladder_of_bands_starts_at_the_grid_top_forty_apart_and_adds_a_step_before_a
 
 #[test]
 fn the_bands_track_is_the_widest_pill_never_narrower_than_the_letters_and_never_into_the_posters() {
-    use super::layout::{band_track_w, BAND_RAIL_CX, BAND_TRACK_MAX_W, GRID_RIGHT, RAIL_TRACK_W};
+    use super::layout::{band_track_w, BAND_RAIL_CX, BAND_TRACK_LIMIT_W, GRID_RIGHT, RAIL_TRACK_W};
     assert_eq!(band_track_w(0.0), RAIL_TRACK_W, "the letters' 44 at least");
     assert_eq!(band_track_w(20.0), RAIL_TRACK_W);
     assert_eq!(band_track_w(33.0), 33.0 + 24.0, "12 px each side of the widest label");
-    assert_eq!(band_track_w(400.0), BAND_TRACK_MAX_W);
-    assert!((BAND_RAIL_CX - BAND_TRACK_MAX_W * 0.5 - GRID_RIGHT).abs() < 0.01, "the widest track's left edge meets the posters' edge and not past it");
+    assert_eq!(band_track_w(400.0), BAND_TRACK_LIMIT_W);
+    assert!((BAND_RAIL_CX - BAND_TRACK_LIMIT_W * 0.5 - GRID_RIGHT).abs() < 0.01, "the widest track's left edge meets the posters' edge and not past it");
 }

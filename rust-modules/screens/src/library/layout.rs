@@ -277,12 +277,12 @@ pub(super) const BAND_PILL_H: f32 = 38.0;
 pub(super) const BAND_PILL_PAD: f32 = 12.0;
 /// The widest the rail of bands may be, pill and all: its left edge stays clear of the posters,
 /// which end at [`GRID_RIGHT`] (the grid does not move for it).
-pub(super) const BAND_TRACK_MAX_W: f32 = 2.0 * (BAND_RAIL_CX - GRID_RIGHT);
+pub(super) const BAND_TRACK_LIMIT_W: f32 = 2.0 * (BAND_RAIL_CX - GRID_RIGHT);
 
 /// The width of a rail of bands whose widest label is `widest` wide: the letters' [`RAIL_TRACK_W`] at
-/// least, and wide enough for the focus pill around the widest label, never past [`BAND_TRACK_MAX_W`].
+/// least, and wide enough for the focus pill around the widest label, never past [`BAND_TRACK_LIMIT_W`].
 pub(super) fn band_track_w(widest: f32) -> f32 {
-    (widest + 2.0 * BAND_PILL_PAD).clamp(RAIL_TRACK_W, BAND_TRACK_MAX_W.max(RAIL_TRACK_W))
+    (widest + 2.0 * BAND_PILL_PAD).clamp(RAIL_TRACK_W, BAND_TRACK_LIMIT_W.max(RAIL_TRACK_W))
 }
 
 /// Where the rows of a rail of bands stand: [`BAND_PITCH`] apart, with [`BAND_STEP_GAP`] more before
