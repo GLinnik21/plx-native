@@ -112,6 +112,18 @@ impl Drop for Rig {
     fn drop(&mut self) {
         self.bridge.metadata_mut().run(MetadataCmd::Clear);
         plx_plex::plex::reset_servers_for_test();
+        // A landing that played the season's first episode began a resolve (`route::play_pending`:
+        // `PLAY_BUSY`, a process global that only a landing's consume or a cancel clears), and nothing
+        // in these tests consumes it. Left set, the next test to read `player::state()` found
+        // `Resolving` where it expected Idle (`diagnostics::an_unknown_firmware_is_named_as_unknown`,
+        // intermittently). Withdraw it, join its worker while the fixture server still answers, and
+        // say so if it is still there: the guard drops after this body, so the lock is held.
+        plx_media::route::cancel_play(&mut self.ps);
+        let joined = plx_media::route::wait_resolve_workers_for_test(std::time::Duration::from_secs(5));
+        if !std::thread::panicking() {
+            assert!(joined, "a resolve worker outlived its test");
+            assert!(!plx_media::route::play_pending(), "the test left a play pending for the next one");
+        }
     }
 }
 
