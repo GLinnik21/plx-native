@@ -615,8 +615,15 @@ frame boundary after the swap, so the copy adds no render pass to framebuffer 0
 The new reading agrees with the old one. On the demo library's 8 hero titles (television,
 2026-10-31, `src=image` on every `groundlog` line) the median |ΔL*| between the two probes was
 0.15 and the worst 1.8, the median |Δspan| 0.25 and the worst 2.1, and the bar was pixel-identical
-on all 8. That art is L* 17 to 51, so the density stayed at its 0.200 floor: this says nothing yet
-about bright grounds.
+on all 8. That art is L* 17 to 51, so the density stayed at its 0.200 floor: that says nothing about
+bright grounds.
+The simulator measured the bright grounds (2026-10-31, not the Mali, frame cost not measured;
+`tools/glass-patterns.py` on `ui::testpat` grounds against the mock, both probes on one ladder): on
+`flat:52` to `flat:95`, `edge`, `ramp` and `rainbow:70` they solved the same density (|Δwant| 0.000,
+|ΔL*| 0.1 at most) and the idle labels measured 4.24 to 4.73 in the screenshot against the plate's
+median on every flat ground from L* 52 up, with both; only `checker:24` moved (want 0.330 to 0.287,
+L* 59.8 to 57.4, span 14.2 to 9.3), its labels measuring 5.1 to 5.5 against the median and 2.7 against
+the plate's brightest tenth with either probe, and 105 of the new probe's 106 lines read `src=image`.
 
 **The cheap sources are the wrong colour, and this cost an iteration.** Plex's `UltraBlurColors` are
 a derived muted palette for an ambient wash: for the hero whose top edge measures (0.00, 0.68, 0.91)

@@ -22,7 +22,7 @@ costs a whole simulator — and why they are launched together and driven in loc
 Sheets land in the output directory (default a scratch dir it prints), plus a table of what the bar
 actually DREW at each rung: the last `track_ground` line the bar logged on that rung (L*, span, the
 density it wanted and the one it drew, where its ground came from) and the contrast the idle labels
-MEASURE in the rung's screenshot against the plate under them. The solver's belief (`want`) and the
+MEASURE in the rung's screenshot against the plate under them (median and worst of it). The solver's belief (`want`) and the
 pixels are different things, and "does it look right" and "does it hold the floor" are different
 questions; the table answers both. It is printed, and written beside the sheets as `table.txt`.
 
@@ -167,33 +167,39 @@ def lum(c):
     return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
 
 
+# A pixel is label ink when its relative luminance reaches this: every ink in the theme is a light
+# cool grey (the idle labels' `TEXT_READING` measures 0.65), and a plate the bar has solved to its
+# floor sits at 0.12 or below, so the line between them has room on both sides. It is how a label is
+# FOUND; its contrast is measured against the plate under it.
+INK_LUM = 0.30
+# …and a pixel is plate (not ink, not the fringe antialiasing leaves around it) below this.
+PLATE_LUM = 0.25
+
+
 def label_contrast(shot: Path, rect):
     """The contrast each label in the tab track MEASURES in a screenshot, left to right, as
-    (contrast, x0, x1) in authored px.
+    (median, worst, x0, x1): contrasts in the sense of WCAG, x in authored px.
 
-    The plate under a column is the median luminance of that column's rows ABOVE and BELOW the
-    labels (the track's 14-26% and 74-86% bands: a median over the label rows would land on the ink
-    in a glyph stem), so a ground that varies along the bar is read per column. A label is a run of
-    columns whose middle rows hold pixels brighter than the plate; its ink is the brightest 2% of
-    the pixels in those columns (the glyph bodies, which reach full ink), and its contrast is
-    (ink + 0.05) / (plate + 0.05) over the columns it spans. The first run is the selected pill and
-    is returned like the rest; the caller decides which are idle."""
+    A label is a run of columns holding ink pixels (see `INK_LUM`) in the track's middle rows, with
+    runs more than 18 px apart kept apart. Its ink is the mean of the brightest 2% of the pixels in
+    those columns (the glyph bodies, which reach full ink). The plate under it is the pixels of the
+    same box that are neither ink nor its fringe (see `PLATE_LUM`): `median` is the contrast against
+    their median, `worst` against their 90th percentile, which is what the label is hardest to read
+    against where the ground varies under it (a checker, an edge). On a flat ground the two agree.
+    The first run is the selected pill and is returned like the rest; the caller decides which are
+    idle."""
     from PIL import Image
     im = Image.open(shot).convert("RGB")
     k = im.width / 1920.0
     x, y, w, h = rect
-    x0, x1 = int(x * k), int((x + w) * k)
+    # the track's rounded ends carry the rim's highlight, which is lighter than ink on a bright
+    # ground and is no label: the search starts 20 px inside them (the first pill is 28 px in)
+    x0, x1 = int((x + 20) * k), int((x + w - 20) * k)
     mid = range(int((y + h * 0.3) * k), int((y + h * 0.7) * k))
-    off = list(range(int((y + h * 0.14) * k), int((y + h * 0.26) * k))) + \
-        list(range(int((y + h * 0.74) * k), int((y + h * 0.86) * k)))
     px = im.load()
     cols = list(range(x0, x1))
     lums = {cx: [lum(px[cx, cy]) for cy in mid] for cx in cols}
-    plate = {}
-    for cx in cols:
-        v = sorted(lum(px[cx, cy]) for cy in off)
-        plate[cx] = v[len(v) // 2]
-    lit = [cx for cx in cols if max(lums[cx]) - plate[cx] > 0.04]
+    lit = [cx for cx in cols if max(lums[cx]) >= INK_LUM]
     runs, cur = [], []
     for cx in lit:
         if cur and cx - cur[-1] > 18 * k:
@@ -209,15 +215,18 @@ def label_contrast(shot: Path, rect):
         body = sorted((v for cx in run for v in lums[cx]), reverse=True)
         n = max(1, len(body) // 50)
         ink = sum(body[:n]) / n
-        under = sum(plate[cx] for cx in run) / len(run)
-        out.append(((ink + 0.05) / (under + 0.05), run[0] / k, run[-1] / k))
+        under = sorted(v for cx in run for v in lums[cx] if v < PLATE_LUM)
+        if not under:
+            continue
+        med, worst = under[len(under) // 2], under[min(len(under) - 1, int(len(under) * 0.9))]
+        out.append(((ink + 0.05) / (med + 0.05), (ink + 0.05) / (worst + 0.05), run[0] / k, run[-1] / k))
     return out
 
 
 def idle_labels(runs):
     """The idle TEXT labels among a track's runs: every run but the first (the selected pill), and
     not the icons (a run narrower than 60 authored px)."""
-    return [r for r in runs[1:] if r[2] - r[1] >= 60]
+    return [r for r in runs[1:] if r[3] - r[2] >= 60]
 
 
 def table(pkgs, rungs, shots):
@@ -225,7 +234,7 @@ def table(pkgs, rungs, shots):
     how many of the settled lines among the rung's had `src=image`, and the measured contrast of
     the idle text labels (see [`idle_labels`])."""
     rows = [f"{'ground':<12} {'build':<8} {'L*':>5} {'span':>5} {'want':>6} {'drawn':>6} "
-            f"{'src':<6} {'arrived':<7} {'settled-lines':>13} {f'idle contrast (floor {FLOOR:.1f})':>28}"]
+            f"{'src':<6} {'arrived':<7} {'settled-lines':>13} {f'idle contrast med/worst (floor {FLOOR:.1f})':>36}"]
     for i, (pat, _) in enumerate(rungs[pkgs[0]]):
         for pkg in pkgs:
             rs = rungs[pkg][i][1]
@@ -235,6 +244,8 @@ def table(pkgs, rungs, shots):
             last = rs[-1]
             ok = [r for r in rs if settled(r)]
             img = sum(1 for r in ok if r["src"] == "image")
+            # a build before `src=` prints no word, and "0 of 7 came from the image" would be a lie
+            seen = f"{img}/{len(ok)}" if any(r["src"] != "-" for r in rs) else "n/a"
             span = f"{last['span']:.1f}" if last["span"] is not None else "-"
             shot = shots[pkg][i][1]
             try:
@@ -242,10 +253,10 @@ def table(pkgs, rungs, shots):
             except Exception as e:  # a missing PIL or a bad crop must not lose the log columns
                 labels = []
                 print(f"  (contrast not measured for {pat}/{pkg}: {e})", file=sys.stderr)
-            idle = " ".join(f"{c:.2f}" for c, _, _ in labels) or "-"
+            idle = " ".join(f"{med:.2f}/{worst:.2f}" for med, worst, _, _ in labels) or "-"
             rows.append(f"{pat:<12} {pkg:<8} {last['lstar']:>5.1f} {span:>5} {last['want']:>6.3f} "
                         f"{last['drawn']:>6.3f} {last['src']:<6} {'yes' if settled(last) else 'NO':<7} "
-                        f"{img:>6}/{len(ok):<6} {idle:>28}")
+                        f"{seen:>13} {idle:>36}")
     return "\n".join(rows)
 
 
