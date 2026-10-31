@@ -26,6 +26,6 @@
   },
   "library_rail.today": {
     "value": "Today",
-    "description": "The Library rail's first band when the list is sorted by Date added, Date viewed or Last episode added: items from today. The same word as under_posters.value_today, unless that is too wide for the rail's narrow column beside the posters (at most 116 px at the rail's 22 px type, and then only with the focus pill squeezed to 4 px each side; French "Aujourd’hui" is exactly that wide, so French keeps its usual abbreviation, "Auj."). One short word."
+    "description": "The Library rail's first band when the list is sorted by Date added, Date viewed or Last episode added: items from today. The same word as under_posters.value_today, unless that is too wide for the rail's narrow column beside the posters (at most 116 px at the rail's 22 px type, and then only with the focus pill squeezed to 4 px each side; French \"Aujourd’hui\" is exactly that wide, so French keeps its usual abbreviation, \"Auj.\"). One short word."
   }
 }
