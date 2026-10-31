@@ -53,9 +53,9 @@
 use super::origin::Origin;
 use super::probe::Location;
 mod playback_options;
-pub use playback_options::InstantDpadSeeking;
+pub use playback_options::{DolbyVisionMode, InstantDpadSeeking};
 
-pub use prefs::{InstantDpadSeekingPref, HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
+pub use prefs::{DolbyVisionModePref, InstantDpadSeekingPref, HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};

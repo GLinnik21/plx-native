@@ -2132,6 +2132,10 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // `Tick` now — `step_scrub_hold`, formula for formula, and the debounce gone with
         // click-to-confirm (a key target waits for OK) — which is what makes the field have one
         // owner. Phase 12, PX-PLAYER.)
+        // A BACK-dismissed offer is gone for the rest of its SEGMENT even though `slot()` keeps
+        // resolving it from the playhead: resolve the latch here, once, before focus follows the
+        // row and before the bottom of the frame hands the page this slot.
+        fr.ctrl = resolve_offer_dismissal(app, fr.ctrl);
         follow_control_row(app, fr.ctrl, fr.now);
         // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to the
         // next episode out of nowhere. `hud.dismissed` has to clear with it, not just the
@@ -2553,6 +2557,29 @@ fn loop_requests(app: &mut App) {
             }
         }
     }
+}
+
+/// **Turn the frame's raw `slot()` into what the viewer asked to see.** A BACK over an offer
+/// latches that segment in `HudState::dismissed_offer`; the slot is recomputed from the playhead
+/// every frame, so the latch has to be applied here — once, before focus follows the row and
+/// before the page is handed its slot for the frame.
+///
+/// Clearing `was_standin` is half of the operation: `follow_control_row` reads it as "a stand-in
+/// was under the ring last frame", and without this the dismissal would look like the segment
+/// ending under the ring and send the cursor to the scrubber. BACK dismissed an offer; it did not
+/// walk away from the row.
+fn resolve_offer_dismissal(
+    app: &mut App,
+    ctrl: plx_appkit::player_hud::ControlSlot,
+) -> plx_appkit::player_hud::ControlSlot {
+    let Some(player) = super::bridge::player_mut(&mut app.pages) else {
+        return ctrl;
+    };
+    let shown = player.hud.slot_after_dismissal(ctrl, &app.player.session);
+    if shown != ctrl {
+        player.hud.was_standin = false;
+    }
+    shown
 }
 
 /// Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
@@ -4566,6 +4593,46 @@ mod lifecycle_regression_tests {
         assert_eq!(player.hud.nav.tab, 0);
         assert_ne!(app.pages.focus().map(|k| k.elem), Some(ELEM_SCRUB), "the engine left the scrubber");
         assert_eq!(app.pages.focus().map(|k| k.elem), Some(ELEM_TAB_BASE), "…for the tab the pin named");
+    }
+
+    /// The BACK latch is resolved before the page is handed the frame's slot. A stand-in that is
+    /// still under the playhead would otherwise reappear on the very next frame, and
+    /// `was_standin` would make its disappearance look like a segment ending under the ring.
+    #[test]
+    fn a_dismissed_offer_resolves_to_the_discs_before_the_page_is_handed_the_slot() {
+        use plx_appkit::player_hud::{ControlSlot, Controls};
+        use plx_data::metadata::{Marker, MarkerKind};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        let intro = Marker {
+            kind: MarkerKind::Intro,
+            start_ms: 1_000,
+            end_ms: 60_000,
+            final_seg: false,
+        };
+        let skip = plx_appkit::player_hud::slot_for(
+            Some(intro),
+            false,
+            plx_media::route::NextEpisodeMode::Countdown,
+        );
+        {
+            let player = super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted");
+            player.hud.dismissed_offer = Some((MarkerKind::Intro, intro.start_ms));
+            player.hud.was_standin = true;
+            player.hud.nav.focus = plx_appkit::player_hud::geometry::GROUP_ROW;
+        }
+        let shown = resolve_offer_dismissal(&mut app, skip);
+        assert!(
+            matches!(shown, ControlSlot::Discs(Controls::NONE)),
+            "the dismissed offer resolves to the discs, with their live controls"
+        );
+        let player = super::super::bridge::player(&app.pages).expect("the player page is mounted");
+        assert!(!player.hud.was_standin, "the stand-in edge is spent, not mistaken for a departure");
+
+        let off = resolve_offer_dismissal(&mut app, ControlSlot::Discs(Controls::NONE));
+        assert!(matches!(off, ControlSlot::Discs(_)), "a plain row is untouched");
     }
 
     /// Offer `standin` on a mounted player, let the offer seat the engine, retire it for `discs`,

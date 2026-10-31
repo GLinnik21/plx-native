@@ -600,3 +600,15 @@ to 17882145870915066293. All three anchors were recorded again on the merged tre
 interval and halved idle sleeps, passed `plxnative-rec check`, and were installed with
 `tools/plxnative-rec rerecord`, anchors retained. `make check-replay` replays all three with
 `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+
+The player's BACK offer dismissal (`HudState::dismissed_offer`, after `last_offer` in
+`PlayerScreen`'s canon and shape string; `SCREEN_SHAPES_PIN` `0xb633_b65b_ed93_ca93` ->
+`0xe208_abdc_a1df_2158`) moved the state shape from 12149748892022442062 to
+2549725339362397449. The census is part of the fingerprint even though no anchor mounts the player,
+so all three anchors were refused on load. They were recorded again against the synthetic server
+with `tests/focusfp.sh --rec --only 1,6,12` and installed with `tools/plxnative-rec rerecord`,
+anchors retained. The first `6-settings-family` recording ran past the reader's record budget
+(`Malformed { what: "record JSON/budget" }`), so it was recorded once more on the default settle
+and imported over its own fixture with `anchor: true` restored; the shape had already moved, so
+this was still that bump's re-record, not a rebaseline. `tests/replay_fixtures.py` replays all
+three with `verdict=SAME` in Targets and Resolve and every difference counter at zero.

@@ -2658,7 +2658,11 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`, so the Speed page can be
 // addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
 // 0x9425_f33f_3f53_6aa5.
-const SCREEN_SHAPES_PIN: u64 = 0xb633_b65b_ed93_ca93;
+// Skip / Up Next offer dismissal: `PlayerScreen`'s `hud` gains `dismissed_offer` (the segment
+// BACK dismissed), after `last_offer` in the canon and the shape string. One bump; the census is
+// part of the replay state fingerprint even though the anchors never mount the player, so all
+// three recordings were re-recorded against it.
+const SCREEN_SHAPES_PIN: u64 = 0xe208_abdc_a1df_2158;
 
 #[cfg(test)]
 mod arg_tests {

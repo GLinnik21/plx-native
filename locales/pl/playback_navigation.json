@@ -2,5 +2,8 @@
   "settings.playback.instant_dpad_seeking": "Natychmiastowy skok strzałkami",
   "settings.playback.instant_dpad_seeking.copy": "Przy ukrytych kontrolkach Lewo/Prawo przeskakuje o ustawiony skok. Przy widocznych potwierdź przyciskiem OK. Wyłączone najpierw pokazuje kontrolki.",
   "settings.playback.instant_dpad_seeking.off": "Wyłączone",
-  "settings.playback.instant_dpad_seeking.on": "Włączone"
+  "settings.playback.instant_dpad_seeking.on": "Włączone",
+  "settings.playback.dolby_vision": "Dolby Vision",
+  "settings.playback.dolby_vision.copy": "Auto używa Dolby Vision, gdy telewizor go obsługuje. „Wył.” odtwarza warstwę HDR10. Pliki bez warstwy HDR10 konwertuje Twój serwer Plex i mogą się nie odtworzyć.",
+  "settings.playback.dolby_vision.off": "Wył."
 }

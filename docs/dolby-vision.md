@@ -18,6 +18,15 @@ The declaration is conditional on one boot-time configd answer. Only an exact bo
 `tv.config.supportDolbyHDRContents` is support; a refusal, timeout, malformed answer or an answer
 still pending is `Unknown` and follows the unsupported column.
 
+The seated profile's Settings > Playback > Dolby Vision is the second input. `Off` plans every
+route as Unsupported (`DolbyVisionMode::gate`, captured in `ResolveEnv` beside the probe), so a
+confirmed-support set follows the unsupported column for that profile: no node, the base layer
+for P8/P7, P5 refused direct play and asked of the server, which may refuse it as well (code 2000,
+`docs/pms-api.md`). Only the presentation is gated: the route's `DvDecision` keeps the probe's own
+answer, so Off on a confirmed-support set logs `dv: capability=supported presentation=base-layer` and
+Diagnostics' Video row reads `base-layer (supported)`, which a failed probe or a set without Dolby
+Vision cannot produce (they read `unknown` and `unsupported`).
+
 **On webOS 3 a configd `true` is overridden to unsupported** (`webos::caps::platform_gate`, logged
 as `webos-caps: … answer=unsupported source=webos3`). Device-measured 2026-10-14 on an LG OLED C7
 (webOS 3.9.3, m16p) with a P8.1 film: configd answers `true`, the declared Load accepts every
@@ -294,8 +303,8 @@ Capability experiments use two presence-only, boot-latched triggers:
 `/tmp/plxnative-dvcaps0` forces Unsupported and `/tmp/plxnative-dvcaps1` forces Supported. If both
 exist, `dvcaps0` wins and the conflict is logged. Restart the app between cases; changing a file
 cannot alter either the completed capability result or an installed playback decision. These
-overrides change capability only — they do not bypass `nodv`, the enhancement-layer refusal or the
-HEVC codec guard. `dvnonode` remains the deliberate diagnostic exception: it suppresses a node
+overrides change capability only — they do not bypass `nodv`, the enhancement-layer refusal, the
+HEVC codec guard or a profile's Dolby Vision Off. `dvnonode` remains the deliberate diagnostic exception: it suppresses a node
 after a route has already frozen `Declare`, and logs that disagreement explicitly.
 
 ---
