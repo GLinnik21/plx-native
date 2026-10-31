@@ -6,14 +6,15 @@
 //! season or episode row carries as a movie row does); no request is added. **Which sorts show a value
 //! depends on the kind of row** ([`shows_value`]): a sort the table does not word for that kind (Title,
 //! Random, the compound Show order Seasons and Episodes default to, a sort a later server declares, a
-//! sort whose fact a kind of row cannot carry, such as an episode's Unplayed or a season's Resolution)
+//! sort whose fact a kind of row cannot carry, such as an episode's Unplayed, a season's Resolution or a show's Duration)
 //! shows NO line at all, and the grid keeps its Title/Details captions and its 40 px rows rather than
 //! drawing a column of dashes. An item with no value for a sort that is worded for its kind shows an
 //! en dash (data the server did not send), and a fact is never guessed (a missing year-less
 //! release date is a dash, not the year).
 //!
 //! **TV shows.** A show's own facts feed the sorts a show library declares: Release date, the two scores,
-//! Date viewed and Plays from the show row, and **Unplayed** (`unviewedLeafCount`) from its episode
+//! Date viewed and Plays from the show row (a show has no length, progress or media of its own, so
+//! Duration, Progress, Resolution and Bitrate are not worded for it and show no line), and **Unplayed** (`unviewedLeafCount`) from its episode
 //! counts, worded as the catalogue's plural "9 episodes" / "1 episode" (`browse.detail.episodes`, the
 //! language's own plural categories). A show with every episode watched has no line at all (the watched
 //! tick says it) while its slot keeps the grid's row pitch; a show whose counts the server did not send
@@ -79,10 +80,12 @@ fn own_scope(kind: c_int, scope: &str) -> bool {
 /// The sort terms worded for a MOVIE row: every fact its listing carries.
 const MOVIE_TERMS: [&str; 13] = ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating",
     "duration", "viewOffset", "viewCount", "addedAt", "lastViewedAt", "mediaHeight", "mediaBitrate", "year"];
-/// A SHOW row's: the movie terms (the ones it has no fact for read as the dash) and the episodes left.
-const SHOW_TERMS: [&str; 14] = ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating",
-    "duration", "viewOffset", "viewCount", "addedAt", "lastViewedAt", "mediaHeight", "mediaBitrate", "year",
-    "unviewedLeafCount"];
+/// A SHOW row's: the movie terms its listing row carries (its scores, content rating, plays, dates and
+/// year; one show lacking a fact reads as the dash) and the episodes left. Not a length, progress or
+/// media: those are one episode's or none (a show row's `duration` is an episode's), so those sorts
+/// show no line for a show.
+const SHOW_TERMS: [&str; 10] = ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating",
+    "viewCount", "addedAt", "lastViewedAt", "year", "unviewedLeafCount"];
 /// An EPISODE row's: the movie terms, from the episode's own facts (its air date, its length, its media).
 const EPISODE_TERMS: [&str; 13] = MOVIE_TERMS;
 /// A SEASON row's: the container facts its listing carries. It has no score, length or media of its
@@ -336,7 +339,7 @@ mod tests {
     fn text(m: &PmsMovie, key: &str) -> String { read(m, key, Some(TODAY)).text }
 
     #[test]
-    fn a_show_words_the_facts_its_listing_carries_and_the_movie_only_sorts_read_as_a_dash() {
+    fn a_show_words_the_facts_its_listing_carries_and_the_movie_only_sorts_show_no_line() {
         let _locale = language_on_this_thread_for_test(Preference::En);
         let s = show();
         for (key, expected) in [("year", "2019"), ("originallyAvailableAt", "Sep\u{a0}2019"), ("rating", "87%"),
@@ -348,18 +351,23 @@ mod tests {
             assert!(!read(&s, key, Some(TODAY)).missing, "{key}");
         }
         assert!(!read(&s, "rating", Some(TODAY)).mark.is_empty(), "the critic score wears its provider's mark");
-        // No user rating on the row, and a show has no length, progress or media of its own: a dash,
-        // never an episode's duration or a movie's bitrate.
-        for key in ["userRating", "duration", "viewOffset", "mediaHeight", "mediaBitrate"] {
-            let v = read(&s, key, Some(TODAY));
-            assert!(v.missing && v.text == "\u{2013}" && !v.plus && v.mark.is_empty(), "{key}");
-        }
+        // A show row parses `userRating` as any row does: no rating on this one is the dash (data the
+        // server did not send), a rated one is worded.
+        let v = read(&s, "userRating", Some(TODAY));
+        assert!(v.missing && v.text == "\u{2013}" && !v.plus && v.mark.is_empty(), "userRating");
+        let mut rated = show();
+        rated.sort_info.as_mut().expect("a show row carries sort facts").user_rating = Some(9.0);
+        assert_eq!(text(&rated, "userRating"), "9.0/10");
+        // A show has no length, progress or media of its own (its row's duration is one episode's):
+        // those sorts are not worded for it and show NO line, never a column of dashes.
         let mut with_episode_runtime = show();
         with_episode_runtime.dur_ns = 22 * 60_000_000_000;
-        assert!(read(&with_episode_runtime, "duration", Some(TODAY)).missing, "a show row's duration is one episode's");
-        // A collection keeps the dash for every sort, the unplayed one too.
-        let other = PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..show() };
-        for key in ALL_KEYS.iter().chain(["unviewedLeafCount"].iter()) { assert!(read(&other, key, Some(TODAY)).missing, "{key}"); }
+        for key in ["duration", "viewOffset", "mediaHeight", "mediaBitrate"] {
+            assert!(!shows_value(KIND_SHOW, key), "{key}");
+            assert!(!shows_value(KIND_SHOW, &format!("show.{key}:desc")), "{key} scoped");
+            assert!(label(&s, key, Some(TODAY)).value.is_none(), "{key}");
+            assert!(label(&with_episode_runtime, key, Some(TODAY)).value.is_none(), "{key} with an episode's runtime");
+        }
     }
 
     #[test]
