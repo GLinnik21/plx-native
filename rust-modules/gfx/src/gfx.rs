@@ -348,8 +348,10 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 /// triple `glViewport` was given, plus the live box a [`clip_clear`] must restore.
 ///
 /// `None` means framebuffer 0, and [`clip_set`] then reads `surface::viewport()`/`scale()` exactly
-/// as it always has. It is `Some` only for the duration of [`blur_snapshot_direct`]'s scene draw,
-/// which renders the page into a small FBO through a scaled, negative-origin viewport. Without
+/// as it always has. It is `Some` only while a page is drawn into a target other than the frame
+/// through a negative-origin viewport: for the duration of [`blur_snapshot_direct`]'s scene draw (a
+/// small, scaled FBO), and for a [`FrameCache::render_region`] fill (the region's own texture, at
+/// scale 1; [`RegionTarget`] puts the previous value back). Without
 /// this, every `Painter::clip` inside that draw would compute a full-resolution screen box — the
 /// scissor is the one drawing call that is not in logical coordinates — and clip a completely
 /// different part of the picture, while `clip_clear`'s bare `glDisable` would additionally throw
@@ -3166,9 +3168,10 @@ fn card_pixel_boxes(hole: [f32; 4], view: PxBox, s: f32) -> CardBoxes {
 }
 
 /// The scissor boxes to draw a resting card's `quad` in pieces, or why it is drawn whole
-/// ([`CardPath::Clipped`]: on a reduced-resolution source pass ([`CLIP_TARGET`]), whose quarter-size
-/// pixels have no shading to save and no draw calls to spare; [`CardPath::NoInterior`]: the card
-/// leaves no certainly-plain part).
+/// ([`CardPath::Clipped`]: in any target [`CLIP_TARGET`] names - a reduced-resolution source pass,
+/// whose quarter-size pixels have no shading to save and no draw calls to spare, and equally a
+/// [`FrameCache::render_region`] fill, whose cards are drawn whole once per key rather than split
+/// every frame; [`CardPath::NoInterior`]: the card leaves no certainly-plain part).
 fn card_boxes(quad: [f32; 4], card: [f32; 4], radius: f32, rimw: f32) -> Result<CardBoxes, CardPath> {
     if unsafe { CLIP_TARGET }.is_some() {
         return Err(CardPath::Clipped);
@@ -3353,9 +3356,19 @@ pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
     }
 }
 
-/// One full logical-screen snapshot shared by modal hosts and frozen page transitions.
+/// **A texture the renderer fills once and serves as one quad**, in one of two modes. They share the
+/// texture, its FBO and the draw path, and differ in WHAT the texture holds and so in how it is drawn:
 ///
-/// This is deliberately a renderer primitive rather than an Account-menu special case. A modal
+/// * **Whole-viewport snapshot** ([`capture`](Self::capture), [`render_into`](Self::render_into)): the
+///   viewport's size, a straight copy of the frame (opaque, over the app ground), bottom-up. Drawn
+///   with [`draw`](Self::draw) / [`draw_alpha`](Self::draw_alpha), which lift [`page_frozen`] and
+///   blend it straight. This is the modal hosts' and the page transitions' snapshot, below.
+/// * **Rect** ([`render_region`](Self::render_region), through [`region_paint`]): a texture of exactly
+///   one rect of the canvas, drawn onto a TRANSPARENT clear, so it holds PREMULTIPLIED colour. Drawn
+///   ONLY by [`draw_region`](Self::draw_region), which blends it premultiplied and does not lift
+///   [`page_frozen`]; never by `draw`/`draw_alpha`, which would composite it as an opaque snapshot.
+///
+/// Whole-viewport snapshot, in more words: this is deliberately a renderer primitive rather than an Account-menu special case. A modal
 /// may freeze a page's *state* and still accidentally redraw its hero, shelves and text on every
 /// swap because double buffering needs complete pixels. `FrameCache` makes the lifecycle explicit:
 /// capture the completed host once, draw one textured quad while the modal owns input, invalidate
@@ -3371,11 +3384,13 @@ pub struct FrameCache {
     valid: bool,
     checked: bool,
     off: bool,
-    /// The framebuffer object over [`tex`](Self::tex) that [`render_into`](Self::render_into)
-    /// draws the page through; 0 until first asked for, and dropped with the texture it names.
+    /// The framebuffer object over [`tex`](Self::tex) that [`render_into`](Self::render_into) and
+    /// [`render_region`](Self::render_region) draw through; 0 until first asked for, and dropped
+    /// with the texture it names.
     fbo: c_uint,
-    /// The FBO came back incomplete once: [`render_into`](Self::render_into) declines from then
-    /// on and the capture falls back to [`capture`](Self::capture)'s copy.
+    /// The FBO came back incomplete once: [`render_into`](Self::render_into) and
+    /// [`render_region`](Self::render_region) decline from then on, and a whole-viewport capture
+    /// falls back to [`capture`](Self::capture)'s copy.
     fbo_off: bool,
     /// **The retained second slot**: a copy of an earlier frame that [`draw_prev`](Self::draw_prev)
     /// fades away over the new capture (a glass menu's look before and after its page reflowed).
@@ -3491,7 +3506,10 @@ impl FrameCache {
     }
 
     /// The captured texture, while it holds a capture: the drawable's viewport as
-    /// `glCopyTexSubImage2D` left it (bottom-up, full size).
+    /// `glCopyTexSubImage2D` left it (bottom-up, full size). A rect-mode fill
+    /// ([`render_region`](Self::render_region)) is premultiplied and rect-sized, not this: it is
+    /// only ever drawn through [`draw_region`](Self::draw_region), and a caller of `tex()` meaning a
+    /// whole-viewport snapshot must not be handed one.
     pub fn tex(&self) -> Option<c_uint> {
         (self.valid && self.tex != 0).then_some(self.tex)
     }
@@ -3531,7 +3549,8 @@ impl FrameCache {
         true
     }
 
-    /// A texture of the viewport's size, re-made (and its FBO with it) when the viewport moved.
+    /// A texture of the size asked for (the viewport's for a whole-viewport snapshot, the rect's for
+    /// a region), re-made (and its FBO with it) when that size changed.
     unsafe fn ensure_tex(&mut self, vw: c_int, vh: c_int) {
         if self.tex == 0 || self.w != vw || self.h != vh {
             if self.fbo != 0 {
@@ -3723,7 +3742,9 @@ impl FrameCache {
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
-    /// [`frame_cache_uv`] is the one orientation rule shared by every future owner.
+    /// [`frame_cache_uv`] is the one orientation rule shared by every future owner. For a
+    /// whole-viewport snapshot ONLY: a rect-mode fill ([`render_region`](Self::render_region)) is
+    /// drawn by [`draw_region`](Self::draw_region), never this.
     ///
     /// **It lifts [`page_frozen`] around its own quad.** This is the one draw in the app that
     /// exists BECAUSE the page is frozen, so it cannot be subject to the refusal — and lifting it
@@ -6597,7 +6618,8 @@ unsafe fn dither_uniforms(prog: c_uint) -> c_int {
     glGetUniformLocation(prog, c"u_dither".as_ptr())
 }
 
-/// The authored rect a blur source pass may draw into; nothing outside it can affect the result.
+/// The authored rect a blur source pass or a [`FrameCache::render_region`] fill may draw into; nothing
+/// outside it can affect the result.
 static mut CULL_RECT: Option<[f32; 4]> = None;
 
 // **Is the host page being served from [`FrameCache`] rather than rasterized?** The flag, its doc
@@ -6682,7 +6704,8 @@ pub fn video_plane_refuses(what: &str) -> bool {
 /// backdrop is a crop of the page, so a quad that misses the region cannot contribute a fragment
 /// to it.
 ///
-/// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
+/// Always `false` outside a source pass or a region fill ([`CULL_RECT`] is `None`), so the visible
+/// frame is drawn exactly as it always was.
 #[inline]
 pub fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
     if page_frozen() || backdrop::suppressed() {
