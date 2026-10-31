@@ -1076,9 +1076,9 @@ impl PlayerScreen {
             Key::Back if edge == Edge::Down
                 && self.hud.visible_at_press
                 && self.hud.nav.focus == GROUP_ROW
-                && self.slot.offer().is_some() =>
+                && let Some(marker) = self.slot.marker() =>
             {
-                self.dismiss_offer(ps, now, fx);
+                self.dismiss_offer(marker, ps, now, fx);
                 Handled::Yes
             }
             Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
@@ -1333,17 +1333,15 @@ impl PlayerScreen {
     /// is a disc rather than a trip back from the scrubber.
     fn dismiss_offer<H: AppLike>(
         &mut self,
+        marker: plx_data::metadata::Marker,
         ps: &plx_media::route::PlaybackSession,
         now: u32,
         fx: &mut Effects<'_, H>,
     ) {
-        let Some(marker) = self.slot.marker() else { return; };
         Self::ask(fx, PlayerReq::DismissOffer(marker));
         self.slot = ControlSlot::Discs(player_hud::Controls::now(ps));
         let primary = self.row_primary();
-        if self.hud.nav.focus == GROUP_ROW {
-            self.hud.nav.btn = primary;
-        }
+        self.hud.nav.btn = primary;
         // `follow_control_row` runs later this frame (update, after content_requests) and reads
         // `was_standin` as "a stand-in was under the ring last frame". Clear it so BACK's swap
         // to the discs is not read as the segment ending under the ring, which would park the
