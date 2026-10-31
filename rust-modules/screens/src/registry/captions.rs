@@ -6,7 +6,8 @@
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
 //! Episodes listing, Search's Episode and Person rows, Detail's Extras and Cast and Recommended's
-//! landscape rows keep the legacy block, [`still_label`] / [`still_block`].)
+//! landscape rows keep the legacy block, [`still_label`] / [`still_block`], except while the
+//! Library's Episodes view shows its sort value, which reads `sort_info::label` instead.)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -113,7 +114,8 @@ pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_co
 
 /// **A landscape STILL's focused block** (an episode's 16:9 art): NOT a poster and so off the Under
 /// posters policy, in its own legacy band (114 px, [`plx_ui::cards::LEGACY_BAND_H`]: this 92 px
-/// block and its air), under every setting: the episode's own title (its address when it has none,
+/// block and its air), under every setting except while the Library's Episodes view shows its sort
+/// value, which reads `sort_info::label` instead: the episode's own title (its address when it has none,
 /// or when it only repeats the show's name) over one fact, the time it has left on the Continue
 /// Watching deck (`is_continue`), else its release date. `credit` is the server a result is borrowed
 /// from (Search's results), named after the fact. The Library's Episodes listing, the Recommended

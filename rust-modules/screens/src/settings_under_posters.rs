@@ -369,11 +369,12 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], foot: Option
     let tiles = (0..PREVIEW_TILES).map(|i| Art::Poster(posters.get(i).map(|m| tile_facts::of(m))));
     if v.sort_value {
         // The Sort value row has focus: the row as a library sorted by Year draws it, every poster
-        // wearing its own year (through the one year formatter), the lifted one bold. The year is the
-        // item's own fact whatever kind the last-opened listing held (a TV show library, its Seasons
-        // or Episodes, a Collections page), so it is worded from the bare year and not from the
-        // item: the value table words only the primary grids' kinds, and a season's year must not
-        // read as a missing fact.
+        // wearing its own year (through the one year formatter), the lifted one bold. The preview
+        // illustrates a Year-sorted library whatever kind the last-opened listing held (a TV show
+        // library, its Seasons or Episodes, a Collections page), while the value table is per kind
+        // (a season has no `year` term, so `label` would draw nothing under a season sample, and a
+        // collection has no terms at all), so each sample is worded from its bare year through
+        // `year_value`, not from the item.
         SampleRow::draw_values(p, &frame, &PREVIEW_STYLE, tiles, lifted,
             |i| crate::registry::sort_info::year_value(posters.get(i).map_or(SAMPLE_YEAR, |item| item.year)), measure);
     } else {
