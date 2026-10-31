@@ -34,7 +34,8 @@ fn focus_fill(p: plx_ui::Painter, rect: Rect) {
 }
 
 /// The focused band's pill, centred on its row `slot`: the board's 38 high with 12 px each side of the
-/// label, built as the shared [`focus_pill`] around the plate it grows from.
+/// label, less for a label too wide for that (`band_pill_pad`), built as the shared [`focus_pill`]
+/// around the plate it grows from.
 fn band_pill(slot: Rect, label_w: f32) -> Rect {
     let plate_w = label_w + 2.0 * (band_pill_pad(label_w) - PILL_FOCUS_OUTSET);
     let plate_h = BAND_PILL_H - 2.0 * PILL_FOCUS_OUTSET;

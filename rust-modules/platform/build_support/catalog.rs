@@ -566,7 +566,7 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
             corpus.push(s.clone());
         }
     }
-    // An optional argument some language never reads would be a parameter nothing uses.
+    // An optional argument no language reads would be a parameter nothing uses.
     for k in optional.iter().filter(|k| !used_anywhere.contains(*k)) {
         errors.push(format!("{at}: optional argument {k} is used by no language; make it required or drop it"));
     }

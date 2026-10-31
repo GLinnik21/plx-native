@@ -379,6 +379,52 @@ fn a_day_turn_keeps_the_previous_days_rail_on_screen_until_the_new_days_lands() 
     // a sort of another family has no use for it either
     assert!(browse.state.set_sort_by_key("rating", true));
     assert!(browse.state.states()[0].shown_bands(kind).is_none(), "the rating's bands are not read yet");
+
+    // A round trip through another sort moves the day's list to the kept slot, and the day turning while
+    // it stands there keeps it on screen just the same: sort by Rating (its read lands), back to Date
+    // added (nothing is asked, the kept list answers), midnight.
+    let key = browse.state.states()[0].bands_key(BandFamily::Rating);
+    browse.state.state_mut(0).unwrap().land_bands(key, Some(a_rail(BandFamily::Rating)));
+    assert!(browse.state.set_sort_by_key("addedAt", true));
+    let state = &browse.state.states()[0];
+    assert!(!state.bands_owed(kind), "the kept list answers, nothing is read");
+    assert!(state.bands.as_ref().is_some_and(|(key, _)| key.family == Some(BandFamily::Rating)), "the rating's list is the landed one");
+    let kept = state.shown_bands(kind).expect("the day's rail, from the kept slot").clone();
+    on(&mut browse, [2026, 11, 2]);
+    let state = &browse.state.states()[0];
+    assert!(state.bands_owed(kind) && state.bands_verdict_for(BandFamily::DateAdded).is_none(), "the new day's bands are asked for");
+    assert!(Arc::ptr_eq(state.shown_bands(kind).expect("the rail stays up from the kept slot"), &kept));
+    assert!(state.bands_current(kind), "…and it is on screen");
+
+    // the same through an Unwatched round trip: this day's list lands, Unwatched goes on (its list is
+    // another terms' and lands, the day's moves to the kept slot) and off again
+    let key = browse.state.states()[0].bands_key(BandFamily::DateAdded);
+    browse.state.state_mut(0).unwrap().land_bands(key, Some(a_rail_on(BandFamily::DateAdded, [2026, 11, 2])));
+    browse.state.state_mut(0).unwrap().unwatched = true;
+    let key = browse.state.states()[0].bands_key(BandFamily::DateAdded);
+    browse.state.state_mut(0).unwrap().land_bands(key, Some(a_rail_on(BandFamily::DateAdded, [2026, 11, 2])));
+    browse.state.state_mut(0).unwrap().unwatched = false;
+    let state = &browse.state.states()[0];
+    assert!(!state.bands_owed(kind), "the kept list answers, nothing is read");
+    let kept = state.shown_bands(kind).expect("the day's rail, from the kept slot").clone();
+    on(&mut browse, [2026, 11, 3]);
+    let state = &browse.state.states()[0];
+    assert!(state.bands_owed(kind));
+    assert!(Arc::ptr_eq(state.shown_bands(kind).expect("the rail stays up from the kept slot"), &kept));
+
+    // landing the new day's drops the previous day's list from the kept slot too: it stands beside no
+    // list of its own terms (here a stale one is planted next to nothing, which no landing leaves)
+    let key = browse.state.states()[0].bands_key(BandFamily::DateAdded);
+    let stale = {
+        let mut stale = key.clone();
+        stale.today = Some([2026, 11, 2]);
+        (stale, Some(Arc::new(a_rail_on(BandFamily::DateAdded, [2026, 11, 2]))))
+    };
+    let state = browse.state.state_mut(0).unwrap();
+    state.bands = None;
+    state.bands_kept = Some(stale);
+    state.land_bands(key, Some(a_rail_on(BandFamily::DateAdded, [2026, 11, 3])));
+    assert!(state.bands_kept.is_none(), "a previous day's list is not kept beside this day's");
 }
 
 /// The key: a calendar family's carries the day (a day turn asks once more), no other does; the

@@ -27,11 +27,13 @@
 //! carries the family (`None` for the letters) and, for a calendar family, the day it was counted on
 //! (`today`, a field of the key and no `gen`: the bands are that day's, so a day turn is a new key and
 //! asks once more, and a fixed ladder's key never carries it). While that read is out the rail keeps
-//! showing the previous day's bands, when the day is all that differs ([`SecState::shown_bands`]): a
-//! focus seated in the rail must not lose it to a second of nothing. The direction is
-//! deliberately NOT in the key: the counts are of values, and a landed [`BandRail`] holds the layout
-//! of both directions, so a flip of the direction asks the server nothing. A family that a watch
-//! moves (`BandFamily::moves_with_viewing`) takes the viewing generation as an Unwatched key does.
+//! showing the previous day's bands, when the day is all that differs ([`SecState::shown_bands`]),
+//! whichever of the two slots holds them (a round trip through another sort or the Unwatched switch
+//! leaves them in the kept one): a focus seated in the rail must not lose it to a second of nothing.
+//! The direction is deliberately NOT in the key: the counts are of values, and a landed [`BandRail`]
+//! holds the layout of both directions, so a flip of the direction asks the server nothing. A family
+//! that a watch moves (`BandFamily::moves_with_viewing`) takes the viewing generation as an Unwatched
+//! key does.
 //! A read whose counts were not trusted lands as a list with no rail, not as a failure
 //! ([`SecState::land_bands`]): over a listing that held still the answer would not change on a retry,
 //! so only a moved key asks again (a listing that moved under the reads is a failure, and is asked
@@ -278,16 +280,22 @@ impl SecState {
     /// calendar rail is re-asked when the day turns, and a rail that vanished for the length of a read
     /// would take a focus seated in it away; the previous day's bands (same family, same terms, same
     /// generation, only `today` differs) are a second off and stand until the new verdict lands
-    /// ([`Self::land_bands`] drops them then).
+    /// ([`Self::land_bands`] drops them then). They are looked for in both slots, as the verdict is: a
+    /// round trip through another sort or the Unwatched switch leaves them in the kept one.
     fn bands_on_screen(&self, kind: SecKind) -> Option<&Option<Arc<BandRail>>> {
         let family = self.rail_family(kind)?;
         self.bands_verdict_for(family).or_else(|| {
             let (unwatched, genre) = self.applied_terms();
             let (gen, today) = (self.key_gen(sensitive(Some(family), unwatched)), self.key_today(family));
-            self.bands.as_ref()
-                .filter(|(key, _)| key.is_but_for_the_day(Some(family), today, unwatched, genre, gen))
+            self.bands_slots()
+                .find(|(key, _)| key.is_but_for_the_day(Some(family), today, unwatched, genre, gen))
                 .map(|(_, verdict)| verdict)
         })
+    }
+
+    /// The two slots of landed band counts, the landed one first.
+    fn bands_slots(&self) -> impl Iterator<Item = &(LettersKey, Option<Arc<BandRail>>)> {
+        [self.bands.as_ref(), self.bands_kept.as_ref()].into_iter().flatten()
     }
 
     /// The verdict of the band counts of `family` asked under the terms and the day the grid has NOW, if
@@ -296,9 +304,7 @@ impl SecState {
         let (unwatched, genre) = self.applied_terms();
         let gen = self.key_gen(sensitive(Some(family), unwatched));
         let today = self.key_today(family);
-        [self.bands.as_ref(), self.bands_kept.as_ref()]
-            .into_iter()
-            .flatten()
+        self.bands_slots()
             .find(|(key, _)| key.is(Some(family), today, unwatched, genre, gen))
             .map(|(_, verdict)| verdict)
     }
@@ -366,6 +372,11 @@ impl SecState {
                     self.bands_kept = None;
                 }
             }
+        }
+        // …and so is a previous day's list the kept slot holds (the day's list a round trip through another
+        // sort or the Unwatched switch left there), which the on-screen fallback stands on until now.
+        if self.bands_kept.as_ref().is_some_and(|(kept, _)| kept.of_another_day_than(&key)) {
+            self.bands_kept = None;
         }
         self.bands = Some((key, landed));
         self.bands_backoff = None;
