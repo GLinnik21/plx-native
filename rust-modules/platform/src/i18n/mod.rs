@@ -716,3 +716,34 @@ pub fn local_calendar_date(seconds: i64) -> Option<[i32; 3]> {
     let date = unsafe { out.assume_init() };
     Some([date.tm_year.checked_add(1900)?, date.tm_mon + 1, date.tm_mday])
 }
+
+/// The Unix timestamp of the first moment of a calendar date in the operating system's timezone
+/// (`mktime`, `tm_isdst = -1`): the twin of [`local_calendar_date`], the other way round. Daylight
+/// saving is decided by the OS FOR THIS DATE, so two dates a day apart across a clock change are 23
+/// or 25 hours apart, and a midnight a zone skips (its clocks jump from 23:59 to 01:00) reads as the
+/// 01:00 that starts that day. `None` for a date that is not on the calendar (month 13, 30 February)
+/// and where `time_t` cannot hold the result, which on the 32-bit television is every date outside
+/// 1901-2038. A date before 1970 gives a negative stamp, which is a real instant.
+///
+/// Like [`local_calendar_date`] this is the platform layer's read of the OS time zone, not a
+/// machine's: its caller is the application's runner, which hands it to a data job as a plain `fn`
+/// (`plx_data::browse::bands::Zone`), so no machine reads the zone and the `wall` gate has nothing
+/// to see. The data job asks it once per band edge, because the clock change is per edge.
+pub fn local_midnight(date: [i32; 3]) -> Option<i64> {
+    let [year, month, day] = date;
+    // `mktime` normalises 30 February to 2 March: a date that is not on the calendar has no midnight.
+    icu_calendar::Date::try_new_gregorian(year, u8::try_from(month).ok()?, u8::try_from(day).ok()?).ok()?;
+    // SAFETY: `tm` is plain integers (and, on glibc, a zone pointer that zero is valid for).
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = year.checked_sub(1900)?;
+    tm.tm_mon = month - 1;
+    tm.tm_mday = day;
+    tm.tm_isdst = -1;
+    // `mktime` answers -1 for "cannot represent" and -1 is also 23:59:59 on 31 Dec 1969 UTC; the day of
+    // the week is only filled in on success, so a -1 there tells the two apart.
+    tm.tm_wday = -1;
+    // SAFETY: `tm` is a valid, initialised `libc::tm` that `mktime` reads and normalises.
+    let stamp = unsafe { libc::mktime(&mut tm) };
+    if stamp == -1 && tm.tm_wday == -1 { return None; }
+    Some(i64::from(stamp))
+}
