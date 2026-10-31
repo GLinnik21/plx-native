@@ -94,12 +94,18 @@ impl<'a> MetadataView<'a> {
     pub fn cached_playing(&self, sid: plx_plex::plex::ServerId, rk: &str) -> Option<PlayingItem> {
         cached_playing(self.state, sid, rk)
     }
+    /// Has the viewer already put this exact segment behind them? Keyed on the segment, not the
+    /// marker value (the server can re-send the same marker with another end), and shared by the
+    /// server-marker and synthesized-tail paths so neither can re-offer a dismissed segment.
+    fn skipped(&self, m: &Marker) -> bool {
+        self.state.skipped.contains(&(m.kind, m.start_ms))
+    }
     pub fn active_marker(&self, head: Playhead) -> Option<Marker> {
         if !head.playing {
             return None;
         }
         let m = marker_at(self.playing_markers(), head.pos_ns / 1_000_000)?;
-        (!self.state.skipped.contains(&(m.kind, m.start_ms))).then_some(m)
+        (!self.skipped(&m)).then_some(m)
     }
     pub fn synthesized_tail_marker(&self, head: Playhead, has_next: bool) -> Option<Marker> {
         if !has_next || !head.playing {
@@ -110,7 +116,7 @@ impl<'a> MetadataView<'a> {
         }
         let dur_ms = head.dur_ns / 1_000_000;
         let pos_ms = head.pos_ns / 1_000_000;
-        tail_marker(pos_ms, dur_ms)
+        tail_marker(pos_ms, dur_ms).filter(|m| !self.skipped(m))
     }
     pub fn alt_copies(&self, sid: plx_plex::plex::ServerId, rk: &str) -> &'a [AltCopy] {
         alt_copies(self.state, sid, rk)
@@ -6653,5 +6659,62 @@ mod alt_runtime_tests {
         for k in ["show", "season", "artist", "album", "collection"] {
             assert!(!has_runtime(k), "{k}");
         }
+    }
+}
+
+/// The HUD dismisses an offer by marking its segment skipped, so the same `skipped` set that
+/// retires a server marker must retire a synthesized tail — and only that segment.
+#[cfg(test)]
+mod skipped_offer_tests {
+    use super::*;
+
+    fn view<'a>(state: &'a MetadataState, adapter: &'a MetadataAdapter) -> MetadataView<'a> {
+        MetadataView { state, adapter }
+    }
+
+    #[test]
+    fn a_dismissed_synthesized_tail_is_not_offered_again() {
+        let adapter = MetadataAdapter::default();
+        let mut state = MetadataState::default();
+        state.playing = Some(PlayingItem::with_subs(Vec::new()));
+        let dur_ms = 22 * 60 * 1_000;
+        let head = Playhead {
+            playing: true,
+            pos_ns: (dur_ms - TAIL_WINDOW_MS + 1) * 1_000_000,
+            dur_ns: dur_ms * 1_000_000,
+        };
+        let marker = view(&state, &adapter)
+            .synthesized_tail_marker(head, true)
+            .expect("the tail of an episode with a successor is offered");
+        mark_skipped(&mut state, marker);
+        assert!(
+            view(&state, &adapter).synthesized_tail_marker(head, true).is_none(),
+            "BACK dismissed this tail: the discs stay up until the playhead leaves it"
+        );
+    }
+
+    #[test]
+    fn dismissing_one_marker_leaves_a_later_segment_on_offer() {
+        let adapter = MetadataAdapter::default();
+        let mut state = MetadataState::default();
+        let intro = Marker { kind: MarkerKind::Intro, start_ms: 10_000, end_ms: 20_000, final_seg: false };
+        let credits = Marker { kind: MarkerKind::Credits, start_ms: 100_000, end_ms: 200_000, final_seg: true };
+        state.playing = Some(PlayingItem {
+            markers: vec![intro, credits],
+            ..PlayingItem::with_subs(Vec::new())
+        });
+        let head = |pos_ms: i64| Playhead {
+            playing: true,
+            pos_ns: pos_ms * 1_000_000,
+            dur_ns: 300_000 * 1_000_000,
+        };
+        mark_skipped(&mut state, intro);
+        let v = view(&state, &adapter);
+        assert!(v.active_marker(head(15_000)).is_none(), "the dismissed intro is not re-offered");
+        assert_eq!(
+            v.active_marker(head(110_000)).map(|m| m.kind),
+            Some(MarkerKind::Credits),
+            "BACK dismissed the intro segment, not every offer in the episode"
+        );
     }
 }

@@ -4025,6 +4025,27 @@ pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
     );
 }
 
+/// Re-seat the player's ring on the element its row currently calls primary — the APP's half of a
+/// row swap, used after it re-resolves a slot the page changed while the frame was in flight
+/// (BACK over an offer). A group-only re-seat would restore the element the engine remembered from
+/// before the stand-in, which can be a different disc from the one now drawn as primary.
+pub(crate) fn reseat_player_focus_on_primary(d: &mut Dispatcher<AppHost>) {
+    let Some(instance) = d.top_page() else { return };
+    let Some(entry) = d.nav.entry_of_instance(instance) else { return };
+    let Some(elem) = player(d).map(|player| plx_appkit::player_hud::control_elem(player.row_primary()))
+    else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(
+        page,
+        Fx::Deliver(
+            page,
+            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                focus: FocusTarget::Elem(FocusKey { entry, elem }),
+            })),
+        ),
+    );
+}
+
 /// **The top page answers its own keys** — the engine owns the input for it.
 ///
 /// The `route: Route` parameter these three took is gone with the fold (D1): `owns_input` already

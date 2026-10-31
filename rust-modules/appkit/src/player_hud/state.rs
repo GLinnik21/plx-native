@@ -148,10 +148,15 @@ impl ControlSlot {
     /// `Discs` and back. Keyed on the segment, that round trip is not a new offer; keyed on the
     /// slot, it was — and every flicker re-raised the HUD over an intro the user was just watching.
     pub fn offer(self) -> Option<(plx_data::metadata::MarkerKind, i64)> {
+        self.marker().map(|m| (m.kind, m.start_ms))
+    }
+    /// The segment this row is offering, if any — what BACK hands the metadata store so the
+    /// store's own `skipped` set, not a HUD copy of it, is what withdraws the offer.
+    pub fn marker(self) -> Option<plx_data::metadata::Marker> {
         match self {
             ControlSlot::Discs(_) => None,
-            ControlSlot::Skip(pr) => Some((pr.marker.kind, pr.marker.start_ms)),
-            ControlSlot::UpNext(m) => Some((m.kind, m.start_ms)),
+            ControlSlot::Skip(pr) => Some(pr.marker),
+            ControlSlot::UpNext(m) => Some(m),
         }
     }
 }

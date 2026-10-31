@@ -627,9 +627,10 @@ subset rejects it for the contrast rule, which needs one ink at one alpha per gl
 States: (section set, slot), under a valuation of the content conditions (R1). The section set is `{}` (compact) or what `layout.sections` allows (modal: one
 section at a time; inline: any subset of the sections the package lays out); the slot is Discs, Up Next or
 Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (closes the latest section,
-then hides the HUD); for modal sections, a direction that leaves the section's groups (closes it); the slot
-changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns to Discs when its
-marker ends or Watch Credits dismisses the offer.
+then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
+`skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
+(closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
+to Discs when its marker ends, when Watch Credits dismisses the offer, or when BACK dismisses it.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
   of the content conditions the package names (`chapters.present`, `title.is_episode`; a placed `previous` or `next`
