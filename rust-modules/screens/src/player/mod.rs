@@ -2832,7 +2832,8 @@ mod step_ladder_tests {
             (intro, false, (MarkerKind::Intro, intro.start_ms)),
             (credits, true, (MarkerKind::Credits, credits.start_ms)),
         ] {
-            let mut page = PlayerScreen::new(ENTRY);
+            let mut page =
+                PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
             page.slot = player_hud::slot_for(
                 Some(marker),
                 has_next,
@@ -2864,7 +2865,7 @@ mod step_ladder_tests {
             end_ms: 60_000,
             final_seg: false,
         };
-        let mut page = PlayerScreen::new(ENTRY);
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         page.slot = player_hud::slot_for(
             Some(intro),
             false,
