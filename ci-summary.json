@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T12:46:56Z",
+ "generated": "2026-10-31T12:56:03Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 35.3,
+   "change7_pct": 35.7,
    "d30": null,
    "delta30": null,
-   "delta7": 50.0,
+   "delta7": 50.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 74,
-   "now": 191.5,
+   "now": 192,
    "prev7": 141.5,
    "shown": true,
    "state": "worse",
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.6,
+   "change30_pct": -2.4,
    "change7_pct": 18.0,
-   "d30": 2517.0,
-   "delta30": -66.5,
+   "d30": 2511,
+   "delta30": -60.5,
    "delta7": 373.0,
    "group": "ci",
    "id": "minutes",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -62.7,
-   "change7_pct": 15.7,
-   "d30": 1028.0,
-   "delta30": -645.0,
-   "delta7": 52,
+   "change30_pct": -62.9,
+   "change7_pct": 15.4,
+   "d30": 1030,
+   "delta30": -648.0,
+   "delta7": 51.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 89,
+   "n_now": 90,
    "n_prev": 87,
-   "now": 383,
+   "now": 382.0,
    "prev7": 331,
    "shown": true,
    "state": "flat",
@@ -389,16 +389,16 @@
   {
    "change30_pct": 34.0,
    "change7_pct": 3.4,
-   "d30": 203,
+   "d30": 203.0,
    "delta30": 69.0,
    "delta7": 9.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 74,
-   "now": 272.0,
+   "now": 272,
    "prev7": 263.0,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -77.2,
-   "change7_pct": 6.2,
-   "d30": 934,
-   "delta30": -721.5,
-   "delta7": 12.5,
+   "change30_pct": -77.6,
+   "change7_pct": 6.5,
+   "d30": 952.0,
+   "delta30": -739.0,
+   "delta7": 13,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 73,
-   "now": 212.5,
+   "now": 213,
    "prev7": 200,
    "shown": true,
    "state": "flat",
@@ -538,16 +538,16 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -5.3,
-   "d30": 17,
+   "d30": 17.0,
    "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 74,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -601,8 +601,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 294,
-   "delta30": -291,
+   "d30": 293.0,
+   "delta30": -290.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -622,8 +622,8 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 962,
-   "delta30": -959,
+   "d30": 961.0,
+   "delta30": -958.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -667,11 +667,6 @@
    "change_pct": 69.1,
    "commits": [
     {
-     "pr": 1165,
-     "sha": "680c8a3c2",
-     "title": "Top bar: the glass is never dropped for the strip's width"
-    },
-    {
      "pr": 1137,
      "sha": "d8f317c06",
      "title": "Person: a refreshed server list no longer blanks a loaded page"
@@ -715,6 +710,11 @@
      "pr": 1176,
      "sha": "fef93ffab",
      "title": "The Seasons and Episodes views show the sort value under their cards"
+    },
+    {
+     "pr": 1177,
+     "sha": "12cbaebb8",
+     "title": "A-Z rail for a TV library's Seasons and Episodes views"
     }
    ],
    "from": 188,
@@ -725,13 +725,8 @@
    "to": 318
   },
   {
-   "change_pct": 35.3,
+   "change_pct": 35.7,
    "commits": [
-    {
-     "pr": 1165,
-     "sha": "680c8a3c2",
-     "title": "Top bar: the glass is never dropped for the strip's width"
-    },
     {
      "pr": 1137,
      "sha": "d8f317c06",
@@ -776,6 +771,11 @@
      "pr": 1176,
      "sha": "fef93ffab",
      "title": "The Seasons and Episodes views show the sort value under their cards"
+    },
+    {
+     "pr": 1177,
+     "sha": "12cbaebb8",
+     "title": "A-Z rail for a TV library's Seasons and Episodes views"
     }
    ],
    "from": 141.5,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 191.5
+   "to": 192
   },
   {
    "change_pct": 21.3,
    "commits": [
-    {
-     "pr": 1165,
-     "sha": "680c8a3c2",
-     "title": "Top bar: the glass is never dropped for the strip's width"
-    },
     {
      "pr": 1137,
      "sha": "d8f317c06",
@@ -837,6 +832,11 @@
      "pr": 1176,
      "sha": "fef93ffab",
      "title": "The Seasons and Episodes views show the sort value under their cards"
+    },
+    {
+     "pr": 1177,
+     "sha": "12cbaebb8",
+     "title": "A-Z rail for a TV library's Seasons and Episodes views"
     }
    ],
    "from": 268.0,
@@ -850,11 +850,6 @@
    "change_pct": 18.0,
    "commits": [
     {
-     "pr": 1165,
-     "sha": "680c8a3c2",
-     "title": "Top bar: the glass is never dropped for the strip's width"
-    },
-    {
      "pr": 1137,
      "sha": "d8f317c06",
      "title": "Person: a refreshed server list no longer blanks a loaded page"
@@ -898,6 +893,11 @@
      "pr": 1176,
      "sha": "fef93ffab",
      "title": "The Seasons and Episodes views show the sort value under their cards"
+    },
+    {
+     "pr": 1177,
+     "sha": "12cbaebb8",
+     "title": "A-Z rail for a TV library's Seasons and Episodes views"
     }
    ],
    "from": 2077.5,
