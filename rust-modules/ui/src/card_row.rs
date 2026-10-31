@@ -973,7 +973,8 @@ pub struct TileLabel {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SortValue {
     /// "98%", "2h 14m", "4K", "27 Oct", "Oct 2024": numbers and their units joined by a no-break
-    /// space. The en dash when the item has no value for the sort.
+    /// space. When the value is empty: the en dash for data the server does not have, "Never"
+    /// under Date viewed and Plays for something nobody played.
     pub text: String,
     /// A second version exists ("4K +1"): the first thing dropped when the line does not fit.
     pub plus: bool,

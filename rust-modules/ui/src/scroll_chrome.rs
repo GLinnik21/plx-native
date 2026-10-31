@@ -1,7 +1,7 @@
 //! **What a scrolled card page does with the chrome around it** — ONE rule for the pages that
 //! scroll a long grid under the tucking top chrome (the Library, its Collections page, the
 //! Watchlist): the chrome tucks away once the first row has gone, a fade of the page's ground takes
-//! the top edge, and a capsule restating the library's name and size appears only where the page's
+//! the top edge, and a capsule restating the library's name and size (and the sort it is read in, "Films 1,284 · Date viewed") appears only where the page's
 //! header names libraries ([`capsule_shown`]).
 //!
 //! **Home keeps its chrome and uses only the spatial half.** Its tab bar and profile chip are the

@@ -142,8 +142,9 @@ pub const CAPTION_DETAIL_INK: [f32; 4] = with_a(WHITE, 0.82);
 /// Random (Settings > Libraries > Under posters > Sort value): white at 80% at rest. The focused
 /// poster's value is [`TEXT_PRIMARY`] in bold.
 pub const SORT_VALUE_INK: [f32; 4] = with_a(WHITE, 0.80);
-/// The en dash a poster shows when it has no value for the sort (a never-viewed film under Date
-/// viewed): white at 50%, a step below [`SORT_VALUE_INK`] so the gap reads as absence.
+/// An empty sort value under a poster: the en dash for data the server does not have, the word
+/// "Never" under Date viewed and Plays for something nobody played. White at 50%, a step below
+/// [`SORT_VALUE_INK`] so the gap reads as absence.
 pub const SORT_VALUE_MISSING_INK: [f32; 4] = with_a(WHITE, 0.50);
 /// The `·` between fine-print facts, and **only** that — a step below the words it separates.
 /// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is

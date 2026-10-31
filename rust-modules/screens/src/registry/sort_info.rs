@@ -18,7 +18,7 @@
 //! the `episode.` scope instead of stripping it down to the show's own `addedAt`).
 //!
 //! The formats: ratings as a percentage beside the provider's mark (`captions::rating_mark`, the one
-//! table), `2h 14m`, `4K` (+1 for a second version), `62 Mbps`, plays with their noun (`14 plays`, `1 play`),
+//! table), `2h 14m`, `4K` (+1 for a second version), `62.0 Mbps`, plays with their noun (`14 plays`, `1 play`),
 //! `TV-MA`, `2019`; an item nobody played reads **Never** under Date viewed and Plays; and
 //! dates as **Today**, **Yesterday**, `27 Oct` (this year) or `Oct 2024` (any other year), in the
 //! interface language's own month names, never numeric. Every space is a no-break space, so a number

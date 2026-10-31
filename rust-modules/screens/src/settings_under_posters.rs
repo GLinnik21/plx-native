@@ -12,12 +12,12 @@
 //! never drawn empty, for any kind of tile: a details kind a tile has no facts for (a season has no
 //! length, often no genre) says the tile's identity instead ("Season 6", "S1 · E8", its year, and
 //! for a film, show or collection with not even that, what it is: "Movie", "Show", "Collection").
-//! Except a movie library grid showing its sort value (one value line under every poster),
+//! Except a movie or TV show library grid showing its sort value (one value line under every poster),
 //! the policy is the same under every POSTER in the app (Search results, a person's filmography,
 //! Detail's Related and collection shelves and a collection's members included); a landscape still
 //! or a headshot is not a poster and wears none of it. The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows
-//! the focused choice. With Sort value On, the value lines (on every tile, as the movie grids
+//! the focused choice. With Sort value On, the value lines (on every tile, as the Movies and TV Shows grids
 //! wear them, illustrating a library sorted by Year: each sample's own year, the lifted one bold)
 //! preview only while the Sort value row has focus, under a "Sorted by Year" caption at the frame's
 //! foot, and never in the picker: Title and Details still govern every other poster surface, so

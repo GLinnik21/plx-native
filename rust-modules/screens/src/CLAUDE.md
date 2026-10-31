@@ -246,7 +246,7 @@ answer (`Layout::with_value_line`, `Grid::set_value_line`); with the switch Off,
 sort, the grid draws as every other poster grid. Other poster surfaces keep the Title/Details policy
 above. The values are Plex's own facts from the listing (no request is added): ratings as a
 percentage beside the provider's mark (the shared `captions::rating_mark`, hung left of the number so
-the number stays on the axis), `2h 14m`, `4K` with `+1` for a second version, `62 Mbps`, plays with their noun ("14 plays", "1 play": the
+the number stays on the axis), `2h 14m`, `4K` with `+1` for a second version, `62.0 Mbps`, plays with their noun ("14 plays", "1 play": the
 catalogue's plural message), the content rating, the year, for a show the episodes left to play ("9 episodes", the
 catalogue's `browse.detail.episodes`; a show with none left draws NO line, while its slot keeps the 60 px pitch), and dates as Today, Yesterday, `27 Oct` this year or `Oct 2024` otherwise,
 in the interface language's month names (an English TV numeric-format locale does not override

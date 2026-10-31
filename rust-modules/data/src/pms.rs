@@ -1022,7 +1022,8 @@ fn apply_edit(b: &mut SourceBuild, at: &ViewAt, edit: ViewEdit) -> bool {
     }
 }
 
-/// The three fields one row's watch state is spread over, moved together.
+/// The fields one row's watch state is spread over, moved together: `watched`, `unwatched` and
+/// `resume_ms`, and for a show or season `viewed_leaf_count` too.
 ///
 /// `resume_ms` goes with them, and it is the half that is easy to miss: [`PmsMovie::resume_frac`]
 /// takes PRECEDENCE over the watched flag at the mark (`ui::widgets::poster_mark` — a re-watch in
@@ -1033,7 +1034,7 @@ fn apply_edit(b: &mut SourceBuild, at: &ViewAt, edit: ViewEdit) -> bool {
 ///
 /// `pub` because the hub catalog stopped being the only store an optimistic edit reaches:
 /// `browse`, `search` and `person` each hold their own rows and each flips them the same way, and
-/// three copies of "which three fields" is three chances for one of them to leave the resume bar on.
+/// three copies of "which fields" is three chances for one of them to leave the resume bar on.
 pub fn set_watched(m: &mut PmsMovie, on: bool) {
     m.watched = on;
     m.unwatched = !on;

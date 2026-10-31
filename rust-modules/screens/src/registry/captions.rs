@@ -1,5 +1,5 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), except a movie library grid showing its sort value (Sort
+//! (Settings > Libraries > Under posters), except a movie or TV show library grid showing its sort value (Sort
 //! value On and a sort that is not Title or Random: one value line under every poster,
 //! `registry::sort_info`): the Library grid, the Collections
 //! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
@@ -46,7 +46,7 @@ pub fn sort_value() -> bool {
     plx_media::route::under_posters().sort_value
 }
 
-/// The standard focused-poster policy; a movie library grid showing its sort value (Sort value On, sorted
+/// The standard focused-poster policy; a movie or TV show library grid showing its sort value (Sort value On, sorted
 /// by something other than Title or Random) draws that one line under every poster instead.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]

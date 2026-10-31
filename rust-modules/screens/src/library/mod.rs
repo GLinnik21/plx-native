@@ -805,7 +805,7 @@ impl LibraryScreen {
         self.pair.master.refresh(cx, &mut self.keys);
     }
 
-    /// The Sort value switch (or a sort) changed the rows' pitch under a held scroll, so the scroll is
+    /// The Sort value switch changed the rows' pitch under a held scroll, so the scroll is
     /// in the old pitch's coordinates and the focused row stands elsewhere than it did: 20 px per
     /// row away, which at a deep row is under the header. Seat that row again the way a focus move
     /// does ([`reveal`](Self::reveal)'s `row_reveal`), jumping, because the rows themselves changed
