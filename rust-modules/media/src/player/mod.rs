@@ -33,6 +33,10 @@ pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load d
 pub mod preview;
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
+#[cfg(feature = "devtriggers")]
+pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uriprobe`): what to say to com.webos.media (pure machine); `uriprobe_drive` runs it
+#[cfg(feature = "devtriggers")]
+pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
 // `test` here is THIS crate's own test build only, not `any(test, feature = "test-support")`: the
 // application crate's `port.rs` names `StarfishSink` in every build of its library that is not its
 // own test build, and `cargo check --lib --tests` builds that library with this crate's
@@ -650,6 +654,10 @@ fn acb_playstate_ready(stage: shared::Stage) -> bool {
 /// deliberately — one definition of "the plane is really ours", not two. No engine means no sink,
 /// so the bit clears on teardown without teardown having to remember to say so.
 ///
+/// A URI-mode probe session (`uriprobe_drive`, dev trigger `plxnative-uriprobe`) has no Engine and
+/// so no ACB stage: its bound is the service's own `playing`, which `drive` has already stepped this
+/// frame (it runs immediately before this call).
+///
 /// This is an OBSERVATION of the adapter, not a second owner: it hands the answer to
 /// [`machine::Player::set_video_plane_bound`], which is the only writer and the only publisher.
 pub fn observe_video_plane(
@@ -657,6 +665,8 @@ pub fn observe_video_plane(
     pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
     let bound = pa.engine().is_some_and(|e| acb_playstate_ready(e.stage));
+    #[cfg(feature = "devtriggers")]
+    let bound = bound || pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
 }
 

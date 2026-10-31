@@ -1674,6 +1674,14 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     if pa.engine().is_none() {
         super::set_native_seek_refused(false);
     }
+    // A URI-mode probe session (dev trigger `plxnative-uriprobe`) holds the route-start attempt and
+    // the exported window without an Engine in the slot: a second start under it is a no-op, as
+    // under a live Engine, and Back ends the session.
+    #[cfg(feature = "devtriggers")]
+    if pa.uri_live() {
+        log("start_bufferfeed: a URI-mode probe session is running (no-op)");
+        return BufferfeedStartOutcome::AlreadyRunning;
+    }
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -1915,6 +1923,31 @@ fn start_bufferfeed_inner(
         return Err(crate::route::RouteStartResult::StartFailed);
     }
     let stream = sample.is_none();
+    // dev: /tmp/plxnative-uriprobe — play this URL through `com.webos.media` (URI mode) instead of
+    // building an Engine, to learn what webOS 5+ does with it (issue #1064). Taken AFTER the route
+    // is prepared and BEFORE anything native is touched (the clock and session guards, the exported
+    // window, the payload), and never for a preview or a local sample: the probe needs a real stream
+    // URL and the foreground play which owns the screen. The content names the variant; text which
+    // names none leaves the probe unarmed and the play normal rather than running a variant nobody
+    // asked for.
+    #[cfg(feature = "devtriggers")]
+    if stream && !crate::route::is_preview(ps) {
+        if let Some(text) = plx_base::devtrig::read("uriprobe") {
+            match super::uriprobe::Variant::from_trigger(&text) {
+                Some(variant) => {
+                    // The probe takes no native session of its own, but its window verbs reach the
+                    // same seam, so it refuses like an Engine does while an earlier session still
+                    // owns the object (a parked timed-out Load): the tester plays again.
+                    if NativeSessionStartGuard::arm().is_none() {
+                        log("uriprobe: the native object is still owned by an earlier session: probe NOT started");
+                        return Err(crate::route::RouteStartResult::StartFailed);
+                    }
+                    return super::uriprobe_drive::start(ps, pa, route_start, &url, variant);
+                }
+                None => log("uriprobe: the trigger file names no variant (empty, load, late or none): NOT armed, playing normally"),
+            }
+        }
+    }
     // For a streamed direct-play/transcode, pick the Load codecs from the item: video H264 vs
     // H265 (native HEVC direct-play), audio AC3/EAC3/AAC/DTS. (The local sample paths keep their
     // fixed payloads.)
@@ -2720,6 +2753,15 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
 fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
+    // A URI-mode probe session (dev trigger `plxnative-uriprobe`) ends with the playback it stands
+    // in for, whatever ended it (Back, an app switch, the next Play): its machine settles a start
+    // still pending, unloads and closes, and the exported window goes. It owns no Engine, so the
+    // Engine-less ritual below then finishes the stop (the transcode session, the route) as it does
+    // for a start which failed before an Engine existed.
+    #[cfg(feature = "devtriggers")]
+    if let Some(probe) = pa.take_uri() {
+        super::uriprobe_drive::stop(ps, pa.mt(), probe);
+    }
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
     // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
     // that fact in the session can go stale across a landing that replaced the session.

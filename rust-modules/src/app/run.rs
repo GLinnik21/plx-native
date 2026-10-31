@@ -1966,6 +1966,12 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 fr.now,
             );
         }
+        // dev: the URI-mode probe (`plxnative-uriprobe`, issue #1064) has no Engine to pump. Its
+        // driver steps the machine once a frame, here, so the plane question just below reads this
+        // frame's answer. Outside `is_started` too: a probe never sets it, and a session which ended
+        // by itself must still be released.
+        #[cfg(feature = "devtriggers")]
+        plx_media::player::uriprobe_drive::drive(&mut app.player.session, &mut app.adapters.player);
         // **The ONE place the Player machine is asked whether the hardware video plane is bound**
         // (spec §9), immediately after the pump that advances the ACB bind transaction and BEFORE
         // the container tree's frame, so the whole iteration reads one answer. Outside the
