@@ -479,6 +479,27 @@ impl SortEntry {
         crate::sortfacts::SortFact::of_pms_key(&self.key).is_some()
     }
 
+    /// Is this the entry that orders a `listing` by title, the order the `/firstCharacter` counts sum
+    /// in? The A-Z letters rail needs exactly that order, ascending
+    /// ([`view::ListingView::rail_available`] adds the direction).
+    ///
+    /// The section's own listing and the collections list say `titleSort`. Seasons and episodes do
+    /// NOT: the server declares a COMPOSITE (`show.titleSort,index` for seasons,
+    /// `show.titleSort,season.index:nullsLast,...` for episodes) and counts the letters by the SHOW's
+    /// title, which the prefix sums land on only in that declared order (the default order is the same
+    /// one), never in the literal `titleSort`'s (`docs/pms-api.md`, "Count probes for seasons and episodes"). Their
+    /// Title entry is therefore the one whose first term is a title, [`SortFact::Title`], the table
+    /// that already reads a key by its first term.
+    pub fn is_title_order(&self, listing: LibraryType) -> bool {
+        // Exhaustive on purpose: a fifth listing must decide here.
+        match listing {
+            LibraryType::Primary | LibraryType::Collections => self.key == "titleSort",
+            LibraryType::Seasons | LibraryType::Episodes => {
+                crate::sortfacts::SortFact::of_pms_key(&self.key) == Some(crate::sortfacts::SortFact::Title)
+            }
+        }
+    }
+
     /// The word for the order this entry is in when `desc`: "A–Z", "Newest first". `None` for a
     /// key whose axis is unknown (a random order has no ends).
     pub fn direction_word(&self, desc: bool) -> Option<&'static str> {
@@ -2149,7 +2170,7 @@ impl BrowseState {
             return false;
         };
         let title_asc = match state.sorts.get(state.sort_idx) {
-            Some(sort) => sort.key == "titleSort" && !state.sort_desc,
+            Some(sort) => sort.is_title_order(state.library_type) && !state.sort_desc,
             None => true,
         };
         title_asc && state.shown_letters().is_some_and(|letters| letters.len() > 1)
