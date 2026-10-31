@@ -22,7 +22,8 @@
 //! eligible, and only when the person's recorded consent for that (account, server) allows it.
 //! Consent is the ACCOUNT's ([`account_key`]): an answer is honoured only while the plex.tv
 //! account that gave it is the one signed in, so a different account signing in on the same
-//! television is asked again.
+//! television is asked again. A new sign-in by the SAME person is asked again too, on purpose:
+//! the key follows the sign-in's token, not the owner, unlike the per-account records (#830).
 //! It names:
 //!
 //! * the server's `machineIdentifier` — a grant admits THAT server's credential ([`allowed_for`]),
@@ -161,13 +162,28 @@ pub fn revision() -> u64 {
 /// as that sign-in lasts, so every profile of the account shares the answer. Empty for an empty
 /// token, and an empty key matches nothing — an answer that cannot be bound to an account is not
 /// honoured. A fresh sign-in (a new token) is therefore asked again: the closed direction.
+///
+/// **This is the CONSENT key, and only consent's.** Consent is a security grant, is answered on the
+/// sign-in error screen while the owner is not yet known, and is deliberately re-asked after a new
+/// sign-in. The per-account RECORDS (`profile_prefs`, `track_memory`, `subtitle_offsets`) carry
+/// [`session::account_stamp`](super::session::account_stamp) instead, which follows the OWNER and
+/// so survives a sign-in by the same person; a new record kind stamped with this function would
+/// be lost at the next re-sign-in (#830).
 pub fn account_key(account_token: &str) -> String {
     if account_token.is_empty() {
         return String::new();
     }
-    let mut input = b"plx-consent:".to_vec();
-    input.extend_from_slice(account_token.as_bytes());
-    plx_base::sha256::sha256(&input)[..8].iter().map(|b| format!("{b:02x}")).collect()
+    fingerprint(b"plx-consent:", account_token)
+}
+
+/// The first 64 bits of SHA-256 over `domain` and `input`, as 16 lowercase hex characters: the one
+/// way this crate turns an identifier into a key that is safe to store in the public preferences.
+/// The `domain` tag keeps two uses of the same input from colliding (`plx-consent:` and the owner
+/// stamp's `plx-owner:`).
+pub(crate) fn fingerprint(domain: &[u8], input: &str) -> String {
+    let mut data = domain.to_vec();
+    data.extend_from_slice(input.as_bytes());
+    plx_base::sha256::sha256(&data)[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// **One insecure-only server, as a read-out needs it** — which server, whose it is, whether the

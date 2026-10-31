@@ -66,12 +66,10 @@ pub fn roster_refresh_fixture(profile_uuid: &str,
     SessionMachine::from_init(SessionInit::captured(persisted))
 }
 
-/// The who's-watching picker path: `Ready` seats the picked profile and commits its roster as
-/// a `Switch` (the one revoke this change of identity owes), Home is drawn, and only then does
-/// the same request's secondary `ProfileRoster` land — for the profile that is ALREADY seated
-/// and installed. Returns the owner after the `Ready` commit (its registry executed), the
-/// request, its epoch and the seated profile's primary source.
-pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::session::SourceRef) {
+/// The owner of the who's-watching picker path just before `Ready` lands: a Home user `u-kid` picked
+/// over a stored session whose registry source is the returned primary. Returns the owner, the
+/// request, its epoch, the stored primary source and the picked user.
+fn picker_switch_pending() -> (SessionMachine, u32, u64, plx_plex::plex::session::SourceRef, UserRef) {
     let primary = plx_plex::plex::session::SourceRef {
         machine_id: "a".into(), name: "Primary A".into(), owned: true,
         token: "kid-a-token".into(), address: "10.0.0.8".into(), port: 32400,
@@ -95,6 +93,14 @@ pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::sess
     let req = owner.allocate(SessionOp::ProfileSwitch, None).unwrap();
     owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
     let epoch = owner.state.epoch;
+    (owner, req, epoch, primary, user)
+}
+
+/// Feed the switch's `Ready` result carrying `source` as the picked profile's server, and return the
+/// commit it makes: its reply and its plan, which must be the `Switch` the registry owes this change
+/// of identity.
+fn picker_switch_ready(owner: &mut SessionMachine, req: u32, epoch: u64,
+    source: &plx_plex::plex::session::SourceRef, user: &UserRef) -> (CommitReply, CommitPlan) {
     let expected = super::super::SessionIdentity::of(&owner.state.persisted);
     let ready = SessionEnvelope {
         addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
@@ -104,14 +110,14 @@ pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::sess
             super::super::ProfileSwitchProgress { epoch, expected,
                 outcome: super::super::ProfileSwitchOutcomeProgress::Ready {
                     delta: super::super::ProfileDelta {
-                        server: super::super::server_ref(&primary),
-                        sources: vec![primary.clone()], user: user.clone(), cache: None,
+                        server: super::super::server_ref(source),
+                        sources: vec![source.clone()], user: user.clone(), cache: None,
                     },
                     probes: Vec::new(),
                 },
             }))),
     };
-    let effects = step(&mut owner, SessionEvent::Result(ready));
+    let effects = step(owner, SessionEvent::Result(ready));
     let (reply, plan) = effects.iter().find_map(|effect| match effect {
         SessionFx::Commit { req, epoch, arrival, plan } => Some((CommitReply {
             req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
@@ -120,12 +126,42 @@ pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::sess
     }).expect("the profile switch must commit");
     assert!(matches!(&plan.registry[0], RegistryPlan::Install { commit: RosterCommit::Switch, .. }),
         "seating a different profile is a switch");
+    (reply, plan)
+}
+
+/// The who's-watching picker path: `Ready` seats the picked profile and commits its roster as
+/// a `Switch` (the one revoke this change of identity owes), Home is drawn, and only then does
+/// the same request's secondary `ProfileRoster` land — for the profile that is ALREADY seated
+/// and installed. Returns the owner after the `Ready` commit (its registry executed), the
+/// request, its epoch and the seated profile's primary source.
+pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::session::SourceRef) {
+    let (mut owner, req, epoch, primary, user) = picker_switch_pending();
+    let (reply, plan) = picker_switch_ready(&mut owner, req, epoch, &primary, &user);
     for p in &plan.registry {
         assert!(super::super::execute_session_registry(p, "synthetic-client"));
     }
     step(&mut owner, SessionEvent::Commit(reply));
     assert_eq!(owner.state.persisted.user.uuid, "u-kid");
     (owner, req, epoch, primary)
+}
+
+/// The who's-watching picker path, one step short of the swap: the stored session's registry is
+/// live (`u-admin`'s server `a`), the picked profile's `Ready` has arrived, and the `Switch` plan it
+/// commits is returned UNEXECUTED, carrying the picked profile's own token for the same server.
+/// Executing it blanks every live token and installs the new one in place, which moves the server's
+/// grant epoch; `session::current_gen` stays where it was, because the profile is published by a
+/// later commit. Returns the server's slot and that plan. The caller holds
+/// [`plx_base::testlock::serial`] and has reset the server table and the grants.
+pub fn switch_away_from_the_seated_profile() -> (plx_plex::plex::ServerId, CommitPlan) {
+    let (mut owner, req, epoch, primary, user) = picker_switch_pending();
+    assert!(super::super::execute_session_registry(&RegistryPlan::Install {
+        sources: owner.state.persisted.sources.clone(), primary: None, commit: RosterCommit::Merge,
+    }, "synthetic-client"));
+    let sid = plx_plex::plex::id_of_machine("a").expect("the stored server registered");
+    let mut picked = primary;
+    picked.token = "the-picked-profiles-token".into();
+    let (_reply, plan) = picker_switch_ready(&mut owner, req, epoch, &picked, &user);
+    (sid, plan)
 }
 
 pub fn late_profile_roster(owner: &mut SessionMachine, req: u32, epoch: u64,

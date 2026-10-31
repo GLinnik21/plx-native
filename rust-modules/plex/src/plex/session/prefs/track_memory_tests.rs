@@ -337,6 +337,25 @@ fn one_profile_keeps_64_worst_case_entries() {
     assert!(list_size(&list) <= BUDGET_BYTES);
 }
 
+/// **The owner stamp costs three bytes a record, and the margin covers it.** `o1:` plus sixteen hex
+/// is nineteen bytes where the token fingerprint is sixteen; the budget counts entries and the
+/// record header once per profile, so a lone viewer still keeps all 64 worst-case entries with the
+/// owner form of the stamp, and the figures move by exactly the stamp's growth.
+#[test]
+fn one_profile_keeps_64_worst_case_entries_under_an_owner_stamp() {
+    let owner = "o1:19afc47bcea99412";
+    assert_eq!(owner.len(), STAMP.len() + 3);
+    let mut list = Vec::new();
+    for n in 0..64 {
+        let entry = worst(n);
+        assert!(list.upsert_with(LONG_USER, owner, &key_of(&entry), |_| Some(entry.clone())));
+    }
+    let size = list_size(&list);
+    assert_eq!(list[0].items.len(), 64, "the budget evicted a lone viewer's entries ({size} of {BUDGET_BYTES} bytes)");
+    assert_eq!(size, BUDGET_BYTES - WORST_MARGIN_BYTES + 3, "the owner form costs exactly its three extra bytes");
+    assert!(size <= BUDGET_BYTES);
+}
+
 /// The worst-case entry's logical size, and what 64 of them leave of the budget under a
 /// UUID-length profile key: re-derived whenever a bound moves.
 const WORST_ENTRY_BYTES: usize = 509;

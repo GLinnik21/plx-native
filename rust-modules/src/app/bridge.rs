@@ -1727,10 +1727,14 @@ impl Bridge {
         plx_plex::plex::session::peek()
     }
 
-    /// The profile the Session owner has seated, as the scope counter it allocated and published
-    /// (`session::current_gen`): it moves when a profile is seated, detached or signed out and
-    /// never on a same-profile token refresh. ViewState's step takes it as an argument and drops a
-    /// write pressed under another one; the Bridge reads the session here, the data layer does not.
+    /// The SEAT counter the Session owner allocated and published (`session::current_gen`): it moves
+    /// when a profile is seated, detached or signed out, and also when the same profile's seat is
+    /// republished (a roster write that moved the account stamp, #1037). It is published by a later
+    /// commit than the token swap of a profile switch, so it is not the identity of the CREDENTIAL:
+    /// that is the registry's grant epoch, which moves with the swap itself (`Client::grant_epoch`;
+    /// ViewState compares it through `ClientKeys`). ViewState's step takes this as an argument and
+    /// drops a write pressed under another seat; the Bridge reads the session here, the data layer
+    /// does not.
     fn profile_scope() -> u32 {
         plx_plex::plex::session::current_gen()
     }
@@ -4488,6 +4492,10 @@ mod store_admission_tests;
 #[cfg(test)]
 #[path = "viewstate_controlled_tests.rs"]
 mod viewstate_controlled_tests;
+
+#[cfg(test)]
+#[path = "viewstate_identity_tests.rs"]
+mod viewstate_identity_tests;
 #[cfg(test)]
 #[path = "browse_hubs_drain_tests.rs"]
 mod browse_hubs_drain_tests;

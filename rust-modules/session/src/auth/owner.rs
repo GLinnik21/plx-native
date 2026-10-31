@@ -45,6 +45,7 @@ pub fn write_purpose(w: &mut Canon, purpose: PersistencePurpose) {
         PersistencePurpose::Final => 1,
         PersistencePurpose::Profile => 2,
         PersistencePurpose::Background => 3,
+        PersistencePurpose::Seat => 4,
     });
 }
 
@@ -137,9 +138,12 @@ pub struct ProfilePublication {
     pub epoch: u64,
     pub profile: Option<UserRef>,
     pub scope: ProfileScope,
-    /// `grant::account_key` of the account token the profile is published under: the half of the
-    /// seat (`plex::session::Seat`) that says which sign-in the profile belongs to. Empty with no
-    /// account token, and in a recording made before the field existed. An empty stamp is left off
+    /// `plex::session::account_stamp` of the persisted session the profile is published under: the
+    /// half of the seat (`plex::session::Seat`) that says which account the profile belongs to. It
+    /// follows the OWNER (`o1:` and a hash of the roster admin's identity) once the roster names
+    /// one, so a new sign-in by the same person is the same seat, and is the token fingerprint
+    /// while the owner is unknown. Empty with no account token, and in a recording made before the
+    /// field existed. An empty stamp is left off
     /// the wire: a controlled replay grades the regenerated effect as complete canonical JSON
     /// against the committed recordings, which hold `{epoch, profile, scope}` alone.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -813,6 +817,18 @@ pub struct SessionInit {
     /// only: a relaunch asks plex.tv again.
     #[serde(default)]
     pub switch_refused_for: Option<Identity>,
+    /// **A `Seat` write was admitted and the seat has not been republished since**, holding the
+    /// stamp that write moved the seat to. The seat
+    /// (`plex::session::Seat`) carries the stamp it was published under, and a roster landing that
+    /// moves the stamp of a published profile makes the stored pair and the seat disagree until the
+    /// profile is published again. Set when a `Seat` commit is admitted; cleared by ANY publication
+    /// ([`SessionMachine::publish_profile`]); dropped wherever `persisted` moves to another account
+    /// ([`SessionMachine::drop_seat_debt`]); and read by the next DURABLE completion of any write,
+    /// which republishes while it is set AND the session still holds the stamp it names (see
+    /// `apply_persistence_completion`; a debt for another stamp is dropped). Neither serialized nor
+    /// hashed while absent, so no recorded initial state or digest changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_republish_owed: Option<String>,
 }
 
 impl SessionInit {
@@ -871,7 +887,7 @@ impl SessionInit {
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0, incident: None, incidents_seen: Vec::new(), next_incident: 0,
             link_trouble: false, discovery_retry: None, plaintext: None, signin_account: None,
-            switch_refused_for: None }
+            switch_refused_for: None, seat_republish_owed: None }
     }
 
     pub fn captured_boot(saved: PersistedSession, primary: Option<plx_plex::plex::session::ServerRef>,
@@ -1101,6 +1117,7 @@ impl LogicalState for SessionInit {
             w.str(&id.client_id).str(&id.account_token).str(&id.profile_uuid);
         });
         // Appended only when present, so every state without an offer keeps its digest.
+        if let Some(stamp) = &self.seat_republish_owed { w.u8(0xA5).str(stamp); }
         if let Some(verdict) = &self.plaintext {
             write_plaintext_verdict(w, verdict);
         }
@@ -1529,7 +1546,38 @@ impl SessionMachine {
             // while an unrelated fresh handoff is held must not free it.
             let released = self.state.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
             if released { self.release_held_handoff(emit); }
-            if superseded || released { self.replace_publication(); }
+            // A durable write while the seat is owed a republication (`seat_republish_owed`, set
+            // when a roster write that moved the stamp of the published profile was admitted, see
+            // `commit_moves_a_published_seat`): the restore the publication triggers now reads a
+            // pair this write landed. Any durable completion of THIS owner's admitted write pays
+            // it, not only the Seat write's own, while the session is still the account it was
+            // owed for (`drop_seat_debt`, and the stamp compared below): a later admission overwrites the single
+            // `admitted_persistence` slot, so the Seat write's verdict is dropped above, but the
+            // storage worker runs the writes in order and the later one is built from the same
+            // `persisted` that holds the new roster, so its landing leaves the pair the seat
+            // must name. A Seat write that FAILED may or may not have left the new pair on disk
+            // (a non-durable canonical commit can still leave the fallback file the next read
+            // serves), so it republishes nothing and the debt stays until the next durable one.
+            // Until then the seat keeps the stamp it has, which is the fail-closed direction
+            // (`persist_profile_pref` and `remember` refuse a pick, nothing is written under a
+            // stamp the file does not hold).
+            // The world is re-checked HERE, because the verdict can arrive after the owner moved
+            // on (a sign-out empties the stamp and the profile and its publication pays the debt,
+            // a sign-in has begun, another handoff is held: their own publication pays it).
+            // `!released` is deliberately DEFENSIVE: a held handoff's release publishes already,
+            // and the conjunct keeps a future change from publishing twice.
+            // The debt names the stamp it was owed for and is paid only while the session still
+            // holds that stamp: a debt for any other (the session moved to another account by a
+            // route that clears nothing) is dropped, never paid under the other account's stamp.
+            let stamp = plx_plex::plex::session::account_stamp(&self.state.persisted);
+            if self.state.seat_republish_owed.as_ref().is_some_and(|owed| *owed != stamp) {
+                self.state.seat_republish_owed = None;
+            }
+            let republish = self.state.seat_republish_owed.is_some() && !released
+                && !self.state.authorized_in_flow && self.state.held_handoff.is_none()
+                && self.state.active_profile.is_some() && !stamp.is_empty();
+            if republish { self.publish_profile(self.state.active_profile.clone(), emit); }
+            if superseded || released || republish { self.replace_publication(); }
         } else if admitted.fresh {
             if self.state.persistence_warning_answered {
                 // This authorization already had its one unsaved-login question answered
@@ -1636,6 +1684,9 @@ impl SessionMachine {
                     (commit.fresh && admit_revision.is_some()).then_some(prior);
                 self.state.committed_credentials = patch;
             }
+        }
+        if admit_revision.is_some() && admit_purpose == Some(PersistencePurpose::Seat) {
+            self.state.seat_republish_owed = Some(plx_plex::plex::session::account_stamp(&self.state.persisted));
         }
         if let Some(phase) = delta.phase { self.state.phase = phase; }
         if let Some(picker) = delta.picker { self.state.picker = picker; }
@@ -1859,14 +1910,25 @@ impl SessionMachine {
         self.schedule_pump(emit);
     }
 
+    /// **The debt must not outlive its account**: called wherever `persisted` moves to another
+    /// account (the authorization with a new token, a fresh restart, a refused token, the resume of
+    /// a stored session, a sign-out). The comparison with the stamp at the completion
+    /// ([`Self::apply_persistence_completion`]) is the second line for a move that clears nothing.
+    fn drop_seat_debt(&mut self) {
+        self.state.seat_republish_owed = None;
+    }
+
     fn publish_profile(&mut self, profile: Option<UserRef>, emit: &mut impl FnMut(SessionFx)) {
         // This is the sole scope allocator. Resource publication will store this explicit value
         // rather than independently incrementing another generation.
         self.state.profile_scope.0 = self.state.profile_scope.0.wrapping_add(1);
         self.state.active_profile = profile;
+        // Every publication seats the stamp `persisted` names now: whatever republication a roster
+        // write owed the seat is paid.
+        self.state.seat_republish_owed = None;
         emit(SessionFx::PublishProfile(ProfilePublication {
             epoch: self.state.epoch, profile: self.state.active_profile.clone(), scope: self.state.profile_scope,
-            stamp: plx_plex::plex::grant::account_key(&self.state.persisted.account_token),
+            stamp: plx_plex::plex::session::account_stamp(&self.state.persisted),
         }));
     }
 
@@ -2031,6 +2093,7 @@ impl SessionMachine {
             emit(SessionFx::Coordinator(CoordinatorAction::SignInCancelled));
         }
         self.state.persisted = stored;
+        self.drop_seat_debt();
         self.state.phase = Phase::Ready;
         self.state.apply_pending = true;
         self.state.pin_code.clear();
@@ -2054,6 +2117,7 @@ impl SessionMachine {
         emit(SessionFx::Coordinator(CoordinatorAction::CloseTelemetry));
         self.advance_epoch(emit).expect("epoch preflight");
         self.state.persisted = PersistedSession::default();
+        self.drop_seat_debt();
         self.state.committed_credentials = CredentialPatch::of(&self.state.persisted);
         // The identity ends here, and its verdicts with it: the same account signed back in is
         // the same `Identity`, and nothing has refused it anything in that sign-in.
@@ -2214,7 +2278,15 @@ impl SessionMachine {
                 let mut next = self.state.persisted.clone();
                 next.server = server.clone();
                 next.sources = sources.clone();
-                next.home_users = users.iter().map(super::UserTile::to_ref).collect();
+                // An EMPTY answer never replaces a roster cached for this token: a retry whose
+                // `home/users` fetch failed arrives here with no users, and the cached roster is
+                // what names the owner (the stamp every per-account record is read under) and what
+                // offline switching reads, exactly as the picker's own roster refresh keeps it
+                // (`HomeRoster` below). A NEW sign-in has nothing to keep: `Authorized` already
+                // emptied the old account's roster.
+                if !users.is_empty() {
+                    next.home_users = users.iter().map(super::UserTile::to_ref).collect();
+                }
                 // `Authorized` emptied the offline profile cache because the new token names no
                 // account. The roster does: the same owner as the stored record gets that
                 // record's cache back (nothing of another account's, nor when either is unknown).
@@ -2466,7 +2538,47 @@ impl SessionMachine {
             }
         }
         plan.writes_durable = plan.credentials.is_some();
+        if plan.writes_durable && self.commit_moves_a_published_seat(&plan, &delta) {
+            plan.purpose = PersistencePurpose::Seat;
+        }
         self.begin_commit(req, envelope.arrival, envelope.terminal, plan, delta, emit)
+    }
+
+    /// **Does this commit move the account stamp of a profile that is already published?** Then its
+    /// purpose becomes [`PersistencePurpose::Seat`], and the owner republishes the profile when the
+    /// write is DURABLE ([`Self::apply_persistence_completion`]), never now: the credential merge
+    /// happens at admission while the disk write and the session cache install land later on the
+    /// storage worker, and the restore a publication triggers reads the cache. Admitting it sets
+    /// [`SessionInit::seat_republish_owed`], and the republication is owed until a publication is
+    /// made: if the Seat write's own verdict is overtaken by a later admission, or is a failure,
+    /// the next DURABLE completion of any write makes it, provided the session is still the
+    /// account the debt was owed for (the debt names the stamp and is dropped when the account moves).
+    ///
+    /// In practice that is the picker's `HomeRoster` commit (the only roster writer besides a
+    /// sign-in) making a previously unknown owner known, or respelling the admin's identity when a
+    /// late id arrives. The predicate is exact, so nothing else can fire:
+    /// * the purpose is `Background` (every Login, Rediscover, ProfileSwitch, Discovery and Final
+    ///   commit carries another one), on the routine authority;
+    /// * no sign-in is in flight (`authorized_in_flow`: `Authorized` has already moved `persisted`
+    ///   to the new token while the PREVIOUS account's profile is still the active one, and the
+    ///   sign-in's own final commit publishes), and no handoff is held (the gate would be bypassed);
+    /// * the commit does not itself activate a profile, and a profile IS published;
+    /// * the stamp after the merge is non-empty and differs from the stamp now. The decision is on
+    ///   the STAMP, not on the roster: a respelling that maps to the same stamp republishes nothing.
+    fn commit_moves_a_published_seat(&self, plan: &CommitPlan, delta: &CommitDelta) -> bool {
+        let Some(patch) = &plan.credentials else { return false };
+        // `purpose == Background` and `!delta.activate_profile` are deliberately DEFENSIVE. The one
+        // call site runs for every resource observation, but the other credential commits there are
+        // Discovery (Login, Rediscover) or Profile (ProfileSwitch) by `purpose`, and no Background
+        // observation sets `activate_profile`, so neither conjunct can be false today. They stay so
+        // that a future op, or a future caller of this predicate, cannot republish around the
+        // held-handoff gate of a sign-in or a profile switch.
+        if plan.purpose != PersistencePurpose::Background
+            || plan.authority != plx_plex::plex::session::SaveAuthority::Routine
+            || self.state.authorized_in_flow || self.state.held_handoff.is_some()
+            || delta.activate_profile || self.state.active_profile.is_none() { return false; }
+        let after = plx_plex::plex::session::account_stamp(&patch.merge_into(&self.state.persisted));
+        !after.is_empty() && after != plx_plex::plex::session::account_stamp(&self.state.persisted)
     }
 
     /// Start/restart is one owner decision. Check both counters before cancelling anything:
@@ -2500,6 +2612,7 @@ impl SessionMachine {
             self.state.persistence_warning_answered = false;
         } else {
             self.state.persisted = self.state.committed_credentials.merge_into(&self.state.persisted);
+            self.drop_seat_debt();
             self.state.phase = Phase::Creating;
             self.state.picker = Picker::Boot;
             self.state.pin_code.clear();
@@ -2620,6 +2733,7 @@ impl SessionMachine {
         // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
         if incident.is_some_and(|context| context.kind.refuses_the_account_token()) {
             self.state.authorized_in_flow = false;
+            self.drop_seat_debt();
         }
         match incident {
             Some(context) => self.raise_incident(IncidentFlow::SignIn, context),
@@ -2705,6 +2819,7 @@ impl SessionMachine {
                         self.state.persisted.home_users.clear();
                         self.state.persisted.profiles.clear();
                         self.state.persisted.account_token = token.clone();
+                        self.drop_seat_debt();
                         self.state.authorized_in_flow = true;
                         self.state.link_trouble = false;
                         self.state.discovery_retry = None;
@@ -2934,6 +3049,8 @@ pub mod scenarios;
 mod tests {
     use super::*;
     use super::scenarios::{roster_refresh_fixture, step, step_at, OwnerHost};
+
+    mod stamp_tests;
 
     /// The session-cache refresh bookkeeping (`CacheRefresh`): driven by tick values, no sleeping.
     mod cache_refresh {

@@ -7,7 +7,7 @@
 //! `profile_prefs`:
 //!
 //! ```json
-//! "profile_prefs": [ { "user": "<home uuid, or \"\" for the account owner>", "account": "<grant::account_key>",
+//! "profile_prefs": [ { "user": "<home uuid, or \"\" for the account owner>", "account": "<account_stamp>",
 //!                      "prefs": { "subtitle_size": "large", "playback_quality": "720p_4_mbps" } } ]
 //! ```
 //!
@@ -26,14 +26,18 @@
 //!   [`super::de_soft_opt`], which turns anything it cannot read into `None` (the per-type `de_soft_*`
 //!   functions of [`Preferences`] turn garbage into the DEFAULT, which would shadow the fallback).
 //! * **Account-bound.** A record is visible only while its `account` equals the non-empty stamp of
-//!   the signed-in account (`grant::account_key` of the account token). The owner's `""` record of
-//!   two accounts therefore never mixes, a re-login that replaced the token without a sign-out
+//!   the signed-in account ([`account_stamp`](crate::plex::session::account_stamp): the OWNER's
+//!   stamp once the roster names one, else the token's fingerprint). The owner's `""` record of
+//!   two accounts therefore never mixes. A re-login by the SAME owner keeps its records (the stamp
+//!   does not follow the token; the older build's token-stamped records are adopted into the owner
+//!   stamp), while a re-login that replaced the credentials of a DIFFERENT owner without a sign-out
 //!   leaves the previous records unreachable, and the next write prunes them ([`put_own`]).
 //! * **Written only through [`persist_profile_pref`]**, which refuses without a seat, across a
-//!   tenure or credential change, and with an empty stamp.
+//!   tenure or client change, when the file's account stamp is no longer the seat's (another
+//!   owner's login; a new token under the SAME owner does not refuse), and with an empty stamp.
 //! * **No `extensions`**: a field a later build adds is not carried by this one.
 use super::{
-    Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite,
+    Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite, StampedRecord,
     DolbyVisionModePref, InstantDpadSeekingPref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UnderPostersPref,
 };
@@ -85,6 +89,52 @@ impl ProfilePrefs {
     pub fn is_empty(&self) -> bool {
         *self == ProfilePrefs::default()
     }
+
+    /// Take from `older` every setting this profile has no value of its own for; a value it has
+    /// stays. **Exhaustive on purpose**: `older` is destructured without `..`, so a setting added
+    /// to [`ProfilePrefs`] stops this compiling until it is merged here, instead of being silently
+    /// dropped by an adoption (the full-fixture test in `profile_prefs_tests` holds it at runtime).
+    fn fill_from(&mut self, older: ProfilePrefs) {
+        let ProfilePrefs {
+            playback_quality,
+            direct_play_mode,
+            subtitle_tone,
+            subtitle_size,
+            subtitle_position,
+            hdr_overlay_brightness,
+            next_episode_mode,
+            skip_interval,
+            instant_dpad_seeking,
+            deck_press,
+            under_posters,
+            audio_enhancements,
+            trailer_autoplay,
+            dolby_vision_mode,
+        } = older;
+        macro_rules! fill {
+            ($($field:ident),* $(,)?) => {$(
+                if self.$field.is_none() {
+                    self.$field = $field;
+                }
+            )*};
+        }
+        fill!(
+            playback_quality,
+            direct_play_mode,
+            subtitle_tone,
+            subtitle_size,
+            subtitle_position,
+            hdr_overlay_brightness,
+            next_episode_mode,
+            skip_interval,
+            instant_dpad_seeking,
+            deck_press,
+            under_posters,
+            audio_enhancements,
+            trailer_autoplay,
+            dolby_vision_mode,
+        );
+    }
 }
 
 /// **One profile's own values under one account stamp** — the record shape of `profile_prefs`, with
@@ -94,8 +144,8 @@ impl ProfilePrefs {
 pub struct ProfilePrefsRecord {
     /// The Plex Home user's `uuid`, or empty for the account owner.
     pub user: String,
-    /// `grant::account_key` of the account the values were picked under; a record is visible only
-    /// while this equals the signed-in account's non-empty stamp.
+    /// [`account_stamp`](crate::plex::session::account_stamp) of the account the values were picked
+    /// under; a record is visible only while this equals the signed-in account's non-empty stamp.
     #[serde(deserialize_with = "super::de_soft_string", skip_serializing_if = "String::is_empty")]
     pub account: String,
     pub prefs: ProfilePrefs,
@@ -116,6 +166,15 @@ impl ProfileKeyed for ProfilePrefsRecord {
     }
     fn slot_mut(session: &mut Session) -> &mut Vec<Self> {
         &mut session.prefs.profile_prefs
+    }
+}
+
+impl StampedRecord for ProfilePrefsRecord {
+    fn set_account(&mut self, account: String) {
+        self.account = account;
+    }
+    fn absorb(&mut self, older: Self) {
+        self.prefs.fill_from(older.prefs);
     }
 }
 
@@ -211,10 +270,11 @@ pub fn put_own<S: ProfileSetting>(records: &mut Vec<ProfilePrefsRecord>, user: &
 }
 
 /// **Who a pick is for, captured on the main thread when the viewer picks**: the seat, the
-/// revocation tenure and the credentials the record belonged to. The worker's write is refused when
-/// any of them moved (the account-data guard of `queue_update_ticket`), so a pick queued before a
-/// sign-out or a different login lands nowhere, and a pick made as profile A lands on A's record
-/// whoever is seated when the write runs.
+/// revocation tenure and the client the record belonged to. The worker's write is refused when the
+/// tenure or the client moved, or when the file's account stamp ([`account_stamp`](crate::plex::session::account_stamp))
+/// is no longer the seat's, so a pick queued before a sign-out or a login by another owner lands
+/// nowhere, a pick queued across a re-sign-in by the SAME owner (a new token, the same stamp) lands,
+/// and a pick made as profile A lands on A's record whoever is seated when the write runs.
 #[derive(Clone, Debug)]
 pub struct ProfileWrite {
     user: String,
@@ -248,7 +308,7 @@ impl ProfileWrite {
         crate::plex::session::tenure() == self.tenure
             && (self.client_id.is_empty() || cur.client_id == self.client_id)
             && !self.stamp.is_empty()
-            && crate::plex::grant::account_key(&cur.account_token) == self.stamp
+            && crate::plex::session::account_stamp(cur) == self.stamp
     }
 }
 
@@ -261,7 +321,7 @@ impl ProfileWrite {
 /// has: a legacy absent quality must not be reinterpreted by a later readiness change. `true` is a
 /// `Durable` write, or no write at all because the profile already held the value (`read &&
 /// unchanged`). `false` is a refused or failed write, an unreadable record, a pick whose tenure or
-/// credentials moved, and the revocation guard of
+/// client moved or whose account stamp is no longer the file's, and the revocation guard of
 /// [`update_guarded_with_outcome`](super::super::update_guarded_with_outcome).
 pub fn persist_profile_pref<S: ProfileSetting>(w: &ProfileWrite, v: S::Value) -> bool {
     let (mut read, mut unchanged) = (false, false);

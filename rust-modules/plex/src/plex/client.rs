@@ -144,8 +144,13 @@ pub struct Client {
     /// replaced in place by another live one is the same identity's credential refreshed —
     /// discovery re-registering a stored server under plex.tv's current grant — and keeps it.
     /// Read by caches of what a server SERVED rather than of a request string (resident poster
-    /// art, `app::adapters::poster::lookup`), which must drop on a new identity and survive a
-    /// refresh. Seeded from the same sequence as `token_gen`, so a new `Client` never shares one.
+    /// art, `app::adapters::poster::lookup`), by queued selection PUTs (`route::decision`), and by
+    /// ViewState's queued household writes (`plex::HeldClient::same_asker`), which must drop on a new
+    /// identity and survive a refresh. Seeded from the same sequence as `token_gen`, so a new
+    /// `Client` never shares one. It is stored with `token_gen` inside the token's write lock and
+    /// read with it by [`Client::credential`]; the installs that move it run on the main thread
+    /// today (`commit_with_disk`), `regrade_credentials` elsewhere, but only blanking, and nothing
+    /// here relies on that.
     grant_epoch: AtomicU32,
     /// Immutable process-local instance identity for adapter recordings, distinct from both the
     /// secret token and the Plex device identifier. A token swap must not rename this instance.
@@ -177,6 +182,15 @@ pub struct Client {
 static GEN_SEQ: AtomicU32 = AtomicU32::new(1);
 fn next_gen() -> u32 {
     GEN_SEQ.fetch_add(1, Relaxed)
+}
+
+/// A client's credential counters read as ONE value ([`Client::credential`]): the token
+/// generation the request keys compare and the grant epoch (the identity the token speaks for).
+/// A named pair so the two `u32`s cannot be transposed silently.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Credential {
+    pub token_gen: u32,
+    pub grant_epoch: u32,
 }
 
 /// [`Client::link`] before discovery has activated a candidate. Distinct from every real tier on
@@ -357,41 +371,62 @@ impl Client {
     /// Swap the `X-Plex-Token` at runtime (Plex Home profile switch — same server, new per-user
     /// token). Cheap; the next request picks it up via [`Client::with_token`]. Bumps the token
     /// generation so token-baked caches (the poster key memo) invalidate, and — only across a
-    /// revocation edge (live → blank, blank → live) — the [`Client::grant_epoch`].
+    /// revocation edge (live → blank, blank → live) — the [`Client::grant_epoch`]. Both counters
+    /// move INSIDE the token's write lock, in one critical section with the token itself, so
+    /// [`Client::credential`] (which reads them under the read lock) never sees a moved token
+    /// generation beside the previous identity. A poisoned lock stores nothing and moves neither.
     pub fn set_token(&self, token: &str) {
         if let Ok(mut g) = self.token.write() {
-            if g.is_empty() != token.is_empty() {
-                self.grant_epoch.store(next_gen(), Relaxed);
-            }
+            let moved_identity = g.is_empty() != token.is_empty();
             *g = token.to_owned();
+            self.publish_edit(g, moved_identity);
         }
-        self.token_gen.store(next_gen(), Relaxed);
     }
     /// **Revoke a live token that `token` would replace**, when the caller cannot prove the two
     /// speak for one identity: the live one is blanked, so the replacement lands across a
     /// revocation edge and [`Client::grant_epoch`] moves exactly as for a profile switch. A blank
     /// slot, or the same token again, is left alone. Returns whether it revoked.
     pub(super) fn revoke_unless_same(&self, token: &str) -> bool {
-        let revoked = match self.token.write() {
+        match self.token.write() {
             Ok(mut g) if !g.is_empty() && g.as_str() != token => {
                 g.clear();
-                self.grant_epoch.store(next_gen(), Relaxed);
+                self.publish_edit(g, true);
                 true
             }
             _ => false,
-        };
-        if revoked {
-            self.token_gen.store(next_gen(), Relaxed);
         }
-        revoked
+    }
+    /// The ONE place the credential counters are written: the token generation, and the grant
+    /// epoch when the edit moved the identity. It takes the token's write guard BY VALUE and drops
+    /// it after both stores, so every writer's edit is published by one critical section; both
+    /// writers ([`Client::set_token`], [`Client::revoke_unless_same`]) end in this call and store
+    /// neither counter themselves. (By structure, not by the compiler: nothing stops a later edit
+    /// from adding a store elsewhere, which is what `credential_is_read_under_the_token_lock` and
+    /// the blank-edge stress test are there to catch.)
+    fn publish_edit(&self, guard: std::sync::RwLockWriteGuard<'_, String>, moved_identity: bool) {
+        if moved_identity {
+            self.grant_epoch.store(next_gen(), Relaxed);
+        }
+        self.token_gen.store(next_gen(), Relaxed);
+        drop(guard);
     }
     /// The identity epoch of this server's credential — see the field. Unchanged by a live-to-live
     /// retoken; moved by every revocation and by the admission that follows one.
     pub fn grant_epoch(&self) -> u32 {
         self.grant_epoch.load(Relaxed)
     }
+    /// The token generation and the grant epoch as ONE reading, taken while holding the token's
+    /// read lock: a writer's edit ([`Client::publish_edit`]) stores both inside its write guard, so
+    /// a reader sees both values of an edit or neither, on any thread. Use this, not the two
+    /// separate accessors, wherever the pair is compared (`HeldClient::of`). `None` when the lock
+    /// is poisoned: nothing can then be proven about the identity.
+    pub fn credential(&self) -> Option<Credential> {
+        let _read = self.token.read().ok()?;
+        Some(Credential { token_gen: self.token_gen.load(Relaxed), grant_epoch: self.grant_epoch.load(Relaxed) })
+    }
     /// Token generation for THIS server — moved by [`Client::set_token`]; caches keyed on paths
-    /// that embed the token compare this to know when to flush. Signature unchanged from the
+    /// that embed the token compare this to know when to flush. For the generation TOGETHER with
+    /// the identity epoch, read [`Client::credential`]. Signature unchanged from the
     /// process-global era on purpose: `app/adapters/poster.rs` reads it through `client()` and must keep
     /// compiling untouched.
     pub fn token_gen(&self) -> u32 {
@@ -1310,6 +1345,108 @@ mod tests {
             StreamUrl::parse("http://192.0.2.10:8020/f.mkv").port(),
             8020
         );
+    }
+
+    // ---- the credential: token generation and grant epoch as one reading ----------------------
+
+    #[test]
+    fn a_revocation_edge_moves_the_grant_and_the_token_generation_in_one_credential() {
+        let c = a_client("m", "tok");
+        let live = c.credential().expect("the lock is not poisoned");
+        assert_eq!((live.token_gen, live.grant_epoch), (c.token_gen(), c.grant_epoch()));
+
+        c.set_token("tok2"); // a live token replaced by another live one
+        let refreshed = c.credential().unwrap();
+        assert_ne!(refreshed.token_gen, live.token_gen);
+        assert_eq!(refreshed.grant_epoch, live.grant_epoch, "a refresh is the same identity");
+        assert_eq!((refreshed.token_gen, refreshed.grant_epoch), (c.token_gen(), c.grant_epoch()));
+
+        c.set_token("");
+        c.set_token("tok3"); // revoked, then admitted again
+        let readmitted = c.credential().unwrap();
+        assert_ne!(readmitted.token_gen, refreshed.token_gen);
+        assert_ne!(readmitted.grant_epoch, refreshed.grant_epoch, "a blank edge is a new identity");
+        assert_eq!((readmitted.token_gen, readmitted.grant_epoch), (c.token_gen(), c.grant_epoch()));
+
+        assert!(c.revoke_unless_same("someone-else"));
+        let revoked = c.credential().unwrap();
+        assert_ne!(revoked.token_gen, readmitted.token_gen);
+        assert_ne!(revoked.grant_epoch, readmitted.grant_epoch);
+    }
+
+    /// The pair is read while holding the token's read lock, so a reading that starts inside a
+    /// writer's critical section waits for it: it can never see the new generation with the old
+    /// epoch. The writer here is a test holding the guard, so the outcome does not depend on timing.
+    #[test]
+    fn credential_is_read_under_the_token_lock() {
+        let c = a_client("m", "tok");
+        let writer = c.token.write().unwrap();
+        c.token_gen.store(777, Relaxed); // half of an edit: the new generation, the old epoch
+        std::thread::scope(|scope| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let c = &c;
+            scope.spawn(move || tx.send(c.credential()).unwrap());
+            assert!(rx.recv_timeout(std::time::Duration::from_millis(100)).is_err(),
+                "the credential was read while a writer held the token lock");
+            c.grant_epoch.store(888, Relaxed); // the other half
+            drop(writer);
+            let got = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the reading finishes once the writer is done");
+            assert_eq!(got, Some(Credential { token_gen: 777, grant_epoch: 888 }));
+        });
+    }
+
+    #[test]
+    fn a_poisoned_token_lock_gives_no_credential() {
+        let c = a_client("m", "tok");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = c.token.write().unwrap();
+            panic!("poisoning the token lock on purpose");
+        }));
+        assert!(c.token.is_poisoned());
+        assert_eq!(c.credential(), None, "no proof of the identity is claimed");
+        let generation = c.token_gen();
+        c.set_token("never-stored"); // a poisoned lock stores nothing and bumps nothing
+        assert_eq!(c.token_gen(), generation);
+    }
+
+    /// Every edit below is a blank edge (live to blank, blank to live), so every edit moves the
+    /// grant AND the generation. A reader must therefore never see the generation differ between
+    /// two readings while the grant stayed. A regression stress for the writers: it cannot flake on
+    /// a correct implementation, and the writer runs until the reader has SEEN thousands of edits,
+    /// so the reader cannot start after the writer is done. The writers are held to the single
+    /// method that stores both counters inside the guard BY STRUCTURE; this is the probabilistic
+    /// net behind that.
+    #[test]
+    fn a_blank_edge_is_never_observed_as_a_moved_key_with_the_same_grant() {
+        use std::sync::atomic::AtomicBool;
+        struct StopOnDrop<'a>(&'a AtomicBool);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) { self.0.store(true, Relaxed); }
+        }
+        let c = a_client("m", "tok");
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(Relaxed) {
+                    c.set_token("");
+                    c.set_token("x");
+                }
+            });
+            let _stop_the_writer = StopOnDrop(&stop); // also when an assertion below fails
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            let mut last = c.credential().unwrap();
+            let mut changes = 0u32;
+            while changes < 5_000 && std::time::Instant::now() < deadline {
+                let now = c.credential().unwrap();
+                if now.token_gen != last.token_gen {
+                    changes += 1;
+                    assert_ne!(now.grant_epoch, last.grant_epoch,
+                        "the generation moved and the grant did not: {last:?} then {now:?}");
+                }
+                last = now;
+            }
+            assert_eq!(changes, 5_000, "the reader did not see the writer move the credential in time");
+        });
     }
 }
 

@@ -109,8 +109,8 @@ pub use client::urlenc_str;
 // `player::report`'s packed attempt snapshot, so the two never keep a private copy each.
 pub use client::{decode_ip, decode_link, encode_ip, encode_link};
 #[allow(unused_imports)]
-pub use client::{Client, IpVersion, StreamUrl};
-pub use client_keys::{ClientKey, ClientKeys, KeyedClients};
+pub use client::{Client, Credential, IpVersion, StreamUrl};
+pub use client_keys::{ClientKey, ClientKeys, HeldClient, KeyedClients};
 // `Client::find_by_guids`' vocabulary (library.rs stays private).
 pub use library::{GuidKind, GuidLookupError, GuidMatch, Oldest, SectionTotal, GUIDS_PER_REQUEST};
 // WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a

@@ -651,6 +651,30 @@ fn under_posters_is_picked_into_the_seated_profiles_record_and_follows_the_seat(
     assert!(matches!(How::settings::<UnderPostersPref>(std::sync::mpsc::channel().0), How::Confirm(_)));
 }
 
+/// **G3, the read.** The mirror is seeded under ONE stamp and a seat reads only under that stamp: a
+/// seat under another stamp reads nothing, even when the mirror's lists hold records of that stamp
+/// (the file keeps the owner's records, hidden, while the owner is unknown). Reading them would be
+/// reading under the other stamp; the next restore reseeds and the two converge.
+#[test]
+fn a_seat_with_a_stamp_other_than_the_mirror_seed_reads_nothing() {
+    let _g = plx_base::testlock::serial();
+    let _session = session::TempSession::new("seat-stamp-vs-seed");
+    let _restore = Put::back(cells());
+    let owner = "o1:19afc47bcea99412";
+    let own = vec![
+        picked("kid", owner, serde_json::json!({"subtitle_size": "extra_large"})),
+        picked("pal", &stamp(), serde_json::json!({"subtitle_size": "small"})),
+    ];
+
+    scramble();
+    restore(&record(stored_prefs(), own.clone()), &Seat::Seated { user: "kid".into(), stamp: owner.into() }, Overrides::default());
+    assert_eq!(cells(), legacy_cells(), "a seat under a stamp the mirror was not seeded under reads the legacy keys");
+
+    scramble();
+    restore(&record(stored_prefs(), own), &Seat::Seated { user: "pal".into(), stamp: stamp() }, Overrides::default());
+    assert_eq!(subtitle_size(), SubtitleSize::Small, "control: under the seed's own stamp the pick is read");
+}
+
 // ---- Dolby Vision override (Settings > Playback) -----------------------------------------------
 
 struct DolbyVisionBack;
