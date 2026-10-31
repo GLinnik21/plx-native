@@ -894,16 +894,9 @@ fn the_top_bar_keeps_three_to_one_on_every_glyph_pixel_of_every_hop() {
 #[test]
 fn the_top_bar_draws_every_label_at_full_ink_in_one_weight_per_frame() {
     let _g = serial_for_motion();
-    // A recording painter paints no pixels, but the bar's draw also queues a framebuffer read of the
-    // ground under its track (`gfx::sample_ground`), which needs GL. A frozen page answers from the
-    // last reading and reads nothing (`gfx`'s `a_frozen_page_answers_its_ground_from_the_last_reading`).
-    struct Frozen(bool);
-    impl Drop for Frozen {
-        fn drop(&mut self) {
-            plx_gfx::gfx::set_page_frozen(self.0);
-        }
-    }
-    let _frozen = Frozen(plx_gfx::gfx::set_page_frozen(true));
+    // A recording painter paints no pixels, and the bar's draw calls `gfx::sample_ground`, which
+    // reads a band image and so needs a walk; with none it answers the last reading and copies
+    // nothing (`gfx`'s `a_bar_with_no_band_image_keeps_its_last_reading_and_copies_nothing`).
     let faces = [
         TabFace::Label("Home".into()),
         TabFace::Label("Movies".into()),
@@ -927,7 +920,8 @@ fn the_top_bar_draws_every_label_at_full_ink_in_one_weight_per_frame() {
         for frame in 0..80 {
             strip.update(labels, sel, TopFocus::Pill(to), DT);
             let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band));
-            let (widths, glass_on) = with_tab_metrics_for(labels, |_, _, w| (w.to_vec(), tab_glass_on(tab_geometry(w, 0.0).track.w)));
+            let widths = with_tab_metrics_for(labels, |_, _, w| w.to_vec());
+            let glass_on = tab_glass_on();
             for (i, word) in words.iter().enumerate() {
                 let mine: Vec<_> = runs.iter().filter(|r| r.text == *word).collect();
                 assert!(!mine.is_empty(), "{from} -> {to} frame {frame}: \"{word}\" is not drawn");
@@ -972,13 +966,6 @@ fn the_top_bar_draws_every_label_at_full_ink_in_one_weight_per_frame() {
 #[test]
 fn painted_pill_frames_stand_one_gap_apart_in_the_top_bar_and_in_a_strip() {
     let _g = serial_for_motion();
-    struct Frozen(bool);
-    impl Drop for Frozen {
-        fn drop(&mut self) {
-            plx_gfx::gfx::set_page_frozen(self.0);
-        }
-    }
-    let _frozen = Frozen(plx_gfx::gfx::set_page_frozen(true));
     // a label's frame (x, w) from the first run that says it
     fn frame(runs: &[crate::draw_census::Run], word: &str, pad: f32) -> (f32, f32) {
         let run = runs.iter().find(|r| r.text == word).unwrap_or_else(|| panic!("\"{word}\" is not drawn"));

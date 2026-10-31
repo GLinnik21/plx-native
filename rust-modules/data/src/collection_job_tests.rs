@@ -8,7 +8,7 @@ use crate::stores::collection::{CollectionCmd, CollectionStore};
 use crate::stores::StoreJob;
 use plx_machine::landgate::fixture_gate;
 
-const KEY: ClientKey = ClientKey { instance: 7, token: 3 };
+const KEY: ClientKey = ClientKey { instance: 7, token: 3, grant: 3 };
 
 fn sid() -> ServerId { ServerId::from_raw(3) }
 

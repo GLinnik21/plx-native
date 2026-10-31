@@ -1729,7 +1729,7 @@ where
                         let _chrome_layer = backdrop::layer(Z::CHROME, true);
                         // **A band that is fully faded is not drawn: by rule, not by where the lift
                         // put it.** The tuck lifts the bar off canvas, which clips its glass away,
-                        // but its draw still queued `sample_ground` framebuffer copies and a glass
+                        // but its draw still queued a `sample_ground` reading and a glass
                         // declaration at alpha 0; with the lift gone it would source every scrolled
                         // frame, invisibly. The same rule withdraws the strip's pointer stops below
                         // (`chrome_presented`), and a skipped frame publishes no material, so the

@@ -1960,7 +1960,7 @@ fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
 /// **A fully tucked chrome band declares nothing by RULE, not by geometry.** The Library lifts a
 /// tucked bar off canvas ([`crate::screen::chrome_lift`]) and `surface_with` clips what is off
 /// canvas away, so it declared no glass at tuck 1 only because of where the lift put it; the track
-/// still ran its draw (a `sample_ground` framebuffer copy and a glass declaration) at alpha 0.
+/// still ran its draw (a `sample_ground` reading and a glass declaration) at alpha 0.
 /// Were the lift removed (it once was, as "unused") the invisible bar would go on sourcing every
 /// scrolled frame. The dispatcher therefore draws no chrome at `chrome_alpha` 0, whatever the lift.
 ///
@@ -2390,4 +2390,31 @@ fn an_entry_far_below_the_top_keeps_only_its_route_and_focus_and_returns_seated(
     let e = d.nav.top_page().unwrap();
     assert_eq!(e.id, home);
     assert_eq!(e.ret.focus, Some(FocusKey { entry: home, elem: 5 }));
+}
+
+/// **A page opened while its host's menu is still fading out does not bring the menu back on
+/// BACK.** An item menu's "Go to" dismisses the menu and opens the page; the closing surface was
+/// covered with its host, and BACK restored it: the host was covered again and nothing was left to
+/// uncover it, so its cards stopped animating and its grid stopped scrolling.
+#[test]
+fn a_page_opened_over_a_closing_surface_returns_to_a_live_host() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let spot = FocusKey { entry: home, elem: 2 };
+    d.set_focus(Some(spot));
+    let menu = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    d.request(MachineId::Nav, NavOp::Dismiss(menu));
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.modals.surface(menu).map(|s| s.phase), Some(Phase::Closing), "premise: still fading");
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(20)));
+    for i in 0..30 { d.frame(&mut rig, tick(48 + i * 16), vec![], vec![], &mut NoTap); }
+    d.request(MachineId::Nav, NavOp::Pop);
+    for i in 0..30 { d.frame(&mut rig, tick(600 + i * 16), vec![], vec![], &mut NoTap); }
+    assert_eq!(d.nav.top_page().unwrap().id, home);
+    assert!(d.nav.modals.is_empty(), "the dismissed menu stays gone");
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(home)));
+    assert_eq!(d.focus(), Some(spot));
+    let ev = events_of(&d, 0);
+    let last = |name: &str| ev.rfind(&format!("\"{name}\""));
+    assert!(last("uncover") > last("cover"), "the host ends uncovered: {ev}");
 }
