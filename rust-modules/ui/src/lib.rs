@@ -593,6 +593,11 @@ pub struct Painter {
 thread_local! {
     static RECORD_WALK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static OUTPUT_GAIN: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+    /// The key of the picture the region's texture was last filled with ([`Painter::cached_region`]) and
+    /// the placeholders that fill drew: what a frame served from the texture counts again. Beside the
+    /// renderer's one slot, which holds the same key, and written by every fill, so the two cannot name
+    /// different pictures.
+    static REGION_DEBT: std::cell::RefCell<Option<(u64, placeholder::Debt)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// **Run `f` with every [`Painter`] on this thread drawing its colours scaled by `gain`.**
@@ -827,8 +832,8 @@ impl Painter {
     ///
     /// `paint` runs exactly once, with the painter to draw with: this one when the picture is drawn
     /// live (a recording or discovery walk, a zoom, a pop, a frozen page, no GL, the cache switched
-    /// off, an unsettled key), the identity painter when it fills the texture. A caller therefore
-    /// draws in the painter's own space, `r` being where the picture stands in it.
+    /// off, an unsettled key, a clip held), the identity painter when it fills the texture. A caller
+    /// therefore draws in the painter's own space, `r` being where the picture stands in it.
     ///
     /// **`paint` draws no glass and no blur.** A glass or blur pass ends by rebinding the frame's
     /// framebuffer and resetting the viewport and clip target to the frame's, which would pull the
@@ -838,26 +843,63 @@ impl Painter {
     /// A call with no key still counts as the page asking for the region: a frame in which no page
     /// asks gives the texture back (`gfx::region_frame_end`).
     ///
-    /// Returns whether `paint` RAN: `false` when the picture came from the texture, so a caller that
-    /// books what a draw books (the placeholder debt) books it itself.
-    pub fn cached_region(self, key: Option<u64>, r: Rect, paint: impl FnOnce(Painter)) -> bool {
+    /// **The placeholders the picture holds are counted on every frame it is shown**, whichever way:
+    /// drawn live they are noted by the draw; at the fill they are noted by `paint` and recorded
+    /// ([`placeholder::since`]) with the key the texture holds, and a frame served from the texture,
+    /// where nothing is drawn, re-notes that debt ([`placeholder::renote`]) - the same bookkeeping a
+    /// held page image keeps (`dispatch`'s `page_debt`). A caller books nothing.
+    pub fn cached_region(self, key: Option<u64>, r: Rect, paint: impl FnOnce(Painter)) {
+        self.cached_region_in(plx_gfx::gfx::region_paint, key, r, paint)
+    }
+
+    /// [`cached_region`](Self::cached_region) over the region `serve` stands for (the renderer's
+    /// `region_paint`, or a table-driven stand-in a host test hands it: no GL is linked there).
+    fn cached_region_in(
+        self,
+        serve: impl FnOnce(Option<u64>, [f32; 4], [f32; 2], [f32; 4], &mut dyn FnMut()) -> bool,
+        key: Option<u64>,
+        r: Rect,
+        paint: impl FnOnce(Painter),
+    ) {
         let mut paint = Some(paint);
-        // A clip the caller holds (a scrolling list's) would be baked into the texture: not cached.
-        if !self.records() && self.zoom.is_none() && self.scale == 1.0 && self.a > 0.0 && self.clip == Rect::FULL {
+        // Only a picture the cascade leaves ALONE is cached: a carried clip, a clip scope open around
+        // the call (a scrolling list's: `ClipScope` narrows the scissor, not this painter) or a
+        // scissor set by `Painter::clip` (the renderer's `region_paint` declines that one) would be
+        // baked into the texture at one offset and served at every other.
+        if !self.records()
+            && self.zoom.is_none()
+            && self.scale == 1.0
+            && self.a > 0.0
+            && self.clip == Rect::FULL
+            && screen::ClipScope::current().is_none()
+        {
             let g = self.rgb * self.a;
-            let drawn = plx_gfx::gfx::region_paint(key, [r.x, r.y, r.w, r.h], [self.dx, self.dy], [g, g, g, self.a], &mut || {
+            let from = placeholder::mark();
+            let mut filled = false;
+            let served = serve(key, [r.x, r.y, r.w, r.h], [self.dx, self.dy], [g, g, g, self.a], &mut || {
                 if let Some(paint) = paint.take() {
+                    filled = true;
                     paint(Painter::root());
                 }
             });
-            if drawn {
-                return paint.is_none();
+            if served {
+                // `serve` answers true only for a key.
+                let key = key.unwrap_or_default();
+                REGION_DEBT.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    if filled {
+                        *slot = Some((key, placeholder::since(from)));
+                    } else if let Some((held, debt)) = slot.as_ref() {
+                        debug_assert_eq!(*held, key, "the texture holds a picture this call did not fill");
+                        placeholder::renote(debt);
+                    }
+                });
+                return;
             }
         }
         if let Some(paint) = paint.take() {
             paint(self);
         }
-        true
     }
     /// The opacity carried on the cascade — for a caller whose WORK depends on whether anything it
     /// draws can be seen this frame (`RouteGround::draw_host` defers its page read to a frame

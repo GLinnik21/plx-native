@@ -3878,6 +3878,16 @@ thread_local! {
     static REGION: std::cell::RefCell<RegionSet> = const {
         std::cell::RefCell::new(RegionSet { slot: RegionSlot::new(), cache: FrameCache::new(), asked: false })
     };
+    #[cfg(any(test, feature = "test-support"))]
+    static REGION_ASKS: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Test-support: the asks [`region_paint`] has had on this thread, ever, as `(keyed, unkeyed)`. Counted
+/// at the door, before any gate, so a host test (no GL: every ask declines) can still say what a
+/// caller ASKED for - a picture it named, or one it was not ready to name. Two readings bracket a span.
+#[cfg(any(test, feature = "test-support"))]
+pub fn region_asks() -> (u32, u32) {
+    REGION_ASKS.with(|n| n.get())
 }
 
 /// The whole-pixel canvas rect a region of `rect` (`x, y, w, h` logical px) is drawn into: the rect
@@ -3911,7 +3921,7 @@ fn region_mix(key: u64, extent: [c_int; 4]) -> u64 {
 /// a frame that asks for none gives the texture back ([`region_frame_end`]). Returns whether the region
 /// was drawn: `false` means `paint` did NOT run and the caller draws it live - with the cache switched
 /// off, with no key, with no GL, on a frozen page, in a blur or discovery pass, in another page target,
-/// or when the fill declined.
+/// under a clip the caller holds (a scissor is up), or when the fill declined.
 ///
 /// **`paint` must draw no glass and no blur.** A glass or blur pass ends by rebinding
 /// [`plx_base::surface::default_fb`] and resetting the viewport, [`CLIP_TARGET`] and the scissor to the
@@ -3925,11 +3935,22 @@ pub fn region_paint(
     tint: [f32; 4],
     paint: &mut dyn FnMut(),
 ) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    REGION_ASKS.with(|n| {
+        let (keyed, unkeyed) = n.get();
+        n.set(if key.is_some() { (keyed + 1, unkeyed) } else { (keyed, unkeyed + 1) });
+    });
     REGION.with(|cell| {
         let Ok(mut set) = cell.try_borrow_mut() else { return false };
         set.asked = true;
         let Some(key) = key else { return false };
         if !region_cache() || page_frozen() || blur_source_pass() || backdrop::discovering() {
+            return false;
+        }
+        // A clip the caller holds (a scrolling list's `ClipScope`, a bare `Painter::clip`) is a scissor on
+        // the frame: the fill would intersect it into the texture's own box and bake a clip that is then
+        // served at every offset. Both spellings go through `clip_set`, so `LIVE_SCISSOR` sees them.
+        if unsafe { LIVE_SCISSOR }.is_some() {
             return false;
         }
         // No image shader, no GL context (a host test): nothing here may call GL.

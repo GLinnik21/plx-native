@@ -16,9 +16,7 @@ use std::hash::{Hash, Hasher};
 use plx_machine::machine::Measure;
 
 use crate::card_row::{self, RowStyle, SortValue, TileLabel};
-use crate::placeholder::{self, Reason};
 use crate::screen::ClipScope;
-use crate::tile::TileKind;
 use crate::widgets::{Art, ArtImage};
 use crate::{theme, Painter, Rect};
 
@@ -143,23 +141,13 @@ impl SampleRow {
         measure: &dyn Measure, text: impl FnOnce(Painter)) {
         let led = Self::lead(p, sty, frame, arts, focused);
         let key = Self::cache_key(frame, sty, arts, &led, focused);
-        let painted = p.cached_region(key, frame.rect, |q| {
+        // The skeletons in the picture are counted on every frame it is shown, drawn or served
+        // (`Painter::cached_region`): this draws nothing of the kind itself.
+        p.cached_region(key, frame.rect, |q| {
             frame.panel(q);
             let _clip = ClipScope::open_in(q, frame.rect);
             Self::tiles(q, frame, sty, arts, &led, focused);
         });
-        if !painted {
-            // The picture came from the texture, so the skeletons in it were not drawn: count them as
-            // the draw would (`widgets::card_named_led`), or the frame's placeholder debt reads zero.
-            for (art, image) in arts.iter().zip(&led) {
-                if let Art::Poster(m) = art {
-                    let neutral = m.is_some_and(|m| m.kind == TileKind::Collection && m.thumb.is_empty());
-                    if image.tex == 0 && !neutral {
-                        placeholder::note(p, Reason::CardSkeleton, m.map_or("", |m| m.thumb));
-                    }
-                }
-            }
-        }
         {
             let _clip = ClipScope::open_in(p, frame.rect);
             text(p);
@@ -241,6 +229,7 @@ mod tests {
     use super::*;
     use crate::draw_census::capture_runs;
     use crate::fixture::FixtureMeasure;
+    use crate::placeholder;
 
     #[test]
     fn the_row_is_centred_and_the_lifted_tile_grows_about_its_own_centre() {
@@ -381,8 +370,10 @@ mod tests {
         assert!(key_of(&frame, &sty, &arts, &done, 1).is_some());
     }
 
-    /// The draw-count pin, end to end on the host: the names of a scripted run of frames go through
-    /// `RegionSlot::serve`, the very step `region_paint` serves from, with a counter for the texture.
+    /// The slot half of the draw-count pin: the names ([`SampleRow::cache_key`]) of a scripted run of
+    /// frames go through `RegionSlot::serve`, the very step `region_paint` serves from, with a counter
+    /// for the texture. It does NOT go through `SampleRow::draw`; the asks `draw` makes are pinned by
+    /// `a_settled_draw_asks_for_its_region_by_name_once_and_an_unsettled_one_asks_without_a_name`.
     /// Twenty frames of the same inputs are ONE fill; each changed input is one more; a frame
     /// mid-dissolve has no name, so it never reaches the slot (it is drawn live); and the two pages of a
     /// push - the same picture, so the same name - share the fill.
@@ -420,14 +411,152 @@ mod tests {
         assert_eq!(frame_of(&arrived, &SampleFrame { rest_alpha: 0.5, ..frame }, 1).0, 3, "and holds");
     }
 
-    /// On the host no GL is linked: the picture is drawn live, once, with the page's own painter and
-    /// the caller is told it ran (so it books what a draw books).
+    /// On the host no GL is linked: the picture is drawn live, once, with the page's own painter.
     #[test]
     fn without_a_gl_context_the_picture_is_drawn_live_exactly_once() {
         let mut runs = 0;
-        let ran = Painter::root().cached_region(Some(1), Rect::new(0.0, 0.0, 10.0, 10.0), |_| runs += 1);
-        assert!(ran && runs == 1);
-        let ran = Painter::root().cached_region(None, Rect::new(0.0, 0.0, 10.0, 10.0), |_| runs += 1);
-        assert!(ran && runs == 2, "an unnamed picture is always live");
+        Painter::root().cached_region(Some(1), Rect::new(0.0, 0.0, 10.0, 10.0), |_| runs += 1);
+        assert_eq!(runs, 1);
+        Painter::root().cached_region(None, Rect::new(0.0, 0.0, 10.0, 10.0), |_| runs += 1);
+        assert_eq!(runs, 2, "an unnamed picture is always live");
+    }
+
+    // ---- the cached picture: what it asks of the renderer, and what it owes the frame ----
+
+    /// The renderer's one slot as a table: `RegionSlot::serve` is the step, the texture a pair of
+    /// counters. What `region_paint` is to `Painter::cached_region`, this is on the host.
+    #[derive(Default)]
+    struct Texture {
+        slot: RegionSlot,
+        fills: u32,
+        serves: u32,
+    }
+
+    impl Texture {
+        fn serve(&mut self, key: Option<u64>, paint: &mut dyn FnMut()) -> bool {
+            let Some(key) = key else { return false };
+            let Self { slot, fills, serves } = self;
+            slot.serve(&mut (), key, |_| { paint(); *fills += 1; true }, |_| { *serves += 1; true })
+        }
+    }
+
+    /// What the cached picture draws: the panel and the tiles, as `framed` hands them to the region.
+    fn picture(q: Painter, frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>]) {
+        frame.panel(q);
+        let _clip = ClipScope::open_in(q, frame.rect);
+        SampleRow::tiles(q, frame, sty, arts, &vec![ArtImage::NONE; arts.len()], 1);
+    }
+
+    /// Ask for `arts` as the picture named `key`, from `serve`, and say how many placeholders the frame
+    /// counted.
+    fn counted(frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>], key: u64,
+        mut serve: impl FnMut(Option<u64>, &mut dyn FnMut()) -> bool) -> u32 {
+        // Declared, not painted: the host has no GL, and a discovery walk is where every primitive
+        // declares itself while the counter still sees what a frame would.
+        let ((), seen) = placeholder::capture_declared(|| {
+            Painter::root().cached_region_in(
+                |k, _, _, _, paint| serve(k, paint), Some(key), frame.rect, |q| picture(q, frame, sty, arts));
+        });
+        seen.count
+    }
+
+    /// **The placeholders a picture holds are counted on every frame it is shown**, not only on the
+    /// frame it is drawn: the live draw, the fill and the frames served from the texture all read the
+    /// same count, for every kind of art (an empty `Poster` and an empty `Still` slot both wear a
+    /// skeleton), and a picture that is filled over another carries its own count, not the old one's.
+    #[test]
+    fn a_frame_served_from_the_texture_counts_the_placeholders_the_fill_drew() {
+        let (frame, sty) = board();
+        let live = |arts: &[Art<'_>]| counted(&frame, &sty, arts, 7, |_, _| false);
+        for arts in [
+            vec![Art::Poster(None), Art::Poster(None), Art::Poster(None)],
+            vec![Art::Still(None), Art::Still(None)],
+            vec![Art::Poster(None), Art::Still(None)],
+        ] {
+            let want = live(&arts);
+            assert!(want > 0, "a tile with no art wears a skeleton: {want}");
+            let mut texture = Texture::default();
+            assert_eq!(counted(&frame, &sty, &arts, 7, |k, p| texture.serve(k, p)), want, "the fill frame counts what a live draw counts");
+            for n in 0..3 {
+                assert_eq!(counted(&frame, &sty, &arts, 7, |k, p| texture.serve(k, p)), want, "served frame {n} counts it again");
+            }
+            assert_eq!((texture.fills, texture.serves), (1, 4), "one fill, and every frame after it is one quad");
+        }
+
+        // A different picture is a new fill, and the debt follows the key the texture holds.
+        let (three, one) = ([Art::Poster(None); 3], [Art::Poster(None)]);
+        let (want3, want1) = (live(&three), live(&one));
+        assert!(want3 > want1 && want1 > 0);
+        let mut texture = Texture::default();
+        for key in [1, 1, 2, 2] {
+            let (arts, want): (&[Art<'_>], u32) = if key == 1 { (&three, want3) } else { (&one, want1) };
+            assert_eq!(counted(&frame, &sty, arts, key, |k, p| texture.serve(k, p)), want, "key {key}");
+        }
+        assert_eq!(texture.fills, 2);
+    }
+
+    /// A picture that holds no placeholder counts none on a served frame either.
+    #[test]
+    fn a_picture_with_no_placeholder_is_served_without_one() {
+        let mut texture = Texture::default();
+        for _ in 0..3 {
+            let ((), seen) = placeholder::capture_declared(|| {
+                Painter::root().cached_region_in(
+                    |key, _, _, _, paint| texture.serve(key, paint), Some(3), Rect::new(0.0, 0.0, 10.0, 10.0), |_| {});
+            });
+            assert_eq!(seen.count, 0);
+        }
+        assert_eq!((texture.fills, texture.serves), (1, 3));
+    }
+
+    /// A clip the caller holds would be baked into the texture at one offset and served at every other:
+    /// under an open `ClipScope` (a scrolling list's) the renderer is not even asked, the picture is
+    /// drawn live with the painter given, and it is served again once the scope is gone.
+    #[test]
+    fn a_region_asked_under_an_open_clip_scope_is_drawn_live_and_never_filled() {
+        let (frame, _) = board();
+        let mut texture = Texture::default();
+        let ask = |texture: &mut Texture, p: Painter| {
+            let mut drawn_at = None;
+            p.cached_region_in(|key, _, _, _, paint| texture.serve(key, paint), Some(9), frame.rect, |q| drawn_at = Some(q.dx()));
+            drawn_at
+        };
+        let scope = ClipScope::open_in(Painter::root(), Rect::new(0.0, 0.0, 300.0, 300.0));
+        assert!(ClipScope::current().is_some());
+        for _ in 0..3 {
+            assert_eq!(ask(&mut texture, Painter::root().translate(5.0, 0.0)), Some(5.0), "live, in the caller's own space");
+        }
+        assert_eq!((texture.fills, texture.serves), (0, 0), "no fill and no quad under a clip");
+        drop(scope);
+        assert_eq!(ask(&mut texture, Painter::root().translate(5.0, 0.0)), Some(0.0), "the fill draws with the identity painter");
+        assert_eq!((texture.fills, texture.serves), (1, 1), "and with the clip gone it is served");
+    }
+
+    /// **What `SampleRow::draw` asks of the renderer, end to end** (the draw through `framed` and
+    /// `Painter::cached_region` to the renderer's door, `gfx::region_asks`; the host has no GL, so the
+    /// ask is all there is to see, and the draw is declared, not painted): a settled picture asks for its region BY NAME, once per draw - a
+    /// `framed` that stopped caching, or asked twice, fails here - and one whose art has not arrived
+    /// whole asks with no name, so it is drawn live and is never frozen mid-dissolve.
+    #[test]
+    fn a_settled_draw_asks_for_its_region_by_name_once_and_an_unsettled_one_asks_without_a_name() {
+        let (frame, sty) = board();
+        let asks_of = |arts: [Art<'_>; 3]| {
+            let before = plx_gfx::gfx::region_asks();
+            placeholder::declared(|| {
+                SampleRow::draw(Painter::root(), &frame, &sty, arts.into_iter(), 1, &TileLabel::default(), &FixtureMeasure);
+            });
+            let after = plx_gfx::gfx::region_asks();
+            (after.0 - before.0, after.1 - before.1)
+        };
+        let settled = [Art::Poster(None), Art::Poster(None), Art::Poster(None)];
+        assert_eq!(asks_of(settled), (1, 0), "one named ask per draw");
+        assert_eq!(asks_of(settled), (1, 0), "and again the next frame");
+
+        // Posters with a card identity and no texture yet: the art has not landed, so the skeleton is
+        // the picture and its card reports `shown` 0 - no name.
+        let waiting = |owner| Art::Poster(Some(TileFacts { owner, ..facts("/waiting") }));
+        crate::card_motion::begin_frame(100_000);
+        assert_eq!(asks_of([waiting(9_301), waiting(9_302), waiting(9_303)]), (0, 1), "unsettled art: asked for, but not by name");
+        assert_eq!(asks_of(settled), (1, 0), "settled again");
     }
 }
