@@ -910,6 +910,45 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     set_veil(0.0);
 }
 
+/// **A mounted harness does not follow the process-wide Under posters cell.** The grid sizes the
+/// focused row's caption band from the setting every frame (80 px under one line, 112 under two),
+/// and the Settings tests write that cell (`restore_under_posters`) under `testlock::serial()`,
+/// which a harness does not take: a flip between two of its frames moved every row below the
+/// focused one by the 32 px between the bands, and failed
+/// `a_remove_changes_nothing_on_the_grid_until_the_landing_starts` about one run in three on a loaded
+/// machine. This holds the cell on a two-line value for the mount and while the page is stepped, as
+/// the Settings tests do, and grades that the band and a lower row's card stand where the default
+/// puts them.
+#[test]
+fn the_harness_sizes_its_band_from_its_own_pin_not_from_the_live_setting() {
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_ui::cards::conformance::CardHarness;
+    /// Puts the live cell back on its default, a panic included.
+    struct Live;
+    impl Drop for Live {
+        fn drop(&mut self) {
+            plx_media::route::restore_under_posters(UnderPosters::DEFAULT);
+        }
+    }
+    let _serial = plx_base::testlock::serial();
+    let _live = Live;
+    let settled = |live: UnderPosters| {
+        plx_media::route::restore_under_posters(live);
+        let mut h = Harness::new(tiles(14));
+        h.focus_index(2);
+        h.run(60);
+        // the live cell moves again under the mounted page, as a Settings test's next write does
+        plx_media::route::restore_under_posters(live);
+        h.run(1);
+        let below = h.cards()[7];
+        (h.screen.band_h(), h.drawn_rect(below, 1.0).unwrap().y)
+    };
+    let default = settled(UnderPosters::DEFAULT);
+    let two_lines = settled(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
+    assert_eq!(default.0, Some(80.0), "premise: the default opens one line of band");
+    assert_eq!(two_lines, default, "the live cell held two lines (112 px) and the harness followed it: (band, y of a lower card)");
+}
+
 #[test]
 fn a_refused_write_draws_the_debug_cue_under_the_title_until_a_write_goes_out() {
     let cue = super::header::dev_blocked_text().to_str().unwrap();
