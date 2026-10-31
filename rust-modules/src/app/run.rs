@@ -6871,6 +6871,11 @@ mod lifecycle_regression_tests {
     /// stored while the flight is still out is cleared by the reload in the very frame that would
     /// have acted on it, and the page never leaves the player. Wait for the flight to land and the
     /// engine to settle, then store the end.
+    ///
+    /// The store is bare on purpose: `SHARED.ended` is stored `true` in production only by the pump
+    /// (`player/pump.rs:2491`, on the frame it sees the stream end); `request_seek` and the
+    /// session reload store `false`. This stands in for that one store, made once nothing can
+    /// reload the session under it.
     fn end_the_stream(app: &mut App, t: &mut u32) {
         poll_until("the rig engine's failed-open recovery never settled", || {
             step(app, t, vec![]);
@@ -6878,6 +6883,22 @@ mod lifecycle_regression_tests {
                 && plx_media::player::state(&app.player.session) == plx_media::player::PlaybackState::Error
         });
         plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// What an end-of-stream assertion prints beside its own message: the inputs the frame's
+    /// end-of-stream branch and the page that should have left depend on, read when the assertion
+    /// fails (the end the app saw, the playback state, whether an engine stands, whether a recovery
+    /// flight is still out, and the navigation still pending). A failure that this identifies is a
+    /// reading of the state, not a guess.
+    fn eos_state(app: &App) -> String {
+        format!(
+            "ended={}, state={:?}, engine started={}, recovery flight outstanding={}, pending navigation={:?}",
+            plx_media::player::ended(),
+            plx_media::player::state(&app.player.session),
+            plx_media::player::is_started(),
+            plx_media::route::recovery_flight_outstanding(),
+            app.pages.nav.tabs.stack.pending_dest().map(|arg| arg.id()),
+        )
     }
 
     /// `settle` for the frames after BACK from the player to Home: the page dip may wait dark at its
@@ -7252,7 +7273,7 @@ mod lifecycle_regression_tests {
         assert!(played.load(Ordering::SeqCst), "premise: the server saw the play");
         end_the_stream(&mut rig.app, &mut t);
         settle(&mut rig.app, &mut t);
-        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "EOS returned to the page");
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "EOS returned to the page ({})", eos_state(&rig.app));
         // The rig's engine decodes no frame, so its own teardown has no final position to report:
         // post the stop it would have (the production path past that point, mail and read-back).
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 60_000, 60_000)), None);
@@ -8150,7 +8171,7 @@ mod lifecycle_regression_tests {
         play_from_here(&mut rig, &mut t);
         end_the_stream(&mut rig.app, &mut t);
         settle(&mut rig.app, &mut t);
-        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "the end returned to the Library");
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "the end returned to the Library ({})", eos_state(&rig.app));
         // the rig has no engine, so teardown posts no `stopped`: the engine's own call, at the end
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 600_000, 600_000)), None);
         plx_media::route::drain_scrobble();
@@ -8524,10 +8545,63 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         assert!(
             rig.app.route().same_instance(&detail_arg(rig.sid)),
-            "end of stream landed on {:?}, not the detail page",
+            "end of stream landed on {:?}, not the detail page ({})",
             rig.app.route().id(),
+            eos_state(&rig.app),
         );
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+
+    /// **An end stored after a recovery's landing is posted** (#1111). The rig's engine never opens
+    /// its media URL, so the pump flies a recovery; once the worker has posted its landing, the next
+    /// frame's pump drains it and its reload (`reset_session_for_reload`) erases a `SHARED.ended`
+    /// stored in between, in the very frame that would have acted on it. The fixture holds the
+    /// recovery's `/decision` (the second one, the ABR session) until the test lets it go, and the
+    /// test waits for the posted-and-undrained window itself, so the interleaving is forced and not
+    /// left to the scheduler. `end_the_stream` waits for the flight and the Error state, so the end
+    /// it stores belongs to the settled session and the page leaves.
+    #[test]
+    fn end_the_stream_survives_a_posted_recovery_landing() {
+        let _serial = plx_base::testlock::serial();
+        let (gate, held) = mpsc::channel::<()>();
+        let reached = Arc::new(AtomicBool::new(false));
+        let gate_reached = reached.clone();
+        let respond = move |request: &str| {
+            if request.contains("/decision?") && request.contains("-abr-1") {
+                gate_reached.store(true, Ordering::SeqCst);
+                let _ = held.recv_timeout(Duration::from_secs(8));
+            }
+            queue_body(request, false).to_owned()
+        };
+        let Some(mut rig) = Rig::serving_with(respond) else {
+            eprintln!("SKIPPED end_the_stream_survives_a_posted_recovery_landing: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        let _origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        // A renamed ABR session id would leave the gate unreached and the forcing a no-op: fail loudly.
+        poll_until("the recovery's /decision never reached the gate (is the ABR session id still `-abr-1`?)", || {
+            reached.load(Ordering::SeqCst)
+        });
+        assert!(plx_media::route::recovery_flight_outstanding(), "premise: the flight is held at the server");
+        gate.send(()).unwrap();
+        poll_until("the recovery's worker never posted its landing", plx_media::route::claim_landing_posted_for_test);
+        // The window: the landing is posted and undrained. The next frame's pump drains it BEFORE the
+        // app reads `ended`; a bare `SHARED.ended.store(true)` here is erased by that reload (the
+        // pre-#1116 test body). `end_the_stream` steps until the flight is over and the engine is in
+        // Error, and stores the end then.
+        end_the_stream(&mut rig.app, &mut t);
+        settle(&mut rig.app, &mut t);
+        assert!(
+            rig.app.route().same_instance(&detail_arg(rig.sid)),
+            "end of stream landed on {:?}, not the detail page ({})",
+            rig.app.route().id(),
+            eos_state(&rig.app),
+        );
     }
 
     /// A session started straight from Home (the hero's Play, or a deck tile in Play mode) has no
@@ -8617,7 +8691,11 @@ mod lifecycle_regression_tests {
         assert!(!plx_media::route::play_pending(), "the credits alone must not request the successor");
         assert_eq!(plx_media::route::up_next(&rig.app.player.session).unwrap().rk, "2");
 
-        // No engine in this rig (the state is forced), so nothing recovers under the end.
+        // No engine in this rig (the state is forced), so nothing recovers under the end. This bare
+        // store is not the forced path of #1111: no pump runs here (the test calls `playback_tick`
+        // directly), so no flight's landing can be drained and reload the session between this store
+        // and the read. `end_the_stream` waits for a failed-open recovery of a rig ENGINE and has
+        // nothing to wait for in this rig; do not "fix" this into a call to it.
         plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = t;
@@ -8671,8 +8749,9 @@ mod lifecycle_regression_tests {
         assert!(!plx_media::route::play_pending(), "Off must not request the successor");
         assert!(
             rig.app.route().same_instance(&detail_arg(rig.sid)),
-            "end of stream landed on {:?}, not the detail page",
+            "end of stream landed on {:?}, not the detail page ({})",
             rig.app.route().id(),
+            eos_state(&rig.app),
         );
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }
