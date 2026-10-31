@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T14:50:46Z",
+ "generated": "2026-10-31T14:55:44Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -82,17 +82,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 38.4,
+   "change7_pct": 37.3,
    "d30": null,
    "delta30": null,
-   "delta7": 54.5,
+   "delta7": 53,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 77,
-   "now": 196.5,
+   "now": 195,
    "prev7": 142,
    "shown": true,
    "state": "worse",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.5,
-   "change7_pct": 16.3,
+   "change30_pct": -63.6,
+   "change7_pct": 16.0,
    "d30": 1054.5,
-   "delta30": -669.5,
-   "delta7": 54.0,
+   "delta30": -670.5,
+   "delta7": 53.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 90,
-   "now": 385,
+   "now": 384.0,
    "prev7": 331.0,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.8,
-   "change7_pct": 3.8,
+   "change30_pct": 34.3,
+   "change7_pct": 4.2,
    "d30": 204,
-   "delta30": 69.0,
-   "delta7": 10.0,
+   "delta30": 70,
+   "delta7": 11,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 77,
-   "now": 273.0,
+   "now": 274,
    "prev7": 263,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -78.0,
-   "change7_pct": 8.7,
+   "change30_pct": -77.9,
+   "change7_pct": 8.9,
    "d30": 970,
-   "delta30": -756.5,
-   "delta7": 17.0,
+   "delta30": -756,
+   "delta7": 17.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 76,
-   "now": 213.5,
+   "now": 214,
    "prev7": 196.5,
    "shown": true,
    "state": "flat",
@@ -560,15 +560,15 @@
    "change30_pct": 5.9,
    "change7_pct": -5.3,
    "d30": 17,
-   "delta30": 1.0,
-   "delta7": -1.0,
+   "delta30": 1,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 77,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 69.7,
    "commits": [
     {
-     "pr": 1137,
-     "sha": "d8f317c06",
-     "title": "Person: a refreshed server list no longer blanks a loaded page"
-    },
-    {
      "pr": 1169,
      "sha": "e382a6be9",
      "title": "Library: sort value under posters, a header sort control, a capsule that carries the sort"
@@ -715,6 +710,11 @@
      "pr": 1177,
      "sha": "12cbaebb8",
      "title": "A-Z rail for a TV library's Seasons and Episodes views"
+    },
+    {
+     "pr": 1161,
+     "sha": "d55bf672f",
+     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
     }
    ],
    "from": 188.0,
@@ -725,13 +725,8 @@
    "to": 319
   },
   {
-   "change_pct": 38.4,
+   "change_pct": 37.3,
    "commits": [
-    {
-     "pr": 1137,
-     "sha": "d8f317c06",
-     "title": "Person: a refreshed server list no longer blanks a loaded page"
-    },
     {
      "pr": 1169,
      "sha": "e382a6be9",
@@ -776,6 +771,11 @@
      "pr": 1177,
      "sha": "12cbaebb8",
      "title": "A-Z rail for a TV library's Seasons and Episodes views"
+    },
+    {
+     "pr": 1161,
+     "sha": "d55bf672f",
+     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
     }
    ],
    "from": 142,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 196.5
+   "to": 195
   },
   {
    "change_pct": 20.4,
    "commits": [
-    {
-     "pr": 1137,
-     "sha": "d8f317c06",
-     "title": "Person: a refreshed server list no longer blanks a loaded page"
-    },
     {
      "pr": 1169,
      "sha": "e382a6be9",
@@ -837,6 +832,11 @@
      "pr": 1177,
      "sha": "12cbaebb8",
      "title": "A-Z rail for a TV library's Seasons and Episodes views"
+    },
+    {
+     "pr": 1161,
+     "sha": "d55bf672f",
+     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
     }
    ],
    "from": 270,
@@ -850,11 +850,6 @@
    "change_pct": 18.0,
    "commits": [
     {
-     "pr": 1137,
-     "sha": "d8f317c06",
-     "title": "Person: a refreshed server list no longer blanks a loaded page"
-    },
-    {
      "pr": 1169,
      "sha": "e382a6be9",
      "title": "Library: sort value under posters, a header sort control, a capsule that carries the sort"
@@ -898,6 +893,11 @@
      "pr": 1177,
      "sha": "12cbaebb8",
      "title": "A-Z rail for a TV library's Seasons and Episodes views"
+    },
+    {
+     "pr": 1161,
+     "sha": "d55bf672f",
+     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
     }
    ],
    "from": 2080,
