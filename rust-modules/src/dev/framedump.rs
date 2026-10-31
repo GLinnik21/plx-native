@@ -661,8 +661,8 @@ impl Dump {
         eprintln!("{msg}");
         self.sum.failed = Some(why);
         self.finish_summary(Vec::new());
-        // SAFETY: `_exit` takes no memory of ours; see the module doc for why not `exit`.
-        unsafe { libc::_exit(3) }
+        // `exit_now`, not `exit`: see the module doc.
+        plx_base::process::exit_now(3)
     }
 }
 

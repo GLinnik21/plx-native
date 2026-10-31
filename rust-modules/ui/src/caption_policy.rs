@@ -1,6 +1,6 @@
 //! **Under posters** — what a focused poster's caption band shows and how tall that band is.
 //!
-//! One global setting (Settings > Libraries > Under posters): a Title switch (default Off) and a
+//! Settings > Libraries > Under posters: a Title switch (default Off) and a
 //! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
 //! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing. (The Continue Watching
 //! deck is the one shelf handed a different policy: its progress line is always shown, so under Nothing
@@ -19,7 +19,8 @@
 //! and a name its face cuts ([`CaptionFacts::name_cut`]) is told on the details line when the title
 //! line is off, since the face is the only other place it is told.
 //!
-//! **Every POSTER tile reads this one setting**: the Library grid, the Collections page, the
+//! **Poster tiles follow this policy except movie grids with Show sort information enabled**
+//! (those use persistent title/year/sort captions): the Library grid, the Collections page, the
 //! Watchlist, Home's shelves, the Library's Recommended shelves, Search's poster rows, the person
 //! page's filmography, Detail's Related and collection shelves and the Collection screen's members
 //! (the screens build the focused block through `registry::captions`, and hand a
@@ -347,3 +348,6 @@ mod tests {
             "an item with no name and no facts has nothing to say");
     }
 }
+
+// The movie library can instead opt into persistent sort captions. That mode is owned by Grid
+// and TileLabel; this two-line policy continues to describe every ordinary poster surface.

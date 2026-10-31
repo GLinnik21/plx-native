@@ -1,0 +1,19 @@
+{
+  "file": "unknown-key.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0102",
+      "hint": "did you mean `gap_before`? The keys are: id, when, gap_before, gap, z, chrome, cells",
+      "message": "`gap_befor` is not a key of `band`",
+      "nearest": [
+        "gap_before",
+        "gap",
+        "cells"
+      ],
+      "path": "/layout/block/1/gap_befor",
+      "rule": "key-known",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}

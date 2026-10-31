@@ -3,6 +3,7 @@
 //! key-driven route-test [`World`] (the one harness the route lanes share).
 
 use super::*;
+use plx_ui::containers::transition::{PageImage, PagePaint};
 
 /// **Put `route` on top, then run one frame** — the TEST driver that replaced `sync_page`.
 ///
@@ -281,6 +282,46 @@ impl Drop for World {
         plx_plex::plex::reset_servers_for_test();
         crate::app::collections_probe::clear_seeds_for_test();
     }
+}
+
+/// **The page-image half of a route dip, as the dispatcher plans it.** `Dispatcher::draw_with` plans
+/// the top page with `PageImage::plan` from the transition and the page's quiescence, records what
+/// it captured, and states `page_image_held` for the screens' NEXT tick; a host has no GL to run the
+/// draw, so a test steps this after every frame (`World::step_dip` for a [`World`]) and every
+/// screen reads the same answer the product gives it. The stated fact is a thread-local: hold an
+/// [`ImageHeld`] for as long as a test drives a dip, so it does not outlive the test.
+#[derive(Default)]
+pub(super) struct DipImage {
+    image: PageImage,
+    valid: bool,
+}
+
+impl DipImage {
+    /// The paint the frame `d` just ran (at `ms`) gets, and `page_image_held` for the next tick.
+    /// `None` when no page is on top.
+    pub(super) fn plan(&mut self, d: &Dispatcher<AppHost>, ms: u32) -> Option<PagePaint> {
+        let quiescent = !plx_machine::idle::page_layout_moving();
+        let transition = &d.nav.tabs.stack.transition;
+        let (alpha, flight) = (transition.page_alpha(), transition.in_flight());
+        let entry = d.nav.top_page().map(|e| e.id)?;
+        let paint = self.image.plan(entry, flight, alpha, ms, self.valid, quiescent);
+        match paint {
+            PagePaint::Capture => { self.image.captured(entry); self.valid = true; }
+            PagePaint::ReplacementCapture => { self.image.replacement_captured(entry); self.valid = true; }
+            PagePaint::Live => { self.image = PageImage::default(); self.valid = false; }
+            PagePaint::Held(_) => {}
+        }
+        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
+        Some(paint)
+    }
+}
+
+/// The page image a test leaves behind must not be the next test's (`PAGE_IMAGE_HELD` is a
+/// thread-local the dispatcher sets and the screens read on their next tick).
+pub(super) struct ImageHeld;
+
+impl Drop for ImageHeld {
+    fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
 }
 
 /// How many collections the rig's probe stands in for on every section it seeds (a server the rig
@@ -581,6 +622,14 @@ impl World {
 
     pub(super) fn frames(&mut self, n: u32) {
         for _ in 0..n { self.step(vec![]); }
+    }
+
+    /// [`Self::step`] and then the route dip's image decision on the frame it made (`dip`): the
+    /// product's `Dispatcher::draw_with` plan, which a host test has no GL to run. `None` when no
+    /// page is on top.
+    pub(super) fn step_dip(&mut self, dip: &mut DipImage, inputs: Vec<InputEvent<u32>>) -> Option<PagePaint> {
+        self.step(inputs);
+        dip.plan(&self.d, self.frame * 16)
     }
 
     /// `n` idle frames; returns what the pump performed meanwhile (a navigation a press began and

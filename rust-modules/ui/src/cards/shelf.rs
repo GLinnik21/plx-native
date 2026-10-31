@@ -5,7 +5,7 @@
 //! the draw loop with its cull and stops, `Focusable` placement and paging.
 
 use plx_machine::machine::{
-    Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent,
+    Canon, Cx, Effects, Enter, EntryId, FocusKey, GroupId, Host, ScreenEvent,
 };
 use plx_machine::present::Provenance;
 
@@ -15,7 +15,7 @@ use super::{CardEvent, CardSource, Landed, Retry, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle, TileLabel};
 use crate::consts::SCR_W;
 use crate::screen::{
-    Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step,
+    Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step,
     Stop,
 };
 use crate::widgets::Art;
@@ -80,10 +80,17 @@ pub struct Shelf {
     anchor: Option<(usize, u64)>,
     /// How far past the screen edge a card still paints and registers a stop (default 0).
     margin: f32,
-    /// The page is still dissolving in ([`dormant`](Shelf::dormant)): no card is lifted yet.
+    /// The page is still dissolving in ([`dormant`](Shelf::dormant)): no card is lifted yet, unless
+    /// the shelf is `returning` with the seat ([`asleep`](Shelf::asleep)).
     dormant: bool,
-    /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
+    /// The last tick ran asleep, so the next awake one starts the focused card's pop from rest.
     slept: bool,
+    /// The page is RETURNING: it was restored (`Enter(Restored)`: BACK onto it, a modal's dismissal),
+    /// so the seat the engine restores comes back as it was left and is not put to sleep
+    /// ([`dormant`](Shelf::dormant)). It ends on the first tick the owner reports awake, at the first
+    /// deliberate move and when focus lands anywhere but a card of this shelf: the reader has moved
+    /// on, and the move is slept through like an entry's. Transient, like `dormant` and `slept`.
+    returning: bool,
     /// The element-keyed pop pool (`pool.rs`).
     pool: RowPool,
     /// Where the artwork warm-ahead stands ([`warm_ahead`](Shelf::warm_ahead)).
@@ -118,7 +125,7 @@ struct WalkKey {
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
         Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), epoch: 0, head: 0, anchor: None,
-            margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
+            margin: 0.0, dormant: false, slept: false, returning: false, pool: RowPool::new(),
             warm: Warm { last: None, forward: true, walk: None }, landing: Landing::new() }
     }
 
@@ -198,9 +205,29 @@ impl Shelf {
     /// halves and the hold after it) nothing on screen can show the ease, and stepping it would hold
     /// the image past its dissolve (a page that is covered freezes its shelves mid-ease and resumes
     /// them under the BACK dip's image), so the springs and the caption band jump to rest on the
-    /// first tick, as [`Grid::dormant`](super::Grid::dormant) does. The scroll is kept either way.
+    /// first tick, as a [`Grid`](super::Grid) put to sleep by [`Grid::dormant`](super::Grid::dormant)
+    /// does. The scroll is kept either way.
+    ///
+    /// **The seat of a page that returns is not put to sleep.** A shelf fed `Enter(Restored)` keeps
+    /// the card the engine restores focus to lifted and its caption band open, as it was left, under
+    /// the very fade or held image the owner reports (BACK from a Detail runs under its dip's
+    /// image): a card put at rest and grown again there moves the shelf below it by the band's
+    /// height, which reads as a bounce. Only the shelf that holds the seat keeps it; a page holds
+    /// many shelves and every one is fed the `Enter`, and the rest are put to rest as any dormant
+    /// shelf is. The return is the shelf's own state, so the owner says nothing more than this flag:
+    /// it ends on the first tick that reports awake, at the first deliberate move and when focus
+    /// lands anywhere but a card of this shelf (that move is slept through, and no band is left
+    /// closing under the image). A landing is adopted whole while dormant, a returning shelf
+    /// included, and so is a scroll glide the covered page froze under way: nothing plays under the
+    /// image.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
+    }
+
+    /// Whether the shelf keeps no lift now: the owner says the page is unseen, and the shelf is not
+    /// returning with the seat (`seated`: the focused card, when focus is on one of this shelf's).
+    fn asleep(&self, seated: Option<usize>) -> bool {
+        self.dormant && !(self.returning && seated.is_some())
     }
 
     pub fn style(&self) -> &'static RowStyle {
@@ -244,14 +271,37 @@ impl Shelf {
             ScreenEvent::FocusMoved { from, to, by } => {
                 let here = |e: &H::Elem| src.index_of(e);
                 let arrived = (to.entry == self.entry).then(|| here(&to.elem)).flatten();
+                // the reader has moved on from what the page returned with: a deliberate move, or
+                // focus gone from this shelf's cards (a header control, another shelf)
+                if arrived.is_none() || matches!(by, By::Dir | By::Pointer) {
+                    self.returning = false;
+                }
                 if let Some(a) = arrived {
                     self.seen = Seen::of(by, a);
+                    // a key's move along the row brings it back to its focus; a hover does not
+                    if *by != By::Pointer {
+                        self.row.unfree();
+                    }
+                    if self.returning && self.dormant {
+                        // The seat returns to a row the page shut when it covered it (a shelf put to
+                        // rest under the push's image): its scroll, band and heading settle with it,
+                        // now, so the layout the owner reads on this very event (the page drawn this
+                        // frame is the one the dip captures) already has them, not a tick after, and
+                        // no glide plays on under the image.
+                        self.row.settle_seat(a, src.len(), self.style);
+                    }
                 }
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| here(&k.elem));
                 self.left |= left.is_some();
                 if arrived.is_some() || left.is_some() {
                     fx.invalidate(Provenance::Input);
                 }
+                None
+            }
+            ScreenEvent::Enter(Enter::Restored) => {
+                // what the covered page slept through is stale: its seat comes back as it was left
+                self.returning = true;
+                self.slept = false;
                 None
             }
             ScreenEvent::PressCommit(_) => {
@@ -261,6 +311,16 @@ impl Shelf {
                 .focused_elem(cx, src)
                 .filter(|&(i, _)| src.holdable(i))
                 .map(|(_, e)| CardEvent::Hold(e)),
+            // A click on one of the row's cards brings the row back to its focus (the card).
+            ScreenEvent::Input(input) => {
+                if let plx_machine::machine::InputKind::Click { hit: Some(hit), .. } = &input.kind {
+                    if src.index_of(hit).is_some() {
+                        self.row.unfree();
+                        fx.invalidate(Provenance::Input);
+                    }
+                }
+                None
+            }
             // A covering menu changes nothing here: the page keeps its focus and the settled pop is
             // what the opener redraw reads.
             _ => None,
@@ -272,14 +332,18 @@ impl Shelf {
     }
 
     fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S) {
-        let focus = super::focused_index(&cx.focus, self.entry, src)
-            .filter(|_| !self.dormant);
+        let seated = super::focused_index(&cx.focus, self.entry, src);
+        if !self.dormant {
+            self.returning = false;
+        }
+        let asleep = self.asleep(seated);
+        let focus = seated.filter(|_| !asleep);
         self.landed = None;
         let sx0 = self.row.scroll_x();
         // what the focused card was drawn at before this tick lets it go: if the landing removes
         // it, its ghost starts there
         let lifted = self.prev().map(|p| (p, self.row.scale(p)));
-        if self.dormant {
+        if asleep {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused shelf's
             self.slept = true;
             self.pool.clear();
@@ -366,8 +430,14 @@ impl Shelf {
         let on = |x: f32, _: f32| crate::on_axis(x - scroll, w, SCR_W, margin);
         let (pitch, margin_x) = (self.pitch(), self.style.margin_x);
         let slot = |i: usize| (margin_x + i as f32 * pitch, 0.0);
-        self.landing.observe(src, &Scene { shift: (scroll - sx0, 0.0), slot: &slot, was: &slot, on: &on, lifted });
-        self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
+        if self.dormant {
+            // a page the owner reports unseen adopts a landing whole, a returning one included:
+            // nothing plays under the image
+            self.landing.snap(src);
+        } else {
+            self.landing.observe(src, &Scene { shift: (scroll - sx0, 0.0), slot: &slot, was: &slot, on: &on, lifted });
+            self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
+        }
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, self.style, dt);
             if focus.is_none() {
@@ -560,7 +630,8 @@ impl Shelf {
     /// Bounded work: one claim per tick, nearest card first, at most `2 * WARM_AHEAD_CARDS`
     /// lookups, and none at all once the walk for this view of the row is complete.
     fn warm_ahead<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S) {
-        let focus = super::focused_index(&cx.focus, self.entry, src).filter(|&i| !self.dormant && i < src.len());
+        let seated = super::focused_index(&cx.focus, self.entry, src);
+        let focus = seated.filter(|&i| !self.asleep(seated) && i < src.len());
         let Some(focus) = focus else {
             self.warm = Warm { last: None, forward: self.warm.forward, walk: None };
             return;
@@ -629,7 +700,7 @@ impl Shelf {
     /// whole (never a one-frame collapse) with the one it left at rest.
     fn pop<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, focus: Option<usize>) -> f32 {
         // the element-keyed pool: a source change no tick has seen yet is resolved by element
-        if focus.is_some_and(|_| !self.dormant) {
+        if focus.is_some_and(|_| !self.asleep(focus)) {
             match self.pool.drawn(src, i, focus == Some(i)) {
                 Some(Drawn::Cell(c)) => return self.row.scale(c),
                 Some(Drawn::Rest) => return 1.0,
@@ -641,7 +712,7 @@ impl Shelf {
 
     /// [`pop`](Self::pop) by position alone: what the draw paints when the tick has seen the source.
     fn pop_at(&self, i: usize, focus: Option<usize>) -> f32 {
-        let Some(j) = focus.filter(|_| !self.dormant) else { return self.row.scale(i) };
+        let Some(j) = focus.filter(|_| !self.asleep(focus)) else { return self.row.scale(i) };
         let prev = self.prev();
         if prev == Some(j) || self.seen == Seen::Deliberate(j) {
             return self.row.scale(i);
@@ -977,6 +1048,18 @@ impl Shelf {
     #[cfg(feature = "devtriggers")]
     pub fn scroll_velocity(&self) -> f32 {
         self.row.scroll_velocity()
+    }
+
+    /// **The pointer's sideways glide** (`InputKind::Pan`) over this row: move it by `dx` px, held
+    /// to its `n` cards, and leave it there until a key moves along it or a click lands on one of
+    /// its cards ([`CardRow::glide`]).
+    pub fn glide(&mut self, dx: f32, n: usize) {
+        self.row.glide(dx, n, self.style);
+    }
+
+    /// Release a row the pointer's glide holds: it follows its focused card again.
+    pub fn unfree(&mut self) {
+        self.row.unfree();
     }
 
     /// Restore a saved viewport (`n` is the current card count).

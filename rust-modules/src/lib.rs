@@ -14,6 +14,11 @@ mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or 
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
 mod dev; // the /tmp/plxnative-* trigger surface, behind one `devtriggers` feature — read it before adding a trigger
 mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder can move, logged when it changes
+// The simulator's HUD tools (`--hud-lint`, `--hud-schema`, `--hud-export`): a library function the thin
+// `src/bin/sim.rs` calls before it reads a PMS host. `pub` because that binary is a separate crate; absent
+// from the television build, which has no use for a linter and no argv to read it from.
+#[cfg(any(test, feature = "hostsim"))]
+pub mod hud_cli;
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 // Pure RELEASE_LINE-parsing helpers, `include!`d verbatim by build.rs so `cargo test --lib`
 // actually runs their unit tests (see the module for why). Nothing in the app itself calls

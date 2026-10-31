@@ -204,7 +204,7 @@ not been measured on the TV. The menu-closed control on the same clip graded 25.
 - **A late commit.** The rest of the frames over 20 ms follow an on-time repaint: the work after
   the clear (page, surfaces, swap) took 3–8 ms longer than usual, the commit moved by that much,
   and the next frame is correspondingly short. The transport's clocks were one cause, rasterised
-  after the clear once a second (`textx2`, 1–3.5 ms); `player_hud::ClockWarm` now queues them from
+  after the clear once a second (`textx2`, 1–3.5 ms); `player_hud::motion::ClockWarm` now queues them from
   the page's `prepare` so they are rasterised before it. In every other such frame the frame
   thread's CPU time over the draw and the swap stayed flat while the wall time rose (the probe's
   `d=`/`s=` fields, wall/cpu/run-queue ms): the thread was off the CPU, not busy.

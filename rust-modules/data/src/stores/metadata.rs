@@ -538,7 +538,7 @@ mod view_edit_notice_tests {
             sid, rk: "show".into(), related: vec![tile("r0")], ..Default::default()
         }));
         let _ = store.take_notice();
-        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
         let apply = |store: &mut MetadataStore, rk: &str, edit| {
             store.run(MetadataCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit })
         };

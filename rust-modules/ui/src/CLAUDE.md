@@ -15,6 +15,14 @@ player HUD are all *compositions of the same tokens + components*. When you add 
 with hard-coded colors and hand-tuned text offsets. That is exactly the drift this system exists to
 kill. Full design + migration status: `docs/ui-system-migration.md`.
 
+## Sans-IO
+
+`ui/` is machine code (its `workers`, `globals` and `forks` are scanned): nothing here starts a worker or
+reads a process-global registry, and nothing forks on `cfg(test)`. A component takes values as
+arguments, and its time is the `dt` it is handed.
+
+@../../../docs/sans-io-guide.md
+
 ## The four rules
 
 1. **Never write a raw color literal.** Every color comes from `theme.rs` as a named token
@@ -78,7 +86,10 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
      regions.
    - **A row of pills** (selection and focus capsules that travel): `widgets::TabStrip` and
      `SelMark` (`widgets.rs`), the nav bar's own motion.
-   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). **Strips and grids of
+   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). A menu placed beside the
+     control that opened it takes its rect from `popover::anchor_panel` with a `Placement`
+     (`under_or_above` and the player menus are calls of it; a header menu's cross axis is `hang_x`),
+     never from a screen's own arithmetic. **Strips and grids of
      tiles**: `cards::Shelf` / `cards::Grid` (`cards/`, next section).
    - **A row of items an equal gap apart** (a header row, a crumb, a name packer): `hstack::HStack`
      (`hstack.rs`), UIStackView's spacing for widths the caller already measured. It places, sums
@@ -186,7 +197,8 @@ through the one `marquee::Block`. A label that names a tile whose face cut the n
 Collections page) is held to its tile instead: `TileLabel::within_tile` gives the block a
 tile-wide window (never the neighbours' room) and the run dissolves at BOTH of the window's edges
 over `card_row::LABEL_EDGE_FADE` px (`Painter::text_fade_edges`: out into the right edge, in from the
-left edge once the run has glided past it, a band that grows with the travel and is none at rest)
+left edge once the run has glided past it, a band that grows with the travel and is none at rest;
+an Arabic or Hebrew run rests flush right and is the mirror image, `card_row::block_text`)
 as the shared marquee glides it. All of it is judged where the tile will REST
 (`CardRow::settle_lag`, passed through `TileLabel::settling`), so a scroll glide never flips the
 block's alignment or width mid-flight. A headshot's credit label is not placed this way: it is a
@@ -327,12 +339,14 @@ enter `task::FrameScope`; `task::assert_may_block` guards session I/O, helper tr
 Keymanager and LS2 calls. Tests panic (catchably). In developer builds (`threadcheck`), an unallowed call logs
 `main-thread block: <label> at <file:line> (fatal; aborting)`, then aborts on the frame thread before the call runs.
 Release builds retain elapsed-time logging once per (label, call site):
-`main-thread block: <label> <ms>ms at <file:line> [under <exception label> at <file:line>]`. Use cached reads and the bounded `storage_worker` queue, then observe the landing
+`main-thread block: <label> <ms>ms at <file:line> [under <exception label> at <file:line>]`. Use cached reads and, in the IO layer, the bounded `storage_worker` queue, then observe the landing
 on the frame thread and call `idle::invalidate()` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
 must be explicit and justified through `task::allow_blocking`, never added to a tick — and every production
 `allow_blocking(` site is a line in `ci/allow/blocking.txt`, which the `blocking` gate holds exact (a
-new site or a stale line fails; the list only shrinks). Move the work to a worker (`task::spawn_off_frame`; a PMS half takes
-`&OffFrame`) instead of adding a line. The ledger holds two sites, both a refused worker thread's fallback rather than a user
+new site or a stale line fails; the list only shrinks). Move the work off the frame: in machine code (`ui/`,
+`screens/`, `data/`) emit it as an effect or store job a runner starts (`docs/sans-io-guide.md`); in the IO
+layer, start a worker (`task::spawn_off_frame`; a PMS half takes `&OffFrame`) instead of adding a line.
+The ledger holds two sites, both a refused worker thread's fallback rather than a user
 action: `task::spawn_or_inline` (OS refused a thread; a server-side stop that must not be dropped runs inline) and
 `route::decision::scrobble_stop` (refused `spawn_small_keeping`; its reporter handle and stop fence must stay ordered).
 To see it fire on the TV, hold the TV lock and, after the first present in a `threadcheck` + `devtriggers` build, run `tools/tv-session.sh key hang:1000` for the guard abort, or `key hang-raw:1000` for the watchdog's unlabeled warning path (both capped at 5000 ms).
@@ -450,7 +464,7 @@ presentation in a design pass.
    paused, a seek spinner while the transport owns the busy signal, nothing at all while playing.
    Transport is driven by REMOTE KEYS, which must genuinely work. Any `<<` / `>>` added must be a
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
-   separate FF/REW entry in the default control row (`appkit/player_hud.rs`).
+   separate FF/REW entry in the default control row (`appkit/player_hud/state.rs`).
    Previous/Next share the default disc row for an episode with a neighbour in its PlayQueue,
    with no setting; the opt-in **Instant D-pad seeking** setting defaults to Off. Dedicated
    FF/REW taps jump immediately; held keys use the shared scrub gesture.
@@ -842,7 +856,7 @@ Its docstring states what it cannot see.
   the cascade `p.alpha()`, which would fade the art and the wash as one object. The cascade still
   reaches the whole `Backdrop` from above, which is how `nav`'s page dip covers it),
   `appkit::player_hud`'s `SCR_H`-offset geometry
-  (shared with `app.rs` pointer hit-tests), and the subtitle renderer. Leave them; wrapping them in a
+  (reported as `HudGeometry`, which the player screen's pointer hit-tests read), and the subtitle renderer. Leave them; wrapping them in a
   `View` breaks a load-bearing contract.
 - **Clipping: prefer culling; use a scissor clip only for a hard-bounded panel.** Two spellings
   today. The legacy one is `Painter::clip(rect)` / `clip_clear()` (backed by `gfx::clip_set`/

@@ -94,10 +94,13 @@ details as a native report (plus the same `probe` fact and the exact firmware `b
 for playback-error reports below), and the file name (never the folder) and build identifier of each
 library (a library of the television's firmware or one bundled with PlxNative) the faulting
 address and the return address were in, with the library's load address and size. A library that
-has no build identifier (the television's own C library has none) is still named, with its load
+has no build identifier (the television's own C library has none), or whose file could not be matched to the one that crashed, is still named, with its load
 address and size and an all-zero placeholder identifier, as the native report lists it. It carries the
 time of the crash, to the second, as the television's clock read it when the crash was logged (it
-is left out when that clock reads an implausible time). It also says in
+is left out when that clock reads an implausible time), which thread it happened on (the thread's number,
+whether it was the main thread, and the thread's own name, a technical label set by PlxNative or a library),
+whether the app was running, shutting down or exiting, and how many seconds it had been running; none of
+this is personal data. It also says in
 one fixed word why the primary report is missing: `no_envelope` (no usable report was left:
 the crash reporter left none, or left one that was malformed and was deleted before the comparison,
 which looks the same) or `envelope_unmatched` (it left reports, none of them this crash). No path, library

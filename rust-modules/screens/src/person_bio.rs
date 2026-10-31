@@ -7,7 +7,8 @@
 //! states what the page knows about this person's presence in the library, and how to leave.
 //!
 //! **It is the panel BEHIND the mark, not a replacement for it.** `person.rs`'s bio block dissolves
-//! its third line into a right-pinned `MORE` (`TextView::fade_last` + the pinned label), and that
+//! its third line into a `MORE` pinned at the line's end, the left one for an Arabic or Hebrew
+//! bio (`TextView::fade_last` + the pinned label), and that
 //! affordance is unchanged: `MORE` is still a mark rather than a control, still unfocusable, still
 //! drawn only when `bio.truncates(BIO_W)`. This panel is what OK on the header now opens, and it is
 //! gated on **exactly that same predicate** — `PersonScreen::bio_more` (the header's measured `bio.truncates(BIO_W)`). A panel that opened on a

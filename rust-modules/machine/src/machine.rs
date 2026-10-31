@@ -200,6 +200,14 @@ pub trait Measure {
         fit_line_by(self, s, budget, sz, bold)
     }
 
+    /// A fitted drawable and its advance. Native measurement caches both; replay keeps querying
+    /// its supplied metrics. Use when an inline mark must be centred together with the text.
+    fn fit_line_measured(&self, s: &str, budget: f32, sz: i32, bold: bool) -> (std::rc::Rc<CStr>, f32) {
+        let run = self.fit_line(s, budget, sz, bold);
+        let width = self.width(&run, sz, bold);
+        (run, width)
+    }
+
     /// `width` for a borrowed `&str` (spec §4.3, phase 12 D4): builds the transient `CString` so
     /// a draw-time call site measures a `String`/`&str` slice without hand-rolling one — the exact
     /// conversion every `plx_gfx::text::text_width(c.as_ptr(), …)` call site already did, moved
@@ -672,6 +680,7 @@ impl<K> InputEvent<K> {
             }
             InputKind::PointerHidden => { c.u32(6); }
             InputKind::SystemKeyboard(up) => { c.u32(7).bool(*up); }
+            InputKind::Pan { dx, x, y } => { c.u32(8).f32(*dx).f32(*x).f32(*y); }
         }
     }
 }
@@ -734,6 +743,14 @@ pub enum InputKind<K> {
     },
     Wheel {
         dy: f32,
+    },
+    /// **A sideways glide of the row under the pointer** (the application's pointer edge glide):
+    /// `dx` px (+ shows more on the right), for whatever scrolls sideways at screen `(x, y)`. A
+    /// page with nothing there ignores it.
+    Pan {
+        dx: f32,
+        x: f32,
+        y: f32,
     },
     Text(TextEdit),
     PointerHidden,

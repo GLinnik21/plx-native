@@ -65,7 +65,8 @@
 //! present at mount, an order a television rarely has) and is answered there, not patched here one
 //! branch at a time. `ci/check-dump-consumers.py` (in `make check`) holds the list of files that may
 //! name the switch to `ci/allow/dump.txt`; a new file naming it fails the gate until this rule has
-//! been read and the file's branch fits it (and is listed below).
+//! been read and the file's branch fits it (and is listed below). `ci/check-ledger-ratchet.py` also
+//! fails a PR that adds a line to that list, so a new consumer is the owner's call.
 //!
 //! # Every consumer, and which kind it is
 //!

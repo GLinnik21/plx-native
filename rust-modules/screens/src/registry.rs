@@ -212,18 +212,28 @@ pub enum PlayerReq {
     CommitTrack(plx_appkit::track_menu::TrackCommit),
     /// **Present one of the player's overlays directly** (restructure phase 12) — the tabs row's OK
     /// (`OverlayKind::Info`/`::Chapters`, the old `key_ok`'s `focus == 2` arm) and the failure
-    /// read-out's own recovery escape (`OverlayKind::More { quality: true }`, the old
+    /// read-out's own recovery escape (`OverlayKind::More` on its Quality page, the old
     /// `key_player_failed`'s `ChooseQuality` arm). Both used to reach
     /// `super::bridge::open_player_overlay` straight from the loop's key ladder; `PlayerScreen`
     /// may not name that function itself (§2.2), so it asks instead.
     OpenOverlay(crate::player::overlay::OverlayKind),
-    /// **OK landed on the transport's own control row** — whichever disc, the Skip pill or the Up
-    /// Next tile currently occupies it (restructure phase 12, the old `key_ok`'s `focus == 1`
-    /// arm). Arms the same tvOS press dip [`ArmInfoPress`](PlayerReq::ArmInfoPress) does; the
-    /// loop's existing commit-frame dispatch (`app/run.rs`'s `Route::Player =>
-    /// activate_player_row(...)`) is unchanged and performs whatever the row decides once the
-    /// spring-back has played.
+    /// **A pointer click landed on the transport's own control row** — whichever disc, the Skip
+    /// pill or the Up Next tile currently occupies it. Arms the same tvOS press dip
+    /// [`ArmInfoPress`](PlayerReq::ArmInfoPress) does; the loop's commit-frame dispatch
+    /// (`app/run.rs`'s `Route::Player => activate_player_row(...)`) performs whatever the row
+    /// decides once the spring-back has played, through the same performer OK reaches by
+    /// [`Command`](PlayerReq::Command) and [`StandIn`](PlayerReq::StandIn). OK on the row does not
+    /// ask this: the focus engine presses the control itself.
     ArmControlRow,
+    /// **A press on a control of the discs committed**, after the engine's tvOS dip has played
+    /// (`PressCommit`, [`PlayerScreen`](crate::player::PlayerScreen)): perform this command. The screen resolves the command of the control the
+    /// engine holds, so the app's performer (`app::playback::perform_hud_command`) never reads a
+    /// cursor. OK on the row is this; a pointer click on the row is still [`ArmControlRow`](PlayerReq::ArmControlRow).
+    Command(plx_appkit::player_hud::command::HudCommand),
+    /// **A press on a stand-in committed** — the Skip pill, or one of the Up Next pair — after the
+    /// same dip. A stand-in's meaning depends on the segment it offers, which the app resolves on
+    /// the committing frame (`app::playback::activate_ctrl_row`), so it carries no command.
+    StandIn,
     /// **Leave the player** — the one ritual the STOP key, a BACK with nothing else open, and the
     /// failure read-out's own BACK escape all perform (`exit_player`; restructure phase 12,
     /// replacing `app/run.rs`'s direct calls to it from the player's own key arms).
@@ -1879,7 +1889,7 @@ impl AppArg {
 }
 
 pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
-     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
+     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(page:u8)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
@@ -2083,6 +2093,18 @@ pub struct AppMounter {
     /// taken before a blocking resolve, so a load longer than the 4.5 s linger expired the HUD
     /// before it was ever drawn and the user got a blank screen instead of a transport.
     pub player_hud_ms: Option<u32>,
+    /// **The rect the NEXT player menu hangs from**: the compiled package's anchor for the opener that asked
+    /// (`PlayerScreen::menu_anchor`), stamped by the app at the press and consumed by the overlay's mount,
+    /// a seed like `player_hud_ms` and for the same reason: the canonical `PlayerOverlayArg` is the panel's
+    /// KIND, so a rect of floats cannot ride on it. `None` mounts the menu at its own default.
+    pub player_menu_anchor: Option<plx_ui::Rect>,
+    /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument):
+    /// compiled by the app once per process (at boot, outside any frame; a controlled run or a dev package
+    /// compiles on its first player frame instead), and handed to the mount the way the seeds above are.
+    /// Cloned, not consumed: every player instance draws from the app's current compile. The mount never compiles, reads no registry and holds no fallback of its own; a
+    /// mounter nothing seeded (a controlled run, which compiles nothing outside a frame and never reaches the
+    /// player) hands the page `Compiled::default()`, which has no state for any frame.
+    pub player_compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,
 }
 
 /// **The one `mount` match** (spec §2.1) — the whole of what "add a screen" costs, in the module
@@ -2115,10 +2137,15 @@ where
             AppArg::ItemMenu(arg) => Box::new(
                 crate::item_menu::ItemMenuScreen::new(entry, arg.clone()).with_watchlist(arg.watchlist)),
             AppArg::WatchlistMenu(arg) => Box::new(crate::watchlist::menu::WatchlistMenuScreen::new(entry, *arg)),
-            AppArg::PlayerOverlay(arg) => Box::new(
-                crate::player::overlay::PlayerOverlayScreen::new_with(
-                    H::session(cx), H::metadata(cx), entry, arg.kind, H::subtitle_search(cx).is_some()),
-            ),
+            AppArg::PlayerOverlay(arg) => {
+                let offer_search = H::subtitle_search(cx).is_some();
+                Box::new(match self.player_menu_anchor.take() {
+                    Some(anchor) => crate::player::overlay::PlayerOverlayScreen::new_anchored(
+                        H::session(cx), H::metadata(cx), entry, arg.kind, offer_search, anchor),
+                    None => crate::player::overlay::PlayerOverlayScreen::new_with(
+                        H::session(cx), H::metadata(cx), entry, arg.kind, offer_search),
+                })
+            }
             AppArg::AltSources(arg) => Box::new(
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),
@@ -2235,7 +2262,7 @@ where
             // instant it mounts (`AppMounter::player_hud_ms`), never from the keypress that asked
             // for the playback.
             AppArg::Player => {
-                let mut page = crate::player::PlayerScreen::new(entry);
+                let mut page = crate::player::PlayerScreen::new(entry, std::sync::Arc::clone(&self.player_compiled));
                 // **Where BACK, Stop and EOS land** (§5.1). Captured at the MOUNT, from the page
                 // that was on top when the push was asked for — never read live, because an
                 // overlay opening on this page's own stack changes the input owner and must not
@@ -2613,7 +2640,11 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Immediate jump state adds SeekBurst target/time and the pending FF/REW tap flag.
 // The independent settings also update the Preferences and Picker state versions.
 // Previous pin: 0x3cf2_5b06_5ed9_8faa. Re-record the incompatible anchors through plxnative-rec.
-const SCREEN_SHAPES_PIN: u64 = 0x9425f33f3f536aa5;
+// HUD commands (PR3): `PlayerOverlay::More` names the page it opens on, `More(page:u8)` (0 the
+// root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`, so the Speed page can be
+// addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
+// 0x9425_f33f_3f53_6aa5.
+const SCREEN_SHAPES_PIN: u64 = 0xb633_b65b_ed93_ca93;
 
 #[cfg(test)]
 mod arg_tests {
@@ -2915,3 +2946,5 @@ mod compaction_tests {
         assert_eq!(table, vec![1, 2, 3]);
     }
 }
+
+pub(crate) mod sort_info;

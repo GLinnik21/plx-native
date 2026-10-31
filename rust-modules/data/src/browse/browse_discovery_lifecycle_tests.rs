@@ -477,7 +477,7 @@ fn directory_landings_for_the_current_lifecycle_commit_both_menus() {
     assert_eq!(state.genres[0].id, "stale");
     assert_eq!(*state.letters, vec![("S".into(), 99)]);
     assert!(state.genres_done);
-    assert!(state.letters_done);
+    assert!(state.letters_current(), "landed under the key the section asks with");
 }
 #[test]
 fn blocking_section_discovery_discards_a_same_slot_repoint_during_the_request() {

@@ -6,7 +6,7 @@ use super::test_support::*;
 use super::*;
 use crate::viewstate::{ViewAt, ViewEdit};
 
-const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
 
 fn resident(sid: ServerId, browse: &mut TestBrowse) {
     let state = browse.state.state_mut(0).unwrap();

@@ -85,10 +85,11 @@ pub enum OverlayKind {
     Info,
     /// The chapter strip (`appkit/chapters_panel.rs`).
     Chapters,
-    /// The `…` overflow popover (`appkit/more_menu.rs`). `quality` opens it focused on the active
-    /// quality rung — the failure read-out's recovery path, which is also why this is the one
-    /// overlay whose style `survives_failure`.
-    More { quality: bool },
+    /// The `…` overflow popover (`appkit/more_menu.rs`). `page` opens it on a drill-in page
+    /// instead of the root: Quality, focused on the active rung, is the failure read-out's recovery
+    /// path (which is also why this is the one overlay whose style `survives_failure`); Speed is
+    /// the `open_more` command's third address. `None` is the root.
+    More { page: Option<plx_appkit::more_menu::MorePage> },
     /// The on-video Subtitle Timing capsule (`appkit/timing_capsule.rs`, plan `subtitle-menu-capsule`
     /// §4) — the Subtitles panel's Timing row hands off here
     /// (`appkit::track_menu::TrackOk::OpenTiming`) rather than stepping the offset itself. The only
@@ -107,7 +108,7 @@ impl OverlayKind {
         OverlayKind::Tracks { tab: 0 },
         OverlayKind::Info,
         OverlayKind::Chapters,
-        OverlayKind::More { quality: false },
+        OverlayKind::More { page: None },
         OverlayKind::Timing,
     ];
 
@@ -121,7 +122,7 @@ impl OverlayKind {
     /// `ScreenArg::same_instance` compares, and the reason it is not the whole `OverlayKind`.
     ///
     /// The two on-screen discs open the SAME track menu on their own tab, and the failure
-    /// read-out opens the SAME `…` popover focused on the quality rung. So `tab` and `quality` are
+    /// read-out opens the SAME `…` popover focused on the quality rung. So `tab` and `page` are
     /// a boot ADDRESS, not an identity — exactly as `AppArg::Settings`'s root page is — and a
     /// container that compared them would stack a second track menu on top of the first when the
     /// viewer moved from Subtitles to Audio.
@@ -205,8 +206,12 @@ impl LogicalState for PlayerOverlayArg {
             OverlayKind::Tracks { tab } => {
                 c.u32(tab as u32);
             }
-            OverlayKind::More { quality } => {
-                c.bool(quality);
+            OverlayKind::More { page } => {
+                c.u8(match page {
+                    None => 0,
+                    Some(plx_appkit::more_menu::MorePage::Quality) => 1,
+                    Some(plx_appkit::more_menu::MorePage::Speed) => 2,
+                });
             }
             OverlayKind::Info | OverlayKind::Chapters | OverlayKind::Timing => {}
         }
@@ -276,6 +281,15 @@ fn search_default_lang(ps: &plx_media::route::PlaybackSession, meta: plx_data::m
     plx_data::subsearch::default_language(plx_media::route::cur_sub_pref_lang(ps), subtitle_yours_langs(ps, meta))
 }
 
+/// **The rect a menu opens beside**, handed to it once when it is mounted: the opener's rest rect,
+/// widened across to the end of its segment, so the openers of one segment share the panel's edge.
+/// Classic has one segment, the control row, end-aligned at `CTRL_RIGHT`, and every opener (the
+/// Subtitles, Audio and `…` discs, and the failure read-out's quality entry that has no disc at
+/// all) gets that row's rect: the panels settle where the fixed constants put them.
+fn menu_anchor() -> Rect {
+    plx_appkit::player_hud::classic::ctrl_row_hit_rect()
+}
+
 impl PlayerOverlayScreen {
     /// Every panel here answers on exactly one focus group — see each `*Part`'s own `groups()`
     /// (restructure phase 12); this screen never holds more than one panel at a time, so there is
@@ -292,24 +306,27 @@ impl PlayerOverlayScreen {
     /// [`Self::new`] for a host that can run a subtitle search (`MetadataLike::subtitle_search`):
     /// the Tracks panel is built offering it, never offered it later (`TrackMenuState::new_with`).
     pub fn new_with(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind, offer_search: bool) -> Self {
+        Self::new_anchored(ps, meta, entry, kind, offer_search, menu_anchor())
+    }
+
+    /// [`Self::new_with`] for a menu opened beside `anchor` ([`menu_anchor`]'s answer in classic):
+    /// the rect the player screen hands to Tracks or More, which latches it. Panels that are not
+    /// menus ignore it.
+    pub fn new_anchored(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind, offer_search: bool, anchor: Rect) -> Self {
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
                 plx_appkit::track_menu::TrackMenuState::new_with(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search)
+                    .with_anchor(anchor)
             })),
             OverlayKind::Info => Panel::Info(plx_appkit::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
                 Panel::Chapters(plx_appkit::chapters_panel::ChaptersState::new(meta))
             }
-            OverlayKind::More { quality: false } => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps))
-            }
-            // Force Direct Play offers no Quality section, so there is no rung to land on: a
-            // quality entry is the ordinary menu then (`more_menu::rows_for`).
-            OverlayKind::More { quality: true } if plx_media::route::forced_direct_play(ps) => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps))
-            }
-            OverlayKind::More { quality: true } => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new_quality(ps))
+            // A quality entry is the ordinary menu under Force Direct Play, which offers no
+            // Quality section so there is no rung to land on, and so is a Speed entry when the
+            // playback takes one speed only: `MoreMenuState::new_on` falls back to the root.
+            OverlayKind::More { page } => {
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new_on(ps, page).with_anchor(anchor))
             }
             OverlayKind::Timing => {
                 let (lo, hi) = plx_media::player::subtitle_offset_range_ms();
