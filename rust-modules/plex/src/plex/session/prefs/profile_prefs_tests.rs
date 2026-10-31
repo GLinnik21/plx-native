@@ -8,6 +8,7 @@ use super::super::{
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
     TrailerAutoplayPref, UserRef,
 };
+use crate::plex::session::HomeUserRef;
 use super::profile_prefs::*;
 use super::{Fallback, Parse, Preferences, Scope, Setting, DESCRIPTORS};
 use crate::plex::session::test_support::STAMP;
@@ -531,4 +532,89 @@ fn hdr_overlay_brightness_defaults_to_three_quarters_and_round_trips() {
     );
     let install: Preferences = serde_json::from_value(json!({ "hdr_overlay_brightness": "half" })).unwrap();
     assert_eq!(HdrOverlayBrightnessPref::get(&install), HdrOverlayBrightness::Half);
+}
+
+// ---- #830: the owner stamp ----------------------------------------------------------------------
+
+const LEGACY: &str = "aaaaaaaaaaaaaaaa";
+const OWNER: &str = "o1:19afc47bcea99412";
+
+/// A profile that picked every setting. Typed out in full, no `..Default::default()`, so a
+/// setting added to [`ProfilePrefs`] stops this compiling until the adoption merge below is told.
+fn picked_everything() -> ProfilePrefs {
+    ProfilePrefs {
+        playback_quality: Some(PlaybackQuality::P720),
+        direct_play_mode: Some(DirectPlayMode::Forced),
+        subtitle_tone: Some(SubtitleTone::Silver),
+        subtitle_size: Some(SubtitleSize::Large),
+        subtitle_position: Some(SubtitlePosition::High),
+        hdr_overlay_brightness: Some(HdrOverlayBrightness::Half),
+        next_episode_mode: Some(NextEpisodeMode::AfterCredits),
+        skip_interval: Some(SkipInterval::Seconds30),
+        instant_dpad_seeking: Some(InstantDpadSeeking::On),
+        deck_press: Some(DeckPress::Play),
+        under_posters: Some(UnderPosters { title: true, details: UnderPostersDetails::Video, sort_value: false }),
+        audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),
+        trailer_autoplay: Some(false),
+        dolby_vision_mode: Some(DolbyVisionMode::Off),
+    }
+}
+
+/// **Adopting a profile's picks keeps EVERY setting.** The record that carried the old sign-in's
+/// stamp is merged into the one already stamped for the owner field by field: the owner's own value
+/// wins, the adopted one fills what the owner never picked. With every field set on the
+/// adopted side a field the merge forgot would read as the default afterwards.
+#[test]
+fn adopting_profile_picks_merges_field_by_field_and_loses_no_setting() {
+    let mut prefs: Preferences = serde_json::from_value(json!({"profile_prefs": [
+        {"user": "kid", "account": LEGACY, "prefs": serde_json::to_value(picked_everything()).unwrap()},
+        {"user": "kid", "account": OWNER, "prefs": {"subtitle_size": "small"}},
+        {"user": "pal", "account": LEGACY, "prefs": serde_json::to_value(picked_everything()).unwrap()},
+        {"user": "far", "account": "ffffffffffffffff", "prefs": {"deck_press": "play"}},
+    ]})).unwrap();
+    assert!(prefs.restamp(&[LEGACY.to_string()], OWNER));
+    assert_eq!(prefs.profile_prefs.len(), 3, "kid's two records became one: {:?}", prefs.profile_prefs);
+    let kid = own_prefs(&prefs.profile_prefs, "kid", OWNER).expect("the merged record");
+    assert_eq!(kid.subtitle_size, Some(SubtitleSize::Small), "the owner's own pick wins");
+    assert_eq!(*kid, ProfilePrefs { subtitle_size: Some(SubtitleSize::Small), ..picked_everything() },
+        "and every other setting came across from the adopted record");
+    assert_eq!(own_prefs(&prefs.profile_prefs, "pal", OWNER), Some(&picked_everything()), "a lone record is re-stamped as it is");
+    assert!(own_prefs(&prefs.profile_prefs, "far", "ffffffffffffffff").is_some(), "another stamp is never adopted");
+    assert!(prefs.profile_prefs.iter().all(|r| r.account != LEGACY));
+}
+
+fn roster(owner: i64) -> Vec<HomeUserRef> {
+    vec![HomeUserRef { id: owner, uuid: format!("synthetic-owner-{owner}"), admin: true, ..Default::default() }]
+}
+
+/// **A pick is admitted while the file's account stamp is the one it was made under**, whatever the
+/// token. Made as the owner of roster 7, it lands across a same-owner re-sign-in (a new token), and
+/// is refused across a different owner's and across a sign-out (the tenure moved).
+#[test]
+fn a_pick_lands_across_a_same_owner_resignin_and_not_across_another_owner_or_a_sign_out() {
+    let _g = plx_base::testlock::serial();
+    let _session = TempSession::new("pick-across-owner-resignin");
+    let owner = |token: &str, id: i64| {
+        let token = token.to_string();
+        assert!(crate::plex::session::update(move |cur| Some(Session { account_token: token, home_users: roster(id), ..cur.clone() })));
+    };
+    owner("token-a", 7);
+    crate::plex::session::publish_seat_for_test(Some(UserRef { uuid: "kid".into(), ..Default::default() }),
+        crate::plex::session::current_gen().wrapping_add(1), OWNER.to_string());
+    let w = ProfileWrite::capture().expect("seated under the owner stamp");
+    assert_eq!(w.stamp(), OWNER);
+    assert!(persist_profile_pref::<SubtitleSizePref>(&w, SubtitleSize::Large), "the stamp the file's account carries");
+
+    owner("token-b", 7);
+    assert!(persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::High), "same owner, new token: it lands");
+    let kept = own_prefs(&stored().prefs.profile_prefs, "kid", OWNER).cloned().expect("the owner's record");
+    assert_eq!((kept.subtitle_size, kept.subtitle_position), (Some(SubtitleSize::Large), Some(SubtitlePosition::High)));
+
+    owner("token-c", 8);
+    assert!(!persist_profile_pref::<DeckPressPref>(&w, DeckPress::Play), "another owner: refused");
+    assert_eq!(own_prefs(&stored().prefs.profile_prefs, "kid", OWNER).and_then(|p| p.deck_press), None);
+
+    owner("token-b", 7);
+    crate::plex::session::revoke_cached_session();
+    assert!(!persist_profile_pref::<DeckPressPref>(&w, DeckPress::Play), "a sign-out moved the tenure: refused");
 }

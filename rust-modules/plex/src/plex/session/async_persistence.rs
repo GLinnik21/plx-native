@@ -41,10 +41,19 @@ pub enum PersistencePurpose {
     Final,
     Profile,
     Background,
+    /// A routine credential write that moves the account stamp of a profile that is ALREADY
+    /// published (the picker's Home roster making the owner known): once it is durable the owner
+    /// republishes the seat under the new stamp (#830), and when its own verdict never comes (a
+    /// later admission overtook it) or is a failure, on the next durable completion of any write while
+    /// the session is still the account the debt was owed for.
+    /// Like `Background`, never evidence that a login was saved. Only the owner plans it, for
+    /// exactly that case.
+    Seat,
 }
 
 impl PersistencePurpose {
-    /// A background refresh is maintenance, never evidence that credentials reached disk.
+    /// A background refresh is maintenance, never evidence that credentials reached disk (and
+    /// neither is the seat's republication write).
     pub fn proves_saved_login(self) -> bool {
         matches!(self, Self::Discovery | Self::Final | Self::Profile)
     }

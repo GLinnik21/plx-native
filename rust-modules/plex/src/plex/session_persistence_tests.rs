@@ -1999,3 +1999,44 @@ fn unmarked_sealed_missing_record_keeps_its_established_legacy_behavior() {
     assert!(matches!(persistence::load(), persistence::CanonicalRead::Missing));
     assert_eq!(std::fs::read(&candidates[2]).unwrap(), original);
 }
+
+/// **#830: every place a `Session` is built from storage adopts an older build's stamps.** The
+/// canonical record read through the authenticated helper (`Opened`), the same record as raw data,
+/// the plaintext legacy file and the sealed legacy file are the four constructions of a ready read;
+/// a record stamped with the token fingerprint is the owner's after each of them, so no reader
+/// (`peek`, a boot `load`, a writer's `cur`) sees the old spelling.
+#[test]
+fn every_read_path_adopts_the_records_of_an_older_build() {
+    use super::prefs::{AudioMemo, ProfileList, TrackMemoryEntry};
+    const OWNER_7: &str = "o1:19afc47bcea99412";
+    let _serial = plx_base::testlock::serial();
+    let _keymanager = SyntheticKeymanager::new();
+    let root = TempSession::new("adopt-every-read-path");
+    let mut written = Session {
+        client_id: "cid-1".into(), account_token: "token-a".into(),
+        home_users: vec![HomeUserRef { id: 7, uuid: "synthetic-owner-7".into(), admin: true, ..Default::default() }],
+        ..Default::default()
+    };
+    written.prefs.track_memory.push(ProfileList {
+        user: "u".into(), account: crate::plex::grant::account_key("token-a"),
+        items: vec![TrackMemoryEntry::new("m", "show", Some(AudioMemo { lang: "eng".into(), ..Default::default() }), None)],
+        ..Default::default()
+    });
+    let stamp_of = |read: ReadState| match read {
+        ReadState::Ready { session, .. } => session.prefs.track_memory[0].account.clone(),
+        _ => panic!("the read did not produce a session"),
+    };
+
+    assert_eq!(stamp_of(read_locked(persistence::CanonicalRead::Opened { revision: 1, session: written.clone() })), OWNER_7,
+        "canonical, authenticated");
+    let payload = serde_json::to_string(&written).unwrap();
+    assert_eq!(stamp_of(read_locked(persistence::CanonicalRead::Data { revision: 1, payload })), OWNER_7, "canonical, raw data");
+
+    std::fs::write(root.file(), serde_json::to_vec(&written).unwrap()).unwrap();
+    assert_eq!(stamp_of(with_io_for_test(read_legacy_locked)), OWNER_7, "the plaintext file");
+
+    let sealed = plx_platform::tv::secure::seal(&serde_json::to_vec(&written).unwrap()).expect("the synthetic store seals");
+    let envelope = SecureEnvelope { format: SECURE_FORMAT.to_string(), version: 1, sealed };
+    std::fs::write(root.file(), serde_json::to_vec_pretty(&envelope).unwrap()).unwrap();
+    assert_eq!(stamp_of(with_io_for_test(read_legacy_locked)), OWNER_7, "the sealed file");
+}

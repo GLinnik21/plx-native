@@ -519,6 +519,91 @@ fn under_posters_round_trips_and_packs_into_one_byte() {
     }
 }
 
+// ---- #830: the owner stamp, at the data layer ---------------------------------------------------
+
+/// The account-bound rows whose records carry NO account stamp (or whose stamp is not the owner's
+/// to follow): a fact about a machine, a per-profile view, and plaintext consent, which stays
+/// bound to the sign-in by design.
+const NOT_STAMPED: &[&str] = &["plaintext_consent", "server_key_pins", "last_library", "library_sorts"];
+
+const LEGACY: &str = "aaaaaaaaaaaaaaaa";
+const OWNER: &str = "o1:19afc47bcea99412";
+
+/// **T-stamp.** Every account-bound row that stamps its records must be re-stamped by
+/// `Preferences::restamp` AND seen by `Preferences::restamp_pending` (two registrations: the write
+/// funnel skips the adoption when the scan sees nothing), so a new tenant that forgets its one registration line fails here instead
+/// of silently losing its records at the next re-sign-in. Held to `DESCRIPTORS`, both ways: a name
+/// in `NOT_STAMPED` that is not an account-bound row is stale.
+#[test]
+fn t_stamp_every_stamped_account_bound_list_is_restamped() {
+    for key in NOT_STAMPED {
+        assert!(DESCRIPTORS.iter().any(|d| d.key == *key && d.account_bound), "`{key}` is not an account-bound row any more");
+    }
+    let mut checked = Vec::new();
+    for d in DESCRIPTORS.iter().filter(|d| d.account_bound && !NOT_STAMPED.contains(&d.key)) {
+        let mut prefs: Preferences = serde_json::from_value(json!({ d.key: [{"user": "", "account": LEGACY}] })).unwrap();
+        assert!(prefs.restamp_pending(&[LEGACY.to_string()]), "`{}`: restamp_pending (the write funnel's scan) does not see its records", d.key);
+        assert!(prefs.restamp(&[LEGACY.to_string()], OWNER), "`{}`: restamp did not touch its records", d.key);
+        let value = serde_json::to_value(&prefs).unwrap();
+        assert_eq!(value[d.key][0]["account"], json!(OWNER), "`{}`: its record is still stamped for the old sign-in", d.key);
+        assert!(!prefs.restamp(&[LEGACY.to_string()], OWNER), "`{}`: a second pass finds nothing left to adopt", d.key);
+        checked.push(d.key);
+    }
+    checked.sort();
+    assert_eq!(checked, ["profile_prefs", "subtitle_offsets", "track_memory"]);
+}
+
+fn offsets_record(user: &str, account: &str, entries: &[(&str, i64)]) -> Value {
+    json!({"user": user, "account": account, "items": entries.iter()
+        .map(|(rk, ms)| json!({"machine_id": "m", "rating_key": rk, "offset_ms": ms})).collect::<Vec<_>>()})
+}
+
+fn offsets_of(prefs: &Preferences, user: &str, account: &str) -> Vec<(String, i64)> {
+    prefs.subtitle_offsets.iter().filter(|r| r.user == user && r.account == account)
+        .flat_map(|r| r.items.iter().map(|e| (e.rating_key.clone(), e.offset_ms))).collect()
+}
+
+/// **Adoption merges into the record already stamped.** One record per `(user, stamp)` survives; the
+/// stamped record's entry wins a clash, the adopted ones go behind it, other profiles are re-stamped
+/// in place, and a record under any other stamp (or none) is never touched.
+#[test]
+fn restamp_merges_into_the_record_already_stamped_and_lets_the_stamped_entry_win() {
+    let mut prefs: Preferences = serde_json::from_value(json!({"subtitle_offsets": [
+        offsets_record("u", LEGACY, &[("rk-1", 100), ("rk-2", 200)]),
+        offsets_record("u", OWNER, &[("rk-2", 999)]),
+        offsets_record("v", LEGACY, &[("rk-1", 300)]),
+        offsets_record("w", "ffffffffffffffff", &[("rk-1", 400)]),
+        offsets_record("x", "", &[("rk-1", 500)]),
+    ]})).unwrap();
+    assert!(prefs.restamp(&[LEGACY.to_string()], OWNER));
+    assert_eq!(prefs.subtitle_offsets.len(), 4, "u's two records became one: {:?}", prefs.subtitle_offsets);
+    assert_eq!(offsets_of(&prefs, "u", OWNER), [("rk-1".to_string(), 100), ("rk-2".to_string(), 999)], "the stamped entry won the clash");
+    assert_eq!(offsets_of(&prefs, "v", OWNER), [("rk-1".to_string(), 300)], "v was re-stamped in place");
+    assert_eq!(offsets_of(&prefs, "w", "ffffffffffffffff"), [("rk-1".to_string(), 400)], "another stamp is never adopted");
+    assert_eq!(offsets_of(&prefs, "x", ""), [("rk-1".to_string(), 500)], "an unstamped record is nobody's to adopt here");
+    assert!(!prefs.restamp(&[LEGACY.to_string()], OWNER), "nothing is left to adopt");
+    assert!(!prefs.restamp(&[], OWNER), "no spelling to adopt from: no change");
+}
+
+/// The cap still holds after a merge: the oldest entries drain, the stamped record's own stay.
+#[test]
+fn restamp_drains_the_oldest_past_the_cap_and_never_grows_a_list() {
+    let adopted: Vec<(String, i64)> = (0..10).map(|n| (format!("a{n}"), 1 + n)).collect();
+    let held: Vec<(String, i64)> = (0..20).map(|n| (format!("t{n}"), 100 + n)).collect();
+    fn entries(v: &[(String, i64)]) -> Vec<(&str, i64)> {
+        v.iter().map(|(k, ms)| (k.as_str(), *ms)).collect()
+    }
+    let mut prefs: Preferences = serde_json::from_value(json!({"subtitle_offsets": [
+        offsets_record("u", LEGACY, &entries(&adopted)),
+        offsets_record("u", OWNER, &entries(&held)),
+    ]})).unwrap();
+    assert!(prefs.restamp(&[LEGACY.to_string()], OWNER));
+    let merged = offsets_of(&prefs, "u", OWNER);
+    assert_eq!(merged.len(), <SubtitleOffsetEntry as super::prefs::MemoryEntry>::CAP, "capped at the tenant's cap");
+    assert_eq!(&merged[merged.len() - 20..], &held[..], "the stamped record's own entries all stayed, in order");
+    assert_eq!(merged[0].0, "a6", "the six oldest adopted entries drained");
+}
+
 #[test]
 fn sort_value_is_on_by_default_stored_as_its_off_state_and_soft_parsed() {
     // Everyone starts On: the default, the packed seed and a profile that never chose it.

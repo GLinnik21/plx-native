@@ -494,7 +494,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
   in `app/boot.rs`, would leave them to the next account: `replace_after_reauthentication_guarded_with_outcome`
-  clears both, and the Home pins and recent searches, when the login's owner identity (`owner_identity`, the roster admin's plex.tv id; never the token, which every sign-in mints anew) differs from the stored one or either is unknown), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  clears both, and the Home pins and recent searches, when the login's owner identity (`owner_identity`, the roster admin's plex.tv id; never the token, which every sign-in mints anew) differs from the stored one or either is unknown; the three STAMPED lists below follow the same identity through their own stamp instead), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
   forms — the legacy file's `Session` and the canonical preference record — declared before each
   form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
   only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes
@@ -505,12 +505,13 @@ a dead source is **absent** from Home and states itself in its own library secti
   `session.with_pref::<Marker>(v)` (a `Copy` row; it writes the TOP-LEVEL key, so for the ten
   per-profile settings it is a fixture builder for the legacy fallback, never what a pick does).
   **The ten player settings and hero trailer autoplay are per profile** (`prefs/profile_prefs.rs`): a profile's own picks sit
-  in `profile_prefs` (`[{user, account, prefs}]`, `account` the `grant::account_key` stamp, the owner
-  `user: ""`), and what a profile reads is `stored_effective` = its own value, else the frozen
-  top-level key (`Setting::get`, a garbage own value included), else the default. The top-level keys
-  are never copied and never written by a pick (`persist_profile_pref` is the only writer; it
-  refuses without a seat, across a tenure or credential change and with an empty stamp, and prunes
-  records of other accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
+  in `profile_prefs` (`[{user, account, prefs}]`, `account` the `session::account_stamp` stamp, see
+  "Stamps" below, the owner `user: ""`), and what a profile reads is `stored_effective` = its own
+  value, else the frozen top-level key (`Setting::get`, a garbage own value included), else the
+  default. The top-level keys are never copied and never written by a pick (`persist_profile_pref` is
+  the only writer; it refuses without a seat, across a tenure or client change, when the file's
+  account stamp is no longer the seat's and with an empty stamp, and prunes records of other
+  accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
   sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
   (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.
   `hold_hint_taught` is Install and never account-bound, so sign-out keeps it: which hold hints
@@ -530,7 +531,8 @@ a dead source is **absent** from Home and states itself in its own library secti
   show, `prefs/track_memory.rs`; `subtitle_offsets`) have no `Copy` value and no whole-list accessor:
   their markers implement `Row` only (not `ListRow`), and they are written only through
   `ProfileMemory::upsert_with`. `track_memory` is account-bound (no stamp, no write; a write prunes
-  every other account's record), its entry strings are bounded (an over-long one reads as absent, a
+  every other account's record, but keeps the owner-stamped ones while the owner is still unknown),
+  its entry strings are bounded (an over-long one reads as absent, a
   title is cut), and it is capped at 64 entries a profile and held to a 32 KiB HOUSEHOLD budget by
   eviction, never refusal. It is READ at resolve time (`route::recall_all` into `ResolveEnv::memory`, and
   only for the SEATED profile: `recall` and `recall_all` ask `session::is_seated_as`, so an unseated
@@ -576,7 +578,41 @@ a dead source is **absent** from Home and states itself in its own library secti
   stamp), and a record stamped for another account reads as nothing and is
   pruned by the next write. The media half (`route/prefs.rs` `remember`) stamps its mirror write with
   the stamp the mirror was seeded under (`decision_memory_tests`
-  `a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded`).
+  `a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded`), and drops the queued file
+  write when the file's own stamp has moved since (`remember_drops_the_edit_when_the_file_stamp_differs_from_the_mirror_seed`).
+- **Stamps: the three stamped lists follow the OWNER, not the sign-in (#830).** The `account` of a
+  `profile_prefs`, `track_memory` or `subtitle_offsets` record is `session::account_stamp(&Session)`:
+  empty without an account token; `o1:` + 16 hex (a one-way, domain-tagged hash of
+  `owner_identity(&home_users)`, the roster admin's plex.tv id, or its uuid for a roster written
+  before ids) once the roster names the admin; else the token fingerprint `grant::account_key`
+  computes, which is also what every older build wrote and what the owner-unknown window stamps with.
+  A token lives for one sign-in, the owner does not, so a re-sign-in by the same person keeps the
+  records and the same seat, while another owner's records read as nothing and are pruned by that
+  owner's first write. Three rules hold it together: (1) **adoption**, `Session::adopt_stamps`, a
+  pure, idempotent pass that re-stamps the records whose stamp is THIS token's fingerprint (or the
+  other spelling of THIS roster's admin) into the owner stamp, run wherever a `Session` is built from
+  storage (`read_locked`, `read_legacy_filtered_locked`) and in the write funnel
+  (`save_locked_with_authority`), merged into the profile's record already stamped (the stamped entry
+  wins a clash, the cap drains the oldest; a merge never adds data); a different owner can never
+  adopt another's records, because the only stamp equal to this token's fingerprint was written by a
+  session holding this token. (2) **Keep while unknown**: a write whose own stamp is not in the owner
+  family (`is_owner_stamp`) prunes foreign records but keeps owner-stamped ones, so a roster that
+  failed to load deletes nothing. (3) **One stamp inside a sign-in**: the cached roster is part of the
+  stamp's input, so an empty `home/users` answer never replaces a roster cached for the same token
+  (the `SignedIn` arm), the owner republishes the seat when a durable roster write moves the stamp
+  (`PersistencePurpose::Seat`, on the durable completion, never at admission; a Seat verdict that was overtaken or failed leaves `seat_republish_owed` set, holding the stamp it was owed for, and the next durable completion of any write pays it while the session still holds that stamp; the debt is dropped wherever `persisted` moves to another account (`drop_seat_debt`) and a completion drops one that names another stamp, so a profile is never published under another account's stamp; until paid, a pick is refused rather than written under a stamp the file does not hold), and the media mirrors
+  read and write under the stamp they were seeded with or not at all. A new stamped list registers
+  in `Preferences::restamp` (`prefs_tests` T-stamp fails until it does) and takes
+  `StampedRecord`; **plaintext consent is not one of them**: it is a security grant, is answered
+  while the owner is not yet known, and stays bound to `grant::account_key`, so a new sign-in asks
+  again. Limits, so nobody over-reads the guarantee: a re-sign-in done BEFORE this build ran
+  (old stamp, old token) is unrecoverable; a Plex Home member who signs in with their own account
+  carries the Home admin's identity (the same boundary `same_owner` draws for pins, searches and
+  library memory); `subtitle_offsets` written before they were account-bound stay readable by
+  whoever is signed in until the next write (`ADOPTS_UNSTAMPED`); and A -> B -> A without B writing
+  anything restores A's records (the prune happens on B's first write). A build older than this one
+  reads an `o1:` stamp as a foreign account's (it never fails to parse) and its first write prunes
+  those records.
 - **The contract for a new setting.** Step 4 is a review rule: no test or CI check enforces it.
   1. **Add the field** to `Preferences`, with explicit serde attributes. Pick the parse policy (a
      soft scalar, `de_soft_vec` for lists, `de_soft_bool_on` when absence or garbage means on) and

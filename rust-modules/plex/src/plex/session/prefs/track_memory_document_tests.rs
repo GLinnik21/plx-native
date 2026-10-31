@@ -12,11 +12,11 @@
 use super::super::{
     persistence, split_canonical, v0, HomePins, HomeUserRef, LastLibrary, LibraryView, LibraryViews, PinVerifier,
     PinnedLib, PlaintextChoice, PlaybackQuality, ProfileCreds, RecentSearches, SaveAuthority, ServerRef, Session,
-    SkipInterval, SourceRef, SubtitleOffsets, TypedLib, UserRef,
+    SkipInterval, SourceRef, SubtitleOffsetEntry, SubtitleOffsets, TypedLib, UserRef,
 };
 use super::track_memory::*;
 use super::track_memory_tests::{put, show, typical, worst, STAMP};
-use super::ProfileList;
+use super::{MemoryEntry, ProfileList, ProfileMemory};
 use plx_platform::storage::state::{self, logical_size, MAX_LOGICAL_BYTES};
 use plx_platform::storage::wire::{
     AuthLoad, ErrorCode, MigrationMutation, ProtectionRequest, Request, SecretString, WireMutation,
@@ -1271,4 +1271,37 @@ fn tier1_the_real_track_memory_shape_rides_through_the_previous_build() {
     assert_eq!(serde_json::to_value(&old).unwrap()["track_memory"], real);
     let back: Session = serde_json::from_value(file).unwrap();
     assert_eq!(back.prefs.track_memory, session.prefs.track_memory);
+}
+
+/// **The owner stamp rides the same codec and the same previous build.** Only the string value of
+/// `account` differs from the real shape above (`o1:` and sixteen hex where a token fingerprint
+/// stood): no key, slot or field is new, so the previous build still keeps the key opaque, rewrites
+/// it byte-identically, and this build reads back exactly what it wrote.
+#[test]
+fn tier1_an_owner_stamped_track_memory_rides_through_the_previous_build() {
+    const OWNER: &str = "o1:19afc47bcea99412";
+    let mut session = household(2, 1);
+    session.prefs.track_memory.clear();
+    for n in 0..3 {
+        let entry = typical(n);
+        assert!(session.prefs.track_memory.upsert_with(&uuid(0), OWNER, &entry.key(), |_| Some(entry.clone())));
+    }
+    session.prefs.subtitle_offsets.clear();
+    session.prefs.subtitle_offsets.upsert_with(&uuid(0), OWNER, &(machine(0), "rk-1".to_string()), |_| {
+        Some(SubtitleOffsetEntry { machine_id: machine(0), rating_key: "rk-1".into(), offset_ms: 1_500, extensions: Default::default() })
+    });
+    let (public, protected) = split_canonical(&session).unwrap();
+    let real = public.preferences["track_memory"].clone();
+    assert_eq!(real[0]["account"], json!(OWNER));
+    assert_eq!(public.preferences["subtitle_offsets"][0]["account"], json!(OWNER));
+
+    let bytes = canonical(&public, 2_000).encode().expect("encode validates");
+    let decoded = state::CanonicalState::decode(&bytes, state::Flavor::Stable).expect("decode validates");
+    assert_eq!(decoded.public.preferences, public.preferences, "the codec keeps it byte for byte");
+    let old = v0::CanonicalSessionPreferences::parse(&decoded.public.preferences);
+    assert_eq!(old.extensions.get("track_memory"), Some(&real), "the previous build keeps the key opaque");
+    assert_eq!(serde_json::to_value(&old).unwrap()["track_memory"], real, "and its own rewrite keeps the value");
+    let joined = super::super::join_canonical(&decoded.public, &protected).expect("the credentials still open");
+    assert_eq!(joined.prefs.track_memory, session.prefs.track_memory);
+    assert_eq!(joined.prefs.subtitle_offsets, session.prefs.subtitle_offsets);
 }
