@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-31T01:10:40Z",
+ "generated": "2026-10-31T01:12:51Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -146,8 +146,8 @@
   {
    "change30_pct": -60.1,
    "change7_pct": 14.1,
-   "d30": 953,
-   "delta30": -573.0,
+   "d30": 953.5,
+   "delta30": -573.5,
    "delta7": 47.0,
    "group": "ci",
    "id": "pr_wait",
@@ -601,8 +601,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 297.5,
-   "delta30": -294.5,
+   "d30": 297,
+   "delta30": -294.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -622,8 +622,8 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 959.0,
-   "delta30": -956.0,
+   "d30": 960,
+   "delta30": -957.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
