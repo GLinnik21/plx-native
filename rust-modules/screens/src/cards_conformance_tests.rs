@@ -42,6 +42,10 @@ fn every_in_scope_card_screen_is_in_the_table_or_pending() {
 
 #[test]
 fn card_screens_match_the_expected_failure_list() {
+    // The cases assume the default Under posters setting (the caption band sizes every row below
+    // the focused one), and five of the eleven harnesses read the setting through `captions::policy`
+    // from the process-wide cell the Settings tests write: pinned here, for every mount of the run.
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
     let matrix = run_all(&table());
     for (s, c, o) in &matrix {
         eprintln!("{s:12} {c:18} {}", match o {
@@ -62,6 +66,7 @@ fn card_screens_match_the_expected_failure_list() {
 fn cards_arriving_in_the_tick_of_a_focus_change_keep_the_view_in_place() {
     use plx_ui::cards::conformance::shifted_under_a_focus_change;
     let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
     let mut bad = Vec::new();
     for (screen, mount) in table() {
         let outcome = shifted_under_a_focus_change(mount);
@@ -74,4 +79,46 @@ fn cards_arriving_in_the_tick_of_a_focus_change_keep_the_view_in_place() {
         }
     }
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}
+
+/// **No tabled harness follows the process-wide Under posters cell while the pin is held.** Five of
+/// the eleven harnesses (collection, home, person, search, library) read the setting through
+/// `captions::policy` and none pins it itself; the Settings tests write the cell under
+/// `testlock::serial()`. This holds the cell on a two-line value (112 px band against the default's
+/// 80) while each harness is mounted and stepped, with the write repeated under the mounted page as
+/// a Settings test's next write would be, and grades that a lower card stands where the default puts
+/// it. Without the pin the policy-reading harnesses move by the 32 px between the bands.
+#[test]
+fn every_card_harness_follows_the_pin_not_the_live_setting() {
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use plx_ui::screen::By;
+    /// Puts the live cell back on its default, a panic included.
+    struct Live;
+    impl Drop for Live {
+        fn drop(&mut self) {
+            plx_media::route::restore_under_posters(UnderPosters::DEFAULT);
+        }
+    }
+    let _serial = plx_base::testlock::serial();
+    let _live = Live;
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let lower_card_y = |live: UnderPosters, mount: Mount| {
+        plx_media::route::restore_under_posters(live);
+        let mut h = mount(14);
+        let cards = h.cards();
+        h.focus(cards[2.min(cards.len() - 1)], By::Dir);
+        h.tick(60);
+        plx_media::route::restore_under_posters(live);
+        h.tick(1);
+        h.drawn_rect(cards[7.min(cards.len() - 1)], 1.0).map(|rect| rect.y)
+    };
+    let two_lines = UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false };
+    let mut moved = Vec::new();
+    for (screen, mount) in table() {
+        let (default, held) = (lower_card_y(UnderPosters::DEFAULT, mount), lower_card_y(two_lines, mount));
+        if default != held {
+            moved.push(format!("{screen}: {default:?} with the default, {held:?} with two lines held live"));
+        }
+    }
+    assert!(moved.is_empty(), "\n{}", moved.join("\n"));
 }

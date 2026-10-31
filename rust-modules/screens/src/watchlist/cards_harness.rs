@@ -12,9 +12,8 @@ use plx_ui::Rect;
 
 use super::options::WatchlistOptionsState;
 use super::page::{WatchTile, WatchlistIn, WatchlistScreen};
-use crate::registry::captions::TEST_UNDER_POSTERS;
+use crate::registry::captions::PolicyPin;
 use crate::registry::{AppFx, AppMsg, PageMemory};
-use plx_plex::plex::session::UnderPosters;
 
 /// A host with no stores: the page reads its rows from itself.
 pub(crate) struct WatchHost;
@@ -67,31 +66,6 @@ pub(crate) fn tiles(n: usize) -> Vec<WatchTile> {
     (0..n).map(tile).collect()
 }
 
-/// **Pins the thread's Under posters setting to its default for the harness's life.** The grid reads
-/// the setting every frame (`captions::policy`) to size the focused row's caption band, 80 px under
-/// one line and 112 under two. Unpinned, that read is the process-wide cell the Settings tests write
-/// (`restore_under_posters`) under `testlock::serial()`, which a harness does not take: a flip between
-/// two of its frames moved every row below the focused one by the 32 px between the bands
-/// (`a_remove_changes_nothing_on_the_grid_until_the_landing_starts`, intermittent). The pin is the
-/// per-thread override the policy documents (`TEST_UNDER_POSTERS`). A setting the test pinned itself
-/// before mounting stands (the pin is the default only where nothing was pinned), and what was there is
-/// put back on the way out, a panic included.
-struct PolicyPin(Option<UnderPosters>);
-
-impl PolicyPin {
-    fn default() -> Self {
-        let before = TEST_UNDER_POSTERS.with(|cell| cell.get());
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(before.unwrap_or(UnderPosters::DEFAULT))));
-        PolicyPin(before)
-    }
-}
-
-impl Drop for PolicyPin {
-    fn drop(&mut self) {
-        TEST_UNDER_POSTERS.with(|cell| cell.set(self.0));
-    }
-}
-
 /// The page, its focus and its clock, stepped the way the host steps a mounted screen.
 pub(crate) struct Harness {
     pub(crate) screen: WatchlistScreen,
@@ -99,7 +73,10 @@ pub(crate) struct Harness {
     press: f32,
     ms: u32,
     n: usize,
-    /// Declared last, so the pin outlives every read the screen makes while it is dropped.
+    /// The thread's Under posters setting held on its default for the harness's life
+    /// (`registry::captions::PolicyPin`: a harness takes no lock, and the Settings tests write the
+    /// process-wide cell under theirs). Declared last, so it outlives every read the screen makes
+    /// while it is dropped.
     _policy: PolicyPin,
 }
 
@@ -110,7 +87,7 @@ pub(crate) fn mount(n: usize) -> Box<dyn CardHarness> {
 impl Harness {
     pub(crate) fn new(rows: Vec<WatchTile>) -> Self {
         let n = rows.len();
-        let policy = PolicyPin::default();
+        let policy = PolicyPin::default_setting();
         let screen = WatchlistScreen::new(rows, WatchlistOptionsState::default()).at_entry(ENTRY);
         let mut h = Self { screen, focus: None, press: 1.0, ms: 0, n, _policy: policy };
         // the stack lays its sections out on the first event it sees
