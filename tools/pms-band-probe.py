@@ -76,7 +76,15 @@ enters memory": a row's FIRST GLYPH is kept (as `ch`) for the letters check, and
 key is a single glyph; no title is printed or written. Libraries stay labelled "show#1".
 
 Usage:  tools/pms-band-probe.py [--base URL] [--token-file PATH] [--json PATH] [--only a,b]
-                                [--floor-and-negative-only] [--types 3,4]
+                                [--floor-and-negative-only] [--types 3,4 [--letters-under-filters]]
+
+## `--types 3,4 --letters-under-filters` (a fourth, small run)
+
+Whether `/firstCharacter?type=T&<terms>` counts under the grid's own terms: for each type it asks the
+`Size=0` count and the letters index with no term, with the application's Unwatched key (`unwatchedLeaves=1`
+for seasons, `unwatched=1` for episodes) and, when the type's `/genre` list has a value that is neither empty
+nor the whole type, with that genre alone and with both, and prints whether the letters' sizes SUM to the
+count of the same terms. Sums, bucket numbers and totals only; no letter, per-letter size or id.
 """
 
 import argparse
@@ -944,9 +952,10 @@ def title_keying(rows, ptype, show_order, show_glyph, descending=False):
     }
 
 
-def letters_index(pms, section, ptype):
-    """`/firstCharacter?type=T` as [(key, size)] in directory order, plus whether the sizes sum to the total."""
-    reply = pms.get("/library/sections/%d/firstCharacter?type=%d" % (section, ptype), 0, 1000, kind="dir")
+def letters_index(pms, section, ptype, terms=()):
+    """`/firstCharacter?type=T[&terms]` as [(key, size)] in directory order, plus whether the sizes sum to the total."""
+    path = "/library/sections/%d/firstCharacter?%s" % (section, "&".join(["type=%d" % ptype] + list(terms)))
+    reply = pms.get(path, 0, 1000, kind="dir")
     out = {"status": reply.status}
     if reply.status == 200:
         out["buckets"] = [(d["key"], d["size"]) for d in reply.dirs if "size" in d and d.get("key") is not None]
@@ -975,6 +984,68 @@ def letters_filter_terms(pms, section, ptype, buckets):
                for key, _ in buckets}
     return {"agree": sum(1 for k, n in buckets if counted[k] == n), "of": len(buckets),
             "disagree": {k: (n, counted[k]) for k, n in buckets if counted[k] != n}}
+
+
+# The terms the application sends with a Seasons / Episodes listing under its Unwatched switch
+# (`SecState::query_filters`): the show-level key for seasons, the plain one for episodes.
+APP_UNWATCHED = {3: "unwatchedLeaves=1", 4: "unwatched=1"}
+
+
+def pick_type_genre(pms, section, ptype, total):
+    """One genre id of this type's `/genre` list whose listing count is neither empty nor the whole type, or None."""
+    reply = pms.get("/library/sections/%d/genre?type=%d" % (section, ptype), 0, 1000, kind="dir")
+    out = {"status": reply.status, "values": len(reply.dirs), "id": None}
+    for entry in reply.dirs[:5]:
+        if entry["key"] is None:
+            continue
+        term_ = "genre=%s" % urllib.parse.quote(str(entry["key"]), safe="")
+        count = pms.count(section, ptype, [term_]).total
+        if isinstance(count, int) and 0 < count < total:
+            out["id"] = term_
+            break
+    return out
+
+
+def measure_letters_under_filters(pms, section, label, ptypes):
+    """Do the letters of `/firstCharacter?type=T&<terms>` sum to the SAME terms' `Size=0` count?
+
+    The Library asks the letters with the grid's own terms and trusts the sum to equal the listing it shows
+    (a letter jump is a prefix sum). If a filter is ignored by the directory the sums differ. Counts only:
+    the sums, the bucket numbers and the totals; no key, size per letter or id is printed.
+    """
+    lib = {"label": label, "kind": "show", "types": {}}
+    print("\n#### %s: letters under the grid's terms" % label)
+    for ptype in ptypes:
+        total = pms.count(section, ptype).total
+        genre = pick_type_genre(pms, section, ptype, total or 0)
+        # The app's Unwatched key matches the whole type on a library nothing was watched in, which cannot tell a
+        # directory that honours a term from one that ignores it. So the same key with `=0` (the watched ones, a
+        # subset or nothing) and a `year=` term (a real episode / season filter, a proper subset) are asked too:
+        # they are not terms the app sends, they tell whether the DIRECTORY follows a filter term at all.
+        sets = [("none", []), ("unwatched", [APP_UNWATCHED[ptype]]), ("unwatched=0", [APP_UNWATCHED[ptype][:-1] + "0"])]
+        years = {}
+        for row in pms.read_all(section, ptype)[0]:
+            if isinstance(row.get("year"), (int, float)):
+                years[int(row["year"])] = years.get(int(row["year"]), 0) + 1
+        if years:
+            sets.append(("year (subset)", ["year=%d" % max(years, key=years.get)]))
+        if genre["id"]:
+            sets += [("genre", [genre["id"]]), ("genre+unwatched", [genre["id"], APP_UNWATCHED[ptype]])]
+        rows = []
+        for name, terms in sets:
+            count = pms.count(section, ptype, terms)
+            letters = letters_index(pms, section, ptype, terms)
+            rows.append({"terms": name, "count_status": count.status, "listing_total": count.total,
+                         "letters_status": letters["status"], "buckets": len(letters.get("buckets", [])),
+                         "sum_of_sizes": letters.get("sum_of_sizes"),
+                         "sum_equals_total": letters.get("sum_of_sizes") == count.total})
+        lib["types"][str(ptype)] = {"name": TYPE_NAMES[ptype], "type_total": total,
+                                    "genre_values": genre["values"], "genre_picked": bool(genre["id"]), "sets": rows}
+        print("== type=%d (%s): %d in the type; genre list status %s with %d values, one picked: %s" % (
+            ptype, TYPE_NAMES[ptype], total or 0, genre["status"], genre["values"], bool(genre["id"])))
+        print(table(["terms", "listing total", "letters sum", "buckets", "sum == total"],
+                    [[r["terms"], r["listing_total"], r["sum_of_sizes"], r["buckets"], r["sum_equals_total"]] for r in rows]))
+    return lib
 
 
 def measure_types_library(pms, section, label, ptypes):
@@ -1262,6 +1333,9 @@ def main():
     parser.add_argument("--types", default="",
                         help="comma-separated listing types of the SHOW libraries to measure instead (3 = seasons, "
                              "4 = episodes): count probe, sorts, ranges, letters index")
+    parser.add_argument("--letters-under-filters", action="store_true",
+                        help="with --types: only ask, per type, whether the /firstCharacter sizes sum to the Size=0 count "
+                             "under the grid's own Unwatched and genre terms (a few dozen requests)")
     parser.add_argument("--selftest", action="store_true", help="check the guard and the arithmetic offline")
     args = parser.parse_args()
     if args.selftest:
@@ -1269,6 +1343,8 @@ def main():
         return
 
     ptypes = [int(t) for t in args.types.split(",") if t.strip().isdigit()]
+    if args.letters_under_filters and not args.types:
+        parser.error("--letters-under-filters needs --types")
     if args.types and (not ptypes or any(t not in TYPE_NAMES for t in ptypes)):
         parser.error("--types takes 3 (seasons) and/or 4 (episodes)")
     token_path = os.path.expanduser(args.token_file)
@@ -1304,7 +1380,8 @@ def main():
         for section, kind, label in sections:
             if ptypes:
                 if kind == "show":
-                    report["libraries"].append(measure_types_library(pms, section, label, ptypes))
+                    measure = measure_letters_under_filters if args.letters_under_filters else measure_types_library
+                    report["libraries"].append(measure(pms, section, label, ptypes))
                 continue
             if args.floor_and_negative_only:
                 lib = floor_and_negative_library(pms, section, kind, label)
