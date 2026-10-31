@@ -274,7 +274,9 @@ a value ladder has its BANDS (`ListingView::bands_available`: rating `95% 90% 85
 1½h 1h <1h`, unplayed `12+ 10 8 6 4 2 1`, plays `10+ 5 3 2 1`, and the CALENDAR sorts: date added, date viewed and
 last episode added (newest first only) read `Today Oct Sep ... Jan 2025 2024 ...`, release date reads `2026 2020s
 2010s ...`), never both. A calendar rail needs the day, which the Library's ask hands the data layer
-(`LibraryLike::today`), and its bands follow it: a day turn re-plans them. What differs:
+(`LibraryLike::today`), and its bands follow it: a day turn re-plans them, and the previous day's bands stay on screen
+until the new day's are read (`SecState::shown_bands`), so a focus seated in the rail is not lost to a gap; a key the new
+plan no longer holds is seated on the first band with films (`RailPart::reconcile`), never on an empty one. What differs:
 
 - **Labels** are `library/rail_bands.rs`, built from the data layer's `Mark` tokens with `fmt::percent`, the locale's
   numbers and the catalog's `library_rail.hours` and `library_rail.hours_or_more` (the language's own short hour unit,
