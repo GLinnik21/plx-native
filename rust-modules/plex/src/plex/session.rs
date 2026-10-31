@@ -1294,7 +1294,7 @@ pub struct UnderPosters {
     #[serde(deserialize_with = "de_soft_under_posters_details")]
     pub details: UnderPostersDetails,
     /// A library grid sorted by something other than Title or Random shows the sort's value under
-    /// every poster (the Movies and TV Shows grids; the Library's `registry::sort_info`). On by default.
+    /// every card (the Movies, TV Shows, Seasons and Episodes grids; the Library's `registry::sort_info`). On by default.
     #[serde(rename = "sort_value_off", with = "sort_value_off", skip_serializing_if = "sort_value_off::is_on")]
     pub sort_value: bool,
 }

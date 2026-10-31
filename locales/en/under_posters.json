@@ -73,7 +73,7 @@
   },
   "under_posters.sort_value": {
     "value": "Sort value",
-    "description": "Switch on the Under posters page: while a library grid is sorted by something other than Title or Random, show the value it is sorted by on one line under every poster (movie and TV show grids). Default on, per profile. Short noun phrase."
+    "description": "Switch on the Under posters page: while a library grid is sorted by something other than Title or Random, show the value it is sorted by on one line under every card (the movies, TV shows, seasons and episodes of a library). Default on, per profile. Short noun phrase."
   },
   "under_posters.sort_value_detail": {
     "value": "Replaces the details line while a library is sorted.",

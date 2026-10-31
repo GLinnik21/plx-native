@@ -1,14 +1,20 @@
-//! **The sort value of a movie or TV show library grid** (Settings > Libraries > Under posters > Sort
-//! value): while the primary grid is sorted by something other than Title or Random, every poster shows
-//! the one fact it is sorted by on one line under it ([`label`], drawn by `plx_ui::card_row::draw_sort_value`).
-//! The facts come from the listing the grid already holds (`PmsMovie` and its `SortInfo`, which a show
-//! row carries as a movie row does); no request is added. A sort the table does not know shows no value
-//! ([`shows_value`]), so the grid keeps the Title/Details captions rather than inventing a fact; an item
-//! with no value for a known sort shows an en dash (data the server did not send), and a fact is never guessed (a missing year-less
+//! **The sort value of a Library grid** (Settings > Libraries > Under posters > Sort value): while a
+//! movie or TV show library's grid (its movies, shows, seasons or episodes) is sorted by something
+//! other than Title or Random, every card shows the one fact it is sorted by on one line under it
+//! ([`label`], drawn by `plx_ui::card_row::draw_sort_value`).
+//! The facts come from the listing the grid already holds (`PmsMovie` and its `SortInfo`, which a show,
+//! season or episode row carries as a movie row does); no request is added. **Which sorts show a value
+//! depends on the kind of row** ([`shows_value`]): a sort the table does not word for that kind (Title,
+//! Random, the compound Show order Seasons and Episodes default to, a sort a later server declares, a
+//! sort whose fact a kind of row cannot carry, such as an episode's Unplayed, a season's Resolution or a show's Duration)
+//! shows NO line at all, and the grid keeps its Title/Details captions and its 40 px rows rather than
+//! drawing a column of dashes. An item with no value for a sort that is worded for its kind shows an
+//! en dash (data the server did not send), and a fact is never guessed (a missing year-less
 //! release date is a dash, not the year).
 //!
 //! **TV shows.** A show's own facts feed the sorts a show library declares: Release date, the two scores,
-//! Date viewed and Plays from the show row, and **Unplayed** (`unviewedLeafCount`) from its episode
+//! Date viewed and Plays from the show row (a show has no length, progress or media of its own, so
+//! Duration, Progress, Resolution and Bitrate are not worded for it and show no line), and **Unplayed** (`unviewedLeafCount`) from its episode
 //! counts, worded as the catalogue's plural "9 episodes" / "1 episode" (`browse.detail.episodes`, the
 //! language's own plural categories). A show with every episode watched has no line at all (the watched
 //! tick says it) while its slot keeps the grid's row pitch; a show whose counts the server did not send
@@ -16,6 +22,17 @@
 //! date of a show's latest episode, and the show's own `addedAt`/`updatedAt` are other facts (measured:
 //! neither follows that order), so the sort is not worded and the grid keeps its captions (`term` keeps
 //! the `episode.` scope instead of stripping it down to the show's own `addedAt`).
+//!
+//! **Episodes and seasons.** An episode's row carries the facts a movie's does (its own air date, scores
+//! and their providers, length, play state, dates and media), so an episode is worded for every term a
+//! movie is, from ITS row: `originallyAvailableAt` is the air date, never the show's. A season's row
+//! carries only the container facts (dates added and viewed, plays, the episode counts), so a season is
+//! worded for those four. PMS lists, for a TV library (recorded 2026-10-31 on 1.43, `docs/pms-api.md` "Sort[]"),
+//! Seasons: the compound Show order and Random; Episodes: the compound Show order, Release date,
+//! Critic and Audience rating, Date added, Date viewed and Random. The Show order is the default and,
+//! like Title and Random, shows no value; the others are worded. `episode.` and `season.` are the
+//! item's OWN scope there (dropped, like `movie.`), while `show.` names the series (`show.titleSort`
+//! leads the compound order) and is another fact, so it reads as a term the table does not word.
 //!
 //! The formats: ratings as a percentage beside the provider's mark (`captions::rating_mark`, the one
 //! table), `2h 14m`, `4K` (+1 for a second version), `62.0 Mbps`, plays with their noun (`14 plays`, `1 play`),
@@ -26,7 +43,9 @@
 //! calendar date in (`LibraryLike::today`), and `CaptionCache` keys its labels on it, so a label
 //! rebuilds when the day turns. Unix timestamps are converted to the OS time zone here, in the
 //! presentation layer; the stores keep the server's seconds.
-use plx_data::pms::{PmsMovie, KIND_SHOW};
+use std::os::raw::c_int;
+
+use plx_data::pms::{PmsMovie, KIND_EPISODE, KIND_MOVIE, KIND_SEASON, KIND_SHOW};
 use plx_platform::i18n::{current, msg, MonthWidth};
 use plx_ui::{cards::{SortValue, TileLabel}, fmt};
 
@@ -35,30 +54,71 @@ const MISSING: &str = "\u{2013}";
 
 /// The sort term a server declares reduced to the name the table below knows: `SortEntry.key` may
 /// be scoped or compound (`movie.addedAt:desc`), and direction never changes the fact described. Only
-/// a scope naming the listed item's OWN kind (`movie.`, `show.`) is dropped: `episode.addedAt` is the
-/// date of a show's latest episode, another fact than the show's `addedAt`, so it keeps its scope and
-/// reads as a term the table does not word.
-fn term(key: &str) -> &str {
+/// a scope naming the listed item's OWN kind is dropped (`movie.`, `show.` on a movie or show row,
+/// `season.` on a season, `episode.` on an episode): `episode.addedAt` on a SHOW listing is the date of
+/// the show's latest episode, another fact than the show's `addedAt`, so it keeps its scope and reads as
+/// a term the table does not word; so does `show.titleSort`, the series name the compound order of a
+/// season or an episode listing starts with.
+fn term(kind: c_int, key: &str) -> &str {
     let first = key.split(',').next().unwrap_or(key).split(':').next().unwrap_or(key);
     match first.split_once('.') {
-        Some(("movie" | "show", rest)) => rest,
+        Some((scope, rest)) if own_scope(kind, scope) => rest,
         _ => first,
     }
 }
 
-/// Whether a grid sorted by `key` shows a value under every poster: every sort the table below
-/// words, which leaves out Title, Random, Last episode added and any sort a later server declares.
-pub(crate) fn shows_value(key: &str) -> bool {
-    matches!(term(key), "originallyAvailableAt" | "rating" | "audienceRating" | "userRating" | "contentRating"
-        | "duration" | "viewOffset" | "viewCount" | "addedAt" | "lastViewedAt" | "mediaHeight" | "mediaBitrate" | "year"
-        | "unviewedLeafCount")
+/// Whether `scope` is how a PMS sort key spells the kind of item listed (`kind`: a `PmsMovie::kind`).
+fn own_scope(kind: c_int, scope: &str) -> bool {
+    match kind {
+        KIND_MOVIE | KIND_SHOW => matches!(scope, "movie" | "show"),
+        KIND_SEASON => scope == "season",
+        KIND_EPISODE => scope == "episode",
+        _ => false,
+    }
 }
 
-/// The label a movie or show grid draws under `item` while it is sorted by `key` and `today` is the
+/// The sort terms worded for a MOVIE row: every fact its listing carries.
+const MOVIE_TERMS: [&str; 13] = ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating",
+    "duration", "viewOffset", "viewCount", "addedAt", "lastViewedAt", "mediaHeight", "mediaBitrate", "year"];
+/// A SHOW row's: the movie terms its listing row carries (its scores, content rating, plays, dates and
+/// year; one show lacking a fact reads as the dash) and the episodes left. Not a length, progress or
+/// media: those are one episode's or none (a show row's `duration` is an episode's), so those sorts
+/// show no line for a show.
+const SHOW_TERMS: [&str; 10] = ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating",
+    "viewCount", "addedAt", "lastViewedAt", "year", "unviewedLeafCount"];
+/// An EPISODE row's: the movie terms, from the episode's own facts (its air date, its length, its media).
+const EPISODE_TERMS: [&str; 13] = MOVIE_TERMS;
+/// A SEASON row's: the container facts its listing carries. It has no score, length or media of its
+/// own, and no air date of its own either, so none of those sorts is worded for it.
+const SEASON_TERMS: [&str; 4] = ["addedAt", "lastViewedAt", "viewCount", "unviewedLeafCount"];
+
+/// The terms worded for a row of `kind` (a `PmsMovie::kind`): none for a collection.
+fn terms_of(kind: c_int) -> &'static [&'static str] {
+    match kind {
+        KIND_MOVIE => &MOVIE_TERMS,
+        KIND_SHOW => &SHOW_TERMS,
+        KIND_SEASON => &SEASON_TERMS,
+        KIND_EPISODE => &EPISODE_TERMS,
+        _ => &[],
+    }
+}
+
+/// Whether a grid of `kind` rows (a `PmsMovie::kind`) sorted by `key` shows a value under every card:
+/// every sort the table words for that kind. It leaves out Title, Random, the compound Show order,
+/// Last episode added, any sort a later server declares and any sort whose fact a row of that kind
+/// does not carry; for those the grid keeps its captions.
+pub(crate) fn shows_value(kind: c_int, key: &str) -> bool {
+    terms_of(kind).contains(&term(kind, key))
+}
+
+/// The label a library grid draws under `item` while it is sorted by `key` and `today` is the
 /// calendar date the application last read (`None`: it has none, and a date reads as month and year).
-/// A show with nothing left to play has a label with no value line (the grid keeps its slot).
+/// A show with nothing left to play has a label with no value line (the grid keeps its slot), and so
+/// does any item whose kind the sort is not worded for ([`shows_value`]): never a dash for a fact the
+/// kind of row cannot carry.
 pub(crate) fn label(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> TileLabel {
-    TileLabel { value: value(item, key, today), ..TileLabel::default() }
+    let value = if shows_value(item.kind, key) { value(item, key, today) } else { None };
+    TileLabel { value, ..TileLabel::default() }
 }
 
 /// "Never", the quiet word for an item nobody played (Date viewed, Plays): drawn like the dash, at 50%
@@ -74,11 +134,12 @@ pub(crate) fn year_value(year: i32) -> SortValue {
     else { SortValue { text: MISSING.into(), plus: false, mark: &[], missing: true } }
 }
 
-/// The line under `item`: the dash for a fact the server did not send, "Never" for something never
-/// played, and `None` when the sort's fact says there is nothing to show (a show whose every episode is
-/// watched).
+/// The line under `item` for a sort [`shows_value`] words for its kind: the dash for a fact the server
+/// did not send, "Never" for something never played, and `None` when the sort's fact says there is
+/// nothing to show (a show whose every episode is watched).
 fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValue> {
-    let show = item.kind == KIND_SHOW;
+    // A show's or a season's own row has no length, progress or media: those are one episode's, or none.
+    let container = matches!(item.kind, KIND_SHOW | KIND_SEASON);
     let facts = item.sort_info.as_ref();
     let date = |stamp: Option<i64>| stamp.and_then(plx_platform::i18n::local_calendar_date).and_then(|date| date_value(date, today));
     // Never played: the row carries its sort facts and nothing on it says the item was ever started or
@@ -90,7 +151,7 @@ fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValu
     let out_of_ten = |v: f64| format!("{}{}", fmt::rating_score(fmt::RatingScale::OutOfTen, v), fmt::rating_suffix(fmt::RatingScale::OutOfTen));
     let mut mark = &[][..];
     let mut plus = false;
-    let text = if !matches!(item.kind, 0 | KIND_SHOW) { None } else { match term(key) {
+    let text = if terms_of(item.kind).is_empty() { None } else { match term(item.kind, key) {
         "year" => return Some(year_value(item.year)),
         "originallyAvailableAt" => {
             // No year fallback: a bare year is not a complete release date.
@@ -120,8 +181,8 @@ fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValu
         "userRating" => facts.and_then(|f| f.user_rating).map(out_of_ten),
         "contentRating" => (!item.rating.is_empty()).then(|| item.rating.clone()),
         // A show row's duration is one episode's and it has no media of its own: those are not the show's facts.
-        "duration" if !show => (item.dur_ns > 0).then(|| fmt::duration(item.dur_ns / 1_000_000)),
-        "viewOffset" if !show => {
+        "duration" if !container => (item.dur_ns > 0).then(|| fmt::duration(item.dur_ns / 1_000_000)),
+        "viewOffset" if !container => {
             if let Some(value) = (item.resume_ms > 0 && item.resume_ms < item.dur_ns / 1_000_000).then(|| item.resume_frac()).flatten() { Some(fmt::percent((value * 100.0).round().clamp(0.0, 99.0) as i64)) }
             else if item.watched { Some(fmt::percent(100)) }
             else if item.dur_ns > 0 && item.resume_ms == 0 && item.unwatched { Some(fmt::percent(0)) }
@@ -139,20 +200,20 @@ fn value(item: &PmsMovie, key: &str, today: Option<[i32; 3]>) -> Option<SortValu
             None if never_played => return Some(never()),
             None => None,
         },
-        "mediaHeight" if !show => {
+        "mediaHeight" if !container => {
             let width = facts.map_or(0, |f| f.width);
             let height = facts.map_or(0, |f| f.height);
             plus = facts.is_some_and(|f| f.media_count > 1);
             fmt::resolution(item.video_resolution.as_deref().unwrap_or(""), width, height)
         }
-        "mediaBitrate" if !show => {
+        "mediaBitrate" if !container => {
             plus = facts.is_some_and(|f| f.media_count > 1);
             facts.and_then(|f| f.bitrate_kbps).map(fmt::bitrate)
         }
         // Episodes left to play: the server's own sort counts them the same way (`leafCount` minus
         // `viewedLeafCount`), and a show the poster marks watched (`viewed >= leaf`) has nothing to
         // say, so it gets no line at all rather than a "0 episodes".
-        "unviewedLeafCount" if show => match item.leaf_count.zip(item.viewed_leaf_count) {
+        "unviewedLeafCount" if container => match item.leaf_count.zip(item.viewed_leaf_count) {
             Some((all, seen)) if all.saturating_sub(seen) == 0 => return None,
             Some((all, seen)) => Some(msg::browse_detail_episodes(i64::from(all - seen)).to_string()),
             None => None,
@@ -278,31 +339,34 @@ mod tests {
     fn text(m: &PmsMovie, key: &str) -> String { read(m, key, Some(TODAY)).text }
 
     #[test]
-    fn a_show_words_the_facts_its_listing_carries_and_the_movie_only_sorts_read_as_a_dash() {
+    fn a_show_words_the_facts_its_listing_carries_and_the_movie_only_sorts_show_no_line() {
         let _locale = language_on_this_thread_for_test(Preference::En);
         let s = show();
         for (key, expected) in [("year", "2019"), ("originallyAvailableAt", "Sep\u{a0}2019"), ("rating", "87%"),
             ("audienceRating", "TMDB\u{a0}81%"), ("contentRating", "TV-MA"), ("viewCount", "4\u{a0}plays"), ("addedAt", "Yesterday"),
             ("lastViewedAt", "28\u{a0}Oct"), ("unviewedLeafCount", "9\u{a0}episodes")] {
-            assert!(shows_value(key), "{key}");
+            assert!(shows_value(KIND_SHOW, key), "{key}");
             assert_eq!(text(&s, key), expected, "{key}");
             assert_eq!(text(&s, &format!("show.{key}:desc")), expected, "{key} scoped");
             assert!(!read(&s, key, Some(TODAY)).missing, "{key}");
         }
         assert!(!read(&s, "rating", Some(TODAY)).mark.is_empty(), "the critic score wears its provider's mark");
-        // No user rating on the row, and a show has no length, progress or media of its own: a dash,
-        // never an episode's duration or a movie's bitrate.
-        for key in ["userRating", "duration", "viewOffset", "mediaHeight", "mediaBitrate"] {
-            let v = read(&s, key, Some(TODAY));
-            assert!(v.missing && v.text == "\u{2013}" && !v.plus && v.mark.is_empty(), "{key}");
-        }
+        // A show row parses `userRating` as any row does: no rating on this one is the dash (data the
+        // server did not send), a rated one is worded.
+        let v = read(&s, "userRating", Some(TODAY));
+        assert!(v.missing && v.text == "\u{2013}" && !v.plus && v.mark.is_empty(), "userRating");
+        let mut rated = show();
+        rated.sort_info.as_mut().expect("a show row carries sort facts").user_rating = Some(9.0);
+        assert_eq!(text(&rated, "userRating"), "9.0/10");
+        // A show has no length, progress or media of its own (its row's duration is one episode's):
+        // those sorts are not worded for it and show NO line, never a column of dashes.
         let mut with_episode_runtime = show();
         with_episode_runtime.dur_ns = 22 * 60_000_000_000;
-        assert!(read(&with_episode_runtime, "duration", Some(TODAY)).missing, "a show row's duration is one episode's");
-        // A season, an episode and a collection keep the dash for every sort, the unplayed one too.
-        for kind in [2, 3, plx_data::pms::KIND_COLLECTION] {
-            let other = PmsMovie { kind, ..show() };
-            for key in ALL_KEYS.iter().chain(["unviewedLeafCount"].iter()) { assert!(read(&other, key, Some(TODAY)).missing, "{kind} {key}"); }
+        for key in ["duration", "viewOffset", "mediaHeight", "mediaBitrate"] {
+            assert!(!shows_value(KIND_SHOW, key), "{key}");
+            assert!(!shows_value(KIND_SHOW, &format!("show.{key}:desc")), "{key} scoped");
+            assert!(label(&s, key, Some(TODAY)).value.is_none(), "{key}");
+            assert!(label(&with_episode_runtime, key, Some(TODAY)).value.is_none(), "{key} with an episode's runtime");
         }
     }
 
@@ -312,13 +376,13 @@ mod tests {
         // show's own `addedAt` / `updatedAt` are other facts (measured against PMS 1.43.5: neither follows
         // that order), so the sort reads as one the table does not word and the grid keeps its captions.
         for key in ["episode.addedAt", "episode.addedAt:desc", "episode.addedAt:desc,titleSort"] {
-            assert!(!shows_value(key), "{key}");
+            assert!(!shows_value(KIND_SHOW, key), "{key}");
         }
-        assert_ne!(term("episode.addedAt"), "addedAt");
+        assert_ne!(term(KIND_SHOW, "episode.addedAt"), "addedAt");
         // The scopes that name the listed item's own kind still read as its fact.
-        for key in ["addedAt", "movie.addedAt:desc", "show.addedAt", "show.addedAt:desc"] { assert!(shows_value(key), "{key}"); }
+        for key in ["addedAt", "movie.addedAt:desc", "show.addedAt", "show.addedAt:desc"] { assert!(shows_value(KIND_SHOW, key), "{key}"); }
         for key in ["titleSort", "random", "show.titleSort,index", "show.titleSort:desc,season.index:nullsLast"] {
-            assert!(!shows_value(key), "{key}");
+            assert!(!shows_value(KIND_SHOW, key), "{key}");
         }
         // Were it ever asked for a value, the show's own date must not come back as the answer.
         let s = show();
@@ -361,8 +425,8 @@ mod tests {
     #[test]
     fn every_declared_sort_words_its_fact_and_the_others_show_no_value() {
         let _locale = language_on_this_thread_for_test(Preference::En);
-        for key in ALL_KEYS { assert!(shows_value(key), "{key}"); assert!(shows_value(&format!("movie.{key}:desc")), "{key} scoped"); }
-        for key in ["titleSort", "title", "random", "futureServerSort", ""] { assert!(!shows_value(key), "{key:?}"); }
+        for key in ALL_KEYS { assert!(shows_value(0, key), "{key}"); assert!(shows_value(0, &format!("movie.{key}:desc")), "{key} scoped"); }
+        for key in ["titleSort", "title", "random", "futureServerSort", "", "unviewedLeafCount"] { assert!(!shows_value(0, key), "{key:?}"); }
         let m = movie();
         for (key, expected) in [("originallyAvailableAt", "Dec\u{a0}1997"), ("rating", "100%"), ("audienceRating", "85%"),
             ("userRating", "8.0/10"), ("contentRating", "PG-13"), ("duration", "2h\u{a0}14m"), ("viewOffset", "0%"),
@@ -587,6 +651,194 @@ mod tests {
             }
         }
         assert!(too_wide.is_empty(), "{too_wide:#?}");
+    }
+
+    /// An episode row as a `type=4` listing sends it: its own air date, scores and providers, length,
+    /// dates, play state and media.
+    fn episode() -> PmsMovie {
+        PmsMovie { kind: KIND_EPISODE, title: "Pilot".into(), show_title: "Series".into(), season_index: 1, ep_index: 22,
+            year: 2014, aired: "2014-05-12".into(), rating: "TV-14".into(), audience_rating: Some(8.4),
+            added_at: Some(1_793_275_200), dur_ns: 22 * 60_000_000_000, video_resolution: Some("1080".into()), unwatched: true,
+            sort_info: Some(SortInfo { rating: Some(7.5), rating_image: "rottentomatoes://image.rating.ripe".into(),
+                audience_image: "themoviedb://image.rating".into(), user_rating: Some(9.0), view_count: Some(2),
+                last_viewed_at: Some(1_793_188_800), bitrate_kbps: Some(6500), media_count: 1, ..Default::default() }),
+            ..Default::default() }
+    }
+    /// A season row as a `type=3` listing sends it: the container facts, no score, length or media.
+    fn season() -> PmsMovie {
+        PmsMovie { kind: KIND_SEASON, title: "Season 1".into(), show_title: "Series".into(), season_index: 1,
+            added_at: Some(1_793_275_200), leaf_count: Some(22), viewed_leaf_count: Some(13),
+            sort_info: Some(SortInfo { view_count: Some(9), last_viewed_at: Some(1_793_188_800), ..Default::default() }),
+            ..Default::default() }
+    }
+
+    /// The sort keys a real PMS (1.43, recorded in `docs/pms-api.md`, "Sort[]") lists for a TV library's Seasons
+    /// and Episodes views, in the form the app holds them (`SortEntry::key`).
+    const SHOW_ORDER_SEASONS: &str = "show.titleSort,index";
+    const SHOW_ORDER_EPISODES: &str = "show.titleSort,season.index:nullsLast,episode.index:nullsLast,\
+        episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id";
+
+    #[test]
+    fn an_episode_words_the_movie_terms_from_its_own_row() {
+        let _locale = language_on_this_thread_for_test(Preference::En);
+        let e = episode();
+        for (key, expected) in [("originallyAvailableAt", "May\u{a0}2014"), ("rating", "75%"), ("audienceRating", "TMDB\u{a0}84%"),
+            ("userRating", "9.0/10"), ("contentRating", "TV-14"), ("duration", "22m"), ("viewOffset", "0%"),
+            ("viewCount", "2\u{a0}plays"), ("addedAt", "Yesterday"), ("lastViewedAt", "28\u{a0}Oct"), ("mediaHeight", "1080p"),
+            ("mediaBitrate", "6.5\u{a0}Mbps"), ("year", "2014")] {
+            assert!(shows_value(KIND_EPISODE, key), "{key}");
+            assert_eq!(text(&e, key), expected, "{key}");
+            // `episode.` is the listed item's own scope there; direction never changes the fact.
+            assert_eq!(text(&e, &format!("episode.{key}:desc")), expected, "{key} scoped");
+            assert!(shows_value(KIND_EPISODE, &format!("episode.{key}:desc")), "{key} scoped");
+            // `show.` names the series: another fact, so no episode sort words it.
+            assert!(!shows_value(KIND_EPISODE, &format!("show.{key}")), "show.{key}");
+            assert!(!read(&e, key, Some(TODAY)).missing, "{key}");
+        }
+        // The scores read as the movie path reads them: the critic score beside its provider's mark, TMDB's
+        // audience score as the provider's word (the table gives it no mark).
+        assert!(!read(&e, "rating", Some(TODAY)).mark.is_empty());
+        assert!(read(&e, "audienceRating", Some(TODAY)).mark.is_empty());
+        // The air date is the EPISODE's, never the series': no year fallback, and a date the server did not
+        // send is the dash.
+        let mut undated = episode();
+        undated.aired.clear();
+        assert!(read(&undated, "originallyAvailableAt", Some(TODAY)).missing);
+        undated.aired = "2014".into();
+        assert!(read(&undated, "originallyAvailableAt", Some(TODAY)).missing, "a bare year is not an air date");
+        // No audience score on the row: the dash, never another score.
+        let mut unscored = episode();
+        unscored.audience_rating = None;
+        let dash = read(&unscored, "audienceRating", Some(TODAY));
+        assert!(dash.missing && dash.text == "\u{2013}" && dash.mark.is_empty());
+        // Every value is one line.
+        for key in ALL_KEYS { assert!(!text(&e, key).contains(' '), "{key}"); }
+        // The label carries the value alone: the air date is not drawn a second time as a caption.
+        let l = label(&e, "originallyAvailableAt", Some(TODAY));
+        assert!(l.title.is_none() && l.caption.is_none() && l.value.is_some());
+    }
+
+    #[test]
+    fn a_season_words_its_container_facts_and_no_other_sort() {
+        let _locale = language_on_this_thread_for_test(Preference::En);
+        let s = season();
+        for (key, expected) in [("addedAt", "Yesterday"), ("lastViewedAt", "28\u{a0}Oct"), ("viewCount", "9\u{a0}plays"),
+            ("unviewedLeafCount", "9\u{a0}episodes")] {
+            assert!(shows_value(KIND_SEASON, key), "{key}");
+            assert_eq!(text(&s, key), expected, "{key}");
+            assert_eq!(text(&s, &format!("season.{key}:desc")), expected, "{key} scoped");
+            assert!(!read(&s, key, Some(TODAY)).missing, "{key}");
+        }
+        // A season has no score, length, media, rating or air date of its own: those sorts show no line.
+        for key in ["originallyAvailableAt", "rating", "audienceRating", "userRating", "contentRating", "duration",
+            "viewOffset", "mediaHeight", "mediaBitrate", "year"] {
+            assert!(!shows_value(KIND_SEASON, key), "{key}");
+            assert!(label(&s, key, Some(TODAY)).value.is_none(), "{key} draws no line, not a dash");
+        }
+        // Every episode watched: no line at all, the slot keeps its pitch (the show's rule).
+        let mut done = season();
+        done.viewed_leaf_count = Some(22);
+        assert!(label(&done, "unviewedLeafCount", Some(TODAY)).value.is_none());
+        assert_eq!(done.kind, KIND_SEASON);
+    }
+
+    /// A sort whose fact the listing does not carry for a kind of row shows NO line: the sort is not
+    /// worded for that kind, so the grid keeps its captions and its 40 px rows, rather than a column of
+    /// dashes. This is not the dash: the dash is a sort that IS worded for the kind whose fact one item
+    /// lacks. The Show order Seasons and Episodes default to is Title's twin and has no value.
+    #[test]
+    fn a_sort_the_listing_does_not_carry_shows_no_line_and_not_a_column_of_dashes() {
+        let _locale = language_on_this_thread_for_test(Preference::En);
+        let descending = |key: &str| key.replacen(',', ":desc,", 1);
+        for key in ["titleSort", "random", "futureServerSort", "", "show.addedAt", "show.titleSort",
+            SHOW_ORDER_SEASONS, SHOW_ORDER_EPISODES, "show.titleSort:desc,index"] {
+            assert!(!shows_value(KIND_SEASON, key), "season {key:?}");
+            assert!(!shows_value(KIND_EPISODE, key), "episode {key:?}");
+            assert!(label(&season(), key, Some(TODAY)).value.is_none(), "season {key:?}");
+            assert!(label(&episode(), key, Some(TODAY)).value.is_none(), "episode {key:?}");
+        }
+        assert!(!shows_value(KIND_EPISODE, &descending(SHOW_ORDER_EPISODES)) && !shows_value(KIND_SEASON, &descending(SHOW_ORDER_SEASONS)));
+        // Another kind's scope is another fact: `episode.addedAt` on a season is its latest episode's date,
+        // `season.addedAt` on an episode its season's.
+        assert!(!shows_value(KIND_SEASON, "episode.addedAt") && !shows_value(KIND_EPISODE, "season.addedAt"));
+        assert!(label(&season(), "episode.addedAt", Some(TODAY)).value.is_none());
+        assert!(label(&episode(), "season.addedAt", Some(TODAY)).value.is_none());
+        // An episode has no episode counts to subtract.
+        assert!(!shows_value(KIND_EPISODE, "unviewedLeafCount"));
+        assert!(label(&episode(), "unviewedLeafCount", Some(TODAY)).value.is_none());
+        // A collection is worded for nothing.
+        for key in ALL_KEYS { assert!(!shows_value(plx_data::pms::KIND_COLLECTION, key), "{key}"); }
+        assert!(label(&PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..movie() }, "addedAt", Some(TODAY)).value.is_none());
+        // What a real PMS lists for the two views: the Show order and Random show nothing, the rest read.
+        for (kind, listed, valued) in [
+            (KIND_SEASON, vec![SHOW_ORDER_SEASONS, "random"], vec![]),
+            (KIND_EPISODE, vec![SHOW_ORDER_EPISODES, "originallyAvailableAt", "rating", "audienceRating", "addedAt", "lastViewedAt", "random"],
+                vec!["originallyAvailableAt", "rating", "audienceRating", "addedAt", "lastViewedAt"]),
+        ] {
+            let got: Vec<_> = listed.iter().copied().filter(|key| shows_value(kind, key)).collect();
+            assert_eq!(got, valued, "kind {kind}");
+        }
+    }
+
+    /// Never-played episodes and seasons say so under Date viewed and Plays (50% white, never bold); the
+    /// dash stays for a fact the server did not send; a played one reads its count and date.
+    #[test]
+    fn an_episode_and_a_season_nobody_played_say_never() {
+        let _locale = language_on_this_thread_for_test(Preference::En);
+        let quiet = |v: &SortValue| v.missing && v.text == "Never" && v.mark.is_empty() && !v.plus;
+        for mut item in [episode(), season()] {
+            let facts = item.sort_info.as_mut().unwrap();
+            facts.last_viewed_at = None;
+            facts.view_count = Some(0);
+            item.watched = false;
+            item.viewed_leaf_count = Some(0);
+            for key in ["lastViewedAt", "viewCount"] {
+                assert!(quiet(&read(&item, key, Some(TODAY))), "{} {key}", item.kind);
+            }
+            // Started or watched is not "never".
+            let mut seen = item.clone();
+            seen.watched = true;
+            for key in ["lastViewedAt", "viewCount"] { assert_eq!(read(&seen, key, Some(TODAY)).text, "\u{2013}", "{} {key}", item.kind); }
+        }
+        let mut one = episode();
+        one.sort_info.as_mut().unwrap().view_count = Some(1);
+        assert_eq!(text(&one, "viewCount"), "1\u{a0}play");
+    }
+
+    /// The words an episode's and a season's values are made of follow every shipped language: the plural
+    /// categories of "N plays" and "N episodes", the day words, the month names and "Never".
+    #[test]
+    fn episode_and_season_values_are_localised_in_every_shipped_language() {
+        let mut e = episode();
+        counts_follow_the_catalogue("under_posters", "under_posters.value_plays", |n| {
+            e.sort_info.as_mut().unwrap().view_count = Some(i64::from(n));
+            text(&e, "viewCount")
+        });
+        let mut sn = season();
+        counts_follow_the_catalogue("browse", "browse.detail.episodes", |n| {
+            sn.leaf_count = Some(n); sn.viewed_leaf_count = Some(0);
+            text(&sn, "unviewedLeafCount")
+        });
+        let en = { let _l = language_on_this_thread_for_test(Preference::En); (text(&episode(), "addedAt"), text(&episode(), "lastViewedAt")) };
+        assert_eq!((en.0.as_str(), en.1.as_str()), ("Yesterday", "28\u{a0}Oct"));
+        for preference in SHIPPED {
+            let _locale = language_on_this_thread_for_test(preference);
+            let e = episode();
+            // The day words are the language's own catalogue words, the air date and the dates are its
+            // month names (never numerals alone), and an episode nobody watched says the language's "Never".
+            assert_eq!(text(&e, "addedAt"), msg::under_posters_value_yesterday().replace(' ', "\u{a0}"), "{preference:?}");
+            let aired = text(&e, "originallyAvailableAt");
+            assert!(aired.chars().any(char::is_alphabetic) && !aired.contains('/') && aired.contains("2014"), "{preference:?}: {aired}");
+            let mut unplayed = episode();
+            unplayed.sort_info.as_mut().unwrap().view_count = Some(0);
+            unplayed.sort_info.as_mut().unwrap().last_viewed_at = None;
+            unplayed.viewed_leaf_count = Some(0);
+            assert_eq!(read(&unplayed, "viewCount", Some(TODAY)).text, msg::under_posters_value_never(), "{preference:?}");
+            // Scores read as the movie path reads them: a percentage, the provider's mark for the critic score.
+            let score = read(&e, "audienceRating", Some(TODAY));
+            assert!(score.text.contains("84"), "{preference:?}: {}", score.text);
+            assert!(!read(&e, "rating", Some(TODAY)).mark.is_empty(), "{preference:?}");
+        }
     }
 
     #[test]

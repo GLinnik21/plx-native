@@ -54,7 +54,7 @@ pub(super) struct Layout {
     /// The focused grid row's band height under the Under posters setting (0 / 80 / 112; the
     /// legacy 114 until [`with_band_h`](Self::with_band_h)). A pref input, not motion: not in the canon.
     band_h: f32,
-    /// The grid shows a sort value under every poster: rows keep [`plx_ui::cards::SORT_VALUE_ROW_GAP`]
+    /// The grid shows a sort value under every card (a poster or an episode still): rows keep [`plx_ui::cards::SORT_VALUE_ROW_GAP`]
     /// instead of 40 px, and the focused row opens [`plx_ui::cards::SORT_VALUE_BAND_H`]'s share. A pref
     /// and sort input, not motion: not in the canon.
     value_line: bool,
