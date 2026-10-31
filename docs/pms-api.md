@@ -105,8 +105,9 @@ spec's "Media Queries" section documents the full query language.
   them with params instead.
 - **Server-driven menus:** `GET /library/sections/{key}/all?includeMeta=1` → `MediaContainer.Meta.Type[]`
   with `Sort[]` (`{key, descKey, defaultDirection, title, firstCharacterKey?}` — movies: 9 entries)
-  and `Filter[]` (`{filter, filterType, key=value-list URL, title}` — movies: 27). With header
-  `X-Plex-Container-Size: 0` it's a menus+totalSize-only probe. Standalone `/filters` and `/sorts`
+  and `Filter[]` (`{filter, filterType, key=value-list URL, title}` — movies: 27). With headers
+  `X-Plex-Container-Start: 0` and `X-Plex-Container-Size: 0` (both, see "Paging gotcha") it's a
+  menus+totalSize-only probe. Standalone `/filters` and `/sorts`
   endpoints exist too. **The client hardcodes no menu contents** (`browse.rs` consumes these).
 - **Sorting:** `sort=key:asc|desc` (comma-chain for multi-level, `nullsLast` supported);
   `sort=random` works. Composes with filters + paging.
@@ -114,8 +115,10 @@ spec's "Media Queries" section documents the full query language.
   `/collection`, …) → `Directory[]` `{key: tag id, title, fastKey}` where **`fastKey` is the
   ready-made listing URL** (`/library/sections/1/all?genre=150`). Apply as `/all?genre={id}`.
 - **Media-query operators** (URL-encode the key side): string `=` contains / `==` equals /
-  `<=` begins-with; int+date `>>=` gt/after, `<<=` lt/before; bool `=1/=0`; relative dates
-  `addedAt>>=-3w`; OR via comma; parens via `push=1`/`pop=1`/`or=1`. Episode scoping
+  `<=` begins-with; int+date `>>=` gt/after, `<<=` lt/before (on int, float and date fields `>=` and
+  `<=` are the inclusive comparisons and `=` is equality: measured 2026-10-31, "Count probes at band
+  edges" below); bool `=1/=0`; relative dates `addedAt>>=-3w`; OR via comma; parens via
+  `push=1`/`pop=1`/`or=1`. Episode scoping
   `type=4&show.id={rk}` works; scoped exact `show.title==` does NOT (use `show.id`).
 - **Unwatched:** movies `unwatched=1`; **shows use `unwatchedLeaves=1`** (`unwatched=1` on
   type=2 has odd semantics — returned 1 of 10 live; re-measured 2026-10-25, PMS 1.43.5: 30 of 33
@@ -165,9 +168,105 @@ spec's "Media Queries" section documents the full query language.
   custom poster is `/library/metadata/{rk}/thumb/{stamp}`. An unshared section answers 403 from its
   collections listing; preserve that as authorization denial rather than an empty result.
 - **Paging gotcha:** a query-param `X-Plex-Container-Size` WITHOUT `Start` is silently ignored —
-  always send both (the client does), or use the headers. Header `Size: 0` = count-only probe.
+  always send both (the client does). The header form is no way round it: `Container-Size: 0`
+  without `Container-Start` is ignored too (every row, no `totalSize`), measured 2026-10-31. Headers
+  `Start: 0` + `Size: 0` (or the two query parameters) are the count-only probe.
   `totalSize` is only present on paged responses.
 - **Payload slimming:** `excludeElements=Media` etc. per the spec (not used yet).
+
+### Count probes at band edges (measured 2026-10-31, PMS 1.43.5.11029, Guest, 44 movies / 15 shows)
+
+The question: can a value-sort rail (Critic rating, Duration, Date added, ...) take its band offsets
+from COUNTS instead of loading the listing? `GET /library/sections/{k}/all?type=T&<field><op>=E`
+with `X-Plex-Container-Start: 0` and `X-Plex-Container-Size: 0` returns no rows and the number of
+items that satisfy the term as `totalSize`. Measured read-only (GET only, 100 ms apart) by
+`tools/pms-band-probe.py`. **The evidence is one small library of each kind: every verdict below is
+"exact there, not proven at scale"** (edges were data-driven quantiles of the distinct values, four
+per family). VERIFIED means each edge's count equalled the count derived from the full listing's own
+values AND the real paged listing straddled the edge at that offset (`Start=count-1, Size=2`).
+
+| family (filter key = sort key) | movies | shows |
+|---|---|---|
+| `rating` | VERIFIED, floats | UNTESTABLE (no show had one) |
+| `audienceRating` | VERIFIED, floats | ROUNDED |
+| `duration` (ms) | VERIFIED | not a show field |
+| `addedAt` (epoch s) | VERIFIED | VERIFIED |
+| `lastViewedAt` (epoch s) | VERIFIED | VERIFIED |
+| `year` | VERIFIED | VERIFIED |
+| `originallyAvailableAt` | VERIFIED as UTC-midnight epochs | VERIFIED, same |
+| `viewCount` | UNTESTABLE (no play count in the listing) | VERIFIED (3 distinct values, 2 edges) |
+| `unviewedLeafCount` | not a movie field | VERIFIED (integers; it equals `leafCount - viewedLeafCount`, but every `viewedLeafCount` was 0, so only `leafCount` was exercised) |
+| `viewedLeafCount` | not a movie field | UNTESTABLE (all 0 under the Guest) |
+| `episode.addedAt` (`type=2`) | not a movie field | VERIFIED for `:desc` only, see below |
+| `leafCount` | not a movie field | not usable: silently ignored as a filter |
+
+ROUNDED: the listing shows the show audience rating to 0.1 while the filter compares finer stored
+values, so every count lay within +-0.05 of the listing's and no 0.01-precise edge is exact (the
+movie ratings were exact tenths). No planned family came out UNSUPPORTED or IGNORED.
+
+- **A count probe needs BOTH `Container-Start: 0` and `Container-Size: 0`.** Header or query form
+  alike answer `size` 0, `totalSize` N, `offset` 0, no rows. `Size: 0` alone is silently ignored
+  (every row, no `totalSize`), in either form.
+- **Floats are compared as floats**, not cast to integers: around a movie rated 9.5, `rating>>=9.49`,
+  `>>=9.5` and `>>=9.51` answered 12, 10, 10 where integer truncation would have given 16, 16, 16
+  (six discriminating probes, six float hits, no cast hit). Keys URL-encoded (`rating%3E%3E=9.5`)
+  and raw (`rating>>=9.5`) answer alike.
+- **Operators:** `>>=` (strictly greater), `>=` (inclusive), `<<=` (strictly less), `<=` (inclusive)
+  and `=` were all accepted (HTTP 200) and exact on int, float and date fields, each checked at ONE
+  value per family (the median distinct value), not swept. `!=` was not measured. "Items at or above E"
+  is therefore either `>=E` or `>>=E-1unit` (1 ms, 1 s, 1 count, 0.01 of a rating).
+- **Items with no value** (no rating, never viewed, no release date) sort FIRST in `:asc` and LAST
+  in `:desc` (the server treats no value as the smallest); `:nullsLast` puts them last in both
+  directions (one show `viewCount` listing kept one of its 11 first). `>>=` and `>=` EXCLUDE
+  them (`rating>>=<below the minimum>` answered the non-null count, 38 of 44) while `<<=` and `<=`
+  INCLUDE them (movie `lastViewedAt<<=<mid>` answered 35 = 10 with a value + 25 without). `=`
+  counts only items with the value.
+- **Offsets.** In a `:desc` listing the first item below E sits at offset `count(>=E)`. In `:asc`
+  the first item at or above E sits at `total - count(>=E)`, which is also `count(<<=E)` because
+  that counts the leading no-value items. The no-value tail or lead is `total - count(>>=<below the
+  minimum>)`. The ascending form was read directly for movie `rating` and `lastViewedAt` and for
+  show `lastViewedAt`, `unviewedLeafCount` and `viewCount`; for the families without no-value
+  items the `:asc` listing was the exact reverse of `:desc`, which implies it.
+- **Dates.** `addedAt` and `lastViewedAt` are instants (epoch seconds), so a calendar edge is the
+  viewer's local midnight. `originallyAvailableAt` is a DATE: the filter compares the day as the
+  epoch of UTC midnight (4 of 4 edges in both libraries; the local-midnight reading 0 of 4, on a host
+  that is not in UTC), so its edge must be built with UTC arithmetic. `year` equalled the release
+  date's year for every item in both libraries.
+- **`episode.addedAt` is not mirror-symmetric.** With `type=2`, `episode.addedAt>>=E` is the shows
+  that have ANY episode newer than E, which equals "whose newest episode is newer" (checked against
+  the per-show maximum of 525 episodes: 4 of 4 edges, 2 of 2 straddles), and
+  `sort=episode.addedAt:desc` orders by the newest episode. But `:asc` orders by the OLDEST episode
+  (non-decreasing in the per-show minimum, not in the maximum) and `episode.addedAt<<=E` is "has ANY
+  episode older than E" (9 of 15 at the mid value, where "newest older than E" would give 7). The
+  ascending offset is `count(<<=E)`, not `total - count(>>=E)`: bands for this family are valid for
+  `:desc` only. Every show had episodes, so the placement of one without was not measured.
+- **`/year` and `/decade` carry no per-bucket `size`** (`key`, `title`, `fastKey` only: 25 and 6
+  buckets on the movie library); only `/firstCharacter` does. A year or decade band therefore costs
+  one count probe per bucket (`decade=D` over the six movie decade keys summed to the library total).
+- **Relative dates** (`addedAt>>=<form>`): `-12h`, `-30d`, `-3w`, `-4w`, `-1mon`, `-6mon`, `-1y`, `-2y`
+  were accepted and cut at their nominal ages. **`-6m` is MINUTES** (0 of 44 movies), and **`-1mo` is
+  HTTP 500**. Build absolute epochs instead.
+- **A filter can be silently ignored.** An unknown key (`bogusfield>>=100`) and even a real attribute
+  (`leafCount>>=100` on shows) answer the WHOLE library with no error, and `Field[]` is no list of
+  what filters: `rating` and `audienceRating` are absent from the movie `Field[]` and filter correctly.
+  A client that reads the counts must fail closed: when every edge's count equals the unfiltered
+  total, or the counts are not monotone in the edge, show no rail.
+- **`Sort[]`** (server-driven, so a rail appears only for a sort the server lists): movies list
+  `titleSort`, `originallyAvailableAt`, `rating`, `audienceRating`, `duration`, `addedAt`,
+  `lastViewedAt`, `mediaHeight`, `random`; shows list `titleSort`, `originallyAvailableAt`, `rating`,
+  `audienceRating`, `unviewedLeafCount`, `episode.addedAt`, `lastViewedAt`, `random`. `year` and
+  `viewCount` are accepted as sorts but are not listed.
+- **The grid's own terms** (`genre`, `inProgress`) are honoured by the probes: the counts under each
+  matched the same-terms listing for movie `rating` and `addedAt` and show `unviewedLeafCount`.
+  `unwatched=1` and `unwatchedLeaves=1` proved nothing here (the Guest had no completed view, so they
+  left every total unchanged).
+- **Cost** (loopback, small libraries): a count probe median 3.2 ms (max 17 ms, 234 probes), a row
+  page of up to 200 rows median 6.5 ms, a directory read 1-5 ms; the first read after an idle spell
+  took 0.67-0.82 s and the first `/library/sections` of a session ~0.7 s.
+
+`tests/mock_pms.py` reproduces these rules (range operators, null placement, the `Size: 0` quirk and
+the `episode.addedAt` asymmetry; the spread data and the per-type `Sort[]` lists behind
+`--band-fixture`), so the data layer can be tested without a server.
 
 ---
 
