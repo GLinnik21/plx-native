@@ -1641,12 +1641,13 @@ mod tests {
     #[test]
     fn an_unfurling_disc_never_crosses_the_people_column() {
         let mut opened = false;
-        for version in [false, true] {
+        // `set_full` hardcodes `go_show: false`, so the Go to Show slot (4) is swept through the set.
+        for (version, go_show) in [(false, false), (true, false), (false, true), (true, true)] {
             for restart in [false, true] {
                 for alt in [false, true] {
                     for trailer in [false, true] {
                         for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
-                            let set = HeroSet { version, ..set_full(restart, alt, mark, trailer) };
+                            let set = HeroSet { version, go_show, ..set_full(restart, alt, mark, trailer) };
                             let (_, n) = hero_ctls(set);
                             for labels in [
                                 [10.0, 12.0, 12.0, 11.0, 10.0],
@@ -2123,6 +2124,30 @@ mod tests {
                         caps[4] > CD,
                         "{set:?}: Go to Show stays a circle: {caps:?}"
                     );
+                }
+            }
+        }
+    }
+
+    /// **The common episode row unfurls Go to Show in all shipped languages**: no Also available pill
+    /// (it needs a second pinned source), so Play/Resume, Restart, Watch, Play Version and Go to
+    /// Show fit with their widest verb. The wider row (`five_discs_never_cross_the_people_column_in_any_language`)
+    /// may collapse; this one must not.
+    #[test]
+    fn go_to_show_unfurls_in_every_language_when_the_row_has_no_alt() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let measure = plx_base::fontcov::advances::ShippedMeasure;
+        for restart in [false, true] {
+            for version in [false, true] {
+                for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
+                    let set = HeroSet { watchlist: false, version, restart, trailer: false, alt: false, mark, go_show: true };
+                    for language in SHIPPED {
+                        let _guard = language_on_this_thread_for_test(language);
+                        let mut unfurl = [0.0; DISCS];
+                        unfurl[4] = 1.0;
+                        let caps = disc_caps(&measure, set, unfurl, false);
+                        assert!(caps[4] > CD, "{} {set:?}: the verb unfurls (cap {})", language.tag(), caps[4]);
+                    }
                 }
             }
         }
