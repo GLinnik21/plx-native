@@ -555,7 +555,7 @@ fn the_letters_rail_is_offered_for_the_title_sort_and_never_for_a_value_sort() {
     assert!(browse.state.set_sort_by_key("rating", false));
     assert!(!letters_shown(&browse) && bands_shown(&browse), "ascending too");
 
-    // a sort with no ladder (the calendar ones are off) has neither
+    // a calendar sort whose ask has handed no day to count by (`today: None`) has neither
     assert!(browse.state.set_sort_by_key("addedAt", true));
     assert!(!letters_shown(&browse) && !bands_shown(&browse));
     assert_eq!(letters_shown(&browse), browse.state.rail_available());
@@ -602,9 +602,11 @@ fn a_title_sort_still_asks_for_the_letters_and_only_the_letters() {
     assert!(job.req.letters.as_ref().is_some_and(|key| key.family.is_none()));
 }
 
-/// The calendar families stay off: no read, no bands, no rail, whatever the data layer could ask.
+/// A calendar sort asks nothing and shows nothing while the ask has handed it no day (`no_job_is_owed`
+/// ticks with `Letters { today: None }`): no read, no bands, no rail. With the day it asks, which
+/// `bands_calendar_tests` drives.
 #[test]
-fn the_calendar_families_ask_nothing_and_show_nothing() {
+fn a_calendar_sort_asks_nothing_and_shows_nothing_without_a_day() {
     let _g = plx_base::testlock::serial();
     for (kind, key, desc) in [
         (SecKind::Movie, "addedAt", true), (SecKind::Movie, "addedAt", false), (SecKind::Movie, "lastViewedAt", true),
