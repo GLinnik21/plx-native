@@ -276,13 +276,17 @@ fn a_calendar_read_with_no_day_no_value_no_zone_or_no_believable_extent_has_no_r
     let no_march = zone_of(|date| (date != [2026, 3, 1]).then(|| utc(date) + 5 * HOUR));
     assert!(matches!(read(Some(TODAY), no_march, instant), (BandsRead::Counted(None), 1)),
         "the size alone is counted: no edge is probed");
-    // the extent year is judged: 1900 up to this year passes, anything else is absurd (it would be a
-    // probe per year since the year 1)
+    // the extent year is judged: after this year there is no rail, and before 1900 the bands start at
+    // 1900 (a probe per year since the year 1 would be absurd): Today, ten months, 1900..=2025, and
+    // the size twice
     let local_year = |year: i32| Some(Oldest::Instant(utc([year, 6, 1])));
     assert!(matches!(read(Some(TODAY), flat_zone(), local_year(1970)), (BandsRead::Counted(_), n) if n > 40));
     assert!(matches!(read(Some(TODAY), flat_zone(), local_year(2026)), (BandsRead::Counted(_), n) if n >= 13));
     let absurd = Zone { local_date: |epoch| Some([i32::try_from(epoch).unwrap_or(1), 1, 1]), ..flat_zone() };
-    for epoch in [1, 1899, 2027, 5000] {
+    for epoch in [1, 1899] {
+        assert!(matches!(read(Some(TODAY), absurd, Some(Oldest::Instant(epoch))), (BandsRead::Counted(_), n) if n == 2 + 1 + 10 + 126), "{epoch}");
+    }
+    for epoch in [2027, 5000] {
         assert!(matches!(read(Some(TODAY), absurd, Some(Oldest::Instant(epoch))), (BandsRead::Counted(None), 1)), "{epoch}");
     }
     let release = |year: i32| {
@@ -294,7 +298,7 @@ fn a_calendar_read_with_no_day_no_value_no_zone_or_no_believable_extent_has_no_r
             |terms| { *counted.borrow_mut() += 1; server.count(terms) }, |_, _| Some(Oldest::Year(year)));
         (out, counted.into_inner())
     };
-    assert!(matches!(release(1899), (BandsRead::Counted(None), 1)), "before 1900");
+    assert!(matches!(release(1899), (BandsRead::Counted(_), n) if n == 2 + 1 + 13), "before 1900 starts at 1900: 2026, the 2020s down to the 1900s");
     assert!(matches!(release(2027), (BandsRead::Counted(None), 1)), "after this year");
     assert!(matches!(release(1900), (_, n) if n > 12), "1900 is believable");
     assert!(matches!(release(2026), (_, 3)), "this year alone is one band: the size, the edge, the size");
@@ -411,4 +415,32 @@ fn a_calendar_request_lands_under_the_key_it_was_asked_with() {
     let rail = state.bands_verdict_for(family).expect("landed").as_ref().expect("a rail").clone();
     assert_eq!(rail.listed(true).bands.len(), edges.len());
     assert!(!Directory::Bands.busy(&browse.adapter));
+}
+
+/// An extent year of 1 (a bogus `0001-01-01` release date, an 1895 film) does not take the rail away: the
+/// bands start at 1900, the probes are bounded, and the items older than that sit in the unlabelled
+/// region at the low end (the lead of an ascending listing, the tail of a descending one) with the
+/// items that have no value, each band at the first index of its items.
+#[test]
+fn an_extent_before_1900_starts_the_release_bands_at_1900_and_leaves_the_older_items_unlabelled() {
+    let family = BandFamily::Release;
+    let edges = edges(family, 1900, flat_shift);
+    let values = [None, None, Some(utc([1, 1, 1])), Some(utc([1850, 6, 1])), Some(utc([1899, 12, 31])), Some(utc([1900, 1, 1])),
+        Some(utc([1931, 4, 2])), Some(utc([1969, 12, 31])), Some(utc([1970, 1, 1])), Some(utc([2005, 5, 5])),
+        Some(utc([2020, 1, 1])), Some(utc([2026, 3, 3]))];
+    let items: Vec<Item> = values.iter().map(|&value| Item { value, unwatched: false, genre: 7 }).collect();
+    let server = Server::new(items.clone(), field(family), 1);
+    let counted = RefCell::new(0);
+    let read = read_bands(Some(family), Some(TODAY), flat_zone(), &[],
+        |terms| { *counted.borrow_mut() += 1; server.count(terms) }, |_, _| Some(Oldest::Year(1)));
+    let BandsRead::Counted(Some(rail)) = read else { panic!("a rail") };
+    assert_eq!(*counted.borrow(), 2 + edges.len(), "the size, one read per band from 1900, the size");
+    assert_eq!(edges.len(), 1 + 13, "2026 and the decades 2020s down to 1900s");
+    for descending in [true, false] {
+        let rows = rows(&edges, &items, &[], descending);
+        assert_layout(edges.len(), &rows, rail.listed(descending), descending, "year 1");
+        let layout = rail.listed(descending);
+        let unlabelled = if descending { layout.tail } else { layout.lead };
+        assert_eq!(unlabelled, 2 + 3, "no value, 1, 1850 and 1899 are in no band");
+    }
 }

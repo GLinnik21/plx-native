@@ -314,8 +314,8 @@ enum Stop {
 /// [`bands::offsets`] does not trust while the size held still (every band as large as the listing:
 /// the server ignored the field; or counts that fall as the edge falls) give no rail and say why in
 /// the log, and so does a server that answers rows to a count-only read, a calendar family with no day,
-/// no value in its field, an extent that is no believable year ([`bands::plausible_extent`]) or an
-/// edge the zone cannot convert.
+/// no value in its field, an extent after this year ([`bands::extent_year`]; one before 1900 only
+/// starts the bands at 1900) or an edge the zone cannot convert.
 fn read_bands(family: Option<BandFamily>, today: Option<Day>, zone: Zone, filters: &[(String, String)],
     probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>,
     oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) -> BandsRead {
@@ -364,10 +364,10 @@ fn ladder_of(family: BandFamily, today: Option<Day>, zone: Zone, filters: &[(Str
         plx_base::eventlog::log(&format!("rail: {family:?} no item has a usable value in {} — no rail", extent.field));
         return Ok(None);
     };
-    if !bands::plausible_extent(year, today) {
-        plx_base::eventlog::log(&format!("rail: {family:?} the oldest value is in the year {year} — no rail"));
+    let Some(year) = bands::extent_year(year, today) else {
+        plx_base::eventlog::log(&format!("rail: {family:?} the oldest value is in the year {year}, after today — no rail"));
         return Ok(None);
-    }
+    };
     let ladder = bands::plan(family, today, year);
     if ladder.is_empty() {
         plx_base::eventlog::log(&format!("rail: {family:?} no bands for {today:?} — no rail"));

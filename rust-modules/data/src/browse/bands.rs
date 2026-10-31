@@ -120,15 +120,18 @@ pub(super) fn utc_zone() -> Zone {
     Zone { local_midnight: |date| Some(utc_midnight(date)), local_date: civil }
 }
 
-/// The oldest year the extent of a calendar family may name. An extent comes off the server, and a
-/// year before this one (a bogus `0001-01-01`) would mean a probe for every year since: at most
-/// `current year - 1900 + 13` of them for one that passes.
+/// The first year a calendar family draws a band for, whatever its extent says. An extent comes off the
+/// server, and a year before this one (an 1895 film, a bogus `0001-01-01`) would mean a probe for every
+/// year since: [`extent_year`] stops at it, so a rail is at most `current year - 1900 + 13` probes.
+/// The items older than it sit below the lowest edge, in the unlabelled region at the low end of the
+/// value order in both directions, never under a wrong label.
 pub const FIRST_PLAUSIBLE_YEAR: i32 = 1900;
 
-/// Is `year` a believable year for the oldest item of a calendar family on `today`: from
-/// [`FIRST_PLAUSIBLE_YEAR`] to this year? Anything else gives the family no rail.
-pub fn plausible_extent(year: i32, today: Day) -> bool {
-    (FIRST_PLAUSIBLE_YEAR..=today[0]).contains(&year)
+/// The year [`plan`] starts a calendar family's bands from, given the year of the oldest item on
+/// `today`: the extent itself, no earlier than [`FIRST_PLAUSIBLE_YEAR`]. `None` for an extent AFTER
+/// this year, which no item can have (nothing is older than the present), so the family has no rail.
+pub fn extent_year(year: i32, today: Day) -> Option<i32> {
+    (year <= today[0]).then(|| year.max(FIRST_PLAUSIBLE_YEAR))
 }
 
 /// How a calendar family finds its oldest value ([`BandFamily::extent_read`]).
