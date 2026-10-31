@@ -41,18 +41,26 @@
 //!   ghosts fade on K_SCALE, survivors spring home on K_SCROLL.
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
-//!   whole, a page returns as it was left (a page that returns dormant, below, regrows its focused
-//!   card from rest instead). An unfocused tile draws at rest (or the live
+//!   whole, a page returns as it was left (a dormant page's own seat, below, is the one thing that may
+//!   regrow from rest instead). An unfocused tile draws at rest (or the live
 //!   let-go of one that lost focus and has not landed). A deliberate move grows from rest (or from
 //!   where its own let-go is, when focus comes back to a tile still letting go).
 //!   A shelf or grid whose page is still dissolving in, or is shown as a held transition image, is
 //!   [`dormant`](Shelf::dormant) / [`Grid::dormant`]: nothing is lifted under the fade or the image
-//!   (a shelf on a page in view eases what was lifted to rest; under a held image it, like a grid,
-//!   is at rest on its first tick), and the first awake tick grows the focused card from rest. A
+//!   (a shelf on a page in view eases what was lifted to rest; under a held image it, like a grid
+//!   asleep, is at rest on its first tick), and the first awake tick grows the focused card from rest. A
 //!   focus the engine restored while the owner slept regrows from rest too, once a dormant tick has
-//!   run since (the Recommended page returning from a Detail under the BACK dip's image); only a
-//!   restore announced after the last dormant tick, on the tick the page wakes, is adopted whole,
-//!   as above. A grid keeps
+//!   run since; only a restore announced after the last dormant tick, on the tick the page wakes, is
+//!   adopted whole, as above. **A [`Grid`] or a [`Shelf`] fed `Enter(Restored)` (BACK onto its page, a
+//!   modal's dismissal) is the exception: a page that returns is not put to sleep.** Its seat is drawn
+//!   lifted with its caption band open (and, on a shelf, its heading raised) from the first frame,
+//!   through the fade or the held image the owner reports, because a seat put at rest and grown again
+//!   there moves the row or shelf under its band by the band's height and back. A page holds many
+//!   shelves and feeds them all the `Enter`: only the shelf the focus is on keeps its seat, the rest
+//!   are put to rest as above (stepping a shelf mid-ease under the image would hold it past its
+//!   dissolve). The return ends on the first tick the owner reports awake, at the first deliberate
+//!   move and when focus lands anywhere but a card of the section (that move is slept through, so it
+//!   holds no image), and leaves no mark; a page ENTERED under an image is still slept through. A grid asleep keeps
 //!   its caption bands shut meanwhile and the waking tick opens the focused row's on the lift's own
 //!   frames: a caption is its band's content (a line is drawn only as the band opens and the room
 //!   holds it, `card_row::line_reveal_for`), so it never stands at full strength under a tile that
@@ -101,15 +109,15 @@ pub use avatars::AvatarRow;
 // those modules can stay `pub(crate)`).
 pub use crate::card_row::{
     column_near_x, credit_role_dy, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
-    resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, RowStyle, TileLabel,
-    band_open_for, BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
+    resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, RowStyle, SortValue, TileLabel,
+    band_open_for, BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, SORT_VALUE_BAND_H, SORT_VALUE_PLUS, SORT_VALUE_REACH, SORT_VALUE_ROW_GAP, UNDER_LABEL_H,
 };
 pub use crate::poster_grid::{
     growth_before as grid_growth_before, growth_before_for as grid_growth_before_for, rest_scroll as grid_rest_scroll, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
     STYLE as GRID_STYLE,
 };
 pub use grid::{DrawRole, Grid, GridSpec, ScrollMode};
-pub use sample_row::SampleRow;
+pub use sample_row::{SampleFrame, SampleRow};
 pub use shelf::{PageEdge, Shelf, PAGE_EDGE_CARDS};
 pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 
@@ -232,6 +240,12 @@ pub trait CardSource<H: Host> {
     fn art(&self, i: usize) -> Art<'_>;
     /// The block drawn under the FOCUSED card (asked for that one card per frame).
     fn label(&self, i: usize) -> TileLabel;
+    /// Scoped access to cached words without cloning their CStrings. Sources without a cache
+    /// keep the owned builder; the grid asks only after visibility has been established.
+    fn with_label<R>(&self, i: usize, draw: impl FnOnce(&TileLabel) -> R) -> R {
+        draw(&self.label(i))
+    }
+
     /// The amber resume fraction of card `i`, if it is partly watched.
     fn progress(&self, _i: usize) -> Option<f32> {
         None

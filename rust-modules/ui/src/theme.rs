@@ -124,14 +124,28 @@ pub const TEXT_READING: [f32; 4] = COOL_200;
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
 pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
 /// A page-header control's label at rest (`PageHeader`): white at 65%. A value segment beside it
-/// stays full white, so "Sort & Filter · Title" reads as a label and a value.
+/// stays full white, so "Collections · 24" reads as a label and a value.
 pub const CONTROL_TEXT_REST: [f32; 4] = with_a(WHITE, 0.65);
 /// The "312 of 1,284" read-out beside the header controls while a filter is on: white at 50%,
 /// quieter than [`CONTROL_TEXT_REST`] because it is not a control and takes no focus.
 pub const COUNT_FILTERED_INK: [f32; 4] = with_a(WHITE, 0.50);
+/// The chevron a header PLACE wears ("Collections · 24 ›", "Recommended ›": the control opens a
+/// page): white at 45%, a step under [`CONTROL_TEXT_REST`] so the mark reads as the control's
+/// affordance and not as part of its name.
+pub const HEADER_PLACE_INK: [f32; 4] = with_a(WHITE, 0.45);
+/// The hairline between the header's places and its sort control (2 x 32 px): white at 16%.
+pub const HEADER_DIVIDER_INK: [f32; 4] = with_a(WHITE, 0.16);
 /// The details line under a focused poster (Under posters: "2019 · 2h 6m"): white at 82%, a step
 /// below the title above it and neutral where [`TEXT_SECONDARY`] read bluish over the ground.
 pub const CAPTION_DETAIL_INK: [f32; 4] = with_a(WHITE, 0.82);
+/// The sort value under every poster of a library grid sorted by something other than Title or
+/// Random (Settings > Libraries > Under posters > Sort value): white at 80% at rest. The focused
+/// poster's value is [`TEXT_PRIMARY`] in bold.
+pub const SORT_VALUE_INK: [f32; 4] = with_a(WHITE, 0.80);
+/// An empty sort value under a poster: the en dash for data the server does not have, the word
+/// "Never" under Date viewed and Plays for something nobody played. White at 50%, a step below
+/// [`SORT_VALUE_INK`] so the gap reads as absence.
+pub const SORT_VALUE_MISSING_INK: [f32; 4] = with_a(WHITE, 0.50);
 /// The `·` between fine-print facts, and **only** that — a step below the words it separates.
 /// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is
 /// worth keeping: a dot at the full ink of its neighbours joins the list instead of punctuating
@@ -194,8 +208,9 @@ pub mod layout {
     /// its note into a column too narrow to read; this floor keeps it a panel. A FLOOR only: wider
     /// content still grows the panel up to `ui::table::MENU_MAX_W`.
     pub const PLAYER_MENU_MIN_W: f32 = 440.0;
-    /// Bottom edge of an in-player popover: ~28px above the transport buttons, at 1080p.
-    pub const PLAYER_MENU_BOTTOM: f32 = crate::consts::SCR_H - 316.0;
+    /// Air between the control that opened an in-player popover (Tracks, More) and the panel, at
+    /// 1080p. Classic's opener row stands at y 792, so this puts the panel's bottom edge at 764.
+    pub const PLAYER_MENU_GAP: f32 = 28.0;
 }
 
 /// The **logo presence ladder** — how big a clearLogo is DRAWN. The third size axis of the design
@@ -382,6 +397,14 @@ pub const CONTROL_RIM_FOCUS_UNKEYED_W: f32 = 1.25;
 /// depths are its blur radii read as how far the light reaches in, which is what an SDF falloff can
 /// express and a CSS spread cannot be transcribed into.
 pub const CONTROL_RIM_FOCUS_UNKEYED_GLOW: [f32; 4] = [5.0, 1.0, 2.5, 0.55];
+
+/// **The `ring` focus face** (`TransportButton::focus_face`): a white stroke standing just OUTSIDE
+/// the disc, which keeps its rest face (the accent fill is the other focus face). White for the
+/// reason [`CONTROL_RIM_FOCUS_UNKEYED`] is: it is the one colour the two polarities of an unknown
+/// frame agree on. `W` is the stroke, `GAP` the clear band between it and the disc's edge.
+pub const CONTROL_FOCUS_RING: [f32; 4] = WHITE;
+pub const CONTROL_FOCUS_RING_W: f32 = 2.5;
+pub const CONTROL_FOCUS_RING_GAP: f32 = 3.0;
 
 /// **THE FOCUS CAST** — what a control face casts once the remote is on it, as two stops of
 /// `(dy, blur, alpha)` over [`CARD_SHADOW`]'s black.
@@ -809,7 +832,7 @@ pub const RAIL_FILL: [f32; 4] = with_a(WHITE, 0.95);
 /// "this bit is special", and the rail sits straight over moving video.
 // (RAIL_MARKER, white @ 0.42, was the intro/credits band on the scrubber. Removed 2026-08-04 with
 // the band itself — at twice the track's opacity it read as a rendering artifact rather than as
-// information. See the "the rail carries NO marks" note in appkit/player_hud.rs.)
+// information. See the "the rail carries NO marks" note in appkit/player_hud/classic.rs.)
 /// The **ambient wash's** resting tint — the faint warm cast a page carries when no artwork is
 /// keying it (the person page's header state, `Person Screen.dc.html`'s
 /// `rgba(233,230,224,.10)`). The palette's one warm stop, and the only survivor of the warm "Snow"
@@ -1218,7 +1241,7 @@ pub const TINT_WHITE: [f32; 4] = WHITE;
 // ── Review-score marks (detail hero ratings row) ─────────────────────────────
 // These used to be the ONE place the palette borrowed someone else's colour, justified by the
 // badge being a BRAND MARK. That justification is gone with the marks: Rotten Tomatoes' fruit,
-// seal and popcorn tub were removed 2026-08-02 (no licensing route exists, and a redraw is the
+// seal and popcorn tub were removed 2026-08-02 (no public licence, none held, and a redraw is the
 // infringement pattern, not a defence), and every provider is NAMED in text instead. So these are
 // now our own semantic colours for a VERDICT, and only two still sit near a brand's hue because a
 // ripe tomato that isn't red has stopped being a tomato.

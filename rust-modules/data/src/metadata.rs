@@ -632,24 +632,6 @@ impl Dovi {
             encryption_type: "clear",
         })
     }
-
-    /// Resolve a fresh decision from the cached platform answer and the boot-latched diagnostic
-    /// signal. Call once at a route boundary; installed playback must retain the returned value.
-    pub fn presentation_now(&self, video_carries_dv: bool) -> DvPresentation {
-        self.presentation(
-            !dv_withheld(),
-            plx_platform::devcaps::dv::capability(),
-            video_carries_dv,
-        )
-    }
-
-    pub fn decision_now(&self, video_carries_dv: bool) -> DvDecision {
-        let capability = plx_platform::devcaps::dv::capability();
-        DvDecision {
-            capability,
-            presentation: self.presentation(!dv_withheld(), capability, video_carries_dv),
-        }
-    }
 }
 
 /// The `option.externalStreamingInfo.contents.DolbyHdrInfo` node of the Starfish Load payload:
@@ -689,8 +671,14 @@ pub enum DvPresentation {
     Refuse(&'static str),
 }
 
-/// The platform answer and the presentation derived from it at one route boundary. Both are
-/// copyable so reload, recovery and rollback preserve the installed decision exactly.
+/// The television's Dolby Vision answer a route planned from and the presentation derived from it at
+/// one route boundary. The capability is the probe's own answer, exactly what `devcaps::dv::capability()`
+/// held when the route was planned, and it is for READING OUT only (Diagnostics and the `dv:` log
+/// lines print it): nothing decides behaviour from it. The seated profile's `DolbyVisionMode` is
+/// applied to the presentation alone, so an Off profile on a set that reports support carries
+/// `Supported` with `NotDv` (the base layer) and a quoted line can tell it from a failed probe or a
+/// set without Dolby Vision. Both are copyable so reload, recovery and rollback preserve the
+/// installed decision exactly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DvDecision {
     pub capability: plx_platform::devcaps::dv::DvCapability,

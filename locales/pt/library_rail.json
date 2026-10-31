@@ -1,0 +1,6 @@
+{
+  "library_rail.decade": "anos {decade}",
+  "library_rail.hours": "{hours} h",
+  "library_rail.hours_or_more": "{hours} h+",
+  "library_rail.today": "Hoje"
+}

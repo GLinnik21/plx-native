@@ -1379,6 +1379,7 @@ mod art_admission_tests { include!("art_admission_tests.rs"); }
 mod lookahead_tests { include!("lookahead_tests.rs"); }
 
 mod grid_motion_tests { include!("grid_motion_tests.rs"); }
+mod sort_value_kinds_tests { include!("sort_value_kinds_tests.rs"); }
 mod keys_window_tests { include!("keys_window_tests.rs"); }
 
 /// BACK from deep in the document returns to the top on the scroll SPRING, the way Home's BACK
@@ -1445,4 +1446,332 @@ fn assert_back_glides(fixture: &Fixture, deep_index: usize) {
     }
     assert!(frames > 4, "reaching the top takes frames (took {frames}), it is not a cut");
     assert!(page.scroll.pos <= 0.5, "and it arrives");
+}
+
+/// **A hover moves focus, never the grid; a click brings the grid to its card.** The reported
+/// bug: a Magic Remote hover seated the row it touched at the top of the screen, like a key does,
+/// so every hover moved the page up to a screenful and a hover after an edge glide threw the glide
+/// away. A key still seats its row at rest.
+#[test]
+fn a_hover_moves_no_grid_and_a_click_brings_it_to_its_card() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let elems: Vec<u32> = [12, 18, 24].iter().map(|&i| deep(&mut page, &fixture, i)).collect();
+    let keys: Vec<_> = elems.iter().map(|&e| page.key(e)).collect();
+    let (row2, row3, row4) = (keys[0], keys[1], keys[2]);
+    page.relayout(Some(row2));
+    let rest2 = page.target_layout.row_reveal(2);
+    page.scroll_target = rest2;
+    page.scroll.jump(rest2);
+    engine.set(OWNER, row2, Some(page.pair.groups_config().detail), By::Restore);
+    let point = |page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, to, by| {
+        let from = engine.current(OWNER);
+        engine.set(OWNER, to, Some(page.pair.groups_config().detail), by);
+        deliver(page, engine, &fixture, ScreenEvent::FocusMoved { from, to, by });
+    };
+    point(&mut page, &mut engine, row3, By::Pointer);
+    assert_eq!(page.scroll_target, rest2, "a hover moves focus, not the page");
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::Input(plx_machine::machine::InputEvent {
+        at: Tick::default(), source: plx_machine::machine::Source::Script,
+        kind: InputKind::Click { x: 0.0, y: 0.0, hit: Some(row3.elem) } }));
+    assert_eq!(page.scroll_target, page.target_layout.row_reveal(3), "a click brings the page to its card");
+    point(&mut page, &mut engine, row4, By::Dir);
+    assert_eq!(page.scroll_target, page.target_layout.row_reveal(4), "a key seats its row at rest");
+}
+
+/// 36 films sorted by Critic rating, best first: 95% holds items 0..6, 90% 6..12, 85% 12..18, 80% none,
+/// 75% 18..30, `<75%` none, and the last six have no rating.
+fn rated_fixture(descending: bool) -> Fixture {
+    rated_fixture_counting(descending, &[6, 12, 18, 18, 30, 30])
+}
+
+/// [`rated_fixture`] with its own rating counts (the films at or above each band's edge).
+fn rated_fixture_counting(descending: bool, at_or_above: &[u32]) -> Fixture {
+    use plx_data::browse::bands::{BandFamily, BandRail};
+    let mut fixture = Fixture::new();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let ladder = BandFamily::Rating.fixed_ladder().expect("rating has a fixed ladder");
+    let rail = BandRail::new(&ladder, at_or_above, 36).expect("trusted counts");
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
+        Some(plx_data::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(), Vec::new())
+        .with_sort_key("rating").with_sort_desc(descending).with_bands(rail);
+    fixture
+}
+
+#[test]
+fn a_rating_sorted_listing_gets_a_rail_of_its_bands_with_the_empty_ones_dimmed() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = rated_fixture(true);
+    let page = fixture.screen();
+    let (bands, focused) = page.probe_rail(None);
+    assert_eq!(bands, [("95%".to_owned(), false), ("90%".to_owned(), false), ("85%".to_owned(), false),
+        ("80%".to_owned(), true), ("75%".to_owned(), false), ("<75%".to_owned(), true)]);
+    assert_eq!(focused, None);
+    let rail = &page.pair.master;
+    assert_eq!((rail.current_for_item(0), rail.current_for_item(17), rail.current_for_item(18), rail.current_for_item(35)),
+        (Some(0), Some(2), Some(4), None), "a card among the unrated is under no band");
+    let mut groups = Vec::new();
+    rail.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
+    let extent = groups.first().expect("the bands are a focus group").extent;
+    assert_eq!((extent.y, extent.h), (244.0, 6.0 * 40.0));
+    assert!((extent.x + extent.w * 0.5 - 1834.0).abs() < 0.01, "centred on 1834, not the letters' 1844: {extent:?}");
+}
+
+#[test]
+fn moving_in_the_bands_rail_scrolls_the_grid_to_the_band_at_once_and_left_returns_to_the_grid() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = rated_fixture(true);
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let cols = page.layout.cols();
+    // the last card of 85%: one Right from the rail
+    let exact = page.key(page.pair.detail.elem_at(17).unwrap());
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(2), "entering the rail lands on the band of the card it came from");
+    assert_eq!(page.pair.detail.index_of(engine.current(OWNER).unwrap().elem), None, "the rail has focus, so the grid has none");
+    // Down steps over the empty 80% band to 75% and the grid goes to that band's first card with no OK
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Down), 1, "the move remembers the band's first card");
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(4));
+    let first_of_75 = 18;
+    assert_eq!(page.scroll_target, page.target_layout.with_grid_focus(None).row_reveal(first_of_75 / cols), "the page scrolls to the 75% band's row");
+    // `<75%` is empty: there is nothing further down
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Down), 0);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(4));
+    // Left returns to the grid, on the band's first card
+    direction(&mut page, &mut engine, &fixture, Dir::Left);
+    assert_eq!(page.grid_position(engine.current(OWNER)), Some((first_of_75 / cols, first_of_75 % cols)));
+}
+
+#[test]
+fn entering_the_bands_rail_from_an_unrated_card_lands_on_the_nearest_band_with_titles_and_left_returns_to_that_card() {
+    let _guard = plx_base::testlock::serial();
+    // 95% holds 3, 90% 3, 85% 3, 80% none, 75% 3, `<75%` none: 24 films are unrated
+    let fixture = rated_fixture_counting(true, &[3, 6, 9, 9, 12, 12]);
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let cols = page.layout.cols();
+    let unrated = 17;
+    assert_eq!(unrated % cols, cols - 1);
+    let exact = page.key(page.pair.detail.elem_at(unrated).unwrap());
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(4), "`<75%` is empty, so 75% is the nearest band with titles");
+    direction(&mut page, &mut engine, &fixture, Dir::Left);
+    assert_eq!(page.grid_position(engine.current(OWNER)), Some((unrated / cols, unrated % cols)), "an entered and left rail returns to the original card");
+}
+
+#[test]
+fn an_ascending_rating_sort_reads_the_bands_in_listing_order() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = rated_fixture(false);
+    let page = fixture.screen();
+    let (bands, _) = page.probe_rail(None);
+    assert_eq!(bands.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(), ["<75%", "75%", "80%", "85%", "90%", "95%"]);
+}
+
+#[test]
+fn a_title_sort_keeps_the_letters_rail_and_a_value_sort_without_bands_has_none() {
+    let _guard = plx_base::testlock::serial();
+    let letters = Fixture::new();
+    assert_eq!(letters.screen().probe_rail(None).0.len(), 26, "the letters rail is unchanged");
+    let mut fixture = Fixture::new();
+    fixture.listing = fixture.listing.clone().with_sort_key("rating");
+    assert!(fixture.screen().probe_rail(None).0.is_empty(), "letters are for the title sort, and no bands have landed");
+}
+
+// ---- the rail of a CALENDAR sort's bands ----------------------------------------------------------
+
+/// 36 films sorted by `key`, whose `family` bands (planned for `today`, the oldest item added or
+/// released in `oldest`) hold the films `at_or_above` counts say, in the data layer's own words.
+fn dated_fixture(family: plx_data::browse::bands::BandFamily, key: &str, today: [i32; 3], oldest: i32,
+    at_or_above: &[u32], descending: bool) -> Fixture {
+    use plx_data::browse::bands::{plan, BandRail};
+    let mut fixture = Fixture::new();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let rail = BandRail::new(&plan(family, today, oldest), at_or_above, 36).expect("trusted counts");
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
+        Some(plx_data::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(), Vec::new())
+        .with_sort_key(key).with_sort_desc(descending).with_bands(rail);
+    fixture
+}
+
+/// The centre y of every band of the rail, top to bottom, as it is drawn at rest.
+fn rail_centres(page: &LibraryScreen, fixture: &Fixture) -> Vec<f32> {
+    use plx_ui::screen::At;
+    let cx = fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap())));
+    let rail = &page.pair.master;
+    rail.elems.iter().map(|elem| rail.place(elem, &cx, At::Drawn).expect("the rail is in the grid's region").rect.cy()).collect()
+}
+
+fn labels_of(page: &LibraryScreen) -> Vec<String> {
+    page.probe_rail(None).0.into_iter().map(|(label, _)| label).collect()
+}
+
+/// 31 October 2026 with the oldest item added in 2024: `Today`, ten months, two years. The films at or
+/// above each band's edge (cumulative): Today 3, Oct 6, Aug 4, May 5, Jan 2, 2025 8, 2024 6 (the rest
+/// empty), and two older than any band.
+const OCTOBER_COUNTS: [u32; 13] = [3, 9, 9, 13, 13, 13, 18, 18, 18, 18, 20, 28, 34];
+const THE_TWENTY_SIXTH: [i32; 3] = [2026, 10, 31];
+
+#[test]
+fn a_date_sorted_listing_gets_a_rail_of_today_the_months_and_the_years_with_one_step_where_the_months_end() {
+    use plx_data::browse::bands::BandFamily;
+    let _guard = plx_base::testlock::serial();
+    let months = ["Today", "Oct", "Sep", "Aug", "Jul", "Jun", "May", "Apr", "Mar", "Feb", "Jan", "2025", "2024"];
+    // Date added, Date viewed and Last episode added read the same calendar
+    for (family, key) in [(BandFamily::DateAdded, "addedAt"), (BandFamily::DateViewed, "lastViewedAt"), (BandFamily::LastEpisodeAdded, "episode.addedAt")] {
+        let fixture = dated_fixture(family, key, THE_TWENTY_SIXTH, 2024, &OCTOBER_COUNTS, true);
+        let page = fixture.screen();
+        assert_eq!(labels_of(&page), months, "{family:?}");
+    }
+    let fixture = dated_fixture(BandFamily::DateAdded, "addedAt", THE_TWENTY_SIXTH, 2024, &OCTOBER_COUNTS, true);
+    let page = fixture.screen();
+    let (bands, focused) = page.probe_rail(None);
+    let empty: Vec<&str> = bands.iter().filter(|(_, empty)| *empty).map(|(label, _)| label.as_str()).collect();
+    assert_eq!((empty, focused), (vec!["Sep", "Jul", "Jun", "Apr", "Mar", "Feb"], None), "the bands that hold no film are dimmed");
+    // the owner's board: Today at y 264, a month every 40, Jan at 664, then 8 more for `2025` at 712
+    let mut expected: Vec<f32> = (0..=10).map(|i| 264.0 + 40.0 * i as f32).collect();
+    expected.extend([712.0, 752.0]);
+    assert_eq!(rail_centres(&page, &fixture), expected);
+    let rail = &page.pair.master;
+    assert_eq!((rail.current_for_item(0), rail.current_for_item(3), rail.current_for_item(9), rail.current_for_item(19), rail.current_for_item(20), rail.current_for_item(33)),
+        (Some(0), Some(1), Some(3), Some(10), Some(11), Some(12)));
+    assert_eq!((rail.current_for_item(34), rail.current_for_item(35)), (None, None), "the two films older than any band are under none");
+    let mut groups = Vec::new();
+    rail.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
+    let extent = groups.first().expect("the bands are a focus group").extent;
+    assert_eq!((extent.y, extent.h), (244.0, 13.0 * 40.0 + 8.0));
+    assert!((extent.x + extent.w * 0.5 - 1834.0).abs() < 0.01, "centred on 1834: {extent:?}");
+}
+
+#[test]
+fn moving_in_a_date_rail_skips_the_empty_months_scrolls_the_grid_to_each_band_and_left_returns() {
+    use plx_data::browse::bands::BandFamily;
+    let _guard = plx_base::testlock::serial();
+    let fixture = dated_fixture(BandFamily::DateAdded, "addedAt", THE_TWENTY_SIXTH, 2024, &OCTOBER_COUNTS, true);
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let cols = page.layout.cols();
+    let in_may = 17;
+    assert_eq!(in_may % cols, cols - 1, "the last card of a row: one Right from the rail");
+    let exact = page.key(page.pair.detail.elem_at(in_may).unwrap());
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    let on = |page: &LibraryScreen, engine: &FocusEngine<u32>| page.probe_rail(engine.current(OWNER)).1;
+    assert_eq!(on(&page, &engine), Some(6), "entering the rail lands on May, the band of the card it came from");
+    assert_eq!(page.pair.detail.index_of(engine.current(OWNER).unwrap().elem), None, "the rail has focus, so the grid has none");
+    let reveal = |page: &LibraryScreen, first_card: usize| page.target_layout.with_grid_focus(None).row_reveal(first_card / cols);
+    // Up steps over June and July (no film added) to August, and the grid is at its first card at once
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Up), 1);
+    assert_eq!(on(&page, &engine), Some(3));
+    assert_eq!(page.scroll_target, reveal(&page, 9), "the page scrolls to August's first card with no OK");
+    // Down steps over April, March and February to January, then the years
+    for (band, first_card) in [(6, 13), (10, 18), (11, 20), (12, 28)] {
+        assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Down), 1);
+        assert_eq!(on(&page, &engine), Some(band));
+        assert_eq!(page.scroll_target, reveal(&page, first_card), "band {band}");
+    }
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Down), 0, "the last band is the end of the rail");
+    // …and all the way up: October (Sep is empty), then Today
+    for (band, first_card) in [(11, 20), (10, 18), (6, 13), (3, 9), (1, 3), (0, 0)] {
+        assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Up), 1);
+        assert_eq!(on(&page, &engine), Some(band));
+        assert_eq!(page.scroll_target, reveal(&page, first_card), "band {band}");
+    }
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Up), 0);
+    // Left returns to the grid, on Today's first card
+    direction(&mut page, &mut engine, &fixture, Dir::Left);
+    assert_eq!(page.grid_position(engine.current(OWNER)), Some((0, 0)));
+}
+
+#[test]
+fn an_ascending_date_sort_reads_the_bands_oldest_first_with_its_step_at_the_same_seam() {
+    use plx_data::browse::bands::BandFamily;
+    let _guard = plx_base::testlock::serial();
+    let fixture = dated_fixture(BandFamily::DateAdded, "addedAt", THE_TWENTY_SIXTH, 2024, &OCTOBER_COUNTS, false);
+    let page = fixture.screen();
+    assert_eq!(labels_of(&page), ["2024", "2025", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Today"]);
+    // two years, then the step (the months begin), then ten months and Today
+    let mut expected = vec![264.0, 304.0];
+    expected.extend((0..=10).map(|i| 352.0 + 40.0 * i as f32));
+    assert_eq!(rail_centres(&page, &fixture), expected);
+    let rail = &page.pair.master;
+    assert_eq!((rail.current_for_item(1), rail.current_for_item(2), rail.current_for_item(35)), (None, Some(0), Some(12)),
+        "the two films older than any band lead the listing, under none");
+}
+
+#[test]
+fn a_release_sorted_listing_gets_the_year_then_the_decades_with_a_step_before_the_first_decade() {
+    use plx_data::browse::bands::BandFamily;
+    let _guard = plx_base::testlock::serial();
+    // 2026 holds 4, the 2020s 6, the 2010s none, the 2000s 8, the 1990s 10, and eight have no release date
+    let fixture = dated_fixture(BandFamily::Release, "originallyAvailableAt", THE_TWENTY_SIXTH, 1990, &[4, 10, 10, 18, 28], true);
+    let mut page = fixture.screen();
+    let (bands, _) = page.probe_rail(None);
+    assert_eq!(bands, [("2026".to_owned(), false), ("2020s".to_owned(), false), ("2010s".to_owned(), true),
+        ("2000s".to_owned(), false), ("1990s".to_owned(), false)]);
+    assert_eq!(rail_centres(&page, &fixture), [264.0, 312.0, 352.0, 392.0, 432.0], "8 px more before the first decade only");
+    // Right from the 2000s lands on it, Up skips the empty 2010s
+    let mut engine = FocusEngine::new();
+    let cols = page.layout.cols();
+    let exact = page.key(page.pair.detail.elem_at(17).unwrap());
+    assert_eq!(17 % cols, cols - 1);
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(3));
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Up), 1);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(1), "the 2010s hold no film");
+    assert_eq!(page.scroll_target, page.target_layout.with_grid_focus(None).row_reveal(4 / cols), "the 2020s start at card 4");
+}
+
+#[test]
+fn a_key_seated_in_the_rail_survives_a_day_turn_and_never_lands_on_an_empty_band() {
+    use plx_data::browse::bands::BandFamily;
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = dated_fixture(BandFamily::DateAdded, "addedAt", THE_TWENTY_SIXTH, 2024, &OCTOBER_COUNTS, true);
+    let mut page = fixture.screen();
+    // focus on October
+    let october = page.key(page.pair.master.elems[1]);
+    let reconcile = |page: &LibraryScreen, fixture: &Fixture, want| <LibraryScreen as Focusable<HostFixture>>::reconcile(page, want, &fixture.cx(Some(want)));
+    assert_eq!(reconcile(&page, &fixture, october), october);
+    // midnight: the data layer still holds yesterday's rail until today's lands, then 1 November has the
+    // same bands (October is the month before this one) and the key it is on stays where it is
+    fixture = dated_fixture(BandFamily::DateAdded, "addedAt", [2026, 11, 1], 2024, &OCTOBER_COUNTS, true);
+    page.sync(&fixture.cx(Some(october)));
+    assert_eq!(labels_of(&page)[..3], ["Today", "Oct", "Sep"], "the rail is still there");
+    assert_eq!(reconcile(&page, &fixture, october), october, "a key in the rail does not fall through to the header row");
+    // …and when the band it is on is gone (31 December to 1 January: no month has gone by, so the months
+    // are gone) it lands on the first band that holds films, not on `Today` when that is empty
+    let may = page.key(page.pair.master.elems[6]);
+    fixture = dated_fixture(BandFamily::DateAdded, "addedAt", [2027, 1, 1], 2025, &[0, 6, 12], true);
+    page.sync(&fixture.cx(Some(may)));
+    assert_eq!(labels_of(&page), ["Today", "2026", "2025"]);
+    let (bands, _) = page.probe_rail(None);
+    assert!(bands[0].1 && !bands[1].1, "Today holds no film and 2026 does: {bands:?}");
+    let recovered = reconcile(&page, &fixture, may);
+    assert_eq!(page.probe_rail(Some(recovered)).1, Some(1), "the first band focus can stop on, not the empty Today");
+    assert_ne!(recovered, may);
+}
+
+#[test]
+fn a_day_turn_changes_the_rails_labels_and_where_its_step_falls() {
+    use plx_data::browse::bands::BandFamily;
+    let _guard = plx_base::testlock::serial();
+    // 31 December: the whole year's months are bands
+    let counts: Vec<u32> = (1..=14).map(|i| 2 * i).collect();
+    let fixture = dated_fixture(BandFamily::DateAdded, "addedAt", [2026, 12, 31], 2025, &counts, true);
+    let page = fixture.screen();
+    let december = labels_of(&page);
+    assert_eq!((december.len(), december[1].as_str(), december[12].as_str(), december[13].as_str()), (14, "Dec", "Jan", "2025"));
+    assert_eq!(rail_centres(&page, &fixture)[13], 264.0 + 13.0 * 40.0 + 8.0, "the step is before 2025");
+    // …and the next morning: no month has gone by, so `Today` is followed by the years directly
+    let counts: Vec<u32> = (1..=3).map(|i| 4 * i).collect();
+    let fixture = dated_fixture(BandFamily::DateAdded, "addedAt", [2027, 1, 1], 2025, &counts, true);
+    let page = fixture.screen();
+    assert_eq!(labels_of(&page), ["Today", "2026", "2025"]);
+    assert_eq!(rail_centres(&page, &fixture), [264.0, 304.0, 344.0], "Today and the year after it are a pitch apart, no step");
 }

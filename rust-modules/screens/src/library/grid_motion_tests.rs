@@ -356,11 +356,78 @@ fn the_under_posters_policy_sizes_the_focused_rows_band() {
         settle(&mut page, &mut engine, &fixture, 0);
         page.layout.row_y(4, 0.0) - rest
     };
-    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None });
-    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre });
-    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre });
+    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false });
+    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre, sort_value: false });
+    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
     assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
     assert!((two_lines - 72.0).abs() < 0.01, "two lines open 112 - 40 px: {two_lines}");
+}
+
+#[test]
+fn value_mode_keeps_the_real_library_focus_and_restores_the_caption_geometry() {
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = plx_base::testlock::serial();
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters::DEFAULT)));
+    let mut fixture = Fixture::new();
+    fixture.listing = fixture.listing.clone().with_sort_key("year");
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let first = page.key(page.pair.detail.elem_at(0).unwrap());
+    engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: first, by: By::Restore });
+    settle(&mut page, &mut engine, &fixture, 0);
+    assert!(page.layout.value_line(), "Sort value On and a sort with a value: the grid shows values");
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    direction(&mut page, &mut engine, &fixture, Dir::Down);
+    settle(&mut page, &mut engine, &fixture, 2000);
+    assert_eq!(page.grid_position(engine.current(OWNER)), Some((1, 1)));
+    let focus = engine.current(OWNER);
+    let pitch = page.layout.grid_pitch();
+    assert_eq!(pitch - page.layout.card_h(), 60.0, "rows are 60 px apart while values show");
+    // Sort value Off: the grid draws as it did before, 40 px rows and the Title/Details band.
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { sort_value: false, ..UnderPosters::DEFAULT })));
+    frame(&mut page, &mut engine, &fixture, 5000);
+    assert!(!page.layout.value_line());
+    assert_eq!(page.layout.grid_pitch() - page.layout.card_h(), 40.0);
+    assert_eq!(engine.current(OWNER), focus, "turning values off keeps the selected poster");
+    // Back On, but sorted by Title: no value to show, so the same plain geometry.
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters::DEFAULT)));
+    fixture.listing = fixture.listing.clone().with_sort_key("titleSort");
+    frame(&mut page, &mut engine, &fixture, 8000);
+    assert!(!page.layout.value_line(), "Title and Random sorts show no value");
+    assert_eq!(page.layout.grid_pitch() - page.layout.card_h(), 40.0);
+    // And a sort a later server declares, which the table does not word, keeps the captions too.
+    fixture.listing = fixture.listing.clone().with_sort_key("futureServerSort");
+    frame(&mut page, &mut engine, &fixture, 11000);
+    assert!(!page.layout.value_line());
+    // The same switch DEEP in the grid: the rows' pitch changes (60 -> 40 px) under a scroll held in the
+    // old pitch's coordinates, so the page must seat the focused row again the way a focus move does, or
+    // the row it stands on is scrolled up under the header.
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters::DEFAULT)));
+    let mut deep = Fixture::new();
+    deep.listing = numbered(0..300).with_sort_key("year");
+    let mut page = deep.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let elem = crate::library::tests::deep(&mut page, &deep, 90);
+    let row = 90 / page.layout.cols();
+    let key = page.key(elem);
+    engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
+    deliver(&mut page, &mut engine, &deep, ScreenEvent::FocusMoved { from: None, to: key, by: By::Restore });
+    settle(&mut page, &mut engine, &deep, 0);
+    assert!(page.layout.value_line() && row >= 10, "values show at a deep row ({row})");
+    // Where a focus move seats a row: its poster top where the first row's is at rest.
+    let seated = |page: &LibraryScreen| page.layout.row_y(row, page.scroll.pos) - page.layout.row_y(0, 0.0);
+    assert!(seated(&page).abs() < 1.0, "with values the focused row is seated at the grid top: {}", seated(&page));
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { sort_value: false, ..UnderPosters::DEFAULT })));
+    frame(&mut page, &mut engine, &deep, 5000);
+    assert!(!page.layout.value_line());
+    assert_eq!(engine.current(OWNER), Some(key), "turning values off keeps the selected poster");
+    assert!(seated(&page).abs() < 1.0, "Off at a deep row: the focused row is seated at the grid top, not under the header: {}", seated(&page));
+    settle(&mut page, &mut engine, &deep, 5016);
+    assert!(seated(&page).abs() < 1.0, "and it stays seated once settled: {}", seated(&page));
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(None));
 }

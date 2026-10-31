@@ -4,10 +4,12 @@
 //! same height — and the discs return the moment the segment ends.
 //!
 //! Replacing them rather than joining them is the design call: one wide unmissable target in the
-//! spot the eye already goes for transport controls. The cost is that CC/Audio are unreachable for
-//! the length of the segment, and that the button only exists while the HUD is up — which is why
-//! `app.rs` RAISES the HUD once when a segment begins and parks focus here, so a bare OK still
-//! skips in one press instead of three.
+//! spot the eye already goes for transport controls. The cost is that CC/Audio are covered for the
+//! length of the segment, so BACK over the pill DISMISSES the offer for that segment and puts the
+//! discs back (`HudState::dismissed_offer`, `PlayerScreen::dismiss_offer`) — the row stays at five
+//! controls and the viewer never has to wait an intro out to change tracks. The button only exists
+//! while the HUD is up, which is why `app.rs` RAISES the HUD once when a segment begins and parks
+//! focus here, so a bare OK still skips in one press instead of three.
 #![allow(dead_code)]
 use plx_data::metadata::{self, MarkerKind};
 use plx_ui::theme;
@@ -70,25 +72,16 @@ pub fn prompt_for(m: metadata::Marker) -> Prompt {
     }
 }
 
-/// The button's rect — the SHARED control-row slot, so it and Up Next cannot drift apart.
-///
-/// `row` is the player instance's own [`crate::player_hud::TransportRow`] (restructure phase
-/// 9): it carries both the label-width memo this measurement is cached in and the control row's
-/// focus springs. It was a module `static mut` on the other side of `ctrl_slot` until then.
-pub fn rect(row: &mut crate::player_hud::TransportRow, pr: Prompt, measure: &dyn plx_machine::machine::Measure) -> Rect {
-    crate::player_hud::ctrl_slot(row, pr.label(), measure)
-}
-
-/// Draw the button in the control row. Called by `player_hud` INSTEAD of the two discs.
-pub fn draw(row: &mut crate::player_hud::TransportRow, p: Painter, pr: Prompt, focused: bool, measure: &dyn plx_machine::machine::Measure) {
+/// **Draw the button** at a rect the caller already has: the compiled package's pill (`Standin::skip`,
+/// one per label width), placed at compile time, in the control row's place.
+pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, slot: Rect, focused: bool) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };
     // No leading icon: the label alone carries it, and a chevron on a control that does not
     // navigate anywhere was reading as "more" rather than "skip".
-    // Its slot's only item, so index 0 — the pop is the control ROW's (`TransportRow::scale`),
+    // Its slot's only item, so index 0 — the pop is the control ROW's (`HudMotion::scale`),
     // shared with the transport discs this pill stands in for.
-    let slot = rect(row, pr, measure);
     let pop = row.scale(0);
     Button::new(label.as_ptr(), theme::size::BODY, slot)
         .scale(pop)

@@ -1,6 +1,7 @@
 //! The Library's listing reads as store jobs: the grid's pages and the filter menus' value lists.
 //!
-//! A Browse step that wants a listing page, or a section's genre or first-letter list, raises that
+//! A Browse step that wants a listing page, or a section's genre list, first-letter list or a value
+//! sort's band counts, raises that
 //! read's claim, takes the section's [`ClientKey`] from the borrowed [`ClientKeys`] and **leaves the
 //! read as a job on the store's outbox** ([`StoreJob::BrowsePage`], [`StoreJob::BrowseDirectory`]).
 //! Nothing here starts a worker or reads the server registry: the application's runner starts the
@@ -19,19 +20,20 @@
 //! Home run never emits them (`bootstrap/effects.rs` accepts only `Browse(Reset)` and
 //! `Browse(Discovery(..))` and refuses `StoreWork::Browse`).
 
+use super::bands::{self, BandFamily, BandRail, Day, Zone};
 use super::{
-    genre_entry, fetch_listing_page, DirectoryResult, GenreEntry, LibraryType, ListingPage, PageResult,
-    Restore, SectionQuery, PAGE,
+    genre_entry, fetch_listing_page, DirectoryResult, GenreEntry, LettersKey, LibraryType, ListingPage,
+    PageResult, Restore, SecKind, SectionQuery, PAGE,
 };
 use plx_machine::job::Port;
 use plx_machine::machine::{Addr, MachineId, RequestId};
-use plx_plex::plex::{Client, ClientKey, LibrarySection, MediaContainer, ServerId};
+use plx_plex::plex::{Client, ClientKey, LibrarySection, MediaContainer, Oldest, SectionTotal, ServerId};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 // ---- the directory read -----------------------------------------------------------------------
 
-/// Which of a section's two value lists a [`BrowseDirectoryReq`] reads. Each has its own claim and
+/// Which of a section's value lists a [`BrowseDirectoryReq`] reads. Each has its own claim and
 /// mailbox on the adapter, and the port a job leaves with knows which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Directory {
@@ -39,6 +41,9 @@ pub(super) enum Directory {
     Genres,
     /// `/library/sections/{key}/firstCharacter`: the A-Z rail's letters and their counts.
     Letters,
+    /// `/library/sections/{key}/all`, count-only, once per band edge of a value sort: the A-Z rail's
+    /// bands and where they start ([`finish_bands_with`]).
+    Bands,
 }
 
 impl Directory {
@@ -47,6 +52,7 @@ impl Directory {
         match self {
             Self::Genres => "genre",
             Self::Letters => "firstCharacter",
+            Self::Bands => "all",
         }
     }
 
@@ -54,6 +60,7 @@ impl Directory {
         match self {
             Self::Genres => adapter.genres.busy(),
             Self::Letters => adapter.letters.busy(),
+            Self::Bands => adapter.bands.busy(),
         }
     }
 
@@ -61,6 +68,7 @@ impl Directory {
         match self {
             Self::Genres => adapter.genres.claim(id),
             Self::Letters => adapter.letters.claim(id),
+            Self::Bands => adapter.bands.claim(id),
         }
     }
 
@@ -68,6 +76,7 @@ impl Directory {
         match self {
             Self::Genres => adapter.genres.refuse_for(id),
             Self::Letters => adapter.letters.refuse_for(id),
+            Self::Bands => adapter.bands.refuse_for(id),
         }
     }
 }
@@ -92,8 +101,12 @@ pub struct BrowseDirectoryReq {
     /// The section's key on its server.
     section: i64,
     library_type: LibraryType,
-    /// The `type=` the section's current listing is asked for, if any.
-    metadata_type: Option<i64>,
+    /// The wire terms the read is scoped by: the listing's `type=` for the genre list, and for the
+    /// letters and the bands the very terms the grid's page read sends (`SecState::query_filters`).
+    filters: Vec<(String, String)>,
+    /// What a letters or bands read counts, to come back with its answer ([`LettersKey`], which
+    /// names the band family); `None` for genres.
+    letters: Option<LettersKey>,
     which: Directory,
 }
 
@@ -110,6 +123,8 @@ pub struct BrowseDirectoryAnswer(DirectoryAnswer);
 enum DirectoryAnswer {
     Genres(DirectoryResult<GenreEntry>),
     Letters(DirectoryResult<(String, i64)>),
+    /// A bands read brings back ONE value in `list`: the rail, or nothing for a listing with no rail.
+    Bands(DirectoryResult<BandRail>),
 }
 
 /// Where a directory request's ONE answer goes: the store's mailbox, captured with the job when it
@@ -141,12 +156,13 @@ impl std::fmt::Debug for BrowseDirectoryPort {
 }
 
 impl Port<BrowseDirectoryAnswer> for BrowseDirectoryPort {
-    /// The request's answer (a panicked read answers an empty list). One read of each directory is
-    /// out at a time (its claim), so the answer replaces whatever is waiting.
+    /// The request's answer (a failed or panicked read answers `ok: false`). One read of each
+    /// directory is out at a time (its claim), so the answer replaces whatever is waiting.
     fn done(&self, _addr: Addr, out: BrowseDirectoryAnswer) {
         match out.0 {
             DirectoryAnswer::Genres(result) => self.adapter.genres.post(result, |_| true),
             DirectoryAnswer::Letters(result) => self.adapter.letters.post(result, |_| true),
+            DirectoryAnswer::Bands(result) => self.adapter.bands.post(result, |_| true),
         }
     }
 
@@ -169,20 +185,29 @@ pub(super) fn listing_addr(id: u32) -> Addr {
 }
 
 impl BrowseDirectoryReq {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(sid: ServerId, key: ClientKey, epoch: u32, sec: usize, section: i64,
-        library_type: LibraryType, metadata_type: Option<i64>, which: Directory) -> Self {
-        Self { sid, key, epoch, sec, section, library_type, metadata_type, which }
+        library_type: LibraryType, filters: Vec<(String, String)>, letters: Option<LettersKey>,
+        which: Directory) -> Self {
+        Self { sid, key, epoch, sec, section, library_type, filters, letters, which }
     }
 }
 
 /// The request's IO body and its completion: read the directory through `client` and post the
-/// answer to `port`. The answer is posted OUTSIDE the guard, so a read that panics lands as an empty
-/// list, as a read that found nothing does.
+/// answer to `port`. The answer is posted OUTSIDE the guard, so a read that panics lands like one that
+/// failed (`ok: false`), never as the empty list of a read that found nothing. `zone` is the viewer's
+/// time zone, which only the application's runner can read (`plx_platform::i18n`): a bands read of a
+/// calendar family converts its edges with it, and nothing else uses it.
 pub fn finish_browse_directory_job(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
-    req: BrowseDirectoryReq) {
-    let (section, metadata_type, which) = (req.section, req.metadata_type, req.which);
+    req: BrowseDirectoryReq, zone: Zone) {
+    let (section, which, filters) = (req.section, req.which, req.filters.clone());
+    if which == Directory::Bands {
+        finish_bands_with(port, addr, client, req, zone, move |terms| client.section_total(section, terms),
+            move |terms, field| client.section_oldest(section, terms, field));
+        return;
+    }
     finish_directory_with(port, addr, client, req, move || {
-        client.section_directory(section, which.wire(), metadata_type)
+        client.section_directory(section, which.wire(), &filters)
     });
 }
 
@@ -190,27 +215,214 @@ pub fn finish_browse_directory_job(port: &BrowseDirectoryPort, addr: Addr, clien
 /// test swaps for a read that panics.
 fn finish_directory_with(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
     req: BrowseDirectoryReq, read: impl FnOnce() -> Option<MediaContainer>) {
-    let BrowseDirectoryReq { key, epoch, sec, library_type, which, .. } = req;
+    let BrowseDirectoryReq { key, epoch, sec, library_type, letters, which, .. } = req;
     let answer = match which {
-        Directory::Genres => DirectoryAnswer::Genres(DirectoryResult {
-            epoch, sec, client, token_gen: key.token, library_type, list: directory_list(read, genre_entry),
-        }),
-        Directory::Letters => DirectoryAnswer::Letters(DirectoryResult {
-            epoch, sec, client, token_gen: key.token, library_type, list: directory_list(read, letter_entry),
-        }),
+        Directory::Genres => {
+            let list = directory_list(read, genre_entry);
+            DirectoryAnswer::Genres(DirectoryResult {
+                epoch, sec, client, token_gen: key.token, library_type, ok: list.is_some(),
+                list: list.unwrap_or_default(), letters: None,
+            })
+        }
+        Directory::Letters => {
+            let list = directory_list(read, letter_entry);
+            DirectoryAnswer::Letters(DirectoryResult {
+                epoch, sec, client, token_gen: key.token, library_type, ok: list.is_some(),
+                list: list.unwrap_or_default(), letters,
+            })
+        }
+        Directory::Bands => {
+            // `finish_browse_directory_job` sends a bands read to `finish_bands_with`: reaching this
+            // arm is a caller's mistake, and it answers a read that failed rather than strand the claim.
+            debug_assert!(false, "a bands read reached the directory body");
+            DirectoryAnswer::Bands(DirectoryResult {
+                epoch, sec, client, token_gen: key.token, library_type, ok: false, list: Vec::new(), letters,
+            })
+        }
     };
     port.done(addr, BrowseDirectoryAnswer(answer));
 }
 
-/// The rows `read` brings back, projected; empty when the read failed or panicked.
-fn directory_list<T>(read: impl FnOnce() -> Option<MediaContainer>,
-    project: fn(&LibrarySection) -> Option<T>) -> Vec<T> {
-    catch_unwind(AssertUnwindSafe(|| {
-        let mut values = Vec::new();
-        if let Some(container) = read() {
-            values.extend(container.directory.iter().filter_map(project));
+/// What a bands read found: the counts of every band (a rail, or none for a listing the rail cannot
+/// band), or no counts at all because a read did not answer.
+enum BandsRead {
+    /// `Some(rail)`, or `None`: nothing to band, or counts that were not trusted. Neither changes
+    /// when the same question is asked again, so it lands as an answer (`SecState::land_bands`).
+    Counted(Option<BandRail>),
+    /// A read failed (the server did not answer, or answered something that is no count): the
+    /// back-off asks again.
+    Failed,
+}
+
+/// [`finish_browse_directory_job`] for a bands read, over `probe`, the one call that reaches the
+/// server: it takes the wire terms of one count-only read (the listing's filters, and for a band's
+/// edge the range term after them) and answers the number of items they match, or that the server
+/// ignored the count-only window ([`SectionTotal`]). The seam a test swaps
+/// for a model of the server, or for a read that panics; the real one is `Client::section_total`.
+///
+/// A calendar family also reads the oldest value of its field first, through `oldest` (the terms of
+/// the listing it is read over, and the date field to sort by), and converts its edges with `zone`;
+/// `today` is the day the key was asked on (`LettersKey::today`).
+///
+/// The reads are sequential and ALL OR NOTHING: a rail built from some of its counts would point at
+/// the wrong rows, so one read that fails fails the answer (`ok: false`: the same back-off as the
+/// letters). They are NOT asked beside one another (`task::beside`): a calendar is a dozen months and a
+/// year apiece, each a count-only read the server answers without rows (3 ms on a loopback server), the
+/// re-read of the total at the end only means something if the reads ran in order, and nothing is
+/// shown until all are in. A fan-out is a change of this function alone, if a remote server ever
+/// measures too slow. The answer is posted OUTSIDE the guard, so a body that panics lands like a read
+/// that failed.
+fn finish_bands_with(port: &BrowseDirectoryPort, addr: Addr, client: &'static Client,
+    req: BrowseDirectoryReq, zone: Zone, probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>,
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) {
+    let BrowseDirectoryReq { key, epoch, sec, library_type, filters, letters, .. } = req;
+    let family = letters.as_ref().and_then(|asked| asked.family);
+    let today = letters.as_ref().and_then(|asked| asked.today);
+    let read = catch_unwind(AssertUnwindSafe(|| read_bands(family, today, zone, &filters, probe, oldest)))
+        .unwrap_or(BandsRead::Failed);
+    let (ok, list) = match read {
+        BandsRead::Counted(rail) => (true, rail.into_iter().collect()),
+        BandsRead::Failed => (false, Vec::new()),
+    };
+    port.done(addr, BrowseDirectoryAnswer(DirectoryAnswer::Bands(DirectoryResult {
+        epoch, sec, client, token_gen: key.token, library_type, ok, list, letters,
+    })));
+}
+
+/// Why a bands read stopped before it had a rail.
+enum Stop {
+    /// A read did not answer, answered something that is no count, or the listing moved under the
+    /// counts: the back-off asks again.
+    Failed,
+    /// The server answered rows to a count-only read: it ignores the window, and answers so every
+    /// time. A verdict, not retried until the key moves.
+    Ignored,
+}
+
+/// The counts behind a rail: the size of the listing (the grid's terms alone), then, for a calendar
+/// family, the oldest year ([`ladder_of`]), then, for each band of the family's ladder, how many items
+/// sit at or above its edge, then the size again. The reads see the SAME filter terms the page request
+/// sends, in the same order, and the size is read in the same pass as the counts, never taken from the
+/// page, which another request may have moved.
+///
+/// The reads are sequential, so a library scan can land between them and move the listing under the
+/// counts; to the offsets that looks like a count above the total or one that falls as the edge falls.
+/// The size is therefore read once more after the last band, and an answer that differs from the first
+/// is a [`Stop::Failed`] (asked again after the back-off), never a verdict about the counts.
+///
+/// A listing with nothing in it has nothing to band and is not read further. Counts that
+/// [`bands::offsets`] does not trust while the size held still (every band as large as the listing:
+/// the server ignored the field; or counts that fall as the edge falls) give no rail and say why in
+/// the log, and so does a server that answers rows to a count-only read, a calendar family with no day,
+/// no value in its field, an extent after this year ([`bands::extent_year`]; one before 1900 only
+/// starts the bands at 1900) or an edge the zone cannot convert.
+fn read_bands(family: Option<BandFamily>, today: Option<Day>, zone: Zone, filters: &[(String, String)],
+    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>,
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) -> BandsRead {
+    let Some(family) = family else {
+        debug_assert!(false, "a bands read for no family");
+        plx_base::eventlog::log("rail: a bands read for no family — no rail");
+        return BandsRead::Counted(None);
+    };
+    match count_bands(family, today, zone, filters, probe, oldest) {
+        Ok(rail) => BandsRead::Counted(rail),
+        Err(Stop::Failed) => BandsRead::Failed,
+        Err(Stop::Ignored) => {
+            plx_base::eventlog::log(&format!("rail: {family:?} the server answered rows to a count-only read — no rail"));
+            BandsRead::Counted(None)
         }
-        values
+    }
+}
+
+/// The ladder `family` counts over, or `None` for no rail (said in the log): a fixed ladder as it is, a
+/// calendar family's bands from `today` and the year of its oldest value. The oldest value is ONE read
+/// of the first row of `sort=<field>:asc:nullsLast` over the page's own terms (a show family that
+/// sorts by its newest episode reads the section's oldest EPISODE instead,
+/// [`bands::ExtentRead::episodes`]); a read that did not answer fails the answer.
+fn ladder_of(family: BandFamily, today: Option<Day>, zone: Zone, filters: &[(String, String)],
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) -> Result<Option<Vec<bands::Band>>, Stop> {
+    let Some(extent) = family.extent_read() else {
+        let ladder = family.fixed_ladder();
+        if ladder.is_none() {
+            debug_assert!(false, "a bands read for {family:?}, which has no fixed ladder");
+            plx_base::eventlog::log(&format!("rail: no fixed band ladder for {family:?} — no rail"));
+        }
+        return Ok(ladder);
+    };
+    let Some(today) = today else {
+        plx_base::eventlog::log(&format!("rail: {family:?} has no date to count by — no rail"));
+        return Ok(None);
+    };
+    let episodes = LibraryType::Episodes.type_terms(SecKind::Show);
+    let terms = if extent.episodes { &episodes[..] } else { filters };
+    let year = match oldest(terms, extent.field).ok_or(Stop::Failed)? {
+        Oldest::Year(year) => Some(year),
+        Oldest::Instant(epoch) => (zone.local_date)(epoch).map(|[year, ..]| year),
+        Oldest::Nothing => None,
+    };
+    let Some(year) = year else {
+        plx_base::eventlog::log(&format!("rail: {family:?} no item has a usable value in {} — no rail", extent.field));
+        return Ok(None);
+    };
+    let Some(year) = bands::extent_year(year, today) else {
+        plx_base::eventlog::log(&format!("rail: {family:?} the oldest value is in the year {year}, after today — no rail"));
+        return Ok(None);
+    };
+    let ladder = bands::plan(family, today, year);
+    if ladder.is_empty() {
+        plx_base::eventlog::log(&format!("rail: {family:?} no bands for {today:?} — no rail"));
+        return Ok(None);
+    }
+    Ok(Some(ladder))
+}
+
+fn count_bands(family: BandFamily, today: Option<Day>, zone: Zone, filters: &[(String, String)],
+    probe: impl Fn(&[(String, String)]) -> Option<SectionTotal>,
+    oldest: impl Fn(&[(String, String)], &str) -> Option<Oldest>) -> Result<Option<BandRail>, Stop> {
+    let count = |terms: &[(String, String)]| match probe(terms) {
+        Some(SectionTotal::Count(count)) => u32::try_from(count).map_err(|_| Stop::Failed),
+        Some(SectionTotal::Ignored) => Err(Stop::Ignored),
+        None => Err(Stop::Failed),
+    };
+    let total = count(filters)?;
+    if total == 0 {
+        return Ok(None);
+    }
+    let Some(ladder) = ladder_of(family, today, zone, filters, oldest)? else { return Ok(None) };
+    // A fixed ladder has no calendar edge, so the converter is never asked of it; a local edge the
+    // zone cannot convert leaves the whole rail without a probe (a rail of some bands would lie).
+    let Some(edges) = bands::probes(&ladder, &zone.local_midnight) else {
+        plx_base::eventlog::log(&format!("rail: {family:?} has an edge without a probe — no rail"));
+        return Ok(None);
+    };
+    let mut at_or_above = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let (field, value) = edge.query_pair();
+        let mut terms = filters.to_vec();
+        terms.push((field, value.to_owned()));
+        at_or_above.push(count(&terms)?);
+    }
+    let after = count(filters)?;
+    if after != total {
+        plx_base::eventlog::log(&format!("rail: {family:?} the listing moved while it was counted ({total} then {after})"));
+        return Err(Stop::Failed);
+    }
+    match BandRail::new(&ladder, &at_or_above, total) {
+        Ok(rail) => Ok(Some(rail)),
+        Err(reject) => {
+            plx_base::eventlog::log(&format!(
+                "rail: {family:?} counts not trusted ({reject:?}; total {total}, counts {at_or_above:?}) — no rail"));
+            Ok(None)
+        }
+    }
+}
+
+/// The rows `read` brings back, projected; `None` when the read failed or panicked. An answer with
+/// no rows is `Some(vec![])`: a filter that matches nothing is a list, not a fault.
+fn directory_list<T>(read: impl FnOnce() -> Option<MediaContainer>,
+    project: fn(&LibrarySection) -> Option<T>) -> Option<Vec<T>> {
+    catch_unwind(AssertUnwindSafe(|| {
+        read().map(|container| container.directory.iter().filter_map(project).collect())
     }))
     .unwrap_or_default()
 }
@@ -327,3 +539,11 @@ fn finish_page_with(port: &BrowsePagePort, addr: Addr, client: &'static Client, 
 #[cfg(test)]
 #[path = "listing_jobs_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bands_job_tests.rs"]
+mod bands_tests;
+
+#[cfg(test)]
+#[path = "bands_calendar_tests.rs"]
+mod bands_calendar_tests;

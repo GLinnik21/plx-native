@@ -99,7 +99,7 @@ libass and HarfBuzz copyright notices are retained in their licence files above.
 
 The exact upstream archives, checksums and licences are recorded in
 `ci/dependencies.json`. Each versioned PlxNative source release contains all
-five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_internal.h`,
+five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_text.c`, `src/ass_internal.h`,
 `include/ass.h`), its complete build recipe (`ci/build-libass.sh`, `ci/build-libass.py`) and the
 one local patch to libass. **libass carries that local patch; every other archive is unmodified.**
 `ci/patches/libass-0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
@@ -268,6 +268,29 @@ which pins the input by sha256.
 *Why it ships:* it is the emoji link of the application's font fallback chain, so an emoji in a
 library or title name draws instead of an empty box.
 
+**Noto Kufi Arabic** — `appfont-arabic.ttf`, `appfont-arabic-bold.ttf`
+Copyright 2019-2022 Google LLC, per the fonts' own name table. Version 2.110 (the
+`notofonts/arabic` release `NotoKufiArabic-v2.110`), the unhinted static Regular and Bold TTFs
+`fonts/NotoKufiArabic/unhinted/ttf/NotoKufiArabic-{Regular,Bold}.ttf` of
+`github.com/notofonts/notofonts.github.io` at commit `5c3913063bb189df4edc94b766584dfb4c04a187`.
+**Noto Sans Hebrew** — `appfont-hebrew.ttf`, `appfont-hebrew-bold.ttf`
+Copyright 2024 The Noto Project Authors (https://github.com/notofonts/hebrew), per the fonts' own
+name table. Version 3.001 (the `notofonts/hebrew` release `NotoSansHebrew-v3.001`), the unhinted
+static Regular and Bold TTFs `fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-{Regular,Bold}.ttf`
+of the same repository at the same commit.
+Licence (all four): **SIL Open Font License 1.1**, the same text that ships in this package as
+`OFL.txt`. Neither copyright statement declares a **Reserved Font Name**, so the family names
+"Noto Kufi Arabic" and "Noto Sans Hebrew" are retained. The fonts carry the upstream trademark
+statement "Noto is a trademark of Google LLC" (the Hebrew cut: "Google Inc.").
+*Unmodified*: shipped byte for byte as published, every layout table kept (Arabic needs `GSUB`
+joining and `GPOS` mark placement). The recipe is `tools/fetch-noto-rtl.py`, which pins each input
+by URL, size and sha256.
+
+*Why they ship:* they are the Arabic and Hebrew links of the application's font fallback chain.
+Their runs are shaped by the bundled ASS renderer's UI text surface (HarfBuzz, FriBidi and
+FreeType, section 1.2), so Arabic, Persian, Urdu and Hebrew titles draw joined and in reading
+order instead of as empty boxes.
+
 ### 2.4 Rust code statically linked into `plxnative`
 
 The application core is Rust. The Rust standard library (the pinned stable toolchain's
@@ -381,23 +404,23 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 | icu_decimal | 2.1.1 |
 | icu_decimal_data | 2.1.1 |
 | icu_locale | 2.1.1 |
-| icu_locale_core | 2.3.0 |
+| icu_locale_core | 2.4.0 |
 | icu_locale_data | 2.1.2 |
 | icu_pattern | 0.4.2 |
 | icu_plurals | 2.1.1 |
 | icu_plurals_data | 2.1.1 |
-| icu_provider | 2.3.1 |
+| icu_provider | 2.4.0 |
 | icu_time | 2.1.1 |
 | icu_time_data | 2.1.1 |
 | ixdtf | 0.6.6 |
 | litemap | 0.8.3 |
 | potential_utf | 0.1.6 |
-| tinystr | 0.8.4 |
+| tinystr | 0.8.5 |
 | writeable | 0.6.4 |
-| yoke | 0.8.3 |
+| yoke | 0.8.4 |
 | zerofrom | 0.1.8 |
 | zerotrie | 0.2.5 |
-| zerovec | 0.11.8 |
+| zerovec | 0.11.9 |
 
 <!-- END GENERATED notices:icu -->
 

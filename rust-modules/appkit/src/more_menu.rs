@@ -189,6 +189,33 @@ pub struct MoreMenuState {
     /// menu uses: a row set that changes height animates the top edge, bottom and right stay on the
     /// anchor, and a push or pop slides the two pages.
     motion: PanelMotion,
+    /// The opener's rect, handed in when the menu opened ([`Self::with_anchor`]) and never read from
+    /// anywhere again: a stand-in taking the HUD row cannot move an open panel.
+    anchor: Rect,
+    /// The side of [`Self::anchor`] the panel took, as of the last placement: where its rise comes from.
+    side: std::cell::Cell<plx_ui::popover::Side>,
+}
+
+/// **The tallest page this menu shows with app-owned rows** — the Quality page, its title band,
+/// seven rungs (Auto first) and the table's padding: 536 px in English. It decides the SIDE of the
+/// opener the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`), so it is the same on
+/// every page. 600 leaves room for a longer label that wraps. Classic's room above its row is 710,
+/// which this stays under, so classic opens upward. `pub(crate)` because the HUD lint places this
+/// menu with it (`hud_format::lint_menus`, M2), through [`place_panel`].
+pub(crate) const NEED_H: f32 = 600.0;
+
+/// **The one call of the shared placer for this menu**: a panel of `size` beside `anchor`, on the side
+/// [`NEED_H`] decides, `PLAYER_MENU_GAP` away, inside `SAFE`. The live panel
+/// ([`MoreMenuState::panel_rect`]), the overscan audit ([`overscan_rects`]) and the HUD lint
+/// (`hud_format::lint_menus`) all place through it, so none can drift from another.
+pub(crate) fn place_panel(anchor: Rect, size: (f32, f32)) -> plx_ui::popover::Anchored {
+    plx_ui::popover::anchor_panel(
+        anchor,
+        size,
+        NEED_H,
+        theme::layout::PLAYER_MENU_GAP,
+        plx_ui::popover::Placement::PLAYER_MENU,
+    )
 }
 
 /// The hand-assigned focus key of each row. `SetQuality` rungs are an exhaustive match, so a new
@@ -338,7 +365,7 @@ fn quality_form(
 }
 
 impl MoreMenuState {
-    fn open_focused(ps: &plx_media::route::PlaybackSession, quality: Option<plx_media::route::Quality>) -> Self {
+    fn open_focused(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>) -> Self {
         let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
         let current = plx_media::route::quality();
@@ -357,12 +384,25 @@ impl MoreMenuState {
             speeds,
             pages: PageStack::new(),
             motion: PanelMotion::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
-        // A quality entry (the failure screen's OK) opens straight on the Quality page with the
-        // active rung focused, no slide: the viewer is fixing a bad decision, not browsing. Under
-        // Force Direct Play there is no ladder, so it is the ordinary root.
-        if quality.is_some() && quality_offered(&st.rows, st.forced) {
-            st.push(ps, MorePage::Quality);
+        // A page entry opens straight on that page, no slide. Quality (the failure screen's OK)
+        // lands on the active rung: the viewer is fixing a bad decision, not browsing. A page that
+        // is not offered (no ladder under Force Direct Play, no choice of speed) is the ordinary
+        // root, as the page-vanished refresh below does.
+        let offered = match page {
+            None => false,
+            Some(MorePage::Quality) => quality_offered(&st.rows, st.forced),
+            Some(MorePage::Speed) => st.speeds.len() > 1,
+        };
+        if let Some(page) = page.filter(|_| offered) {
+            // the page is pushed from its opener's row, so BACK lands where a viewer would have
+            // pressed to get here
+            if page == MorePage::Speed {
+                st.focus_key(MoreRow::OpenSpeed.key().0);
+            }
+            st.push(ps, page);
             st.motion.cancel_slide();
         }
         st
@@ -516,7 +556,22 @@ impl MoreMenuState {
     }
 
     pub fn new(ps: &plx_media::route::PlaybackSession) -> Self {
-        Self::open_focused(ps, None)
+        Self::new_on(ps, None)
+    }
+
+    /// Open beside `anchor`, the rect of the control (widened to the end of its segment) that
+    /// opened the menu, as the player screen hands it over. Without it the menu opens where classic
+    /// does: the control row's rect, whose right edge is `CTRL_RIGHT`. Called once, on the freshly
+    /// built menu and before its first frame: the placement is cached against the table's layout,
+    /// and the anchor is latched for the menu's whole life.
+    pub fn with_anchor(mut self, anchor: Rect) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// The anchor the menu was opened with ([`Self::with_anchor`]).
+    pub fn anchor(&self) -> Rect {
+        self.anchor
     }
 
     /// The existing overflow menu, opened on the Quality page with the ACTIVE rung focused.
@@ -529,7 +584,14 @@ impl MoreMenuState {
     /// Under Force Direct Play the menu has no Quality section (see [`rows_for`]), and this is the
     /// same menu as [`Self::new`]; `screens::player::overlay` does not route here then.
     pub fn new_quality(ps: &plx_media::route::PlaybackSession) -> Self {
-        Self::open_focused(ps, Some(plx_media::route::quality()))
+        Self::new_on(ps, Some(MorePage::Quality))
+    }
+
+    /// The menu opened on `page`: the root for `None`, else the drill-in, focused on its checked
+    /// row. A page that is not offered for this playback (Quality under Force Direct Play, Speed
+    /// when the playback takes only one) opens the root instead.
+    pub fn new_on(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>) -> Self {
+        Self::open_focused(ps, page)
     }
 
     /// Every row's focus key, in drawn order (for a test that walks the rows).
@@ -572,37 +634,26 @@ impl MoreMenuState {
         }
     }
 
-    /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
-    /// track menu is anchored to the pair beside it. Shares the track menu's right margin
-    /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
-    /// other does not make the panel hop. This is the NATURAL (layout) rect, cached against the
-    /// table's `layout_rev`; [`Self::shown_rect`] is what is on screen while the card resizes.
+    /// Beside the control that opened it, the way the track menu is: both are placed by the one
+    /// shared placer from the same kind of anchor, so the openers of one segment share the panel's
+    /// edge and opening one menu after the other does not make the panel hop. This is the NATURAL
+    /// (layout) rect, cached against the table's `layout_rev`; [`Self::shown_rect`] is what is on
+    /// screen while the card resizes.
+    ///
+    /// The height is the table's own, and the placer cuts it to the room on the side the panel took.
+    /// The Quality page is 536 tall with Auto's rung (its title band plus seven rungs AND the
+    /// table's own top/bottom padding): a 320 cap put four of nine rows on screen and silently
+    /// scrolled the rest, which is a picker whose options you cannot see, and a `bottom - <margin>`
+    /// literal put a later version 4px UNDER the content for the same reason. A cap that is the
+    /// room itself has no margin to forget. Past it the table scrolls, which is what `TableView` is for.
     fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
-            let px = crate::player_hud::CTRL_RIGHT - pw;
-            let bottom = theme::layout::PLAYER_MENU_BOTTOM; // ~28px above the discs, as track_menu
-            let ph = self.panel_h();
-            Rect::new(px, bottom - ph, pw, ph)
+            let ph = self.form.table.measured_height().max(120.0);
+            let placed = place_panel(self.anchor, (pw, ph));
+            self.side.set(placed.side);
+            placed.rect
         })
-    }
-
-    /// The panel's height alone. The ceiling was 320 while this menu held one row, and it was
-    /// invisible then. With the Quality ladder beside it `measured_height()` can reach 600 when
-    /// Auto is enabled — the tallest page is the Quality page: its title band plus seven
-    /// rungs, AND the table's own top/bottom padding — so a 320 cap put four of nine rows on screen and silently scrolled the rest,
-    /// which is a picker whose options you cannot see.
-    ///
-    /// The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
-    /// is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
-    /// clear margin at the top of the frame while comfortably clearing 600. Reaching for a
-    /// `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
-    /// — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
-    /// rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
-    /// the cap it scrolls, which is what `TableView` is for.
-    fn panel_h(&self) -> f32 {
-        let bottom = theme::layout::PLAYER_MENU_BOTTOM;
-        self.form.table.measured_height().clamp(120.0, bottom * 0.86)
     }
 
     /// The card as drawn this frame: top and left on their springs toward [`Self::panel_rect`].
@@ -632,13 +683,13 @@ impl MoreMenuState {
     }
 
     pub fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
-        // rises INTO place from below, toward the disc that opened it. The dim under it is the
-        // container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`), painted at the
-        // end of the player's page pass — not here.
-        let p = plx_ui::Painter::root()
-            .alpha(appear)
-            .translate(0.0, 16.0 * (1.0 - appear));
-        self.motion.draw(p, self.panel_rect(measure), 24.0, &self.form.table, measure);
+        // rises INTO place from the side of the disc that opened it, the shared entry distance. The
+        // dim under it is the container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`),
+        // painted at the end of the player's page pass — not here.
+        let natural = self.panel_rect(measure);
+        let (dx, dy) = plx_ui::popover::Popover::rise_offset(self.side.get(), plx_ui::popover::Popover::RISE, appear);
+        let p = plx_ui::Painter::root().alpha(appear).translate(dx, dy);
+        self.motion.draw(p, natural, 24.0, &self.form.table, measure);
     }
 }
 
@@ -845,15 +896,17 @@ fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
     }
 }
 
-/// The panel at its TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]).
+/// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`]) and TALLEST, for the overscan audit
+/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside the anchor of the compiled classic (`player_hud::audit_geometry`):
+/// asked for the whole screen's height it gets the whole room, which is what a list longer than
+/// the room fills (the track menu's audit asks the same).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (pw, ph) = (plx_ui::table::MENU_MAX_W, 320.0f32);
-    let bottom = theme::layout::PLAYER_MENU_BOTTOM;
-    out.push((
-        "… overflow menu panel",
-        Rect::new(crate::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
-    ));
+    let placed = place_panel(
+        crate::player_hud::audit_geometry().row,
+        (plx_ui::table::MENU_MAX_W, plx_ui::consts::SCR_H),
+    );
+    out.push(("… overflow menu panel", placed.rect));
 }
 
 /// The index→action mapping, which is the only part of a popover that is testable off the main
@@ -948,7 +1001,7 @@ mod tests {
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true;
         form.set_or_open(root_form(&ps, &rows, forced, current, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES), None);
-        MoreMenuState { form, rows, forced, current, speed: plx_media::player::RATE_NORMAL, speeds: plx_media::player::PLAY_RATES.to_vec(), pages: PageStack::new(), motion: PanelMotion::new() }
+        MoreMenuState { form, rows, forced, current, speed: plx_media::player::RATE_NORMAL, speeds: plx_media::player::PLAY_RATES.to_vec(), pages: PageStack::new(), motion: PanelMotion::new(), anchor: crate::player_hud::classic::ctrl_row_hit_rect(), side: std::cell::Cell::new(plx_ui::popover::Side::Above) }
     }
 
     /// The same menu with the Quality page pushed (and its slide skipped).
@@ -1158,6 +1211,29 @@ mod tests {
         assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "on the row that opened it");
     }
 
+    /// **`open_more {page: speed}` opens the Speed page itself** — no drill-in press, no slide —
+    /// on the current speed, and BACK returns to the root on the row that would have opened it. A
+    /// playback that takes one speed only has no Speed page to open, so it is the ordinary root
+    /// (`speed_offer`'s own tests grade when that is).
+    #[test]
+    fn the_menu_opens_straight_on_the_speed_page_when_it_is_offered() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = plx_media::route::PlaybackSession::default();
+        let mut st = MoreMenuState::new_on(&ps, Some(MorePage::Speed));
+        assert_eq!(st.speeds.len(), plx_media::player::PLAY_RATES.len(), "the fixture offers every speed");
+        assert_eq!(st.page(), Some(MorePage::Speed));
+        assert_eq!(st.form.table.title(), Some("Playback speed"));
+        assert_eq!(
+            st.form.selected_id(),
+            Some(&MoreRow::Act(Action::SetSpeed(st.speed))),
+            "on the current speed"
+        );
+        assert!(st.pop(&ps), "BACK returns to the root");
+        assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "on the row that opens Speed");
+
+        assert_eq!(MoreMenuState::new_on(&ps, None).page(), None, "the root is the root");
+    }
+
     /// **No offer, no row**: where a playback can play only 1x (segmented HLS, an undecodable audio
     /// codec, a television that failed PCM — `player::speed_offer`), the root has no Playback speed
     /// row, and an open Speed page goes back to the root when the offer goes away under it.
@@ -1223,6 +1299,8 @@ mod tests {
             speeds: plx_media::player::PLAY_RATES.to_vec(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
         for a in rows_for(false).into_iter().filter(|a| matches!(a, Action::SetQuality(_))) {
             let i = st.form.index_of_key(a.key()).expect("every row keeps its key");
@@ -1525,6 +1603,8 @@ mod focus_tests {
             speeds: plx_media::player::PLAY_RATES.to_vec(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         }
     }
 
@@ -1763,5 +1843,117 @@ mod focus_tests {
         plx_plex::plex::reset_servers_for_test();
         plx_media::route::restore_quality(plx_media::route::Quality::Original);
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+}
+
+/// **Classic's settled More panel does not move** when its placement comes from an anchor: right
+/// edge `CTRL_RIGHT`, bottom edge 764, from the root and from the Quality page, however it was
+/// opened (the `…` disc or the failure read-out's quality entry).
+#[cfg(test)]
+mod classic_placement_tests {
+    use super::*;
+    use plx_base::fontcov::advances::ShippedMeasure;
+
+    fn settled() -> Vec<(&'static str, [f32; 4])> {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let rect = |st: &MoreMenuState| {
+            let r = st.panel_rect(&ShippedMeasure);
+            [r.x + r.w, r.y + r.h, r.w, r.h]
+        };
+        let mut root = MoreMenuState::new(&ps);
+        let mut out = vec![("root", rect(&root))];
+        root.focus_key(MoreRow::OpenQuality.key().0);
+        assert_eq!(root.on_ok(&ps), MoreOk::Navigated);
+        out.push(("quality page", rect(&root)));
+        out.push(("quality entry", rect(&MoreMenuState::new_quality(&ps))));
+        out
+    }
+
+    #[test]
+    fn classic_more_panels_settle_where_they_always_did() {
+        // captured from the constants-placed panels (`CTRL_RIGHT - pw`, bottom 764): (right, bottom, width, height)
+        assert_eq!(
+            settled(),
+            [
+                ("root", [1824.0, 764.0, 470.0, 284.0]),
+                ("quality page", [1824.0, 764.0, 440.0, 536.0]),
+                ("quality entry", [1824.0, 764.0, 440.0, 536.0]),
+            ],
+        );
+    }
+
+    fn menu_at(anchor: Rect) -> MoreMenuState {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        MoreMenuState::new(&plx_media::route::PlaybackSession::IDLE).with_anchor(anchor)
+    }
+
+    /// The panel opens beside the anchor it was handed, whichever side that is: the same placer and
+    /// the same rules as the track menu's.
+    #[test]
+    fn the_panel_opens_beside_the_anchor_it_was_handed() {
+        use plx_ui::popover::Side;
+        let _g = plx_base::testlock::serial();
+        let gap = theme::layout::PLAYER_MENU_GAP;
+        let high = Rect::new(1500.0, 120.0, 324.0, 64.0);
+        let st = menu_at(high);
+        let r = st.panel_rect(&ShippedMeasure);
+        assert_eq!(st.side.get(), Side::Below);
+        assert_eq!((r.y, r.x + r.w), (high.y + high.h + gap, high.x + high.w));
+
+        let mid = Rect::new(1700.0, 560.0, 64.0, 64.0);
+        let st = menu_at(mid);
+        let r = st.panel_rect(&ShippedMeasure);
+        assert_eq!(st.side.get(), Side::Start, "neither 478 above nor 374 below holds NEED_H");
+        assert_eq!(r.x + r.w, mid.x - gap);
+    }
+
+    /// **The anchor is latched**: a push changes the panel's size, not its side or its edge by the opener.
+    #[test]
+    fn the_panel_does_not_move_off_its_anchor_while_it_is_open() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut st = menu_at(Rect::new(1500.0, 300.0, 324.0, 64.0));
+        let first = st.panel_rect(&ShippedMeasure);
+        let side = st.side.get();
+        assert_eq!(side, plx_ui::popover::Side::Below, "the opener is high: the panel hangs under it");
+        st.focus_key(MoreRow::OpenQuality.key().0);
+        assert_eq!(st.on_ok(&ps), MoreOk::Navigated);
+        let pushed = st.panel_rect(&ShippedMeasure);
+        assert_ne!((pushed.w, pushed.h), (first.w, first.h), "the page changed the panel's size");
+        assert_eq!(st.side.get(), side);
+        assert_eq!((pushed.x + pushed.w, pushed.y), (first.x + first.w, first.y));
+    }
+
+    /// `NEED_H` covers the tallest page, the Quality page with its whole ladder, Auto included
+    /// (`route::auto_quality_ready` is a const `true`, so the shipping ladder has Auto and the page
+    /// is the seven-rung 536 px one), and fits classic's room above the row, so classic opens
+    /// upward. A page that outgrew `NEED_H` (a longer label that wraps, an eighth rung) would scroll
+    /// an app-owned row on a side with less room.
+    #[test]
+    fn need_h_covers_the_quality_page_with_auto_and_fits_classics_room() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let _g = plx_base::testlock::serial();
+        let st = MoreMenuState::new_quality(&plx_media::route::PlaybackSession::IDLE);
+        assert_eq!(st.page(), Some(MorePage::Quality));
+        let auto = Action::SetQuality(plx_media::route::Quality::Auto);
+        assert!(st.form.index_of_key(auto.key()).is_some(), "the page measured has the Auto row");
+        let tallest = st.form.table.measured_height();
+        assert!(tallest > 400.0, "the Quality page was measured: {tallest}");
+        assert!(tallest <= NEED_H, "the Quality page is {tallest} px, taller than NEED_H {NEED_H}");
+        assert!(NEED_H <= 764.0 - plx_ui::consts::SAFE.y);
+    }
+
+    /// The overscan audit's rect is the placer's whole room, the same extent the track menu's audit
+    /// takes, and sits inside SAFE.
+    #[test]
+    fn the_overscan_rect_comes_from_the_placer() {
+        let mut out = Vec::new();
+        overscan_rects(&mut out);
+        let r = out[0].1;
+        assert_eq!((r.x + r.w, r.y + r.h, r.w), (1824.0, 764.0, plx_ui::table::MENU_MAX_W));
+        assert_eq!(r.y, plx_ui::consts::SAFE.y, "the whole room above the row");
     }
 }

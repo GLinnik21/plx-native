@@ -60,7 +60,8 @@ impl TestBrowse {
                     ran += 1;
                     let (sid, key) = job.req.server();
                     match held(sid, key) {
-                        Some(client) => listing_jobs::finish_browse_directory_job(&port, job.addr, client, job.req),
+                        Some(client) => listing_jobs::finish_browse_directory_job(&port, job.addr, client, job.req,
+                            bands::utc_zone()),
                         None => plx_machine::job::Port::refused(&port, job.addr),
                     }
                 }
@@ -332,7 +333,7 @@ pub(super) fn registered_directory_source(
     }]);
     state.letters = Arc::new(vec![("N".into(), 7)]);
     state.genres_done = false;
-    state.letters_done = false;
+    state.letters_for = None;
     (cleanup, browse, sid, client)
 }
 pub(super) fn queue_success_from(
@@ -385,6 +386,8 @@ pub(super) fn queue_directories_from(
             id: "stale".into(),
             title: "Stale Genre".into(),
         }],
+        ok: true,
+        letters: None,
     }, |_| true);
     browse.adapter.letters.post(DirectoryResult {
         library_type: browse.state.states[0].library_type,
@@ -393,17 +396,16 @@ pub(super) fn queue_directories_from(
         client,
         token_gen,
         list: vec![("S".into(), 99)],
+        ok: true,
+        letters: Some(browse.state.states[0].letters_key()),
     }, |_| true);
     browse.adapter.genres.claim(0);
     browse.adapter.letters.claim(0);
-    browse.state.land_directory_owned(&browse.adapter.genres, |st, list| {
+    browse.state.land_directory_owned(&browse.adapter.genres, |st, list, _, _| {
         st.genres_done = true;
         st.genres = Arc::new(list);
     });
-    browse.state.land_directory_owned(&browse.adapter.letters, |st, list| {
-        st.letters_done = true;
-        st.letters = Arc::new(list);
-    });
+    browse.state.land_letters_for_test(&browse.adapter.letters);
 }
 pub(super) fn assert_new_directories_survive(browse: &TestBrowse) {
     let state = browse.state.states().first().unwrap();
@@ -412,7 +414,7 @@ pub(super) fn assert_new_directories_survive(browse: &TestBrowse) {
     assert_eq!(state.genres[0].title, "New Genre");
     assert_eq!(*state.letters, vec![("N".into(), 7)]);
     assert!(!state.genres_done);
-    assert!(!state.letters_done);
+    assert!(state.letters_for.is_none(), "the registered fixture's list is owed again, as it was");
 }
 // ---- the three-state fetch machine ---------------------------------------------------------
 //
@@ -579,8 +581,14 @@ fn seed_pair(browse: &mut TestBrowse, house: BrowseSource) {
 /// read as a job, and one that is run (`run_listing_jobs`) is refused at once instead of dialling
 /// 10.0.0.1.
 pub(super) fn loopback_page_source() -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
+    loopback_source_at(9, SecKind::Movie)
+}
+/// [`loopback_page_source`] with one section of `kind` (key 1) on the server at `127.0.0.1:port`:
+/// port 9 refuses at once, a test's own listener answers.
+pub(super) fn loopback_source_at(port: i32, kind: SecKind)
+    -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
     plx_plex::plex::reset_servers_for_test();
-    let sid = plx_plex::plex::register_for_test("browse-ledger", "127.0.0.1", 9, "old", "cid");
+    let sid = plx_plex::plex::register_for_test("browse-ledger", "127.0.0.1", port, "old", "cid");
     assert!(plx_plex::plex::set_current(sid));
     let mut source = a_source("original", "", true);
     source.sid = sid;
@@ -588,6 +596,7 @@ pub(super) fn loopback_page_source() -> (RegisteredCleanup, TestBrowse, ServerId
     source.counts_done = true;
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![source]);
-    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+    let title = if kind == SecKind::Movie { "Movies" } else { "TV Shows" };
+    browse.append_sections(0, vec![(1, title.into(), kind)]);
     (RegisteredCleanup, browse, sid, plx_plex::plex::client_for(sid).unwrap())
 }

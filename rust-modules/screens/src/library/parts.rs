@@ -35,7 +35,7 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
     if item.kind == 3 { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) }
 }
 
-/// The Under posters setting as the caption policy every Library grid card and band follows.
+/// The standard focused caption policy; a grid sorted by a value draws its value line instead.
 pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
 /// A grid card's label under `policy`: the focused caption band shows exactly what the Under
@@ -99,6 +99,18 @@ struct Window {
     elems: Vec<u32>,
 }
 
+/// Render cache bounded by the projected windows. A data publication, sort or locale change
+/// invalidates formatting; walking focus only changes the shared component's presentation.
+#[derive(Default)]
+struct CaptionCache {
+    language: Option<plx_platform::i18n::Language>,
+    format: String,
+    sort: String,
+    /// The calendar date the labels were worded for: "Today" and "Yesterday" go stale at midnight.
+    today: Option<[i32; 3]>,
+    labels: HashMap<usize, (usize, ui_cards::TileLabel)>,
+}
+
 pub(super) struct GridPart {
     entry: EntryId,
     group: GroupId,
@@ -124,13 +136,16 @@ pub(super) struct GridPart {
     /// (`Grid::set_page`) before every call. A pop starts from REST when a deliberate move arms it
     /// and when the first awake tick finds a focus no event announced since the last dormant tick;
     /// a restore or reconcile announced after that is adopted at full scale (`ui::cards`, the pop
-    /// rule). A page returning from a Detail push is dormant under the BACK dip's held image, so
-    /// its focused poster regrows from rest when the image is let go.
+    /// rule). A page ENTERED under a route dip's held image is dormant, so its focused poster grows
+    /// from rest when the image is let go; a page that RETURNS (`Enter(Restored)`, fed to the grid
+    /// by `LibraryScreen`) is not put to sleep, so its poster comes back lifted, as it was left
+    /// (`Grid::dormant`).
     grid: Grid,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,
     /// Render history for the at-rest poster lookahead (`lookahead.rs`); never logical state.
     rest: super::lookahead::Rest,
+    captions: std::cell::RefCell<CaptionCache>,
     #[cfg(test)]
     test_ops: PublicationOps,
 }
@@ -151,7 +166,7 @@ impl GridPart {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
         // projection and identity are traversed below; its Arc address never enters logical state.
         let Self { entry: _, group, total, windows, applied: _, pins: _, known, identity, layout, scroll, target_layout,
-            scroll_target, grid, snapshot: _, indexes: _, rest: _, #[cfg(test)] test_ops: _ } = self;
+            scroll_target, grid, snapshot: _, indexes: _, rest: _, captions: _, #[cfg(test)] test_ops: _ } = self;
         c.u32(group.0).u32(*total as u32).seq(windows.len());
         for w in windows {
             c.u32(w.first as u32).seq(w.elems.len());
@@ -191,11 +206,13 @@ impl GridPart {
             snapshot: None,
             indexes: GridIndexes::default(),
             rest: Default::default(),
+            captions: Default::default(),
             #[cfg(test)] test_ops: PublicationOps::default(),
         }
     }
 
-    /// The grid's one entry for the events that move it (`Tick`, `FocusMoved`; the Library keeps
+    /// The grid's one entry for the events that move it (`Tick`, `FocusMoved` and the `Enter(Restored)`
+    /// that makes it a page returning; the Library keeps
     /// its own press, hold and paging handling, so the grid's `Activate` / `Hold` / `Want` are not
     /// used — [`GridSrc::more`](CardSource::more) is `false`, and the page requests its window
     /// itself). `scroll` is the Library's CURRENT page scroll. Returns the document shift
@@ -204,13 +221,14 @@ impl GridPart {
     pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
         self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
-        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() };
+        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions };
         let _ = self.grid.on(ev, cx, &src, fx);
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
 
     /// Hold the grid's cards at rest while the page is still dissolving in ([`Grid::dormant`]); the
-    /// lift begins on the first frame after. Set before each [`on`](Self::on).
+    /// lift begins on the first frame after. A page that RETURNS is not held: the grid keeps its
+    /// seat lifted through the fade or the image. Set before each [`on`](Self::on).
     pub(super) fn dormant(&mut self, held: bool) { self.grid.dormant(held); }
 
     /// The focus the page seats next is its arrival, not a restore ([`Grid::arrive`]).
@@ -239,6 +257,7 @@ impl GridPart {
         self.target_layout = target_layout;
         self.scroll_target = scroll_target;
         self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
+        self.grid.set_value_line(layout.value_line());
         self.grid.set_caption_policy(Some(caption_policy()));
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
     }
@@ -284,6 +303,7 @@ impl GridPart {
         if self.snapshot.as_ref().is_some_and(|old| view.same_items(old.view())) && ranges == self.applied {
             return;
         }
+        self.captions.borrow_mut().labels.clear();
         self.snapshot = Some(view.retain());
         self.project(view, keys, ranges);
     }
@@ -432,7 +452,7 @@ impl GridPart {
 
     /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
     fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
-        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() }
+        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy(), values: self.layout.value_line(), today: H::today(cx), captions: &self.captions }
     }
 
     /// The painter the grid draws and registers stops through: the page's alpha, and the stops
@@ -496,6 +516,12 @@ struct GridSrc<'a, 'v> {
     indexes: &'a GridIndexes,
     view: plx_data::stores::browse::ListingView<'v>,
     policy: CaptionPolicy,
+    /// The grid draws a sort value line under every card rather than the Title/Details caption (an
+    /// Episodes view's legacy two-line caption included).
+    values: bool,
+    /// The calendar date the application handed in (`LibraryLike::today`).
+    today: Option<[i32; 3]>,
+    captions: &'a std::cell::RefCell<CaptionCache>,
 }
 
 impl GridSrc<'_, '_> {
@@ -504,9 +530,27 @@ impl GridSrc<'_, '_> {
     fn collections(&self) -> bool { self.view.library_type() == plx_data::browse::LibraryType::Collections }
 
     /// The label the grid draws under tile `i`: the one [`CardSource::label`] answers.
-    fn tile_label(&self, i: usize) -> ui_cards::TileLabel {
-        let Some(item) = self.view.item(i) else { return Default::default() };
-        grid_label(item, &self.policy)
+    fn with_tile_label<R>(&self, i: usize, read: impl FnOnce(&ui_cards::TileLabel) -> R) -> R {
+        let Some(item) = self.view.item(i) else { return read(&ui_cards::TileLabel::default()) };
+        if self.values {
+            let key = self.view.sorts().get(self.view.sort_index()).map_or("", |sort| sort.key.as_str());
+            let locale = plx_platform::i18n::current();
+            let mut cache = self.captions.borrow_mut();
+            if cache.language != Some(locale.language()) || cache.format != locale.format_locale() || cache.sort != key
+                || cache.today != self.today {
+                cache.labels.clear(); cache.language = Some(locale.language());
+                cache.format = locale.format_locale().to_owned(); cache.sort = key.to_owned();
+                cache.today = self.today;
+            }
+            let owner = item as *const plx_data::pms::PmsMovie as usize;
+            if let Some((_, label)) = cache.labels.get(&i).filter(|(old, _)| *old == owner) {
+                return read(label);
+            }
+            let entry = cache.labels.entry(i).or_insert_with(|| (owner, crate::registry::sort_info::label(item, key, self.today)));
+            if entry.0 != owner { *entry = (owner, crate::registry::sort_info::label(item, key, self.today)); }
+            return read(&entry.1);
+        }
+        read(&grid_label(item, &self.policy))
     }
 }
 
@@ -517,7 +561,8 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn art(&self, i: usize) -> Art<'_> {
         self.view.item(i).map_or(Art::Poster(None), grid_art)
     }
-    fn label(&self, i: usize) -> ui_cards::TileLabel { self.tile_label(i) }
+    fn label(&self, i: usize) -> ui_cards::TileLabel { self.with_tile_label(i, Clone::clone) }
+    fn with_label<R>(&self, i: usize, read: impl FnOnce(&ui_cards::TileLabel) -> R) -> R { self.with_tile_label(i, read) }
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }
@@ -652,5 +697,51 @@ impl<H: LibraryLike> Part<H> for GridPart {
         let p = Self::painter(f);
         let src = self.source(f.cx);
         self.grid.draw(f, p, &src);
+    }
+}
+
+#[cfg(test)]
+mod caption_cache_review_tests {
+    use super::*;
+    use plx_data::{browse::view::ListingSnapshot, pms::PmsMovie};
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+
+    #[test]
+    fn review_caption_cache_borrows_words_and_invalidates_stale_publications() {
+        let _guard = plx_base::testlock::serial();
+        let _locale = language_on_this_thread_for_test(Preference::En);
+        let listing = ListingSnapshot::fixture(plx_plex::plex::ServerId::from_raw(0),
+            vec![Some(PmsMovie { title: "Original".into(), year: 1997, ..Default::default() })], vec![]).with_sort_key("year");
+        let cache = std::cell::RefCell::new(CaptionCache::default());
+        let indexes = GridIndexes::default();
+        let mut src = GridSrc { total: 1, windows: &[], indexes: &indexes, view: listing.view(),
+            policy: CaptionPolicy::default(), values: true, today: Some([2026, 10, 30]), captions: &cache };
+        let pointer = |label: &ui_cards::TileLabel| label.value.as_ref().unwrap().text.as_ptr() as usize;
+        let first = src.with_tile_label(0, pointer);
+        assert_eq!(first, pointer(&cache.borrow().labels[&0].1), "read the cached CString itself");
+        assert_eq!(src.with_tile_label(0, pointer), first);
+        assert_eq!(cache.borrow().labels.len(), 1);
+        cache.borrow_mut().sort = "obsoleteSort".into();
+        src.with_tile_label(0, |_| {});
+        assert_eq!(cache.borrow().sort, "year");
+        {
+            let _ru = language_on_this_thread_for_test(Preference::Ru);
+            src.with_tile_label(0, |_| {});
+            assert_eq!(cache.borrow().language, Some(plx_platform::i18n::current().language()));
+        }
+        let changed = listing.clone().with_page(0, vec![PmsMovie { title: "Replaced".into(), ..Default::default() }]);
+        src.view = changed.view();
+        let owner = cache.borrow().labels[&0].0;
+        src.with_tile_label(0, |_| {});
+        assert_ne!(cache.borrow().labels[&0].0, owner, "a replaced item is worded again, keyed on the item it was worded for");
+        assert_eq!(cache.borrow().labels.len(), 1);
+        // The day turning over invalidates the labels: "Today" must not outlive midnight.
+        cache.borrow_mut().labels.get_mut(&0).unwrap().1.value.as_mut().unwrap().text = "stale".into();
+        assert_eq!(src.with_tile_label(0, |label| label.value.as_ref().unwrap().text.clone()), "stale",
+            "the same date reads the cached label");
+        src.today = Some([2026, 10, 31]);
+        assert_ne!(src.with_tile_label(0, |label| label.value.as_ref().unwrap().text.clone()), "stale",
+            "a new date rebuilds the label");
+        assert_eq!(cache.borrow().today, Some([2026, 10, 31]));
     }
 }

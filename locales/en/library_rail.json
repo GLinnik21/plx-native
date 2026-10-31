@@ -1,0 +1,31 @@
+{
+  "library_rail.decade": {
+    "value": "{decade}s",
+    "args": {
+      "decade": "str",
+      "end": "str"
+    },
+    "optional": [
+      "end"
+    ],
+    "description": "The Library rail's band for a decade of release years (2020s) when the list is sorted by Release date. {decade} arrives as the decade's first year in plain digits (2020, 1990) and {end} as the last two digits of its last year (29, 99, 09); use whichever the language writes a decade with, and leave {end} out when the phrase has no use for it. A language with no short phrase of its own writes the span with both: 2020–29 (en dash). Keep it short: it stands in a narrow column beside the posters, at most about 115 px at the rail's 22 px type (\"años 2020\" is 111, \"années 2020\" is 137 and does not fit)."
+  },
+  "library_rail.hours": {
+    "value": "{hours}h",
+    "args": {
+      "hours": "str"
+    },
+    "description": "The Library rail's band for a length in whole or half hours (3h, 2½h, 1h) when the list is sorted by Duration. {hours} arrives formatted for the language and already carries the half (2½); the unit and its spacing are the language's own short hour, the same as core.duration_hours writes it. Keep it short: it stands in a narrow column beside the posters."
+  },
+  "library_rail.hours_or_more": {
+    "value": "{hours}h+",
+    "args": {
+      "hours": "str"
+    },
+    "description": "The Library rail's top Duration band (3h+): at least this many hours. {hours} arrives formatted; the unit is the language's own short hour, as in library_rail.hours, and the + follows it. Keep it short."
+  },
+  "library_rail.today": {
+    "value": "Today",
+    "description": "The Library rail's first band when the list is sorted by Date added, Date viewed or Last episode added: items from today. The same word as under_posters.value_today, unless that is too wide for the rail's narrow column beside the posters (at most 116 px at the rail's 22 px type, and then only with the focus pill squeezed to 4 px each side; French \"Aujourd’hui\" is exactly that wide, so French keeps its usual abbreviation, \"Auj.\"). One short word."
+  }
+}

@@ -531,6 +531,73 @@ mod seam_order_tests {
         );
     }
 
+    /// **No exit of the app process returns into libc's `exit`.** `exit` runs libcrypto's
+    /// `OPENSSL_cleanup`, which frees and NULLs its global locks while the detached curl workers
+    /// still run (#1115). The run-and-shutdown sequence and the entry point are typed `-> !` (a
+    /// path that returns does not compile): these consts are the compile-time proof, and the
+    /// source scan below finds any other `exit` call, which would sidestep
+    /// `plx_base::process::exit_now`.
+    const _: unsafe fn(&mut super::super::App) -> ! = super::super::run_and_shutdown;
+    const _: fn(*const std::os::raw::c_char, std::os::raw::c_int) -> ! =
+        super::super::run_application;
+
+    #[test]
+    fn no_production_code_calls_libc_exit_outside_the_shared_helper() {
+        // The app process links every crate under rust-modules except `storage` (the separate
+        // `plxstorage` helper binary, no OpenSSL workers) and platform's `storage_service/` (that
+        // helper's body). `base/src/process.rs` is the helper itself.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        collect_rs(&root.join("src"), &mut files);
+        for entry in std::fs::read_dir(root).expect("rust-modules") {
+            let dir = entry.expect("entry").path();
+            let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            if matches!(name.as_str(), "storage" | "target" | "tests")
+                || name.starts_with("target-")
+                || !dir.join("src").is_dir()
+            {
+                continue;
+            }
+            collect_rs(&dir.join("src"), &mut files);
+        }
+        assert!(files.len() > 100, "the scan must see the whole tree");
+        let (a, b) = (concat!("process::", "exit("), concat!("libc::", "exit("));
+        let mut hits = Vec::new();
+        for f in files {
+            let path = f.to_string_lossy().replace('\\', "/");
+            if path.ends_with("base/src/process.rs")
+                || path.contains("/storage_service/")
+                || path.contains("/tests/")
+                || path.ends_with("_tests.rs")
+            {
+                continue;
+            }
+            let text = std::fs::read_to_string(&f).expect("read");
+            let prod = text.split("#[cfg(test)]").next().unwrap_or("");
+            for (n, line) in prod.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains(a) || code.contains(b) {
+                    hits.push(format!("{path}:{}", n + 1));
+                }
+            }
+        }
+        assert!(
+            hits.is_empty(),
+            "exit through plx_base::process::exit_now, never libc exit (#1115): {hits:?}"
+        );
+    }
+
+    fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect_rs(&p, out);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
     /// `enter_application` installs the player's error-trace eraser before telemetry first loads a
     /// decision (`pre_boot_diagnostics` -> `telemetry::boot`, which already erases through it) and
     /// before anything can play. It was installed by `player::report::requested`, which a
@@ -1372,7 +1439,7 @@ pub(super) fn install_pms_owned(
 /// Everything before the loop: SDL and the window, GL, text, the poster workers, the boot gate
 /// (login / token / session / picker), every dev trigger read once, and the `App` literal —
 /// `plex_run`'s former body up to `while app.running`, moved verbatim in phase 1b-ii. An early
-/// exit is the process exit code `plex_run` returns.
+/// exit ends the process through `plx_base::process::exit_now` (the caller maps `Err(code)` to it).
 ///
 /// `mt`, THE main-thread token, is minted once by `plex_run` itself (`plx_base::task::MainThread::
 /// assume()` — that function IS the SDL main thread) and MOVES into `App.adapters.player` here,
@@ -2391,6 +2458,9 @@ pub(crate) unsafe fn construct(
     // has been initialised and, unlike the earlier boot/discovery work, the SDL loop below is
     // ready to dispatch a delivered command within one frame. Compile-time no-op otherwise.
     if !controlled { crate::lab::start_control(); }
+    // **The HUD compiles here, at boot, outside any frame**, and the mounter is seeded with it (`run::boot_hud`;
+    // a controlled run defers it to the first player frame).
+    let hud = super::run::boot_hud(&mut bridge, controlled);
     let mut app = App {
         last_input,
         loop_t,
@@ -2399,6 +2469,8 @@ pub(crate) unsafe fn construct(
         #[cfg(feature = "devtools")]
         fps_shown,
         play_prev,
+        hud,
+        dev_hud: Default::default(),
         running,
         window_activity: super::window_activity::WindowActivity::new(),
         #[cfg(feature = "devtools")]

@@ -60,6 +60,8 @@ python3 -W ignore tools/test_tv_sched_trace.py
 python3 tools/test_check_parallel.py
 python3 ci/test_tv_session.py
 python3 ci/test_source_bundle.py
+python3 ci/test_renderer_sources.py
+python3 ci/test_shipped_faces.py
 # The restructure's structure gates (spec §15.2): greps with counted allowlists under
 # ci/allow/. tests/test_harness.py runs the same script; this line is the one a reader sees.
 ci/check-deps.sh
@@ -357,3 +359,25 @@ python3 ci/test_agent_files.py
 # no code. Fixtures of real headless output with Ghidra's own multi-line records mixed in, through `decomp.sh filter` and through
 # `fn` / `xref` against a fake `analyzeHeadless`. No Ghidra, no Java, no firmware; POSIX awk, so BSD awk and mawk both pass.
 python3 ci/test_decomp_filter.py
+
+# tests/mkv_audio_lead.py (the late-audio tests' fixture reorderer) reading Tracks: only TrackEntry children are parsed, never the CRC-32 ffmpeg writes
+# there, whose checksum bytes can look like a huge field (the flaky "Exceeds the limit (4300 digits)" crash). Synthetic MKV, no ffmpeg, milliseconds.
+python3 tests/test_mkv_audio_lead.py
+
+# The ledger ratchet (ci/check-ledger-ratchet.py): no count under ci/allow/ -- a family's entry total (workers/, globals/, forks/,
+# fxlanes/) or a top-level list's -- and no key of tests/test_harness.py's PINNED_LEDGER_TOTALS / PINNED_ALLOWLIST_COUNTS may be
+# above the merge-base with the base branch (GITHUB_BASE_REF on a pull request, else origin/main; no base = a skip that says so),
+# for every counter the base has. A top-level file, family directory or pin key the base lacks is a new gate's own list (no existing
+# gate reads a file name that did not exist), so it is named in the ok line and not compared; a new area file inside a family the
+# base has still counts toward that family. Every other check here compares a ledger with numbers in the SAME tree, so one diff could
+# add a line, its `# count:` header and its pin together. Entry lines are counted, never the header. `git ls-tree`/`git show` only,
+# no cargo; the test runs it against fixture repositories (a count that rises, falls, is renamed or moves inside a family; a new
+# file, family or pin key; a new area file; a pin; no base) and checks that the CI job that runs it fetches the full history.
+python3 ci/test_ledger_ratchet.py
+python3 ci/check-ledger-ratchet.py
+
+# tools/pms-band-probe.py, the A-Z rail's read-only PMS probe: its request guard (GET only, and only the server root, /library/sections and
+# /library/sections/{id}/{all|genre|year|decade|firstCharacter}; every /:/ route, metadata route and write route refused, the token never
+# a query term) and its verdict arithmetic. Offline: no server, no token file, no port, nothing written. The measuring run needs a real
+# PMS and is never part of a gate; tests/mock_pms.py --band-fixture is the server it can be pointed at.
+python3 tools/pms-band-probe.py --selftest

@@ -42,6 +42,10 @@ pub struct LocaleContext {
         icu_calendar::Gregorian,
         icu_datetime::fieldsets::YMD,
     >,
+    date_medium: icu_datetime::FixedCalendarDateTimeFormatter<
+        icu_calendar::Gregorian,
+        icu_datetime::fieldsets::YMD,
+    >,
 }
 impl LocaleContext {
     /// Exercise expanded catalogs without changing the process-wide locale or environment.
@@ -81,18 +85,38 @@ impl LocaleContext {
                 DecimalFormatter::try_new(Default::default(), Default::default())
                     .expect("compiled English number data")
             });
-        let date = icu_datetime::FixedCalendarDateTimeFormatter::try_new(
-            locale.into(),
+        let date = icu_datetime::FixedCalendarDateTimeFormatter::try_new_unstable(
+            &CaptionDateProvider(None),
+            locale.clone().into(),
             icu_datetime::fieldsets::YMD::short()
                 .with_year_style(icu_datetime::options::YearStyle::Full),
         )
         .unwrap_or_else(|_| {
-            icu_datetime::FixedCalendarDateTimeFormatter::try_new(
+            icu_datetime::FixedCalendarDateTimeFormatter::try_new_unstable(
+                &CaptionDateProvider(None),
                 Default::default(),
                 icu_datetime::fieldsets::YMD::short()
                     .with_year_style(icu_datetime::options::YearStyle::Full),
             )
             .expect("compiled English date data")
+        });
+        // Named months are interface text. A TV may report an English format locale even when
+        // Russian was chosen in the app; retain regional order only within the same language.
+        let named_locale = if locale.id.language.as_str() == language.tag() { locale }
+            else { language.regional().parse::<Locale>().expect("compiled interface locale") };
+        let (months, _) = month_names(language, MonthWidth::Medium);
+        let date_medium = icu_datetime::FixedCalendarDateTimeFormatter::try_new_unstable(
+            &CaptionDateProvider(Some(months)),
+            named_locale.into(),
+            icu_datetime::fieldsets::YMD::medium()
+                .with_year_style(icu_datetime::options::YearStyle::Full),
+        ).unwrap_or_else(|_| {
+            icu_datetime::FixedCalendarDateTimeFormatter::try_new_unstable(
+                &CaptionDateProvider(Some(&EN_MEDIUM)),
+                Default::default(),
+                icu_datetime::fieldsets::YMD::medium()
+                    .with_year_style(icu_datetime::options::YearStyle::Full),
+            ).expect("compiled English named-month date data")
         });
         // The regional locale, not the bare tag: pt-PT counts 0 as plural where bare `pt` (pt-BR) does not.
         let plural =
@@ -110,6 +134,7 @@ impl LocaleContext {
             plural,
             decimal,
             date,
+            date_medium,
         }
     }
     pub fn preference(&self) -> Preference {
@@ -140,9 +165,44 @@ impl LocaleContext {
         let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
         Some(self.date.format(&d).to_string())
     }
+    /// Full calendar date with an abbreviated month in the interface language. A matching
+    /// regional format keeps its order; another language's numeric-format preference cannot
+    /// replace the month names.
+    pub fn date_medium(&self, year: i32, month: u8, day: u8) -> Option<String> {
+        let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
+        Some(self.date_medium.format(&d).to_string())
+    }
+    /// Month and year, the yMMM skeleton in the interface language with its abbreviated month and
+    /// never a numeric one: "Oct 2024", "out. de 2024", "2024. okt.", "окт. 2024 г." (the unit
+    /// "г." after a no-break space). Hand-written over the same abbreviated month tables as
+    /// [`month_day`](Self::month_day) (ICU's compiled yMMM data answers numerically, "10/2024",
+    /// for the shipped German, Portuguese and Belarusian once the month names are ours), except
+    /// where CLDR spells the skeleton with the STAND-ALONE month (`LLL`) and that differs from the
+    /// form after a day: Russian and Belarusian write "май 2024 г." where a day makes it "9 мая"
+    /// ([`standalone_abbreviated`]). Every other shipped language's yMMM is `MMM y`, or `LLL y`
+    /// over stand-alone names identical to its format ones (Polish).
+    pub fn month_year(&self, year: i32, month: u8) -> Option<String> {
+        icu_calendar::Date::try_new_gregorian(year, month, 1).ok()?;
+        let name = self.month_short(month)?;
+        Some(match self.language {
+            Language::Hu => format!("{year}. {name}"),
+            Language::Pt => format!("{name} de {year}"),
+            Language::Ru | Language::Be => format!("{name} {year}\u{a0}г."),
+            _ => format!("{name} {year}"),
+        })
+    }
+    /// The abbreviated month a language writes with nothing beside it, the one name a rail or a chip
+    /// gives a month: "Oct", "okt.", "окт.", "кра". It is [`month_year`](Self::month_year)'s month
+    /// (the same [`standalone_abbreviated`] selection, so the two never disagree), which is the
+    /// format form that follows a day wherever the language has one form, and the nominative in
+    /// Russian and Belarusian. `None` for a month outside `1..=12`.
+    pub fn month_short(&self, month: u8) -> Option<String> {
+        let index = usize::from(month).checked_sub(1)?;
+        standalone_abbreviated(self.language).get(index).map(|name| (*name).to_owned())
+    }
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
-    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Polish, Belarusian and Russian the genitive
+    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, "12 mrt" / "12 maart" in Dutch, and in Polish, Belarusian and Russian the genitive
     /// after the day ("12 marca", "12 сакавіка", "12 марта") with the abbreviated form for medium. Hand-written tables, not
     /// ICU month data, so no name data is compiled in for the shipped languages. The year is
     /// unknown, so 29 February is a valid day; a day the calendar lacks returns `None`.
@@ -158,28 +218,160 @@ impl LocaleContext {
             };
             return Some(format!("{} {day}.", names[i]));
         }
-        let (names, joiner) = match (self.language, width) {
-            (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),
-            (Language::En | Language::Pseudo, MonthWidth::Long) => (&EN_LONG, " "),
-            (Language::Es, MonthWidth::Medium) => (&ES_MEDIUM, " "),
-            (Language::Es, MonthWidth::Long) => (&ES_LONG, " de "),
-            (Language::Be, MonthWidth::Medium) => (&BE_MEDIUM, " "),
-            (Language::Be, MonthWidth::Long) => (&BE_GENITIVE, " "),
-            (Language::Ru, MonthWidth::Medium) => (&RU_MEDIUM, " "),
-            (Language::Ru, MonthWidth::Long) => (&RU_GENITIVE, " "),
-            (Language::Pl, MonthWidth::Medium) => (&PL_MEDIUM, " "),
-            (Language::Pl, MonthWidth::Long) => (&PL_GENITIVE, " "),
-            (Language::Fr, MonthWidth::Medium) => (&FR_MEDIUM, " "),
-            (Language::Fr, MonthWidth::Long) => (&FR_LONG, " "),
-            (Language::It, MonthWidth::Medium) => (&IT_MEDIUM, " "),
-            (Language::It, MonthWidth::Long) => (&IT_LONG, " "),
-            (Language::Pt, MonthWidth::Medium) => (&PT_MEDIUM, " "),
-            (Language::Pt, MonthWidth::Long) => (&PT_LONG, " de "),
-            (Language::De, MonthWidth::Medium) => (&DE_MEDIUM, ". "),
-            (Language::De, MonthWidth::Long) => (&DE_LONG, ". "),
-            (Language::Hu, _) => unreachable!("Hungarian returned above"),
-        };
+        let (names, joiner) = month_names(self.language, width);
         Some(format!("{day}{joiner}{}", names[i]))
+    }
+}
+
+/// The abbreviated month a language writes with NO day before it (CLDR's stand-alone `LLL`, what
+/// its yMMM skeleton spells), which is [`month_names`]' `Medium` table, the format form that
+/// follows a day, wherever the two agree. Russian and Belarusian are the languages in which they
+/// do not: the format form of May is the genitive "мая" ("9 мая") and the stand-alone one the
+/// nominative "май" ("май 2024 г."), and Russian also writes "март", "июнь" and "июль" in full.
+fn standalone_abbreviated(language: Language) -> &'static [&'static str; 12] {
+    match language {
+        Language::Ru => &RU_STANDALONE,
+        Language::Be => &BE_STANDALONE,
+        other => month_names(other, MonthWidth::Medium).0,
+    }
+}
+
+/// Month data shared by yearless captions and full sort dates. Keep the ICU pattern/number
+/// formatter, but do not link its all-locale Gregorian month-name database for these eleven tables.
+fn month_names(language: Language, width: MonthWidth) -> (&'static [&'static str; 12], &'static str) {
+    match (language, width) {
+        (Language::En | Language::Pseudo, MonthWidth::Medium) => (&EN_MEDIUM, " "),
+        (Language::En | Language::Pseudo, MonthWidth::Long) => (&EN_LONG, " "),
+        (Language::Es, MonthWidth::Medium) => (&ES_MEDIUM, " "),
+        (Language::Es, MonthWidth::Long) => (&ES_LONG, " de "),
+        (Language::Be, MonthWidth::Medium) => (&BE_MEDIUM, " "),
+        (Language::Be, MonthWidth::Long) => (&BE_GENITIVE, " "),
+        (Language::Ru, MonthWidth::Medium) => (&RU_MEDIUM, " "),
+        (Language::Ru, MonthWidth::Long) => (&RU_GENITIVE, " "),
+        (Language::Pl, MonthWidth::Medium) => (&PL_MEDIUM, " "),
+        (Language::Pl, MonthWidth::Long) => (&PL_GENITIVE, " "),
+        (Language::Fr, MonthWidth::Medium) => (&FR_MEDIUM, " "),
+        (Language::Fr, MonthWidth::Long) => (&FR_LONG, " "),
+        (Language::It, MonthWidth::Medium) => (&IT_MEDIUM, " "),
+        (Language::It, MonthWidth::Long) => (&IT_LONG, " "),
+        (Language::Pt, MonthWidth::Medium) => (&PT_MEDIUM, " "),
+        (Language::Pt, MonthWidth::Long) => (&PT_LONG, " de "),
+        (Language::De, MonthWidth::Medium) => (&DE_MEDIUM, ". "),
+        (Language::De, MonthWidth::Long) => (&DE_LONG, ". "),
+        (Language::Hu, MonthWidth::Medium) => (&HU_MEDIUM, " "),
+        (Language::Hu, MonthWidth::Long) => (&HU_LONG, " "),
+        (Language::Nl, MonthWidth::Medium) => (&NL_MEDIUM, " "),
+        (Language::Nl, MonthWidth::Long) => (&NL_LONG, " "),
+    }
+}
+
+// Short dates are numeric; only medium dates request abbreviated month names.
+struct CaptionDateProvider(Option<&'static [&'static str; 12]>);
+icu_provider::marker::impl_data_provider_never_marker!(CaptionDateProvider);
+
+macro_rules! forward_caption_date_data {
+    ($marker:path, $provider:expr) => {
+        impl icu_provider::DataProvider<$marker> for CaptionDateProvider {
+            fn load(
+                &self,
+                req: icu_provider::DataRequest,
+            ) -> Result<icu_provider::DataResponse<$marker>, icu_provider::DataError> {
+                icu_provider::DataProvider::<$marker>::load(&$provider, req)
+            }
+        }
+    };
+}
+forward_caption_date_data!(
+    icu_datetime::provider::DatetimePatternsDateGregorianV1,
+    icu_datetime::provider::Baked
+);
+forward_caption_date_data!(
+    icu_datetime::provider::neo::DatetimeNamesYearGregorianV1,
+    icu_datetime::provider::Baked
+);
+forward_caption_date_data!(
+    icu_decimal::provider::DecimalSymbolsV1,
+    icu_decimal::provider::Baked
+);
+forward_caption_date_data!(
+    icu_decimal::provider::DecimalDigitsV1,
+    icu_decimal::provider::Baked
+);
+
+impl icu_provider::DataProvider<icu_datetime::provider::neo::DatetimeNamesMonthGregorianV1>
+    for CaptionDateProvider
+{
+    fn load(
+        &self,
+        req: icu_provider::DataRequest,
+    ) -> Result<
+        icu_provider::DataResponse<icu_datetime::provider::neo::DatetimeNamesMonthGregorianV1>,
+        icu_provider::DataError,
+    > {
+        use icu_datetime::provider::neo::{marker_attrs, MonthNames};
+        if req.id.marker_attributes != marker_attrs::ABBR {
+            return Err(icu_provider::DataErrorKind::IdentifierNotFound.into_error());
+        }
+        let mut names = *self
+            .0
+            .ok_or_else(|| icu_provider::DataErrorKind::IdentifierNotFound.into_error())?;
+        let locale = req.id.locale;
+        match (
+            locale.language.as_str(),
+            locale.region.as_ref().map(|r| r.as_str()),
+        ) {
+            ("en", _) => {
+                // CLDR English regions inherit either US or world-English month names.
+                let fallback =
+                    icu_locale::fallback::LocaleFallbacker::new().for_config(Default::default());
+                let mut locales = fallback.fallback_for(*locale);
+                loop {
+                    match locales.get().region.as_ref().map(|r| r.as_str()) {
+                        Some("AU") => {
+                            names[5] = "June";
+                            names[6] = "July";
+                            names[8] = "Sept";
+                            break;
+                        }
+                        Some("001") => {
+                            names[8] = "Sept";
+                            break;
+                        }
+                        None => break,
+                        _ => {
+                            locales.step();
+                        }
+                    }
+                }
+            }
+            ("es", Some("MX")) => names[8] = "sep",
+            ("es", Some("PE" | "UY")) => {
+                names = [
+                    "ene.", "feb.", "mar.", "abr.", "may.", "jun.", "jul.", "ago.", "set.", "oct.",
+                    "nov.", "dic.",
+                ]
+            }
+            ("es", Some("PY" | "VE")) => {
+                names = [
+                    "ene.", "feb.", "mar.", "abr.", "may.", "jun.", "jul.", "ago.", "sept.",
+                    "oct.", "nov.", "dic.",
+                ]
+            }
+            ("fr", Some("CA")) => names[6] = "juill.",
+            ("fr", Some("MA")) => {
+                names[0] = "jan.";
+                names[1] = "fév.";
+                names[2] = "mar.";
+                names[5] = "jui.";
+            }
+            _ => {}
+        }
+        Ok(icu_provider::DataResponse {
+            metadata: Default::default(),
+            payload: icu_provider::DataPayload::from_owned(MonthNames::Linear(
+                names.as_slice().into(),
+            )),
+        })
     }
 }
 
@@ -206,6 +398,11 @@ const RU_GENITIVE: [&str; 12] = [
     "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
     "ноября", "декабря",
 ];
+/// CLDR 47 `ru` stand-alone abbreviated months (the `LLL` of yMMM, `LLL y 'г'.`): it inherits the
+/// format form except "март", "май", "июнь" and "июль", which it spells out.
+const RU_STANDALONE: [&str; 12] = [
+    "янв.", "февр.", "март", "апр.", "май", "июнь", "июль", "авг.", "сент.", "окт.", "нояб.", "дек.",
+];
 
 /// CLDR `hu` abbreviated format months, with their dots.
 const HU_MEDIUM: [&str; 12] =
@@ -229,6 +426,10 @@ const ES_LONG: [&str; 12] = [
 /// CLDR `be` abbreviated format months: three letters, no dot, and "мая" (the genitive) for May.
 const BE_MEDIUM: [&str; 12] =
     ["сту", "лют", "сак", "кра", "мая", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
+/// CLDR 47 `be` stand-alone abbreviated months (yMMM is `LLL y`): the format form except May, the
+/// nominative "май" (skarnik.by: "май, род. мая"; verbum.by: nominative "май", genitive "мая").
+const BE_STANDALONE: [&str; 12] =
+    ["сту", "лют", "сак", "кра", "май", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
 /// Genitive, because a day number governs the month in Belarusian ("12 сакавіка").
 const BE_GENITIVE: [&str; 12] = [
     "студзеня", "лютага", "сакавіка", "красавіка", "траўня", "чэрвеня", "ліпеня", "жніўня",
@@ -258,6 +459,13 @@ const DE_MEDIUM: [&str; 12] =
 const DE_LONG: [&str; 12] = [
     "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
     "November", "Dezember",
+];
+/// CLDR `nl` format months: lower case, abbreviated without dots.
+const NL_MEDIUM: [&str; 12] =
+    ["jan", "feb", "mrt", "apr", "mei", "jun", "jul", "aug", "sep", "okt", "nov", "dec"];
+const NL_LONG: [&str; 12] = [
+    "januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus", "september",
+    "oktober", "november", "december",
 ];
 /// Reject control bytes and invalid tags before they can become HTTP headers. POSIX suffixes
 /// are only used at this input boundary; callers retain canonical BCP-47 tags.
@@ -491,3 +699,81 @@ pub mod msg {
 mod catalog_tests;
 #[cfg(test)]
 mod tests;
+
+/// **Today's calendar date in the operating system's timezone** — the ONE wall-clock read for
+/// calendar display, here in the platform layer and never in a machine (`screens/`, `ui/`,
+/// `data/src/stores`). It reads `SystemTime::now`, so a machine that called it would be reading the
+/// clock, and the `wall` gate does not cover it: that pattern (`Instant::now`, `SystemTime::now`,
+/// `.elapsed()`) names the raw reads and is not run over this crate, so a call to THIS function from
+/// a machine passes it. Its one caller is the application's clock door (`app::clock::today`), which
+/// the loop calls once per frame (the door reads this at most once a minute) and publishes the
+/// date to the screens as an input, the way a frame's time arrives on a `Tick`.
+pub fn local_calendar_today() -> Option<[i32; 3]> {
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    local_calendar_date(i64::try_from(seconds).ok()?)
+}
+
+/// A Unix timestamp as a calendar date in the operating system's timezone. Called while building
+/// cached presentation labels, never by data parsers or once per card per frame. Checked time_t conversion
+/// matters on the 32-bit television: an unrepresentable date remains unknown.
+pub fn local_calendar_date(seconds: i64) -> Option<[i32; 3]> {
+    if seconds <= 0 { return None; }
+    civil_date_of(libc::time_t::try_from(seconds).ok()?)
+}
+
+/// The civil date `stamp` falls on in the operating system's timezone, for any `time_t` (a stamp
+/// before 1970 included, which [`local_calendar_date`] refuses).
+fn civil_date_of(stamp: libc::time_t) -> Option<[i32; 3]> {
+    let mut out = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid for localtime_r; the result is read only on success.
+    if unsafe { libc::localtime_r(&stamp, out.as_mut_ptr()) }.is_null() { return None; }
+    let date = unsafe { out.assume_init() };
+    Some([date.tm_year.checked_add(1900)?, date.tm_mon + 1, date.tm_mday])
+}
+
+/// The Unix timestamp of the FIRST instant of a calendar date in the operating system's timezone: the
+/// twin of [`local_calendar_date`], the other way round. What is guaranteed is exactly this: the stamp
+/// falls on `date` and the second before it does not, or the answer is `None`. A day that begins at
+/// 00:00 gets its 00:00; a day whose midnight the zone skips (the clocks jump from 23:59 to 01:00)
+/// gets the 01:00 that begins it; a day whose midnight happens twice (the clocks fall back across it)
+/// gets the first. Daylight saving is the OS's, decided for this date, so two dates a day apart across
+/// a clock change are 23 or 25 hours apart. `None` also for a date that is not on the calendar (month
+/// 13, 30 February) and where `time_t` cannot hold the result, which on the 32-bit television is every
+/// date outside 1901-2038. A date before 1970 gives a negative stamp, which is a real instant.
+///
+/// `mktime` alone does not promise that. With `tm_isdst = -1` it must pick one reading of a midnight
+/// that does not exist or exists twice, and which one is the C library's: it may answer 23:00 of the
+/// PREVIOUS day, or the second 00:00. The three `tm_isdst` readings (-1, 0, 1) are therefore all tried
+/// and the smallest answer that passes the check above is returned. A host test cannot settle what the
+/// television's own `mktime` says for these days, which is why its answer is verified and not trusted.
+///
+/// Like [`local_calendar_date`] this is the platform layer's read of the OS time zone, not a
+/// machine's: its caller is the application's runner, which hands it to a data job as a plain `fn`
+/// (`plx_data::browse::bands::Zone`), so no machine reads the zone and the `wall` gate has nothing
+/// to see. The data job asks it once per band edge, because the clock change is per edge.
+pub fn local_midnight(date: [i32; 3]) -> Option<i64> {
+    let [year, month, day] = date;
+    // `mktime` normalises 30 February to 2 March: a date that is not on the calendar has no midnight.
+    icu_calendar::Date::try_new_gregorian(year, u8::try_from(month).ok()?, u8::try_from(day).ok()?).ok()?;
+    [-1, 0, 1]
+        .into_iter()
+        .filter_map(|isdst| {
+            // SAFETY: `tm` is plain integers (and, on glibc, a zone pointer that zero is valid for).
+            let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+            tm.tm_year = year.checked_sub(1900)?;
+            tm.tm_mon = month - 1;
+            tm.tm_mday = day;
+            tm.tm_isdst = isdst;
+            // `mktime` answers -1 for "cannot represent" and -1 is also 23:59:59 on 31 Dec 1969 UTC; the
+            // day of the week is only filled in on success, so a -1 there tells the two apart.
+            tm.tm_wday = -1;
+            // SAFETY: `tm` is a valid, initialised `libc::tm` that `mktime` reads and normalises.
+            let stamp = unsafe { libc::mktime(&mut tm) };
+            if stamp == -1 && tm.tm_wday == -1 { return None; }
+            // the first instant of the day: on it, and the second before it is not
+            (civil_date_of(stamp) == Some(date) && civil_date_of(stamp.checked_sub(1)?).is_some_and(|before| before != date))
+                .then_some(stamp)
+        })
+        .min()
+        .map(i64::from)
+}

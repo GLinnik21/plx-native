@@ -56,7 +56,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, FocusSource, ReturnState, Screen, ScreenEvent,
+    At, Enter, FocusSource, FocusTarget, ReturnState, Screen, ScreenEvent,
 };
 
 
@@ -117,6 +117,11 @@ pub(crate) struct AppViews<'a> {
     /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
     /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
     pub(crate) session: &'a plx_media::route::PlaybackSession,
+    /// **Today's calendar date as this frame's publication**, `[year, month, day]` in the viewer's
+    /// time zone: published by the loop once per iteration ([`Bridge::publish_today`]) the way the
+    /// playback session is, so a screen RECEIVES the date it words ("Today", "27 Oct") and fetches
+    /// none. `None` before the first publication and when the platform cannot say.
+    pub(crate) today: Option<[i32; 3]>,
     /// **The kind of page beneath the page these views are read for** on the navigation stack,
     /// folded in by the dispatcher per page ([`Host::views_over`]); `None` for a root, and for
     /// every context that is not a page's own. What a page that names where BACK goes reads
@@ -137,7 +142,7 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, today: self.today, beneath: None }
     }
 }
 
@@ -250,6 +255,7 @@ impl plx_screens::registry::LibraryLike for AppHost {
     fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
         super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
     }
+    fn today(cx: &Cx<'_, Self>) -> Option<[i32; 3]> { cx.views.today }
 }
 
 impl plx_screens::registry::PersonLike for AppHost {
@@ -407,6 +413,9 @@ pub(crate) struct Bridge {
     /// Was the publication above refreshed on the last frame? The one bit that lets the retirement
     /// of a stale publication be a single assignment rather than a per-frame one.
     playback_live: bool,
+    /// This frame's publication of the calendar date — see `AppViews::today`. Refreshed by
+    /// [`Bridge::publish_today`] from the loop, once per iteration; `None` until the first one.
+    today: Option<[i32; 3]>,
     /// **Is the hardware video plane bound?** `Player::video_plane_bound`, published here by the
     /// loop on its edges — the rig's own copy of the one bit, for the privileged call at draw
     /// entry (`clear_opaque_region`), which the `Rig` trait gives no argument.
@@ -470,6 +479,9 @@ pub(crate) struct Bridge {
 impl Bridge {
     #[cfg(test)]
     pub(crate) fn measurement_queries(&self)->Vec<plx_ui::rec::MetricKey> { self.measure.queries() }
+    /// The measurer every screen of this bridge lays out with (a host test's has no fonts): the HUD
+    /// package is compiled with it, outside the draw, so the plan's widths are the draw's.
+    pub(crate) fn measure(&self) -> &dyn Measure { &self.measure }
     pub(crate) fn prepare_measurements(&mut self, replay: Option<&std::collections::HashMap<plx_ui::rec::MetricKey,u32>>) {
         self.measure.prepare(replay);
     }
@@ -659,6 +671,7 @@ impl Bridge {
             mounter: AppMounter::default(),
             playback: plx_media::route::PlaybackSession::IDLE,
             playback_live: false,
+            today: None,
             video_plane: false,
             measure: plx_ui::rec::Measurements::Live(measure),
             hubs: reads.hubs,
@@ -922,6 +935,18 @@ impl Bridge {
     /// [`AppMounter::player_hud_ms`]. Set by `start_playback` and consumed by the mount.
     pub(crate) fn seed_player_hud(&mut self, ms: u32) {
         self.mounter.player_hud_ms = Some(ms);
+    }
+
+    /// The compiled HUD every player instance from now on is constructed with — see
+    /// [`AppMounter::player_compiled`]. Set at boot and again by `run::refresh_hud` when a controlled run or a dev package compiles on the first player frame.
+    pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
+        self.mounter.player_compiled = compiled;
+    }
+
+    /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
+    /// so an open that has no anchor (or retargets a panel already up) never leaves one for a later mount.
+    pub(crate) fn seed_player_menu_anchor(&mut self, anchor: Option<plx_ui::Rect>) {
+        self.mounter.player_menu_anchor = anchor;
     }
 
     fn home_focus(d: &Dispatcher<AppHost>) -> Option<FocusKey<u32>> {
@@ -1989,6 +2014,14 @@ impl Bridge {
             self.playback_live = false;
         }
     }
+
+    /// **Publish this frame's calendar date** — see `AppViews::today`. Called once per iteration by
+    /// the loop, beside [`Self::publish_playback`] and before the dispatcher frame and the draw, with
+    /// `clock::today()` (the loop is that door's one caller). Time arrives as an input: a screen
+    /// that words a date reads it from its views and reads no clock.
+    pub(crate) fn publish_today(&mut self, today: Option<[i32; 3]>) {
+        self.today = today;
+    }
 }
 
 impl Bridge {
@@ -2040,7 +2073,7 @@ impl Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -2238,7 +2271,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
             },
             measure: &self.measure,
         }
@@ -3963,6 +3996,35 @@ pub(crate) fn player_mut(
         .downcast_mut::<plx_screens::player::PlayerScreen>()
 }
 
+/// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half
+/// of an APP-SIDE write to `hud.nav.focus`.
+///
+/// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
+/// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in five
+/// places — a Chapters / Info panel handing the ring back to the tabs (`PlayerReq::FocusTabs`), the
+/// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, the auto-hide
+/// park (in `run::update`) and the Skip / Up Next stand-in's departure (`run::follow_control_row`: the
+/// ring goes back to the scrubber, `standin_left_the_ring`'s contract) — and a bare write would leave
+/// the engine on the group it was on, so the next Up, Down or OK travelled from there. Each such
+/// write is followed by this, which hands the page
+/// the same `Enter::Fresh { ContainerGroup }` the screen's own `repair_focus` delivers. It rides
+/// the dispatcher's queue from outside a step and drains in the next frame, ahead of its input.
+///
+/// A no-op when no player page is mounted. The engine acts on an `Enter` only for the page that owns
+/// input at the moment it drains; for a page under a panel it only reaches the screen, which mirrors it.
+pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
+    let Some(instance) = d.top_page() else { return };
+    let Some(group) = player(d).map(|player| player.hud.nav.focus) else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(
+        page,
+        Fx::Deliver(
+            page,
+            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(group) })),
+        ),
+    );
+}
+
 /// **The top page answers its own keys** — the engine owns the input for it.
 ///
 /// The `route: Route` parameter these three took is gone with the fold (D1): `owns_input` already
@@ -3978,6 +4040,12 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
     !d.surface_up()
         && d.top_screen().and_then(|screen| screen.as_any())
             .is_some_and(|screen| screen.is::<plx_screens::search::SearchScreen>())
+}
+
+/// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
+/// page scrolls itself by a wheel (`Screen::glides`): the pointer's edge glide is offered to it.
+pub(crate) fn page_glides(d: &Dispatcher<AppHost>) -> bool {
+    !d.surface_up() && d.owns_input() && d.top_screen().is_some_and(|screen| screen.glides())
 }
 
 pub(crate) fn owns_input(d: &Dispatcher<AppHost>) -> bool {
@@ -4296,6 +4364,10 @@ mod library_push_capture_tests;
 #[cfg(test)]
 #[path = "recommended_enter_tests.rs"]
 mod recommended_enter_tests;
+
+#[cfg(test)]
+#[path = "library_back_lift_tests.rs"]
+mod library_back_lift_tests;
 
 #[cfg(test)]
 #[path = "library_diagnostic_tests.rs"]

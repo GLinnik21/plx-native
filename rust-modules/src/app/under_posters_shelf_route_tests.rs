@@ -46,7 +46,7 @@ const VIDEO: &str = "1080p \u{b7} HDR";
 fn left() -> String { plx_ui::fmt::time_left(80 * 60 * 1000) }
 
 pub(super) fn set(w: &mut World, title: bool, details: Details) {
-    plx_media::route::restore_under_posters(UnderPosters { title, details });
+    plx_media::route::restore_under_posters(UnderPosters { title, details, sort_value: false });
     w.frames(60);
 }
 
@@ -370,7 +370,7 @@ fn a_setting_changed_under_a_kept_home_reaches_the_card_after_back() {
         open_settings_at(&mut w.d, plx_screens::family::SettingsPage::UnderPosters);
         w.frames(40);
         assert_ne!(w.focus(), focus, "premise ({setting}): the Settings page holds focus over the kept Home");
-        plx_media::route::restore_under_posters(UnderPosters { title, details });
+        plx_media::route::restore_under_posters(UnderPosters { title, details, sort_value: false });
         w.frames(30);
         w.press(Key::Back);
         w.frames(60);

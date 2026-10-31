@@ -205,8 +205,11 @@ static PAGE_TARGET: AtomicU32 = AtomicU32::new(0);
 /// While one is alive, [`default_fb`] names `fbo`, so every "back to the screen" bind a pass makes
 /// inside the page (the glass chains, the field reduction, a blur source pass) comes back to the
 /// snapshot rather than to the frame, and the page lands in the texture the modal is then served
-/// from. Dropping it binds the frame's own framebuffer again. The texture behind `fbo` has to be
-/// the drawable's size, so the viewport and every scissor mean the same pixels in both.
+/// from. Dropping it binds the frame's own framebuffer again. For a WHOLE-page snapshot the texture
+/// behind `fbo` has to be the drawable's size, so the viewport and every scissor mean the same
+/// pixels in both; a region fill (`gfx::FrameCache::render_region`) enters a target that is only the
+/// region's size (668x564 for the Under posters preview) and so moves the viewport and the scissor to
+/// match for its duration (`gfx::RegionTarget` puts them back).
 pub struct PageTarget {
     _private: (),
 }

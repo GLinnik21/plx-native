@@ -466,8 +466,9 @@ impl SubBitmap {
 ///
 /// This replaces the old single `seeking` boolean, which was only ever set by `request_seek` —
 /// so `player::loading()` was **false for the whole initial load** and the `Spinner` that has sat
-/// in `player_hud.rs` all along never fired on first play. The HUD drew a live-looking transport
-/// at 0:00 / -0:00 instead, which is the half of the frozen-HUD report that is not blocking I/O.
+/// in `appkit/player_hud/classic.rs` all along never fired on first play. The HUD drew a
+/// live-looking transport at 0:00 / -0:00 instead, which is the half of the frozen-HUD report that
+/// is not blocking I/O.
 ///
 /// Derived once per frame in `pump::set_state` from signals the workers already publish; no
 /// new cross-thread plumbing. `Playing` alone means "a frame is on the panel"; `Paused` (a paused
@@ -2628,8 +2629,9 @@ impl Shared {
 const PREROLL_VOLUME_NONE: i32 = i32::MIN;
 
 /// UI-facing transport state. Main-thread-only in practice (plex_run + pump +
-/// player_hud all run on M), but exposed as atomics so app.rs / player_hud.rs read
-/// it with plain .load()/.store(). Replaces the #[no_mangle] transport globals.
+/// player_hud all run on M), but exposed as atomics so the app's per-frame loop reads it
+/// with plain .load()/.store(); the HUD's draw path sees it only through the `HudModel` that
+/// loop fills. Replaces the #[no_mangle] transport globals.
 pub struct Transport {
     pub started: AtomicBool, // bf_started
     pub paused: AtomicBool,  // pl_paused

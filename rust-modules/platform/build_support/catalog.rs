@@ -466,6 +466,23 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
         }
         args.insert(k.clone(), ty.into());
     }
+    // Arguments a language may leave out of its text: the code passes every argument, and a language
+    // spells the thing it says with the ones its grammar wants (a decade is "2020s" or "2020–29").
+    let mut optional: BTreeSet<String> = BTreeSet::new();
+    match entry.get("optional") {
+        None => {}
+        Some(Value::Array(names)) => {
+            for name in names {
+                match name.as_str() {
+                    Some(k) if args.contains_key(k) && k != "count" => {
+                        optional.insert(k.to_string());
+                    }
+                    _ => errors.push(format!("{at}: optional must name arguments of the message other than count ({name})")),
+                }
+            }
+        }
+        Some(_) => errors.push(format!("{at}: optional must be a list of argument names")),
+    }
     if entry.get("description").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
         errors.push(format!("{at}: missing translator context (description)"));
     }
@@ -482,9 +499,9 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
     for l in langs {
         let file = &l.origin[key];
         let v = &l.entries[key];
-        if v.as_object().is_some_and(|m| ["value", "description", "args", "translate"].iter().any(|k| m.contains_key(*k))) {
+        if v.as_object().is_some_and(|m| ["value", "description", "args", "optional", "translate"].iter().any(|k| m.contains_key(*k))) {
             errors.push(format!(
-                "{file}: {key}: a translation is a bare string or a plural map; \"value\", \"description\", \"args\" and \"translate\" belong only in locales/en"
+                "{file}: {key}: a translation is a bare string or a plural map; \"value\", \"description\", \"args\", \"optional\" and \"translate\" belong only in locales/en"
             ));
             continue;
         }
@@ -502,6 +519,7 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
     }
     let argkeys: BTreeSet<_> = args.keys().cloned().collect();
     let mut corpus = Vec::new();
+    let mut used_anywhere: BTreeSet<String> = BTreeSet::new();
     for (spec, file, fs) in &values {
         if plural == fs.contains_key("") {
             errors.push(format!("{file}: {key}: message kind differs from English (text versus plural forms)"));
@@ -538,14 +556,19 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
                 }
             };
             if used.iter().any(|k| !argkeys.contains(k))
-                || argkeys.iter().any(|k| !used.contains(k) && !(plural && k == "count"))
+                || argkeys.iter().any(|k| !used.contains(k) && !(plural && k == "count") && !optional.contains(k))
             {
                 errors.push(format!(
                     "{file}: {key}: placeholder mismatch expected {argkeys:?}, found {used:?}"
                 ));
             }
+            used_anywhere.extend(used);
             corpus.push(s.clone());
         }
+    }
+    // An optional argument no language reads would be a parameter nothing uses.
+    for k in optional.iter().filter(|k| !used_anywhere.contains(*k)) {
+        errors.push(format!("{at}: optional argument {k} is used by no language; make it required or drop it"));
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -1125,9 +1148,48 @@ mod tests {
         );
         let e = errors_of(compile(&en, &langs));
         assert!(
-            e.contains("es/x.json: test.label: a translation is a bare string or a plural map; \"value\", \"description\", \"args\" and \"translate\" belong only in locales/en"),
+            e.contains("es/x.json: test.label: a translation is a bare string or a plural map; \"value\", \"description\", \"args\", \"optional\" and \"translate\" belong only in locales/en"),
             "{e}"
         );
+    }
+    /// English source for a message with two arguments, `end` optional, and es/be/fr translations.
+    fn optional_catalogs(optional: serde_json::Value, es: &str, be: &str, fr: &str) -> (Catalog, Vec<Catalog>) {
+        let specs = specs();
+        let en = catalog(&specs[0], &[("test.span", serde_json::json!({
+            "value": "{start}s", "args": {"start": "str", "end": "str"}, "optional": optional, "description": "A decade"}))]);
+        let tr = |i: usize, t: &str| catalog(&specs[i], &[("test.span", serde_json::json!(t))]);
+        (en, vec![tr(1, es), tr(2, be), tr(3, fr)])
+    }
+    #[test]
+    fn an_optional_argument_may_be_left_out_by_a_language_that_does_not_need_it() {
+        // English never reads `end`; French writes the range with it
+        let (en, langs) = optional_catalogs(serde_json::json!(["end"]), "años {start}", "{start}-я", "{start}–{end}");
+        let good = compile(&en, &langs).expect("compiles");
+        assert!(good.messages.contains("pub fn test_span(end: &str, start: &str) -> String"), "every language is handed both: {}", good.messages);
+        // without the declaration the same texts are a mismatch in every language that omits `end`
+        let (en, langs) = optional_catalogs(serde_json::json!([]), "años {start}", "{start}-я", "{start}–{end}");
+        let e = errors_of(compile(&en, &langs));
+        assert!(e.contains("es/x.json: test.span: placeholder mismatch"), "{e}");
+        // …but an unknown placeholder is still an error, optional or not
+        let (en, langs) = optional_catalogs(serde_json::json!(["end"]), "años {start}", "{start}-я", "{start}–{stop}");
+        assert!(errors_of(compile(&en, &langs)).contains("fr/x.json: test.span: placeholder mismatch"));
+    }
+    #[test]
+    fn an_optional_argument_is_a_known_argument_some_language_reads_and_only_english_declares_it() {
+        // required `start` is not made optional by listing it: a language that leaves it out is an error
+        let (en, langs) = optional_catalogs(serde_json::json!(["end"]), "años", "{start}-я", "{start}–{end}");
+        assert!(errors_of(compile(&en, &langs)).contains("es/x.json: test.span: placeholder mismatch"));
+        let (en, langs) = optional_catalogs(serde_json::json!(["end", "nope"]), "{start}", "{start}", "{start}–{end}");
+        assert!(errors_of(compile(&en, &langs)).contains("optional must name arguments of the message"));
+        let (en, langs) = optional_catalogs(serde_json::json!("end"), "{start}", "{start}", "{start}–{end}");
+        assert!(errors_of(compile(&en, &langs)).contains("optional must be a list of argument names"));
+        // an optional argument no language reads is a dead parameter
+        let (en, langs) = optional_catalogs(serde_json::json!(["end"]), "{start}", "{start}", "{start}");
+        assert!(errors_of(compile(&en, &langs)).contains("optional argument end is used by no language"));
+        // a translation cannot carry the declaration
+        let (en, mut langs) = optional_catalogs(serde_json::json!(["end"]), "{start}", "{start}", "{start}–{end}");
+        langs[0].entries.insert("test.span".into(), serde_json::json!({"value": "{start}", "optional": ["end"]}));
+        assert!(errors_of(compile(&en, &langs)).contains("\"optional\" and \"translate\" belong only in locales/en"));
     }
     #[test]
     fn errors_are_collected_and_capped() {

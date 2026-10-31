@@ -1,14 +1,18 @@
 """Library fixture contracts: the mock must exercise the real rail and sparse-page boundaries."""
+import calendar
 import contextlib
+import datetime
 import io
 import json
 import hashlib
+import os
 import pathlib
 import re
 import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 import urllib.parse
 import urllib.request
@@ -25,6 +29,24 @@ HAS_FFMPEG_AND_FFPROBE = shutil.which("ffmpeg") and shutil.which("ffprobe")
 HAS_DEMO_CACHE = bool(HAS_FFMPEG_AND_FFPROBE) and (demo_cache_dir() / "derived").is_dir()
 CATALOG = pathlib.Path(__file__).resolve().parent / "demo_library" / "catalog.json"
 FIXTURES = pathlib.Path(__file__).resolve().parent / "demo_library" / "fixtures"
+
+
+@contextlib.contextmanager
+def local_zone(name):
+    """Run with the process's local time zone set to `name` (a platform without `tzset` skips)."""
+    if not hasattr(time, "tzset"):
+        raise unittest.SkipTest("no time.tzset on this platform")
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if before is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
 
 
 def get(pms, path):
@@ -254,6 +276,86 @@ class LibraryRail(unittest.TestCase):
             server.server_close()
 
 
+class LetterRailFilters(unittest.TestCase):
+    """`firstCharacter` takes the same terms as `/all` (docs/pms-api.md, "Letter index"): its counts
+    describe the filtered listing, so the app's jump offsets (prefix sums) land on the right title."""
+
+    def counts(self, pms, section, terms):
+        query = f"?{terms}" if terms else ""
+        return get(pms, f"/library/sections/{section}/firstCharacter{query}")["Directory"]
+
+    def total(self, pms, section, terms):
+        joined = (terms + "&" if terms else "")
+        return get(pms, f"/library/sections/{section}/all?{joined}"
+                        "X-Plex-Container-Start=0&X-Plex-Container-Size=0")["totalSize"]
+
+    def assert_offsets_land_on_their_letter(self, pms, section, terms):
+        """Sum == totalSize, and the item at each prefix-summed offset starts that letter."""
+        letters = self.counts(pms, section, terms)
+        self.assertEqual(sum(r["size"] for r in letters), self.total(pms, section, terms), terms)
+        joined = (terms + "&" if terms else "")
+        offset = 0
+        for letter in letters:
+            first = get(pms, f"/library/sections/{section}/all?{joined}sort=titleSort"
+                             f"&X-Plex-Container-Start={offset}&X-Plex-Container-Size=1")["Metadata"][0]
+            self.assertTrue(first["titleSort"].startswith(letter["title"] + " "), (terms, letter, offset))
+            offset += letter["size"]
+        return letters
+
+    def test_counts_follow_unwatched_genre_and_both_for_movies(self):
+        pms = MockPms(Library(movies=60, rail_fixture=True))
+        genre = next(iter(pms.lib.genres.values()))["id"]
+        plain = self.assert_offsets_land_on_their_letter(pms, 1, "")
+        for terms in ("unwatched=1", f"genre={genre}", f"unwatched=1&genre={genre}"):
+            with self.subTest(terms=terms):
+                filtered = self.assert_offsets_land_on_their_letter(pms, 1, terms)
+                self.assertLess(sum(r["size"] for r in filtered), sum(r["size"] for r in plain))
+        by_letter = {r["title"]: r["size"] for r in self.counts(pms, 1, "unwatched=1")}
+        self.assertTrue(any(by_letter.get(r["title"], 0) < r["size"] for r in plain),
+                        "the fixture has watched titles, so some letter shrinks")
+
+    def fully_watched_show_fixture(self):
+        lib = Library(movies=0, rail_fixture=True)
+        show = next(it for it in lib.items.values() if it["type"] == "show")
+        for episode in lib.leaves(int(show["ratingKey"])):
+            episode["viewCount"] = 1
+        lib._roll_up()
+        return MockPms(lib)
+
+    def test_shows_are_scoped_by_type_and_unwatched_leaves(self):
+        pms = self.fully_watched_show_fixture()
+        everything = self.counts(pms, 2, "type=2")
+        filtered = self.assert_offsets_land_on_their_letter(pms, 2, "type=2&unwatchedLeaves=1")
+        self.assertLess(sum(r["size"] for r in filtered), sum(r["size"] for r in everything),
+                        "the fixture has a fully watched show")
+
+    def test_unwatched_is_not_unwatched_leaves_on_shows(self):
+        """A real PMS answers the two keys differently for shows (docs/pms-api.md, "Unwatched":
+        30 of 33 against 24), so the mock must not treat them as one predicate: an app that sent
+        `unwatched` for a show listing would otherwise get the filtered rail and grid by luck.
+        The Rust half is `the_letters_request_carries_the_terms_the_grid_sends`
+        (`data/src/browse/listing_jobs_tests.rs`), which pins the key the app sends for shows; this
+        pins that the mock can tell a wrong key from the right one. Only the DIVERGENCE is
+        modelled (the row's own, never-set `viewCount`), not PMS's undocumented rule."""
+        pms = self.fully_watched_show_fixture()
+        everything = sum(r["size"] for r in self.counts(pms, 2, "type=2"))
+        leaves = sum(r["size"] for r in self.counts(pms, 2, "type=2&unwatchedLeaves=1"))
+        plain = sum(r["size"] for r in self.counts(pms, 2, "type=2&unwatched=1"))
+        self.assertLess(leaves, everything)
+        self.assertNotEqual(plain, leaves)
+        self.assertEqual(self.total(pms, 2, "type=2&unwatched=1"), plain, "counts still sum to totalSize")
+
+    def test_a_filter_that_matches_nothing_answers_an_empty_directory(self):
+        pms = MockPms(Library(movies=60, rail_fixture=True))
+        self.assertEqual(self.counts(pms, 1, "genre=999999"), [])
+        self.assertEqual(self.total(pms, 1, "genre=999999"), 0)
+
+    def test_collections_keep_their_own_counts(self):
+        pms = MockPms(Library())
+        with_unwatched = self.counts(pms, 1, "type=18&unwatched=1")
+        self.assertEqual(with_unwatched, self.counts(pms, 1, "type=18"))
+
+
 class ResumeFixture(unittest.TestCase):
     """`--resume-fixture`: a show that has been watched up to S12E14, and one that has not."""
 
@@ -363,6 +465,503 @@ class CaptionEdgeCases(unittest.TestCase):
             self.assertEqual({k: v for k, v in item.items()
                               if k not in ("Collection", "leafCount", "viewedLeafCount", "childCount")},
                              kept, rk)
+
+
+class BandQueries(unittest.TestCase):
+    """The value-sort rail's count probes, answered as a real PMS 1.43.5 was measured to answer them
+    (docs/pms-api.md, "Count probes at band edges"). Every expectation is computed from the library's
+    own items, the way `tools/pms-band-probe.py` checks a server against its own listing."""
+    COUNT_HEADERS = {"X-Plex-Container-Start": "0", "X-Plex-Container-Size": "0"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.lib = Library(seed=3, movies=60, shows=15, band_fixture=True)
+        cls.pms = MockPms(cls.lib)
+        cls.movies = [it for it in cls.lib.items.values()
+                      if it["type"] == "movie" and it["librarySectionID"] == 1]
+        cls.shows = [it for it in cls.lib.items.values()
+                     if it["type"] == "show" and it["librarySectionID"] == 2]
+
+    @staticmethod
+    def term(key, op, value):
+        """One filter term spelled as the probe tool does: the key side URL-encoded."""
+        text = ("%.4f" % value).rstrip("0").rstrip(".") if isinstance(value, float) else str(value)
+        return urllib.parse.quote(key + op.rstrip("="), safe=".") + "=" + text
+
+    @staticmethod
+    def mine(it, field):
+        """The number `field` holds on an item (None: no value), read off the item itself."""
+        if field == "unviewedLeafCount":
+            return it["leafCount"] - it["viewedLeafCount"]
+        if field == "originallyAvailableAt":
+            day = it.get(field)
+            return None if day is None else calendar.timegm(datetime.date.fromisoformat(day).timetuple())
+        return it.get(field)
+
+    @staticmethod
+    def passes(op, value, edge):
+        """What a term keeps: a missing value fails `>>=` `>=` `=` and passes `<<=` `<=`."""
+        if value is None:
+            return op in ("<<=", "<=")
+        return {">>=": value > edge, ">=": value >= edge, "<<=": value < edge,
+                "<=": value <= edge, "=": value == edge}[op]
+
+    def container(self, path, headers=None):
+        status, _, data = self.pms.handle("GET", path, headers=headers or {})
+        self.assertEqual(status, 200)
+        return json.loads(data)["MediaContainer"]
+
+    def count(self, section, kind, *terms):
+        """The count-only probe: Start 0 and Size 0 as headers, no rows, `totalSize` is the answer."""
+        path = f"/library/sections/{section}/all?type={kind}" + "".join("&" + t for t in terms)
+        mc = self.container(path, self.COUNT_HEADERS)
+        self.assertEqual((mc["size"], mc.get("Metadata", [])), (0, []))
+        return mc["totalSize"]
+
+    def rows(self, section, kind, sort=None, start=None, size=None):
+        path = f"/library/sections/{section}/all?type={kind}" + (f"&sort={sort}" if sort else "")
+        if start is not None:
+            path += f"&X-Plex-Container-Start={start}&X-Plex-Container-Size={size}"
+        return self.container(path)["Metadata"]
+
+    def test_the_fixture_spreads_the_values_the_bands_are_cut_from(self):
+        for field in ("rating", "audienceRating", "duration", "addedAt", "lastViewedAt", "year",
+                      "originallyAvailableAt", "viewCount"):
+            held = {self.mine(it, field) for it in self.movies} - {None}
+            self.assertGreaterEqual(len(held), 3, field)
+        for field in ("rating", "lastViewedAt", "originallyAvailableAt"):
+            held = [self.mine(it, field) for it in self.movies]
+            self.assertTrue(None in held and any(v is not None for v in held), field)
+        years = {datetime.datetime.fromtimestamp(it["addedAt"], datetime.timezone.utc).year
+                 for it in self.movies}
+        self.assertGreaterEqual(len(years), 4, "added over several years")
+        self.assertGreater(len({self.mine(it, "unviewedLeafCount") for it in self.shows}), 5)
+        viewed = [it.get("lastViewedAt") for it in self.shows]
+        self.assertTrue(None in viewed and any(v is not None for v in viewed), "shows nobody watched")
+
+    def test_every_operator_counts_every_family_the_way_the_server_does(self):
+        for field in ("rating", "audienceRating", "duration", "addedAt", "lastViewedAt", "year",
+                      "originallyAvailableAt", "viewCount"):
+            held = [self.mine(it, field) for it in self.movies]
+            distinct = sorted(set(held) - {None})
+            edge = distinct[len(distinct) // 2]
+            for op in (">>=", ">=", "<<=", "<=", "="):
+                with self.subTest(field=field, op=op):
+                    self.assertEqual(self.count(1, 1, self.term(field, op, edge)),
+                                     sum(self.passes(op, v, edge) for v in held))
+        for field in ("addedAt", "lastViewedAt", "year", "originallyAvailableAt"):
+            held = [self.mine(it, field) for it in self.shows]
+            edge = sorted(set(held) - {None})[3]
+            for alias in (field, "show." + field):
+                with self.subTest(show=alias):
+                    self.assertEqual(self.count(2, 2, self.term(alias, ">>=", edge)),
+                                     sum(self.passes(">>=", v, edge) for v in held))
+
+    def test_a_float_edge_is_a_float_and_the_spellings_agree(self):
+        held = [it.get("rating") for it in self.movies]
+
+        def above(edge):
+            return sum(v is not None and v > edge for v in held)
+        value = next(r for r in sorted(set(held) - {None})
+                     if r != int(r) and above(round(r - 0.01, 4)) != above(int(r)))
+        edge = round(value - 0.01, 4)
+        self.assertEqual(self.count(1, 1, self.term("rating", ">>=", edge)), above(edge))
+        self.assertEqual(self.count(1, 1, f"rating>>={edge}"), above(edge), "raw spelling")
+        self.assertEqual(self.count(1, 1, self.term("rating", ">=", value)), above(edge))
+
+    def test_items_with_no_value_sort_first_ascending_and_last_descending(self):
+        for field in ("rating", "lastViewedAt", "originallyAvailableAt"):
+            blank = sum(self.mine(it, field) is None for it in self.movies)
+            self.assertTrue(0 < blank < len(self.movies))
+            for sort, first in ((f"{field}:desc", False), (f"{field}:asc", True),
+                                (f"{field}:desc:nullsLast", False), (f"{field}:asc:nullsLast", False)):
+                with self.subTest(sort=sort):
+                    got = [self.mine(it, field) for it in self.rows(1, 1, sort)]
+                    lead, tail = (got[:blank], got[blank:]) if first else (
+                        got[len(got) - blank:], got[:len(got) - blank])
+                    self.assertEqual(lead, [None] * blank)
+                    self.assertNotIn(None, tail)
+                    self.assertEqual(tail, sorted(tail, reverse=sort.split(":")[1] == "desc"))
+
+    def test_greater_excludes_no_value_items_and_less_includes_them(self):
+        for field in ("rating", "lastViewedAt"):
+            held = [self.mine(it, field) for it in self.movies]
+            nonnull = [v for v in held if v is not None]
+            below, above = min(nonnull) - 1, max(nonnull) + 1
+            self.assertEqual(self.count(1, 1, self.term(field, ">>=", below)), len(nonnull))
+            self.assertEqual(self.count(1, 1, self.term(field, ">=", below)), len(nonnull))
+            self.assertEqual(self.count(1, 1, self.term(field, "<<=", below)), len(held) - len(nonnull))
+            self.assertEqual(self.count(1, 1, self.term(field, "<=", above)), len(held))
+            self.assertEqual(self.count(1, 1, self.term(field, "=", below)), 0)
+
+    def test_a_probe_at_zero_leaves_out_no_value_items_and_only_the_inclusive_one_counts_stored_zeros(self):
+        # Measured (docs/pms-api.md, "Stored zeros"): `>>=-1` and `>=0` count every item that holds a
+        # number, `>>=0` only those above zero; an item with no value is in none of them.
+        for field, items in (("rating", self.movies), ("duration", self.movies),
+                             ("unviewedLeafCount", self.shows)):
+            held = [self.mine(it, field) for it in items]
+            nonnull = [v for v in held if v is not None]
+            kind, section = (1, 1) if items is self.movies else (2, 2)
+            with self.subTest(field=field):
+                self.assertEqual(self.count(section, kind, self.term(field, ">>=", -1)), len(nonnull))
+                self.assertEqual(self.count(section, kind, self.term(field, ">=", 0)), len(nonnull))
+                self.assertEqual(self.count(section, kind, self.term(field, ">>=", 0)),
+                                 sum(v > 0 for v in nonnull))
+        self.assertLess(len([it for it in self.movies if "rating" in it]), len(self.movies), "unrated movies")
+        # A server that STORES a zero the listing hides (movie `viewCount`: 25 of 44 on the measured one).
+        lib = Library(seed=3, movies=20, shows=3, band_fixture=True)
+        movies = [it for it in lib.items.values() if it["type"] == "movie" and it["librarySectionID"] == 1]
+        unplayed = [it for it in movies if "viewCount" not in it]
+        played = sum(it.get("viewCount", 0) > 0 for it in movies)
+        self.assertGreaterEqual(len(unplayed), 4)
+        for it in unplayed[:4]:
+            it["viewCount"] = 0
+        self.pms = MockPms(lib)  # on the instance: the shared server is back after the test
+        for op, edge, want in ((">>=", -1, played + 4), (">=", 0, played + 4), (">>=", 0, played)):
+            self.assertEqual(self.count(1, 1, self.term("viewCount", op, edge)), want, f"{op}{edge}")
+
+    def test_a_negative_bare_number_on_a_date_field_is_an_absolute_epoch(self):
+        # Measured (docs/pms-api.md): `-N` without a unit is a number, not a relative date. The mock's
+        # release dates reach back to 1950, so the probes below tell an absolute reading from both an
+        # ignored term and a clamp at zero.
+        sixties = -315619200  # 1960-01-01 UTC
+        for field, items in (("originallyAvailableAt", self.movies), ("addedAt", self.movies),
+                             ("originallyAvailableAt", self.shows)):
+            held = [self.mine(it, field) for it in items]
+            kind, section = (1, 1) if items is self.movies else (2, 2)
+            for op, edge in ((">=", sixties), (">>=", sixties - 1), (">=", -1), (">>=", -1),
+                             ("<<=", -1), ("<=", sixties), (">=", 0)):
+                with self.subTest(field=field, op=op, edge=edge):
+                    self.assertEqual(self.count(section, kind, self.term(field, op, edge)),
+                                     sum(self.passes(op, v, edge) for v in held))
+        held = [self.mine(it, "originallyAvailableAt") for it in self.movies]
+        before_1970 = sum(v is not None and v < 0 for v in held)
+        before_1960 = sum(v is not None and v < sixties for v in held)
+        self.assertGreater(before_1960, 0)
+        self.assertGreater(before_1970, before_1960)
+        self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", ">=", sixties)),
+                         len([v for v in held if v is not None]) - before_1960)
+        self.assertNotEqual(self.count(1, 1, self.term("originallyAvailableAt", ">=", sixties)),
+                            self.count(1, 1, self.term("originallyAvailableAt", ">=", 0)), "not a clamp at 0")
+
+    def test_the_count_probe_needs_a_start_as_well_as_a_size(self):
+        total = len(self.movies)
+        path = "/library/sections/1/all?type=1"
+        for label, query, headers in (
+                ("header", path, self.COUNT_HEADERS),
+                ("query", path + "&X-Plex-Container-Start=0&X-Plex-Container-Size=0", {})):
+            mc = self.container(query, headers)
+            self.assertEqual((mc["size"], mc["totalSize"], mc["offset"], mc.get("Metadata", [])),
+                             (0, total, 0, []), label)
+        for label, query, headers in (
+                ("header", path, {"X-Plex-Container-Size": "0"}),
+                ("query", path + "&X-Plex-Container-Size=0", {})):
+            mc = self.container(query, headers)
+            self.assertEqual((mc["size"], "totalSize" in mc), (total, False), label)
+
+    def test_offsets_are_the_count_at_or_above_the_edge_descending_and_its_complement_ascending(self):
+        for section, kind, field, items in (
+                (1, 1, "rating", self.movies), (1, 1, "lastViewedAt", self.movies),
+                (1, 1, "addedAt", self.movies), (1, 1, "originallyAvailableAt", self.movies),
+                (2, 2, "unviewedLeafCount", self.shows), (2, 2, "addedAt", self.shows)):
+            held = [self.mine(it, field) for it in items]
+            distinct = sorted(set(held) - {None})
+            for edge in distinct[1::max(1, len(distinct) // 4)]:
+                with self.subTest(field=field, edge=edge):
+                    c = self.count(section, kind, self.term(field, ">=", edge))
+                    unit = 0.01 if isinstance(edge, float) else 1
+                    self.assertEqual(c, self.count(section, kind,
+                                                   self.term(field, ">>=", round(edge - unit, 4))),
+                                     "`>=E` is `>>=E-1unit`")
+                    self.assertEqual(c, sum(v is not None and v >= edge for v in held))
+                    # descending: the first item below E sits at offset count(>=E)
+                    top, under = self.rows(section, kind, field + ":desc", c - 1, 2)[:2]
+                    self.assertGreaterEqual(self.mine(top, field), edge)
+                    self.assertTrue(self.mine(under, field) is None or self.mine(under, field) < edge)
+                    # ascending: the first item at or above E sits at total - count(>=E)
+                    offset = len(held) - c
+                    before, first = self.rows(section, kind, field + ":asc", offset - 1, 2)[:2]
+                    self.assertTrue(self.mine(before, field) is None or self.mine(before, field) < edge)
+                    self.assertGreaterEqual(self.mine(first, field), edge)
+                    self.assertEqual(self.count(section, kind, self.term(field, "<<=", edge)), offset)
+
+    def test_a_shows_unplayed_count_rolls_up_from_its_episodes_and_sorts_and_filters(self):
+        unwatched = {}
+        for ep in self.lib.items.values():
+            if ep["type"] == "episode":
+                unwatched[ep["grandparentRatingKey"]] = unwatched.get(ep["grandparentRatingKey"], 0) + (
+                    0 if ep.get("viewCount", 0) > 0 else 1)
+        want = {show["ratingKey"]: unwatched.get(show["ratingKey"], 0) for show in self.shows}
+        listed = self.rows(2, 2, "unviewedLeafCount:desc")
+        self.assertEqual({r["ratingKey"]: self.mine(r, "unviewedLeafCount") for r in listed}, want)
+        order = [self.mine(r, "unviewedLeafCount") for r in listed]
+        self.assertEqual(order, sorted(order, reverse=True))
+        edge = sorted(set(want.values()))[2]
+        self.assertEqual(self.count(2, 2, self.term("unviewedLeafCount", ">>=", edge)),
+                         sum(v > edge for v in want.values()))
+
+    def test_episode_added_at_is_the_newest_episode_descending_and_the_oldest_ascending(self):
+        times = {}
+        for ep in self.lib.items.values():
+            if ep["type"] == "episode":
+                times.setdefault(ep["grandparentRatingKey"], []).append(ep["addedAt"])
+        newest = {rk: max(v) for rk, v in times.items()}
+        oldest = {rk: min(v) for rk, v in times.items()}
+        desc = [newest[r["ratingKey"]] for r in self.rows(2, 2, "episode.addedAt:desc")]
+        self.assertEqual(desc, sorted(desc, reverse=True))
+        asc_rows = self.rows(2, 2, "episode.addedAt:asc")
+        by_oldest = [oldest[r["ratingKey"]] for r in asc_rows]
+        by_newest = [newest[r["ratingKey"]] for r in asc_rows]
+        self.assertEqual(by_oldest, sorted(by_oldest))
+        self.assertNotEqual(by_newest, sorted(by_newest), "ascending is NOT the descending mirror")
+        mid = sorted(newest.values())[len(newest) // 2]
+        self.assertEqual(self.count(2, 2, self.term("episode.addedAt", ">>=", mid)),
+                         sum(v > mid for v in newest.values()), "any episode newer")
+        older = self.count(2, 2, self.term("episode.addedAt", "<<=", mid))
+        self.assertEqual(older, sum(v < mid for v in oldest.values()), "any episode older")
+        self.assertNotEqual(older, sum(v < mid for v in newest.values()), "not: the newest is older")
+        # the ascending offset of the first show with no episode older than `low` is count(<<=)
+        low = sorted(oldest.values())[len(oldest) // 2]
+        offset = self.count(2, 2, self.term("episode.addedAt", "<<=", low))
+        self.assertGreater(offset, 0)
+        self.assertLess(oldest[asc_rows[offset - 1]["ratingKey"]], low)
+        self.assertGreaterEqual(oldest[asc_rows[offset]["ratingKey"]], low)
+
+    def test_an_unknown_or_unsupported_term_is_ignored_and_answers_the_whole_library(self):
+        total = len(self.movies)
+        for term in ("bogusfield%3E%3E=100", "rating%3E%3E=-3w", "rating%3E%3E=nan", "rating%21=5",
+                     "rating%3E%3E=", "episode.addedAt%3E%3E=1", "unviewedLeafCount%3E%3E=100"):
+            self.assertEqual(self.count(1, 1, term), total, term)
+        self.assertEqual(self.count(2, 2, "leafCount%3E%3E=100"), len(self.shows), "a REAL attribute")
+        self.assertEqual(self.count(2, 2, "show.id=1"), len(self.shows))
+
+    def test_release_dates_compare_as_utc_midnight_epochs(self):
+        day = next(m["originallyAvailableAt"] for m in self.movies if m.get("originallyAvailableAt"))
+        midnight = calendar.timegm(datetime.date.fromisoformat(day).timetuple())
+        held = [self.mine(m, "originallyAvailableAt") for m in self.movies]
+        self.assertGreaterEqual(held.count(midnight), 1)
+        # In a zone that is not UTC (a CI runner usually is), where a day read as LOCAL midnight
+        # (`time.mktime`) lands hours away from the UTC midnight the server compares.
+        for zone in ("Asia/Tokyo", "America/Los_Angeles"):
+            with self.subTest(zone=zone), local_zone(zone):
+                self.assertNotEqual(time.mktime(datetime.date.fromisoformat(day).timetuple()), midnight)
+                self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", "=", midnight)),
+                                 held.count(midnight))
+                self.assertEqual(
+                    self.count(1, 1, self.term("originallyAvailableAt", "=", midnight + 3600)), 0)
+                self.assertEqual(self.count(1, 1, self.term("originallyAvailableAt", ">>=", midnight)),
+                                 sum(v is not None and v > midnight for v in held))
+
+    def test_sort_menus_follow_the_server_per_type_under_the_fixture_only(self):
+        def keys(pms, section, kind):
+            typed = "" if kind is None else f"type={kind}&"
+            status, _, data = pms.handle(
+                "GET", f"/library/sections/{section}/all?{typed}includeMeta=1"
+                       "&X-Plex-Container-Start=0&X-Plex-Container-Size=0")
+            active = [t for t in json.loads(data)["MediaContainer"]["Meta"]["Type"] if t["active"]]
+            self.assertEqual(len(active), 1)
+            return [s["key"] for s in active[0]["Sort"]]
+        self.assertEqual(keys(self.pms, 1, 1), [
+            "titleSort", "originallyAvailableAt", "rating", "audienceRating", "duration", "addedAt",
+            "lastViewedAt", "mediaHeight", "random"])
+        self.assertEqual(keys(self.pms, 2, 2), [
+            "titleSort", "originallyAvailableAt", "rating", "audienceRating", "unviewedLeafCount",
+            "episode.addedAt", "lastViewedAt", "random"])
+        short = ["titleSort", "addedAt", "originallyAvailableAt", "rating", "lastViewedAt", "random"]
+        self.assertEqual(keys(MockPms(Library()), 1, 1), short)
+        # no `type` takes the section's own; seasons and episodes have the lists measured for them
+        self.assertEqual(keys(self.pms, 2, None), keys(self.pms, 2, 2))
+        self.assertEqual(keys(self.pms, 1, None), keys(self.pms, 1, 1))
+        self.assertEqual(len(keys(self.pms, 2, 3)), 2)
+        self.assertEqual(len(keys(self.pms, 2, 4)), 7)
+        for kind in (3, 4):
+            self.assertNotEqual(keys(MockPms(Library()), 2, kind), keys(self.pms, 2, kind), kind)
+        self.assertEqual(keys(MockPms(Library()), 2, 4), short, "the default library keeps its short list")
+
+    # --- a show library's SEASONS (type 3) and EPISODES (type 4) listings --------------------------
+
+    TV_TITLE_EPISODES = ("show.titleSort,season.index:nullsLast,episode.index:nullsLast,"
+                         "episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id")
+    TV_TITLE_EPISODES_DESC = TV_TITLE_EPISODES.replace("show.titleSort", "show.titleSort:desc", 1)
+
+    _rail_library = None
+
+    def use_a_library_with_letters(self):
+        """This test reads a band-fixture library whose shows' sort titles start with five different letters
+        (`rail_fixture`): the generated names all share one, so a letters index would have a single bucket."""
+        cls = type(self)
+        if cls._rail_library is None:
+            lib = Library(seed=3, movies=60, shows=15, band_fixture=True, rail_fixture=True)
+            cls._rail_library = (lib, MockPms(lib))
+        self.lib, self.pms = cls._rail_library
+        self.shows = [it for it in self.lib.items.values() if it["type"] == "show" and it["librarySectionID"] == 2]
+
+    def tv_meta(self, kind):
+        """`Meta.Type[]` of an `includeMeta=1` read of type `kind`: every entry, and the active one's sorts."""
+        mc = self.container(f"/library/sections/2/all?type={kind}&includeMeta=1",
+                            {"X-Plex-Container-Start": "0", "X-Plex-Container-Size": "0"})
+        types = mc["Meta"]["Type"]
+        return types, [t for t in types if t["active"]]
+
+    def test_the_seasons_and_episodes_menus_are_the_two_and_the_seven_the_server_declares(self):
+        sort_rows = lambda t: [(s["key"], s["descKey"], s["defaultDirection"]) for s in t["Sort"]]
+        types, active = self.tv_meta(3)
+        self.assertEqual(([t["type"] for t in types], [t["type"] for t in active]),
+                         (["show", "season", "episode"], ["season"]), "only the listing's own type is active")
+        self.assertEqual(sort_rows(active[0]), [
+            ("show.titleSort,index", "show.titleSort:desc,index", "asc"), ("random", "random:desc", "desc")])
+        types, active = self.tv_meta(4)
+        self.assertEqual([t["type"] for t in active], ["episode"])
+        self.assertEqual(sort_rows(active[0]), [
+            (self.TV_TITLE_EPISODES, self.TV_TITLE_EPISODES_DESC, "asc"),
+            ("originallyAvailableAt", "originallyAvailableAt:desc", "desc"), ("rating", "rating:desc", "desc"),
+            ("audienceRating", "audienceRating:desc", "desc"), ("addedAt", "addedAt:desc", "desc"),
+            ("lastViewedAt", "lastViewedAt:desc", "desc"), ("random", "random:desc", "desc")])
+
+    def tv_expected_order(self, kind, desc):
+        """The ratingKeys of the seasons (3) or episodes (4) in the Title order the server declares, built the
+        other way round from the mock: show by show (reversed for the `descKey`), each show's seasons by
+        index, each season's episodes by index."""
+        out = []
+        for show in sorted(self.shows, key=lambda s: s["titleSort"], reverse=desc):
+            seasons = sorted((it for it in self.lib.items.values() if it["type"] == "season"
+                              and it["parentRatingKey"] == show["ratingKey"]), key=lambda s: s["index"])
+            for season in seasons:
+                if kind == 3:
+                    out.append(season["ratingKey"])
+                else:
+                    out += [e["ratingKey"] for e in sorted(
+                        (it for it in self.lib.items.values() if it["type"] == "episode"
+                         and it["parentRatingKey"] == season["ratingKey"]), key=lambda e: e["index"])]
+        return out
+
+    def test_seasons_and_episodes_are_ordered_by_the_declared_title_key_and_not_by_the_literal_one(self):
+        self.use_a_library_with_letters()
+        keys = lambda sort, kind: [r["ratingKey"] for r in self.rows(2, kind, sort)]
+        titles = {3: ("show.titleSort,index", "show.titleSort:desc,index"),
+                  4: (self.TV_TITLE_EPISODES, self.TV_TITLE_EPISODES_DESC)}
+        for kind, (asc, desc) in titles.items():
+            quote = lambda sort: urllib.parse.quote(sort, safe=":,.")
+            self.assertGreater(len(keys(None, kind)), 20)
+            self.assertEqual(keys(None, kind), self.tv_expected_order(kind, False), "the default order")
+            self.assertEqual(keys(quote(asc), kind), self.tv_expected_order(kind, False), "the declared key")
+            self.assertEqual(keys(quote(desc), kind), self.tv_expected_order(kind, True), "the declared descKey")
+            self.assertNotEqual(keys("titleSort:asc", kind), self.tv_expected_order(kind, False),
+                                f"type {kind}: the literal titleSort is another order, as measured")
+        # `:desc` appended to the composite key is not its descKey: the shows do not reverse
+        wrong = urllib.parse.quote(self.TV_TITLE_EPISODES + ":desc", safe=":,.")
+        self.assertNotEqual(keys(wrong, 4), self.tv_expected_order(4, True))
+
+    def test_the_letters_of_seasons_and_episodes_count_by_show_and_land_on_the_listings_boundaries(self):
+        self.use_a_library_with_letters()
+        shows = {s["ratingKey"]: s for s in self.shows}
+        for kind, unwatched_key in ((3, "unwatchedLeaves"), (4, "unwatched")):
+            for terms in ((), (f"{unwatched_key}=1",)):
+                path = f"/library/sections/2/firstCharacter?type={kind}" + "".join("&" + t for t in terms)
+                letters = [(d["title"], d["size"]) for d in self.container(path)["Directory"]]
+                counted = self.count(2, kind, *terms)
+                self.assertEqual(sum(size for _, size in letters), counted, (kind, terms, "sum == count"))
+                self.assertGreater(len(letters), 1)
+                for desc in (False, True):
+                    sort = urllib.parse.quote({(3, False): "show.titleSort,index", (3, True): "show.titleSort:desc,index",
+                                               (4, False): self.TV_TITLE_EPISODES, (4, True): self.TV_TITLE_EPISODES_DESC}[kind, desc],
+                                              safe=":,.")
+                    rows = self.rows(2, kind, sort + "".join("&" + t for t in terms))
+                    walk = letters[::-1] if desc else letters
+                    boundaries = [title for title, size in walk for _ in range(size)]
+                    group = "grandparentRatingKey" if kind == 4 else "parentRatingKey"
+                    glyphs = [shows[r[group]]["titleSort"][0].upper() for r in rows]
+                    self.assertEqual(glyphs, boundaries, (kind, terms, desc))
+        # the Unwatched episodes are fewer than the episodes: the term narrows the letters too
+        narrowed = self.container("/library/sections/2/firstCharacter?type=4&unwatched=1")["Directory"]
+        self.assertLess(sum(d["size"] for d in narrowed), self.count(2, 4))
+
+    def test_episodes_hold_the_values_their_value_sorts_and_range_terms_read(self):
+        """MOCK MODEL, NOT MEASURED for `rating` and `lastViewedAt`: a real PMS held no value in either on an
+        episode (docs/pms-api.md, "Count probes for seasons and episodes"), so the exact `rating>>=` and
+        `lastViewedAt>=` counts below say what the MOCK does with the values it was given. Only `addedAt` and
+        `originallyAvailableAt` (UTC midnight) were verified on a server; `audienceRating` is rounded there."""
+        episodes = [it for it in self.lib.items.values() if it["type"] == "episode" and it["librarySectionID"] == 2]
+        for field in ("rating", "audienceRating", "originallyAvailableAt", "lastViewedAt"):
+            held = [self.mine(it, field) for it in episodes]
+            self.assertTrue(any(v is None for v in held) and any(v is not None for v in held), field)
+        self.assertTrue(all("addedAt" in it for it in episodes), "an episode is always added at some time")
+        for it in episodes:
+            for field in ("rating", "audienceRating"):
+                if field in it:
+                    self.assertEqual(it[field], round(it[field], 1), "tenths, as the listing prints them")
+        # a range term compares the number the row holds: ratings as floats, air dates as UTC midnight
+        for field, op, edge in (("rating", ">>=", 6.0), ("audienceRating", "<<=", 5.0), ("addedAt", ">>=", 1_640_995_200),
+                                ("lastViewedAt", ">=", 1_640_995_200),
+                                ("originallyAvailableAt", ">>=", calendar.timegm((2010, 6, 1, 0, 0, 0)))):
+            expected = sum(self.passes(op, self.mine(it, field), edge) for it in episodes)
+            self.assertEqual(self.count(2, 4, self.term(field, op, edge)), expected, (field, op))
+            self.assertGreater(expected, 0)
+            self.assertLess(expected, len(episodes))
+        # sort=audienceRating: no-value rows first ascending, last descending; the rest in order
+        asc = self.rows(2, 4, "audienceRating:asc")
+        desc = self.rows(2, 4, "audienceRating:desc")
+        self.assertEqual(len(asc), len(episodes))
+        values = lambda rows: [r.get("audienceRating") for r in rows]
+        bare = sum(v is None for v in values(asc))
+        self.assertGreater(bare, 0)
+        self.assertEqual(values(asc)[:bare], [None] * bare)
+        self.assertEqual(values(desc)[-bare:], [None] * bare)
+        held = values(asc)[bare:]
+        self.assertEqual(held, sorted(held))
+        self.assertEqual(values(desc)[:-bare], held[::-1])
+        self.assertEqual([r["ratingKey"] for r in self.rows(2, 4, "audienceRating")], [r["ratingKey"] for r in asc],
+                         "no direction is ascending")
+
+    def test_the_tv_listings_of_a_default_library_keep_their_own_order_and_letters(self):
+        lib = Library()
+        self.assertNotIn("band_fixture", lib.__dict__)
+        for kind in ("season", "episode"):
+            got = lib.section_items("2", {"type": "3" if kind == "season" else "4"})
+            rows = [it for it in lib.items.values() if it["type"] == kind and it["librarySectionID"] == 2]
+            self.assertEqual([it["ratingKey"] for it in got],
+                             [it["ratingKey"] for it in sorted(rows, key=lambda it: it["titleSort"])], kind)
+        letters = lib.first_characters("2", {"type": "4"})
+        own = {}
+        for it in lib.items.values():
+            if it["type"] == "episode" and it["librarySectionID"] == 2:
+                own[it["titleSort"][0].upper()] = own.get(it["titleSort"][0].upper(), 0) + 1
+        self.assertEqual({d["title"]: d["size"] for d in letters}, own, "counted by the row's own title, as before")
+
+    def test_off_by_default_and_the_older_sorts_order_as_they_always_did(self):
+        lib = Library()
+        self.assertNotIn("band_fixture", lib.__dict__)
+        old = {"titleSort": lambda it: it["titleSort"], "addedAt": lambda it: it["addedAt"],
+               "originallyAvailableAt": lambda it: it.get("originallyAvailableAt", ""),
+               "year": lambda it: it.get("year", 0), "rating": lambda it: it.get("rating", 0.0),
+               "lastViewedAt": lambda it: it.get("lastViewedAt", 0)}
+        for section, kind in ((1, "movie"), (2, "show")):
+            base = [it for it in lib.items.values()
+                    if it["type"] == kind and it["librarySectionID"] == section]
+            for field, key in old.items():
+                for direction in ("asc", "desc"):
+                    expected = sorted(base, key=key, reverse=direction == "desc")
+                    got = lib.section_items(str(section), {"sort": f"{field}:{direction}"})
+                    self.assertEqual([it["ratingKey"] for it in got],
+                                     [it["ratingKey"] for it in expected], (kind, field, direction))
+
+    def test_the_flag_reaches_the_server_over_http(self):
+        server, pms = serve(0, movies=30, shows=4, band_fixture=True)
+        try:
+            self.assertTrue(pms.lib.band_fixture)
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            request = urllib.request.Request(
+                base + "/library/sections/1/all?type=1&rating%3E%3E=7.99",
+                headers={"X-Plex-Container-Start": "0", "X-Plex-Container-Size": "0"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                mc = json.loads(response.read())["MediaContainer"]
+            held = [it.get("rating") for it in pms.lib.items.values()
+                    if it["type"] == "movie" and it["librarySectionID"] == 1]
+            self.assertEqual((mc["size"], mc["totalSize"]),
+                             (0, sum(v is not None and v > 7.99 for v in held)))
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 class HomeHubsFlag(unittest.TestCase):

@@ -109,11 +109,11 @@ impl WatchlistOptionsState {
         }
     }
 
-    /// The pill's `<summary>` half: the current SORT, by its menu label ("Date added", "Title"),
-    /// the same fact the Library's pill names. A filter (Type, Show) never shows here; it shows
-    /// as the header's "N of M" read-out. The direction is not spelled: the open menu shows it as
-    /// the checked sort row's value word, and the pill has to share the header line with the
-    /// title and the count in the longest language.
+    /// The sort control's criterion, the one text it draws: the current SORT, by its menu label
+    /// ("Date added", "Title"), the same fact the Library's sort control names. A filter (Type,
+    /// Show) never shows here; it shows as the header's "N of M" read-out. The direction is not
+    /// spelled: the open menu shows it as the checked sort row's value word, and the control has
+    /// to share the header line with the title and the count in the longest language.
     pub fn summary(&self) -> String {
         OptionsRow::Sort(self.sort).label().to_string()
     }

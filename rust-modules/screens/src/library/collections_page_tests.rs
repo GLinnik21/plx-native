@@ -153,8 +153,8 @@ fn every_shipped_language_words_the_count_without_english() {
         if l.tag() == "en" { continue; }
         let s = lines(l.tag(), CaptionPolicy::DEFAULT, &films(7))[1].clone().unwrap();
         assert!(s.starts_with("7 ") || s.contains('7'), "{}: {s}", l.tag());
-        // French spells the plural of "film" as English does.
-        if l.tag() != "fr" { assert_ne!(s, en, "{}: caption is English", l.tag()); }
+        // French and Dutch spell the plural of "film" as English does.
+        if !["fr", "nl"].contains(&l.tag()) { assert_ne!(s, en, "{}: caption is English", l.tag()); }
     }
 }
 

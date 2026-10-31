@@ -27,7 +27,7 @@ answers what a QA pass would find.
 | Is **private data** in the repo? | Git history is clean of credentials. Release CI has no `config.local.h`, remaps host paths, compiles out the trigger/FIFO/capture surfaces, and verifies the shipped bytes. The event log scrubs tokens, server addresses, household names and media text before writing, and the three runtime logs (events, crash, stderr) are mode 0640 — group read for a Dev Mode user's file tool, never world-readable; §4 records the remaining diagnostic surface and the residual risk. |
 | Needs a **rooted** TV? | **No** — the unprivileged Dev Mode jail is device-proven in §3.5. Homebrew and retail layouts now use probed writable paths; Key Manager permission is capability-tested and denial keeps the mode-0600 fallback. A real LG Content Store entitlement/install is still an acceptance test, not something the rooted development set can prove. |
 | **Licensing** clear? | Font blocker **CLEARED 2026-08-01** — Inter (OFL 1.1) replaced Monotype Arial. FFmpeg/LGPL is fine. The repo still has **no LICENSE file at all**. |
-| **Trademarks**? | Plex itself is fine (their guidelines have an explicit permitted formula). **Rotten Tomatoes marks have no licensing route that exists**, and the TMDB logo ships without its mandatory attribution. |
+| **Trademarks**? | Plex itself is fine (their guidelines have an explicit permitted formula). **Rotten Tomatoes marks have no public licence** (RT reviews each proposed use case by case, and this project holds no permission), so the rating row names its providers in words and ships no RT, IMDb or TMDB marks (§11). |
 
 **Blockers, in the order they'd bite:** *(1 — the Arial font — was cleared 2026-08-01, see §5.3)*
 
@@ -1704,10 +1704,14 @@ fontTools dumps of `pkg/appfont*.ttf`; `tar tzf ipkroot/data.tar.gz`.
 
 ## 11. The rating marks are ours now (2026-08-02)
 
-The last hard trademark blocker. Rotten Tomatoes' marks had **no licensing route in existence** —
-their developer programme is closed to unofficial projects and `developer.fandango.com` does not
-resolve, so there was not even an application path — and redrawing a mark is the standard
-infringement pattern rather than a defence.
+The last hard trademark blocker. Rotten Tomatoes' marks have **no public or self-serve licence**.
+RT's licensing page (`rottentomatoes.com/help_desk/licensing`, read 2026-10-29) sends every
+proposed use of its logos or data through a Business Proposal Form for case-by-case review, and
+says the Fresh Tomato, Rotten Splat, Hot Popcorn and Stale Popcorn logos *"cannot be altered
+without prior written permission"*. Fandango's developer portal (`developer.fandango.com`) no
+longer resolves. This project holds no such permission, and redrawing a mark is the standard
+infringement pattern rather than a defence. (The 2026-08-02 review found no application path at
+all; the 2026-10-29 re-check found the form. The decision is unchanged.)
 
 Removed: the 5 RT states as 11 layered SVGs (fruit, Certified Fresh seal, upright and spilled
 popcorn tubs), plus a dead `tmdb.svg` and a retired `star.svg` that nothing drew. Also removed —
@@ -1730,6 +1734,22 @@ What remains is not a licensing question but a taste one: the tomato is a fruit,
 a percentage in a movie app still gestures at Rotten Tomatoes. That is the owner's call, made with
 the facts on the table, and the two shapes a rights holder would actually write about — the seal and
 the popcorn pair — are the ones that are gone.
+
+**Re-checked 2026-10-29, when a revision of #1129 proposed redrawn splat and popcorn marks
+(withdrawn in review).** Other clients that show the marks are not precedent. Plezy ships copies
+of RT's marks (Wikimedia/Inkscape traces in RT's exact colours,
+`github.com/edde746/plezy/tree/1dd75b3e5e95913cdaa5b8c22911490e72dfb7c5/assets/rating_icons`),
+which RT's published terms do not allow. Infuse 8.5.7 (2026-10-13) shows RT's own artwork after
+Firecore said in 2024 that *"the Rotten Tomatoes service presents a number of challenges"* and that
+it had *"recently gained official access to Metacritic ratings"*
+(`community.firecore.com/t/imdb-rotten-tomato-ratings/14551?page=8`), so it is most likely a
+licensee. Neither helps us. Fandango grants its marks in writing, revocably, without sublicensing
+and per developer, so another app's licence never reaches this one. A use nobody has challenged is
+not a permitted one either; it only means the owner has not acted yet. And a logo is the weakest
+form of reference: *Toyota v. Tabari*, 610 F.3d 1171 (9th Cir. 2010), treated a stylized mark and
+logo as more of the mark than nominative use needs where words would do. The one enforcement action
+found is Fandango's 2017 legal request that made OMDb stop serving RT data
+(`github.com/omdbapi/OMDb-API/issues/5`).
 
 ---
 

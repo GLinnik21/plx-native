@@ -13,7 +13,8 @@
 //! answer waits in a claim-guarded mailbox (`Fetch`) stamped with the request's generation (a
 //! re-query supersedes in-flight landings), applied on the main thread by [`pump`] once a frame
 //! while the Library screen is up. The filter menus' value lists (genres, first letters) leave the
-//! same way, as `StoreJob::BrowseDirectory`.
+//! same way, as `StoreJob::BrowseDirectory`, and so do the band counts of a value sort's rail
+//! (`bands.rs`, `letters.rs`).
 //!
 //! The sort/filter MENUS are server-driven: the first page of a section is requested with
 //! `includeMeta=1` and the response's `Meta.Type[]` supplies the Sort entries; the genre
@@ -62,6 +63,7 @@
 //! that replaces it, and it holds for every source that lands later rather than only for the
 //! second call.
 use plx_plex::plex::{ClientKeys, SectionQuery, ServerId};
+use letters::LettersKey;
 use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
 use crate::stores::page_cache::{kept_when_over_budget, Keep, PAGE};
@@ -403,6 +405,13 @@ impl LibraryType {
         }
     }
 
+    /// The `type=` term of a listing of this type ([`Self::plex_type`]) as the wire pair a listing
+    /// request carries: empty for the section's own default listing. The first of
+    /// [`SecState::query_filters`]' terms, and the whole of what the genre list is asked with.
+    pub fn type_terms(self, kind: SecKind) -> Vec<(String, String)> {
+        self.plex_type(kind).map(|ty| ("type".to_owned(), ty.to_string())).into_iter().collect()
+    }
+
     /// Do the Unwatched and Genre filters apply? A collection has no watch state of its own and
     /// no genre, so both are hidden — and not sent — while collections are listed. The section's
     /// Unwatched switch is kept for when its own type is listed again (a genre never survives a
@@ -470,6 +479,28 @@ impl SortEntry {
         crate::sortfacts::SortFact::of_pms_key(&self.key).is_some()
     }
 
+    /// Is this the entry that orders a `listing` by title, the order the `/firstCharacter` counts sum
+    /// in? The A-Z letters rail needs exactly that order, ascending
+    /// ([`view::ListingView::rail_available`] adds the direction).
+    ///
+    /// The section's own listing and the collections list say `titleSort`. Seasons and episodes do
+    /// NOT: the server declares a COMPOSITE (`show.titleSort,index` for seasons,
+    /// `show.titleSort,season.index:nullsLast,...` for episodes) and counts the letters by the SHOW's
+    /// title, which the prefix sums land on only in that declared order (the default order is the same
+    /// one), never in the literal `titleSort`'s (`docs/pms-api.md`, "Count probes for seasons and
+    /// episodes"). Their Title entry is therefore the one whose FIRST comma-separated term is exactly
+    /// `show.titleSort`, read on the key as the server lists it: not through
+    /// [`crate::sortfacts::SortFact::of_pms_key`], which strips the table prefix and so would take a
+    /// literal `titleSort`, a `title` or an `episode.titleSort,...` key for it too (the letters land
+    /// on none of those orders: 41 of 48 seasons and 125 of 525 episodes over the literal one).
+    pub fn is_title_order(&self, listing: LibraryType) -> bool {
+        // Exhaustive on purpose: a fifth listing must decide here.
+        match listing {
+            LibraryType::Primary | LibraryType::Collections => self.key == "titleSort",
+            LibraryType::Seasons | LibraryType::Episodes => self.key.split(',').next() == Some("show.titleSort"),
+        }
+    }
+
     /// The word for the order this entry is in when `desc`: "A–Z", "Newest first". `None` for a
     /// key whose axis is unknown (a random order has no ends).
     pub fn direction_word(&self, desc: bool) -> Option<&'static str> {
@@ -530,7 +561,9 @@ pub enum SecFetch {
     Failed,
 }
 
+pub mod bands;
 pub mod discovery_job;
+mod letters;
 pub mod listing_jobs;
 pub mod record;
 mod saved_view;
@@ -589,12 +622,41 @@ struct SecState {
     /// The same for the saved genre: false only while its existence check could not be read, so
     /// the library opened unfiltered but the record still holds the genre.
     genre_resolved: bool,
-    /// per-letter (label, count) in titleSort order, from `/firstCharacter` — the letter rail.
-    /// Counts describe the UNFILTERED title listing, so the rail only shows in that state.
+    /// per-letter (label, count) in the listing's Title order, from `/firstCharacter` (`titleSort` for
+    /// the section's own listing and collections, the declared composite for seasons and episodes:
+    /// `SortEntry::is_title_order`) — the letter rail. They count the listing [`Self::letters_for`]
+    /// names and are shown only while that is the listing the grid shows, or the kept list is
+    /// ([`SecState::shown_letters`], `letters.rs`).
     letters: Arc<Vec<(String, i64)>>,
-    letters_done: bool,
-    /// The grid's own view (sort, genre, menus, letters), set aside while the section is on the
-    /// Collections listing and put back when it returns to the type it was on ([`LoanedView`]).
+    /// What `letters` counted; `None` = no list has landed (or it was forgotten).
+    letters_for: Option<LettersKey>,
+    /// The list `letters` replaced, with its key, while that is still worth showing again
+    /// ([`SecState::land_letters`]): turning a filter off must not cost the rail a read.
+    letters_kept: Option<(LettersKey, Arc<Vec<(String, i64)>>)>,
+    /// Moves when the server's membership changed under the section ([`SecState::membership_changed`]).
+    letters_gen: u32,
+    /// Moves when a title of the section's server had its watched state read back
+    /// ([`SecState::viewing_changed`]), whether or not Unwatched is applied: only a key counted
+    /// under Unwatched, or for a bands family that moves with viewing (plays, unplayed), carries it
+    /// ([`SecState::key_gen`]).
+    viewing_gen: u32,
+    /// A failed letters read of this key, and the steps left before it is asked again.
+    letters_backoff: Option<(LettersKey, u32)>,
+    /// The band counts of a value sort's rail, with the key they counted under and the verdict: the
+    /// rail, or `None` for a listing with nothing to band or counts that were not trusted. Shown only
+    /// while the key is the present one ([`SecState::shown_bands`], `letters.rs`), like the letters.
+    bands: Option<(LettersKey, Option<Arc<bands::BandRail>>)>,
+    /// The list `bands` replaced, while it is still worth showing again ([`SecState::land_bands`]).
+    bands_kept: Option<(LettersKey, Option<Arc<bands::BandRail>>)>,
+    /// A failed bands read of this key, and the steps left before it is asked again.
+    bands_backoff: Option<(LettersKey, u32)>,
+    /// Today's date as the Library's last ask handed it in (`LibraryWork::Letters`), the same for every
+    /// section ([`BrowseState::note_today`]): an INPUT, never a clock read. A calendar family's key
+    /// carries it, and none has bands without it.
+    today: Option<bands::Day>,
+    /// The grid's own view (sort, genre, menus), set aside while the section is on the Collections
+    /// listing and put back when it returns to the type it was on ([`LoanedView`]). The letters are
+    /// not loaned: every type change forgets them and the listing it lands on asks again.
     loaned: Option<LoanedView>,
     /// **The library's OWN shelves** — `Library Recommended`, as its server's owner arranged it.
     /// A field here rather than a store of its own because this struct is already the per-section
@@ -614,9 +676,10 @@ struct SecState {
 }
 
 /// What the Collections page borrows the section's single query from: the grid's sort, genre and
-/// the menus and letter counts that describe them. `set_library_type` resets all of it for the
-/// new type, so the page that listed Films, sorted by Date Added and filtered to Drama, would
-/// come back title-sorted and unfiltered; the loan hands it back whole instead.
+/// the menus that describe them. `set_library_type` resets all of it for the new type, so the page
+/// that listed Films, sorted by Date Added and filtered to Drama, would come back title-sorted and
+/// unfiltered; the loan hands it back whole instead. The letter counts are NOT part of it: what the
+/// section lists can change while Collections is shown, so they are asked again on the way back.
 #[derive(Clone)]
 struct LoanedView {
     library_type: LibraryType,
@@ -628,8 +691,6 @@ struct LoanedView {
     genres_done: bool,
     sort_resolved: bool,
     genre_resolved: bool,
-    letters: Arc<Vec<(String, i64)>>,
-    letters_done: bool,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -803,7 +864,15 @@ impl Default for SecState {
             sort_resolved: true,
             genre_resolved: true,
             letters: Arc::default(),
-            letters_done: false,
+            letters_for: None,
+            letters_kept: None,
+            letters_gen: 0,
+            viewing_gen: 0,
+            letters_backoff: None,
+            bands: None,
+            bands_kept: None,
+            bands_backoff: None,
+            today: None,
             loaned: None,
             hubs: Default::default(),
             fetch: SecFetch::Loading,
@@ -817,11 +886,10 @@ impl Default for SecState {
 
 impl SecState {
     /// Does the server's answer to this section's query change when an item is watched: the
-    /// Unwatched switch drops it, ordering by last viewed moves it? (Plex's sort key for "Last
-    /// Viewed" is `lastViewedAt`.)
+    /// Unwatched switch drops it, ordering by a value a watch changes moves it ([`orders_by_viewing`])?
     fn membership_depends_on_viewing(&self) -> bool {
         (self.unwatched && self.library_type.filters())
-            || self.sorts.get(self.sort_idx).is_some_and(|sort| sort.key == "lastViewedAt")
+            || self.sorts.get(self.sort_idx).is_some_and(|sort| orders_by_viewing(&sort.key))
     }
     /// Forget the listing, as a query edit does: the next visit fetches it afresh.
     fn reset_listing(&mut self) {
@@ -829,13 +897,15 @@ impl SecState {
         self.total = -1;
         self.items.clear();
         self.cursor = None;
+        // A stale flag spent here is what the letters hear of a membership change that was
+        // flagged rather than reset at once (`apply_view_local`, `listings_changed`).
+        if self.membership_stale {
+            self.letters_gen = self.letters_gen.wrapping_add(1);
+        }
         self.membership_stale = false;
     }
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
-        let mut filters = Vec::new();
-        if let Some(kind) = self.library_type.plex_type(section_kind) {
-            filters.push(("type".into(), kind.to_string()));
-        }
+        let mut filters = self.library_type.type_terms(section_kind);
         if !self.library_type.filters() {
             return filters;
         }
@@ -869,6 +939,7 @@ pub struct BrowseState {
     page_req: u32,
     genres_req: u32,
     letters_req: u32,
+    bands_req: u32,
     /// The request id of the last source discovery the step emitted: each takes the next one and
     /// raises the discovery claim for it, and a refusal of that id is what the next step settles
     /// ([`BrowseState::discovery_settle`]).
@@ -957,6 +1028,8 @@ pub struct BrowseAdapter {
     /// The genre and first-letter lists, each with a claim and mailbox of its own.
     genres: crate::stores::Fetch<DirectoryResult<GenreEntry>>,
     letters: crate::stores::Fetch<DirectoryResult<(String, i64)>>,
+    /// The band counts of a value sort's rail (`letters`' twin, with a claim and a mailbox of its own).
+    bands: crate::stores::Fetch<DirectoryResult<bands::BandRail>>,
     /// The source discovery's claim, raised by the step that emits the read ([`discovery_job`]).
     /// Its mailbox slot is unused: the answer lands in `src_result`, which `record::take_from`
     /// takes and a controlled run records, and whose claim is lowered at APPLY
@@ -980,6 +1053,7 @@ impl Default for BrowseAdapter {
             page: Default::default(),
             genres: Default::default(),
             letters: Default::default(),
+            bands: Default::default(),
             src_fetching: Default::default(),
             src_result: Mutex::new(None),
             hubs: Default::default(),
@@ -992,6 +1066,7 @@ impl BrowseAdapter {
         self.page.clear();
         self.genres.clear();
         self.letters.clear();
+        self.bands.clear();
         *self.src_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.hubs.fetch.clear();
         self.src_fetching.clear();
@@ -1006,6 +1081,7 @@ impl Default for BrowseState {
             page_req: 0,
             genres_req: 0,
             letters_req: 0,
+            bands_req: 0,
             src_req: 0,
             src_flight: None,
             hubs_stamp: 0,
@@ -1088,9 +1164,12 @@ impl BrowseState {
     pub fn pump_needs_work(&self, adapter: &BrowseAdapter) -> bool {
         if self.discovery_needs_pump(adapter)
             || self.retry_cd > 0
+            || self.cur_state().is_some_and(SecState::letters_waiting)
+            || self.cur_state().is_some_and(SecState::bands_waiting)
             || adapter.page.has_mail()
             || adapter.genres.has_mail()
             || adapter.letters.has_mail()
+            || adapter.bands.has_mail()
             || adapter.hubs.fetch.has_mail()
             // A read the runner refused (or an adapter retired under) leaves its record with the claim
             // down: the next step settles it ([`BrowseState::hubs_settle`]), and nothing else would
@@ -1333,6 +1412,9 @@ impl BrowseState {
         }
         let from = state.library_type;
         state.library_type = library_type;
+        // Counts describe one metadata type, and what the section lists can change while the
+        // Collections page is up: every type change drops them, and the listing it lands on asks.
+        state.forget_letters();
         // The Collections page borrows the listing: the view it borrowed it from comes back as it
         // was, on the way out, and is set aside on the way in.
         if library_type == LibraryType::Collections {
@@ -1340,8 +1422,7 @@ impl BrowseState {
                 library_type: from, sort_idx: state.sort_idx, sort_desc: state.sort_desc,
                 genre: state.genre.clone(), sorts: state.sorts.clone(), genres: state.genres.clone(),
                 genres_done: state.genres_done, sort_resolved: state.sort_resolved,
-                genre_resolved: state.genre_resolved, letters: state.letters.clone(),
-                letters_done: state.letters_done,
+                genre_resolved: state.genre_resolved,
             });
         } else if from == LibraryType::Collections {
             if let Some(view) = state.loaned.take().filter(|view| view.library_type == library_type) {
@@ -1353,8 +1434,6 @@ impl BrowseState {
                 state.genres_done = view.genres_done;
                 state.sort_resolved = view.sort_resolved;
                 state.genre_resolved = view.genre_resolved;
-                state.letters = view.letters;
-                state.letters_done = view.letters_done;
                 self.requery();
                 return true;
             }
@@ -1370,8 +1449,6 @@ impl BrowseState {
         // A new listing starts a new restore, and the viewer just chose it.
         state.sort_resolved = true;
         state.genre_resolved = true;
-        state.letters = Arc::default();
-        state.letters_done = false;
         self.requery();
         true
     }
@@ -1412,7 +1489,10 @@ impl BrowseState {
     /// whether or not it changes the row: the server's answer is what marks staleness, and a
     /// read-back that agrees with the optimistic row is exactly that answer. The row is patched
     /// where it stands, but the server would now list it elsewhere or not at all.
-    /// Returns true when a row changed or a section was newly marked stale or reset.
+    /// A [`ViewEdit::Facts`] also stales every first-letter list counted under Unwatched in every
+    /// section of the item's server ([`SecState::viewing_changed`]), covered row or not.
+    /// Returns true when a row changed, a section was newly marked stale or reset, or the rail on
+    /// screen lost its counts.
     /// The current section waits for a page to be pushed over the Library page
     /// ([`BrowseState::requery_stale`]); any other section simply forgets its pages AND its
     /// cursor (`reset_listing`), which is what a first visit looks like: switching back to it
@@ -1430,8 +1510,22 @@ impl BrowseState {
                     hit |= !state.membership_stale;
                     state.membership_stale = true;
                 } else {
-                    state.reset_listing();
+                    state.membership_changed();
                     hit = true;
+                }
+            }
+        }
+        // The rail's counts under Unwatched are the server's word too, whether or not Unwatched is
+        // applied and whether or not the title is in a loaded page: the covered-row path above
+        // cannot see either, and a `ViewAt` names no section, so every section of the server hears.
+        if matches!(edit, crate::viewstate::ViewEdit::Facts { .. }) {
+            for i in 0..self.states.len() {
+                if self.section_sid(i) == Some(at.sid) {
+                    if let Some(state) = self.states.get_mut(i) {
+                        if let Some(kind) = self.sections.get(i).map(|section| section.kind) {
+                            hit |= state.viewing_changed(kind);
+                        }
+                    }
                 }
             }
         }
@@ -1473,7 +1567,7 @@ impl BrowseState {
             }
             let Some(state) = self.states.get_mut(i) else { continue };
             if i != current {
-                state.reset_listing();
+                state.membership_changed();
                 hit = true;
             } else if state.total >= 0 || state.fetch == SecFetch::Loading {
                 hit |= !state.membership_stale;
@@ -1712,11 +1806,15 @@ impl BrowseState {
         jobs: &mut Vec<crate::stores::StoreJob>, which: listing_jobs::Directory) {
         self.settle_refused_reads(adapter);
         let current = self.cur();
-        let done = self.cur_state().map(|state| match which {
-            listing_jobs::Directory::Genres => state.genres_done,
-            listing_jobs::Directory::Letters => state.letters_done,
+        // Genres are asked once per listing type; the letters are asked whenever the list on hand
+        // does not describe the grid ([`SecState::letters_owed`]), and so are a value sort's bands
+        // ([`SecState::bands_owed`]).
+        let owed = self.cur_state().zip(self.section_kind(current)).map(|(state, kind)| match which {
+            listing_jobs::Directory::Genres => !state.genres_done,
+            listing_jobs::Directory::Letters => state.letters_owed(),
+            listing_jobs::Directory::Bands => state.bands_owed(kind),
         });
-        if self.states.get(current).is_none() || done.unwrap_or(true) {
+        if self.states.get(current).is_none() || !owed.unwrap_or(false) {
             return;
         }
         let Some(sid) = self.section_sid(current) else {
@@ -1729,11 +1827,24 @@ impl BrowseState {
             return;
         }
         let section = self.sections[current].key;
-        let library_type = self.states[current].library_type;
-        let metadata_type = library_type.plex_type(self.sections[current].kind);
+        let kind = self.sections[current].kind;
+        let state = &self.states[current];
+        let library_type = state.library_type;
+        // The letters are asked with the terms the grid's pages are, from the same source, and keyed
+        // by them; the genre list is scoped by the listing's type alone.
+        let (filters, letters) = match which {
+            listing_jobs::Directory::Genres => (library_type.type_terms(kind), None),
+            listing_jobs::Directory::Letters => (state.query_filters(kind), Some(state.letters_key())),
+            // The bands carry the page's terms too; the family is in the key the answer comes back with.
+            listing_jobs::Directory::Bands => {
+                let Some(family) = state.rail_family(kind) else { return };
+                (state.query_filters(kind), Some(state.bands_key(family)))
+            }
+        };
         let id = match which {
             listing_jobs::Directory::Genres => &mut self.genres_req,
             listing_jobs::Directory::Letters => &mut self.letters_req,
+            listing_jobs::Directory::Bands => &mut self.bands_req,
         };
         *id = id.wrapping_add(1);
         let id = *id;
@@ -1742,7 +1853,7 @@ impl BrowseState {
             plx_machine::job::Job {
                 addr: listing_jobs::listing_addr(id),
                 req: listing_jobs::BrowseDirectoryReq::new(
-                    sid, key, self.table_epoch(), current, section, library_type, metadata_type, which),
+                    sid, key, self.table_epoch(), current, section, library_type, filters, letters, which),
             },
             listing_jobs::BrowseDirectoryPort::of(adapter, which),
         ));
@@ -1750,16 +1861,25 @@ impl BrowseState {
     /// Settle the reads the runner refused since the last step: the claim went back in the call that
     /// refused (`Port::refused`), so what is left is the refusal's record, which is consumed here
     /// and never recorded anywhere. A directory read that never started leaves its list owed
-    /// (`genres_done` / `letters_done` are only set by a landing), a page read that never started
+    /// (`genres_done` is only set by a landing, and the letters stay not current until one), a page read that never started
     /// leaves the first missing page missing, so the state is already the one such a read leaves and
     /// the next ask is the same step's own. The loop is woken because nothing else would: the
     /// claim that held the pump quiet is down.
     fn settle_refused_reads(&mut self, adapter: &BrowseAdapter) {
         let refused = adapter.page.take_refused(self.page_req)
             | adapter.genres.take_refused(self.genres_req)
-            | adapter.letters.take_refused(self.letters_req);
+            | adapter.letters.take_refused(self.letters_req)
+            | adapter.bands.take_refused(self.bands_req);
         if refused {
             plx_machine::idle::invalidate();
+        }
+    }
+    /// Take the date the Library's ask carries into every section's state, where a calendar family's key
+    /// reads it. A new day is a new key, so the bands counted on yesterday are no longer shown and the
+    /// next ask counts them again.
+    fn note_today(&mut self, today: Option<bands::Day>) {
+        for state in &mut self.states {
+            state.today = today;
         }
     }
     fn kick_genres(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
@@ -1769,6 +1889,14 @@ impl BrowseState {
     fn kick_letters(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
         jobs: &mut Vec<crate::stores::StoreJob>) {
         self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Letters);
+    }
+    /// The rail's data is asked on the one tick the screens send for it: the letters, and the bands
+    /// when the sort has them (a title sort owes none, so its tick is the letters' alone).
+    fn kick_rail(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>, today: Option<bands::Day>) {
+        self.note_today(today);
+        self.kick_letters(adapter, keys, jobs);
+        self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Bands);
     }
     pub fn addressed_with_adapter(
         &mut self,
@@ -1854,7 +1982,7 @@ impl BrowseState {
                 }
                 match work {
                     LibraryWork::Want { lo, hi, focus } => self.want(lo, hi, focus),
-                    LibraryWork::Letters => self.kick_letters(adapter, keys, jobs),
+                    LibraryWork::Letters { today } => self.kick_rail(adapter, keys, jobs, today),
                     LibraryWork::Genres => self.kick_genres(adapter, keys, jobs),
                     LibraryWork::Retry => self.retry_cur_source(),
                     LibraryWork::Requery => {
@@ -2045,10 +2173,18 @@ impl BrowseState {
             return false;
         };
         let title_asc = match state.sorts.get(state.sort_idx) {
-            Some(sort) => sort.key == "titleSort" && !state.sort_desc,
+            Some(sort) => sort.is_title_order(state.library_type) && !state.sort_desc,
             None => true,
         };
-        title_asc && !state.unwatched && state.genre.is_none() && state.letters.len() > 1
+        title_asc && state.shown_letters().is_some_and(|letters| letters.len() > 1)
+    }
+    /// The twin of `ListingView::bands_available`: a value sort whose shown bands have two populated.
+    #[cfg(test)]
+    fn bands_available(&self) -> bool {
+        let (Some(state), Some(kind)) = (self.cur_state(), self.section_kind(self.cur())) else {
+            return false;
+        };
+        state.shown_bands(kind).is_some_and(|rail| rail.listed(state.sort_desc).populated() >= 2)
     }
     fn discovery_state(&self) -> SecFetch {
         if !self.sections.is_empty() || self.sources.iter().all(|source| source.sections_done) {
@@ -2785,7 +2921,7 @@ impl BrowseState {
         &mut self,
         gate: &plx_machine::landgate::Gate,
         fetch: &crate::stores::Fetch<DirectoryResult<T>>,
-        apply: impl FnOnce(&mut SecState, Vec<T>),
+        apply: impl FnOnce(&mut SecState, Vec<T>, bool, Option<LettersKey>),
     ) -> bool {
         // DUMP MODE: owed while this directory's own claim is held (genre and letters each have
         // one), per mailbox. The take lowers the claim with it.
@@ -2796,14 +2932,14 @@ impl BrowseState {
         if result.epoch != self.table_epoch() {
             return false;
         }
-        let DirectoryResult { sec, client, token_gen, library_type, list, .. } = result;
+        let DirectoryResult { sec, client, token_gen, library_type, list, ok, letters, .. } = result;
         plx_plex::plex::commit_if_current(client.id(), client, token_gen, || {
             if self.section_sid(sec) == Some(client.id()) {
                 if let Some(state) = self.state_mut(sec) {
                     if state.library_type != library_type {
                         return false;
                     }
-                    apply(state, list);
+                    apply(state, list, ok, letters);
                     return true;
                 }
             }
@@ -2820,7 +2956,7 @@ impl BrowseState {
     #[cfg(test)]
     #[track_caller]
     fn land_directory_owned<T>(&mut self, fetch: &crate::stores::Fetch<DirectoryResult<T>>,
-        apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
+        apply: impl FnOnce(&mut SecState, Vec<T>, bool, Option<LettersKey>)) -> bool {
         self.land_directory_owned_with_gate(plx_machine::landgate::fixture_gate(), fetch, apply)
     }
     /// Ask for the first page the wanted window is missing, if no page read is out. Nothing is
@@ -2917,6 +3053,11 @@ impl BrowseState {
     ) -> crate::stores::StoreOutcome {
         let mut changed = false;
         self.retry_cd = self.retry_cd.saturating_sub(1);
+        let current = self.cur();
+        if let Some(state) = self.states.get_mut(current) {
+            state.tick_letters_backoff();
+            state.tick_bands_backoff();
+        }
         let discovery = self.land_discovery_owned_with_gate(adapter, gate, session);
         changed |= discovery.changed;
         let endpoints = discovery.endpoints;
@@ -2925,20 +3066,14 @@ impl BrowseState {
         changed |= self.hubs_tick_all(adapter, keys, jobs);
         changed |= self.land_directory_owned_with_gate(
             gate,
-            &adapter.genres, |state, list| {
+            &adapter.genres, |state, list, _, _| {
             state.genres_done = true;
             if state.genres.is_empty() {
                 state.genres = Arc::new(list);
             }
         });
-        changed |= self.land_directory_owned_with_gate(
-            gate,
-            &adapter.letters, |state, list| {
-                state.letters_done = true;
-                if state.letters.is_empty() {
-                    state.letters = Arc::new(list);
-                }
-            });
+        changed |= self.land_letters_owned(gate, &adapter.letters);
+        changed |= self.land_bands_owned(gate, &adapter.bands);
         // DUMP MODE: owed while the listing page's claim is held. The take lowers it with it.
         // The wanted window, read before the landing borrows the section table: the grid's
         // visible rows, the focused slot's page and the page a restore lands on.
@@ -3147,7 +3282,7 @@ fn fetch_listing_page(
     if let (Some(restore), true) = (restore, discovery) {
         if let Some(wanted) = &restore.genre {
             let list = client
-                .section_directory(query.section_key, "genre", restore.library_type.plex_type(restore.kind))
+                .section_directory(query.section_key, "genre", &restore.library_type.type_terms(restore.kind))
                 .map(|container| container.directory.iter().filter_map(genre_entry).collect::<Vec<_>>());
             if let Some(list) = list {
                 if let Some(found) = list.iter().find(|entry| &entry.id == wanted) {
@@ -3271,6 +3406,12 @@ struct DirectoryResult<T> {
     token_gen: u32,
     library_type: LibraryType,
     list: Vec<T>,
+    /// Did the read answer? False for a read that failed or panicked: `list` is then empty because
+    /// there was nothing to project, not because the server listed nothing.
+    ok: bool,
+    /// The key a letters read was asked under ([`LettersKey`]); `None` for the genre list, which the
+    /// grid's terms do not scope.
+    letters: Option<LettersKey>,
 }
 
 /// What a source-discovery worker brings back, per SOURCE — named by its index, which appending
@@ -3429,6 +3570,15 @@ impl SecKind {
 /// 500s the whole listing, which is why [`with_plays_sort`] never sends this for a kind that
 /// hasn't been proven to accept it.
 pub const PLAYS_SORT_KEY: &str = "viewCount";
+
+/// Does a watch move a row under this sort key? Last viewed (`lastViewedAt`), plays
+/// ([`PLAYS_SORT_KEY`]) and the unplayed count (`unviewedLeafCount`) are values a watch changes, so
+/// the loaded pages are out of order as soon as the server's read-back arrives. The rail's band
+/// counts under these keys move with a watch as well ([`bands::BandFamily::moves_with_viewing`]),
+/// and must be counted over the very listing the grid shows, so the grid is asked again.
+fn orders_by_viewing(key: &str) -> bool {
+    matches!(key, "lastViewedAt" | "unviewedLeafCount" | PLAYS_SORT_KEY)
+}
 
 /// Whether the server is proven to honour [`PLAYS_SORT_KEY`] for this section kind. An
 /// exhaustive match rather than a wildcard default: [`SecKind`]'s own doc says a third variant
@@ -3956,7 +4106,8 @@ pub fn seed_registered_table_for_owner_test(
             });
     }
     for section in &mut state.states {
-        section.letters_done = true;
+        let key = section.letters_key();
+        section.land_letters(key, Vec::new());
     }
 }
 
@@ -3980,13 +4131,14 @@ pub fn seed_letter_counts_for_owner_test(
     plx_base::testlock::assert_held("an owned browse section table (seed_letter_counts_for_test)");
     let current = state.cur();
     if let Some(section) = state.state_mut(current) {
-        section.letters = Arc::new(
+        let key = section.letters_key();
+        section.land_letters(
+            key,
             letters
                 .iter()
                 .map(|(label, count)| ((*label).into(), *count))
                 .collect(),
         );
-        section.letters_done = true;
     }
 }
 
@@ -3996,8 +4148,7 @@ pub fn owe_letters_for_owner_test(state: &mut BrowseState) {
     plx_base::testlock::assert_held("an owned browse section table (owe_letters_for_test)");
     let current = state.cur();
     if let Some(section) = state.state_mut(current) {
-        section.letters = Arc::default();
-        section.letters_done = false;
+        section.forget_letters();
     }
 }
 
@@ -4047,6 +4198,7 @@ pub fn queue_genre_for_owner_test(
         epoch: state.table_epoch(), sec, client, token_gen: client.token_gen(),
         library_type: state.states[sec].library_type,
         list: vec![GenreEntry { id: "new".into(), title: "New Genre".into() }],
+        ok: true, letters: None,
     }, |_| true);
 }
 
@@ -4059,13 +4211,13 @@ pub fn adapter_has_page_for_test(adapter: &BrowseAdapter) -> bool {
 /// still waiting for the pump?
 #[cfg(any(test, feature = "test-support"))]
 pub fn directory_answered_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.genres.has_mail() || adapter.letters.has_mail()
+    adapter.genres.has_mail() || adapter.letters.has_mail() || adapter.bands.has_mail()
 }
 
 /// TEST ONLY: is a directory claim (genres or letters) up on this adapter?
 #[cfg(any(test, feature = "test-support"))]
 pub fn directory_claim_up_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.genres.busy() || adapter.letters.busy()
+    adapter.genres.busy() || adapter.letters.busy() || adapter.bands.busy()
 }
 
 #[cfg(any(test, feature = "test-support"))]

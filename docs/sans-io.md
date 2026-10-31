@@ -30,8 +30,8 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
-| `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement, a field or an inline `cfg!` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
+| `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement or an inline `cfg!`, or `<path>::<struct>` for a field |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
 `blocking` (the frame thread's `allow_blocking(` exceptions) is the older ledger these follow. It now
@@ -43,20 +43,45 @@ dropped.
 
 **Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
-`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs` and `recovery.rs`
-(the failed-open ladder machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
+`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs`, `recovery.rs`
+(the failed-open ladder machine) and `release.rs` (the native object's release machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
 `net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
-of `data/`, `plex/`, `media/` and `session/`, because a fork anywhere in them is a test that does not
-run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
+of every crate that holds a machine (`FORK_SCOPE`): `data/`, `plex/`, `media/`, `session/`, `screens/`,
+`ui/`, `appkit/` and `machine/`, because a fork anywhere in them is a test that does not run the
+product's code. It read only the first four until the scope was widened to the rest; the
+widening recorded the 17 forks that were already there (three in `screens/`: `legal.rs`
+`build_sha`, `library/lookahead.rs` `rows` and `login.rs` `harness_driven`; thirteen in `ui/`; one in
+`machine/`) as a coverage expansion, not new code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
 
 **Decisions the table hides.**
 
-- A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` is a site only in a
-  file that imports it from `task`, `storage_worker`, `session`, `keypin` or `grant` (singly, as the
-  last or any other item of a braced group, or through a glob; `Builder::spawn`, a local fn and
-  `it.peek()` are not workers or registry reads); `peek` is also a site in
-  `plex/src/plex/session.rs`, the module that defines it. A local launcher (`launch_browse_discovery`) is no
-  site of its own: the real call inside it is.
+- A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` / `current_gen(` /
+  `active(` is a site only in a file that imports it from `task`, `storage_worker`, `session`, `keypin`,
+  `grant` or `tape` (singly, as the last or any other item of a braced group, or through a glob;
+  `Builder::spawn`, a local fn, `it.peek()` and another module's `active()` are not workers or registry
+  reads); `peek` and `current_gen(` are also sites inside `plex/src/plex/session.rs`, the module that
+  defines them. `current_gen` and `active` are generic names, so their bare form counts only as a call; a
+  `use ... as` rename of `tape`, `tape::active` or any of the new names fails outright. A local launcher
+  (`launch_browse_discovery`) is no site of its own: the real call inside it is.
+- The roster, session-cache and tape readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
+  `server_probe_result`, `session::peek_settled`, `session::current_gen`, `tape::active`) read process-wide
+  state behind a free function, as `client_for` does: the first four are the `plex/src/plex/mod.rs`
+  re-exports of `servers::ids`, `roster_gen`, `facts_gen` and `probe_result` over atomics and the slot
+  table, `peek_settled` locks the session cache, and `current_gen` is `current_snapshot().generation`.
+  `tape::active` is the one that is thread-local rather than process-wide (the tape the controlled
+  bootstrap arms), and it is a site because it is ambient state a step reads instead of being handed, the
+  same hazard as a fork. The four `server_*` names and `peek_settled` are as distinctive as `client_for`
+  and are sites bare anywhere (`x.server_ids()` is not); the spelling the rule keys is the one the call
+  uses (`session::peek_settled` when qualified, `peek_settled` when bare). Widening the rule to them
+  was a coverage expansion: it recorded 57 reads that were already there (`globals` 57 to 114) and
+  deleted none. Not in the list on purpose: `i18n::current` (a display read) and the
+  `plx_media::route::*()` settings getters, which the architecture board kept out of this gate; and the
+  other registry accessors (`server_facts`, `server_count`, `describe_server`, ...), which the rule does
+  not name yet.
+- `task::beside` is not a `workers` site: its scoped sibling is joined before the IO body that asked for
+  it returns, so no worker outlives the call and there is no ledger line to shrink; scoped concurrency
+  inside an IO body a runner already runs off the frame is allowed, a machine step never calls it (it
+  would block the frame on the network, and `beside` asserts it is not on the frame thread).
 - A getter named without a call (`.and_then(client_for)`) reads the registry as surely as a call
   does, so it is a site. Only a rename (`use ...::client_for as x`) fails outright, because the
   calls through `x` are invisible to the scan.
@@ -121,8 +146,9 @@ different areas never edit the same `# count:` header. The directories do not co
 
 Each file starts with `# count: N` (it must equal the entry count), then a comment header saying what
 the rule is, then one key per line. A line filed in the wrong area fails the gate and names the right one.
-`tests/test_harness.py` pins each rule's total (`PINNED_LEDGER_TOTALS`), so a ledger and its count
-cannot grow together unseen.
+`tests/test_harness.py` pins each rule's total (`PINNED_LEDGER_TOTALS`), and `ci/check-ledger-ratchet.py`
+fails a PR whose entry counts or pins rise above its base's, so a ledger, its count and its pin cannot
+grow together.
 
 ## What fails
 
@@ -143,7 +169,8 @@ becomes one code path that tests and the product both drive. The PR then:
 3. leaves the gate green (`ci/check-deps.sh`).
 
 It never edits a line to make a new site pass, and never adds one: a new worker start, registry read
-or fork in a machine is moved behind an effect instead. A ledger file that reaches zero entries is
+or fork in a machine is moved behind an effect instead, and CI fails a PR whose ledger counts rise
+above its base's (`ci/check-ledger-ratchet.py`). A ledger file that reaches zero entries is
 deleted; a rule whose last file is gone has a total of zero, and its pin says so.
 
 A store the Bridge runs leaves as a store job, not an `AppFx`, while a stepped machine such as the
@@ -245,7 +272,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   loopback request; each failed with the page parked, and every suite is green with the directory
   read parked.
 - **A registry read is an input.** A step that decides from "which client does this server slot
-  hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token }` per server) as
+  hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token, grant }` per server) as
   an argument. The Bridge owns one buffer and refills it in place
   (`adapters::stores::refill_client_keys`, the only loop over `client_for` that feeds a step)
   immediately before the step, so a pump that runs every frame allocates nothing for it. The job
@@ -339,7 +366,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
 - **What the Person step still reads.** Person starts no worker and reads no `client_for`, but its
   step is NOT pure. It still reads `tape::active()` (which decides whether a job exists and carries
   the controlled identity), `session::peek_settled()` (the settled plex.tv account the two global
-  reads are made as; the gate's `session::peek(` spelling does not match it), the session watch, the
+  reads are made as; a `globals` site of its own, in `ci/allow/globals/data-person.txt`), the session watch, the
   refused-discover check (`discover::person_profile_refused` / `person_credits_refused`, which
   lands the refusal in the step with no job, because routing it through the runner would release
   and respawn it every ~2 s), `plx_base::devtrig::read("personcredits")` (dev-trigger builds only:
@@ -551,13 +578,24 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     the system refused, refuses the job: the claim is lowered in the refusing call and the
     request id remembered. `settle_refused_reads` takes the three markers at the head of the next
     step and wakes the pump (`idle::invalidate`); nothing is recorded and nothing backs off. The
-    directory is owed again (`*_done` is still false, and the menu's tick sends the work again),
+    directory is owed again (`genres_done` is still false, or the letters are still not current
+    (`SecState::letters_current`), and the menu's tick sends the work again),
     and the page is still the first one missing, so the next pump asks again with the then-current
     key, exactly what the old `!spawned` arms left.
   - **The guard is in the body, the landing outside it.** A page read that panics lands as a failed
-    page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a directory
-    read that panics lands as an empty list. The seams `finish_page_with` and
+    page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a genre read
+    that panics lands as an empty list, and a letters read that fails or panics lands as `ok: false`:
+    the landed list stays as it was (hidden, it no longer describes the grid) and the same key waits
+    120 steps (`SecState::letters_backoff`), an edit asking at once. The seams `finish_page_with` and
     `finish_directory_with` take the read as a closure so a test can swap in one that panics.
+  - **The letters carry the grid's terms.** The Letters job is asked with `SecState::query_filters`,
+    the terms of the page read, and a `LettersKey` (applied Unwatched, applied genre, a generation
+    that a membership change moves and, for an Unwatched key only, a watched state read back from
+    the server; `data/src/browse/letters.rs`) that the answer returns. A list is current, and
+    shown, only while its key is the section's present one, checked where it is read. The landed
+    list and the one it replaced are both held (`SecState::letters_kept`: an unfiltered list
+    survives a genre or Unwatched switched on and off; an Unwatched list is never the kept one),
+    and a third key evicts the oldest.
 - **The discovery lane.** The Library's source discovery (`data/src/browse/mod.rs`,
   `maybe_discover_owned`) is the twelfth store job: the section list, the server's name and the
   item counts of one source, as `StoreJob::BrowseDiscovery(Job<BrowseDiscoveryReq>,

@@ -4,12 +4,12 @@
     "description": "Settings > Libraries row and page title: the setting for what shows under the focused poster. Row label, short."
   },
   "under_posters.detail": {
-    "value": "What shows under the poster you are on.",
-    "description": "Detail line under the Under posters row on the Settings root. One short sentence."
+    "value": "Under posters, for movies and TV shows.",
+    "description": "Detail line under the Under posters row on the Settings root. One short sentence naming the kinds it applies to: movies and TV shows."
   },
   "under_posters.copy": {
-    "value": "Most posters already show their title. Choose what appears under the poster you are on.",
-    "description": "Narrative copy beside the Under posters page: what the setting does. Two short sentences."
+    "value": "Most posters already show their title. Choose what appears under them, for movies and TV shows alike. The preview uses the library you last opened.",
+    "description": "Narrative copy beside the Under posters page: what the setting does, which kinds it covers, and where the preview's posters come from. Three short sentences."
   },
   "under_posters.title_row": {
     "value": "Title",
@@ -24,12 +24,12 @@
     "description": "Row label on the Under posters page that opens the details picker, and that picker's page title. Its right side reads the chosen line, e.g. Year · Length. One short word."
   },
   "under_posters.details_detail": {
-    "value": "One line of information.",
-    "description": "Detail line under the Details row on the Under posters page."
+    "value": "One line, worded for a movie or a TV show.",
+    "description": "Detail line under the Details row on the Under posters page. One short sentence."
   },
   "under_posters.details_copy": {
-    "value": "Titles that are started, coming soon or a collection show that instead: time left, the release date, the number of films.",
-    "description": "Narrative copy beside the Details picker page: the facts that replace the details line on started, upcoming and collection titles. One sentence."
+    "value": "Each choice fits the poster: a movie shows 2019 · 2h 14m, a TV show 2019 · 6 seasons, or 4 new episodes once you have started it. Started, upcoming and collection titles show time left, the release date or how many titles they hold instead.",
+    "description": "Narrative copy beside the Details picker page: what a choice shows on a movie and on a TV show (year and length; year and season count, or the new-episode count once started), and the facts that replace it on started, upcoming and collection titles. Keep the middle dots and each language's own duration spelling in the samples."
   },
   "under_posters.year_length": {
     "value": "Year · Length",
@@ -43,6 +43,10 @@
     "value": "Video",
     "description": "Under posters details choice: video quality marks such as 4K · HDR."
   },
+  "under_posters.video_detail": {
+    "value": "A TV show has no single video quality; it shows its year.",
+    "description": "Detail line under the Video choice of the details picker, shown while that row has focus: a TV show has no single video quality, so the choice shows its year instead. Names the kind and what it does instead. One short sentence."
+  },
   "under_posters.age_rating_score": {
     "value": "Age rating · Score",
     "description": "Under posters details choice: age rating and audience score, e.g. PG-13 · 7.8. Keep the middle dot."
@@ -53,11 +57,11 @@
   },
   "under_posters.reset": {
     "value": "Reset to default",
-    "description": "Button on the Under posters page that restores the default (no title, year and length)."
+    "description": "Button on the Under posters page that restores the default (no title, year and length, sort value on)."
   },
   "under_posters.reset_detail": {
-    "value": "Year and length, no title.",
-    "description": "Detail line under Reset to default on the Under posters page: what the default shows."
+    "value": "Year and length, sort value on, no title.",
+    "description": "Detail line under Reset to default on the Under posters page: what the default shows (year and length, sort value on, no title)."
   },
   "under_posters.sample_title": {
     "value": "Movie",
@@ -66,5 +70,43 @@
   "under_posters.sample_genre": {
     "value": "Drama",
     "description": "Sample genre shown in the Under posters preview, one word."
+  },
+  "under_posters.sort_value": {
+    "value": "Sort value",
+    "description": "Switch on the Under posters page: while a library grid is sorted by something other than Title or Random, show the value it is sorted by on one line under every card (the movies, TV shows, seasons and episodes of a library). Default on, per profile. Short noun phrase."
+  },
+  "under_posters.sort_value_detail": {
+    "value": "Replaces the details line while a library is sorted.",
+    "description": "Detail line under the Sort value switch: the value line replaces the details line while the library is sorted."
+  },
+  "under_posters.value_today": {
+    "value": "Today",
+    "description": "Sort value in a library grid sorted by a date (Date added, Date viewed, release date): the date is today. One short word."
+  },
+  "under_posters.value_yesterday": {
+    "value": "Yesterday",
+    "description": "Sort value in a library grid sorted by a date (Date added, Date viewed, release date): the date is yesterday. One short word."
+  },
+  "under_posters.value_never": {
+    "value": "Never",
+    "description": "Sort value in a library grid sorted by Date viewed or Plays, under an item that was never played. Shown quietly (50% white), the same word for both sorts. One short word."
+  },
+  "under_posters.value_plays": {
+    "value": {
+      "one": "{count} play",
+      "other": "{count} plays"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "Sort value in a library grid sorted by Plays: how many times the item was played, always with its noun (\"14 plays\", \"1 play\"). The number and the noun are joined by a no-break space. Short: it must fit under a 250 px poster."
+  },
+  "under_posters.sorted_by": {
+    "value": "Sorted by Year",
+    "description": "Caption under the Under posters preview while Sort value is on: the sample posters are shown as a library sorted by year, whose values are the years under them. One short phrase, whole (the sort's name is inside it, so a language can inflect it); no placeholder."
+  },
+  "under_posters.last_opened": {
+    "value": "The library you last opened",
+    "description": "Caption under the Details picker's preview: the sample posters come from the library the viewer last opened. One short noun phrase."
   }
 }

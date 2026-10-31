@@ -1,0 +1,105 @@
+{
+  "$schema": "https://plxnative.com/hud/schema/1.0.json",
+  "format": "1.0",
+  "id": "com.plxnative.examples.reference",
+  "version": "1.0.0",
+  "name": "Reference",
+  "author": "PlxNative",
+  "license": "CC0-1.0",
+  "palette": { "gold": "#f2b535" },
+  "assets": {
+    "subs-bubble": "<svg viewBox='0 0 24 24'><path d='M3 4h18v12H10l-5 4v-4H3z'/></svg>",
+    "list": "<svg viewBox='0 0 24 24'><path d='M4 6h16v2H4zM4 11h16v2H4zM4 16h16v2H4z'/></svg>",
+    "gear": "<svg viewBox='0 0 24 24'><path d='M10 2h4l1 3 3-1 2 3-2 2v2l2 2-2 3-3-1-1 3h-4l-1-3-3 1-2-3 2-2v-2L4 7l2-3 3 1z'/></svg>",
+    "eq": "<svg viewBox='0 0 24 24'><path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/></svg>",
+    "back10": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7v3l-4-4zM9 8h1.5v8h-1.5v-6.5l-1.5 1.5v-1.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
+    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM8 8h2l1 1v6l-1 1h-2l-1-1v-0.5h2.5v-2h-2v-1.5h2v-1.5h-2.5v-0.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>"
+  },
+  "layout": {
+    "anchor": "bottom",
+    "inset": "MD",
+    "x_inset": "LG",
+    "band": "block",
+    "sections": "inline",
+    "scrim": { "cover": "block", "extra": 120 },
+    "block": [
+      { "id": "title", "cells": [
+        { "align": "start", "vstack": { "gap": "XS", "w": "fill", "cells": [
+          { "text": { "bind": "title.kicker", "size": "CAPTION", "ink": "TEXT_SECONDARY", "bold": false, "max_lines": 1, "w": "fill" } },
+          { "text": { "bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } }
+        ] } }
+      ] },
+      { "id": "bar", "gap_before": "SM", "cells": [
+        { "align": "start", "playbar": { "w": "fill", "fill": "gold", "track": "RAIL_TRACK", "thickness": 6,
+          "knob": "always", "clocks": "ends", "clock_size": "CAPTION", "mark": "busy_only" } }
+      ] },
+      { "id": "row", "gap_before": "XS", "z": 1, "cells": [
+        { "align": "center", "segment": { "id": "center", "gap": "LG", "items": [
+          { "id": "subs", "command": "open_tracks", "tab": "subtitles", "widget": "disc", "size": 52,
+            "rest": "bare", "focus": "accent", "face": "subs-bubble" },
+          { "id": "back", "command": "seek", "by": -10, "widget": "disc", "size": 52,
+            "rest": "bare", "focus": "accent", "face": "back10" },
+          { "id": "prev", "command": "previous", "widget": "disc", "size": 52, "rest": "bare", "focus": "accent",
+            "face": { "default": "builtin:previous", "restart": "builtin:restart" } },
+          { "id": "play", "command": "toggle_play", "widget": "disc", "size": 64, "rest": "solid", "focus": "ring",
+            "face": { "playing": "builtin:pause", "paused": "builtin:play" } },
+          { "id": "next", "command": "next", "widget": "disc", "size": 52, "rest": "bare", "focus": "accent",
+            "face": "builtin:next" },
+          { "id": "fwd", "command": "seek", "by": 30, "widget": "disc", "size": 52,
+            "rest": "bare", "focus": "accent", "face": "fwd30" }
+        ] } },
+        { "align": "end", "segment": { "id": "right", "gap": "MD", "items": [
+          { "id": "chapters", "command": "toggle_section", "section": "chapters", "widget": "disc", "size": 52,
+            "rest": "bare", "focus": "accent", "face": "list" },
+          { "id": "info", "command": "toggle_section", "section": "info", "widget": "disc", "size": 52,
+            "rest": "bare", "focus": "accent", "face": "builtin:info" },
+          { "id": "more", "command": "open_more", "widget": "disc", "size": 52,
+            "rest": "bare", "focus": "accent", "face": "gear" }
+        ] } }
+      ] },
+      { "id": "chapters_head", "when": "panel.chapters", "gap_before": { "value": "SM", "if": { "panel.info": "XS" } }, "cells": [
+        { "align": "start", "text": { "bind": "label.chapters", "size": "LABEL", "ink": "TEXT_PRIMARY", "bold": false } }
+      ] },
+      { "id": "chapters", "when": "panel.chapters", "gap_before": "XS", "cells": [
+        { "align": "start", "strip": { "bind": "chapters", "w": "fill", "card_w": 192,
+          "card_h": { "value": 108, "if": { "panel.info": 84 } }, "gap": "SM", "radius": 8, "focus": "ring",
+          "card": {
+            "art": { "bind": "item.thumb", "crop": "cover" },
+            "overlay": [ { "when": "item.is_current", "align": "center", "valign": "center",
+                           "icon": { "asset": "eq", "size": 28, "ink": "TEXT_PRIMARY" } } ],
+            "below_gap": "XS",
+            "below": [
+              { "text": { "bind": "item.start", "size": "MICRO", "ink": "TEXT_SECONDARY", "bold": false } },
+              { "text": { "bind": "item.title", "size": "CAPTION", "bold": false, "max_lines": 1, "w": "fill",
+                          "ink": { "value": "TEXT_SECONDARY", "if": { "item.focused": "TEXT_PRIMARY" } } } }
+            ] } } }
+      ] },
+      { "id": "info_rule", "when": "panel.info", "gap_before": "SM", "cells": [
+        { "align": "start", "rule": { "axis": "h", "length": "fill", "ink": "HAIRLINE" } }
+      ] },
+      { "id": "info", "when": "panel.info", "gap_before": "SM", "gap": "LG", "cells": [
+        { "align": "start", "image": { "bind": "info.still", "w": 292, "h": 164, "radius": 8, "crop": "cover" } },
+        { "align": "start", "valign": "top", "vstack": { "gap": "XS", "w": 760, "cells": [
+          { "text": { "bind": "title.kicker", "size": "CAPTION", "ink": "TEXT_SECONDARY", "bold": false, "max_lines": 1, "w": "fill" } },
+          { "text": { "bind": "title.main", "size": "HEADLINE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } },
+          { "text": { "bind": "info.summary", "size": "CAPTION", "ink": "TEXT_SECONDARY", "bold": false, "max_lines": 2, "w": "fill" } }
+        ] } },
+        { "align": "end", "valign": "center", "rule": { "axis": "v", "length": 80, "ink": "HAIRLINE" } },
+        { "align": "end", "valign": "center", "facts": { "bind": "info.facts",
+          "order": [ "duration", "year", "content_rating", "genres" ], "genres_max": 1, "bold": false,
+          "playback_fact": false, "badges": [], "size": "CAPTION", "ink": "TEXT_SECONDARY" } },
+        { "align": "end", "spacer": { "w": 150 } }
+      ] }
+    ],
+    "up_next": {
+      "replaces": [ "center", "right" ],
+      "band": "row",
+      "align": "center",
+      "still": false,
+      "caption": false,
+      "watch_credits": { "rest": "film", "focus": "accent" },
+      "play_next": { "rest": "solid", "focus": "ring" },
+      "countdown": "ring"
+    }
+  }
+}

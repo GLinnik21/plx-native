@@ -18,7 +18,7 @@
 //! will see; instead the memo asks for the position under the knob, waits for that one to settle,
 //! and then asks for wherever the knob has got to. Until a new still lands, the last one stays up.
 //!
-//! The memo is a RENDER memo, like [`crate::player_hud::TransportRow`]'s label widths: what it
+//! The memo is a RENDER memo, like the rest of [`crate::player_hud::motion::HudMotion`]'s render state: what it
 //! holds is which still the draw can show, and it is stepped where the art is probed — in the draw.
 
 use plx_ui::{theme, Painter, Rect};
@@ -58,7 +58,48 @@ pub enum Look {
     Waiting,
 }
 
-/// The scrub preview's memo. Owned by the player's [`crate::player_hud::TransportRow`].
+/// **Where the card's stills come from.** The memo ([`ScrubPreview::step`]) and the draw ask a
+/// source for two things about a still, named by its ms: whether it can be drawn
+/// ([`Stills::look`], which also STARTS the fetch of one never asked for) and the texture to draw
+/// ([`Stills::tex`]). [`PosterStills`] is the PMS source above; a source that yields one whole
+/// texture per still implements this and draws through the same card, memo and motion, rather
+/// than a card of its own. The draw samples the whole texture `tex` names, so a still that is a
+/// region of a larger texture is outside this seam.
+pub trait Stills {
+    /// Probe the still at `ms`: resident, settled as a miss, or still on its way.
+    fn look(&mut self, ms: i64) -> Look;
+    /// The still at `ms` as `(texture, width, height)` in decoded pixels, or `None` while it is
+    /// not resident. A source that holds one still at a time answers for that one only: the draw
+    /// then swaps without a crossfade.
+    fn tex(&mut self, ms: i64) -> Option<(u32, f32, f32)>;
+}
+
+/// The part's own stills: ordinary keyed art through the poster source and the render cache.
+pub struct PosterStills {
+    /// the playing item's server, as the poster source names it
+    pub sid: u16,
+    pub part: i64,
+}
+
+impl Stills for PosterStills {
+    fn look(&mut self, ms: i64) -> Look {
+        let path = still_path(self.part, ms);
+        if plx_ui::tex::resolve_on(self.sid, &path, REQ_W, REQ_H, false) != 0 {
+            Look::Ready
+        } else if plx_ui::tex::failed_on(self.sid, &path, REQ_W, REQ_H, false) {
+            Look::Failed
+        } else {
+            Look::Waiting
+        }
+    }
+
+    fn tex(&mut self, ms: i64) -> Option<(u32, f32, f32)> {
+        let (tex, w, h) = plx_ui::tex::resolve_wh_on(self.sid, &still_path(self.part, ms), REQ_W, REQ_H, false);
+        (tex != 0 && w > 0.0 && h > 0.0).then_some((tex, w, h))
+    }
+}
+
+/// The scrub preview's memo. Owned by the player's [`crate::player_hud::motion::HudMotion`].
 #[derive(Default)]
 pub struct ScrubPreview {
     /// The playback the memo describes: `(part id, playback generation)`. Any change resets it, so
@@ -222,7 +263,7 @@ pub fn draw(p: Painter, r: Rect, tex: u32, tw: f32, th: f32, prev: Option<(u32, 
 // ---- motion ---------------------------------------------------------------------------------
 //
 // Everything below is PURE: a value of time in, a number out, so the choreography is tested
-// without a GL context. `TransportRow::step` feeds [`Motion::step_live`] once per frame (the
+// without a GL context. `HudMotion::step` feeds [`Motion::step_live`] once per frame (the
 // scrub's edges, the chrome and the knob clock); the draw feeds [`Motion::observe`] (the card).
 
 /// The chrome (title block, control row, tabs) fades out over this when a scrub starts…
@@ -569,6 +610,8 @@ mod tests {
         fn new(has_index: bool, delay: u32) -> Self {
             Self { has_index, delay, asked: Vec::new(), frame: 0 }
         }
+    }
+    impl Stills for Server {
         fn look(&mut self, ms: i64) -> Look {
             let at = match self.asked.iter().find(|(m, _)| *m == ms) {
                 Some((_, at)) => *at,
@@ -584,6 +627,11 @@ mod tests {
             } else {
                 Look::Failed
             }
+        }
+
+        fn tex(&mut self, ms: i64) -> Option<(u32, f32, f32)> {
+            // one texture per still, named by its second; every still is a 16:9 tile
+            self.asked.iter().any(|(m, _)| *m == ms).then_some((1 + (ms / 1000) as u32, 320.0, 180.0))
         }
     }
     fn run(m: &mut ScrubPreview, s: &mut Server, target: i64) -> Option<i64> {
@@ -603,6 +651,34 @@ mod tests {
         assert_eq!(still_ms(0), 0);
         assert_eq!(still_ms(-5), 0, "a negative preview clamps to the start");
         assert_eq!(still_path(7459, 600_000), "/library/parts/7459/indexes/sd/600000");
+    }
+
+    /// A source that cuts one still at a time out of a larger picture holds only the newest: the
+    /// memo and the card read it through [`Stills`] like any other.
+    struct OneTile {
+        tile: Option<i64>,
+    }
+    impl Stills for OneTile {
+        fn look(&mut self, ms: i64) -> Look {
+            self.tile = Some(ms);
+            Look::Ready
+        }
+        fn tex(&mut self, ms: i64) -> Option<(u32, f32, f32)> {
+            (self.tile == Some(ms)).then_some((9, 320.0, 134.0))
+        }
+    }
+
+    #[test]
+    fn a_source_holding_one_tile_draws_through_the_same_memo_and_card() {
+        let (mut m, mut src) = (ScrubPreview::new(), OneTile { tile: None });
+        assert_eq!(m.step((7459, GEN), 30_000, 0, |ms| src.look(ms)), Some(30_000));
+        assert_eq!(m.step((7459, GEN), 31_000, 16, |ms| src.look(ms)), Some(31_000));
+        // the previous tile is gone: the draw's crossfade finds nothing and swaps at once
+        assert_eq!(src.tex(30_000), None);
+        let (tex, w, h) = src.tex(31_000).unwrap();
+        assert_eq!(tex, 9);
+        // a 2.39:1 tile sizes the card by its own aspect, as a poster-sourced still does
+        assert_eq!(card_size(w, h), (CARD_H * 320.0 / 134.0, CARD_H));
     }
 
     #[test]

@@ -1,10 +1,18 @@
-# count: 5
+# count: 13
 # Process-global reads inside machines (docs/sans-io.md), area `data-metadata`: one line per production read of a registry in a machine —
 # (the spellings are ci/check-deps.sh's `globals` rule) — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
 # The gate compares this list to the tree as an exact multiset: a new site fails it, and so does a line whose site is gone, so it only shrinks. A migration lands by deleting its lines; do not add one to make a new site pass.
 rust-modules/data/src/metadata.rs::alt_dev_stand_in::current_server
 rust-modules/data/src/metadata.rs::alt_prune_inactive::client_for
+rust-modules/data/src/metadata.rs::alt_pump_stand_in::tape::active
 rust-modules/data/src/metadata.rs::alt_stand_in_slot::client_for
 rust-modules/data/src/metadata.rs::alt_stand_in_slot::current_server
+rust-modules/data/src/metadata.rs::alt_stand_in_slot::server_ids
+rust-modules/data/src/metadata.rs::dev_source::tape::active
+rust-modules/data/src/metadata.rs::pump_alt_sources_with_library::server_facts_gen
+rust-modules/data/src/metadata.rs::pump_alt_sources_with_library::server_roster_gen
+rust-modules/data/src/metadata.rs::pump_detail_with_gate::tape::active
+rust-modules/data/src/metadata.rs::request_alt_sources::server_ids
+rust-modules/data/src/metadata.rs::request_alt_sources::server_roster_gen
 rust-modules/data/src/metadata.rs::resolve_alt_sources::client_for

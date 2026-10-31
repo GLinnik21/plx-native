@@ -20,13 +20,13 @@ use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
 
-/// How many controls the hero row can hold at most: Play + bookmark + Play Version + Restart +
-/// Trailer + Alt + one watch face. [`row_rect`] sizes its stack storage by it.
-pub const MAX_CTLS: usize = 7;
+/// How many controls the hero row can hold at most: Play + bookmark + Go to Show + Play Version +
+/// Restart + Trailer + Alt + one watch face. [`row_rect`] sizes its stack storage by it.
+pub const MAX_CTLS: usize = 8;
 
 /// How many of the row's controls are discs that unfurl to a verb on focus: Restart, Trailer, the
-/// watch toggle and Play Version (the bookmark disc never unfurls).
-pub const DISCS: usize = 4;
+/// watch toggle, Play Version and Go to Show (the bookmark disc never unfurls).
+pub const DISCS: usize = 5;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = 168.0;

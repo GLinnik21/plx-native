@@ -74,8 +74,9 @@ pub enum Icon {
     Play,
     Pause,
     /// The transport pair — two filled triangles, pointing back and forward. Worn by ONE surface:
-    /// the player HUD's transport state read-out beside the elapsed clock (`player_hud::draw_hud`,
-    /// via `plx_appkit::player_hud::transport_mark`), where `Rewind` marks the playhead travelling
+    /// the player HUD's transport state read-out beside the elapsed clock
+    /// (`player_hud::render`, via `plx_appkit::player_hud::transport_mark`), where
+    /// `Rewind` marks the playhead travelling
     /// BACKWARDS and `FastForward` marks it travelling forwards — a scrub, a chapter/marker hop and
     /// a rapid-seek burst alike. They are a read-out, never a control: there is no rewind BUTTON in
     /// this app and the design system forbids adding one.
@@ -162,9 +163,9 @@ pub enum Icon {
     //
     // These are OUR OWN drawings, not reproductions. Rotten Tomatoes' marks — the fruit, the
     // Certified Fresh seal, the popcorn tub — were shipped here until 2026-08-02 and removed:
-    // there is no licensing route for them (RT's developer programme is closed to unofficial
-    // projects and `developer.fandango.com` does not resolve), and redrawing a mark is the
-    // standard infringement pattern rather than a defence. The provider is now NAMED in text
+    // RT offers no public licence (it reviews each use case by case and forbids altering its
+    // score logos without written permission; docs/distribution.md §11), and redrawing a mark is
+    // the standard infringement pattern rather than a defence. The provider is now NAMED in text
     // instead, which is referential use and needs no licence — so the glyph no longer has to say
     // *whose* score this is. It only has to carry the VERDICT, which is what these four do.
     //
@@ -244,6 +245,11 @@ pub enum Icon {
     /// A ring with a bar through it — the Watchlist's on-no-server mark, the universal "unavailable"
     /// sign at the inline weight.
     CircleSlash,
+    /// Three centred bars, long to short — the sort mark. Worn by
+    /// the Library header's sort control, where it leads the chosen criterion
+    /// ("= Date added v"); it says "ordered by", not "filter". The Design System's own `sort.svg`
+    /// byte for byte (`M4 7L20 7M7 12L17 12M10 17L14 17`, stroke 2.2, round caps), so it has no third-party entry.
+    Sort,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -272,6 +278,8 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
         Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
         Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
+        // The sort bars: path x 4..20 plus the 2.2-unit stroke's 1.1 each side.
+        Icon::Sort => (2.9 / 24.0, 21.1 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -290,6 +298,20 @@ pub const fn band(id: Icon) -> f32 {
         Icon::Bookmark | Icon::BookmarkFill => 19.5 / 24.0,
         Icon::Clock | Icon::CircleSlash => 20.2 / 24.0,
         Icon::ServerSlash => 21.0 / 24.0,
+        _ => 1.0,
+    }
+}
+
+/// How far a review-score mark is drawn PAST the box its caller gives it, about the box's centre, so
+/// the mark's body fills the box the way the Library board draws it. The tomato's body is a disc of
+/// 15.2 units in a 26-unit viewBox (58% of the box: the viewBox leaves room for the stem above it),
+/// where the board's disc is 15 px in a 20 px box (75%): a tomato handed a 20 px box is enlarged by
+/// 0.75 / 0.585 so its body is the board's 15 px, the stem rising past the box. The art itself is
+/// unchanged; every layer of one mark takes the same zoom (they share a viewBox and register).
+/// 1.0 for every other glyph.
+pub const fn mark_zoom(id: Icon) -> f32 {
+    match id {
+        Icon::Tomato | Icon::TomatoCalyx | Icon::TomatoHollow => (15.0 / 20.0) / (15.2 / 26.0),
         _ => 1.0,
     }
 }
@@ -347,6 +369,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Clock => include_str!("../../../assets/icons/clock.svg"),
         Icon::ServerSlash => include_str!("../../../assets/icons/server-slash.svg"),
         Icon::CircleSlash => include_str!("../../../assets/icons/circle-slash.svg"),
+        Icon::Sort => include_str!("../../../assets/icons/sort.svg"),
     }
 }
 
@@ -357,9 +380,35 @@ fn src(id: Icon) -> &'static str {
 // uploaded them: the render thread, the only one that draws. (The entries have no destructor, so
 // nothing runs GL at thread exit; the textures live for the process, as `CACHE` never evicts.)
 struct Entry {
-    id: Icon,
+    key: Key,
     px: i32,
     tex: c_uint,
+}
+
+/// WHICH glyph a cache entry rasterizes: one of the app's own [`Icon`]s, or an [`Svg`] a package
+/// supplied (keyed by the hash of its source, so a changed asset is a new entry, never a stale one).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Key {
+    Builtin(Icon),
+    Package(u64),
+}
+
+/// A glyph drawn from SVG SOURCE the app does not ship — a HUD package's asset. `key` identifies
+/// the source in the texture cache ([`Svg::new`] derives it from the text); the mask is rasterized
+/// and cached exactly as a built-in icon's is, at the size it is drawn, and (like every entry) lives
+/// for the process: the cache grows by one entry per distinct (asset, size) a package draws.
+#[derive(Clone, Copy)]
+pub struct Svg<'a> {
+    pub key: u64,
+    pub src: &'a str,
+}
+impl<'a> Svg<'a> {
+    pub fn new(src: &'a str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        src.hash(&mut h);
+        Self { key: h.finish(), src }
+    }
 }
 thread_local! {
     static CACHE: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
@@ -394,7 +443,7 @@ pub fn icon_raster_px(px: i32) -> i32 {
     px.clamp(8, MAX_ICON_PX)
 }
 
-fn tex_for(id: Icon, px: i32) -> c_uint {
+fn tex_for(key: Key, svg: &str, px: i32) -> c_uint {
     // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
     // land on the same `icon_raster_px` result rasterize identically, so they share one
     // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
@@ -405,7 +454,7 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
     // The cell is borrowed only for the lookup and, below, for the push: the rasteriser and the
     // upload run with no borrow held, so nothing they call can meet one.
     if let Some(tex) = CACHE.with(|cache| {
-        cache.borrow().iter().find(|e| e.id == id && e.px == raster_px).map(|e| e.tex)
+        cache.borrow().iter().find(|e| e.key == key && e.px == raster_px).map(|e| e.tex)
     }) {
         return tex;
     }
@@ -413,14 +462,14 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
     // rasterised at physical size and still drawn into the same logical rect.
     let target = raster_px * plx_base::surface::render_scale();
     let hi = target * SS;
-    let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
+    let tex = match plx_gfx::svg::rasterize(svg, hi, hi) {
         Some(rgba) => {
             let small = downsample_alpha(&rgba, hi, SS);
             upload(target, &small)
         }
         None => 0,
     };
-    CACHE.with(|cache| cache.borrow_mut().push(Entry { id, px: raster_px, tex }));
+    CACHE.with(|cache| cache.borrow_mut().push(Entry { key, px: raster_px, tex }));
     tex
 }
 
@@ -495,7 +544,28 @@ pub fn draw_raster(p: Painter, id: Icon, r: Rect, raster_px: i32, tint: [f32; 4]
         }
         return;
     }
-    let tex = tex_for(id, px);
+    blit(p, tex_for(Key::Builtin(id), src(id), px), r, tint);
+}
+
+/// [`draw`] for a package's [`Svg`]: the same mask, cache and 1:1 snap, a different source.
+pub fn draw_svg(p: Painter, svg: Svg<'_>, r: Rect, tint: [f32; 4]) {
+    draw_svg_raster(p, svg, r, r.w.max(r.h).round() as i32, tint);
+}
+
+/// [`draw_svg`] with the raster size chosen by the caller — [`draw_raster`]'s contract for a glyph
+/// whose box moves on a spring.
+pub fn draw_svg_raster(p: Painter, svg: Svg<'_>, r: Rect, raster_px: i32, tint: [f32; 4]) {
+    if raster_px <= 0 || p.is_recording() {
+        #[cfg(any(test, feature = "test-support"))]
+        if p.is_recording() {
+            crate::draw_census::note_svg(svg.key, p.place(r));
+        }
+        return;
+    }
+    blit(p, tex_for(Key::Package(svg.key), svg.src, raster_px), r, tint);
+}
+
+fn blit(p: Painter, tex: c_uint, r: Rect, tint: [f32; 4]) {
     if tex != 0 {
         // 1:1 mask — snap the COMPOSITED origin (fold the painter translate, snap, unfold),
         // same contract as text; see gfx::snap.
@@ -544,6 +614,7 @@ mod ink_tests {
             Icon::ChevronDown,
             Icon::ChevronUp,
             Icon::Check,
+            Icon::Sort,
         ] {
             let (l, r) = ink_x(id);
             assert!(
@@ -573,6 +644,37 @@ mod ink_tests {
         assert!(src(Icon::ChevronUp).contains(r#"d="M6 15l6-6 6 6""#));
         let (l, r) = ink_x(Icon::ChevronDown);
         assert!((l - (6.0 - 1.5) / 24.0).abs() < 1e-6 && (r - (18.0 + 1.5) / 24.0).abs() < 1e-6);
+    }
+
+    /// The sort mark's `ink_x` is its asset's own bounds (the long bar's path x 4..20 and the
+    /// 2.2-unit stroke's 1.1 each side), and it rasterizes clean at the header's 26 px (and 4x):
+    /// full opacity reached, no ink on the border, the board's three decreasing bars.
+    #[test]
+    fn the_sort_mark_matches_its_asset_and_rasterizes_clean() {
+        let svg = src(Icon::Sort);
+        // The Design System's own `sort.svg`, byte for byte (its one source of truth for the geometry).
+        assert_eq!(svg.trim_end(), concat!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" "##,
+            r#"stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7L20 7M7 12L17 12M10 17L14 17"></path></svg>"#));
+        assert!(svg.contains(r#"d="M4 7L20 7M7 12L17 12M10 17L14 17""#));
+        assert!(svg.contains(r#"stroke-width="2.2""#) && svg.contains(r#"stroke-linecap="round""#));
+        let (l, r) = ink_x(Icon::Sort);
+        assert!((l - (4.0 - 1.1) / 24.0).abs() < 1e-6 && (r - (20.0 + 1.1) / 24.0).abs() < 1e-6);
+        for px in [26, 104] {
+            let px = icon_raster_px(px);
+            let rgba = plx_gfx::svg::rasterize(svg, px, px).expect("the sort mark rasterizes");
+            assert_eq!(rgba.len(), (px * px * 4) as usize);
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            assert_eq!((0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max(), Some(255), "never full at {px}px");
+            for i in 0..px {
+                for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "ink on the border at {px}px ({x},{y})");
+                }
+            }
+            // Three bars, each shorter than the last: the ink in the middle row of each bar's band
+            // is wider for the top bar than the middle, and for the middle than the bottom.
+            let ink_in_row = |unit: f32| (0..px).filter(|&x| alpha(x, (unit / 24.0 * px as f32) as i32) > 127).count();
+            assert!(ink_in_row(7.0) > ink_in_row(12.0) && ink_in_row(12.0) > ink_in_row(17.0));
+        }
     }
 
     #[test]
@@ -711,6 +813,26 @@ mod ink_tests {
                 }
             }
         }
+    }
+
+    /// [`mark_zoom`] is derived from the tomato asset's own disc and viewBox, so a re-drawn body
+    /// (a different `r`, a different viewBox) fails here instead of drifting from the board's 15 px.
+    #[test]
+    fn the_tomato_zoom_puts_its_body_at_the_boards_15_px_in_a_20_px_box() {
+        let number_after = |svg: &str, key: &str| -> Vec<f32> {
+            let at = svg.find(key).expect(key) + key.len();
+            svg[at..].split('"').next().unwrap().split_whitespace().map(|n| n.parse().unwrap()).collect()
+        };
+        let svg = src(Icon::Tomato);
+        let (view, r) = (number_after(svg, "viewBox=\""), number_after(svg, " r=\"")[0]);
+        assert_eq!(view[2], view[3], "a square viewBox");
+        for id in [Icon::Tomato, Icon::TomatoCalyx, Icon::TomatoHollow] {
+            assert_eq!(src(id).split("viewBox=\"").nth(1).unwrap().split('"').next(), svg.split("viewBox=\"").nth(1).unwrap().split('"').next(),
+                "the layers of one mark share a viewBox and a zoom");
+            let body = 20.0 * mark_zoom(id) * (2.0 * r) / view[2];
+            assert!((body - 15.0).abs() < 0.05, "{id:?}: the body of a 20 px tomato box is {body} px");
+        }
+        assert_eq!(mark_zoom(Icon::Crowd), 1.0);
     }
 
     /// The Watchlist marks' `ink_x` and `band` entries are the bounds of their own assets, not

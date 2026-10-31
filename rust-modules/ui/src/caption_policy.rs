@@ -1,6 +1,6 @@
 //! **Under posters** — what a focused poster's caption band shows and how tall that band is.
 //!
-//! One global setting (Settings > Libraries > Under posters): a Title switch (default Off) and a
+//! Settings > Libraries > Under posters: a Title switch (default Off) and a
 //! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
 //! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing. (The Continue Watching
 //! deck is the one shelf handed a different policy: its progress line is always shown, so under Nothing
@@ -19,7 +19,8 @@
 //! and a name its face cuts ([`CaptionFacts::name_cut`]) is told on the details line when the title
 //! line is off, since the face is the only other place it is told.
 //!
-//! **Every POSTER tile reads this one setting**: the Library grid, the Collections page, the
+//! **Poster tiles follow this policy except a movie or TV show library grid showing its sort value**
+//! (one value line under every card, `card_row::draw_sort_value`): the Library grid, the Collections page, the
 //! Watchlist, Home's shelves, the Library's Recommended shelves, Search's poster rows, the person
 //! page's filmography, Detail's Related and collection shelves and the Collection screen's members
 //! (the screens build the focused block through `registry::captions`, and hand a
@@ -27,7 +28,11 @@
 //! **Landscape tiles and headshots are not posters and are not on it**: an episode still (the
 //! Library's Episodes listing, Search's Episode row, Recommended's landscape rows, Detail's Extras)
 //! and a cast or search-result headshot keep their own block, in their own height (the legacy band,
-//! `Grid::set_caption_policy(None)` for a grid), under every setting. The types and the two function signatures are what the
+//! `Grid::set_caption_policy(None)` for a grid), under every setting. The one exception is the
+//! Library's Episodes grid: while Sort value is On and the sort has a value for episodes it draws its
+//! sort value line under every still INSTEAD of that block (rows 60 px apart, the focused one opening
+//! 26 px), whatever its policy; the `None` policy sizes only the Off / no-value case (the legacy
+//! 114 px band). The types and the two function signatures are what the
 //! library, collection and settings packages compile against. [`band_h`] sizes the band;
 //! [`caption_lines`] words the lines in the given locale, with the catalog's plurals.
 
@@ -347,3 +352,6 @@ mod tests {
             "an item with no name and no facts has nothing to say");
     }
 }
+
+// A movie or TV show library sorted by a value draws one value line under every poster instead. That mode is
+// owned by Grid and TileLabel (`SortValue`); this two-line policy continues to describe every ordinary poster surface.

@@ -1620,7 +1620,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     };
     let heat = || Item::Media(PmsMovie { title: "Heat".into(), year: 1995, genre: Some("Crime".into()), ..Default::default() });
     let at = |title, details, sources: &[ScopeSource]| {
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details, sort_value: false })));
         let label = lines(&label_of(Kind::Movie, heat(), sources));
         TEST_UNDER_POSTERS.with(|cell| cell.set(None));
         label
@@ -1632,7 +1632,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     assert_eq!(at(true, Details::None, &friend), [Some("Heat".into()), None], "Nothing credits no line");
     assert_eq!(at(false, Details::None, &friend), [None, None]);
 
-    TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::Genre })));
+    TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::Genre, sort_value: false })));
     let still = Item::Media(PmsMovie { kind: 3, title: "A Grand Day Out".into(), aired: "1989-11-04".into(), ..Default::default() });
     let episode = lines(&label_of(Kind::Episode, still, &friend));
     TEST_UNDER_POSTERS.with(|cell| cell.set(None));
@@ -1651,4 +1651,25 @@ fn empty_state_pair_is_one_md_apart_and_centred_in_its_area() {
     let top = header_y;
     let bottom = statement_y + sh;
     assert!(((top + bottom) * 0.5 - (area.y + area.h * 0.5)).abs() < 0.01, "the pair is centred");
+}
+
+/// **The pointer's edge glide moves Search's results by poster rows, the unit every page glides
+/// by.** The glide hands the page a fraction of a row every frame; by the 60 px table row Search's
+/// wheel uses, the results crawled at a seventh of the speed of every other page. A notch of the
+/// remote's wheel (a whole step) still moves one table row.
+#[test]
+fn the_edge_glide_moves_the_results_by_poster_rows_and_a_wheel_notch_by_a_table_row() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.query("glide").shelves(vec![shelf(Kind::Movie, "g0", 6), shelf(Kind::Show, "g1", 6), shelf(Kind::Movie, "g2", 6)]);
+    let mut screen = fixture.screen();
+    let engine = seated(&screen, &fixture);
+    let wheel = |dy: f32| ScreenEvent::Input(InputEvent { at: Tick::default(),
+        source: plx_machine::machine::Source::Script, kind: InputKind::Wheel { dy } });
+    for _ in 0..10 { deliver(&mut screen, &fixture, engine.current(OWNER), wheel(-0.03)); }
+    let glided = screen.stack.target();
+    assert!((glided - 0.3 * plx_ui::consts::ROW_PITCH).abs() < 0.01, "the glide moves by poster rows: {glided}");
+    deliver(&mut screen, &fixture, engine.current(OWNER), wheel(-1.0));
+    assert!((screen.stack.target() - glided - plx_ui::table::ROW_H).abs() < 0.01,
+        "a wheel notch moves one table row: {} -> {}", glided, screen.stack.target());
 }

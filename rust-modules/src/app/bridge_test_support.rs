@@ -3,6 +3,7 @@
 //! key-driven route-test [`World`] (the one harness the route lanes share).
 
 use super::*;
+use plx_ui::containers::transition::{PageImage, PagePaint};
 
 /// **Put `route` on top, then run one frame** — the TEST driver that replaced `sync_page`.
 ///
@@ -47,7 +48,12 @@ pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, 
 /// supply the identity. The fold puts the identity ON the argument, which is what makes the
 /// trail seeding this helper used to do unnecessary.
 pub(super) fn detail_arg(rk: &str) -> AppArg {
-    AppArg::Content(ContentArg::Detail { sid: plx_plex::plex::ServerId::UNSET, rk: rk.into() })
+    detail_arg_for(plx_plex::plex::ServerId::UNSET, rk)
+}
+
+/// [`detail_arg`] for an item of server `sid` (the argument carries the pair, `ContentArg::Detail`).
+pub(super) fn detail_arg_for(sid: plx_plex::plex::ServerId, rk: &str) -> AppArg {
+    AppArg::Content(ContentArg::Detail { sid, rk: rk.into() })
 }
 
 /// …and a person page's.
@@ -283,6 +289,46 @@ impl Drop for World {
     }
 }
 
+/// **The page-image half of a route dip, as the dispatcher plans it.** `Dispatcher::draw_with` plans
+/// the top page with `PageImage::plan` from the transition and the page's quiescence, records what
+/// it captured, and states `page_image_held` for the screens' NEXT tick; a host has no GL to run the
+/// draw, so a test steps this after every frame (`World::step_dip` for a [`World`]) and every
+/// screen reads the same answer the product gives it. The stated fact is a thread-local: hold an
+/// [`ImageHeld`] for as long as a test drives a dip, so it does not outlive the test.
+#[derive(Default)]
+pub(super) struct DipImage {
+    image: PageImage,
+    valid: bool,
+}
+
+impl DipImage {
+    /// The paint the frame `d` just ran (at `ms`) gets, and `page_image_held` for the next tick.
+    /// `None` when no page is on top.
+    pub(super) fn plan(&mut self, d: &Dispatcher<AppHost>, ms: u32) -> Option<PagePaint> {
+        let quiescent = !plx_machine::idle::page_layout_moving();
+        let transition = &d.nav.tabs.stack.transition;
+        let (alpha, flight) = (transition.page_alpha(), transition.in_flight());
+        let entry = d.nav.top_page().map(|e| e.id)?;
+        let paint = self.image.plan(entry, flight, alpha, ms, self.valid, quiescent);
+        match paint {
+            PagePaint::Capture => { self.image.captured(entry); self.valid = true; }
+            PagePaint::ReplacementCapture => { self.image.replacement_captured(entry); self.valid = true; }
+            PagePaint::Live => { self.image = PageImage::default(); self.valid = false; }
+            PagePaint::Held(_) => {}
+        }
+        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
+        Some(paint)
+    }
+}
+
+/// The page image a test leaves behind must not be the next test's (`PAGE_IMAGE_HELD` is a
+/// thread-local the dispatcher sets and the screens read on their next tick).
+pub(super) struct ImageHeld;
+
+impl Drop for ImageHeld {
+    fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
+}
+
 /// How many collections the rig's probe stands in for on every section it seeds (a server the rig
 /// has no network to ask): enough that the Library header's Collections control is on the row.
 pub(crate) const RIG_COLLECTIONS: u32 = 4;
@@ -514,14 +560,44 @@ impl World {
     /// The Detail page of record `movie` holding `detail` (its `related` shelf, its collection), pushed
     /// over Home over the same scripted plex.tv, settled.
     pub(super) fn detail_page(name: &str, detail: plx_data::metadata::Detail) -> World {
+        Self::detail_page_at(name, detail_arg("movie"), detail)
+    }
+
+    /// An episode's Detail page (record `rk` of server `sid`, the `season` of the show `show_rk`)
+    /// pushed over Home over the same scripted plex.tv, settled. Nothing is watched, so the hero
+    /// row is Play and the watch disc, plus whatever the page adds for an episode.
+    pub(super) fn detail_episode(name: &str, sid: plx_plex::plex::ServerId, rk: &str, show_rk: &str, season: i64) -> World {
+        Self::detail_page_at(name, detail_arg_for(sid, rk), Self::episode_detail(sid, rk, show_rk, season))
+    }
+
+    /// The Detail [`Self::detail_episode`] installs, for a test that re-lands it (a page that left
+    /// and came back asks its server again).
+    pub(super) fn episode_detail(sid: plx_plex::plex::ServerId, rk: &str, show_rk: &str, season: i64) -> plx_data::metadata::Detail {
+        plx_data::metadata::Detail {
+            sid,
+            rk: rk.into(),
+            kind: "episode".into(),
+            title: "Episode".into(),
+            show_rk: show_rk.into(),
+            show_title: "Show".into(),
+            season,
+            index: 5,
+            part: format!("/library/parts/{rk}"),
+            ..Default::default()
+        }
+    }
+
+    /// [`Self::detail_page`] for the page `arg` names: the argument is the identity the page mounts
+    /// under, `detail` is what the store holds for it.
+    fn detail_page_at(name: &str, arg: AppArg, detail: plx_data::metadata::Detail) -> World {
         let mut w = Self::scripted(name);
         super::show_page(&mut w.d, AppArg::Home);
         w.frames(20);
         // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
         plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(detail));
-        super::nav_push_with_return(&mut w.d, detail_arg("movie"), Default::default());
+        super::nav_push_with_return(&mut w.d, arg.clone(), Default::default());
         w.frames(60);
-        assert!(w.on(&detail_arg("movie")), "premise: the Detail page is on top");
+        assert!(w.on(&arg), "premise: the Detail page is on top");
         w
     }
 
@@ -581,6 +657,14 @@ impl World {
 
     pub(super) fn frames(&mut self, n: u32) {
         for _ in 0..n { self.step(vec![]); }
+    }
+
+    /// [`Self::step`] and then the route dip's image decision on the frame it made (`dip`): the
+    /// product's `Dispatcher::draw_with` plan, which a host test has no GL to run. `None` when no
+    /// page is on top.
+    pub(super) fn step_dip(&mut self, dip: &mut DipImage, inputs: Vec<InputEvent<u32>>) -> Option<PagePaint> {
+        self.step(inputs);
+        dip.plan(&self.d, self.frame * 16)
     }
 
     /// `n` idle frames; returns what the pump performed meanwhile (a navigation a press began and

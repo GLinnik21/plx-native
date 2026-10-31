@@ -119,7 +119,7 @@ fn the_browse_pump_arm_starts_the_reads_it_asked_for_again_after_a_refusal() {
 #[test]
 fn browse_run_starts_a_directory_read_its_step_emitted_in_the_same_call() {
     let _guard = plx_base::testlock::serial();
-    for work in [LibraryWork::Genres, LibraryWork::Letters] {
+    for work in [LibraryWork::Genres, LibraryWork::Letters { today: None }] {
         let mut rig = armed_rig();
         rig.bridge.stores.browse.borrow_mut().owe_letters_for_test();
         let target = rig.target;
@@ -183,7 +183,7 @@ fn the_reconcile_pump_starts_the_read_its_browse_pump_asked_for() {
         select: false, choice: false, query: Some(plx_data::stores::browse::QueryEdit::Unwatched(true)) } });
     rig.bridge.stores.browse.borrow_mut().seed_items_for_test(3);
     rig.bridge.browse_run(BrowseCmd::ApplyView { at: plx_data::viewstate::ViewAt::leaf(own, "1"),
-        edit: plx_data::viewstate::ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 } });
+        edit: plx_data::viewstate::ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None } });
     rig.bridge.browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Requery });
     assert!(rig.bridge.stores.browse.borrow().requery_owed(), "premise: a membership re-query is owed");
     rig.assert_down();

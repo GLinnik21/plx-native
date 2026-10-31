@@ -13,7 +13,7 @@ use super::cards_harness::{row, tile, Harness};
 use super::page::WatchlistScreen;
 
 fn set(title: bool, details: UnderPostersDetails) {
-    TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { title, details })));
+    TEST_UNDER_POSTERS.with(|c| c.set(Some(UnderPosters { title, details, sort_value: false })));
 }
 
 fn lines(state: TileState) -> (Option<String>, Option<String>) {

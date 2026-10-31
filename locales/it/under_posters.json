@@ -1,19 +1,32 @@
 {
   "under_posters.title": "Sotto le locandine",
-  "under_posters.detail": "Cosa appare sotto la locandina scelta.",
-  "under_posters.copy": "La maggior parte delle locandine mostra già il titolo. Scegli cosa appare sotto la locandina su cui ti trovi.",
+  "under_posters.detail": "Sotto le locandine, per film e serie TV.",
+  "under_posters.copy": "La maggior parte delle locandine mostra già il titolo. Scegli cosa appare sotto, per film e serie TV. L’anteprima usa la libreria che hai aperto per ultima.",
   "under_posters.title_row": "Titolo",
   "under_posters.title_detail": "Il nome, in grassetto.",
   "under_posters.details_row": "Dettagli",
-  "under_posters.details_detail": "Una riga di informazioni.",
-  "under_posters.details_copy": "I titoli iniziati, in arrivo o le raccolte mostrano invece questo: tempo rimanente, data di uscita, numero di film.",
+  "under_posters.details_detail": "Una riga per film o serie TV.",
+  "under_posters.details_copy": "Ogni scelta si adatta alla locandina: un film mostra 2019 · 2 h 14 min, una serie TV 2019 · 6 stagioni, oppure 4 nuovi episodi dopo che l’hai iniziata. I titoli iniziati, in arrivo e le raccolte mostrano invece il tempo rimanente, la data di uscita o quanti titoli contengono.",
   "under_posters.year_length": "Anno · Durata",
   "under_posters.genre": "Genere",
   "under_posters.video": "Video",
+  "under_posters.video_detail": "Senza qualità video unica, la serie TV mostra l’anno.",
   "under_posters.age_rating_score": "Classificazione · Voto",
   "under_posters.none": "Niente",
   "under_posters.reset": "Ripristina predefinito",
-  "under_posters.reset_detail": "Anno e durata, senza titolo.",
+  "under_posters.reset_detail": "Anno e durata, valore di ordinamento attivo, senza titolo.",
   "under_posters.sample_title": "Film",
-  "under_posters.sample_genre": "Drammatico"
+  "under_posters.sample_genre": "Drammatico",
+  "under_posters.sort_value": "Valore di ordinamento",
+  "under_posters.sort_value_detail": "Sostituisce la riga dei dettagli mentre una libreria è ordinata.",
+  "under_posters.value_today": "Oggi",
+  "under_posters.value_yesterday": "Ieri",
+  "under_posters.value_never": "Mai",
+  "under_posters.value_plays": {
+    "one": "{count} riproduzione",
+    "many": "{count} riproduzioni",
+    "other": "{count} riproduzioni"
+  },
+  "under_posters.sorted_by": "Ordinato per anno",
+  "under_posters.last_opened": "La libreria aperta per ultima"
 }

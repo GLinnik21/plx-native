@@ -7,6 +7,14 @@ binds the decoded sink to the hardware video plane. The Starfish/ACB calls cross
 bind-order gotchas for that seam live in THIS file**, below. `docs/agent-reference.md` carries only the
 one-paragraph playback summary.
 
+## Sans-IO
+
+`lifecycle.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
+`plan_memory.rs` are machines: a step starts no worker, reads no registry and has no `cfg(test)`
+fork. The engine, the pump and the drivers beside them execute their effects.
+
+@../../../../docs/sans-io-guide.md
+
 ## Pipeline
 
 In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process
@@ -101,8 +109,11 @@ something.
   Methods returning a `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO)
   for short replies like `"Ok"`/`"BufferFull"`.
 - **Dolby Vision and Dolby Atmos have their own document: `docs/dolby-vision.md`.** A DV node is
-  emitted only after the boot-time configd probe definitely confirms hardware support. The route
-  freezes that capability + presentation decision, and every Load/reload/recovery consumes the
+  emitted only when the boot-time configd probe definitely confirms hardware support and the seated
+  profile's Dolby Vision setting is Auto (`ResolveEnv::dolby_vision_mode`, applied by
+  `DolbyVisionMode::gate` where the route plans, to the presentation only). The route freezes the
+  probe's own capability (for read-outs) + that gated presentation decision, and every
+  Load/reload/recovery consumes the
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
   exception. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.
@@ -353,7 +364,8 @@ something.
   ladder read it: under Force Direct Play (D1(b)) a surround track the set has no native path for is NOT decoded
   in the app (`app_decodes_lossy_track` is false for it, in either arm, the codec being in force or not), so the
   Forced pick refuses it like any unplayable track (`ForcedFailure::Audio`, naming the codec; before S4 the same)
-  and a pipeline refusal of it reads out; a track of one or two channels is no downmix and keeps the app decode. Under
+  and a pipeline refusal of it reads out (`RecoveryEffect::NameRefusedAudio`: LG's 601 names no codec and is also a video/resource refusal, so the read-out names the
+  track the Load was fed only when the refusal is attributable to it (`OpenRecovery::refusal_attributable_to_audio`: an Engine with no picture, a codec the attempt's `Caps::native_audio_track(.., forced)` says the set does not play, not the app's PCM decode, and no video above `VIDEO_REFUSAL_FLOOR` that the facet rungs would suspect; Opus, DTS on a set with a DTS row and FLAC/ALAC/LPCM keep the generic read-out), then the same `ForcedFailure::Audio` sentence as the planner's up-front refusal; scheme of discussion #695 row 10); a track of one or two channels is no downmix and keeps the app decode. Under
   Auto (D2) the surround downmix is only the very last rung of the ladder (below), after every server option was
   refused, and stays labelled; Auto's default for a 5.1 track the set cannot take is the server conversion that keeps its channels.
   **One exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,

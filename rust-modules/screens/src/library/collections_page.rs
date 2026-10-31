@@ -24,7 +24,7 @@ use plx_data::browse::LibraryType;
 use plx_data::stores::browse::SecKind;
 use plx_platform::i18n::msg;
 use plx_ui::breadcrumb::Crumb;
-use plx_ui::page_header::{HeaderItem, PageHeaderSpec};
+use plx_ui::page_header::PageHeaderSpec;
 
 /// A server that declares at least this many sorts for the listing gets the Sort control. PMS
 /// declares only `titleSort` for `type=18` (and no descending key), so the control is absent today
@@ -73,13 +73,7 @@ pub fn root_label(library: &str, kind: SecKind) -> String {
 /// this is the page's declaration of what is on it, and nothing else.
 pub fn header_spec(library: &str, kind: SecKind, declared_sorts: usize, sort_value: &str) -> PageHeaderSpec {
     let right = if sort_visible(declared_sorts) {
-        vec![HeaderItem {
-            label: msg::browse_library_sort().to_owned(),
-            value: Some(sort_value.to_owned()),
-            fold_glyph: true,
-            focusable: true,
-            ..Default::default()
-        }]
+        vec![plx_ui::page_header::HeaderItem::sort_control(msg::browse_library_sort(), sort_value)]
     } else { Vec::new() };
     PageHeaderSpec { crumb: Some(Crumb::new(root_label(library, kind), msg::browse_kind_collections())), right, ..Default::default() }
 }

@@ -1,19 +1,31 @@
 {
   "under_posters.title": "Plakátok alatt",
-  "under_posters.detail": "Mi látszik a kijelölt plakát alatt.",
-  "under_posters.copy": "A legtöbb plakát már mutatja a címét. Válaszd ki, mi jelenjen meg annak a plakátnak az alatt, amelyiken állsz.",
+  "under_posters.detail": "Plakátok alatt, filmeknél és sorozatoknál.",
+  "under_posters.copy": "A legtöbb plakát már mutatja a címét. Válaszd ki, mi jelenjen meg alattuk, filmeknél és sorozatoknál egyaránt. Az előnézet a legutóbb megnyitott filmtárat használja.",
   "under_posters.title_row": "Cím",
   "under_posters.title_detail": "A név, félkövéren.",
   "under_posters.details_row": "Részletek",
-  "under_posters.details_detail": "Egy sor információ.",
-  "under_posters.details_copy": "A megkezdett, hamarosan érkező címek és a gyűjtemények ezt mutatják helyette: hátralévő idő, megjelenési dátum, filmek száma.",
+  "under_posters.details_detail": "Egy sor, filmhez vagy sorozathoz igazítva.",
+  "under_posters.details_copy": "Minden választás illik a plakáthoz: egy film 2019 · 2 ó 14 p, egy sorozat 2019 · 6 évad vagy 4 új epizód, ha már elkezdted. A megkezdett, a hamarosan érkező címek és a gyűjtemények helyette hátralévő időt, megjelenést vagy darabszámot mutatnak.",
   "under_posters.year_length": "Év · Hossz",
   "under_posters.genre": "Műfaj",
   "under_posters.video": "Videó",
+  "under_posters.video_detail": "Sorozatnak nincs egységes videóminősége, évet mutat.",
   "under_posters.age_rating_score": "Korhatár · Értékelés",
   "under_posters.none": "Semmi",
   "under_posters.reset": "Alapértelmezés",
-  "under_posters.reset_detail": "Év és hossz, cím nélkül.",
+  "under_posters.reset_detail": "Év és hossz, rendezési érték be, cím nélkül.",
   "under_posters.sample_title": "Film",
-  "under_posters.sample_genre": "Dráma"
+  "under_posters.sample_genre": "Dráma",
+  "under_posters.sort_value": "Rendezési érték",
+  "under_posters.sort_value_detail": "Felváltja a részletek sorát, amíg a filmtár rendezett.",
+  "under_posters.value_today": "Ma",
+  "under_posters.value_yesterday": "Tegnap",
+  "under_posters.value_never": "Soha",
+  "under_posters.value_plays": {
+    "one": "{count} lejátszás",
+    "other": "{count} lejátszás"
+  },
+  "under_posters.sorted_by": "Rendezés: év",
+  "under_posters.last_opened": "A legutóbb megnyitott filmtár"
 }

@@ -8,7 +8,7 @@ use crate::stores::subsearch::SubSearchStore;
 use crate::stores::StoreJob;
 use plx_machine::landgate::Gate;
 
-const KEY: ClientKey = ClientKey { instance: 7, token: 3 };
+const KEY: ClientKey = ClientKey { instance: 7, token: 3, grant: 3 };
 
 fn sid() -> ServerId { ServerId::from_raw(1) }
 

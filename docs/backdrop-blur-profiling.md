@@ -454,8 +454,8 @@ OVERDRAW frames=60 panel=... | card=... image=... | cardpath split=P/D focus=P/D
 ```
 
 `split` is a resting card cut into pieces; `focus` a card with `f > 0` or `dy > 0` (the focus
-program, whole); `clip` a resting, rounded card on a reduced-resolution blur source pass with the
-split on (whole); `nointerior` a card with no certainly-plain interior (a circle, a sliver);
+program, whole); `clip` a resting, rounded card on a reduced-resolution blur source pass, or inside a
+full-resolution `FrameCache::render_region` fill (scale 1), with the split on (whole); `nointerior` a card with no certainly-plain interior (a circle, a sliver);
 `plain` a corner radius under half a pixel (the shader's own whole-quad plain branch); `off` a card
 that would have been split with the split switched off. A card is sorted focus, then plain, then
 off, and only a card that is still to be split has its target checked, so a popped, square-cornered
@@ -1412,9 +1412,12 @@ synchronous `glReadPixels` once every thirty frames. That frame cost 27–29 ms:
 **Fix: a ground reading never waits on the frame** (`gfx::GroundProbe`, cadence in the pure
 `gfx::ProbeCadence`). A due call copies the tap boxes GPU-side into a small probe target and
 inserts a fence. `gfx::ground_probes_frame_end` reads the target right after the swap, once the
-fence has signalled. The sampler's next call reduces it. Both samplers take this path: the tab
-track's `sample_ground` and the Hero row's `sample_control_ground`. Two intermediate steps were
-measured and rejected:
+fence has signalled. The sampler's next call reduces it. Both samplers took this path: the tab
+track's `sample_ground` and the Hero row's `sample_control_ground`. (The track's copy has since
+moved off framebuffer 0: it copies the band's retained backdrop image at the frame boundary, and
+only the Hero row still copies framebuffer 0 on its call; see `gfx::sample_ground`, and
+`docs/glass-hardware-budget.md`, "What to index on instead", for what the move took out of the
+frame.) Two intermediate steps were measured and rejected:
 
 - **Reading the probe mid-page, at the sampler's next call.** `gndread` fell to 0.2 ms, but the
   frame still ran ~12 ms over its neighbours.

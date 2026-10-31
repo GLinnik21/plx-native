@@ -53,7 +53,7 @@ pub fn secs_short(ms: i64) -> String {
 #[cfg(test)]
 mod one_shape_tests {
     use super::*;
-    use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
 
     const MINUTE: i64 = 60_000;
 
@@ -76,8 +76,9 @@ mod one_shape_tests {
     /// the unit marks every other length on screen wears ("6m", "2h 14m"), in every shipped language.
     #[test]
     fn time_left_wears_the_unit_marks_of_a_duration_in_every_language() {
-        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
-            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
             for minutes in [8, 62] {
                 let (left, length) = (time_left_minutes_in(cx, minutes), duration_minutes_in(cx, minutes));
@@ -88,8 +89,9 @@ mod one_shape_tests {
 
     #[test]
     fn every_shipped_language_tells_a_duration_with_both_numbers() {
-        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
-            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
             let (hours, minutes) = (duration(134 * MINUTE), duration(14 * MINUTE));
             assert!(hours.contains('2') && hours.contains("14"), "{tag}: {hours}");
             assert!(minutes.contains("14") && !minutes.contains('0'), "{tag}: {minutes}");
@@ -104,8 +106,9 @@ mod one_shape_tests {
         for bad in ["", "tomorrow", "2027-13-40", "2027-02-30", "2027-03", "2027-03-12-01"] {
             assert_eq!(coming_on(bad, MonthWidth::Medium), None, "{bad:?}");
         }
-        for tag in ["en", "de", "es", "fr", "hu", "it", "pt", "be"] {
-            let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
+        for language in SHIPPED {
+            let tag = language.tag();
+            let _g = language_on_this_thread_for_test(language);
             let lead = msg::watchlist_state_coming_on("");
             let (medium, long) = (coming_on("2027-03-12", MonthWidth::Medium).unwrap(), coming_on("2027-03-12", MonthWidth::Long).unwrap());
             assert!(medium.starts_with(lead.trim_end()), "{tag}: {medium} vs {lead:?}");
@@ -326,13 +329,18 @@ pub fn shared_by(handle: &str) -> Option<String> {
     (!handle.is_empty()).then(|| plx_platform::i18n::msg::core_shared_by(handle))
 }
 
+/// The separator between the episode's numbering and its title in [`episode_kicker`] (`"S2, E3 · Laura"`):
+/// shared so a caller that measures the numbering alone (the HUD lint's app-text fit) measures the same prefix
+/// the kicker draws.
+pub const KICKER_SEPARATOR: &str = " \u{b7} ";
+
 /// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
 /// it. ONE formatter, because this string is drawn by the transport HUD (the now-playing item), the
 /// route's pre-roll ctx line and the Up Next caption, and the whole point of the last two is that
 /// they read identically to the first. It was three separate literals before, with nothing keeping
 /// them in step.
 pub fn episode_kicker(season: i64, index: i64, title: &str) -> String {
-    join_present(&[&episode_ordinal(season, index), title], " \u{b7} ")
+    join_present(&[&episode_ordinal(season, index), title], KICKER_SEPARATOR)
 }
 
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no
@@ -493,6 +501,15 @@ mod tests {
 /// pass 0 when there is none, and an unparseable date yields the empty string rather than a
 /// half-formatted one — every caller draws a date line only when it is non-empty.
 pub fn pretty_date(iso: &str, year: i64) -> String {
+    pretty_date_with(iso, year, false)
+}
+
+/// A calendar date with the locale's abbreviated month, retaining [`pretty_date`]'s validation.
+pub fn pretty_date_medium(iso: &str, year: i64) -> String {
+    pretty_date_with(iso, year, true)
+}
+
+fn pretty_date_with(iso: &str, year: i64, named_month: bool) -> String {
     let parts: Vec<&str> = iso.split('-').collect();
     if parts.len() == 3 {
         if let (Ok(y), Ok(mo), Ok(da)) = (
@@ -501,7 +518,8 @@ pub fn pretty_date(iso: &str, year: i64) -> String {
             parts[2].parse::<i64>(),
         ) {
             if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
-                if let Some(date) = plx_platform::i18n::current().date(y, m, d) { return date; }
+                let cx = plx_platform::i18n::current();
+                if let Some(date) = if named_month { cx.date_medium(y, m, d) } else { cx.date(y, m, d) } { return date; }
             }
         }
     }
@@ -534,8 +552,8 @@ pub fn rating_score(scale: RatingScale, value: f64) -> String {
     }
 }
 
-/// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (Spanish and
-/// Belarusian set it off with a no-break space; English does not).
+/// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (German,
+/// Spanish and Belarusian set it off with a no-break space; English does not).
 pub fn percent(value: i64) -> String {
     plx_platform::i18n::msg::core_percent(&plx_platform::i18n::current().number(value))
 }

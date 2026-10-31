@@ -18,6 +18,9 @@
 //! word (§2.1).
 
 use plx_appkit::held_key::HeldKey;
+use plx_appkit::player_hud::geometry::{GROUP_ROW, GROUP_SCRUB, GROUP_TABS};
+use plx_appkit::player_hud::{ControlSlot, Controls};
+use plx_machine::machine::GroupId;
 use std::os::raw::c_int;
 
 /// Is the transport HUD on screen? Its timer is live, OR playback is paused, OR the pipeline is
@@ -159,12 +162,17 @@ impl Scrub {
 ///
 /// As three loose `plex_run` locals they were never reset at all: `start_playback` sets the
 /// route, the resume point and the HUD timer, but the focus cursor survived from the
-/// PREVIOUS session — leave one movie with the Subtitles button focused (`focus == 1`),
+/// PREVIOUS session — leave one movie with the Subtitles button focused (`focus == GROUP_ROW`),
 /// start another, and the first OK opened the track menu instead of pausing. Bundling makes
 /// "reset the HUD focus" one assignment that `start_playback` cannot half-do.
 #[derive(Clone, Copy)]
 pub struct HudNav {
-    pub focus: i32, // 0 = scrubber, 1 = right buttons (Subtitles/Audio/More), 2 = bottom tabs
+    /// Which of the HUD's FocusEngine groups holds focus: [`GROUP_SCRUB`] (the scrubber),
+    /// [`GROUP_ROW`] (the control row: Subtitles/Audio/More, the Skip pill or the Up Next pair) or
+    /// [`GROUP_TABS`] (the bottom tabs). It MIRRORS the engine's focus, which is the authority:
+    /// `PlayerScreen::step` writes it on `FocusMoved` and every other write is paired with a
+    /// re-seat. The canon hash writes its `.0`, where the integer used to be.
+    pub focus: GroupId,
     pub btn: i32,   // 0 = Previous, 1 = Next, 2 = Subtitles, 3 = Audio, 4 = More
     pub tab: i32,   // 0 = Info, 1 = Chapters (within the tabs row)
 }
@@ -172,7 +180,7 @@ impl HudNav {
     /// Focus parked on the scrubber, both indexed rows on their first item — where a fresh
     /// session starts and where an auto-hidden HUD is re-parked.
     pub const HOME: HudNav = HudNav {
-        focus: 0,
+        focus: GROUP_SCRUB,
         btn: 0,
         tab: 0,
     };
@@ -236,6 +244,12 @@ pub struct HudState {
     /// so each segment raises the HUD exactly once per playback however often the row
     /// flickers.
     pub last_offer: Option<(plx_data::metadata::MarkerKind, i64)>,
+    /// The SEGMENT whose offer the viewer dismissed with BACK. `None` until they do, and keyed
+    /// on the segment rather than the row so it covers an intro and its later credits as two
+    /// independent decisions: dismissing Skip Intro must not silently hide Up Next at the end
+    /// of the same episode. The row falls back to the discs while the playhead is still inside
+    /// this segment, and a different segment offers normally.
+    pub dismissed_offer: Option<(plx_data::metadata::MarkerKind, i64)>,
     /// Did a stand-in own the control row last frame? The reset below is the EDGE of a
     /// stand-in vanishing under the focus ring — see `player_hud::standin_left_the_ring`,
     /// which is where that rule is written down and tested.
@@ -251,8 +265,28 @@ impl HudState {
         exit_armed: false,
         back_leaves_at_press: false,
         last_offer: None,
+        dismissed_offer: None,
         was_standin: false,
     };
+
+    /// **The row to DRAW once BACK has dismissed its offer.** The slot is recomputed every frame
+    /// from the playhead, so a dismissal has to be applied at the one place the frame's slot is
+    /// resolved, not by remembering a replacement `Discs` value: the next frame's `slot()` would
+    /// put the offer straight back. Keyed on the SEGMENT (`ControlSlot::offer`) so it lapses by
+    /// itself when the marker does, and reusing [`Controls::now`] gives the returning discs the
+    /// same live Previous/Next pair they have outside a segment.
+    pub fn slot_after_dismissal(
+        &self,
+        slot: ControlSlot,
+        ps: &plx_media::route::PlaybackSession,
+    ) -> ControlSlot {
+        match slot.offer() {
+            Some(offer) if self.dismissed_offer == Some(offer) => {
+                ControlSlot::Discs(Controls::now(ps))
+            }
+            _ => slot,
+        }
+    }
 
     /// Is the transport on screen right now, by this HUD's own state?
     #[inline]
@@ -351,8 +385,8 @@ impl HudState {
     pub fn raise_for_offer(&mut self, now: u32, primary: c_int) {
         self.extend(now, HUD_LINGER_MS);
         self.dismissed = false;
-        if self.nav.focus == 0 {
-            self.nav.focus = 1;
+        if self.nav.focus == GROUP_SCRUB {
+            self.nav.focus = GROUP_ROW;
             self.nav.btn = primary;
         }
     }
@@ -388,13 +422,13 @@ pub enum ScrubPress {
 }
 
 /// The decision above, written once so the key arm and its test cannot disagree.
-pub fn scrub_press(hud_vis: bool, focus: i32, seekable: bool) -> ScrubPress {
+pub fn scrub_press(hud_vis: bool, focus: GroupId, seekable: bool) -> ScrubPress {
     if !hud_vis {
         return ScrubPress::Reveal;
     }
     match focus {
-        1 => ScrubPress::Row,
-        2 => ScrubPress::Tabs,
+        GROUP_ROW => ScrubPress::Row,
+        GROUP_TABS => ScrubPress::Tabs,
         _ if seekable => ScrubPress::Jump,
         _ => ScrubPress::Nothing,
     }
@@ -516,27 +550,27 @@ mod hud_visibility_tests {
     /// The pairing is the point: whatever the cursor is parked on, an invisible transport takes the
     /// press for itself, and the SAME cursor acts normally the moment the transport is on screen.
     /// Focus survives an auto-hide (`HudNav::HOME` is re-parked one block down in the loop), so
-    /// "hidden but focus == 1" is an ordinary state, not a corner.
+    /// "hidden but focus == GROUP_ROW" is an ordinary state, not a corner.
     #[test]
     fn a_hidden_hud_spends_the_press_on_itself() {
-        for focus in [0, 1, 2] {
+        for focus in [GROUP_SCRUB, GROUP_ROW, GROUP_TABS] {
             for seekable in [false, true] {
                 assert_eq!(
                     scrub_press(false, focus, seekable),
                     ScrubPress::Reveal,
-                    "hidden HUD, focus {focus}: the press raises it and moves nothing"
+                    "hidden HUD, focus {focus:?}: the press raises it and moves nothing"
                 );
             }
         }
         // …and visible, the same three cursors act — this is what the reveal DEFERS to, one press later
-        assert_eq!(scrub_press(true, 0, true), ScrubPress::Jump);
-        assert_eq!(scrub_press(true, 1, true), ScrubPress::Row);
-        assert_eq!(scrub_press(true, 2, true), ScrubPress::Tabs);
+        assert_eq!(scrub_press(true, GROUP_SCRUB, true), ScrubPress::Jump);
+        assert_eq!(scrub_press(true, GROUP_ROW, true), ScrubPress::Row);
+        assert_eq!(scrub_press(true, GROUP_TABS, true), ScrubPress::Tabs);
         // Duration belongs only to the scrubber. Indexed rows remain live without one.
-        assert_eq!(scrub_press(true, 1, false), ScrubPress::Row);
-        assert_eq!(scrub_press(true, 2, false), ScrubPress::Tabs);
+        assert_eq!(scrub_press(true, GROUP_ROW, false), ScrubPress::Row);
+        assert_eq!(scrub_press(true, GROUP_TABS, false), ScrubPress::Tabs);
         // the scrubber itself with nothing to move through is still not a Jump
-        assert_eq!(scrub_press(true, 0, false), ScrubPress::Nothing);
+        assert_eq!(scrub_press(true, GROUP_SCRUB, false), ScrubPress::Nothing);
     }
 
     /// Sample a hand dismissal before the fresh bound press clears it, or the press would drive
@@ -550,6 +584,46 @@ mod hud_visibility_tests {
             assert!(!hud.visible_at_press, "the press found a hand-hidden HUD");
             assert!(!hud.dismissed, "the same bound press wakes it for the next decision");
         });
+    }
+
+    /// BACK's dismissal is keyed on the SEGMENT. It hides the offer that was up and shows the
+    /// discs, and it must not carry over to the next marker: an intro dismissed at 0:30 says
+    /// nothing about whether the viewer wants Up Next at the end of the episode.
+    #[test]
+    fn a_dismissed_offer_shows_the_discs_and_another_segment_still_offers() {
+        use plx_data::metadata::{Marker, MarkerKind};
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let intro = Marker {
+            kind: MarkerKind::Intro,
+            start_ms: 0,
+            end_ms: 60_000,
+            final_seg: false,
+        };
+        let credits = Marker {
+            kind: MarkerKind::Credits,
+            start_ms: 60_000,
+            end_ms: 120_000,
+            final_seg: true,
+        };
+        let skip = plx_appkit::player_hud::slot_for(
+            Some(intro),
+            false,
+            plx_media::route::NextEpisodeMode::Countdown,
+        );
+        let up_next = plx_appkit::player_hud::slot_for(
+            Some(credits),
+            true,
+            plx_media::route::NextEpisodeMode::Countdown,
+        );
+        let mut hud = HudState::IDLE;
+        assert!(hud.slot_after_dismissal(skip, &ps) == skip, "nothing dismissed yet");
+
+        hud.dismissed_offer = Some((MarkerKind::Intro, intro.start_ms));
+        assert!(matches!(hud.slot_after_dismissal(skip, &ps), ControlSlot::Discs(_)));
+        assert!(
+            hud.slot_after_dismissal(up_next, &ps) == up_next,
+            "a different segment gets its own chance"
+        );
     }
 
     /// The exit arming is sampled BEFORE the press un-dismisses, and the press spends it: only the
@@ -639,11 +713,11 @@ mod hud_visibility_tests {
             hud.raise_for_offer(now, plx_appkit::up_next::PRIMARY_BTN);
             assert!(hud.visible(&ps, now, false), "an offer clears a hand dismissal");
             assert_eq!(
-                hud.nav.focus, 1,
+                hud.nav.focus, GROUP_ROW,
                 "on the control row, so the auto-hide re-park leaves it"
             );
             assert!(
-                plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn == plx_appkit::up_next::BTN_NEXT),
                 "…and RESTING on the primary, which is what the next frame's cancel rule asks"
             );
         });
@@ -661,7 +735,7 @@ mod hud_visibility_tests {
             // parked on the Chapters tab, which is only reachable by pressing DOWN twice
             let mut hud = HudState {
                 nav: HudNav {
-                    focus: 2,
+                    focus: GROUP_TABS,
                     btn: 0,
                     tab: 1,
                 },
@@ -669,9 +743,9 @@ mod hud_visibility_tests {
             };
             hud.raise_for_offer(now, plx_appkit::up_next::PRIMARY_BTN);
             assert!(hud.visible(&ps, now, false), "the offer is still shown");
-            assert_eq!((hud.nav.focus, hud.nav.tab), (2, 1), "their spot is theirs");
+            assert_eq!((hud.nav.focus, hud.nav.tab), (GROUP_TABS, 1), "their spot is theirs");
             assert!(
-                !plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                !plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn == plx_appkit::up_next::BTN_NEXT),
                 "engaging the transport is not consent to be pulled into the next episode"
             );
         });

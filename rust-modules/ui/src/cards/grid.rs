@@ -1,4 +1,4 @@
-//! [`Grid`] — the poster grid with a collapsing caption band under the focused row: six
+//! [`Grid`] — a poster grid with focused captions, or fixed captions on every visible tile: six
 //! `poster_grid::STYLE` columns by default, any column count / style / left edge through
 //! [`GridSpec`] (`poster_grid`'s `_in` functions are its geometry). The Collection page is its first
 //! adopter; [`ScrollMode::External`] serves a grid inside a document another owner scrolls.
@@ -7,7 +7,7 @@
 //! the same arithmetic for draw, stops, `Focusable` placement and paging, so the rect a card is
 //! drawn at, the stop it registers and the rect `place` answers are one value.
 
-use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
+use plx_machine::machine::{Canon, Cx, Effects, Enter, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::{PresentEvent, Provenance};
 
 use super::landing::{Landing, Occupancy, Scene};
@@ -81,12 +81,15 @@ pub struct GridSpec {
     pub landings: bool,
     /// Rows REST rather than snap (see [`resting`](Self::resting)).
     pub rests: bool,
+    /// Every visible cell carries its sort value line ([`card_row::SortValue`]) and the grid's
+    /// rows are [`card_row::SORT_VALUE_ROW_GAP`] apart, opening [`card_row::SORT_VALUE_OPEN`] on focus.
+    pub value_line: bool,
 }
 
 impl GridSpec {
     /// A grid that scrolls home when focus leaves it.
     pub const fn new(top: f32, edge: f32) -> Self {
-        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false, rests: false }
+        Self { top, edge, home_when_unfocused: true, cols: COLS, style: STYLE, left: MARGIN_X, scroll: ScrollMode::Own, landings: false, rests: false, value_line: false }
     }
 
     /// **A grid whose rows rest where the first row does** (the Library's rule, `poster_grid::rest_scroll`):
@@ -135,7 +138,9 @@ impl GridSpec {
         Self { landings: on, ..self }
     }
 
-    fn geom(&self) -> Geom { Geom::of(self.cols, self.left, &self.style) }
+    fn geom(&self) -> Geom {
+        Geom { value_line: self.value_line, ..Geom::of(self.cols, self.left, &self.style) }
+    }
 }
 
 /// What [`Grid::card_paint`] decides for one card (see there).
@@ -179,10 +184,20 @@ pub struct Grid {
     /// What the focused caption band shows (the Library's Under posters setting); `None` keeps the
     /// legacy 114 px band every grid without the setting opens to.
     caption_policy: Option<crate::caption_policy::CaptionPolicy>,
-    /// The page is still dissolving in ([`dormant`](Grid::dormant)): no card is lifted yet.
+    /// The owner reports the page unseen, dissolving in or shown as a held image
+    /// ([`dormant`](Grid::dormant)). The grid is then asleep (no card is lifted yet) unless the
+    /// page is `returning` ([`asleep`](Grid::asleep)).
     dormant: bool,
-    /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
+    /// The last tick ran asleep (a returning grid ticks dormant and sleeps through none), so the
+    /// next awake one starts the focused card's pop from rest.
     slept: bool,
+    /// The page is RETURNING: it was restored (`Enter(Restored)`: BACK onto it, a modal's dismissal,
+    /// its own pill pressed again), so its seat comes back as it was left and is never put to sleep
+    /// ([`dormant`](Grid::dormant)). It ends on the first tick the owner reports awake, at the first
+    /// deliberate move and when focus lands anywhere but a card of this grid: the reader has moved
+    /// on, and the move is slept through like an entry's. Transient, like `dormant` and `slept`: not
+    /// part of the canon.
+    returning: bool,
     /// The owner announced that the focus it just seated is an arrival ([`arrive`](Grid::arrive)),
     /// not a restore: the next `FocusMoved` onto this grid grows from rest. Cleared by the tick.
     arriving: bool,
@@ -218,6 +233,7 @@ impl Grid {
             caption_policy: None,
             dormant: false,
             slept: false,
+            returning: false,
             arriving: false,
         }
     }
@@ -235,10 +251,24 @@ impl Grid {
     /// [`Shelf::dormant`](super::Shelf::dormant)): a lifted tile under a fade plays its selection
     /// where nobody can see it. The grid keeps no pop meanwhile; the first awake tick starts the
     /// focused card's pop from rest, as a deliberate move does (a restore or reconcile announced
-    /// since the last dormant tick is still adopted whole). Landings are adopted whole while
-    /// dormant. Set it before each [`on`](Self::on).
+    /// since the last dormant tick is still adopted whole). Set it before each [`on`](Self::on).
+    ///
+    /// **A page that returns is not put to sleep.** A grid fed `Enter(Restored)` keeps its seat
+    /// lifted and its caption band open, as it was left, under the very fade or held image the
+    /// owner reports (BACK from a Detail runs under its dip's image): a card put at rest and grown
+    /// again there moves the row below it by the band's height, which reads as a bounce. The return
+    /// is the grid's own state, so the owner says nothing more than this flag: it ends on the first
+    /// tick that reports awake, at the first deliberate move and when focus leaves the grid's cards
+    /// (that move is slept through, and no band is left closing under the image). Landings are
+    /// adopted whole while dormant, a returning grid included: nothing plays under the image.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
+    }
+
+    /// Whether the grid keeps no lift now: the owner says the page is unseen and the page is not
+    /// returning.
+    fn asleep(&self) -> bool {
+        self.dormant && !self.returning
     }
 
     /// Size and caption the focused band by `policy` (the Library's Under posters setting), or with
@@ -255,8 +285,13 @@ impl Grid {
         self.caption_policy
     }
 
-    /// The focused band's height: the policy's (0 / 80 / 112), else the legacy band.
+    /// Draw every tile's sort value line, and space the rows for it.
+    pub fn set_value_line(&mut self, on: bool) { self.spec.value_line = on; }
+
+    /// The focused band's height: [`card_row::SORT_VALUE_BAND_H`] while value lines show, else the
+    /// policy's (0 / 80 / 112) or the legacy band.
     pub fn band_h(&self) -> f32 {
+        if self.spec.value_line { return card_row::SORT_VALUE_BAND_H; }
         self.caption_policy.as_ref().map_or(card_row::LEGACY_BAND_H, crate::caption_policy::band_h)
     }
 
@@ -281,6 +316,11 @@ impl Grid {
                 // or a reconcile is adopted whole by the next tick.
                 let arrival = arrived.is_some() && std::mem::take(&mut self.arriving);
                 let deliberate = arrival || matches!(by, By::Dir | By::Pointer);
+                // the reader has moved on from what the page returned with: a deliberate move, or
+                // focus gone from the grid's cards (a header control, a BACK that walks to one)
+                if deliberate || arrived.is_none() {
+                    self.returning = false;
+                }
                 if let Some(a) = arrived {
                     self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
@@ -295,6 +335,12 @@ impl Grid {
                 if arrived.is_some() || left.is_some() {
                     fx.invalidate(Provenance::Input);
                 }
+                None
+            }
+            ScreenEvent::Enter(Enter::Restored) => {
+                // what the covered page slept through is stale: its seat comes back as it was left
+                self.returning = true;
+                self.slept = false;
                 None
             }
             ScreenEvent::PressCommit(_) => self.focused_elem(cx, src).map(|(_, e)| CardEvent::Activate(e)),
@@ -319,9 +365,12 @@ impl Grid {
         self.landed = None;
         self.shift = 0.0;
         let sy0 = self.scroll.pos;
-        let awake = !self.dormant;
+        if !self.dormant {
+            self.returning = false;
+        }
+        let awake = !self.asleep();
         self.arriving = false;
-        if self.dormant {
+        if self.asleep() {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused grid's
             self.slept = true;
             self.seen = Seen::Nothing;
@@ -329,8 +378,9 @@ impl Grid {
             // A caption is its band's content (its lines are drawn only as the band opens), so the band of a seat
             // nobody has lifted is shut too: it opens with the lift below, not under the fade. Shut
             // outright and not through `focus_band`, which would keep the open layout for the
-            // landing to measure from, and a landing is not what wakes.
-            self.bands.focus(None, false);
+            // landing to measure from, and a landing is not what wakes. `shut` also drops a band a
+            // move off the grid left closing (a returning grid's, put to sleep by that move).
+            self.bands.shut();
         } else if std::mem::take(&mut self.slept) {
             // an arrival announced since the last dormant tick (a restore, a reconcile) keeps its
             // own rule; only a focus no event told the grid about wakes growing from rest, its
@@ -384,10 +434,12 @@ impl Grid {
         }
         self.seen = Seen::Nothing;
         self.anchor = anchor;
-        if awake {
-            self.play_landing(src, sy0, lifted, dt);
-        } else {
+        // a page the owner reports unseen adopts a landing whole, a returning one included: nothing
+        // plays under the fade or the image
+        if self.dormant {
             self.landing.snap(src);
+        } else {
+            self.play_landing(src, sy0, lifted, dt);
         }
         if focus.is_none() && !self.landing.has_takeover() {
             self.focus_band(None, false);
@@ -637,10 +689,10 @@ impl Grid {
     /// Open `row`'s caption band at once, settled (and close the rest), for an owner that sizes
     /// its document from the bands before the next tick would (a restored page's first layout).
     /// A no-op when `row` is already the focused row, so it never cuts short a band `on` is
-    /// animating, and while the grid is [`dormant`](Self::dormant): a seat nobody has lifted has no
-    /// band open under it, and its caption with it.
+    /// animating, and while the grid is asleep ([`dormant`](Self::dormant) and not returning): a seat
+    /// nobody has lifted has no band open under it, and its caption with it.
     pub fn settle_band(&mut self, row: Option<usize>) {
-        if !self.dormant {
+        if !self.asleep() {
             self.bands.focus(row, false);
         }
     }
@@ -711,8 +763,9 @@ impl Grid {
 
     /// [`pop`](Self::pop) with the way this frame finds the let-gos' cards already decided.
     fn pop_in<H: Host, S: CardSource<H>>(&self, cards: LetGoCards, src: &S, i: usize, focus: Option<usize>) -> f32 {
-        // a page still dissolving in lifts nothing
-        let focus = focus.filter(|_| !self.dormant);
+        // a page asleep (unseen, and not returning) lifts nothing; a returning one keeps its seat
+        // lifted through the fade or the image
+        let focus = focus.filter(|_| !self.asleep());
         // the element-aware pool: a source change no tick has seen yet is resolved by element
         if cards == LetGoCards::ByElement {
             match pool::let_go_drawn(&self.pop, src, i, focus == Some(i)) {
@@ -798,8 +851,8 @@ impl Grid {
     /// Draw the grid into `p` (page alpha already applied) and register its stops. Back to front:
     /// the leaving copies of the cards a landing moved to another row (over the owner's ghosts,
     /// which it paints before this), every caption (beneath every tile, so a line still arriving
-    /// never covers the poster tops of the row under it), the non-focused cards, the focused one
-    /// last; only the cards the scroll can show are touched.
+    /// never covers the poster tops of the row under it), the non-focused cards, the focused one,
+    /// then every sort-value line above all of them; only the cards the scroll can show are touched.
     pub fn draw<H: Host, S: CardSource<H>>(&self, f: &mut DrawFrame<'_, '_, H>, p: Painter, src: &S) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
@@ -824,14 +877,24 @@ impl Grid {
         // Captions BENEATH the tiles: every caption of the frame is painted before any tile, so a
         // line that is still arriving (the band opening under the focused row) never paints over
         // the poster tops of the row below it. Draw order only; the band's timing is its own.
-        for (_, s, focused, paint) in &paints {
+        for (i, s, focused, paint) in &paints {
             if let Some(paint) = paint {
-                self.draw_caption(f, paint, *s, *focused);
+                self.draw_caption(f, src, *i, paint, *s, *focused);
             }
         }
-        for (i, s, focused, paint) in paints {
+        for (i, s, focused, paint) in &paints {
             if let Some(paint) = paint {
-                self.draw_card(f, src, i, s, focused, paint, lead.filter(|_| focused));
+                self.draw_card(f, src, *i, *s, *focused, paint, lead.filter(|_| *focused));
+            }
+        }
+        // A value line is the OPPOSITE of a band: it has a fixed place under its poster (never over
+        // the row below: `SORT_VALUE_REACH` is inside the 60 px row gap), so it goes ABOVE every
+        // tile. The lifted card's drop shadow is folded into its composite quad, which reaches 64 px
+        // past the poster: a value drawn before the tiles sat UNDER that shadow and read at 86% of
+        // its ink.
+        for (i, s, focused, paint) in &paints {
+            if let Some(paint) = paint {
+                self.draw_value(f, src, *i, paint, *s, *focused);
             }
         }
         self.record_stops(f, p, src);
@@ -926,8 +989,9 @@ impl Grid {
         let cards = pool::let_go_cards(&self.pop, src);
         let s = super::press_scale(self.pop_in(cards, src, i, Some(i)), i, pressed, f.cx);
         let Some(paint) = self.card_paint(f, p, src, cards, i, s, true, &self.bands.geometry()) else { return };
-        self.draw_caption(f, &paint, s, true);
-        self.draw_card(f, src, i, s, true, paint, None);
+        self.draw_caption(f, src, i, &paint, s, true);
+        self.draw_card(f, src, i, s, true, &paint, None);
+        self.draw_value(f, src, i, &paint, s, true);
     }
 
     /// What card `i` is painted with, decided apart from the GL calls so that [`draw_card`](Self::draw_card)
@@ -953,29 +1017,27 @@ impl Grid {
         if super::lifted_out(f, self.entry, src, i) {
             return None;
         }
-        // The caption a card carries: the focused card's, at its band's progress; or, on a card the
-        // focus has left, the caption its row's band is still closing on, at that band's progress.
-        // Either way each line is revealed by the band's own progress and the room it has made
-        // (`card_row::line_reveal_for`), so the caption goes with the gap and never stands over
-        // the row under it.
-        let label = if focused {
-            let row = i / self.spec.cols;
-            let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
-            // The focused card left as a ghost that is still waiting for the landing to step: the
-            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
-            // focus reconciled to takes it up with the landing's first step.
-            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
-            Some((label, open))
+        // Cull before asking the source for any words. A value line has a fixed reach;
+        // a focused/closing legacy caption reserves the same room whether its words are empty.
+        let open = if focused {
+            Some(bands.iter().find(|band| band.row == i / self.spec.cols).map_or(0.0, |band| band.expansion))
         } else {
-            self.bands.closing()
-                .find(|&(row, card, _)| card == i && row == i / self.spec.cols)
-                .map(|(_, _, open)| (src.label(i), open))
-        }
-        .map(|(label, open)| label.revealed(self.band_h(), open, self.rise_below(cards, f.cx, src, i, bands)));
+            self.bands.closing().find(|&(row, card, _)| card == i && row == i / self.spec.cols)
+                .map(|(_, _, open)| open)
+        };
         let rect = super::to_local(p, self.slot(i, src.len(), bands)).scaled(s);
-        if !card_row::paint_visible(p, rect, s, label.is_some()) {
-            return None;
-        }
+        let visible = if self.spec.value_line {
+            card_row::paint_visible_with_label_h(p, rect, s, card_row::SORT_VALUE_REACH)
+        } else { card_row::paint_visible(p, rect, s, open.is_some()) };
+        if !visible { return None; }
+        // A value line's words stay in the source cache until draw_caption borrows them. Legacy bands
+        // retain their per-frame reveal, including the focused ghost's held caption.
+        let label = if self.spec.value_line { None } else {
+            open.map(|open| {
+                let label = if focused && self.caption_held() { super::TileLabel::default() } else { src.label(i) };
+                label.revealed(self.band_h(), open, self.rise_below(cards, f.cx, src, i, bands))
+            })
+        };
         // an arriving card fades in
         let p = match self.landing.alpha(src.len(), i) {
             a if a < 1.0 => p.alpha(a),
@@ -984,17 +1046,44 @@ impl Grid {
         Some(CardPaint { rect, p, label })
     }
 
-    /// The caption block under card `paint` (a label the card carries: the focused card's, or the
-    /// closing band's of a card the focus left), painted ahead of every tile ([`draw`](Self::draw)).
-    fn draw_caption<H: Host>(&self, f: &DrawFrame<'_, '_, H>, paint: &CardPaint, s: f32, focused: bool) {
-        let Some(label) = &paint.label else { return };
+    /// Hands `read` the label card `i` carries, `None` when it carries none: with value lines
+    /// the source's own cached label (every card has one), otherwise the one `paint` holds
+    /// (the focused card's, or the closing band's of a card the focus left).
+    fn with_caption<H: Host, S: CardSource<H>, R>(
+        &self, src: &S, i: usize, paint: &CardPaint, read: impl FnOnce(&super::TileLabel) -> R,
+    ) -> Option<R> {
+        if self.spec.value_line { Some(src.with_label(i, read)) }
+        else { paint.label.as_ref().map(read) }
+    }
+
+    /// The caption block under card `paint` ([`with_caption`](Self::with_caption)'s label), painted
+    /// ahead of every tile ([`draw`](Self::draw)). `focused` marks the lifted card: it opens the
+    /// `devtriggers` card probe. A grid in value-line mode paints no block here
+    /// ([`draw_value`](Self::draw_value) paints its line after the tiles).
+    fn draw_caption<H: Host, S: CardSource<H>>(
+        &self, f: &DrawFrame<'_, '_, H>, src: &S, i: usize, paint: &CardPaint, s: f32, focused: bool,
+    ) {
         #[cfg(feature = "devtriggers")]
-        if focused {
-            crate::card_probe::begin_card();
-        }
+        if focused { crate::card_probe::begin_card(); }
         #[cfg(not(feature = "devtriggers"))]
         let _ = focused;
-        card_row::draw_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure);
+        if self.spec.value_line { return; }
+        self.with_caption(src, i, paint, |label| {
+            card_row::draw_label(paint.p, paint.rect, s, &self.spec.style, label, f.measure);
+        });
+    }
+
+    /// The sort value line under card `paint` (the source's cached label), painted AFTER every
+    /// tile ([`draw`](Self::draw)): `focused` marks the lifted card, whose value is drawn bold.
+    fn draw_value<H: Host, S: CardSource<H>>(
+        &self, f: &DrawFrame<'_, '_, H>, src: &S, i: usize, paint: &CardPaint, s: f32, focused: bool,
+    ) {
+        if !self.spec.value_line { return; }
+        src.with_label(i, |label| {
+            if let Some(value) = &label.value {
+                card_row::draw_sort_value(paint.p, paint.rect, s, &self.spec.style, value, f.measure, focused);
+            }
+        });
     }
 
     /// The tile of card `i`, drawn after the captions: the art, its lift, its resume bar and the
@@ -1007,10 +1096,10 @@ impl Grid {
         i: usize,
         s: f32,
         focused: bool,
-        paint: CardPaint,
+        paint: &CardPaint,
         led: Option<crate::widgets::ArtImage>,
     ) {
-        let CardPaint { rect, p, .. } = paint;
+        let (rect, p) = (paint.rect, paint.p);
         if focused {
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_art();
@@ -1040,10 +1129,11 @@ impl Grid {
         self.draw_plan(src.len(), focus, &bands).into_iter().filter_map(|(role, i)| {
             let s = super::press_scale(self.pop_in(cards, src, i, focus), i, pressed, f.cx);
             let paint = self.card_paint(f, p, src, cards, i, s, role == DrawRole::Focus, &bands)?;
-            let label = paint.label?;
-            (label.title.is_some() || label.caption.is_some()).then(|| {
-                (i, label.lines().iter().flatten().map(|l| l.alpha).fold(0.0, f32::max) * paint.p.opacity())
-            })
+            self.with_caption(src, i, &paint, |label| {
+                (label.title.is_some() || label.caption.is_some()).then(|| {
+                    (i, label.lines().iter().flatten().map(|l| l.alpha).fold(0.0, f32::max) * paint.p.opacity())
+                })
+            }).flatten()
         }).collect()
     }
 
@@ -1061,11 +1151,12 @@ impl Grid {
         for (role, i) in self.draw_plan(src.len(), focus, &bands) {
             let s = super::press_scale(self.pop_in(cards, src, i, focus), i, pressed, f.cx);
             let Some(paint) = self.card_paint(f, p, src, cards, i, s, role == DrawRole::Focus, &bands) else { continue };
-            let Some(label) = paint.label else { continue };
-            let bottom = card_row::unscaled_bottom(paint.rect, s);
-            for line in label.lines().into_iter().flatten().filter(|l| l.alpha * paint.p.opacity() > 0.0) {
-                out.push((i, bottom + line.top, bottom + line.bottom, line.alpha * paint.p.opacity()));
-            }
+            self.with_caption(src, i, &paint, |label| {
+                let bottom = card_row::unscaled_bottom(paint.rect, s);
+                for line in label.lines().into_iter().flatten().filter(|l| l.alpha * paint.p.opacity() > 0.0) {
+                    out.push((i, bottom + line.top, bottom + line.bottom, line.alpha * paint.p.opacity()));
+                }
+            });
         }
         out
     }
@@ -1140,7 +1231,7 @@ impl Grid {
     /// of the lift, with the let-gos of the cards focus left out.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pop_probe(&self, focus: Option<usize>) -> f32 {
-        focus.filter(|_| !self.dormant).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
+        focus.filter(|_| !self.asleep()).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
     }
 
     /// Card `i`'s settled (unpopped) cell as the grid stands now, the caption bands folded in: where

@@ -7,6 +7,7 @@ pub use recommended::RecommendedScreen;
 mod lookahead;
 mod parts;
 mod rail;
+mod rail_bands;
 #[cfg(test)] mod scroll_chrome_tests;
 #[cfg(test)]
 mod rail_tests;
@@ -107,6 +108,77 @@ impl<H: LibraryLike> plx_ui::master_detail::KeyRegion<H> for Regions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Readout { Loading, Empty, Failed, Grid }
 
+/// **The kind of row (`PmsMovie::kind`) a listing of `listed` in a `kind` library holds, when that
+/// listing can show a sort value**: a movie library's movies, a TV library's shows, seasons or
+/// episodes. A section's collections never show one, and a movie library lists no seasons or
+/// episodes (`LibraryType::offered`). An exhaustive match on both, not a wildcard: a library kind or
+/// a listing added later must decide for itself.
+fn value_row_kind(kind: SecKind, listed: plx_data::browse::LibraryType) -> Option<std::os::raw::c_int> {
+    use plx_data::browse::LibraryType::{Collections, Episodes, Primary, Seasons};
+    use plx_data::pms::{KIND_EPISODE, KIND_MOVIE, KIND_SEASON, KIND_SHOW};
+    match (kind, listed) {
+        (SecKind::Movie | SecKind::Show, Collections) => None,
+        (SecKind::Movie, Primary) => Some(KIND_MOVIE),
+        (SecKind::Show, Primary) => Some(KIND_SHOW),
+        (SecKind::Show, Seasons) => Some(KIND_SEASON),
+        (SecKind::Show, Episodes) => Some(KIND_EPISODE),
+        (SecKind::Movie, Seasons | Episodes) => None,
+    }
+}
+
+/// **Whether the grid shows the sort value under its cards**: the Sort value switch is On and the
+/// listing is a movie or TV show library's movies, shows, seasons or episodes (never its Collections),
+/// sorted by a criterion the value table words FOR THAT KIND OF ROW (`sort_key`: the current sort's
+/// key, `None` before the listing declares one). Title, Random, the compound Show order Seasons and
+/// Episodes default to, a sort a later server declares and a sort the kind of row carries no fact for
+/// keep the captions and the 40 px rows.
+fn shows_sort_values(kind: SecKind, listed: plx_data::browse::LibraryType, switch_on: bool, sort_key: Option<&str>) -> bool {
+    switch_on && value_row_kind(kind, listed).zip(sort_key)
+        .is_some_and(|(row, key)| crate::registry::sort_info::shows_value(row, key))
+}
+
+#[cfg(test)]
+#[test]
+fn sort_values_show_on_the_four_listings_with_the_switch_on_and_a_sort_worded_for_the_kind() {
+    use plx_data::browse::LibraryType::{self, Collections, Episodes, Primary, Seasons};
+    // The compound Show order a real PMS lists as the Seasons and Episodes default.
+    let show_seasons = "show.titleSort,index";
+    let show_episodes = "show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id";
+    // (library kind, listing, the sorts that show a value there, the ones that do not)
+    let table: [(SecKind, LibraryType, &[&str], &[&str]); 4] = [
+        (SecKind::Movie, Primary, &["addedAt", "movie.addedAt:desc", "rating", "duration", "year"],
+            &["titleSort", "random", "futureServerSort", "episode.addedAt", "episode.addedAt:desc", "unviewedLeafCount"]),
+        (SecKind::Show, Primary, &["addedAt", "show.addedAt:desc", "audienceRating", "unviewedLeafCount"],
+            &["titleSort", "random", "futureServerSort", "episode.addedAt", "episode.addedAt:desc"]),
+        (SecKind::Show, Seasons, &["addedAt", "season.addedAt:desc", "lastViewedAt", "viewCount", "unviewedLeafCount"],
+            &["rating", "audienceRating", "originallyAvailableAt", "duration", "random", "futureServerSort", "show.addedAt", show_seasons]),
+        (SecKind::Show, Episodes, &["originallyAvailableAt", "rating", "audienceRating", "addedAt", "episode.addedAt:desc", "lastViewedAt", "duration"],
+            &["unviewedLeafCount", "random", "futureServerSort", "show.addedAt", show_episodes, "titleSort"]),
+    ];
+    for (kind, listed, valued, plain) in table {
+        for key in valued {
+            assert!(shows_sort_values(kind, listed, true, Some(key)), "{kind:?} {listed:?} {key}");
+            assert!(!shows_sort_values(kind, listed, false, Some(key)), "{kind:?} {listed:?} {key}: the switch is Off");
+        }
+        for key in plain { assert!(!shows_sort_values(kind, listed, true, Some(key)), "{kind:?} {listed:?} {key} keeps its captions"); }
+        assert!(!shows_sort_values(kind, listed, true, None), "{kind:?} {listed:?}: no sort declared yet");
+    }
+    // A section's collections never show one, whatever the sort; a movie library lists no seasons or episodes.
+    for kind in [SecKind::Movie, SecKind::Show] {
+        for key in ["addedAt", "titleSort", "random", "rating"] {
+            assert!(!shows_sort_values(kind, Collections, true, Some(key)), "{kind:?} collections {key}");
+        }
+    }
+    for listed in [Seasons, Episodes] {
+        assert!(!shows_sort_values(SecKind::Movie, listed, true, Some("addedAt")), "a movie library has no {listed:?}");
+    }
+    // The four listings hold four kinds of row.
+    assert_eq!([value_row_kind(SecKind::Movie, Primary), value_row_kind(SecKind::Show, Primary),
+        value_row_kind(SecKind::Show, Seasons), value_row_kind(SecKind::Show, Episodes), value_row_kind(SecKind::Show, Collections)],
+        [Some(plx_data::pms::KIND_MOVIE), Some(plx_data::pms::KIND_SHOW), Some(plx_data::pms::KIND_SEASON),
+            Some(plx_data::pms::KIND_EPISODE), None]);
+}
+
 fn readout(table: SecFetch, sections: usize, fetch: SecFetch, total: i64) -> Readout {
     if total < 0 {
         match table {
@@ -148,6 +220,11 @@ pub struct LibraryScreen {
     /// `sync` like the layout's episode geometry, so not logical state of its own. The toolbar
     /// reads it: collections take no filters, so FILTER leaves the row while they are listed.
     listed: plx_data::browse::LibraryType,
+    /// The grid shows the sort value under every card (`registry::sort_info`): a movie or TV show
+    /// library's movies, shows, seasons or episodes with Sort value On, sorted by something that has a
+    /// value for that kind of row. Read in `sync`, where
+    /// the listing is, and handed to the layout by `relayout`.
+    values: bool,
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
     /// The names on the header row (the library on view among them) and, last, `MORE` when some
@@ -192,6 +269,10 @@ pub struct LibraryScreen {
     /// The total of the library's unfiltered listing the page last saw, keyed by the listing it
     /// belongs to: the "312 of 1,284" read-out's denominator. A projection, not canon.
     unfiltered: Option<((LibrarySectionIdentity, u32, plx_data::browse::LibraryType), i64)>,
+    /// The total the filter in force matched when its listing last landed, with the library and
+    /// terms it was counted under: the read-out's numerator, held while a sort pick reloads the
+    /// listing under the same terms (`header::note_totals`). A projection, not canon.
+    filtered: Option<(header::FilterKey, i64)>,
     /// A library was just chosen with OK: the page seats the name the reader pressed and shows the
     /// top of the page, where the header is, instead of restoring the new library's scroll.
     switched: bool,
@@ -215,6 +296,9 @@ pub struct LibraryScreen {
     /// The top chrome and the capsule, as drawn: decided from `scroll_target` and run on the swap
     /// clock, in sequence (`plx_ui::scroll_chrome`). Stepped beside the scroll spring.
     handoff: plx_ui::scroll_chrome::Handoff,
+    /// The capsule's three C strings, rebuilt when the library's name, its count or the sort
+    /// differs and not on every frame the capsule is up. A render resource, not canon.
+    capsule_text: plx_ui::scroll_chrome::CapsuleText,
     restore_scroll: Option<f32>,
     viewports: Vec<LibraryViewport>,
     /// The grid key an `Enter::Fresh` names to seat, kept projected until the engine has seated it.
@@ -270,7 +354,7 @@ impl LibraryScreen {
         let layout = Layout::new(false, 0);
         Self {
             listing: Listing::All,
-            entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), keys: KeyRegistry::default(),
+            entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), values: false, keys: KeyRegistry::default(),
             pair: MasterDetail::new(
                 RailPart::new(entry, RAIL_GROUP), GridPart::new(entry, GRID_GROUP),
                 MasterDetailLayout { master: Rect::FULL, detail: Rect::FULL },
@@ -278,10 +362,10 @@ impl LibraryScreen {
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
             libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), header_of: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
-            type_before_collections: None, unfiltered: None,
+            type_before_collections: None, unfiltered: None, filtered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
-            scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), restore_scroll: None,
+            scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), capsule_text: plx_ui::scroll_chrome::CapsuleText::default(), restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
@@ -340,7 +424,8 @@ impl LibraryScreen {
         (self.libraries.iter().filter(|(elem, _)| *elem != MORE).copied().collect(), self.folded.clone())
     }
 
-    /// The A-Z rail: every letter with whether it is empty, and the index of the focused one.
+    /// The rail: every letter (or, for a value sort, every band) as drawn with whether it is empty,
+    /// and the index of the focused one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_rail(&self, focus: Option<FocusKey<u32>>) -> (Vec<(String, bool)>, Option<usize>) {
         self.pair.master.probe(focus)
@@ -352,7 +437,7 @@ impl LibraryScreen {
         self.header.row().and_then(|row| row.readout()).map(str::to_owned)
     }
 
-    /// The Sort & Filter pill's value on the header row (the text after the dot), if the row has one.
+    /// The sort control's criterion on the header row (the one text it draws), if the row has one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_sort_value(&self) -> Option<String> {
         self.header.row()?.page.spec().right.iter().find(|item| item.fold_glyph).and_then(|item| item.value.clone())
@@ -528,6 +613,14 @@ impl LibraryScreen {
                 self.wanted_kind = None;
             }
         }
+        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value(),
+            listing.sorts().get(listing.sort_index()).map(|sort| sort.key.as_str()));
+        // The rows' pitch changes with the value lines (60 <-> 40 px) under a grid that is already
+        // laid out and held at a scroll of its own: not a first layout, a restore still to be
+        // applied, or a grid the page is about to send back to its top.
+        let repitched = values != self.values && self.layout.rows > 0
+            && !self.grid_reset_pending && self.restore_scroll.is_none();
+        self.values = values;
         self.refresh_header(cx);
         if let Some(kind) = self.wanted_kind.filter(|kind|
             directory.current().map(|i| directory.sections()[i].kind) != Some(*kind)) {
@@ -552,6 +645,7 @@ impl LibraryScreen {
         }
         self.project_grid(cx);
         self.relayout(cx.focus.current);
+        if repitched { self.reseat_after_repitch(cx.focus.current, cx); }
         // The relayout hands the grid this frame's scroll, and with it the window it will paint:
         // a cell it can paint or step to must hold a key in the frame, so project again (a
         // no-op when the window did not move).
@@ -613,12 +707,14 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
-        let band_h = self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h);
+        let values = self.values;
+        let band_h = if values { plx_ui::cards::SORT_VALUE_BAND_H }
+            else { self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h) };
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
-        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h)
+        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h)
+        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);
@@ -726,7 +822,11 @@ impl LibraryScreen {
             }
         }
         self.relayout(Some(key));
-        let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
+        // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and a
+        // click by what it clicked, `Input`'s `Click` arm).
+        let want = if by == By::Pointer {
+            None
+        } else if let Some(index) = self.pair.detail.index_of(key.elem) {
             // held in the coordinates `scroll` is in until the grid's tick rebases both by a landing
             Some(self.target_layout.row_reveal(index / self.layout.cols()) - self.pair.detail.pending_shift(cx))
         } else if let Some(top) = self.header_focus().and_then(|focus| focus.reveal(key.elem)) {
@@ -750,6 +850,22 @@ impl LibraryScreen {
         }
         self.relayout(Some(key));
         self.pair.master.refresh(cx, &mut self.keys);
+    }
+
+    /// The Sort value switch changed the rows' pitch under a held scroll, so the scroll is
+    /// in the old pitch's coordinates and the focused row stands elsewhere than it did: 20 px per
+    /// row away, which at a deep row is under the header. Seat that row again the way a focus move
+    /// does ([`reveal`](Self::reveal)'s `row_reveal`), jumping, because the rows themselves changed
+    /// pitch in the same frame; with no focus in the grid, keep the scroll inside the new document.
+    fn reseat_after_repitch<H: LibraryLike>(&mut self, focus: Option<FocusKey<u32>>, cx: &Cx<'_, H>) {
+        let row = focus.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.pair.detail.index_of(key.elem)).map(|index| index / self.layout.cols());
+        if let Some(row) = row {
+            self.scroll_target = self.target_layout.row_reveal(row) - self.pair.detail.pending_shift(cx);
+        }
+        self.scroll_target = self.scroll_target.clamp(0.0, self.target_layout.max_scroll());
+        self.scroll.jump(self.scroll_target);
+        self.relayout(focus);
     }
 
     fn follow<H: LibraryLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -1204,6 +1320,9 @@ impl LibraryScreen {
             }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
             ScreenEvent::Enter(enter) => {
+                // A page that returns (`Enter::Restored`: BACK onto it, a modal's dismissal) keeps its
+                // seat lifted under the dip's image or a fade, as it was left: the grid's own rule.
+                self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 self.live = true;
                 self.buried = false;
                 // The engine seats the target right after this event, so a key it names must hold
@@ -1263,8 +1382,9 @@ impl LibraryScreen {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
                 // tile from rest over the frames after this. A restore or a reconcile announced
                 // here is adopted whole by its next tick, unless a dormant tick ran since (a page
-                // returning from a Detail push under the held image, `Tick` below), in which case
-                // the first awake tick regrows the tile from rest (`ui::cards`, the pop rule).
+                // ENTERED under the held image, `Tick` below), in which case the first awake tick
+                // grows the tile from rest (`ui::cards`, the pop rule); a page that RETURNS runs
+                // none (`Grid::dormant`).
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 // The engine seats a page it has just mounted in the first group it can (the bar), before a
                 // page whose listing is still loading has anything to seat. Such a page holds no seat
@@ -1351,6 +1471,7 @@ impl LibraryScreen {
                     // A page still dissolving in shows its seat unpopped: the lift starts on the
                     // dissolve's last frame, where it can be seen, instead of playing out under the
                     // fade or the held image of a route dip (the page arrives in its first poster).
+                    // A page that returns is not put to sleep (`Grid::dormant`).
                     self.pair.detail.dormant(self.page_fade.is_arriving() || plx_ui::containers::transition::page_image_held());
                     self.handoff.step(dt, self.scroll.pos, self.scroll_target, self.layout.grid_pitch(), self.capsule_wanted());
                     // The grid steps its pop and bands. A content landing that moved the focused
@@ -1404,7 +1525,7 @@ impl LibraryScreen {
                     let focus = cx.focus.current.filter(|key| key.entry == self.entry)
                         .and_then(|key| self.pair.detail.index_of(key.elem));
                     self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * self.layout.cols(), hi: (hi + 1) * self.layout.cols(), focus }, fx);
-                    self.store(target, LibraryWork::Letters, fx);
+                    self.store(target, LibraryWork::Letters { today: H::today(cx) }, fx);
                 }
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::Browse)));
             }
@@ -1439,6 +1560,14 @@ impl LibraryScreen {
                     && cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
                     self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
                     return Handled::Yes;
+                }
+                // A click brings the page to the card it clicked, the way a key's move does.
+                if let InputKind::Click { hit: Some(hit), .. } = input.kind {
+                    if let Some(index) = self.pair.detail.index_of(hit) {
+                        self.scroll_target = self.target_layout.row_reveal(index / self.layout.cols())
+                            - self.pair.detail.pending_shift(cx);
+                        fx.invalidate(Provenance::Input);
+                    }
                 }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * self.layout.grid_pitch())
@@ -1573,6 +1702,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         LibraryScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
     fn chrome_tuck(&self) -> f32 { self.handoff.tuck() }
     fn state(&self) -> &dyn LogicalState { self }

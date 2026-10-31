@@ -33,7 +33,8 @@
 //! between runs and between packages. The comparison stops being a matching problem.
 //!
 //! **The pattern is drawn as PAGE CONTENT** — after the hero and the grid, before the chrome — so
-//! it is exactly what `gfx::sample_ground` reads and exactly what the backdrop blur sources. It
+//! it is exactly what the backdrop blur sources, and so exactly what `gfx::sample_ground` reads (it
+//! takes its taps from the bar's band image, which is that blur of the page under the bar). It
 //! rides the page's own transition alpha, so a route change still dips it like anything else.
 use crate::{Painter, Rect};
 use std::cell::Cell;

@@ -124,7 +124,7 @@ fn every_playback_field_pushes_its_picker() {
         [SettingsPage::Picker(PickerKind::Quality), SettingsPage::Picker(PickerKind::DirectPlay),
          SettingsPage::Picker(PickerKind::SubtitleSize), SettingsPage::Picker(PickerKind::SubtitlePosition),
          SettingsPage::Picker(PickerKind::HdrOverlay), SettingsPage::Picker(PickerKind::NextEpisode), SettingsPage::Picker(PickerKind::DeckPress),
-         SettingsPage::Picker(PickerKind::SkipInterval), SettingsPage::Picker(PickerKind::InstantDpadSeeking)]);
+         SettingsPage::Picker(PickerKind::SkipInterval), SettingsPage::Picker(PickerKind::InstantDpadSeeking), SettingsPage::Picker(PickerKind::DolbyVision)]);
     assert_every_nav_item_pushes_exactly_its_dest("playback", &items, &|| consent_opened(SettingsPage::Playback));
 }
 
@@ -221,7 +221,7 @@ fn the_details_picker_opens_seated_on_the_stored_line_not_its_first_row() {
     let _g = plx_base::testlock::serial();
     let _sess = seated_scratch_session("nav-walk-under-posters-seat");
     for stored in [UnderPostersDetails::Genre, UnderPostersDetails::AgeRatingScore, UnderPostersDetails::None] {
-        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: stored });
+        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: stored, sort_value: false });
         let (d, rig, id) = opened();
         let mut w = Walk { d, rig, id, ms: 0 };
         w.ms = settle_frames(&mut w.d, &mut w.rig, 16);
@@ -245,6 +245,7 @@ struct PlaybackCells {
     hdr: plx_media::route::HdrOverlayBrightness,
     next_episode: plx_media::route::NextEpisodeMode,
     instant_dpad_seeking: plx_plex::plex::session::InstantDpadSeeking,
+    dolby_vision: plx_plex::plex::session::DolbyVisionMode,
     deck_press: plx_media::route::DeckPress,
     skip: plx_media::route::SkipInterval,
 }
@@ -253,7 +254,7 @@ impl PlaybackCells {
         use plx_media::route as r;
         PlaybackCells { quality: r::quality(), direct_play: r::direct_play_mode(), size: r::subtitle_size(),
             position: r::subtitle_position(), hdr: r::hdr_overlay_brightness(), next_episode: r::next_episode_mode(), instant_dpad_seeking: r::instant_dpad_seeking(),
-            deck_press: r::deck_press(), skip: r::skip_interval() }
+            dolby_vision: r::dolby_vision_mode(), deck_press: r::deck_press(), skip: r::skip_interval() }
     }
 }
 impl Drop for PlaybackCells {
@@ -262,7 +263,7 @@ impl Drop for PlaybackCells {
         r::restore_quality(self.quality); r::restore_direct_play_mode(self.direct_play);
         r::restore_subtitle_size(self.size); r::restore_subtitle_position(self.position);
         r::restore_hdr_overlay_brightness(self.hdr); r::restore_next_episode_mode(self.next_episode); r::restore_instant_dpad_seeking(self.instant_dpad_seeking);
-        r::restore_deck_press(self.deck_press); r::restore_skip_interval(self.skip);
+        r::restore_dolby_vision_mode(self.dolby_vision); r::restore_deck_press(self.deck_press); r::restore_skip_interval(self.skip);
     }
 }
 
@@ -313,6 +314,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     r::restore_deck_press(*ses::DeckPress::LADDER.last().unwrap());
     r::restore_skip_interval(*ses::SkipInterval::LADDER.last().unwrap());
     r::restore_instant_dpad_seeking(*ses::InstantDpadSeeking::LADDER.last().unwrap());
+    r::restore_dolby_vision_mode(*ses::DolbyVisionMode::LADDER.last().unwrap());
     let lines = |kind: PickerKind| match kind {
         PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
         PickerKind::DirectPlay => 2,
@@ -323,10 +325,11 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         PickerKind::DeckPress => ladder_last(ses::DeckPress::LADDER.len()),
         PickerKind::SkipInterval => ladder_last(ses::SkipInterval::LADDER.len()),
         PickerKind::InstantDpadSeeking => ladder_last(ses::InstantDpadSeeking::LADDER.len()),
+        PickerKind::DolbyVision => ladder_last(ses::DolbyVisionMode::LADDER.len()),
         other => panic!("{other:?} is not a Playback picker"),
     };
     let playback = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
-    assert_eq!(playback.len(), 9, "every Playback picker is in the table: {playback:?}");
+    assert_eq!(playback.len(), 10, "every Playback picker is in the table: {playback:?}");
     for &(row, dest) in &playback {
         let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
         assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
@@ -336,7 +339,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     // Under posters: Details, the fourth ladder line.
     {
         use ses::{UnderPosters, UnderPostersDetails};
-        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore });
+        let _cell = UnderPostersCell::holding(UnderPosters { title: false, details: UnderPostersDetails::AgeRatingScore, sort_value: false });
         let items = super::under_posters::nav_items_for_test();
         assert_eq!(items.len(), 1, "{items:?}");
         let (row, dest) = items[0];
@@ -428,7 +431,7 @@ fn the_under_posters_page_walks_title_details_reset_and_back_with_keys() {
 
     // The Title switch.
     w.press(Key::Ok);
-    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::YearLength }], "OK on Title asks for the switch on");
+    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::YearLength, sort_value: true }], "OK on Title asks for the switch on");
     assert!(plx_media::route::under_posters().title);
     assert!(w.on("title=true"), "the page reads the stored value: {}", path(&w.d, w.id));
 
@@ -450,7 +453,7 @@ fn the_under_posters_page_walks_title_details_reset_and_back_with_keys() {
     w.press(Key::Down);
     assert_eq!(w.elem(), Some(genre), "Down moves to the next line (Genre)");
     w.press(Key::Ok);
-    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::Genre }], "the pick is one write, title kept");
+    assert_eq!(w.answer(), [UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: true }], "the pick is one write, title kept");
     assert!(w.on("under_posters sel=2 "), "a durable pick pops the picker onto the Details row: {}", path(&w.d, w.id));
     assert_eq!(plx_media::route::under_posters().details, UnderPostersDetails::Genre);
     assert!(w.on("details=1"), "the Details row reads the pick (Genre, ladder index 1): {}", path(&w.d, w.id));
@@ -460,12 +463,16 @@ fn the_under_posters_page_walks_title_details_reset_and_back_with_keys() {
     w.press(Key::Up);
     assert_eq!(w.elem(), Some(1), "Up from Details reaches Title");
     w.press(Key::Ok);
-    assert_eq!(w.answer(), [UnderPosters { title: false, details: UnderPostersDetails::Genre }], "a Title toggle after the pick keeps the picked details");
+    assert_eq!(w.answer(), [UnderPosters { title: false, details: UnderPostersDetails::Genre, sort_value: true }], "a Title toggle after the pick keeps the picked details");
 
     // Reset restores both.
     w.press(Key::Down);
     w.press(Key::Down);
-    assert_eq!(w.elem(), Some(30), "Down from Details reaches Reset");
+    assert_eq!(w.elem(), Some(3), "Down from Details reaches Sort value");
+    w.press(Key::Ok);
+    assert!(!w.answer()[0].sort_value, "the default is On, so OK asks for Off");
+    w.press(Key::Down);
+    assert_eq!(w.elem(), Some(30), "Down from Sort value reaches Reset");
     w.press(Key::Ok);
     assert_eq!(w.answer(), [UnderPosters::DEFAULT], "Reset asks for the default of both");
     assert_eq!(plx_media::route::under_posters(), UnderPosters::DEFAULT);

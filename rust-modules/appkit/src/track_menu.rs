@@ -331,27 +331,47 @@ type EnhState = (
     plx_media::route::SubtitleEffect,
 );
 
-/// **A tab root's natural panel rect** — the layout of `table` as the panel would hug it. Each
-/// tab hugs its own rows (shared menu rule); the right edge is fixed, so switching tabs moves only
-/// the left edge.
-fn table_natural(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
+/// **The tallest page this menu shows with app-owned rows** — what decides which SIDE of its opener
+/// the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`), so the side is the same on
+/// every page and never flips under a viewer who pushes one. A server-length list (audio dubs,
+/// subtitle tracks) may be taller and scrolls inside the panel. Classic's room above its row is
+/// 710, which this stays under, so classic always opens upward. `pub(crate)` because the HUD lint
+/// places this menu with it (`hud_format::lint_menus`, M2), through [`place_panel`].
+pub(crate) const NEED_H: f32 = 600.0;
+
+/// **The one call of the shared placer for this menu**: a panel of `size` beside `anchor`, on the side
+/// [`NEED_H`] decides, `PLAYER_MENU_GAP` away, inside `SAFE`. The live panel ([`table_natural`]), the
+/// overscan audit ([`overscan_rects`]) and the HUD lint (`hud_format::lint_menus`) all place through
+/// it, so none can drift from another.
+pub(crate) fn place_panel(anchor: Rect, size: (f32, f32)) -> plx_ui::popover::Anchored {
+    plx_ui::popover::anchor_panel(
+        anchor,
+        size,
+        NEED_H,
+        theme::layout::PLAYER_MENU_GAP,
+        plx_ui::popover::Placement::PLAYER_MENU,
+    )
+}
+
+/// **A tab root's natural panel**, placed beside `anchor` — the layout of `table` as the panel would
+/// hug it. Each tab hugs its own rows (shared menu rule); the edge the opener's segment ends at is
+/// fixed, so switching tabs moves only the far edge.
+///
+/// The panel grows away from the opener and its height is capped at the room on that side, so a
+/// long list (an item with many audio dubs) SCROLLS inside the panel instead of the panel itself
+/// spilling over the opener or past the safe frame.
+fn table_natural(
+    table: &TableView,
+    anchor: Rect,
+    measure: &dyn plx_machine::machine::Measure,
+) -> plx_ui::popover::Anchored {
     let pw = table.menu_panel_width(measure);
-    // the transport control row's own right edge — one number for the discs and both panels
-    let px = crate::player_hud::CTRL_RIGHT - pw;
-    // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
-    // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
-    // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
-    // instead of the panel itself spilling down over the buttons. Switching Audio↔Subtitles keeps
-    // the bottom edge steady.
-    let bottom = theme::layout::PLAYER_MENU_BOTTOM; // 764 — ~28px above the buttons
     // A note row wraps, so its line count depends on the width: it is resolved HERE, against the
     // same `measure` and `pw` the panel is sized with, so no caller (`update`, hit-testing,
     // `draw`) can read the count a rebuild left stale. Idempotent and a few short strings.
     table.fit_notes(pw, measure);
-    let top_min = 60.0;
-    let ph = table.measured_height().clamp(160.0, bottom - top_min);
-    let py = bottom - ph; // ≥ top_min by construction
-    Rect::new(px, py, pw, ph)
+    let ph = table.measured_height().max(160.0);
+    place_panel(anchor, (pw, ph))
 }
 
 /// The renderer the ACTIVE subtitle is drawn by — what decides whether the caption's Size and
@@ -541,6 +561,13 @@ pub struct TrackMenuState {
     /// without the item in hand. A copy, refreshed wherever the subs list is re-read, so a
     /// subtitle that lands (or is replaced) while the page is up marks its hit at once.
     item_sidecars: Vec<metadata::Stream>,
+    /// The opener's rect, handed in when the menu opened ([`Self::with_anchor`]) and never read
+    /// from anywhere again: a stand-in taking the HUD row, or a language change, cannot move an
+    /// open panel.
+    anchor: Rect,
+    /// The side of [`Self::anchor`] the panel took, as of the last placement: where its rise
+    /// comes from.
+    side: std::cell::Cell<plx_ui::popover::Side>,
 }
 
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
@@ -699,11 +726,28 @@ impl TrackMenuState {
             search: offer_search.then(|| plx_data::subsearch::SubSearchSnapshot::idle(0)),
             search_watching: false,
             item_sidecars: Vec::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
         s.form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
         s.sync_item(ps, meta);
         s.rebuild(ps, meta, tab, false);
         s
+    }
+
+    /// Open beside `anchor`, the rect of the control (widened to the end of its segment) that
+    /// opened the menu, as the player screen hands it over. Without it the menu opens where classic
+    /// does: the control row's rect, whose right edge is `CTRL_RIGHT`. Called once, on the
+    /// freshly built menu and before its first frame: the placement is cached against the table's
+    /// layout, and the anchor is latched for the menu's whole life.
+    pub fn with_anchor(mut self, anchor: Rect) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// The anchor the menu was opened with ([`Self::with_anchor`]).
+    pub fn anchor(&self) -> Rect {
+        self.anchor
     }
 
     /// The highlighted row, for the focus probe (`crate::focusprobe`) — a READ of the cursor the
@@ -2090,7 +2134,11 @@ impl TrackMenuState {
     /// [`TableView::layout_rev`]: text is measured when the table changed, not once per caller per
     /// frame. What is on screen is [`Self::shown_rect`], which springs toward this.
     fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        self.motion.natural(self.form.table.layout_rev(), || table_natural(&self.form.table, measure))
+        self.motion.natural(self.form.table.layout_rev(), || {
+            let placed = table_natural(&self.form.table, self.anchor, measure);
+            self.side.set(placed.side);
+            placed.rect
+        })
     }
 
     /// The card as it is drawn this frame: its top and left edges on their springs toward
@@ -2189,7 +2237,7 @@ impl TrackMenuState {
             let mut other = TrackTable::new(BAND_BASE);
             other.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
             other.set(form, None);
-            let natural = table_natural(&other.table, measure);
+            let natural = table_natural(&other.table, self.anchor, measure).rect;
             PanelMotion::prewarm_background_text(natural, &other.table, measure)
         });
         self.background_owner = Some(owner);
@@ -2199,13 +2247,14 @@ impl TrackMenuState {
         // The appear fade/rise — the container drives the phase and the appear spring. The dim
         // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
         // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
-        let p = Painter::root()
-            .alpha(appear)
-            .translate(0.0, Popover::RISE * (1.0 - appear));
+        // The panel rises from the side its opener is on (placed first: that is where the side is read).
+        let natural = self.panel_rect(measure);
+        let (dx, dy) = Popover::rise_offset(self.side.get(), Popover::RISE, appear);
+        let p = Painter::root().alpha(appear).translate(dx, dy);
         // frosted panel card — near-opaque dark (no true backdrop blur on the GLES plane, so a solid
         // dark card approximates it); only a hint of video shows through. ONE background at the
         // animated rect, the page(s) under its clip (`PanelMotion::draw`).
-        self.motion.draw(p, self.panel_rect(measure), 28.0, &self.form.table, measure);
+        self.motion.draw(p, natural, 28.0, &self.form.table, measure);
     }
 }
 
@@ -2618,17 +2667,14 @@ fn table_form(
 }
 
 /// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`], the shared cap — either tab may hug
-/// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — the full
-/// `top_min`→`bottom` span, since the measured height comes from a `TableView` no host test can
-/// measure.
+/// up to it) and TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — placed by the
+/// same placer as the live panel, beside the anchor of the compiled classic (`player_hud::audit_geometry`), with the height of the whole room (the
+/// measured height comes from a `TableView` no host test can measure).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (bottom, top_min) = (theme::layout::PLAYER_MENU_BOTTOM, 60.0);
     let pw = plx_ui::table::MENU_MAX_W;
-    out.push((
-        "track menu panel (widest)",
-        Rect::new(crate::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
-    ));
+    let placed = place_panel(crate::player_hud::audit_geometry().row, (pw, plx_ui::consts::SCR_H));
+    out.push(("track menu panel (widest)", placed.rect));
 }
 
 #[cfg(test)]
@@ -5468,6 +5514,8 @@ mod focus_tests {
             search: None,
             search_watching: false,
             item_sidecars: Vec::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         }
     }
 
@@ -7258,5 +7306,164 @@ mod motion_tests {
         assert!(store.run(append(sidecar(11, "", "nld"))), "an empty title names nothing, so matches nothing");
         let ids: Vec<i64> = store.view().playing().unwrap().subs.iter().map(|s| s.id).collect();
         assert_eq!(ids, [5, 6, 9, 10, 11]);
+    }
+}
+
+/// **Classic's settled Tracks panel does not move** when its placement comes from an anchor: the
+/// right edge is the control row's (`CTRL_RIGHT`), the bottom edge 764, the width the hug, and the
+/// height the measured one up to the room above the row.
+#[cfg(test)]
+mod classic_placement_tests {
+    use super::tests::stream;
+    use super::*;
+    use plx_base::fontcov::advances::ShippedMeasure;
+
+    fn item(audio: usize) -> plx_data::stores::metadata::MetadataStore {
+        let mut store = plx_data::stores::metadata::MetadataStore::default();
+        let mut item = metadata::PlayingItem::with_subs(vec![stream(10, 0, "English", "eng", ""), stream(11, 1, "French", "fra", "SDH")]);
+        item.audio = (0..audio).map(|i| stream(100 + i as i64, i as i64, &format!("Dub {i}"), "eng", "")).collect();
+        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        store
+    }
+
+    /// (name, right edge, bottom edge, width, height) of each settled page.
+    fn settled(audio: usize) -> Vec<(String, [f32; 4])> {
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = item(audio);
+        let mut out = Vec::new();
+        for (tab, name) in [(0, "audio root"), (1, "subtitles root")] {
+            let mut menu = TrackMenuState::new(&ps, store.view(), tab, vec!["eng".into()]);
+            let r = menu.panel_rect(&ShippedMeasure);
+            out.push((format!("{name} ({audio} dubs)"), [r.x + r.w, r.y + r.h, r.w, r.h]));
+            if let Some(i) = menu.form.index_of(&TrackRow::Style) {
+                menu.focus_row(i as c_int);
+                assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+                let r = menu.panel_rect(&ShippedMeasure);
+                out.push((format!("style page ({audio} dubs)"), [r.x + r.w, r.y + r.h, r.w, r.h]));
+            }
+        }
+        plx_plex::plex::reset_servers_for_test();
+        out
+    }
+
+    /// Captured from the constants-placed panels (`CTRL_RIGHT - pw`, bottom 764) before the
+    /// placement came from an anchor: (right, bottom, width, height).
+    #[test]
+    fn classic_tracks_panels_settle_where_they_always_did() {
+        let got = settled(3);
+        assert_eq!(
+            got.iter().map(|(n, r)| (n.as_str(), *r)).collect::<Vec<_>>(),
+            [
+                ("audio root (3 dubs)", [1824.0, 764.0, 468.0, 356.0]),
+                ("subtitles root (3 dubs)", [1824.0, 764.0, 447.0, 488.0]),
+                ("style page (3 dubs)", [1824.0, 764.0, 440.0, 296.0]),
+            ],
+        );
+    }
+
+    /// A list taller than the room scrolls inside a panel that stops at the cap. The cap was 704
+    /// (`bottom - 60`) and is now the room above the row, 710: the one settled frame that differs,
+    /// and only for a list taller than the old cap.
+    #[test]
+    fn a_long_dub_list_stops_at_the_room_above_the_row() {
+        let got = settled(40);
+        let (name, [right, bottom, w, h]) = &got[0];
+        assert!(name.starts_with("audio root"));
+        assert_eq!((*right, *bottom, *w, *h), (1824.0, 764.0, 468.0, 710.0));
+        assert_eq!(*bottom - *h, plx_ui::consts::SAFE.y, "the room is what is left under SAFE's top");
+    }
+
+    /// Every opener of classic gets the same anchor from the player screen, and it is the control
+    /// row's, ending at the segment's edge: that is why the Audio, Subtitles and `…` discs all open
+    /// a panel at `CTRL_RIGHT - pw`, bottom 764.
+    #[test]
+    fn the_classic_anchor_is_the_row_ending_at_the_segment_edge_above_the_gap() {
+        let a = crate::player_hud::classic::ctrl_row_hit_rect();
+        assert_eq!(a.x + a.w, crate::player_hud::classic::CTRL_RIGHT, "the segment's outer edge");
+        assert_eq!(a.y - theme::layout::PLAYER_MENU_GAP, 764.0, "PLAYER_MENU_GAP above the row is classic's bottom edge");
+        assert_eq!((a.y, a.h), (crate::player_hud::classic::CTRL_Y, crate::player_hud::classic::CTRL_H), "the discs' own band");
+    }
+
+    fn menu_at(anchor: Rect, tab: c_int) -> (TrackMenuState, plx_data::stores::metadata::MetadataStore) {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = item(3);
+        (TrackMenuState::new(&ps, store.view(), tab, vec!["eng".into()]).with_anchor(anchor), store)
+    }
+
+    /// The panel opens beside the anchor it was handed, whichever side that is.
+    #[test]
+    fn the_panel_opens_beside_the_anchor_it_was_handed() {
+        let _g = plx_base::testlock::serial();
+        use plx_ui::popover::Side;
+        let gap = theme::layout::PLAYER_MENU_GAP;
+        // an opener high on the screen: the panel hangs BELOW it, from its right edge
+        let high = Rect::new(1500.0, 120.0, 324.0, 64.0);
+        let (menu, _store) = menu_at(high, 1);
+        let r = menu.panel_rect(&ShippedMeasure);
+        assert_eq!(menu.side.get(), Side::Below);
+        assert_eq!((r.y, r.x + r.w), (high.y + high.h + gap, high.x + high.w));
+        // an opener in the middle of the right edge with no room above or below for NEED_H: to its left
+        let mid = Rect::new(1700.0, 560.0, 64.0, 64.0);
+        let (menu, _store) = menu_at(mid, 1);
+        let r = menu.panel_rect(&ShippedMeasure);
+        assert_eq!(menu.side.get(), Side::Start);
+        assert_eq!(r.x + r.w, mid.x - gap);
+        assert!(plx_ui::consts::SAFE.contains(r.x, r.y) && r.y + r.h <= plx_ui::consts::SAFE.y + plx_ui::consts::SAFE.h);
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// **The anchor is latched**: the panel's side and its edge by the opener stay put as the page
+    /// changes under it (a push, the other tab: both change the width and height), because nothing
+    /// re-reads where the opener is.
+    #[test]
+    fn the_panel_does_not_move_off_its_anchor_while_it_is_open() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, store) = menu_at(Rect::new(1500.0, 300.0, 324.0, 64.0), 1);
+        let first = menu.panel_rect(&ShippedMeasure);
+        let side = menu.side.get();
+        assert_eq!(side, plx_ui::popover::Side::Below, "the opener is high: the panel hangs under it");
+        let i = menu.form.index_of(&TrackRow::Style).expect("Style row");
+        menu.focus_row(i as c_int);
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+        let pushed = menu.panel_rect(&ShippedMeasure);
+        assert_ne!((pushed.w, pushed.h), (first.w, first.h), "the page changed the panel's size");
+        assert_eq!(menu.side.get(), side);
+        assert_eq!(pushed.x + pushed.w, first.x + first.w, "the edge by the opener");
+        assert_eq!(pushed.y, first.y, "and the panel's start (below the opener: its top)");
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// `NEED_H` is what the side is decided on, so it has to cover the tallest page the menu shows
+    /// with app-owned rows, and has to fit classic's room above the row (710) or classic would flip.
+    #[test]
+    fn need_h_covers_the_app_owned_pages_and_fits_classics_room() {
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = item(0);
+        let mut tallest = 0.0f32;
+        for tab in [0, 1] {
+            let mut menu = TrackMenuState::new_with(&ps, store.view(), tab, vec!["eng".into()], true);
+            tallest = tallest.max(menu.form.table.measured_height());
+            if let Some(i) = menu.form.index_of(&TrackRow::Style) {
+                menu.focus_row(i as c_int);
+                assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
+                tallest = tallest.max(menu.form.table.measured_height());
+            }
+        }
+        assert!(tallest > 200.0, "something was measured: {tallest}");
+        assert!(tallest <= NEED_H, "a page of {tallest} px is taller than NEED_H {NEED_H}");
+        assert!(NEED_H <= 764.0 - plx_ui::consts::SAFE.y, "classic's room above the row holds NEED_H");
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The overscan audit's rect is the placer's, and sits inside SAFE.
+    #[test]
+    fn the_overscan_rect_comes_from_the_placer() {
+        let mut out = Vec::new();
+        overscan_rects(&mut out);
+        let r = out[0].1;
+        assert_eq!((r.x + r.w, r.y + r.h, r.w), (1824.0, 764.0, plx_ui::table::MENU_MAX_W));
+        assert_eq!(r.y, plx_ui::consts::SAFE.y, "the whole room");
     }
 }
