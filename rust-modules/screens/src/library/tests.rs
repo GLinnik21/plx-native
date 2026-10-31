@@ -1480,3 +1480,104 @@ fn a_hover_moves_no_grid_and_a_click_brings_it_to_its_card() {
     point(&mut page, &mut engine, row4, By::Dir);
     assert_eq!(page.scroll_target, page.target_layout.row_reveal(4), "a key seats its row at rest");
 }
+
+/// 36 films sorted by Critic rating, best first: 95% holds items 0..6, 90% 6..12, 85% 12..18, 80% none,
+/// 75% 18..30, `<75%` none, and the last six have no rating.
+fn rated_fixture(descending: bool) -> Fixture {
+    rated_fixture_counting(descending, &[6, 12, 18, 18, 30, 30])
+}
+
+/// [`rated_fixture`] with its own rating counts (the films at or above each band's edge).
+fn rated_fixture_counting(descending: bool, at_or_above: &[u32]) -> Fixture {
+    use plx_data::browse::bands::{BandFamily, BandRail};
+    let mut fixture = Fixture::new();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let ladder = BandFamily::Rating.fixed_ladder().expect("rating has a fixed ladder");
+    let rail = BandRail::new(&ladder, at_or_above, 36).expect("trusted counts");
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
+        Some(plx_data::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(), Vec::new())
+        .with_sort_key("rating").with_sort_desc(descending).with_bands(rail);
+    fixture
+}
+
+#[test]
+fn a_rating_sorted_listing_gets_a_rail_of_its_bands_with_the_empty_ones_dimmed() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = rated_fixture(true);
+    let page = fixture.screen();
+    let (bands, focused) = page.probe_rail(None);
+    assert_eq!(bands, [("95%".to_owned(), false), ("90%".to_owned(), false), ("85%".to_owned(), false),
+        ("80%".to_owned(), true), ("75%".to_owned(), false), ("<75%".to_owned(), true)]);
+    assert_eq!(focused, None);
+    let rail = &page.pair.master;
+    assert_eq!((rail.current_for_item(0), rail.current_for_item(17), rail.current_for_item(18), rail.current_for_item(35)),
+        (Some(0), Some(2), Some(4), None), "a card among the unrated is under no band");
+    let mut groups = Vec::new();
+    rail.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
+    let extent = groups.first().expect("the bands are a focus group").extent;
+    assert_eq!((extent.y, extent.h), (244.0, 6.0 * 40.0));
+    assert!((extent.x + extent.w * 0.5 - 1834.0).abs() < 0.01, "centred on 1834, not the letters' 1844: {extent:?}");
+}
+
+#[test]
+fn moving_in_the_bands_rail_scrolls_the_grid_to_the_band_at_once_and_left_returns_to_the_grid() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = rated_fixture(true);
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let cols = page.layout.cols();
+    // the last card of 85%: one Right from the rail
+    let exact = page.key(page.pair.detail.elem_at(17).unwrap());
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(2), "entering the rail lands on the band of the card it came from");
+    assert_eq!(page.pair.detail.index_of(engine.current(OWNER).unwrap().elem), None, "the rail has focus, so the grid has none");
+    // Down steps over the empty 80% band to 75% and the grid goes to that band's first card with no OK
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Down), 1, "the move remembers the band's first card");
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(4));
+    let first_of_75 = 18;
+    assert_eq!(page.scroll_target, page.target_layout.with_grid_focus(None).row_reveal(first_of_75 / cols), "the page scrolls to the 75% band's row");
+    // `<75%` is empty: there is nothing further down
+    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Down), 0);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(4));
+    // Left returns to the grid, on the band's first card
+    direction(&mut page, &mut engine, &fixture, Dir::Left);
+    assert_eq!(page.grid_position(engine.current(OWNER)), Some((first_of_75 / cols, first_of_75 % cols)));
+}
+
+#[test]
+fn entering_the_bands_rail_from_an_unrated_card_lands_on_the_nearest_band_with_titles_and_left_returns_to_that_card() {
+    let _guard = plx_base::testlock::serial();
+    // 95% holds 3, 90% 3, 85% 3, 80% none, 75% 3, `<75%` none: 24 films are unrated
+    let fixture = rated_fixture_counting(true, &[3, 6, 9, 9, 12, 12]);
+    let mut page = fixture.screen();
+    let mut engine = FocusEngine::new();
+    let cols = page.layout.cols();
+    let unrated = 17;
+    assert_eq!(unrated % cols, cols - 1);
+    let exact = page.key(page.pair.detail.elem_at(unrated).unwrap());
+    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Right);
+    assert_eq!(page.probe_rail(engine.current(OWNER)).1, Some(4), "`<75%` is empty, so 75% is the nearest band with titles");
+    direction(&mut page, &mut engine, &fixture, Dir::Left);
+    assert_eq!(page.grid_position(engine.current(OWNER)), Some((unrated / cols, unrated % cols)), "an entered and left rail returns to the original card");
+}
+
+#[test]
+fn an_ascending_rating_sort_reads_the_bands_in_listing_order() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = rated_fixture(false);
+    let page = fixture.screen();
+    let (bands, _) = page.probe_rail(None);
+    assert_eq!(bands.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(), ["<75%", "75%", "80%", "85%", "90%", "95%"]);
+}
+
+#[test]
+fn a_title_sort_keeps_the_letters_rail_and_a_value_sort_without_bands_has_none() {
+    let _guard = plx_base::testlock::serial();
+    let letters = Fixture::new();
+    assert_eq!(letters.screen().probe_rail(None).0.len(), 26, "the letters rail is unchanged");
+    let mut fixture = Fixture::new();
+    fixture.listing = fixture.listing.clone().with_sort_key("rating");
+    assert!(fixture.screen().probe_rail(None).0.is_empty(), "letters are for the title sort, and no bands have landed");
+}

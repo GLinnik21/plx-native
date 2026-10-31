@@ -7,6 +7,7 @@ pub use recommended::RecommendedScreen;
 mod lookahead;
 mod parts;
 mod rail;
+mod rail_bands;
 #[cfg(test)] mod scroll_chrome_tests;
 #[cfg(test)]
 mod rail_tests;
@@ -382,7 +383,8 @@ impl LibraryScreen {
         (self.libraries.iter().filter(|(elem, _)| *elem != MORE).copied().collect(), self.folded.clone())
     }
 
-    /// The A-Z rail: every letter with whether it is empty, and the index of the focused one.
+    /// The rail: every letter (or, for a value sort, every band) as drawn with whether it is empty,
+    /// and the index of the focused one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_rail(&self, focus: Option<FocusKey<u32>>) -> (Vec<(String, bool)>, Option<usize>) {
         self.pair.master.probe(focus)
