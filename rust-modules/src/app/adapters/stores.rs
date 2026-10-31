@@ -34,11 +34,12 @@
 //! settled it after a hundred `yield_now`s. `Held` parks per kind (`LiveKind`): [`StoreRunner::held`]
 //! leaves the Home Hubs read, the Metadata season switch, the Library listing's page read and the
 //! Library's source discovery live (the rigs that poll for a landing, the dump and return-hold
-//! tests, `menu_play_season_tests` and the library route rigs that wait for a grid to settle, need a
-//! real answer on a worker; discovery is live so the rigs that run every parked job on the test thread
-//! (the hostsim helpers of `app/run.rs`) never run its blocking reads there),
-//! [`StoreRunner::park_page_reads`] parks the page read as well, and [`StoreRunner::held_all`] parks
-//! every kind. Every held runner parks episode-page and Related window jobs.
+//! tests and `menu_play_season_tests` need a real answer on a worker; discovery is live so the rigs
+//! that run every parked job on the test thread (the hostsim helpers of `app/run.rs`) never run its
+//! blocking reads there), [`StoreRunner::park_page_reads`] parks the page read as well, and
+//! [`StoreRunner::held_all`] parks every kind. The route Worlds (`bridge_test_support::World`) park
+//! the page read and land it themselves, on the test thread, in the frame that asked
+//! ([`StoreRunner::run_held_pages`]): no World rig waits for a worker's landing any more. Every held runner parks episode-page and Related window jobs.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
@@ -222,10 +223,12 @@ impl StoreRunner {
     /// TEST ONLY: [`StoreRunner::Held`] for every kind but the Home Hubs read, the Metadata season
     /// switch, the Library listing's page read and the Library's source discovery, which start on a
     /// worker as they do in production:
-    /// a rig that waits for a Home or a grid landing, and the menu-play season wait
+    /// a rig that waits for a Home landing, and the menu-play season wait
     /// (`menu_play_season_tests`, which polls `metadata_pump_season` for a landing and never runs held
-    /// jobs), need a real one. No rig waits for an episode-page or a Related window landing through a
-    /// worker (the Related rigs land the window with `land_related_for_test`), so those are parked.
+    /// jobs), need a real one, and so does the page read of `session_dispatch_tests`. The route Worlds
+    /// do not: they park the page read and land it in `World::step`. No rig waits for an episode-page
+    /// or a Related window landing through a worker (the Related rigs land the window with
+    /// `land_related_for_test`), so those are parked.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
         Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery] }
@@ -950,6 +953,14 @@ impl StoreRunner {
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
         self.run_held_where(|_| true)
+    }
+
+    /// TEST ONLY: [`Self::run_held`] for the Library listing's page reads alone: what a worker
+    /// would have landed (a closed port's refusal, a seeded server's answer), on the calling thread,
+    /// through the production completion (`finish_browse_page_job`). Every other parked job stays.
+    #[cfg(test)]
+    pub(crate) fn run_held_pages(&mut self) -> usize {
+        self.run_held_where(|job| matches!(job, StoreJob::BrowsePage(..)))
     }
 
     /// TEST ONLY: take the parked jobs without running them, in the order they were parked. A test
@@ -3041,10 +3052,10 @@ mod tests {
         assert_ne!(listing_key(&again), first);
     }
 
-    /// `held` starts the grid's page read on a worker, as production does: the library rigs wait
-    /// for a grid to settle (the route rigs for a failed page, `session_dispatch_tests` for a request
-    /// that reaches the loopback server) and nothing is parked for them. `park_page_reads` parks it
-    /// for the rig that grades which reads an entry started.
+    /// `held` starts the grid's page read on a worker, as production does: `session_dispatch_tests`
+    /// waits for a request that reaches the loopback server and nothing is parked for it.
+    /// `park_page_reads` parks it for the rig that grades which reads an entry started and for the
+    /// route Worlds, which land it themselves.
     #[test]
     fn the_held_runner_starts_a_browse_page_job_on_a_worker_unless_told_to_park_it() {
         let _serial = plx_base::testlock::serial();
@@ -3064,6 +3075,31 @@ mod tests {
         assert!(!browse.page_answer_waiting_for_test(), "no worker answered: the job is parked");
         assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
         assert!(browse.page_answer_waiting_for_test());
+    }
+
+    /// `run_held_pages` lands the page reads a runner holds, through the production completion, and
+    /// leaves every other parked job parked: the route Worlds call it each frame and must not settle
+    /// a fetch some other part of the rig is holding on purpose.
+    #[test]
+    fn run_held_pages_runs_page_reads_and_leaves_every_other_parked_job() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse) = registered_browse();
+        page_step(&mut browse);
+        let page_job = the_one_job(&mut browse, is_page, "page");
+        directory_step(&mut browse);
+        let directory_job = the_one_job(&mut browse, is_directory, "directory");
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(page_job);
+        runner.start(directory_job);
+        assert!(!browse.page_answer_waiting_for_test(), "parked: no answer yet");
+        assert_eq!(runner.run_held_pages(), 1);
+        assert!(browse.page_answer_waiting_for_test(), "the page read landed through the production completion");
+        assert!(!browse.directory_answer_waiting_for_test(), "the directory read did not run");
+        assert_eq!(runner.run_held_pages(), 0, "nothing left to land");
+        let left = runner.take_held();
+        assert!(matches!(left.as_slice(), [StoreJob::BrowseDirectory(..)]), "the directory read stays parked: {left:?}");
     }
 
     /// The directory's lane, same five branches: a worker that answers once, a client gone, a thread

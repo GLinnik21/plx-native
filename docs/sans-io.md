@@ -249,13 +249,15 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   (`LiveKind`, test only; a kind and not a store, because Browse emits several kinds: `BrowseHubs`,
   `BrowseDirectory`, `BrowsePage`, `BrowseDiscovery`): `StoreRunner::held()`
   leaves the Hubs read, the Metadata season switch and the Library grid's page read live, as
-  production runs them (a rig that waits for a Home, a season or a grid landing needs a real worker;
-  `menu_play_season_tests` polls for the season landing and never runs held jobs), leaves the
+  production runs them (a rig that waits for a Home or a season landing needs a real worker;
+  `menu_play_season_tests` polls for the season landing and never runs held jobs; the route Worlds
+  of `bridge_test_support` park the page read and land it themselves in `World::step`), leaves the
   Library's source discovery live for the reason given below, and
   `StoreRunner::held_all()` parks them too, for a test that chooses when the read settles
   (`Bridge::run_held_store_jobs_of_for_test`).
   `StoreRunner::park_page_reads` (`Bridge::park_page_reads_for_test`) parks only the page read of
-  a held runner, for a rig that grades which reads an entry started. Source discovery is parked by
+  a held runner, for a rig that grades which reads an entry started (and for the route Worlds, via
+  `StoreRunner::run_held_pages`). Source discovery is parked by
   `held_all()` only: it is live under `held()` and under `park_page_reads()`, so a rig that runs
   every parked job on the test thread (the `hostsim` helpers of `app/run.rs`) never runs a
   discovery's blocking reads there, where the worker blocks harmlessly off-thread. No rig waits for

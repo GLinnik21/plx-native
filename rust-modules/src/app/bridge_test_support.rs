@@ -372,6 +372,10 @@ impl World {
         plx_plex::plex::set_current(own);
         let d = Dispatcher::<AppHost>::new();
         let mut bridge = Bridge::for_test(|| 0);
+        // The Library listing's page read is parked here and landed on this thread by `step`: the
+        // test server is a closed port, and a worker's refusal would reach the page whenever the OS
+        // ran it, not in the frame the rows count (#1001).
+        bridge.park_page_reads_for_test();
         bridge.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         // "Film Club" beside "Movies": the header then names two libraries (one library draws no
         // names, no plate and no scroll capsule).
@@ -618,6 +622,10 @@ impl World {
         super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
         let now = self.frame * 16;
         self.performed.extend(self.pump.run(&mut self.d, &mut self.bridge, now));
+        // What the Library listing's worker would have landed (parked in `build_shelves`): the
+        // production completion, on this thread, in the frame that asked; the next frame's pump
+        // hands it to the store.
+        self.bridge.run_held_page_reads_for_test();
     }
 
     pub(super) fn frames(&mut self, n: u32) {

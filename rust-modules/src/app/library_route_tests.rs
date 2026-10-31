@@ -300,6 +300,27 @@ fn the_crumb_root_pops_to_the_library_and_up_from_it_is_the_movies_pill() {
     ]);
 }
 
+/// **The World lands a page read the runner is holding, in the frame that asked for it.** The
+/// Collections page seats focus on its Retry control only once the Library listing's page read has
+/// answered (a closed port: the refusal turns Loading into Failed). The read is parked at the store
+/// runner, as a worker the OS has not scheduled yet would leave it (`World::build_shelves` already
+/// parks it; the setup call below only keeps this row independent of that), and one OK press must still
+/// find the Retry control: `World::step` runs what the runner holds, on this thread, after the pump.
+/// It tests the World's drain; the Worlds no longer start page reads on a worker at all, so this row
+/// is not a slow-worker simulation (the failure it replaced was #1001).
+#[test]
+fn world_step_lands_a_parked_page_read_in_the_frame_that_asked_for_it() {
+    run(vec![Row {
+        name: "world-drain-collections-page-read",
+        setup: |w| { w.bridge.park_page_reads_for_test(); library(w) },
+        start: "header:collections",
+        steps: vec![
+            press(Key::Ok, "library:OpenListing { listing: Collections", "collections", "status"),
+        ],
+        end: no_checks,
+    }]);
+}
+
 // ---- R5: the "+N" list ---------------------------------------------------------------------------
 
 /// Eleven Movie libraries: the header names the first two and folds the rest behind "+N".
