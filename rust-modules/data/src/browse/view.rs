@@ -301,20 +301,24 @@ impl<'a> ListingView<'a> {
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
-    /// Is the A-Z rail offered? For the title sort, when it is ascending (the order the counts sum in)
-    /// and there are letters of THIS listing to jump to; a descending title sort has none. For a value
-    /// sort with bands (`BandFamily::rail_ready`), when the counts of THIS listing put items in at
-    /// least two of them ([`Self::bands`]). Unwatched and a genre do not hide it: both lists are asked
-    /// with the grid's own terms and shown only while they describe them. Any other sort has no rail.
+    /// Is the A-Z LETTERS rail offered? The sort is the title, ascending (the order the counts sum in), and
+    /// there are letters of THIS listing to jump to. Unwatched and a genre do not hide it: the letters
+    /// are asked with the grid's own terms and shown only while they describe them ([`Self::letters`]).
+    /// A value sort has no letters rail, whatever the letters on hand; its bands are
+    /// [`Self::bands_available`].
     pub fn rail_available(self) -> bool {
-        if self.id().is_none() {
-            return false;
-        }
-        match self.sorts().get(self.sort_index()) {
-            None => self.letters().len() > 1,
-            Some(sort) if sort.key == "titleSort" => !self.sort_desc() && self.letters().len() > 1,
-            Some(_) => self.bands().is_some_and(|bands| bands.populated() >= 2),
-        }
+        self.id().is_some()
+            && self
+                .sorts()
+                .get(self.sort_index())
+                .is_none_or(|s| s.key == "titleSort" && !self.sort_desc())
+            && self.letters().len() > 1
+    }
+    /// Is a rail of BANDS offered? The grid is ordered by a value sort with bands
+    /// (`BandFamily::rail_ready`), and the counts of THIS listing put items in at least two of them
+    /// ([`Self::bands`]). The title sort has the letters ([`Self::rail_available`]) and never both.
+    pub fn bands_available(self) -> bool {
+        self.id().is_some() && self.bands().is_some_and(|bands| bands.populated() >= 2)
     }
     pub fn letter_start(self, index: usize) -> usize {
         self.letters()

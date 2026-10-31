@@ -387,7 +387,13 @@ fn snapshot_bands(browse: &TestBrowse) -> Option<Offsets> {
     browse.state.listing_snapshot().view().bands().cloned()
 }
 
-fn rail_shown(browse: &TestBrowse) -> bool {
+/// Is a rail of bands offered for the sort the grid is ordered by?
+fn bands_shown(browse: &TestBrowse) -> bool {
+    browse.state.listing_snapshot().view().bands_available()
+}
+
+/// Is the letters rail offered (the title sort's, which the screen draws from `letters()`)?
+fn letters_shown(browse: &TestBrowse) -> bool {
     browse.state.listing_snapshot().view().rail_available()
 }
 
@@ -405,7 +411,7 @@ fn a_value_sort_asks_with_the_pages_terms_and_the_view_lays_the_bands_out() {
     assert!(browse.state.set_unwatched(true));
     land_title_letters(&mut browse);
     assert!(browse.state.set_sort_by_key("rating", true));
-    assert!(!rail_shown(&browse), "premise: nothing counted yet");
+    assert!(!bands_shown(&browse), "premise: nothing counted yet");
 
     let ladder = Ladder::rating();
     let items = ladder.items(80, 11);
@@ -430,14 +436,46 @@ fn a_value_sort_asks_with_the_pages_terms_and_the_view_lays_the_bands_out() {
     assert_eq!(page_terms, filters, "premise");
     let shown = snapshot_bands(&browse).expect("the bands of the sort the grid is ordered by");
     assert_layout(&ladder, &listing(&ladder, &items, &filters, true), &shown, true, "descending");
-    assert!(rail_shown(&browse));
+    assert!(bands_shown(&browse));
+    assert!(!letters_shown(&browse), "the letters are landed too, and are not this sort's rail");
 
     // the direction is not part of what was counted: a flip lays the same counts out the other way
     assert!(browse.state.set_sort_by_key("rating", false));
     no_job_is_owed(&mut browse, sid, "a flip of the direction");
     let shown = snapshot_bands(&browse).expect("still counted");
     assert_layout(&ladder, &listing(&ladder, &items, &filters, false), &shown, false, "ascending");
-    assert!(rail_shown(&browse));
+    assert!(bands_shown(&browse));
+}
+
+/// The letters rail is the title sort's alone: the screen draws `letters()` for whatever
+/// `rail_available` allows, and the letters are landed on a value sort too (their key has no sort), so
+/// a jump from one would land on an arbitrary row. A value sort offers its bands, never the letters.
+#[test]
+fn the_letters_rail_is_offered_for_the_title_sort_and_never_for_a_value_sort() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = banded_source(SecKind::Movie, &["rating", "addedAt"]);
+    assert!(letters_shown(&browse), "the title sort, ascending, with two letters: as before");
+    assert!(!bands_shown(&browse));
+    assert!(browse.state.set_sort_by_key("titleSort", true));
+    assert!(!letters_shown(&browse), "a descending title sort has none");
+    assert!(browse.state.set_sort_by_key("titleSort", false));
+
+    let ladder = Ladder::rating();
+    assert!(browse.state.set_sort_by_key("rating", true));
+    assert_eq!(browse.state.listing_snapshot().view().letters().len(), 2, "premise: letters are on hand");
+    assert!(!letters_shown(&browse), "a value sort without its bands counted");
+    ask_bands(&mut browse, sid, client, &ladder.server(ladder.items(60, 3)));
+    assert!(bands_shown(&browse), "premise: the bands are offered");
+    assert!(!letters_shown(&browse), "…and the letters still are not, whatever the bands");
+    assert_eq!(browse.state.listing_snapshot().view().letters().len(), 2, "…though they are on hand");
+    assert!(browse.state.set_sort_by_key("rating", false));
+    assert!(!letters_shown(&browse) && bands_shown(&browse), "ascending too");
+
+    // a sort with no ladder (the calendar ones are off) has neither
+    assert!(browse.state.set_sort_by_key("addedAt", true));
+    assert!(!letters_shown(&browse) && !bands_shown(&browse));
+    assert_eq!(letters_shown(&browse), browse.state.rail_available());
+    assert_eq!(bands_shown(&browse), browse.state.bands_available());
 }
 
 /// A sort of another family counts again; the title sort shows no bands and asks for none.
@@ -448,12 +486,12 @@ fn a_sort_change_asks_again_and_a_title_sort_asks_for_no_bands() {
     let rating = Ladder::rating();
     assert!(browse.state.set_sort_by_key("rating", true));
     ask_bands(&mut browse, sid, client, &rating.server(rating.items(60, 3)));
-    assert!(rail_shown(&browse));
+    assert!(bands_shown(&browse));
 
     let duration = Ladder::duration();
     assert!(browse.state.set_sort_by_key("duration", true));
     assert!(snapshot_bands(&browse).is_none(), "the rating's counts are not the duration's");
-    assert!(!rail_shown(&browse));
+    assert!(!bands_shown(&browse));
     let (job, _port) = bands_job(&mut browse, sid);
     assert_eq!(job.req.letters.as_ref().and_then(|key| key.family), Some(BandFamily::Duration));
     browse.jobs.clear();
@@ -461,7 +499,8 @@ fn a_sort_change_asks_again_and_a_title_sort_asks_for_no_bands() {
     // back to the title sort: the letters (landed) are the rail, no bands read is owed
     assert!(browse.state.set_sort_by_key("titleSort", false));
     assert!(snapshot_bands(&browse).is_none());
-    assert!(rail_shown(&browse), "the letters of the title sort");
+    assert!(letters_shown(&browse), "the letters of the title sort");
+    assert!(!bands_shown(&browse), "…and no bands beside them");
     browse.adapter.bands.clear();
     no_job_is_owed(&mut browse, sid, "a title sort");
     let _ = duration;
@@ -492,7 +531,7 @@ fn the_calendar_families_ask_nothing_and_show_nothing() {
         assert!(browse.state.set_sort_by_key(key, desc));
         no_job_is_owed(&mut browse, sid, key);
         assert!(snapshot_bands(&browse).is_none(), "{key}");
-        assert!(!rail_shown(&browse), "{key}");
+        assert!(!bands_shown(&browse), "{key}");
     }
 }
 
@@ -507,7 +546,7 @@ fn a_rail_with_fewer_than_two_populated_bands_is_not_offered() {
     ask_bands(&mut browse, sid, client, &ladder.server(items));
     let shown = snapshot_bands(&browse).expect("the counts are trustworthy");
     assert_eq!(shown.populated(), 1, "premise: every rated item is in the top band");
-    assert!(!rail_shown(&browse), "one band is not a rail");
+    assert!(!bands_shown(&browse), "one band is not a rail");
 }
 
 /// Counts that cannot be trusted leave the rail hidden and the claim down, and nothing is asked
@@ -522,7 +561,7 @@ fn untrusted_counts_hide_the_rail_without_a_retry() {
     server.ignores_the_field = true;
     ask_bands(&mut browse, sid, client, &server);
     assert!(snapshot_bands(&browse).is_none());
-    assert!(!rail_shown(&browse));
+    assert!(!bands_shown(&browse));
     assert!(!Directory::Bands.busy(&browse.adapter));
     assert!(!browse.state.states()[0].bands_waiting(), "a verdict, not a failure: no back-off");
     for _ in 0..3 {
@@ -547,7 +586,7 @@ fn a_failed_read_backs_off_like_the_letters() {
     let server = ladder.server(ladder.items(40, 4));
     server.fail_from.set(Some(2));
     ask_bands(&mut browse, sid, client, &server);
-    assert!(!rail_shown(&browse));
+    assert!(!bands_shown(&browse));
     assert!(browse.state.states()[0].bands_waiting(), "the back-off is armed");
     no_job_is_owed(&mut browse, sid, "inside the back-off");
 
@@ -584,7 +623,7 @@ fn an_answer_asked_under_older_terms_is_not_shown() {
     let _ = browse.pump();
     browse.jobs.clear();
     assert!(snapshot_bands(&browse).is_none(), "counts of the unfiltered listing over a filtered grid");
-    assert!(!rail_shown(&browse));
+    assert!(!bands_shown(&browse));
     land_title_letters(&mut browse);
     let (job, _port) = bands_job(&mut browse, sid);
     assert_eq!(job.req.filters, terms(&[("unwatched", "1")]), "and asked again with the new terms");
@@ -621,9 +660,9 @@ fn a_watch_stales_the_counts_that_move_with_it_and_only_those() {
         let (_cleanup, mut browse, sid, client) = banded_source(SecKind::Movie, &[key]);
         assert!(browse.state.set_sort_by_key(key, true));
         ask_bands(&mut browse, sid, client, &ladder.server(ladder.items(50, 8)));
-        assert!(rail_shown(&browse), "{key}: premise");
+        assert!(bands_shown(&browse), "{key}: premise");
         browse.state.apply_view_local(&ViewAt::leaf(sid, "7"), WATCHED_FACTS);
-        assert_eq!(!rail_shown(&browse), moved, "{key}: a watch hides the counts it moves");
+        assert_eq!(!bands_shown(&browse), moved, "{key}: a watch hides the counts it moves");
         if moved {
             let _ = bands_job(&mut browse, sid);
         } else {
@@ -635,9 +674,9 @@ fn a_watch_stales_the_counts_that_move_with_it_and_only_those() {
     assert!(browse.state.set_sort_by_key("unviewedLeafCount", true));
     let ladder = Ladder::unplayed();
     ask_bands(&mut browse, sid, client, &ladder.server(ladder.items(50, 8)));
-    assert!(rail_shown(&browse));
+    assert!(bands_shown(&browse));
     browse.state.apply_view_local(&ViewAt::leaf(sid, "7"), WATCHED_FACTS);
-    assert!(!rail_shown(&browse));
+    assert!(!bands_shown(&browse));
     let (job, _port) = bands_job(&mut browse, sid);
     assert_eq!(job.req.filters, terms(&[("type", "2")]), "a show's listing is asked for as the page asks");
 }
@@ -650,9 +689,9 @@ fn a_library_type_change_forgets_the_bands() {
     assert!(browse.state.set_sort_by_key("rating", true));
     let ladder = Ladder::rating();
     ask_bands(&mut browse, sid, client, &ladder.server(ladder.items(50, 1)));
-    assert!(rail_shown(&browse));
+    assert!(bands_shown(&browse));
     assert!(browse.state.set_library_type(LibraryType::Collections));
-    assert!(!rail_shown(&browse), "Collections have no value bands");
+    assert!(!bands_shown(&browse), "Collections have no value bands");
     assert!(browse.state.set_library_type(LibraryType::Primary));
     assert!(snapshot_bands(&browse).is_none());
     land_title_letters(&mut browse);

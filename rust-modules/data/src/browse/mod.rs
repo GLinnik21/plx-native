@@ -2131,16 +2131,22 @@ impl BrowseState {
     }
     #[cfg(test)]
     fn rail_available(&self) -> bool {
+        let Some(state) = self.cur_state() else {
+            return false;
+        };
+        let title_asc = match state.sorts.get(state.sort_idx) {
+            Some(sort) => sort.key == "titleSort" && !state.sort_desc,
+            None => true,
+        };
+        title_asc && state.shown_letters().is_some_and(|letters| letters.len() > 1)
+    }
+    /// The twin of `ListingView::bands_available`: a value sort whose shown bands have two populated.
+    #[cfg(test)]
+    fn bands_available(&self) -> bool {
         let (Some(state), Some(kind)) = (self.cur_state(), self.section_kind(self.cur())) else {
             return false;
         };
-        let letters = || state.shown_letters().is_some_and(|letters| letters.len() > 1);
-        match state.sorts.get(state.sort_idx) {
-            None => letters(),
-            Some(sort) if sort.key == "titleSort" => !state.sort_desc && letters(),
-            // a value sort: its bands, two of them with items in
-            Some(_) => state.shown_bands(kind).is_some_and(|rail| rail.listed(state.sort_desc).populated() >= 2),
-        }
+        state.shown_bands(kind).is_some_and(|rail| rail.listed(state.sort_desc).populated() >= 2)
     }
     fn discovery_state(&self) -> SecFetch {
         if !self.sections.is_empty() || self.sources.iter().all(|source| source.sections_done) {
