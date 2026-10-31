@@ -2,6 +2,8 @@
 
 Design proposal, 2026-09-21. Source observations below are from this live worktree, not from the historical filenames in the July audit. No implementation or performance verification accompanies this document. The reported TV sequence—visible art queued 47th and dropped frames increasing from 68 to 247—is the task's supplied incident evidence, not a measurement reproduced here.
 
+> Written for two workers. The pool is now `workers_for` in [poster.rs](../rust-modules/src/app/adapters/poster.rs): two, or three on a set with at least four cores and 2 GiB. Read every "two workers" below, `POSTER_WORKERS` and `WorkerId` (0 or 1) as that count: the typed sketch must take the count, not fix it. The one-speculative-obligation rule (§3, rule 2) is what keeps capacity for visible work, and it holds for any count of two or more.
+
 ## 1. Problem and scope
 
 Replace the poster adapter's implicit work protocol with a small, poster-specific request state machine. Keep two ordinary worker threads, the existing thread-spawn seam, and the SDL loop's ownership of application scheduling and result application. Make urgency and arrival order explicit data, independently of cache allocation. Do not migrate working one-shot mailboxes, playback services, or persistence into a common scheduler.

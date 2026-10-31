@@ -1699,7 +1699,7 @@ fn first_failure(srv: ServerId, cause: ArtFail) -> bool {
     static LOGGED: Mutex<std::collections::BTreeMap<u16, u32>> =
         Mutex::new(std::collections::BTreeMap::new());
     let bit = 1u32 << cause as u32;
-    // One lock, not load-then-store: this loop runs on more than one thread (`posters_init` spawns
+    // One lock, not load-then-store: this loop runs on more than one thread (`poster::init` spawns
     // two or three), so two workers can reach the same cause for the same server at once and only the one
     // that flipped the bit may write the line.
     let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
@@ -2033,10 +2033,13 @@ const WORKERS_DEFAULT: usize = 2;
 /// Fetch + decode workers on a roomier set. Measured on a four-core, 2.7 GB set against a slow
 /// server (100 ms per image, 377 uncached posters scrolled a row every 120 ms): three workers got
 /// about a fifth more posters on screen within half a second than two, for roughly 8 MB less free
-/// RAM and about a frame per second less while scrolling. The slot holds a finished decode until
-/// the upload queue takes it, so the decoded-byte backlog ([`DECODE_BACKLOG_MAX`]) stays
-/// the bound it was: it gates when a decode STARTS, and one more worker adds one more decode in
-/// flight, not a bigger queue (the peak queued bytes read 7.4 MB with two workers and 7.8 MB with three).
+/// RAM and about a frame per second less while scrolling. That run had a cold disk cache, so its
+/// workers mostly waited on a socket: the frame cost with a warm cache, where three decodes run
+/// back to back on the frame thread's cores, is NOT determined. The slot holds a finished decode
+/// until the upload queue takes it, and [`DECODE_BACKLOG_MAX`] gates when a decode STARTS, so a
+/// third worker adds one more decode in flight (up to one 1920x1080 backdrop, about 8.3 MB)
+/// beyond that budget, not a bigger queue (the peak queued bytes read 7.4 MB with two workers and
+/// 7.8 MB with three, posters only).
 const WORKERS_ROOMY: usize = 3;
 /// The core count from which a set gets [`WORKERS_ROOMY`].
 const ROOMY_CORES: usize = 4;
@@ -4042,6 +4045,7 @@ mod tests {
         assert_eq!(workers_for(Some(4), Some(2_678_680)), 3, "four cores and 2.7 GB");
         assert_eq!(workers_for(Some(8), Some(2 * 1024 * 1024)), 3, "2 GiB is the floor, inclusive");
         assert_eq!(workers_for(Some(2), Some(4 * 1024 * 1024)), 2, "two cores");
+        assert_eq!(workers_for(Some(3), Some(4 * 1024 * 1024)), 2, "just under four cores");
         assert_eq!(workers_for(Some(4), Some(1024 * 1024)), 2, "four cores but 1 GB");
         assert_eq!(workers_for(Some(4), Some(2 * 1024 * 1024 - 1)), 2, "just under 2 GiB");
         assert_eq!(workers_for(None, Some(4 * 1024 * 1024)), 2, "cores unknown");
