@@ -613,7 +613,8 @@ struct SecState {
     letters_gen: u32,
     /// Moves when a title of the section's server had its watched state read back
     /// ([`SecState::viewing_changed`]), whether or not Unwatched is applied: only a key counted
-    /// under Unwatched carries it ([`SecState::key_gen`]).
+    /// under Unwatched, or for a bands family that moves with viewing (plays, unplayed), carries it
+    /// ([`SecState::key_gen`]).
     viewing_gen: u32,
     /// A failed letters read of this key, and the steps left before it is asked again.
     letters_backoff: Option<(LettersKey, u32)>,
@@ -856,11 +857,10 @@ impl Default for SecState {
 
 impl SecState {
     /// Does the server's answer to this section's query change when an item is watched: the
-    /// Unwatched switch drops it, ordering by last viewed moves it? (Plex's sort key for "Last
-    /// Viewed" is `lastViewedAt`.)
+    /// Unwatched switch drops it, ordering by a value a watch changes moves it ([`orders_by_viewing`])?
     fn membership_depends_on_viewing(&self) -> bool {
         (self.unwatched && self.library_type.filters())
-            || self.sorts.get(self.sort_idx).is_some_and(|sort| sort.key == "lastViewedAt")
+            || self.sorts.get(self.sort_idx).is_some_and(|sort| orders_by_viewing(&sort.key))
     }
     /// Forget the listing, as a query edit does: the next visit fetches it afresh.
     fn reset_listing(&mut self) {
@@ -3532,6 +3532,15 @@ impl SecKind {
 /// 500s the whole listing, which is why [`with_plays_sort`] never sends this for a kind that
 /// hasn't been proven to accept it.
 pub const PLAYS_SORT_KEY: &str = "viewCount";
+
+/// Does a watch move a row under this sort key? Last viewed (`lastViewedAt`), plays
+/// ([`PLAYS_SORT_KEY`]) and the unplayed count (`unviewedLeafCount`) are values a watch changes, so
+/// the loaded pages are out of order as soon as the server's read-back arrives. The rail's band
+/// counts under these keys move with a watch as well ([`bands::BandFamily::moves_with_viewing`]),
+/// and must be counted over the very listing the grid shows, so the grid is asked again.
+fn orders_by_viewing(key: &str) -> bool {
+    matches!(key, "lastViewedAt" | "unviewedLeafCount" | PLAYS_SORT_KEY)
+}
 
 /// Whether the server is proven to honour [`PLAYS_SORT_KEY`] for this section kind. An
 /// exhaustive match rather than a wildcard default: [`SecKind`]'s own doc says a third variant
