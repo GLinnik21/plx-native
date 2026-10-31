@@ -2033,8 +2033,8 @@ const WORKERS_DEFAULT: usize = 2;
 /// Fetch + decode workers on a roomier set. Measured on a four-core, 2.7 GB set against a slow
 /// server (100 ms per image, 377 uncached posters scrolled a row every 120 ms): three workers got
 /// about a fifth more posters on screen within half a second than two, for roughly 8 MB less free
-/// RAM and about a frame per second less while scrolling. Each worker holds its decode's pixels
-/// until the upload queue takes them, so the decoded-byte backlog ([`DECODE_BACKLOG_MAX`]) stays
+/// RAM and about a frame per second less while scrolling. The slot holds a finished decode until
+/// the upload queue takes it, so the decoded-byte backlog ([`DECODE_BACKLOG_MAX`]) stays
 /// the bound it was: it gates when a decode STARTS, and one more worker adds one more decode in
 /// flight, not a bigger queue (the peak queued bytes read 7.4 MB with two workers and 7.8 MB with three).
 const WORKERS_ROOMY: usize = 3;
