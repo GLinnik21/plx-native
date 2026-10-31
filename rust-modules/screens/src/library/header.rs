@@ -1,7 +1,7 @@
 //! The library page header (redesign spec, "Header"): the library names, the "+N" overflow and the
 //! page's controls (Collections › and Recommended › as places, a divider, then the sort control:
 //! icon, the chosen criterion, a down chevron, with "Sort & Filter" as its unshown name
-//! ([`sort_control`], which the Collections page's Sort wears too); on the Collections page, the
+//! ([`HeaderItem::sort_control`], which the Collections page's Sort and the Watchlist's wear too); on the Collections page, the
 //! crumb and its Sort) on the ui
 //! [`PageHeader`], one focus row at y 148.
 //!
@@ -63,17 +63,6 @@ fn item(label: impl Into<String>) -> HeaderItem {
 /// A control that opens a page (Collections, Recommended): the row draws a chevron after it.
 fn place(label: impl Into<String>) -> HeaderItem {
     HeaderItem { place: true, ..item(label) }
-}
-
-/// **The sort control** (the board's "= Date added v"): the sort icon, the chosen criterion and a
-/// quiet down chevron. `name` is what the control is called ("Sort & Filter": its menu's title and
-/// its identity in the row), carried by the item and not drawn; `value` is the criterion, the only
-/// text it shows. The Library's row and the Collections page's wear this one declaration.
-pub(super) fn sort_control(name: impl Into<String>, value: impl Into<String>) -> HeaderItem {
-    HeaderItem {
-        value: Some(value.into()), glyph: Some(plx_ui::icons::Icon::Sort), value_only: true, fold_glyph: true,
-        fold_quiet: true, ..item(name)
-    }
 }
 
 /// The hairline between the places and the sort control. Not a stop.
@@ -226,11 +215,11 @@ impl LibraryScreen {
         widest.push(divider());
         let sort = self.sort_value(cx);
         let longest = H::listing(cx).sorts().iter().map(|sort| sort.label()).chain([sort])
-            .map(|label| (page_header::cluster_width(&[sort_control("", label)], cx.measure), label))
+            .map(|label| (page_header::cluster_width(&[HeaderItem::sort_control("", label)], cx.measure), label))
             .max_by(|a, b| a.0.total_cmp(&b.0))
             .map_or("", |(_, label)| label).to_owned();
-        right.push(sort_control(msg::library_header_sort_filter(), sort));
-        widest.push(sort_control(msg::library_header_sort_filter(), longest));
+        right.push(HeaderItem::sort_control(msg::library_header_sort_filter(), sort));
+        widest.push(HeaderItem::sort_control(msg::library_header_sort_filter(), longest));
         (right, widest)
     }
 

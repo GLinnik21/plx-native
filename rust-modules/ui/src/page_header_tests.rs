@@ -507,6 +507,47 @@ fn a_shared_row_hands_one_row_to_every_reader_until_the_key_changes() {
     assert_eq!((next.as_str(), first.as_str(), row.builds()), ("two", "one", 2), "a reader that holds the old row keeps it");
 }
 
+/// **A page that holds its row behind `&self` begins its swap from the rebuild itself.**
+/// `get_replacing` names the row that was replaced and the row that replaced it, once per rebuild:
+/// never for the first build, never while the key stands.
+#[test]
+fn a_shared_row_names_the_row_a_rebuild_replaced_and_only_then() {
+    let row = SharedRow::<String>::new();
+    let told = std::cell::RefCell::new(Vec::<(String, String)>::new());
+    let get = |key: u64, text: &str| row.get_replacing(key, || text.to_owned(), |old, new| told.borrow_mut().push((old.clone(), new.clone())));
+    let first = get(1, "one");
+    assert!(told.borrow().is_empty(), "the first build replaces nothing");
+    for _ in 0..20 { assert!(std::rc::Rc::ptr_eq(&first, &get(1, "one"))); }
+    assert!(told.borrow().is_empty(), "a key that stands replaces nothing");
+    assert_eq!(get(2, "two").as_str(), "two");
+    assert_eq!(*told.borrow(), [("one".to_owned(), "two".to_owned())], "the old row and the new, once");
+    get(2, "two");
+    get(1, "one again");
+    assert_eq!(told.borrow().len(), 2, "going back to an old key is a rebuild like any other");
+    assert_eq!(row.builds(), 3);
+}
+
+/// **The sort control is ONE declaration** ([`HeaderItem::sort_control`]): the Library, the
+/// Collections page and the Watchlist wear it. A stop; the sort icon, the criterion and the quiet
+/// chevron; its name carried and never drawn; no slot, so it ends at the text edge.
+#[test]
+fn the_sort_control_is_a_value_only_stop_that_ends_at_the_text_edge() {
+    let _g = plx_base::testlock::serial();
+    let sort = HeaderItem::sort_control("Sort & Filter".to_owned(), "Date added");
+    assert_eq!(sort, HeaderItem {
+        label: "Sort & Filter".into(), value: Some("Date added".into()), glyph: Some(Icon::Sort), value_only: true,
+        fold_glyph: true, fold_quiet: true, focusable: true, ..Default::default()
+    });
+    assert!(sort.value_slot.is_none() && !sort.place && !sort.readout && !sort.title && !sort.divider);
+    let page = PageHeader::new(PageHeaderSpec { right: vec![sort], ..Default::default() }, &[], &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    let at = layout.items.last().unwrap();
+    assert!(at.focusable, "the control is a stop");
+    assert!((at.text.x + at.text.w - TEXT_X1).abs() < 0.01, "it keeps the row's right text edge: {:?}", at.text);
+    let drawn = 8.0 * "Date added".len() as f32;
+    assert_eq!(at.text.w, GLYPH_SIZE + GLYPH_GAP + drawn + QUIET_FOLD_GAP + QUIET_FOLD_SIZE, "icon, criterion, chevron: the name has no room");
+}
+
 /// The right cluster with a slotted Collections control holding `value`, and its widest case.
 fn slotted(value: Option<&str>, readout: bool) -> (PageHeaderSpec, Vec<HeaderItem>) {
     let collections = |value: Option<&str>| HeaderItem { value_slot: Some("9,999".into()), ..item("Collections", value) };

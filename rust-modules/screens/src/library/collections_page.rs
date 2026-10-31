@@ -73,7 +73,7 @@ pub fn root_label(library: &str, kind: SecKind) -> String {
 /// this is the page's declaration of what is on it, and nothing else.
 pub fn header_spec(library: &str, kind: SecKind, declared_sorts: usize, sort_value: &str) -> PageHeaderSpec {
     let right = if sort_visible(declared_sorts) {
-        vec![super::header::sort_control(msg::browse_library_sort(), sort_value)]
+        vec![plx_ui::page_header::HeaderItem::sort_control(msg::browse_library_sort(), sort_value)]
     } else { Vec::new() };
     PageHeaderSpec { crumb: Some(Crumb::new(root_label(library, kind), msg::browse_kind_collections())), right, ..Default::default() }
 }

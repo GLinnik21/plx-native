@@ -1,14 +1,15 @@
 //! **PageHeader** — the one row of plain-text controls a library page wears under the top bar:
 //! the library names on the left (with a "+N" for the ones that do not fit) or a breadcrumb
 //! ("Films › Collections"), and the page's own controls on the right ("Collections · 12",
-//! "Recommended", "Sort & Filter · Title ▾"; the Library's own cluster is the board's: "Collections
+//! "Recommended", "≡ Date added ⌄"; the Library's own cluster is the board's: "Collections
 //! · 24 ›  Recommended ›  |  ≡ Date added ⌄", places with a chevron ([`HeaderItem::place`]), a
-//! [`HeaderItem::divider`] and a sort control that is a leading [`HeaderItem::glyph`], its criterion
-//! alone ([`HeaderItem::value_only`]: the name "Sort & Filter" is carried, never drawn) and a quiet
-//! down chevron ([`HeaderItem::fold_quiet`]); the criterion has NO slot, so the control ends at
-//! [`TEXT_X1`] and the places slide as its width changes). The Library, its Collections and
-//! Recommended pages and the Watchlist all wear THIS row: one layout, one draw, one focus group
-//! ([`HeaderFocus`]); every new item field defaults to the look the other pages have.
+//! [`HeaderItem::divider`] and a sort control ([`HeaderItem::sort_control`]) that is a leading
+//! [`HeaderItem::glyph`], its criterion alone ([`HeaderItem::value_only`]: the name "Sort & Filter"
+//! is carried, never drawn) and a quiet down chevron ([`HeaderItem::fold_quiet`]); the criterion has
+//! NO slot, so the control ends at [`TEXT_X1`] and the places slide as its width changes). The
+//! Library, its Collections and Recommended pages and the Watchlist all wear THIS row and the same
+//! sort control: one layout, one draw, one focus group ([`HeaderFocus`]); every new item field
+//! defaults to the look the other pages have.
 //!
 //! Geometry (spec): the text edges are x 96 and x 1771; a selected plate overhangs the text by
 //! [`OVERHANG`] (20), so the container is left 76, right 129, and a focus pill stands a constant
@@ -135,6 +136,24 @@ pub struct HeaderItem {
     /// item's text); the row keeps its one [`GAP`] between the divider's two neighbours and the
     /// divider adds its own width and two [`DIVIDER_MARGIN`]s to it.
     pub divider: bool,
+}
+
+impl HeaderItem {
+    /// **The sort control** (the board's "= Date added v"): the sort icon ([`Icon::Sort`]), the chosen
+    /// criterion and a quiet down chevron, and nothing else. `name` is what the control is called
+    /// ("Sort & Filter": its menu's title and its identity in the row, which the row's
+    /// [`HeaderSwap`] knows it by), carried by the item and never drawn ([`Self::value_only`]);
+    /// `value` is the criterion, the only text it shows (a narrowing filter is the page's read-out,
+    /// not part of it). It is a stop and has no slot: it ends at [`TEXT_X1`] and its neighbours
+    /// slide as the criterion's width changes. The ONE declaration of it: the Library's row, the
+    /// Collections page's Sort and the Watchlist's wear it, so one page's sort button cannot drift
+    /// from another's.
+    pub fn sort_control(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: name.into(), value: Some(value.into()), glyph: Some(Icon::Sort), value_only: true,
+            fold_glyph: true, fold_quiet: true, focusable: true, ..Default::default()
+        }
+    }
 }
 
 /// What the header is built from.
@@ -1216,9 +1235,24 @@ impl<R> SharedRow<R> {
 
     /// The row for `key`, built by `build` when the one held was built for another key.
     pub fn get(&self, key: u64, build: impl FnOnce() -> R) -> std::rc::Rc<R> {
-        let mut cache = self.0.borrow_mut();
-        cache.refresh(key, || std::rc::Rc::new(build()));
-        std::rc::Rc::clone(cache.row().expect("refreshed above"))
+        self.get_replacing(key, build, |_, _| {})
+    }
+
+    /// [`Self::get`], telling `replaced(old, new)` when a row that was held is replaced by a rebuild
+    /// (the first build replaces nothing), before the new row is handed out. A page whose readers
+    /// are `&self` begins its [`HeaderSwap`] there (`swap.begin(old, new)`): the one place that
+    /// sees every rebuild, from whichever question or paint asked first, so the frame that changes
+    /// the row already draws at the swap's first step and never as a cut. `replaced` runs after
+    /// the cache is released, but it must not rebuild this row itself.
+    pub fn get_replacing(&self, key: u64, build: impl FnOnce() -> R, replaced: impl FnOnce(&R, &R)) -> std::rc::Rc<R> {
+        let (row, old) = {
+            let mut cache = self.0.borrow_mut();
+            let old = if cache.is_current(key) { None } else { cache.row().cloned() };
+            cache.refresh(key, || std::rc::Rc::new(build()));
+            (std::rc::Rc::clone(cache.row().expect("refreshed above")), old)
+        };
+        if let Some(old) = old { replaced(&old, &row); }
+        row
     }
 
     /// How many times a row has been built.

@@ -156,10 +156,10 @@ fn a_criterion_in_every_language_takes_its_own_width_and_never_moves_the_names()
     // The page's own widest case holds the longest of the LISTING's sorts; these criteria are the
     // longest a language has, so the widest case is rebuilt around the longest of them, as it is
     // for a listing that declares them.
-    let width = |text: &str| plx_ui::page_header::cluster_width(&[super::header::sort_control("", text)], cx.measure);
+    let width = |text: &str| plx_ui::page_header::cluster_width(&[plx_ui::page_header::HeaderItem::sort_control("", text)], cx.measure);
     let longest = criteria.iter().copied().max_by(|a, b| width(a).total_cmp(&width(b))).unwrap();
     let last_widest = widest.len() - 1;
-    widest[last_widest] = super::header::sort_control(widest[last_widest].label.clone(), longest);
+    widest[last_widest] = plx_ui::page_header::HeaderItem::sort_control(widest[last_widest].label.clone(), longest);
     let names_budget = |items: &[plx_ui::page_header::HeaderItem]| {
         plx_ui::page_header::PageHeader::new(
             plx_ui::page_header::PageHeaderSpec { right: items.to_vec(), ..Default::default() }, &widest, cx.measure)
@@ -169,7 +169,7 @@ fn a_criterion_in_every_language_takes_its_own_width_and_never_moves_the_names()
     for criterion in criteria {
         let mut items = right.clone();
         let last = items.len() - 1;
-        items[last] = super::header::sort_control(items[last].label.clone(), criterion);
+        items[last] = plx_ui::page_header::HeaderItem::sort_control(items[last].label.clone(), criterion);
         let placed = names_budget(&items);
         assert_eq!(placed.left_budget, base.left_budget, "{criterion}: the names' room does not move");
         let sort = placed.items.iter().find(|r| r.slot == Slot::Right(last)).unwrap().text;
