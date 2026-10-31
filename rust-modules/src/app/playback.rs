@@ -1100,6 +1100,30 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     );
 }
 
+/// Watch a Live TV channel from Home. The resolve worker tunes it (`route::request_live`, several
+/// seconds) while the player shows its Resolving state; there is no resume point, no metadata to
+/// fetch and no PlayQueue, so the start ritual runs at 0 with the channel's name as the title.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn play_live_channel(
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    sid: plx_plex::plex::ServerId,
+    dvr: &str,
+    channel: &str,
+    title: &str,
+    hud_ms: u32,
+    ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+) {
+    if !plx_media::route::request_live(ps, bridge.metadata_mut(), plx_platform::devcaps::caps(), sid, dvr, channel, title) {
+        return;
+    }
+    // The previous item's caption would otherwise label the channel for the whole tune.
+    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(None));
+    start_playback(ps, pa, 0, Origin::Here, hud_ms, ret, pages, bridge);
+}
+
 // (`key_player_failed` stood here — the arm `app/run.rs` reached for a key arriving while a
 // terminal read-out owned the frame: OK opened the quality ladder, BACK closed the `…` popover if
 // one was up and otherwise left the playback, everything else was swallowed. Restructure phase 12

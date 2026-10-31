@@ -1791,6 +1791,31 @@ impl Src {
 struct HlsNet {
     hs: *mut HttpStream,
     curl: Option<Box<crate::curlio::CurlSource>>,
+    /// `Some` only for a Live TV session (armed by `hls_cursor_open` when the entry is a media
+    /// playlist): the stream state one segment leaves for the next. Rides here because this is the
+    /// one value every segment fetch of the session is lent.
+    carry: Option<SegmentCarry>,
+}
+
+/// What a Live TV segment hands the next one of the SAME playlist. A recording is the tuner's
+/// stream copied and cut every second whatever the GOP (measured on the TV 2026-10-21: segment 1
+/// probed `0x0` and opened mid-GOP), so its segments are cuts of ONE stream, not independently
+/// decodable pieces: a later one may carry no SPS/PPS, begin without an IDR, and time B-frames
+/// before its first packet. PMS's own transcodes are independent segments and never arm this.
+/// Scoped to the playlist's directory, so nothing crosses into another playlist.
+#[derive(Default)]
+struct SegmentCarry {
+    /// Empty until the first segment lands: armed, nothing to continue yet.
+    scope: String,
+    params: H264ParamSets,
+    raster: (i32, i32),
+    anchors: (Option<crate::hls::StreamAnchor>, Option<crate::hls::StreamAnchor>),
+}
+
+/// The directory a segment's playlist lives in — the scope of a [`SegmentCarry`].
+fn carry_scope(segment: &crate::hls::Segment) -> &str {
+    let path = segment.resource.path.split_once('?').map_or(segment.resource.path.as_str(), |(p, _)| p);
+    path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
 /// **The live-transfer terminal rule.** A partial response is right-censored evidence.  PMS may
@@ -4069,7 +4094,7 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
     ]
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct H264ParamSets {
     sps: Vec<u8>,
     pps: Vec<u8>,
@@ -4989,6 +5014,14 @@ unsafe fn hls_demux_segment(
     let path = auth
         .request_path(&segment.resource)
         .map_err(|_| HlsExit::Failed("segment credential rejected"))?;
+    let scope = carry_scope(segment).to_owned();
+    let live = net.carry.is_some();
+    let carried = net
+        .carry
+        .as_ref()
+        .filter(|c| c.scope == scope && c.raster.0 > 0 && c.raster.1 > 0)
+        .map(|c| (c.params.clone(), c.raster, c.anchors));
+    let continuing = carried.is_some();
     let request_started = runtime.request_started();
     let audio_expected =
         || SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed);
@@ -5145,12 +5178,24 @@ unsafe fn hls_demux_segment(
         None
     };
 
-    let video_width = (*vcp).width;
-    let video_height = (*vcp).height;
-    if video_width <= 0 || video_height <= 0 {
-        return Err(HlsExit::Failed("HLS segment has invalid video dimensions"));
+    let (mut video_width, mut video_height) = ((*vcp).width, (*vcp).height);
+    let (mut params, carried_raster, anchors) = carried.unwrap_or_default();
+    if continuing {
+        clock.continue_stream(anchors);
     }
-    let mut params = H264ParamSets::default();
+    if video_width <= 0 || video_height <= 0 {
+        // No SPS in this segment for the probe to read: the previous segment of this playlist
+        // named the raster, and its parameter sets go in front of this one's IDR.
+        let (w, h) = carried_raster;
+        if w <= 0 || h <= 0 {
+            return Err(HlsExit::Failed("HLS segment has invalid video dimensions"));
+        }
+        (video_width, video_height) = (w, h);
+        crate::player::log(&format!(
+            "hls: segment={} carries no SPS; raster {w}x{h} and parameter sets from the previous segment",
+            segment.sequence
+        ));
+    }
     let mut aubuf = Vec::with_capacity(4 * 1024 * 1024);
     let mut video_packets = 0usize;
     let mut audio_packets = 0usize;
@@ -5189,7 +5234,8 @@ unsafe fn hls_demux_segment(
                 &mut aubuf,
             )
             .map_err(HlsExit::Failed)?;
-            if video_packets == 0 && !is_key {
+            // A continued live segment is a cut of the stream the decoder is already inside.
+            if video_packets == 0 && !is_key && !continuing {
                 av_packet_unref(input.pkt);
                 return Err(HlsExit::Failed("HLS segment does not begin with an IDR"));
             }
@@ -5331,6 +5377,14 @@ unsafe fn hls_demux_segment(
     if let Some(cs) = input.state.src.take_curl() {
         net.curl = Some(cs);
     }
+    if live {
+        net.carry = Some(SegmentCarry {
+            scope,
+            params,
+            raster: (video_width, video_height),
+            anchors: clock.stream_anchors(),
+        });
+    }
     Ok(HlsSegmentOutput {
         aus,
         transfer,
@@ -5451,6 +5505,34 @@ struct HlsCursor {
     ended: bool,
     target_duration_secs: u64,
     start_applied: bool,
+    /// A Live TV session's playlist (the entry was already a media playlist): it starts
+    /// [`LIVE_START_CUSHION_NS`] behind its edge and is polled every [`LIVE_POLL`].
+    live: bool,
+}
+
+/// How far behind a live recording's edge playback starts. Measured on the TV 2026-10-21: started
+/// on the first one-second segment, the play rate held 1000‰ for 11 s and then swung between 667‰
+/// and 1400‰ with 400-600 ms video gaps — every late segment was a stall, because the whole buffer
+/// was the one segment in hand. Three seconds of recording absorb that jitter; the start costs the
+/// same three seconds once.
+const LIVE_START_CUSHION_NS: i64 = 3_000_000_000;
+
+/// A live playlist grows by one segment a second; polled at the VOD cadence (a full second for
+/// these) each new segment was found up to a second late, a second the cushion then has to pay.
+const LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether a live playlist holding `total_ns` of recording may start delivering segments.
+fn live_start_ready(live: bool, start_applied: bool, total_ns: i64) -> bool {
+    !live || start_applied || total_ns >= LIVE_START_CUSHION_NS
+}
+
+/// The wait before re-reading a playlist that had nothing new.
+fn playlist_poll(live: bool, target_duration_secs: u64) -> std::time::Duration {
+    if live {
+        LIVE_POLL
+    } else {
+        std::time::Duration::from_millis(target_duration_secs.saturating_mul(500).clamp(250, 1_000))
+    }
 }
 
 fn hls_cursor_open(
@@ -5468,6 +5550,24 @@ fn hls_cursor_open(
     // Parsed against where the fetch LANDED: a redirected master's children are relative to it.
     let (master_text, master_ms, master_landed) =
         hls_fetch_text(&master_resource, &auth, aq, net, reserve)?;
+    if crate::hls::is_media_playlist(&master_text) {
+        // A Live TV session: the URL is the media playlist itself, read again by the first
+        // `hls_cursor_next` like any variant's. No declared rate exists for it.
+        crate::player::log(&format!("hls: entry is a media playlist fetch_ms={master_ms}"));
+        net.carry = Some(SegmentCarry::default());
+        return Ok(HlsCursor {
+            publishes_duration,
+            declared_bps: 0,
+            auth,
+            media: master_landed,
+            tracker: crate::hls::MediaTracker::default(),
+            pending: std::collections::VecDeque::new(),
+            ended: false,
+            target_duration_secs: 1,
+            start_applied: false,
+            live: true,
+        });
+    }
     let master = crate::hls::parse_master(&master_landed, &master_text).map_err(|e| {
         crate::player::log(&format!("hls: master rejected: {e}"));
         HlsExit::Failed("HLS master rejected")
@@ -5486,6 +5586,7 @@ fn hls_cursor_open(
         ended: false,
         target_duration_secs: 1,
         start_applied: false,
+        live: false,
     })
 }
 
@@ -5523,44 +5624,47 @@ fn hls_cursor_next(
         if cursor.publishes_duration {
             SHARED.duration_ns.store(total_ns, Ordering::Relaxed);
         }
-        let mut refresh = cursor.tracker.apply(&media).map_err(|e| {
-            crate::player::log(&format!("hls: refresh rejected: {e}"));
-            HlsExit::Failed("HLS media refresh rejected")
-        })?;
-        let mut skipped = 0usize;
-        if !cursor.start_applied {
-            let first_sequence = media
-                .segments
-                .get(start_index)
-                .map(|segment| segment.sequence)
-                .unwrap_or_else(|| {
-                    media
-                        .media_sequence
-                        .saturating_add(media.segments.len() as u64)
-                });
-            let before = refresh.new_segments.len();
-            refresh
-                .new_segments
-                .retain(|segment| segment.sequence >= first_sequence);
-            skipped = before.saturating_sub(refresh.new_segments.len());
-            cursor.start_applied = true;
+        // Not one segment of a live recording leaves before the cushion exists; the tracker is left
+        // untouched, so the read that has it delivers every segment from the first.
+        let holding = !live_start_ready(cursor.live, cursor.start_applied, total_ns);
+        if holding {
+            crate::player::log(&format!("hls: live start holds for its cushion total_ms={}", total_ns / 1_000_000));
         }
-        crate::player::log(&format!(
-            "hls: refresh new={} skipped={} total_ms={} end={} fetch_ms={media_ms}",
-            refresh.new_segments.len(),
-            skipped,
-            total_ns / 1_000_000,
-            refresh.end_list
-        ));
-        cursor.pending.extend(refresh.new_segments);
-        cursor.ended = refresh.end_list;
+        if !holding {
+            let mut refresh = cursor.tracker.apply(&media).map_err(|e| {
+                crate::player::log(&format!("hls: refresh rejected: {e}"));
+                HlsExit::Failed("HLS media refresh rejected")
+            })?;
+            let mut skipped = 0usize;
+            if !cursor.start_applied {
+                let first_sequence = media
+                    .segments
+                    .get(start_index)
+                    .map(|segment| segment.sequence)
+                    .unwrap_or_else(|| {
+                        media
+                            .media_sequence
+                            .saturating_add(media.segments.len() as u64)
+                    });
+                let before = refresh.new_segments.len();
+                refresh
+                    .new_segments
+                    .retain(|segment| segment.sequence >= first_sequence);
+                skipped = before.saturating_sub(refresh.new_segments.len());
+                cursor.start_applied = true;
+            }
+            crate::player::log(&format!(
+                "hls: refresh new={} skipped={} total_ms={} end={} fetch_ms={media_ms}",
+                refresh.new_segments.len(),
+                skipped,
+                total_ns / 1_000_000,
+                refresh.end_list
+            ));
+            cursor.pending.extend(refresh.new_segments);
+            cursor.ended = refresh.end_list;
+        }
         if cursor.pending.is_empty() && !cursor.ended {
-            let poll = std::time::Duration::from_millis(
-                cursor
-                    .target_duration_secs
-                    .saturating_mul(500)
-                    .clamp(250, 1_000),
-            );
+            let poll = playlist_poll(cursor.live, cursor.target_duration_secs);
             let reserve_snapshot = reserve
                 .as_deref_mut()
                 .and_then(|reserve| reserve.active(false));
@@ -6894,7 +6998,7 @@ fn hls_demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
-    let mut net = HlsNet { hs, curl: None };
+    let mut net = HlsNet { hs, curl: None, carry: None };
     let mut cursor = hls_cursor_open(origin, path, aq, &mut net, true, None)?;
     if abr.is_some() {
         SHARED.dg_abr_declared_kbps.store(

@@ -103,6 +103,8 @@ impl SegmentTimeline {
             next_start_ns,
             video_origin_ns: None,
             audio_origin_ns: None,
+            video_stream: None,
+            audio_stream: None,
         })
     }
 
@@ -128,6 +130,18 @@ pub struct SegmentClock {
     next_start_ns: i64,
     video_origin_ns: Option<i64>,
     audio_origin_ns: Option<i64>,
+    /// Set by [`Self::continue_stream`]: this segment is a cut of the stream an earlier segment
+    /// began, and its timestamps are read against that one's anchors instead of its own first packet.
+    video_stream: Option<StreamAnchor>,
+    audio_stream: Option<StreamAnchor>,
+}
+
+/// One lane's anchor in a continuous stream: the raw timestamp of the first packet of the segment
+/// that began it, and where that segment sat on the content timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamAnchor {
+    raw_ns: i64,
+    base_ns: i64,
 }
 
 impl SegmentClock {
@@ -146,11 +160,42 @@ impl SegmentClock {
     /// first packet observed makes the later-discovered lane inherit an arbitrary packet-order
     /// offset. The controller consumes only this content timeline, never raw FFmpeg PTS.
     pub fn normalize_video(&mut self, raw_ns: i64) -> MediaTimeMs {
-        Self::normalize_from(self.base_ns, &mut self.video_origin_ns, raw_ns)
+        match self.video_stream {
+            Some(anchor) => anchor.place(raw_ns),
+            None => Self::normalize_from(self.base_ns, &mut self.video_origin_ns, raw_ns),
+        }
     }
 
     pub fn normalize_audio(&mut self, raw_ns: i64) -> MediaTimeMs {
-        Self::normalize_from(self.base_ns, &mut self.audio_origin_ns, raw_ns)
+        match self.audio_stream {
+            Some(anchor) => anchor.place(raw_ns),
+            None => Self::normalize_from(self.base_ns, &mut self.audio_origin_ns, raw_ns),
+        }
+    }
+
+    /// The anchors a LATER segment of the same continuous stream continues from: the ones this
+    /// segment continued itself, or — for the stream's first segment — its own first packets.
+    pub fn stream_anchors(&self) -> (Option<StreamAnchor>, Option<StreamAnchor>) {
+        let own = |origin: Option<i64>| origin.map(|raw_ns| StreamAnchor { raw_ns, base_ns: self.base_ns });
+        (
+            self.video_stream.or(own(self.video_origin_ns)),
+            self.audio_stream.or(own(self.audio_origin_ns)),
+        )
+    }
+
+    /// Read this segment as a cut of the stream `anchors` began — a Live TV recording, which PMS
+    /// cuts every second whatever the GOP, so a segment may open mid-GOP with B-frames timed before
+    /// its first packet. Per-segment anchoring would clamp those onto the boundary (`max(0)`) and
+    /// reset any drift each second; one anchor per lane keeps the stream's own timing.
+    pub fn continue_stream(&mut self, anchors: (Option<StreamAnchor>, Option<StreamAnchor>)) {
+        (self.video_stream, self.audio_stream) = anchors;
+    }
+}
+
+impl StreamAnchor {
+    fn place(self, raw_ns: i64) -> MediaTimeMs {
+        let relative = raw_ns.saturating_sub(self.raw_ns);
+        MediaTimeMs(self.base_ns.saturating_add(relative).max(0) / 1_000_000)
     }
 }
 
@@ -465,6 +510,22 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Whether `text` is already a MEDIA playlist (segments, no variants). A Live TV session's playlist
+/// is one: PMS serves `/livetv/sessions/{uuid}/{client}/index.m3u8` with no master in front of it
+/// (`docs/pms-api.md` §10), so the URL a route hands over is its own single variant. Shape only;
+/// [`parse_media`] still validates every line.
+pub fn is_media_playlist(text: &str) -> bool {
+    let mut lines = text.lines().map(str::trim);
+    lines.next() == Some("#EXTM3U") && {
+        let (mut segments, mut variants) = (false, false);
+        for line in lines {
+            segments |= line.starts_with("#EXTINF:");
+            variants |= line.starts_with("#EXT-X-STREAM-INF:");
+        }
+        segments && !variants
+    }
+}
 
 pub fn parse_master(source: &Resource, text: &str) -> Result<MasterPlaylist, Error> {
     let lines = playlist_lines(text)?;
@@ -1067,6 +1128,52 @@ mod tests {
             text.push_str("#EXT-X-ENDLIST\n");
         }
         parse_media(&source, &text).unwrap()
+    }
+
+    // A Live TV session's playlist as PMS 1.43.3 served it (2026-10-21): no master, no
+    // PLAYLIST-TYPE, no ENDLIST while the channel plays, one-second segments named from zero.
+    const LIVE: &str = "#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-TARGETDURATION:3\n#EXT-X-MEDIA-SEQUENCE:0\n\
+        #EXT-X-PROGRAM-DATE-TIME:2026-10-21T07:54:42.854397846Z\n#EXTINF:0.760000, nodesc\n00000.ts\n\
+        #EXTINF:1.000000, nodesc\n00001.ts\n#EXTINF:1.000000, nodesc\n00002.ts\n";
+
+    #[test]
+    fn a_continued_live_segment_keeps_the_stream_s_timing_across_the_cut() {
+        let mut timeline = SegmentTimeline::default();
+        let mut first = timeline.begin(Duration::from_millis(760)).unwrap();
+        assert_eq!(first.normalize_video(10_000_000_000), MediaTimeMs(0));
+        assert_eq!(first.normalize_audio(9_980_000_000), MediaTimeMs(0));
+        assert_eq!(first.normalize_video(10_720_000_000), MediaTimeMs(720));
+        timeline.commit(first);
+        let anchors = first.stream_anchors();
+
+        let mut second = timeline.begin(Duration::from_secs(1)).unwrap();
+        second.continue_stream(anchors);
+        // mid-GOP: a P-frame first, then a B-frame timed before it — both on the stream's own clock
+        assert_eq!(second.normalize_video(10_800_000_000), MediaTimeMs(800));
+        assert_eq!(second.normalize_video(10_760_000_000), MediaTimeMs(760), "not clamped onto the cut");
+        assert_eq!(second.normalize_audio(10_780_000_000), MediaTimeMs(800));
+        assert_eq!(second.stream_anchors(), anchors, "the third segment continues the same anchors");
+
+        timeline.commit(second);
+        // without continuation the same B-frame is clamped onto the boundary, as PMS transcodes want
+        let mut independent = timeline.begin(Duration::from_secs(1)).unwrap();
+        independent.normalize_video(10_800_000_000);
+        assert_eq!(independent.normalize_video(10_760_000_000), MediaTimeMs(1_760));
+    }
+
+    #[test]
+    fn a_live_session_playlist_is_its_own_variant_and_parses_as_growing_media() {
+        assert!(is_media_playlist(LIVE));
+        assert!(!is_media_playlist(
+            "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nsession/index.m3u8\n"
+        ));
+        assert!(!is_media_playlist("#EXTINF:1.0,\n00000.ts\n"), "no header");
+        let at = source("/livetv/sessions/9b9fe727-0000/clientid/index.m3u8?offset=-1.000000&X-Plex-Token=secret");
+        let media = parse_media(&at, LIVE).unwrap();
+        assert_eq!((media.media_sequence, media.segments.len(), media.end_list), (0, 3, false));
+        assert_eq!(media.playlist_type, None);
+        assert_eq!(media.segments[1].resource.path, "/livetv/sessions/9b9fe727-0000/clientid/00001.ts");
+        assert_eq!(media.preferred_start_index().unwrap(), 0);
     }
 
     #[test]

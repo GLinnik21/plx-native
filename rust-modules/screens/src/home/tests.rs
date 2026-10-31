@@ -164,11 +164,12 @@ fn every_tab_pill_round_trips_through_the_focus_packing() {
         (STRIP_SEARCH_ELEM, HomeReq::Tab(HomeTab::Search)),
         (STRIP_ACCOUNT_ELEM, HomeReq::Account),
         (STRIP_ACCOUNT_ELEM + 1, HomeReq::Tab(HomeTab::Watchlist)),
+        (STRIP_ACCOUNT_ELEM + 2, HomeReq::Tab(HomeTab::LiveTv)),
     ];
     for (elem, want) in cases {
         assert_eq!(HomeScreen::request_for_strip(elem), Some(want));
     }
-    assert_eq!(HomeScreen::request_for_strip(STRIP_ACCOUNT_ELEM + 2), None);
+    assert_eq!(HomeScreen::request_for_strip(STRIP_ACCOUNT_ELEM + 3), None);
     for page_key in [HERO_PLAY_ELEM, HERO_INFO_ELEM, FIRST_ITEM_ELEM] {
         assert_eq!(HomeScreen::request_for_strip(page_key), None);
     }
@@ -2090,6 +2091,34 @@ fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
     let _press = deck_press_is(DeckPress::Details);
     assert!(!deck_label(true).glyph);
     assert!(!deck_label(false).glyph);
+}
+
+#[test]
+fn ok_on_a_live_tv_channel_tunes_it_and_holding_it_opens_no_item_menu() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let channel = plx_plex::plex::livetv::LiveChannel {
+        dvr: "7".into(),
+        channel: "C101.242.ersatztv.org".into(),
+        vcn: "101".into(),
+        name: "Family Channel".into(),
+        thumb: String::new(),
+        now: "Family Show".into(),
+        ends_at: 0,
+    };
+    plx_data::pms::seed_live_for_test(&mut state, &adapter, 1, &[channel]);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    let card = first_card(&s);
+    let (_, ok, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+    assert!(has_home(&ok, |r| matches!(r, HomeReq::Tune { dvr, channel, title, .. }
+        if dvr == "7" && channel == "C101.242.ersatztv.org" && title == "Family Channel")));
+    assert!(!has_home(&ok, |r| matches!(r, HomeReq::Play { .. } | HomeReq::Detail { .. })));
+    let (_, held, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::PressHold(plx_machine::machine::PressId(2)));
+    assert!(!has_home(&held, |r| matches!(r, HomeReq::ItemMenu { .. })), "a channel is no library item");
 }
 
 #[test]

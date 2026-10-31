@@ -601,14 +601,13 @@ interval and halved idle sleeps, passed `plxnative-rec check`, and were installe
 `tools/plxnative-rec rerecord`, anchors retained. `make check-replay` replays all three with
 `verdict=SAME` in Targets and Resolve and every difference counter at zero.
 
-The player's BACK offer dismissal (`HudState::dismissed_offer`, after `last_offer` in
-`PlayerScreen`'s canon and shape string; `SCREEN_SHAPES_PIN` `0xb633_b65b_ed93_ca93` ->
-`0xe208_abdc_a1df_2158`) moved the state shape from 12149748892022442062 to
-2549725339362397449. The census is part of the fingerprint even though no anchor mounts the player,
-so all three anchors were refused on load. They were recorded again against the synthetic server
-with `tests/focusfp.sh --rec --only 1,6,12` and installed with `tools/plxnative-rec rerecord`,
-anchors retained. The first `6-settings-family` recording ran past the reader's record budget
-(`Malformed { what: "record JSON/budget" }`), so it was recorded once more on the default settle
-and imported over its own fixture with `anchor: true` restored; the shape had already moved, so
-this was still that bump's re-record, not a rebaseline. `tests/replay_fixtures.py` replays all
-three with `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+The Live TV page added `AppArg::LiveTv` to `ARG_SHAPE` and appended `LiveTvScreen::SHAPE` to the
+screen census (`SCREEN_SHAPES_PIN` `0x54a0_99c6_78cc_98c9` on the tree merged with `main`), which
+moved the state shape from 2452334830893428010 to 8567449098204471100. All three anchors were
+refused on load, then recorded again against the synthetic server with `FOCUS_STEP=0.35
+FOCUS_SETTLE=1 FOCUS_BOOT_SETTLE=1 tests/focusfp.sh --rec --only 1,6,12` on the 120 Hz display
+(the default cadence overran the reader's record budget in all three), and installed with
+`tools/plxnative-rec rerecord`, anchors retained. The strip's new `TV` pill enters the measurement
+table, so the closed alphabet gains the literal `TV` (`live_tv_tab`). `tests/replay_fixtures.py`
+replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero
+on three consecutive runs.

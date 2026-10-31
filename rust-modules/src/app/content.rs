@@ -477,6 +477,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     library_requests(app, fr.now);
     search_requests(app);
     watchlist_requests(app);
+    livetv_requests(app);
     // The player's overlays are surfaces on its own stack, so what they decide reaches the
     // loop the same way every other owned screen's decision does — as requests, drained here,
     // after the dispatcher and before the frame's own arms (`playback::player_requests`).
@@ -670,6 +671,9 @@ fn home_requests(app: &mut App, now: u32) {
                 activate_home_item(app, source, entry, sid, &rk, Some(resume_ns), ret, now),
             HomeReq::Detail { sid, rk } =>
                 activate_home_item(app, source, entry, sid, &rk, None, ret, now),
+            HomeReq::Tune { sid, dvr, channel, title } => super::playback::play_live_channel(
+                &mut app.player.session, &mut app.adapters.player, sid, &dvr, &channel, &title,
+                HUD_LINGER_MS, Some(ret), &mut app.pages, &mut app.bridge),
             HomeReq::ItemMenu { sid, rk } => {
                 let snapshot = app.bridge.hubs_snapshot();
                 let Some(item) = home_item(snapshot.view(), sid, &rk)
@@ -770,6 +774,35 @@ fn watchlist_requests(app: &mut App) {
             continue;
         }
         watchlist_request(&mut app.pages, &mut app.bridge, entry, request, ret, &mut app.ok_armed);
+    }
+}
+
+/// **The Live TV page's requests**, gated like the Watchlist's (the asking page still holds input
+/// on its route): a channel's tune starts the player over the page, so BACK out of the player lands
+/// back on it; the strip and BACK navigate as from the Watchlist.
+fn livetv_requests(app: &mut App) {
+    use plx_screens::livetv::LiveTvOut;
+    for (source, request, ret) in app.bridge.take_livetv_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        if app.route() != AppArg::LiveTv || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) {
+            continue;
+        }
+        match request {
+            LiveTvOut::Tune { sid, dvr, channel, title } => super::playback::play_live_channel(
+                &mut app.player.session, &mut app.adapters.player, sid, &dvr, &channel, &title,
+                HUD_LINGER_MS, Some(ret), &mut app.pages, &mut app.bridge),
+            LiveTvOut::Back => bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, None, Some(ret)),
+            LiveTvOut::Tab(HomeTab::LiveTv) => {}
+            LiveTvOut::Tab(tab) => {
+                if !app.bridge.search_tab_available(tab) { continue; }
+                match tab {
+                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
+                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
+                }
+            }
+            LiveTvOut::Account => chip_activate(&mut app.pages),
+        }
     }
 }
 

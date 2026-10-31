@@ -27,7 +27,7 @@ fn content_instances_compare_item_identity_and_keep_distinct_entries() {
 #[test]
 fn a_page_arg_wears_the_chrome_its_own_table_says() {
     for r in every_route() {
-        let want = if matches!(r, AppArg::Home | AppArg::Search | AppArg::Watchlist) || r.is_library_family() {
+        let want = if matches!(r, AppArg::Home | AppArg::Search | AppArg::Watchlist | AppArg::LiveTv) || r.is_library_family() {
             Chrome::TabBar
         } else {
             Chrome::None

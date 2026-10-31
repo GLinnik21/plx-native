@@ -948,6 +948,7 @@ fn request(sid: ServerId, preview: bool) -> PlaybackRequest {
         title: "Episode".into(),
         ctx: String::new(),
         preview,
+        live: None,
         version: None,
     }
 }
