@@ -52,7 +52,8 @@ pub(crate) use plx_base::hold::{clamp_hold, HOLD_ROWS};
 /// raw index names. Holding the window to this size keeps the two from ever disagreeing.
 pub const MAX_SHELF_ITEMS: usize = 24;
 
-/// `PmsMovie::kind` of a TV show (a movie is 0, a season 2, an episode 3).
+/// `PmsMovie::kind` of a movie, a TV show, a season and an episode (a collection is 4).
+pub const KIND_MOVIE: c_int = 0;
 pub const KIND_SHOW: c_int = 1;
 pub const KIND_SEASON: c_int = 2;
 pub const KIND_EPISODE: c_int = 3;

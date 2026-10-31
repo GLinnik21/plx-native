@@ -1379,6 +1379,7 @@ mod art_admission_tests { include!("art_admission_tests.rs"); }
 mod lookahead_tests { include!("lookahead_tests.rs"); }
 
 mod grid_motion_tests { include!("grid_motion_tests.rs"); }
+mod sort_value_kinds_tests { include!("sort_value_kinds_tests.rs"); }
 mod keys_window_tests { include!("keys_window_tests.rs"); }
 
 /// BACK from deep in the document returns to the top on the scroll SPRING, the way Home's BACK
