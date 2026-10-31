@@ -4582,7 +4582,6 @@ mod lifecycle_regression_tests {
     #[test]
     fn back_over_an_offer_swaps_in_the_discs_on_the_same_frame() {
         use plx_appkit::player_hud::{control_elem, geometry::GROUP_ROW, ControlSlot};
-        use plx_data::metadata::Playhead;
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!("SKIPPED back_over_an_offer_swaps_in_the_discs_on_the_same_frame: \
@@ -4615,10 +4614,14 @@ mod lifecycle_regression_tests {
             Some(control_elem(primary)),
             "the FocusEngine followed the cursor, so OK presses what is drawn"
         );
-        let head = Playhead { playing: true, pos_ns: 30_000_000_000, dur_ns: 0 };
         assert!(
-            rig.app.bridge.metadata_view().active_marker(head).is_none(),
-            "the segment is retired in the store, so no later frame can offer it again"
+            plx_media::player::is_playing(&rig.app.player.session),
+            "the rig is still Playing, so a Discs row below can only come from the store"
+        );
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(
+            fr.ctrl.is_discs(),
+            "the segment is retired in the store, so the next frame's row is the discs, not the offer again"
         );
     }
 

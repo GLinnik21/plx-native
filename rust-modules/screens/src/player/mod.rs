@@ -2831,6 +2831,41 @@ mod step_ladder_tests {
         assert_eq!(reqs, vec![PlayerReq::Exit], "the second BACK leaves");
     }
 
+    /// A server-shaped Skip Intro segment.
+    fn intro() -> plx_data::metadata::Marker {
+        plx_data::metadata::Marker {
+            kind: plx_data::metadata::MarkerKind::Intro,
+            start_ms: 0,
+            end_ms: 60_000,
+            final_seg: false,
+        }
+    }
+
+    /// A final credits segment, which is what Up Next offers over.
+    fn credits() -> plx_data::metadata::Marker {
+        plx_data::metadata::Marker {
+            kind: plx_data::metadata::MarkerKind::Credits,
+            start_ms: 60_000,
+            end_ms: 120_000,
+            final_seg: true,
+        }
+    }
+
+    /// A page whose control row offers `marker`, with the ring on the offer and the transport up,
+    /// so BACK is about what is drawn.
+    fn offered(marker: plx_data::metadata::Marker, has_next: bool) -> PlayerScreen {
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        page.slot = player_hud::slot_for(
+            Some(marker),
+            has_next,
+            plx_media::route::NextEpisodeMode::Countdown,
+        );
+        page.hud.nav.focus = GROUP_ROW;
+        page.hud.nav.btn = page.slot.primary_btn();
+        page.hud.until = 5_000;
+        page
+    }
+
     /// **BACK over a Skip / Up Next offer puts the discs back and keeps the film playing.** The
     /// offer replaces the transport row, so without this the Subtitles/Audio discs are unreachable
     /// for the whole intro. The SEGMENT is retired in the metadata store, and the ring stays on
@@ -2838,31 +2873,9 @@ mod step_ladder_tests {
     /// the controls.
     #[test]
     fn back_over_a_skip_or_up_next_offer_restores_the_discs_without_hiding_the_transport() {
-        use plx_data::metadata::{Marker, MarkerKind};
         let _g = plx_base::testlock::serial();
-        let intro = Marker {
-            kind: MarkerKind::Intro,
-            start_ms: 0,
-            end_ms: 60_000,
-            final_seg: false,
-        };
-        let credits = Marker {
-            kind: MarkerKind::Credits,
-            start_ms: 60_000,
-            end_ms: 120_000,
-            final_seg: true,
-        };
-        for (marker, has_next) in [(intro, false), (credits, true)] {
-            let mut page =
-                PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-            page.slot = player_hud::slot_for(
-                Some(marker),
-                has_next,
-                plx_media::route::NextEpisodeMode::Countdown,
-            );
-            page.hud.nav.focus = GROUP_ROW;
-            page.hud.nav.btn = page.slot.primary_btn();
-            page.hud.until = 5_000; // the transport is up, so BACK is about what is drawn
+        for (marker, has_next) in [(intro(), false), (credits(), true)] {
+            let mut page = offered(marker, has_next);
             let (handled, reqs) = bound_press(&mut page, 0, WCODE_BACK);
             assert_eq!(handled, Handled::Yes);
             assert_eq!(reqs, vec![PlayerReq::DismissOffer(marker)], "{marker:?}");
@@ -2878,23 +2891,9 @@ mod step_ladder_tests {
     /// restarted on the play/pause disc — the bug a hand-parked cursor hides.
     #[test]
     fn dismissing_an_offer_re_seats_the_engine_on_the_returning_discs_primary() {
-        use plx_data::metadata::{Marker, MarkerKind};
         let _g = plx_base::testlock::serial();
-        let credits = Marker {
-            kind: MarkerKind::Credits,
-            start_ms: 60_000,
-            end_ms: 120_000,
-            final_seg: true,
-        };
-        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.slot = player_hud::slot_for(
-            Some(credits),
-            true,
-            plx_media::route::NextEpisodeMode::Countdown,
-        );
-        page.hud.nav.focus = GROUP_ROW;
-        page.hud.nav.btn = page.slot.primary_btn();
-        page.hud.until = 5_000;
+        let credits = credits();
+        let mut page = offered(credits, true);
         let mut rig = Rig::on(&page, ENTRY);
         rig.reseat(&mut page, GROUP_ROW);
         rig.seat_on(player_hud::control_elem(page.slot.primary_btn()));
@@ -2915,14 +2914,9 @@ mod step_ladder_tests {
     /// offer dismisses it. From the scrubber, the press hides the transport as it always did.
     #[test]
     fn back_off_the_offer_row_still_hides_the_transport() {
-        use plx_data::metadata::{Marker, MarkerKind};
+        use plx_data::metadata::MarkerKind;
         let _g = plx_base::testlock::serial();
-        let intro = Marker {
-            kind: MarkerKind::Intro,
-            start_ms: 0,
-            end_ms: 60_000,
-            final_seg: false,
-        };
+        let intro = intro();
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         page.slot = player_hud::slot_for(
             Some(intro),
