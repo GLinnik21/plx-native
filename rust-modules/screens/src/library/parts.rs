@@ -711,7 +711,7 @@ mod caption_cache_review_tests {
         let _guard = plx_base::testlock::serial();
         let _locale = language_on_this_thread_for_test(Preference::En);
         let listing = ListingSnapshot::fixture(plx_plex::plex::ServerId::from_raw(0),
-            vec![Some(PmsMovie { title: "Original".into(), year: 1997, ..Default::default() })], vec![]);
+            vec![Some(PmsMovie { title: "Original".into(), year: 1997, ..Default::default() })], vec![]).with_sort_key("year");
         let cache = std::cell::RefCell::new(CaptionCache::default());
         let indexes = GridIndexes::default();
         let mut src = GridSrc { total: 1, windows: &[], indexes: &indexes, view: listing.view(),
@@ -723,7 +723,7 @@ mod caption_cache_review_tests {
         assert_eq!(cache.borrow().labels.len(), 1);
         cache.borrow_mut().sort = "obsoleteSort".into();
         src.with_tile_label(0, |_| {});
-        assert_eq!(cache.borrow().sort, "titleSort");
+        assert_eq!(cache.borrow().sort, "year");
         {
             let _ru = language_on_this_thread_for_test(Preference::Ru);
             src.with_tile_label(0, |_| {});
