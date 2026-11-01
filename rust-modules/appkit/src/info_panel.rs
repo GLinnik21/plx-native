@@ -1,15 +1,19 @@
-//! The Info section's data and geometry: what the playing item says about itself (`info_content`, the
-//! meta line's chips, the live playback fact), the card's rect and its action column. The card is drawn
-//! by the HUD's Info section (`player_hud::sections`); the screen's keys and focus are the player
-//! screen's, over the compiled state's buttons.
+//! The Info section's data: what the playing item says about itself (`info_content`, the meta line's
+//! chips, the live playback fact) and the action labels. The card is drawn by the HUD's Info section
+//! (`player_hud::sections`); the screen's keys and focus are the player screen's, over the compiled
+//! state's buttons. The retired hand-written card's geometry (`card_geometry`, `button_rect`) stays under
+//! `cfg(test)`, the reference the compiled card is pinned to.
 use crate::chip_row::{Chip, ChipRow};
 use plx_data::metadata;
+#[cfg(test)]
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::theme;
+#[cfg(test)]
 use plx_ui::Rect;
 
 /// The action column's length: `actions` always returns two labels, only their TEXT depends on
 /// `is_episode`. [`button_rect`] sizes the column from this constant instead of building the array.
+#[cfg(test)]
 const N_ACTIONS: usize = 2;
 
 /// The ratingKey of the page the playing item belongs to: the show for an episode, the movie
@@ -49,6 +53,7 @@ pub(crate) fn actions(meta: metadata::MetadataView<'_>) -> [&'static str; 2] {
 /// The card's own rect and its side padding — **pure**, since every input is a fixed layout
 /// constant (`SCR_W`/`SCR_H` alone). Shared by the compiled card (the still/title/synopsis layout) and
 /// [`button_rect`] (the action column), so the two formulas can never drift apart.
+#[cfg(test)]
 pub(crate) fn card_geometry() -> (Rect, f32) {
     let cx = 80.0f32;
     let cw = SCR_W - 160.0;
@@ -60,6 +65,7 @@ pub(crate) fn card_geometry() -> (Rect, f32) {
 /// The `i`-th action button's rect, widened for the longest translated action label. The compiled
 /// state's buttons stand at it (`compile_tests`), so a stop built from it lands on the pixel the button
 /// is drawn at.
+#[cfg(test)]
 pub(crate) fn button_rect(i: usize, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let (card, pad) = card_geometry();
     let labels = [
