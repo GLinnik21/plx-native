@@ -2248,11 +2248,18 @@ mod sections {
         }
         assert!(appear_at.is_some() && appear_at == limit_at, "open: appear {appear_at:?}, limit {limit_at:?}");
         assert_eq!(limit(&mut run), 656.0, "settled on Info's limit");
-        run.tap(Key::Back);
-        // `tap` leaves the spring a few frames into the fade: the limit has started home with the section,
-        // neither a frame sooner nor later
+        // BACK on a frame of its own, as `the_fade_starts_on_the_frame_after_the_back...` does: the frame the key
+        // lands on moves neither the section nor the limit, the next frame moves both
+        let now = run.now + 16;
+        run.now = now;
+        let ps = plx_media::route::idle_session_for_test();
+        run.screen().hud.note_fresh_press(ps, now, false);
+        run.frame(now, vec![key(Key::Back, tick(now))]);
+        assert!(run.open_sections().is_empty(), "BACK closed it");
+        assert_eq!((run.appear(Section::Info), limit(&mut run)), (1.0, 656.0), "the dismissal frame moves nothing");
+        run.frame(now + 16, vec![]);
         let (a, l) = (run.appear(Section::Info), limit(&mut run));
-        assert!(a < 1.0 && l > 656.0, "the section and the limit are both on their way: appear {a}, limit {l}");
+        assert!(a < 1.0 && l > 656.0, "the next frame takes both first steps: appear {a}, limit {l}");
         let (mut appear_at, mut limit_at) = (None, None);
         for i in 0..90 {
             run.frames(1);

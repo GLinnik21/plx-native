@@ -1907,6 +1907,27 @@ mod caption_rise_pins {
         }
     }
 
+    /// **A section held at appear 0 for several frames holds the limit for as many.** The appear spring stays
+    /// held while the frame's text is still being rasterised (`surface_text_pending`, bounded at 100 ms), and
+    /// the snapshot fence does the same through `snapshot_pending`; the limit must wait with it and start on the
+    /// frame the section does. The text latch is the one a host test can drive.
+    #[test]
+    fn a_section_held_for_several_frames_holds_the_limit_with_it() {
+        plx_gfx::text::latch_surface_text_pending(true);
+        let mut rig = classic();
+        rig.open(OPEN_INFO);
+        let (mut held, mut started) = (0, None);
+        for i in 0..40 {
+            rig.frame();
+            let (appear, rise) = (rig.m.section_appear(Section::Info), rig.m.caption_rise()[LOW]);
+            assert_eq!(appear > 0.0, rise > 0.0, "frame {i}: appear {appear}, rise {rise}");
+            if appear == 0.0 { held += 1 } else if started.is_none() { started = Some(i) }
+        }
+        plx_gfx::text::latch_surface_text_pending(false);
+        assert!(held >= 3, "the hold lasted {held} frames: the pin needs a multi-frame hold");
+        assert!(started.is_some(), "and the section started once the bound was up");
+    }
+
     /// The limit's first moving frame is the section's first appear frame, on open and on close, and it passes
     /// neither end (critically damped).
     #[test]
