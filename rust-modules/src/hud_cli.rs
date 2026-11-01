@@ -32,7 +32,8 @@
 //! television's: for text fit the TV's own compile decides (`docs/hud-plugins.md`, "Text fit"). The COST is
 //! another matter: its ceilings are the television's own maxima, taken with the whole-pixel advances, and
 //! an advance a few pixels off moves `blended_px` and `texture_bytes` past a ceiling the television
-//! accepts (the classic's Up Next and Info states, 4 of the 12 terms). So the cost is priced by
+//! accepts (the classic's Up Next and Info states and every two-section state of the reference: 4 of the 12
+//! terms). So the cost is priced by
 //! [`WholePixelMeasure`], the same advances read from the same `appfont*.ttf` files, and the simulator and
 //! the television print one number (`lint_report_priced`). There is no unmeasured fallback: when the faces
 //! cannot be opened or read the run is a usage error, `cannot load fonts: ...`.

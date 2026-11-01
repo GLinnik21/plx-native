@@ -511,6 +511,11 @@ fn unit_only() -> Vec<(&'static str, &'static str)> {
     .collect()
 }
 
+/// Every case, through [`assert_case`]: exactly its `(code, pointer)` pairs, with one exception. The cost
+/// verdict `HUD-E1401` is set aside unless the case is `lint_cost`'s own, because the ceilings are the
+/// television's exact maxima and any edit of the classic or the reference that adds a pixel to their heaviest
+/// state is over one (eleven cases do, incidentally); listing it in each of their `also` would tie eleven
+/// cases about other rules to the ceiling numbers, so every re-measure would churn them.
 #[test]
 fn every_invalid_case_yields_exactly_its_findings() {
     for case in invalid_cases() {
