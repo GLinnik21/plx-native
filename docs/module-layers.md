@@ -509,7 +509,7 @@ is new. What it taught beyond the recipe:
   `landgate::phase` wrapper and `Present::global` stay `cfg(test)`: only this crate's tests call
   them, and under `test-support` alone they would be dead code.
 - **The `Measure` impls for `fontcov::advances::ShippedMeasure` and `WholePixelMeasure` live in `plx_machine`.**
-  The trait is the machine crate's and the types are `plx_base`'s, so an impl may sit in either crate; it
+  The trait is the machine crate's and the types are `plx_base`'s, so the impl sits in `plx_machine`, the trait's crate, the only crate that can write it; it
   cannot sit in a third (E0117), which is why it could not stay in `ui` for the layers above.
   The machine crate is the lowest one that names both. `ShippedMeasure`'s is `test-support` only, and
   `plx_machine/test-support` enables `plx_base/test-support`, because `fontcov::advances::ShippedMeasure`

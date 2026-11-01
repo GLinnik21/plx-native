@@ -734,8 +734,8 @@ three places:
    language change or an app update, with its OWN `Measure` for its current language. Its result is cached per
    (package sha256, app version, language). The TV's compile is the authority; 1 and 2 are early warnings, so an
    unreviewed sideload is bound exactly as a registry package is. Only the FIT is the live measure: the cost
-   (`HUD-E1401`) is priced by the one model of "The ceilings (PR19)" on all three sides, so its verdict is not an
-   early warning and cannot differ between them. The driver that runs this on the TV (PR10) calls both passes of the
+   (`HUD-E1401`) is priced by the one model of "The ceilings (PR19)" wherever the lint runs, so its verdict is not an
+   early warning and cannot differ from one place to the next. The driver that runs this on the TV (PR10) calls both passes of the
    lint, the fit with the TV's `Measure` and the price with `WholePixelMeasure`; at PR19's head it does not exist and
    nothing on the set lints.
 
@@ -1257,7 +1257,7 @@ advances of `appfont.ttf` and `appfont-bold.ttf` and a line height of 1.21 x the
 (`plx_base::fontcov::advances::WholePixelMeasure`, a pure value over two `Face`s; in the host tests `ShippedMeasure`,
 the same numbers read from `pkg/`). The text FIT keeps the live measure of the set that lints (the television's SDL_ttf,
 the simulator's own), but nothing that is priced does, so the same package bytes cost the same, and get the same
-`HUD-E1401` verdict, on the television, in the simulator and in registry CI, whatever each firmware's SDL_ttf does with
+`HUD-E1401` verdict wherever the lint runs, whatever each firmware's SDL_ttf does with
 hinting. A ceiling priced by a per-firmware measure would refuse, on a set that hints differently, a package that sits
 exactly at it. The lint is two passes for this reason (`lint::lint_fit`, every check but the cost, on the live measure;
 `lint::lint_price`, `HUD-E1401` and the cost lines alone, on the model; `lint_report_priced` joins them), and there is no
@@ -1266,7 +1266,7 @@ against it, so a ceiling is a number of the model's for the states the televisio
 
 **The ceilings.** A class's ceiling in each term is the MAXIMUM of that term, in the model, over the states of that
 class (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, `dropped=0` on the pacing boot, no frame late on
-the app's side in the traces below, for the states the television ran), not rounded and with no headroom. Each class stands alone: two sections is not capped
+the app's side in the traces below, for the three strip states traced so far), not rounded and with no headroom. Each class stands alone: two sections is not capped
 by one section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming
 the state and language it came from, and
 `lint_cost::the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
@@ -1341,7 +1341,7 @@ any term is one error at `/layout`: the class, each term over as `value > ceilin
 by the pointer of the node that drew it (`CompiledState::top_contributors`, `CompiledState::origin`). It runs in the lint
 (`plxnative-sim --hud-lint`, both passes). At PR19's head no path on the set runs the lint: the television loads
 `builtin:classic` through `load_classic`, which never lints, and a package a user installs is linted by PR10's driver,
-which calls both passes (`lint_fit` with the live measure, `lint_price` with `WholePixelMeasure`, one tick each). So the verdict never rejects a package in a frame, and the
+which will call both passes (`lint_fit` with the live measure, `lint_price` with `WholePixelMeasure`, one tick each). So the verdict never rejects a package in a frame, and the
 builtin classic is safe because it is never linted, as well as because it passes. The ceilings are not
 raised and no state is exempt; because they carry no headroom, a package that adds a draw op, a glyph run or a pixel to the
 heaviest state of its class is over until it is run on the television and its figures set the ceiling. The builtin classic

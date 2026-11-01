@@ -466,7 +466,7 @@ fn most_a_shelf_paints(rect: Rect, card: Rect, pitch: f32) -> usize {
 }
 
 /// REGRESSION: the strip was priced at its width over the pitch plus one (`r.w / pitch + 1`). The Shelf ignores
-/// the width and culls against the screen, and a row at rest has scrolled, so it paints a card more: 10 on the
+/// the width and culls against the screen, and a row at rest has scrolled, so it paints more cards: 10 on the
 /// reference where the price said 8, 7 on the classic where it said 6.
 #[test]
 fn a_strip_is_priced_by_the_cards_its_shelf_paints_at_rest_in_both_fixtures() {
