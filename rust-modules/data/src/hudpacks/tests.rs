@@ -75,6 +75,8 @@ struct Rig {
     log: Vec<HudEffect>,
     notices: Vec<Notice>,
     selections: Vec<String>,
+    /// What the network answers by URL; a URL not listed is `Unreachable`. Every request is logged.
+    network: BTreeMap<String, Result<Vec<u8>, FetchError>>,
 }
 
 impl Rig {
@@ -88,6 +90,7 @@ impl Rig {
             log: Vec::new(),
             notices: Vec::new(),
             selections: Vec::new(),
+            network: BTreeMap::new(),
         }
     }
 
@@ -186,6 +189,11 @@ impl Rig {
                 HudEffect::Validate { tag, sha, bytes } => {
                     Some(HudEvent::Validated { tag, sha, verdict: validator(&bytes) })
                 }
+                HudEffect::Fetch { tag, address, max_bytes } => {
+                    assert_eq!(max_bytes, MAX, "the fetch is bounded by the store's package limit");
+                    let result = self.network.get(address.url()).cloned().unwrap_or(Err(FetchError::Unreachable));
+                    Some(HudEvent::Fetched { tag, result })
+                }
                 HudEffect::Selection { id } => {
                     self.selections.push(id);
                     None
@@ -229,6 +237,7 @@ fn line(effect: &HudEffect) -> String {
         HudEffect::WriteFile { at, .. } => format!("write {}", at.path().display()),
         HudEffect::Delete { at } => format!("delete {}", at.path().display()),
         HudEffect::Validate { sha, .. } => format!("validate {}", sha.hex()),
+        HudEffect::Fetch { address, .. } => format!("fetch {}", address.url()),
         HudEffect::Selection { id } => format!("select {id}"),
         HudEffect::Notice(n) => format!("notice {n:?}"),
     }
@@ -253,6 +262,7 @@ fn tag_of(effect: &HudEffect) -> Tag {
         HudEffect::ScanDir { tag, .. }
         | HudEffect::ReadFile { tag, .. }
         | HudEffect::WriteFile { tag, .. }
+        | HudEffect::Fetch { tag, .. }
         | HudEffect::Validate { tag, .. } => *tag,
         other => panic!("{other:?} carries no tag"),
     }
@@ -417,7 +427,7 @@ fn only_the_volatile_candidate_gives_until_restart() {
     r.refuse.extend([root(0), root(1), root(2)]);
     r.refresh();
     r.install(&bytes, Source::Address, 1);
-    assert_eq!(r.notices.last(), Some(&Notice::NotWritten { sha: Sha::of(&bytes) }));
+    assert_eq!(r.notices.last(), Some(&Notice::NotWritten { sha: Some(Sha::of(&bytes)) }));
     assert_eq!(r.ids(), [BUILTIN_CLASSIC]);
     assert!(r.files.is_empty());
 }
@@ -828,7 +838,7 @@ fn a_refresh_takes_over_from_an_install_or_removal_that_never_finished() {
 fn a_refresh_that_displaces_an_install_says_it_was_not_written() {
     let bytes = pack("org.example.hud", "1.0.0");
     let sha = Sha::of(&bytes);
-    let not_written = Notice::NotWritten { sha };
+    let not_written = Notice::NotWritten { sha: Some(sha) };
     for (step, lose, landed, listed) in [
         ("validating", is_validate as fn(&HudEffect) -> bool, false, false),
         ("writing the pack", is_pack_write, false, false),
@@ -1214,4 +1224,210 @@ fn only_package_file_names_can_be_dropped_in() {
     for bad in [".plxhud.json", ".hidden.plxhud.json", "a/b.plxhud.json", "a\\b.plxhud.json", "x.json", "x.plxhud.json.bak", "../x.plxhud.json"] {
         assert!(!drop_name_ok(bad), "{bad:?}");
     }
+}
+
+// ---- install from an address (PR11) ----
+
+const HUD_URL: &str = "https://github.com/org/hud/releases/latest/download/hud.plxhud.json";
+
+fn address(text: &str) -> address::Address {
+    address::parse(text).unwrap_or_else(|e| panic!("{text:?}: {e:?}"))
+}
+
+/// A rig listing an empty disk whose network answers `HUD_URL` with `body`.
+fn fetching(body: Result<Vec<u8>, FetchError>) -> Rig {
+    let mut r = Rig::new();
+    r.network.insert(HUD_URL.to_owned(), body);
+    r.refresh();
+    r
+}
+
+fn fetch_event() -> HudEvent {
+    HudEvent::Fetch { address: address("gh:org/hud") }
+}
+
+/// A fetch asks the network lane for the URL, validates what came back, and then HOLDS it: nothing
+/// is written until the viewer confirms, and what is written hashes to the sha the viewer was shown.
+#[test]
+fn a_fetch_is_offered_before_anything_is_written_and_installs_the_bytes_the_viewer_saw() {
+    let bytes = pack("org.example.hud", "1.2.0");
+    let sha = Sha::of(&bytes);
+    let mut r = fetching(Ok(bytes.clone()));
+    let mark = r.log.len();
+    assert_eq!(r.send(fetch_event()), Handled::Yes);
+    assert_eq!(r.lines(mark), [format!("fetch {HUD_URL}"), format!("validate {}", sha.hex())]);
+    assert!(r.m.busy(), "an offer is open work");
+    assert!(r.files.keys().all(|p| !p.to_string_lossy().contains("packs/")), "nothing on disk yet: {:?}", r.files.keys());
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC]);
+
+    let offer = r.m.offer().expect("a loadable fetch is offered");
+    assert_eq!((offer.sha, offer.source, offer.meta.id.as_str(), offer.meta.version.as_str()), (sha, Source::Address, "org.example.hud", "1.2.0"));
+    assert_eq!(offer.from.as_ref().map(|a| (a.url(), a.host(), a.dev_source())), Some((HUD_URL, "github.com", false)));
+    assert_eq!(offer.source.trust(), Trust::Unreviewed);
+
+    let mark = r.log.len();
+    assert_eq!(r.send(HudEvent::InstallOffer { sha, now: 77 }), Handled::Yes);
+    let lines = r.lines(mark);
+    assert_eq!(lines[..2], [format!("write {}", pack_path(0, sha).display()), format!("write {}", index_path(0).display())]);
+    assert!(!r.m.busy());
+    assert!(r.m.offer().is_none());
+    let written = &r.files[&pack_path(0, sha)];
+    assert_eq!(Sha::of(written), sha, "the bytes on disk hash to the sha the viewer saw");
+    assert_eq!(r.index_of(0)["org.example.hud"], Record::new(sha, Source::Address, 77));
+    assert_eq!(r.entry("org.example.hud").source, Some(Source::Address));
+    assert_eq!(r.entry("org.example.hud").trust, Trust::Unreviewed);
+    assert!(matches!(r.notices.last(), Some(Notice::Installed { sha: s, .. }) if *s == sha));
+}
+
+/// A viewer who cancels leaves nothing: no file, no index, no notice, and the store takes the next
+/// request.
+#[test]
+fn declining_an_offer_writes_nothing() {
+    let bytes = pack("org.example.hud", "1.0.0");
+    let sha = Sha::of(&bytes);
+    let mut r = fetching(Ok(bytes));
+    let files = r.files.clone();
+    assert_eq!(r.send(fetch_event()), Handled::Yes);
+    assert!(r.m.offer().is_some());
+    // The wrong sha is not the offer the viewer saw: neither confirms nor declines it.
+    let other = Sha::of(b"other");
+    assert_eq!(r.send(HudEvent::InstallOffer { sha: other, now: 1 }), Handled::No);
+    assert_eq!(r.send(HudEvent::DeclineOffer { sha: other }), Handled::No);
+    assert!(r.m.offer().is_some());
+
+    let mark = r.log.len();
+    assert_eq!(r.send(HudEvent::DeclineOffer { sha }), Handled::Yes);
+    assert!(r.lines(mark).is_empty(), "no effect: {:?}", r.lines(mark));
+    assert!(r.notices.is_empty());
+    assert!(!r.m.busy() && r.m.offer().is_none());
+    assert_eq!(r.files, files, "the disk is as it was");
+    // Once declined there is nothing to confirm.
+    assert_eq!(r.send(HudEvent::InstallOffer { sha, now: 1 }), Handled::No);
+    assert_eq!(r.send(fetch_event()), Handled::Yes, "the next request is taken");
+}
+
+/// Each way a fetch fails ends with its own notice and writes nothing.
+#[test]
+fn each_failed_fetch_names_its_reason_and_writes_nothing() {
+    for reason in [FetchError::NotFound, FetchError::TooLarge, FetchError::Unreachable, FetchError::Certificate] {
+        let mut r = fetching(Err(reason));
+        let files = r.files.clone();
+        assert_eq!(r.send(fetch_event()), Handled::Yes);
+        assert_eq!(r.notices, [Notice::FetchFailed { reason }]);
+        assert!(!r.m.busy() && r.m.offer().is_none());
+        assert_eq!(r.files, files, "{reason:?}");
+    }
+}
+
+/// What the body is gets the existing refusals: not a package, a package this app cannot run, one
+/// that claims the built-in's id, the one already installed, one that is not newer, and one over the
+/// bound that came back anyway. Nothing is offered or written for any of them.
+#[test]
+fn a_fetched_body_that_is_refused_is_never_offered() {
+    let installed = pack("org.example.hud", "2.0.0");
+    let cases: [(&str, Vec<u8>, Refusal); 6] = [
+        ("not a package", flagged("a.b", "1.0.0", "bad"), Refusal::Invalid),
+        ("newer format", flagged("a.b", "1.0.0", "newer"), Refusal::Unloadable(Unloadable::NewerFormat)),
+        ("built-in id", pack(BUILTIN_CLASSIC, "1.0.0"), Refusal::BuiltinId),
+        ("already installed", installed.clone(), Refusal::AlreadyInstalled),
+        ("not newer", pack("org.example.hud", "1.0.0"), Refusal::NotNewer),
+        ("over the bound", vec![b'x'; MAX + 1], Refusal::TooLarge),
+    ];
+    for (what, body, reason) in cases {
+        let mut r = Rig::with(&[(&installed, Source::Drop, &[0])]);
+        r.network.insert(HUD_URL.to_owned(), Ok(body.clone()));
+        r.refresh();
+        let files = r.files.clone();
+        assert_eq!(r.send(fetch_event()), Handled::Yes, "{what}");
+        assert_eq!(r.notices, [Notice::Refused { sha: Sha::of(&body), reason }], "{what}");
+        assert!(!r.m.busy() && r.m.offer().is_none(), "{what}");
+        assert_eq!(r.files, files, "{what}: nothing written");
+    }
+}
+
+/// Busy is `Handled::No`, like an install while busy: a second fetch while one is in flight or an
+/// offer is open, and a fetch while anything else runs. The answer of a fetch nothing awaits is
+/// dropped, and so is an answer carrying another request's tag.
+#[test]
+fn a_fetch_while_busy_is_not_handled_and_a_late_answer_is_dropped() {
+    let bytes = pack("org.example.hud", "1.0.0");
+    let mut m = listed();
+    let (handled, fx) = step(&mut m, fetch_event());
+    assert_eq!(handled, Handled::Yes);
+    let awaited = tag_of(&fx[0]);
+    assert!(matches!(&fx[0], HudEffect::Fetch { max_bytes: 1024, .. }));
+    assert!(m.busy());
+    assert_eq!(step(&mut m, fetch_event()).0, Handled::No, "a second request while one is in flight");
+    assert_eq!(step(&mut m, HudEvent::Install { bytes: bytes.clone(), source: Source::Address, now: 1 }).0, Handled::No);
+    assert_eq!(step(&mut m, HudEvent::Removed { id: "org.example.hud".into() }).0, Handled::No);
+    let stranger = Tag(awaited.0.wrapping_add(50));
+    assert_eq!(step(&mut m, HudEvent::Fetched { tag: stranger, result: Ok(bytes.clone()) }).0, Handled::No);
+    assert!(m.busy(), "the wrong tag changed nothing");
+
+    // The right answer is taken, once; a repeat of it finds nothing awaiting it.
+    let (handled, fx) = step(&mut m, HudEvent::Fetched { tag: awaited, result: Ok(bytes.clone()) });
+    assert_eq!(handled, Handled::Yes);
+    assert!(is_validate(&fx[0]));
+    let verdict = validator(&bytes);
+    let (_, held) = step(&mut m, HudEvent::Validated { tag: tag_of(&fx[0]), sha: Sha::of(&bytes), verdict });
+    assert!(held.is_empty(), "held for the viewer: {held:?}");
+    assert_eq!(step(&mut m, HudEvent::Fetched { tag: awaited, result: Ok(bytes.clone()) }).0, Handled::No);
+    assert_eq!(step(&mut m, fetch_event()).0, Handled::No, "a second request while an offer is open");
+
+    // Idle store: nothing awaits a fetch.
+    let mut idle = listed();
+    assert_eq!(step(&mut idle, HudEvent::Fetched { tag: awaited, result: Ok(bytes) }).0, Handled::No);
+    assert!(!idle.busy());
+    // A request answered before the Refresh that replaced it is stale.
+    let (_, fx) = step(&mut idle, fetch_event());
+    let owed = tag_of(&fx[0]);
+    assert_eq!(step(&mut idle, HudEvent::Refresh { setup: setup(), selected: String::new() }).0, Handled::Yes);
+    assert_eq!(step(&mut idle, HudEvent::Fetched { tag: owed, result: Err(FetchError::NotFound) }).0, Handled::No);
+}
+
+/// A `Refresh` replaces a fetch in flight and an offer waiting, and ends each with the notice an
+/// install gets, `NotWritten`; nothing reaches the disk. This is also what leaving the page costs:
+/// the page's return opens HUD settings again, which is a `Refresh`, so an offer does not wait for
+/// the return, it goes (the simpler of the two; the page asks again).
+#[test]
+fn a_refresh_ends_a_fetch_in_flight_and_an_offer_waiting_with_not_written() {
+    let bytes = pack("org.example.hud", "1.0.0");
+    let sha = Sha::of(&bytes);
+
+    // In flight: the answer never came back before the Refresh.
+    let mut m = listed();
+    let (_, fx) = step(&mut m, fetch_event());
+    let owed = tag_of(&fx[0]);
+    let (handled, fx) = step(&mut m, HudEvent::Refresh { setup: setup(), selected: String::new() });
+    assert_eq!(handled, Handled::Yes);
+    assert_eq!(fx[0], HudEffect::Notice(Notice::NotWritten { sha: None }), "no bytes, so no sha yet");
+    assert_eq!(step(&mut m, HudEvent::Fetched { tag: owed, result: Ok(bytes.clone()) }).0, Handled::No, "the late answer is dropped");
+
+    // Waiting for the viewer.
+    let mut r = fetching(Ok(bytes));
+    let files = r.files.clone();
+    assert_eq!(r.send(fetch_event()), Handled::Yes);
+    assert!(r.m.offer().is_some());
+    let mark = r.log.len();
+    r.refresh();
+    assert_eq!(r.log[mark], HudEffect::Notice(Notice::NotWritten { sha: Some(sha) }), "the notice leads");
+    assert_eq!(r.notices, [Notice::NotWritten { sha: Some(sha) }]);
+    assert!(r.m.offer().is_none());
+    assert_eq!(r.files, files, "nothing reached the disk");
+    assert_eq!(r.send(HudEvent::InstallOffer { sha, now: 1 }), Handled::No, "the offer is gone");
+}
+
+/// An install from an address replaces a lower version of the id like any other source.
+#[test]
+fn a_fetched_higher_version_replaces_the_installed_one() {
+    let old = pack("org.example.hud", "1.0.0");
+    let new = pack("org.example.hud", "1.1.0");
+    let (old_sha, new_sha) = (Sha::of(&old), Sha::of(&new));
+    let mut r = Rig::with(&[(&old, Source::Drop, &[0])]);
+    r.network.insert(HUD_URL.to_owned(), Ok(new));
+    r.refresh();
+    assert_eq!(r.send(fetch_event()), Handled::Yes);
+    assert_eq!(r.send(HudEvent::InstallOffer { sha: new_sha, now: 5 }), Handled::Yes);
+    assert_eq!(r.entry("org.example.hud").sha, Some(new_sha));
+    assert!(!r.files.contains_key(&pack_path(0, old_sha)), "the replaced pack is deleted");
 }

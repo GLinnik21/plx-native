@@ -25,7 +25,7 @@
 //! A listing reads every candidate; one sha found in two of them is one package; for one id the higher
 //! `version` wins, and on a tie the earlier candidate.
 //!
-//! **Install** (from bytes, or from a drop file): hash, validate, judge ([`Refusal`] lists what is
+//! **Install** (from bytes, from a drop file, or from an address): hash, validate, judge ([`Refusal`] lists what is
 //! refused), then write the pack FIRST and `installed.json` second, so the switch is one atomic rename
 //! of the index. The first candidate that takes both writes is used; a package only the last,
 //! volatile (`/tmp`-backed) candidate took is [`Entry::until_restart`]. A new package replaces an
@@ -43,7 +43,7 @@
 //!
 //! **Work is sequential**: at most one request is in flight, so a runner may execute effects in the
 //! order they are pushed and memory stays bounded by one file, with no cap on how many packages exist.
-//! A `Refresh` replaces work in flight, so it ends an install or removal it displaces with a notice and,
+//! A `Refresh` replaces work in flight, so it ends an install, a fetch, a held offer or a removal it displaces with a notice and,
 //! once the indexes are read again, deletes the packs that work may have left that no index names (an
 //! unreadable index shields its candidate). A process that dies mid-install is not covered: the store
 //! keeps no list of the packs on disk, only of those an index names, and a pack left that way costs
@@ -54,6 +54,10 @@
 //! | `Refresh` | any: it replaces a listing, install or removal in flight (an install ends `NotWritten`, a removal `RemoveIncomplete`) | per candidate `ReadFile(installed.json)`; `Delete` of a displaced work's pack no index names; then `ReadFile(packs/<sha>)` + `Validate` per distinct sha; then `ScanDir(drop)` and `ReadFile` + `Validate` per file; idle |
 //! | `Install` | idle | `Validate`; on a loadable verdict `WriteFile(pack)` then `WriteFile(installed.json)`; `Notice::Installed` or `Notice::Refused`/`NotWritten` |
 //! | `InstallDrop` | idle | `ReadFile(drop file)`, then as `Install` (the bytes must hash to the sha the user saw) |
+//! | `Fetch` | idle (a parsed [`Address`](address::Address)) | `Fetch`; busy until the answer |
+//! | `Fetched` | a fetch in flight, the tag it awaits | `Validate`; a loadable verdict holds the bytes as the [`offer`](HudStore::offer) (nothing written, busy until answered), any other verdict ends `Notice::Refused`; a failed fetch ends `Notice::FetchFailed` |
+//! | `InstallOffer` | an offer held, the sha shown | as `Install` from the held bytes (the sha written is the sha the viewer saw): `WriteFile(pack)` then `WriteFile(installed.json)` |
+//! | `DeclineOffer` | an offer held, the sha shown | idle, nothing written, no notice |
 //! | `Removed` | idle | `WriteFile(installed.json)` per candidate holding a record of the id (an unreadable one too), `Delete(pack)`; `Selection(builtin)` when the selected one went |
 //! | `Selected` | any | `Selection(id)` for the built-in or a listed, loadable package; else not handled |
 //!
@@ -263,6 +267,21 @@ pub enum ReadError {
     Failed,
 }
 
+/// Why a [`HudEffect::Fetch`] brought back no package. The runner reduces the transport's own answer
+/// to these four, and keeps the number (status or `CURLcode`) for the one `hud:` log line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FetchError {
+    /// The server answered `404` (or `410`): there is no such file at the address.
+    NotFound,
+    /// The body ran past the bound; nothing was kept.
+    TooLarge,
+    /// The host did not answer, answered with another error status, or the transfer failed.
+    Unreachable,
+    /// The television's certificate check failed: the chain does not verify against this set's trust
+    /// store (a CA it does not carry, a wrong clock or a name that does not match).
+    Certificate,
+}
+
 /// The outcome of a [`HudEffect::WriteFile`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteOutcome {
@@ -318,8 +337,11 @@ impl Loc {
 pub enum Notice {
     Installed { id: String, version: String, sha: Sha, until_restart: bool },
     Refused { sha: Sha, reason: Refusal },
-    /// Every candidate refused the pack or the index: nothing was installed.
-    NotWritten { sha: Sha },
+    /// Every candidate refused the pack or the index, or a `Refresh` displaced the work (an install,
+    /// a held offer, or a fetch that had not answered, which has no `sha` yet): nothing was installed.
+    NotWritten { sha: Option<Sha> },
+    /// A fetch from an address ended without a package ([`FetchError`]). Nothing was written.
+    FetchFailed { reason: FetchError },
     Removed { id: String },
     /// Some candidate kept the entry (its index could not be rewritten), so the id may list again.
     RemoveIncomplete { id: String },
@@ -346,9 +368,18 @@ pub enum HudEvent {
     Validated { tag: Tag, sha: Sha, verdict: Verdict },
     /// A [`HudEffect::WriteFile`] answered.
     Written { tag: Tag, outcome: WriteOutcome },
-    /// Install these bytes (a fetch, PR11; the user has confirmed). `now` is the unix time recorded as
-    /// installed-at.
+    /// Install these bytes (the user has confirmed). `now` is the unix time recorded as installed-at.
     Install { bytes: Vec<u8>, source: Source, now: u64 },
+    /// Fetch the package at this address (idle only). The viewer has not confirmed anything yet:
+    /// what comes back is validated and held as the [`offer`](HudStore::offer).
+    Fetch { address: address::Address },
+    /// A [`HudEffect::Fetch`] answered, with the body or the reason there is none.
+    Fetched { tag: Tag, result: Result<Vec<u8>, FetchError> },
+    /// Install the offer the store holds under this sha (the viewer confirmed it). `now` as for
+    /// `Install`.
+    InstallOffer { sha: Sha, now: u64 },
+    /// The viewer declined the offer held under this sha: drop it, write nothing.
+    DeclineOffer { sha: Sha },
     /// Install the drop file the listing showed under this sha (the user has confirmed).
     InstallDrop { sha: Sha, now: u64 },
     /// The user picked a package (or the built-in).
@@ -369,6 +400,9 @@ pub enum HudEffect {
     /// Delete a file; one already gone is not an error. Nothing returns: a pack left behind costs
     /// bytes, never correctness.
     Delete { at: Loc },
+    /// Fetch the package at `address` over the network, at most `max_bytes` of body, on the runner's
+    /// network lane and never the storage worker's: [`HudEvent::Fetched`].
+    Fetch { tag: Tag, address: address::Address, max_bytes: usize },
     /// Admit these bytes (the format lives above this layer): parse them and check the invariants and the app range,
     /// with no layout: [`HudEvent::Validated`].
     Validate { tag: Tag, sha: Sha, bytes: Arc<[u8]> },
@@ -395,6 +429,18 @@ pub struct Entry {
     /// The profile's selection names this row. It may name a package that cannot load: what plays is
     /// [`HudStore::resolved`].
     pub selected: bool,
+}
+
+/// A fetched package the store holds for the viewer to confirm: what the prompt shows, and the sha
+/// the confirming event must name (the bytes written are the ones this sha was taken of).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferView {
+    pub sha: Sha,
+    pub meta: Meta,
+    /// Always [`Source::Address`] today; carried so the prompt reads the trust tier from the source.
+    pub source: Source,
+    /// The address the bytes came from.
+    pub from: Option<address::Address>,
 }
 
 /// One file found in `drop/`.
@@ -506,7 +552,11 @@ struct Listing {
 struct Offer {
     sha: Sha,
     source: Source,
-    now: u64,
+    /// The unix time recorded as installed-at. `None` until the viewer has confirmed: a validated
+    /// offer without one is held for the page ([`Step::Offered`]) instead of written.
+    now: Option<u64>,
+    /// Where the bytes came from, for the prompt: the address of a fetch.
+    from: Option<address::Address>,
     bytes: Arc<[u8]>,
 }
 
@@ -520,7 +570,11 @@ enum Write {
 enum Step {
     /// A drop file is being read again so that what is installed is what was listed.
     Reading { sha: Sha, now: u64 },
+    /// A fetch is in flight.
+    Fetching { address: address::Address },
     Validating(Offer),
+    /// A validated fetch waits for the viewer to confirm or decline (`offer.now` is `None`).
+    Offered { offer: Offer, meta: Meta },
     Writing { offer: Offer, meta: Meta, dir: usize, what: Write },
 }
 
@@ -636,6 +690,20 @@ impl HudStore {
         out
     }
 
+    /// The validated fetch waiting for the viewer's answer, if any: [`HudEvent::InstallOffer`] installs
+    /// it, [`HudEvent::DeclineOffer`] drops it, and a `Refresh` ends it with [`Notice::NotWritten`].
+    pub fn offer(&self) -> Option<OfferView> {
+        match &self.op {
+            Op::Installing(Installing { step: Step::Offered { offer, meta }, .. }) => Some(OfferView {
+                sha: offer.sha,
+                meta: meta.clone(),
+                source: offer.source,
+                from: offer.from.clone(),
+            }),
+            _ => None,
+        }
+    }
+
     /// The files found in `drop/`, one row per distinct sha, with whether installing them would be
     /// accepted now.
     pub fn drops(&self) -> Vec<DropFile> {
@@ -692,10 +760,37 @@ impl HudStore {
                 if bytes.len() > self.setup.max_pack_bytes {
                     fx.push(HudEffect::Notice(Notice::Refused { sha, reason: Refusal::TooLarge }));
                 } else {
-                    self.op = self.validate(Offer { sha, source, now, bytes: bytes.into() }, fx);
+                    self.op = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into() }, fx);
                 }
                 Handled::Yes
             }
+            HudEvent::Fetch { address } => {
+                if self.busy() {
+                    return Handled::No;
+                }
+                let tag = self.tag();
+                fx.push(HudEffect::Fetch { tag, address: address.clone(), max_bytes: self.setup.max_pack_bytes });
+                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address } });
+                Handled::Yes
+            }
+            HudEvent::InstallOffer { sha, now } => match std::mem::replace(&mut self.op, Op::Idle) {
+                Op::Installing(Installing { step: Step::Offered { mut offer, meta }, .. }) if offer.sha == sha => {
+                    offer.now = Some(now);
+                    self.op = self.write_pack(offer, meta, 0, fx);
+                    Handled::Yes
+                }
+                other => {
+                    self.op = other;
+                    Handled::No
+                }
+            },
+            HudEvent::DeclineOffer { sha } => match std::mem::replace(&mut self.op, Op::Idle) {
+                Op::Installing(Installing { step: Step::Offered { offer, .. }, .. }) if offer.sha == sha => Handled::Yes,
+                other => {
+                    self.op = other;
+                    Handled::No
+                }
+            },
             HudEvent::InstallDrop { sha, now } => {
                 if self.busy() {
                     return Handled::No;
@@ -715,7 +810,8 @@ impl HudStore {
             result @ (HudEvent::Scanned { .. }
             | HudEvent::Read { .. }
             | HudEvent::Validated { .. }
-            | HudEvent::Written { .. }) => {
+            | HudEvent::Written { .. }
+            | HudEvent::Fetched { .. }) => {
                 let (op, handled) = match std::mem::replace(&mut self.op, Op::Idle) {
                     Op::Idle => (Op::Idle, Handled::No),
                     Op::Listing(listing) => self.listing_result(listing, result, fx),
@@ -828,8 +924,10 @@ impl HudStore {
             Op::Idle | Op::Listing(_) => {}
             Op::Installing(Installing { step, .. }) => {
                 let sha = match step {
-                    Step::Reading { sha, .. } => sha,
-                    Step::Validating(offer) => offer.sha,
+                    Step::Reading { sha, .. } => Some(sha),
+                    // A fetch that has not answered has no bytes, so no sha.
+                    Step::Fetching { .. } => None,
+                    Step::Validating(offer) | Step::Offered { offer, .. } => Some(offer.sha),
                     Step::Writing { offer, dir, what, .. } => {
                         // The pack is down or on its way. If the index write reached the disk the id's
                         // old pack is the unlisted one, if not the new one is: only a re-read says.
@@ -837,7 +935,7 @@ impl HudStore {
                         if let Write::Index { replaced: Some(old), .. } = what {
                             stray.extend(at(self, dir, old).filter(|_| old != offer.sha));
                         }
-                        offer.sha
+                        Some(offer.sha)
                     }
                 };
                 Self::notice(fx, Notice::NotWritten { sha });
@@ -1018,7 +1116,8 @@ impl HudStore {
             HudEvent::Scanned { tag: t, .. }
             | HudEvent::Read { tag: t, .. }
             | HudEvent::Validated { tag: t, .. }
-            | HudEvent::Written { tag: t, .. } => *t == tag,
+            | HudEvent::Written { tag: t, .. }
+            | HudEvent::Fetched { tag: t, .. } => *t == tag,
             _ => false,
         };
         if !addressed {
@@ -1027,11 +1126,27 @@ impl HudStore {
         let op = match (step, ev) {
             (Step::Reading { sha, now }, HudEvent::Read { result, .. }) => match result {
                 Ok(bytes) if Sha::of(&bytes) == sha => {
-                    self.validate(Offer { sha, source: Source::Drop, now, bytes: bytes.into() }, fx)
+                    self.validate(Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into() }, fx)
                 }
                 _ => {
                     Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
                     Op::Idle
+                }
+            },
+            (Step::Fetching { address }, HudEvent::Fetched { result, .. }) => match result {
+                Err(reason) => {
+                    Self::notice(fx, Notice::FetchFailed { reason });
+                    Op::Idle
+                }
+                Ok(bytes) => {
+                    let sha = Sha::of(&bytes);
+                    if bytes.len() > self.setup.max_pack_bytes {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::TooLarge });
+                        Op::Idle
+                    } else {
+                        let offer = Offer { sha, source: Source::Address, now: None, from: Some(address), bytes: bytes.into() };
+                        self.validate(offer, fx)
+                    }
                 }
             },
             (Step::Validating(offer), HudEvent::Validated { sha, verdict, .. }) if sha == offer.sha => {
@@ -1040,7 +1155,10 @@ impl HudStore {
                         Self::notice(fx, Notice::Refused { sha: offer.sha, reason });
                         Op::Idle
                     }
-                    Ok(meta) => self.write_pack(offer, meta, 0, fx),
+                    // The viewer has confirmed already (a drop file, `Install`): write it.
+                    Ok(meta) if offer.now.is_some() => self.write_pack(offer, meta, 0, fx),
+                    // A fetch: nothing is written until the viewer has seen what it is.
+                    Ok(meta) => Op::Installing(Installing { tag, step: Step::Offered { offer, meta } }),
                 }
             }
             (Step::Writing { offer, meta, dir, what }, HudEvent::Written { outcome, .. }) => match (what, outcome) {
@@ -1048,7 +1166,7 @@ impl HudStore {
                     // The pack is down: switch the candidate's index to it.
                     let mut index = self.dirs[dir].index.clone();
                     let replaced = index
-                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now))
+                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default()))
                         .map(|old| old.sha);
                     let tag = self.tag();
                     fx.push(HudEffect::WriteFile {
@@ -1103,7 +1221,7 @@ impl HudStore {
     fn write_pack(&mut self, offer: Offer, meta: Meta, dir: usize, fx: &mut Vec<HudEffect>) -> Op {
         // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
         let Some(dir) = (dir..self.dirs.len()).find(|d| self.dirs[*d].access == Access::Writable) else {
-            Self::notice(fx, Notice::NotWritten { sha: offer.sha });
+            Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
             return Op::Idle;
         };
         let tag = self.tag();
