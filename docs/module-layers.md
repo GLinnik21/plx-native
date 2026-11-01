@@ -513,8 +513,9 @@ is new. What it taught beyond the recipe:
   is the machine crate's and the type is `plx_base`'s, so the impl may sit in either crate; it
   cannot sit in a third (E0117), which is why it could not stay in `ui` for the layers above.
   The machine crate is the lowest one that names both. It is `test-support` only, and
-  `plx_machine/test-support` enables `plx_base/test-support`, because `fontcov::advances` is
-  itself behind that feature. No other orphan-rule hazard appeared (the compiler is the checker:
+  `plx_machine/test-support` enables `plx_base/test-support`, because `fontcov::advances::ShippedMeasure`
+  is itself behind that feature (the module is also built under `hostsim`, for the `Face` alone: the simulator's
+  HUD lint prices with it, `hud_cli`). No other orphan-rule hazard appeared (the compiler is the checker:
   an `impl` of a `plx_machine` trait for a `plx_base` type in the application would be the next
   one, and there is none).
 - **Moving a trait to another crate changes dead-code analysis.** `app/recorder.rs`'s
