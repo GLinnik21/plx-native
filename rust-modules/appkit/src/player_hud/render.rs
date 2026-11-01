@@ -1203,6 +1203,36 @@ mod tests {
             let _ = button_rect(0, &FM);
         }
 
+        /// **The synopsis column ends where the card's text column ends.** The card runs its text from the still
+        /// to 34 px short of the action column's REST left edge (`button_rect(0).x`), so the synopsis wraps and
+        /// ellipsizes at 964 px in English (462 to 1426). The compile once kept the fill clear of the buttons'
+        /// focus pop as well, which narrowed it by 12.32 px and moved the ellipsis of a long synopsis (found in the
+        /// simulator, where the real face puts the second line's break within that margin: `her....` against
+        /// `her...`).
+        #[test]
+        fn the_synopsis_column_ends_where_the_cards_text_column_ends() {
+            let _serial = plx_base::testlock::serial();
+            let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+            let hud = crate::player_hud::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &FM);
+            let state = hud.compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("classic has an info state");
+            let text = |bind: &str| {
+                state
+                    .ops
+                    .iter()
+                    .find_map(|op| match op {
+                        DrawOp::Text { bind: b, rect, .. } if b == bind => Some(*rect),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("the info state draws `{bind}`"))
+            };
+            let want_right = button_rect(0, &FM).x - 34.0;
+            assert_eq!((want_right, 462.0), (1426.0, text("info.summary").x), "the frozen edges of the card's text column");
+            for bind in ["info.title", "info.summary"] {
+                let r = text(bind);
+                assert_eq!((r.x, r.x + r.w), (462.0, want_right), "`{bind}` runs from the still to the action column's rest edge");
+            }
+        }
+
         /// Every run of the two censuses but the tab's label, in a common order (the renderer also draws the
         /// Info tab, which the card does not), as (text, size, x, y, w).
         fn runs(c: &Census) -> Vec<(String, i32, f32, f32, f32)> {

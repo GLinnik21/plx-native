@@ -1682,16 +1682,17 @@ impl<'e, 'p> Env<'e, 'p> {
         out
     }
 
-    /// The left edges the fill of an earlier group must stop short of: each control scaled by the focus
-    /// pop it may reach, any other cell as it stands.
-    fn left_edges(&self, cell: &CellIn<'p>, x: f32, w: f32) -> Vec<f32> {
+    /// The left edges the fill of an earlier group must stop short of: each segment control scaled by the
+    /// focus pop it may reach, any other cell as it stands. An `actions` column stands as placed: the Info
+    /// card's text ran to the buttons' REST edge less the gap (`info_panel::button_rect`), and a pop of a few
+    /// pixels lands inside that gap.
+    fn left_edges(&self, cell: &CellIn<'p>, x: f32) -> Vec<f32> {
         let scaled = |x: f32, w: f32| Rect::new(x, 0.0, w, 1.0).scaled(CTRL_FOCUS_SCALE).x;
         match cell.kind {
             "segment" => {
                 let c = self.controls(cell.o, self.gap(cell.o, "gap").unwrap_or(0.0), false);
                 HStack::new(&c.items, c.gap, Align::Leading(x)).placed().map(|s| scaled(s.x, s.w)).collect()
             }
-            "actions" => vec![scaled(x, w)],
             _ => vec![x],
         }
     }
@@ -1743,7 +1744,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 .fold(x, f32::max);
             let later = (0..row.len())
                 .filter(|&i| row[i].grp != SegmentAlign::Start && !(mode.hide && row[i].replaced))
-                .flat_map(|i| self.left_edges(&row[i], at[i].0, at[i].1))
+                .flat_map(|i| self.left_edges(&row[i], at[i].0))
                 .chain(mode.standin_left)
                 .reduce(f32::min);
             let limit = later.map_or(boxr.x + boxr.w, |l| l - gap);
