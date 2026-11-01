@@ -394,6 +394,10 @@ pub(crate) struct HudDriver {
     notices: Vec<Notice>,
     log: Vec<String>,
     dirty: bool,
+    /// How many ticks went past the early return (the ones that did work): a still HUD adds none, which
+    /// `classic_with_nothing_installed_adds_no_work_per_frame` reads.
+    #[cfg_attr(not(test), allow(dead_code))] // read only by that test; the counting is the same in every build
+    worked: u64,
     revision: u64,
 }
 
@@ -419,6 +423,7 @@ impl HudDriver {
             notices: Vec::new(),
             log: Vec::new(),
             dirty: false,
+            worked: 0,
             revision: 0,
         }
     }
@@ -545,6 +550,7 @@ impl HudDriver {
         if self.runner.is_idle() && self.reading.is_none() && !self.dirty {
             return None;
         }
+        self.worked += 1;
         let mut events = Vec::new();
         self.runner.ready(&mut events);
         for event in events {
@@ -939,11 +945,12 @@ mod tests {
         let cx = english();
         driver.refresh(String::new());
         assert!(settle(&mut driver, &cx).is_empty());
-        let revision = driver.revision();
+        let (revision, worked) = (driver.revision(), driver.worked);
         let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP };
         for _ in 0..1000 {
             assert!(driver.tick(&env).is_none());
         }
+        assert_eq!(driver.worked, worked, "a still HUD's tick returns on its first flag test: no entries() Vec, no clone of the compile");
         assert_eq!(driver.revision(), revision, "no store event");
         assert!(driver.compiled.is_none() && driver.reading.is_none() && driver.runner.is_idle(), "no compile, no read, no IO");
         assert!(!driver.dirty, "and the next tick returns on its first flag test");
