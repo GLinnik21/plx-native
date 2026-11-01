@@ -12,6 +12,7 @@ use plx_ui::Rect;
 
 use super::options::WatchlistOptionsState;
 use super::page::{WatchTile, WatchlistIn, WatchlistScreen};
+use crate::registry::captions::PolicyPin;
 use crate::registry::{AppFx, AppMsg, PageMemory};
 
 /// A host with no stores: the page reads its rows from itself.
@@ -72,6 +73,11 @@ pub(crate) struct Harness {
     press: f32,
     ms: u32,
     n: usize,
+    /// The thread's Under posters setting held on its default for the harness's life
+    /// (`registry::captions::PolicyPin`: a harness takes no lock, and the Settings tests write the
+    /// process-wide cell under theirs). Declared last, so it outlives every read the screen makes
+    /// while it is dropped.
+    _policy: PolicyPin,
 }
 
 pub(crate) fn mount(n: usize) -> Box<dyn CardHarness> {
@@ -81,8 +87,9 @@ pub(crate) fn mount(n: usize) -> Box<dyn CardHarness> {
 impl Harness {
     pub(crate) fn new(rows: Vec<WatchTile>) -> Self {
         let n = rows.len();
+        let policy = PolicyPin::default_setting();
         let screen = WatchlistScreen::new(rows, WatchlistOptionsState::default()).at_entry(ENTRY);
-        let mut h = Self { screen, focus: None, press: 1.0, ms: 0, n };
+        let mut h = Self { screen, focus: None, press: 1.0, ms: 0, n, _policy: policy };
         // the stack lays its sections out on the first event it sees
         h.step(ScreenEvent::Tick(Tick { ms: 0, dt_us: 16_667 }));
         h

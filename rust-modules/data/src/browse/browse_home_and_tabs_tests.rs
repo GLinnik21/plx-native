@@ -1273,6 +1273,39 @@ fn the_movies_tab_prefers_the_households_library_over_a_friends() {
     );
 }
 
+/// **Picking a library that is not a favourite (the Library's Sort & Filter switcher offers any
+/// reachable one) does not forget the favourite the profile last chose.**
+///
+/// Only a favourite can be restored — [`BrowseState::remembered_section`] matches `pinned`
+/// sections alone — so remembering a non-favourite pick would replace the profile's remembered
+/// library for that type with one that never matches, and the next tab press or restart would
+/// open the tiebreak winner instead of the library the reader last chose on purpose.
+#[test]
+fn choosing_a_non_favourite_library_keeps_the_remembered_favourite() {
+    let _g = plx_base::testlock::serial();
+    let t = TempPins::new("choice-non-favourite");
+    t.watching("u-managed");
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![a_household_source("mac-mini"), a_source("nas-home", "friend", true)]);
+    browse.append_sections(
+        0,
+        vec![(1, "Movies".into(), SecKind::Movie), (2, "Home Movies".into(), SecKind::Movie)],
+    );
+    browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+    assert!(browse.pinned(0) && browse.pinned(1), "the household's films default On");
+    assert!(!browse.pinned(2), "a friend's library defaults Off: it is not a favourite");
+
+    browse.state.note_library_choice(1);
+    assert_eq!(browse.state.remembered_section(SecKind::Movie), Some(1), "a favourite pick is remembered");
+
+    browse.state.note_library_choice(2);
+    assert_eq!(
+        browse.state.remembered_section(SecKind::Movie),
+        Some(1),
+        "a non-favourite pick leaves the remembered favourite where it was"
+    );
+}
+
 /// **`/api/v2/home/users` landing on its own re-resolves the whole pin table.**
 ///
 /// The roster is the one input to the household verdict that is not in the server registry, and it

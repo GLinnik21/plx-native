@@ -217,6 +217,14 @@ fn header_accessory(sec: Section, g: &SrcGroup) -> Section {
     }
 }
 
+/// A library as a picker row: its title is the server's, and a library on a shared server carries
+/// the owner's handle beside it, dimmed (an own server has none). The Library's Sort & Filter
+/// switcher draws its rows with this too, so the two pickers cannot drift.
+pub fn library_row(title: &str, handle: &str) -> Row {
+    let row = Row::new(title).server_label();
+    if handle.is_empty() { row } else { row.value(handle).server_value().value_dim(true) }
+}
+
 /// Build the list.
 ///
 /// The levels never mirror each other's marks. **Browse** is a picker: one tick, on the library you
@@ -259,16 +267,15 @@ pub fn form(
         };
         let mut sec = FormSection::from_head(head);
         for r in mine {
-            let mut row = Row::new(r.title.clone()).server_label();
+            let mut row = if level == Level::Browse {
+                library_row(&r.title, &g.handle)
+            } else {
+                Row::new(r.title.clone()).server_label()
+            };
             let kind = match level {
-                Level::Browse => {
-                    // One line a row: the +N list holds only libraries the fold hid, so no tick
-                    // (the library on view is never in it) and no count line.
-                    if shared_pick {
-                        row = row.value(g.handle.clone()).server_value().value_dim(true);
-                    }
-                    RowKind::Choice
-                }
+                // One line a row: the +N list holds only libraries the fold hid, so no tick
+                // (the library on view is never in it) and no count line.
+                Level::Browse => RowKind::Choice,
                 Level::OnHome => {
                     row = row
                         .toggle(r.pinned)

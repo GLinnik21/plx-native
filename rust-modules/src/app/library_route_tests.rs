@@ -126,6 +126,28 @@ fn matches_words(want: &str, got: &str) -> bool {
     want.strip_suffix('*').map_or(want == got, |prefix| got.starts_with(prefix))
 }
 
+/// **A press is graded after the store workers it started have returned.** The rig's server is a
+/// closed port whose fetch fails at once, but on a real `page` worker: the Collections page reads
+/// Failed (focus on its Retry) only once that worker is back and a frame has applied its landing,
+/// and a fixed frame count races the worker's wall-clock (graded too early under load, the page
+/// was still Loading with focus on nothing). A worker made slow on purpose stands for a loaded
+/// machine: `settle` must not return, nor count a frame, before it has finished.
+#[test]
+fn settle_waits_for_the_store_workers_a_press_started() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let mut w = World::new("settle-joins-store-workers");
+    let returned = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&returned);
+    assert!(plx_base::task::spawn_small("page", move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        flag.store(true, Ordering::SeqCst);
+    }));
+    assert!(!returned.load(Ordering::SeqCst), "premise: the slow fetch is still out");
+    w.settle(1);
+    assert!(returned.load(Ordering::SeqCst), "settle counted its frames while a store worker was still out");
+}
+
 /// Every row in a fresh world; every deviation of every row is reported together.
 fn run(rows: Vec<Row>) {
     let mut fails = Vec::new();

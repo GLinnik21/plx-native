@@ -234,6 +234,12 @@ pub enum PlayerReq {
     /// same dip. A stand-in's meaning depends on the segment it offers, which the app resolves on
     /// the committing frame (`app::playback::activate_ctrl_row`), so it carries no command.
     StandIn,
+    /// **BACK over a Skip / Up Next offer** — retire this exact segment in the metadata store's
+    /// skipped set (`MetadataCmd::MarkSkipped`). The store's skipped set is the only dismissal
+    /// state and the row is re-resolved from it every frame, which is what turns the offer into
+    /// the discs; the same set also retires a synthesized tail, which is what keeps a silent
+    /// credits marker from coming back.
+    DismissOffer(plx_data::metadata::Marker),
     /// **Leave the player** — the one ritual the STOP key, a BACK with nothing else open, and the
     /// failure read-out's own BACK escape all perform (`exit_player`; restructure phase 12,
     /// replacing `app/run.rs`'s direct calls to it from the player's own key arms).
@@ -1448,6 +1454,8 @@ pub enum LoopReq {
     /// Lab builds only, and it changes no route: the tester stays where they were and the toast
     /// says what happened.
     AccountSendDiagnostics,
+    /// Open Settings directly on Favorite libraries from the Library's Sort & Filter menu.
+    LibraryFavourites,
 }
 
 /// Any host that carries this bundle. The screens under `screens/` are written against it, so the
@@ -1886,7 +1894,8 @@ pub enum AppArg {
     /// are two entries (`person → detail → person` is three), which is the whole reason the
     /// identity rides on the argument instead of being a variant of a page alphabet.
     Content(ContentArg),
-    /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
+    /// The Settings family, rooted at this page (`SettingsPage::Root` for every opening but the
+    /// Library's Favorite libraries row, `LoopReq::LibraryFavourites`).
     Settings(SettingsPage),
     /// The first-run consent question, rooted at this stage byte (0 for every real opening;
     /// `screens::consent`'s `STAGE_PRODUCT` for `/tmp/plxnative-consent=product`).
@@ -2658,11 +2667,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`, so the Speed page can be
 // addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
 // 0x9425_f33f_3f53_6aa5.
-// Skip / Up Next offer dismissal: `PlayerScreen`'s `hud` gains `dismissed_offer` (the segment
-// BACK dismissed), after `last_offer` in the canon and the shape string. One bump; the census is
-// part of the replay state fingerprint even though the anchors never mount the player, so all
-// three recordings were re-recorded against it.
-const SCREEN_SHAPES_PIN: u64 = 0xe208_abdc_a1df_2158;
+const SCREEN_SHAPES_PIN: u64 = 0xb633_b65b_ed93_ca93;
 
 #[cfg(test)]
 mod arg_tests {
