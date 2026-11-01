@@ -298,3 +298,27 @@ fn the_row_parks_on_the_primary_control_of_the_package() {
     assert_eq!(page.row_primary(), next, "an episode with a Next: Next");
     assert_eq!(page_with(classic()).row_primary(), page_with(classic()).slot.primary_btn(), "classic's rule over its own table");
 }
+
+/// **The failure read-out's recovery More lists no folded row.** Its Change Quality opens More on the Quality page
+/// over a failed playback, and BACK pops to the root: a root with Chapters, From Beginning or Previous in it would
+/// give the read-out a route to a section or a seek it never had. The page holds the state already (`busy`), so the
+/// gate is where the seed is taken (`PlayerScreen::more_folds`), and a playback that is merely loading still folds.
+#[test]
+fn a_failed_playback_seeds_no_folded_rows_into_more() {
+    let _g = plx_base::testlock::serial();
+    let minimal = load(
+        include_str!("../../../appkit/src/hud_format/fixtures/minimal.plxhud.json").as_bytes(),
+        "test",
+        plx_platform::i18n::english(),
+        &FixtureMeasure,
+    )
+    .expect("the minimal fixture loads")
+    .compiled;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let mut page = page_with(minimal);
+    assert!(!page.more_folds(meta.view()).is_empty(), "a playing page folds rows");
+    page.busy = plx_appkit::player_hud::Busy::Transport;
+    assert!(!page.more_folds(meta.view()).is_empty(), "a loading one still does");
+    page.busy = plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
+    assert_eq!(page.more_folds(meta.view()), Vec::new(), "the failure read-out owns the frame: no route to a section or a seek");
+}

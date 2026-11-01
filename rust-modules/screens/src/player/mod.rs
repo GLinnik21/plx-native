@@ -268,6 +268,30 @@ impl PlayerScreen {
         self.publish();
     }
 
+    /// **Every caption path, in one place** (libass text, the fault message, the sidecar notice, the PGS/VobSub
+    /// display set): each reads the HUD's `band` this frame, rise included, so they lift together. The frame
+    /// draws them under the transport, or over an open section (`Screen::draw`'s order).
+    fn draw_captions(
+        &mut self,
+        ps: &plx_media::route::PlaybackSession,
+        measure: &dyn plx_machine::machine::Measure,
+        subs_lift: bool,
+        band: plx_media::player::text_style::HudBand,
+    ) {
+        self.render.ass.draw(subs_lift, band, &self.model);
+        if let Some(message) = self.render.ass.error() {
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, measure);
+        }
+        // a sidecar that produced nothing says so for a few seconds; the server burning the
+        // selection draws it already, so no second notice then
+        if let Some(message) = plx_media::player::sidecar::notice()
+            .filter(|_| !plx_media::route::subtitles_burned(ps))
+        {
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, measure);
+        }
+        self.draw_subtitle_bitmap(subs_lift, band); // PGS/VobSub image subs
+    }
+
     /// Draw the image-subtitle display set — the render half this screen owns.
     pub fn draw_subtitle_bitmap(&mut self, hud_up: bool, band: plx_appkit::player_hud::HudBand) {
         plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up, band, &self.model);
@@ -756,6 +780,11 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // …and the sections' appear springs, pointed at the sections that are open (a write to
                 // `hud.sections` that did not tell them is caught up here) and stepped once per frame.
                 self.row.follow(self.hud.sections.bits());
+                // …and the captions' rise, aimed at the block those sections lay out and stepped by the same call
+                // as the springs above, so it starts on the frame their appear does
+                let open = self.hud.sections.bits();
+                let block_top = if open != 0 { self.hud_geometry(cx).open_top() } else { None };
+                self.row.follow_captions(open, self.compiled.band(), block_top);
                 self.row.step_appear(*tick, &mut fx.present());
                 // …and the strip's Shelf on the same Tick as the spring that carries it in, not while that spring is
                 // still held at appear 0: the panel's card began to pop with its fade, not ahead of it
@@ -2012,6 +2041,18 @@ impl PlayerScreen {
         Some(opener.and_then(|i| state.menu_anchor(i)).unwrap_or(state.standin.row))
     }
 
+    /// **The folded rows More's root lists** for the content playing: the commands the compiled package places in
+    /// no reachable state (R2), each kept only when the app's own predicate for it holds on this frame's model
+    /// ([`plx_appkit::more_menu::folded_rows`]). Classic's list is empty, and so is every list while the failure
+    /// read-out owns the frame: its Change Quality opens More over a failed playback, and a root with a section or a
+    /// seek in it would give the read-out a route it never had.
+    pub fn more_folds(&self, meta: plx_data::metadata::MetadataView<'_>) -> Vec<plx_appkit::more_menu::FoldedRow> {
+        if player_hud::readout_owns_frame(self.busy) {
+            return Vec::new();
+        }
+        plx_appkit::more_menu::folded_rows(self.compiled.folds(), &self.model, meta)
+    }
+
     /// Does item `i` of the row have a stop? The command's own predicate for a package's discs, the slot's
     /// elsewhere (`player_hud::geometry::row_enabled`).
     fn row_enabled(&self, i: i32) -> bool {
@@ -2040,10 +2081,11 @@ impl PlayerScreen {
 
     /// **The caption band the layout occupies**: ONE value of the package (`Compiled::band`), the same one
     /// every state's report carries, so the caption draws and the libass lift move with the HUD that is up
-    /// and not with the frame's state. It is read on every drawn frame, so it asks the compile for the value
-    /// itself and builds no report.
+    /// and not with the frame's state, carrying the rise the open sections have lifted the captions by
+    /// ([`HudMotion::caption_rise`](player_hud::motion::HudMotion::caption_rise)). It is read on every drawn
+    /// frame, so it asks the compile for the value itself and builds no report.
     fn caption_band(&self) -> plx_media::player::text_style::HudBand {
-        self.compiled.band()
+        self.compiled.band().with_rise(self.row.caption_rise())
     }
 
     /// Which of the HUD's three transport groups holds `elem` — the failure row and the repair
@@ -2387,18 +2429,14 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         let subs_lift = self.subs_lift(ps, now);
         // The band the layout occupies, a value from its geometry this frame, not a constant.
         let band = self.caption_band();
-        self.render.ass.draw(subs_lift, band, &self.model);
-        if let Some(message) = self.render.ass.error() {
-            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, f.cx.measure);
+        // **Captions draw above an open section** (`docs/hud-plugins.md`, "Captions"): while a section draws
+        // something (open, or fading out, `HudMotion::sections_visible`) they are the frame's last layer under
+        // the read-outs, so its ground and scrim cannot cover them; on a frame it draws nothing (held at appear 0,
+        // or faded) they stay where they always were, under the transport's scrim.
+        let over_section = self.row.sections_visible();
+        if !over_section {
+            self.draw_captions(ps, f.cx.measure, subs_lift, band);
         }
-        // a sidecar that produced nothing says so for a few seconds; the server burning the
-        // selection draws it already, so no second notice then
-        if let Some(message) = plx_media::player::sidecar::notice()
-            .filter(|_| !plx_media::route::subtitles_burned(ps))
-        {
-            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, f.cx.measure);
-        }
-        self.draw_subtitle_bitmap(subs_lift, band); // PGS/VobSub image subs
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
         // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
         // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse
@@ -2418,6 +2456,9 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
             self.draw_hud(ps, now, f, H::metadata(f.cx));
         } else {
             self.row.reset_title();
+        }
+        if over_section {
+            self.draw_captions(ps, f.cx.measure, subs_lift, band);
         }
         // The read-out is NOT transport chrome — it is drawn whether or not the HUD is up, so a
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
@@ -5129,5 +5170,90 @@ mod repair_confirmation_tests {
             assert_eq!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)), vec![PlayerReq::Exit]);
             assert!(!page.repair_alert.is_open());
         }
+    }
+}
+
+/// **Captions draw above an open section** (`docs/hud-plugins.md`, "Captions: the band a HUD occupies"): the
+/// frame-level pin on the draw order. The caption here is the sidecar notice, which every caption path
+/// shares the order with (`PlayerScreen::draw_captions`).
+#[cfg(test)]
+mod caption_order_tests {
+    use super::*;
+    use crate::player::overlay_tests::TestHost;
+    use plx_machine::machine::{Cx, EntryId, InputOwner, Tick};
+    use plx_ui::fixture::FixtureMeasure;
+
+    const ENTRY: EntryId = EntryId(9);
+
+    fn cx() -> Cx<'static, TestHost> {
+        Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &FixtureMeasure,
+            focus: Default::default(),
+            press: Default::default(),
+            owner: InputOwner::Entry(ENTRY),
+        }
+    }
+
+    /// The text runs one frame of `page` draws, in draw order.
+    fn runs(page: &mut PlayerScreen) -> Vec<String> {
+        let cx = cx();
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_ui::frame::backdrop::Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let _walk = plx_ui::frame::backdrop::discover(sources.clone());
+        let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        plx_ui::draw_census::capture_runs(|| Screen::<TestHost>::draw(page, &mut frame)).into_iter().map(|r| r.text).collect()
+    }
+
+    #[test]
+    fn a_caption_draws_over_an_open_section_and_under_the_transport_otherwise() {
+        let _g = plx_base::testlock::serial();
+        plx_media::player::sidecar::reset();
+        plx_media::player::sidecar::fail_for_test(9, std::time::Duration::ZERO);
+        let notice = plx_media::player::sidecar::notice().expect("the notice is up").to_string();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        page.set_hud_policy(HudPolicy::Lifted);
+
+        let closed = runs(&mut page);
+        let at = closed.iter().position(|t| *t == notice).unwrap_or_else(|| panic!("the caption is drawn: {closed:?}"));
+        assert!(at + 1 < closed.len(), "with nothing open the transport draws over it, as it always did: {closed:?}");
+
+        // A section the frame draws nothing of (held at appear 0, or faded out) leaves the caption where it was:
+        // the order, and the scrim's dimming with it, changes only while the section is visibly drawn.
+        let mut present = plx_machine::present::Present::new();
+        let mut ms = 1_000;
+        let mut step = |page: &mut PlayerScreen| {
+            ms += 16;
+            let mut ph = plx_machine::machine::PresentHandle::of(&mut present);
+            page.row.step_appear(Tick { ms, dt_us: 16_667 }, &mut ph);
+        };
+        let last = |page: &mut PlayerScreen| runs(page).last() == Some(&notice);
+        page.hud.sections = Sections::NONE.toggled(Section::Info, true);
+        page.row.follow(page.hud.sections.bits());
+        assert_eq!(page.row.section_appear(Section::Info), 0.0);
+        assert!(!last(&mut page), "the held frame draws the section invisibly: the caption stays under the transport");
+        step(&mut page); // held: the frame the spring is pinned on
+        assert!(!last(&mut page));
+        step(&mut page);
+        assert!(page.row.section_appear(Section::Info) > 0.0);
+        let open = runs(&mut page);
+        assert!(open.len() > 1, "the section drew its own text: {open:?}");
+        assert_eq!(open.last(), Some(&notice), "the first frame the section is visible, the caption is the last thing drawn: {open:?}");
+
+        // closing: over the section for as long as it draws anything, under again on the first frame it draws nothing
+        page.hud.sections = Sections::NONE;
+        page.row.follow(0);
+        step(&mut page);
+        let mut over = 0;
+        while page.row.section_appear(Section::Info) > 0.0 {
+            assert!(last(&mut page), "fading out at appear {}: still over the section", page.row.section_appear(Section::Info));
+            over += 1;
+            step(&mut page);
+            assert!(over < 200, "the section never faded");
+        }
+        assert!(over > 2, "it faded over several frames");
+        assert!(!last(&mut page), "the first frame the section draws nothing, the caption is back under the transport");
+        plx_media::player::sidecar::reset();
     }
 }

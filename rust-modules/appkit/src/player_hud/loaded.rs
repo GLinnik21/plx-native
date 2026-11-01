@@ -94,6 +94,25 @@ pub fn reference_with_info_actions_for_test() -> Arc<Compiled> {
         .compiled
 }
 
+/// **The reference with its Chapters and Info discs taken out of the row**, under `policy` (`"modal"` or `"inline"`): the
+/// two section bands stay, so both sections are laid out, and the package places no opener for either. A More fold
+/// row is the only way to either section. Loaded like [`reference_for_test`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn reference_without_openers_for_test(policy: &str) -> Arc<Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+    let openers = concat!(
+        "          { \"id\": \"chapters\", \"command\": \"toggle_section\", \"section\": \"chapters\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"list\" },\n",
+        "          { \"id\": \"info\", \"command\": \"toggle_section\", \"section\": \"info\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"builtin:info\" },\n",
+    );
+    assert_eq!(text.matches(openers).count(), 1, "the reference's two section discs, as written");
+    let text = text.replace(openers, "").replace("\"sections\": \"inline\"", &format!("\"sections\": \"{policy}\""));
+    load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+        .expect("the reference without its openers loads")
+        .compiled
+}
+
 /// **The dev trigger's value**: the path of the package to draw instead of classic, the first line of the
 /// trigger file, trimmed. `None` for an empty file (nothing armed).
 pub fn dev_package_path(value: &str) -> Option<&str> {

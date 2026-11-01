@@ -66,7 +66,7 @@ use plx_ui::{theme, Rect};
 
 use super::clocks::{self, ClockRects};
 use super::parse::{Cond, CondTerm, Object, Package, Val};
-use super::reach::{Layout, Slot, State, Valuation};
+use super::reach::{Fold, Layout, Slot, State, Valuation};
 use super::schema;
 use super::{pointer_push, validate::each_object};
 use crate::player_hud::classic::{self, stand_in_w, CLOCK_TOP, KNOB_GLOW_R};
@@ -669,6 +669,7 @@ impl CompiledState {
             title: shown.title,
             tabs: [self.tab("info"), self.tab("chapters")],
             band: self.band,
+            open_height: self.open_height(),
         };
         if let Some(bar) = self.playbar {
             g.grab = bar.grab;
@@ -692,6 +693,17 @@ impl CompiledState {
             Slot::Skip => g.items[0] = self.standin.skip.map(|s| s[skip as usize]),
         }
         g
+    }
+
+    /// **The height of the block a section has open** (`docs/hud-plugins.md`, "Captions"): `SCR_H` less the top
+    /// of the highest band this state lays out (the scrim's own `block_top`), `0` for a compact state. A modal
+    /// package's state holds the section's band and the tabs, so this is the section's card; an inline one's
+    /// holds the transport lifted over it, so it is the whole block, as the package laid it out.
+    pub fn open_height(&self) -> f32 {
+        if self.key.open == 0 {
+            return 0.0;
+        }
+        self.bands.iter().map(|(_, r)| r.y).reduce(f32::min).map_or(0.0, |top| (SCR_H - top).max(0.0))
     }
 
     /// The pill of the `toggle_section` control that opens `section`.
@@ -805,6 +817,9 @@ pub struct Compiled {
     /// `inline` lets any set be open. Read once here for the player's `HudState::sections`, as `reach` reads it
     /// for the state graph, so the two cannot disagree
     modal: bool,
+    /// the commands the package places in no reachable state (R2), in the command table's order: the rows More's
+    /// root lists after Quality and Speed ([`Compiled::folds`])
+    folds: Vec<Fold>,
     findings: Vec<CompileFinding>,
     /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
     assets: Vec<(String, String)>,
@@ -830,6 +845,7 @@ impl Default for Compiled {
             band: HudBand::CLASSIC,
             block: false,
             modal: true,
+            folds: Vec::new(),
             findings: Vec::new(),
             assets: Vec::new(),
         }
@@ -877,6 +893,16 @@ impl Compiled {
     /// any set may be open and focus travels freely. The player's `HudState::sections` obeys it.
     pub fn sections_modal(&self) -> bool {
         self.modal
+    }
+
+    /// **The commands More's root lists as rows** (R2, `docs/hud-plugins.md`, "Reachability over the HUD's state
+    /// graph"): each command the package places in no state reachable from the root, in the command table's order,
+    /// which is More's order after Quality and Speed. The compiler computes them once, with the same
+    /// walk [`super::check`] reports as [`super::Checked::folds`]; classic's list is empty. Whether a row is
+    /// offered for the content playing is the app's predicate ([`crate::player_hud::command::HudCommand::enabled`]),
+    /// asked when the menu opens.
+    pub fn folds(&self) -> &[Fold] {
+        &self.folds
     }
 
     /// What the compiler could not carry as written (see [`CompileFinding`]); empty for a package that
@@ -933,7 +959,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
     let pauses: &[bool] = if frame.paused { &[false, true] } else { &[false] };
     for &paused in pauses {
         for v in layout.valuations() {
-            for state in layout.explore(v) {
+            for state in layout.explore_with_folds(v) {
                 let env = Env { package, layout: &layout, measure, labels: &ctx.labels, state, v, paused };
                 states.push(env.compile_state());
             }
@@ -953,6 +979,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
         modal: package.layout.get("sections").and_then(Val::as_str) != Some("inline"),
+        folds: layout.folds(),
         findings,
         assets: package.assets.clone(),
     };

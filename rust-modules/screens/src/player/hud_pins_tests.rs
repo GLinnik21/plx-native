@@ -1981,6 +1981,64 @@ mod sections {
         assert!(run.asked().is_empty());
     }
 
+    // -- a section with no opener: the More fold -----------------------------------------------------
+
+    fn without_openers(policy: &str) -> std::sync::Arc<plx_appkit::hud_format::compile::Compiled> {
+        plx_appkit::player_hud::loaded::reference_without_openers_for_test(policy)
+    }
+
+    /// **A package that places no section opener reaches the section through its fold row**, under both policies, and
+    /// the section then opens, travels and closes as it does from a tab: the row's command is the very one the tab
+    /// asks (`PlayerReq::Command(ToggleSection(..))`), so the app's one performer opens it and the page seats the
+    /// strip's first card (or Info's first button) exactly as a press on the pill does.
+    #[test]
+    fn a_section_with_no_opener_is_reached_through_its_fold_row_and_behaves_as_from_a_tab() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        for policy in ["modal", "inline"] {
+            let package = without_openers(policy);
+            let model = plx_appkit::player_hud::model::HudModel { chapters: true, detail: true, ..Default::default() };
+            let rows = plx_appkit::more_menu::folded_rows(package.folds(), &model, test_store().view());
+            let commands: Vec<HudCommand> = rows.iter().map(|r| r.command).collect();
+            for section in [Section::Chapters, Section::Info] {
+                assert!(commands.contains(&HudCommand::ToggleSection(section)), "{policy}: {section:?} folds into More: {commands:?}");
+            }
+            let labels: Vec<&str> = rows.iter().map(|r| r.label).collect();
+            assert!(labels.contains(&plx_platform::i18n::msg::widgets_player_chapters()) && labels.contains(&plx_platform::i18n::msg::widgets_player_info()), "{labels:?}");
+
+            // Chapters: open, travel, close
+            let mut run = Run::boot_in(Occupant::Plain, package.clone(), true);
+            run.screen().model.chapters = true;
+            run.step('D'); // the transport is hidden at boot, and More opens over a raised one: the first press raises it
+            run.toggle(Section::Chapters);
+            assert_eq!(run.open_sections(), vec![Section::Chapters], "{policy}");
+            assert_eq!(run.group(), GROUP_STRIP.0, "{policy}: the page's cursor follows the engine into the strip");
+            assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE), "{policy}: the engine holds the first card");
+            run.step('R');
+            assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE + 1), "{policy}: Right walks the strip");
+            run.step('L');
+            assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE), "{policy}");
+            run.asked();
+            run.step('B');
+            assert_eq!(run.open_sections(), Vec::<Section>::new(), "{policy}: BACK closes it");
+            assert!(run.asked().is_empty(), "{policy}: closing asks the app for nothing");
+
+            // Info: open, close
+            let mut run = Run::boot_in(Occupant::Plain, package, true);
+            run.screen().model.chapters = true;
+            run.step('D');
+            let before = run.group();
+            run.toggle(Section::Info);
+            assert_eq!(run.open_sections(), vec![Section::Info], "{policy}");
+            // the reference's Info places no action, so there is nothing to seat: the ring stays where it was, as
+            // it stays on the disc that opened it in `the_reference_stacks_info_over_chapters...`
+            assert_eq!(run.group(), before, "{policy}");
+            run.step('B');
+            assert_eq!(run.open_sections(), Vec::<Section>::new(), "{policy}");
+        }
+    }
+
     // -- the stand-ins and a failure ---------------------------------------------------------------
 
     /// D7: a Skip pill or the Up Next pair draws only with no section open. While one is open the page reads the
@@ -2386,6 +2444,54 @@ mod sections {
         run.frames(80);
         assert!(run.appear(Section::Info) > 0.99, "…and it comes to rest: {}", run.appear(Section::Info));
         assert_eq!(run.presented(), vec![Section::Info]);
+    }
+
+    /// **The captions' limit rides the section's own frames** (`docs/hud-plugins.md`, "Captions"): through the
+    /// screen's real tick the limit takes its first step on the frame the section's appear takes its first, on open
+    /// and on close, rises to Info's limit (656 at Low) without passing it and comes home to 780 on BACK.
+    #[test]
+    fn the_captions_rise_starts_with_the_section_and_comes_home_with_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::Plain);
+        let limit = |run: &mut Run| {
+            let band = run.screen().caption_band();
+            band.ceil_y - band.rise_for(plx_plex::plex::session::SubtitlePosition::Low)
+        };
+        assert_eq!(limit(&mut run), 780.0, "nothing open: today's ceiling");
+        run.toggle(Section::Info);
+        let (mut appear_at, mut limit_at) = (None, None);
+        for i in 0..90 {
+            run.frames(1);
+            let (a, l) = (run.appear(Section::Info), limit(&mut run));
+            assert!(l <= 780.0 && l >= 656.0, "frame {i}: {l} stays between the two ends");
+            if a > 0.0 && appear_at.is_none() { appear_at = Some(i) }
+            if l < 780.0 && limit_at.is_none() { limit_at = Some(i) }
+        }
+        assert!(appear_at.is_some() && appear_at == limit_at, "open: appear {appear_at:?}, limit {limit_at:?}");
+        assert_eq!(limit(&mut run), 656.0, "settled on Info's limit");
+        // BACK on a frame of its own, as `the_fade_starts_on_the_frame_after_the_back...` does: the frame the key
+        // lands on moves neither the section nor the limit, the next frame moves both
+        let now = run.now + 16;
+        run.now = now;
+        let ps = plx_media::route::idle_session_for_test();
+        run.screen().hud.note_fresh_press(ps, now, false);
+        run.frame(now, vec![key(Key::Back, tick(now))]);
+        assert!(run.open_sections().is_empty(), "BACK closed it");
+        assert_eq!((run.appear(Section::Info), limit(&mut run)), (1.0, 656.0), "the dismissal frame moves nothing");
+        run.frame(now + 16, vec![]);
+        let (a, l) = (run.appear(Section::Info), limit(&mut run));
+        assert!(a < 1.0 && l > 656.0, "the next frame takes both first steps: appear {a}, limit {l}");
+        let (mut appear_at, mut limit_at) = (None, None);
+        for i in 0..90 {
+            run.frames(1);
+            let (a, l) = (run.appear(Section::Info), limit(&mut run));
+            assert!(l >= 656.0 && l <= 780.0, "frame {i}: {l}");
+            if a < 1.0 && appear_at.is_none() { appear_at = Some(i) }
+            if l > 656.0 && limit_at.is_none() { limit_at = Some(i) }
+        }
+        assert!(appear_at == limit_at, "close: appear {appear_at:?}, limit {limit_at:?}");
+        assert_eq!(limit(&mut run), 780.0, "home");
     }
 
     /// **BACK fades a section out and gives the transport back at the dismissal frame.** The logical set drops the

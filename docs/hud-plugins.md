@@ -39,7 +39,7 @@ HUD drawing and state
 - F3. The draw path reads process globals, not values: `TX.paused` (`player_hud.rs:2095`, `:1847`); in
   `Playbar::live` `TX.scrub_ns` `:1826`, `playpos_ns()` `:1833`, `seek_display_ns()` `:1836`,
   `duration_ns()` `:1850`; `draw_scrub_preview` `TX.scrub_ns` `:2204`; `ClockWarm` `:93-97`; `slot()`
-  `:905-906`; `busy()` `:1047`; `caption_geometry` `:151`; the bitmap path `:345`. The three player
+  `:905-906`; `busy()` `:1047`; the bitmap path `:345`. The three player
   reads are `SHARED.*.load` (`media/src/player/mod.rs:682-696`).
 - F4. App-owned state logic already sits in its own functions: `slot_for` `:878`, `slot` `:899`,
   `standin_left_the_ring` `:934`, `busy_surface` `:977`, `readout_owns_frame` `:1010`,
@@ -185,8 +185,9 @@ Captions
   `text_style.rs:68`, `:192-195`; `screens/src/player/ass_subtitles.rs:271` (test `:398`);
   `media/src/player/ass/tests/synth.rs:443-447`; `plex/src/plex/session.rs:1076` (doc). Media cannot name
   appkit (`ci/module-layers.ini` `[media] uses = base machine platform gfx net plex telemetry data`).
-  Captions draw first and the HUD over them (`screens/src/player/mod.rs:1513-1525`, `:1539-1541`), so
-  today an open Info card (top 668) or strip (684) covers a caption lifted to 780.
+  Captions drew first and the HUD over them (`screens/src/player/mod.rs:1513-1525`, `:1539-1541`), so
+  an open Info card (top 668) or strip (684) covered a caption lifted to 780 until PR17, which lifts the
+  caption clear of it and draws it above the section (section "Captions").
 - F29. `SAFE` = x 96..1824, y 54..1026 (`ui/src/consts.rs:32`, `:41`, `:94-99`); its doc exempts grounds:
   "a full-bleed hero backdrop ... a scrim, the page ground ... are supposed to reach the panel edge ...
   What must be inside is what the viewer has to read or press" (`:88-93`).
@@ -293,8 +294,9 @@ Other subsystems the plan touches
     More, the Info card's two actions.
   A key-less command that no control carries in any state the viewer can reach is FOLDED by the app into
   the app-owned More menu as a row (`more_menu::Action` gains a `Hud(HudCommand)` variant in place; the
-  menu still only reports, and `apply_more_action` hands it to the same performer a placed control
-  uses, F16). The ONE required control is the More opener (`open_more`), in the root state (compact,
+  menu reports `Action::Hud(command)`, the overlay closes More and asks `PlayerReq::Command`, and
+  `perform_hud_command` runs it, the performer a placed control uses, F16; `apply_more_action` never receives a
+  folded row). The ONE required control is the More opener (`open_more`), in the root state (compact,
   Discs slot): More holds Stats for nerds, which is how bug reports leave TVs (F16), and it is the home
   of every folded command, so it cannot fold into itself. Section "Reachability" defines the state graph;
   classic passes it as it is.
@@ -332,12 +334,13 @@ Other subsystems the plan touches
   is false behind any overlay or open section, F19), and the stand-in takes its segments when the last
   section closes, if the marker is still active.
 - D8. **The caption band is derived from the COMPACT state only, one value per package.** Today the
-  ceiling is the fixed 780 whenever the HUD is up, and an open card or strip covers a lifted caption (F28).
+  ceiling is the fixed 780 whenever the HUD is up and no section is open; with a section open the caption rises
+  clear of it and draws over the section (section "Captions clear of an open section").
   A band that moved per section would move classic's captions in its info and chapters states and break
   pixel identity there. So the band is the union over the compact state's slot states (Discs, Up Next,
-  Skip), measured on DRAWN extents, and sections may cover captions exactly as classic's do today. Lifting
-  captions clear of an open section is a separate, owner-gated PR (PR17), because it changes classic's
-  frames. Section "Captions" has the arithmetic.
+  Skip), measured on DRAWN extents, and the base band does not move with a section. Lifting captions
+  clear of an open section is a separate, owner-gated PR (PR17), because it changes classic's frames: it
+  is a RISE on top of the band while a section is open, not a different band (section "Captions").
 - D9. **Menu placement is derived from the opener's compiled rect by ONE shared placer in
   `ui/src/popover.rs`, extended in place for every caller.** No player-local placer. A package cannot hint
   the side: in 1.0 the only anchor is `bottom` (D13), so a hint carries no information the room test does
@@ -676,12 +679,16 @@ to Discs when its marker ends, when Watch Credits dismisses the offer, or when B
   root by the edges above places an enabled-capable control carrying it, under EVERY valuation in which the command is
   enabled (a valuation where its predicate fails, Previous for a movie, asks nothing); a command placed under only some
   of them folds. Each command that none places is
-  folded into More's root, after Quality and Speed and before Options (the More fold PR adds the rows, their
-  i18n keys in all eleven catalogs and a `fit_report` over More's FormTable; the section rows reuse
-  `widgets_player_chapters`/`widgets_player_info` (`player_hud.rs:1433-1434`) and the Info actions reuse
-  their button strings (`info_panel.rs:566-575`), so only Previous, Next and the track-menu row need new keys). A command that already has a
+  folded into More's root, after Quality and Speed and before Options (PR9 added the rows; the compiler keeps the
+  list, `Compiled::folds`, and a row is listed only when the app's own predicate for its command holds for the item
+  playing, so a movie has no Previous or Next row; the section rows reuse
+  `widgets_player_chapters`/`widgets_player_info` and the Info actions reuse their button strings; Next reuses
+  `widgets.next.episode` and the track-menu row `settings.audio.title`, which opens the track menu on its Subtitles
+  tab, so the one new key is `widgets.menu.previous_episode`). A command that already has a
   More row (`toggle_stats`, the Options switch) never folds. Reachability can therefore never fail except
-  by R1; lint lists the folded commands as information.
+  by R1; lint lists the folded commands as information. A section only a fold row opens is compiled like any
+  other (the compiler's walk adds the state the row reaches, `explore_with_folds`; the rules' own graph above does
+  not), so it opens, travels and closes as from a tab.
 - R3. A `toggle_section {section: s}` control implies a band with `when: panel.s` (lint error otherwise: an
   opener with nothing to open); a section band with no opener is reachable through the fold.
 - R4. Both Up Next buttons are placed in `layout.up_next`, the countdown presentation sits on or in
@@ -786,14 +793,64 @@ rounding, by an amount UNVERIFIED until PR12 measures it; either way the TV's co
   block is about 3 x 48 x 1.8 = 259 px, so the ceiling must sit at or below about 54 + 259 + 320 = 633 and
   `controls_top_y` at about 645. Classic's compact top 792 passes. Classic's card (668) and strip (684)
   would pass too, being BELOW 645; only the reference's expanded block (top near y 480 in its chapters plus
-  info state, an estimate) would fail, and under D8 the expanded states do not define the band, so no lift
-  clamp is needed in 1.0.
-- Plumbing: `text_style::HudBand { ceil_y, controls_top_y, lift }` with `HudBand::CLASSIC` equal to today's
+  info state, an estimate; the compile computes 377.8) would fail, and under D8 the expanded states do not
+  define the band, so no band clamp is needed. The rise PR17 adds has its own safe-area clamp (below).
+- Plumbing: `text_style::HudBand { ceil_y, controls_top_y, lift, rise }` (`rise` is PR17's, zero with no section) with `HudBand::CLASSIC` equal to today's
   constants; every F28 reader takes the band as an argument (`caption_geometry_for`, `hud_lift`/`overhangs`,
   `today_baseline`, the libass lift, the synth test); the player screen passes `HudGeometry::band()` down, so
   media still names nothing above it. The tie test runs for `CLASSIC` and for a non-classic band.
 - Decor may overlap captions, as classic's title does today; registry CI renders captions at the largest
   size so a reviewer sees it.
+
+### Captions clear of an open section (PR17)
+
+While any player section is open, a caption's bottom limit is `min(P, S - 12)`. P is the HUD-up limit the code
+gives the viewer's Position (`band.ceil_y - position_lift`: Low 780, Middle 620, High 460 on classic; an image
+caption has no Position, so its P is the ceiling, Low's) and S is the resting top of everything the HUD has open,
+which the compile reports as the open block's height (`HudGeometry::open_height`, `S = 1080 - height`: the top
+of the highest band of the state, the same rule the scrim's `block_top` uses). The two never add: a Position that
+already clears the section does not move. 12 is `CAPTION_INK_CLEARANCE`, the gap the band itself keeps.
+
+| state | Low | Middle | High |
+|---|---|---|---|
+| HUD up, nothing open | 780 | 620 | 460 |
+| built-in Info (S 668) | 656 | 620 | 460 |
+| built-in Chapters (S 684) | 672 | 620 | 460 |
+
+The reference package's block is its whole inline block (its transport is lifted over the section), laid out by
+its own compile, and its band is its own too (ceiling 757.2, so P is 757.2 / 597.2 / 437.2): Chapters S 542.8
+gives 530.8 / 530.8 / 437.2, Info S 572.2 gives 560.2 / 560.2 / 437.2, both S 377.8 give 365.8 at every Position.
+(The designer's estimates, 640 / 600 / 480, were for a band at 780 and a block without the lifted title.)
+
+- **The rise.** `HudBand` carries `rise: [f32; 3]`, `P - limit` per Position (Low, Middle, High), so every reader
+  takes the limit as `P - rise` and a band whose rise is zero leaves its arithmetic exactly as it was
+  (`caption_geometry_for`, `hud_lift`, `today_baseline`, the libass `lift_dys`). `rise_to_clear(S)` is
+  `max(0, P - (S - 12))` per Position. A Position that already clears the block takes no rise: Position gives way
+  first.
+- **Rise only.** `player_hud::caption_rise::CaptionRise`, a field of `HudMotion`, holds the lowest S of every state
+  visited since the first section opened, so a second section or a taller one lifts the limit, a shorter one or the
+  close of one of two holds it, and the last close returns it to P. It is aimed from the screen's tick
+  (`HudMotion::follow_captions`) with `follow`, and the presented rise reaches the readers inside the band
+  (`PlayerScreen::caption_band`): no writer into the media layer.
+- **Motion.** One critically damped spring per Position on `popover::K_APPEAR` (300), in the rise's own domain, so
+  a Middle or High caption moves from the first appear frame instead of waiting for a single spring to reach it. It
+  steps in `HudMotion::step_appear`, beside the sections' appear springs, and waits wherever they do (a section
+  held at appear 0, the frame a section was dismissed on): the first moving frame is the section's first appear
+  frame, on open and on close.
+- **Safe area.** `HudBand::clear_rise`: where `limit - caption height < 54` the limit becomes `54 + caption height`
+  and the caption overlaps the section at its own size. Bespoke text measures its anchored block, the image path the
+  overhanging group, libass the group that moves (libass's block sits `INK_TRIM` below the bespoke one, so it stops
+  3 px lower).
+- **Parts.** One delta for every part whose bottom is below the limit (dialogue, an image rectangle, a libass
+  region), parts above stay, nothing is rescaled. A libass frame is rasterised when its cue changes, never per
+  frame: the travel moves the cached textures (`AssSubtitles::draw`), and a PGS or VobSub set moves its cached
+  rectangles, so a travel frame costs the quads it already drew. An authored ASS script keeps its placement.
+- **Draw order.** While a section draws something (`HudMotion::sections_visible`: any section's appear above 0,
+  open or fading out) every caption path draws after the HUD, so the section's ground and the scrim cannot cover
+  it; on a frame it draws nothing (held at appear 0, or faded) it draws before the transport, under the scrim, as it
+  always did. A caption therefore stops being dimmed by the scrim on the first frame a section is visibly drawn and
+  is dimmed again on the first frame it draws nothing.
+- The Compact HUD, the HUD down and a frame with no section keep every number they had.
 
 ## Menus and other HUD popovers
 
@@ -833,7 +890,9 @@ opener, through ONE shared placer.
   language; a server-length list (audio and subtitle tracks) may exceed it and scrolls. Classic's room above
   its row is 764 - 54 = 710. The track menu's cap moves from `bottom - 60` (704) to the room (710), and
   More's from `bottom * 0.86` (657) to 710: settled classic frames change only when a list is taller than
-  the old cap, which the More menu's tallest page (about 600) is not.
+  the old cap, which the More menu's tallest page (about 600) is not. A More root that lists folded rows is
+  taller than that page from the fourth row on (the root's own height is 344 px, plus 24 and 60 a row; `more_menu::need_h(folded)` is that or 600, whichever is taller), so
+  its `need_h` grows with the fold count and M2 asks the placer at every count the package can reach.
 - Motion and scrim stay app-owned and unchanged. Both menus keep `OpenStyle::Appear` (switching to `Morph`
   would be a visible change, and these panels stand over the video plane, not on glass); the container's
   appear spring (`K_APPEAR`, `popover.rs:84`) and `PanelMotion`'s resize springs are untouched; the rise now
@@ -1005,7 +1064,7 @@ time hug (app text, D10); the chapter name is server text and may elide on unfoc
 focused one (D11). Estimated compact block height about 210 px, so its top lands near y 790, below the
 caption bound's estimate (645); the chapters plus info block is about 520 px with its top near 480 (all
 estimates at ladder line heights, UNVERIFIED; the golden `reference_passes_every_invariant` replaces them
-with computed values). The end-aligned `spacer` of 150 reproduces the image's gap after the facts (the run ends near
+with computed values; PR17's compile reports the chapters plus info block's top as 377.8). The end-aligned `spacer` of 150 reproduces the image's gap after the facts (the run ends near
 1422 / 0.871 = 1633 against the content edge 1784; an estimate).
 
 ### Image element -> format feature
@@ -1124,7 +1183,7 @@ at 768 and the title at 802.
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |
 | Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left; cards past `SAFE` culled at the screen edge; an empty name draws "Chapter N" | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 42 = 949 - 684 - (162 + 26 + 34 + 1): `item.start` carries `leading: 1`, the smallest leading, as the stand-in for `chapters_panel::label_ys`'s zero-height origin, because a one-line text's box is its measurer's line height and no gap lands the top on 684 for the fixture, the shipped and the television's measure at once); scroll and marquee per D11 |
 | Info card | ground x 80, w 1760, h 236, top `SCR_H - 176 - 236` = 668, pad 28 (`info_panel.rs:581-588`); still radius 16 (`:216`); text 34 from the still and from the buttons (`:252-255`); title to synopsis 6, tags `before(12)` (`:436-446`); synopsis `leading(29)` (`:386-389`); buttons a column 70 tall, 16 apart, centred, width max(352, widest of all three labels) (`:594-608`), right edge 1812 inside `SAFE`'s 1824 | band `info`, `when: panel.info`: `rect {bleed: 16, pad: 28, h: 236, gap: 34, ink: PANEL_TOP, radius: 28}` holding `image info.still` 320 x 180 radius 16; a `vstack {gap: 6, w: fill, valign: center}` of the title (`max_lines: 1`), the synopsis (`leading: 29`, `max_lines: 2`) and `facts` with `gap_before: 12` (`order: [genres, year, duration]`, `genres_max: 2`, `bold: true`, `ink: TEXT_PRIMARY`, `playback_fact: true`, `badges: [content_rating, audio_format, cc, sdh, ad]`); `actions {axis: column, gap: 16, item_h: 70, min_w: 352, items: [from_beginning, go_to_detail]}`, `align: end`, `valign: center`; the tabs band's `gap_before` 45 under `panel.info` (949 - 904) |
-| Captions | ceiling 780 whenever the HUD is up (F28) | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
+| Captions | ceiling 780 whenever the HUD is up and no section is open (F28); with one open, the limit is `min(P, S - 12)` (section "Captions clear of an open section") | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
 
 ## Invariants
 
@@ -1482,7 +1541,7 @@ PR8. Sections.
 PR9. The More fold.
 - Goal: `more_menu::Action::Hud(HudCommand)` performed through PR3's performer; the folded rows from the compiled
   package; i18n keys in all eleven catalogs (`be` looked up per the repo's dictionary rule) with a `fit_report` over
-  More's FormTable (new keys only for Previous, Next and the track-menu row; R2); `OverlayKind::More`'s
+  More's FormTable (one new key, `widgets.menu.previous_episode`; Next and the track-menu row reuse `widgets.next.episode` and `settings.audio.title`; R2); `OverlayKind::More`'s
   address becomes a `MorePage` so `page: speed` opens on Speed.
 - Verify: a package with no previous/next folds both and the rows perform them; classic folds nothing (its More
   root unchanged, pixel-identical); `fit_report` clean in every shipped language.
@@ -1528,8 +1587,10 @@ later a static web editor on the site.
 
 PR16. A `cargo fuzz` package over `parse + compile` and the SVG checker, with its `make build-bench` table.
 
-PR17. Owner-gated: a per-state caption band with a lift clamp, so an open section lifts captions clear of itself;
-it changes classic's info and chapters frames, which is why it waits for the owner.
+PR17. Owner-gated: captions rise clear of an open section (section "Captions", "Captions clear of an open section"):
+a rise per Position on `HudBand`, aimed from the open block's height the HUD reports and moved by a spring in
+`HudMotion`, with the safe-area clamp and captions drawn above the sections. It changes the frames of classic's info
+and chapters states that carry a caption, which is why it waited for the owner.
 
 No PR adds a dependency before PR14 (the schema is written from the descriptor table, F41). PR11 and PR14 may touch
 the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-auditor` after behaviour changes and
@@ -1552,8 +1613,7 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 - Replacing any app-owned surface (I1). Commands that write the Plex record, change a setting, start a network
   request of their own, exit the app or delete. Direct quality and speed buttons (reached through `open_more`).
 - Press-and-hold commands (FF/REW-style held controls) and a hold behaviour per control: hold stays app-owned.
-- Top-anchored interactive layouts (1.1). A designable Skip pill (a later minor). Lifting captions clear of open
-  sections until the owner approves PR17.
+- Top-anchored interactive layouts (1.1). A designable Skip pill (a later minor).
 - A relay or backend that stores uploads, a LAN listener on the TV, USB until verified. Ratings, comments or payments
   in the registry; telemetry of the HUD id.
 
