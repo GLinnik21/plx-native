@@ -82,9 +82,11 @@ pub enum PickerKind {
 }
 
 impl SettingsPage {
-    /// The pages a boot target opens the surface over, root first: `plxnative-settings=picker-…`
-    /// is reached as root → Playback → the picker (root → the picker for a root row's), so BACK from it
-    /// lands where an interactive visit would. Every other page is booted as the surface's root.
+    /// The pages a boot target asks the surface to stand on, root first: `plxnative-settings=picker-…` and
+    /// `player-hud` name root → Playback → the page (root → the picker for a root row's), the stack an interactive visit
+    /// builds. `RouteSurface::new` issues one request per page and the inner stack keeps only the newest request, so
+    /// what stands is the LAST page alone and BACK from it dismisses the surface instead of popping to its parent
+    /// (seen for the Player HUD page and two pickers). Every other page is booted as the surface's root.
     pub fn boot_trail(self) -> Vec<SettingsPage> {
         match self {
             SettingsPage::Picker(kind) if kind.parent() == SettingsPage::Root => vec![SettingsPage::Root, self],

@@ -380,14 +380,14 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 
 /// **Make sure the player has a compiled HUD**, on each player frame in `prepare_window` (inside the frame
 /// iteration, before the draw): the app's layer is where the current locale is read
-/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The compile runs once per
-/// process: [`boot_hud`] does it at boot, and this does it on the first player frame when boot did not (a
-/// controlled replay or record run) and for the `plxnative-hud=<path>` package, which is read and compiled
-/// on that frame too, so THAT frame pays the compile. A language change does not recompile: the language is
-/// fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a changed setting is the "confirmed next-launch"
-/// one) and takes effect at the next launch. Every compile is handed to the mounter ([`adopt_hud`]), so the next
-/// player instance is constructed with the current one. `builtin:classic` always loads, so after this
-/// `app.hud` is `Some`.
+/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The classic HUD compiles once, at
+/// boot ([`boot_hud`]). A dev package (`plxnative-hud=<path>`, read and compiled on that frame, so THAT frame pays the
+/// compile) and a controlled run compile on their first player frame. A chosen package compiles in
+/// `Bridge::huds_tick`, in each frame's prepare window, when the resolved selection names a package not yet compiled
+/// for this language, and never while a player is up. Every compile reaches the mounter through [`adopt_hud`]. A
+/// language change does not recompile: the language is fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a
+/// changed setting is the "confirmed next-launch" one) and takes effect at the next launch. `builtin:classic` always
+/// loads, so after this `app.hud` is `Some`.
 fn refresh_hud(app: &mut App) {
     use plx_appkit::player_hud::loaded::{DevHud, DevStep};
     let cx = plx_platform::i18n::current();

@@ -12,7 +12,10 @@
 //!
 //! **Validation is the caller's.** The format lives in `appkit::hud_format`, above this layer, so the
 //! store never parses a package. It hashes the bytes it holds (computation) and asks for the verdict
-//! with a [`HudEffect::Validate`]; the runner parses and compiles and answers [`HudEvent::Validated`].
+//! with a [`HudEffect::Validate`]; the runner answers [`HudEvent::Validated`]. It answers `Validate` with `admit`: the
+//! package parses, passes the reachability and package invariants, and runs on this app's version and range. It is not
+//! laid out there. Fit in a language is the driver's (the lint and the load, with the TV's measurer), so `Loadable` means
+//! "parses and runs on this app", not "fits every language".
 //! Nothing is decided before that answer, and the sha the store trusts is always its own.
 //!
 //! **Layout** per candidate directory: `packs/<sha256>.plxhud.json` (content-addressed, so an update is
@@ -214,11 +217,11 @@ pub enum Unloadable {
     AppRange,
 }
 
-/// The runner's answer to a [`HudEffect::Validate`]: the strict parse and the compile, reduced to what
+/// The runner's answer to a [`HudEffect::Validate`]: `admit`'s strict parse, invariants and app-range check, reduced to what
 /// the store decides on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// Parses, compiles, and runs on this app.
+    /// Parses, passes the invariants, and runs on this app. Not laid out: it may still not fit a language.
     Loadable(Meta),
     /// Parses, but this app cannot run it.
     Unloadable(Meta, Unloadable),
@@ -363,7 +366,8 @@ pub enum HudEffect {
     /// Delete a file; one already gone is not an error. Nothing returns: a pack left behind costs
     /// bytes, never correctness.
     Delete { at: Loc },
-    /// Parse and compile these bytes (the format lives above this layer): [`HudEvent::Validated`].
+    /// Admit these bytes (the format lives above this layer): parse them and check the invariants and the app range,
+    /// with no layout: [`HudEvent::Validated`].
     Validate { tag: Tag, sha: Sha, bytes: Arc<[u8]> },
     /// The selection the profile setting must now hold (the store changed it, or the user picked it).
     Selection { id: String },

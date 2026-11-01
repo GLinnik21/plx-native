@@ -10,10 +10,11 @@
 //! deletes it. The list is read again each time the page opens.
 //!
 //! **What a row says.** The package's `name` (the author's text: a server-style label, never measured by
-//! the fit report), then the trust tier (*Built-in*, *Unreviewed*), "Installed until restart" when only
-//! the volatile directory holds it, and the reason it cannot run: a format the app does not read, an
-//! app range it is outside of, or ("Doesn't fit in {language}") a compile the television refused in the
-//! current language, where classic draws and the selection is kept.
+//! the fit report), then its trust tier (*Built-in*, *Unreviewed*) and one more fact: why it cannot run (a
+//! format the app does not read, an app range it is outside of, or "Doesn't fit in {language}": a compile the
+//! television refused in the current language, where classic draws and the selection is kept), else "Installed
+//! until restart" when only the volatile directory holds it. One fact is what the detail line fits in every
+//! language.
 use std::borrow::Cow;
 use std::sync::mpsc::{self, Receiver};
 
@@ -98,6 +99,12 @@ pub struct HudPage {
     /// The drop file the open prompt asks about.
     asking: Option<Sha>,
     prompt: DecisionPrompt,
+}
+
+/// The crumb over the title: the page this one is pushed from, Video & playback (the Playback page's Player HUD row
+/// opens it), as `PickerKind::parent_title` names it for a picker on that page.
+fn parent_title() -> &'static str {
+    plx_platform::i18n::msg::settings_playback_title()
 }
 
 /// The package row's name: the built-in is the app's word, any other the author's text.
@@ -223,7 +230,7 @@ impl HudPage {
 
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
-            Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()), plx_platform::i18n::msg::settings_hud_title(), &self.copy),
+            Header::new(RouteLayout::screen(), Some(parent_title()), plx_platform::i18n::msg::settings_hud_title(), &self.copy),
             &self.form.table,
             GroupId(0),
             self.entry,
@@ -406,7 +413,7 @@ impl Screen<InnerHost> for HudPage {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(plx_platform::i18n::msg::settings_title()))
+        Some(Cow::Borrowed(parent_title()))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {

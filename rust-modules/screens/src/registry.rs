@@ -2152,9 +2152,9 @@ pub struct AppMounter {
     /// the same mount and for the same reason. Empty for classic, for a menu opened without a player HUD under it
     /// (the failure read-out's recovery) and for every other overlay.
     pub player_more_folds: Vec<plx_appkit::more_menu::FoldedRow>,
-    /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument):
-    /// compiled by the app once per process (at boot, outside any frame; a controlled run or a dev package
-    /// compiles on its first player frame instead), and handed to the mount the way the seeds above are.
+    /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument): the last
+    /// compile `adopt_hud` took into use (the classic at boot, a dev package, or a chosen package the driver handed
+    /// over), and handed to the mount the way the seeds above are.
     /// Cloned, not consumed: every player instance draws from the app's current compile. The mount never compiles, reads no registry and holds no fallback of its own; a
     /// mounter nothing seeded (a controlled run, which compiles nothing outside a frame and never reaches the
     /// player) hands the page `Compiled::default()`, which has no state for any frame.

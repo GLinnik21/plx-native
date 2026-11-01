@@ -108,6 +108,17 @@ fn key_of(page: &HudPage, id: &HudId) -> u32 {
     page.form.key_at(page.form.index_of(id).expect("row present")).unwrap().0
 }
 
+/// **The crumb over the title names the page this one is pushed from**, Video & playback (the Playback page's
+/// title), the way a picker on that page does (`PickerKind::parent_title`) and not the Settings root two pages up.
+#[test]
+fn the_crumb_names_the_page_it_is_pushed_from() {
+    let page = HudPage::new(EntryId(0));
+    let parent = plx_platform::i18n::msg::settings_playback_title();
+    assert_ne!(parent, plx_platform::i18n::msg::settings_title(), "premise: the two titles differ");
+    assert_eq!(page.view().header.crumb, Some(parent), "the header's crumb");
+    assert_eq!(page.crumb(&context(0)).as_deref(), Some(parent), "the screen's own crumb says the same");
+}
+
 #[test]
 fn the_page_opens_its_channel_once_and_lists_what_it_is_sent() {
     let (mut page, _tx) = page_with(list());
@@ -247,12 +258,21 @@ fn the_notice_replaces_the_line_under_the_title_only_while_there_is_one() {
     assert_eq!(copy_of(&l), plx_platform::i18n::msg::settings_hud_not_saved());
 }
 
-/// **Every row fits its column in every shipped language**, whatever it says: the built-in, a package with
-/// every fact it can carry, an unloadable one, an unfit one in the longest native language name, and
-/// every refusal a drop file can show. The package names are the author's text and are not judged.
-#[test]
-fn every_row_fits_its_column_in_every_language() {
-    let all_refusals = [
+/// Every refusal the store can give a file, for the tests that must cover each: the match has no wildcard, so a
+/// refusal added to the store does not compile here until it is listed (and so is measured).
+fn every_refusal() -> [Refusal; 9] {
+    fn listed(refusal: Refusal) -> bool {
+        match refusal {
+            Refusal::BuiltinId
+            | Refusal::Invalid
+            | Refusal::Unloadable(Unloadable::NewerFormat | Unloadable::OlderFormat | Unloadable::AppRange)
+            | Refusal::AlreadyInstalled
+            | Refusal::NotNewer
+            | Refusal::TooLarge
+            | Refusal::Changed => true,
+        }
+    }
+    let all = [
         Refusal::BuiltinId,
         Refusal::Invalid,
         Refusal::Unloadable(Unloadable::NewerFormat),
@@ -263,6 +283,15 @@ fn every_row_fits_its_column_in_every_language() {
         Refusal::TooLarge,
         Refusal::Changed,
     ];
+    assert!(all.into_iter().all(listed));
+    all
+}
+
+/// **Every row fits its column in every shipped language**, whatever it says: the built-in, a package with
+/// every fact it can carry, an unloadable one, an unfit one in the longest native language name, and
+/// every refusal a drop file can show. The package names are the author's text and are not judged.
+#[test]
+fn every_row_fits_its_column_in_every_language() {
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -276,7 +305,7 @@ fn every_row_fits_its_column_in_every_language() {
         every.entries.extend([volatile, unfit, newer]);
         every.unfit = vec![Sha::of(&[3])];
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
-        every.drops = all_refusals.iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud.json"), 20 + i as u8, Err(*r))).collect();
+        every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud.json"), 20 + i as u8, Err(*r))).collect();
         every.drops.push(drop_file("ok.plxhud.json", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
@@ -289,8 +318,8 @@ fn every_row_fits_its_column_in_every_language() {
 }
 
 /// **The line under the title fits the column complete in every language**, whichever text it carries (the page's
-/// own copy, a refused file, a store that could not write): never cut at the line cap, never taller than the room
-/// between the title and the action band, and short enough to read as a note.
+/// own copy, each of the nine refusals a file can be given, a store that could not write): never cut at the line cap,
+/// never taller than the room between the title and the action band, and short enough to read as a note.
 #[test]
 fn the_line_under_the_title_fits_the_column_in_every_language() {
     const MAX_COPY_LINES: usize = 5;
@@ -300,11 +329,10 @@ fn the_line_under_the_title_fits_the_column_in_every_language() {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
         let mut l = list();
-        for (name, notice) in [
-            ("no notice", None),
-            ("refused", Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::Invalid })),
-            ("not written", Some(Notice::NotWritten { sha: Sha::of(&[9]) })),
-        ] {
+        let notices = std::iter::once(("no notice".to_owned(), None))
+            .chain(every_refusal().into_iter().map(|reason| (format!("refused {reason:?}"), Some(Notice::Refused { sha: Sha::of(&[9]), reason }))))
+            .chain(std::iter::once(("not written".to_owned(), Some(Notice::NotWritten { sha: Sha::of(&[9]) }))));
+        for (name, notice) in notices {
             l.notice = notice;
             let copy = copy_of(&l);
             let size = theme::size::LABEL;

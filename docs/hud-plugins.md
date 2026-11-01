@@ -1252,8 +1252,22 @@ New `paths::hud_candidates()` on F39's pattern, keyed by `app_id()`:
 The first candidate that accepts a write is used; all are read when listing; the flavours never share (D14).
 Layout: `packs/<sha256>.plxhud.json` (content-addressed, so an update is a new file and a switch is atomic),
 `installed.json` (id -> sha, source, installed-at), `index-cache.json` (plus ETag), `drop/` (the sideload
-drop folder, scanned when HUD settings open). UNVERIFIED: that a rooted set runs the app under one of the two
-jails by prefix (F39's table does not say); if so, the same order works.
+drop folder, scanned when HUD settings open).
+
+Measured on the television (PR10, 2026-11-01), for the DEBUG install on a ROOTED set only (webOS 4.10.2, the app
+jailed as uid 6085, gid 5000): the order behaved as written, except that candidate 2 is never taken there.
+- (1) `/media/developer/{id}-huds`: the app creates it itself when it is absent (`755`, owned by the app's uid), and a
+  package installs into it (`source: drop`). A root-owned `<dev>/drop/` is scanned.
+- (2) `/media/internal/.{id}-huds`: never taken. `/media/internal` is mounted `ro,nosuid` in the app's jail
+  (`/proc/PID/mountinfo`), though it is `0777` on the host.
+- (3) `/media/developer/temp/{id}-huds`: taken when (1) is unwritable (a root-owned `755` folder); created `0700`, owned by
+  the app's uid, with `packs/` `0700`. A folder a stranger owns (root) is refused, and the install fell through to the next candidate.
+- (4) `/tmp/{id}/huds`: taken when all the others are out; `0700`, owned by the app's uid. The row reads "Unreviewed ·
+  Installed until restart", and a drop placed in this volatile root is scanned too.
+
+STILL UNVERIFIED: a real Developer Mode set, where ssh is `prisoner` and not root (which candidate the app takes there,
+and what a `prisoner` can copy into `drop/`), and the Homebrew Channel jail. Note for PR11: a root the app created is `755`
+and owned by the app's uid, so whether a Dev Mode `prisoner` can then write its `drop/` is unmeasured.
 
 ## Sideload: getting a file onto the TV
 
@@ -1552,8 +1566,10 @@ PR10. Store, local install, selection, drop folder.
   literal so the built-in's own file parses; a sideloaded or registry file claiming it must never collide with the
   built-in's Settings entry or the fallback target). `data::hudpacks::HudStore` (pure; events `Refresh`, `Install`, `InstallDrop`, `Selected`, `Removed` in and
   the answers `Scanned`, `Read`, `Validated`, `Written`; effects `ScanDir`, `ReadFile`, `WriteFile`, `Delete`,
-  `Validate`, `Selection`, `Notice`), runners in `app/adapters/huds.rs` on the storage worker, `paths::hud_candidates()`,
-  a `Profile` `setting!` with the install fallback, and `SettingsPage::PlayerHud`, a FormTable keyed by package id
+  `Validate`, `Selection`, `Notice`), runners in `app/adapters/huds.rs` on the storage worker, `paths::hud_candidates()`.
+  PR10 landed the chosen HUD as a per-profile `Row` (`HudSelectionPref`), not a `setting!`, because its value is a
+  package-id `String` and `Setting::Value` is `Copy`; its accessors are `effective_hud`, `stored_effective_hud` and
+  `persist_profile_hud` (a profile that has not picked reads the install-wide key). Also `SettingsPage::PlayerHud`, a FormTable keyed by package id
   (not a `PickerKind`, a static vocabulary, F32) with a `fit_report`; a compile failure in the current language falls
   back per language with the `hud: fallback` line and the Settings reason (`settings.hud.unfit_language`, eleven catalogs,
   `fit_report`), Text fit.

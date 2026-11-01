@@ -11,8 +11,8 @@
 //! **The driver** ([`HudDriver`], owned by the Bridge) steps the store with the answers, executes the
 //! effects it returns (`Selection` persists the profile's pick, `Notice` is kept for the Settings page) and
 //! decides what the player draws: the compiled package of the store's `resolved` selection, compiled
-//! with the television's own measurer and cached per (package sha256, app version, language), or
-//! `builtin:classic`.
+//! with the television's own measurer and cached as one entry keyed by (package sha256, language) (the app version
+//! is fixed for the process), or `builtin:classic`.
 //!
 //! * **Never on the frame path.** A tick with nothing in flight and nothing changed is a flag test. A compile is two
 //!   ticks (the lint, then the load), never the draw, and until it lands the player draws what it had. Nothing here runs
