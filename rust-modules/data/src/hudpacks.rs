@@ -14,8 +14,9 @@
 //! store never parses a package. It hashes the bytes it holds (computation) and asks for the verdict
 //! with a [`HudEffect::Validate`]; the runner answers [`HudEvent::Validated`]. It answers `Validate` with `admit`: the
 //! package parses, passes the reachability and package invariants, and runs on this app's version and range. It is not
-//! laid out there. Fit in a language is the driver's (the lint and the load, with the TV's measurer), so `Loadable` means
-//! "parses and runs on this app", not "fits every language".
+//! laid out there. Fit in a language is the driver's: `lint_fit` with the television's measurer, `lint_price` with the
+//! model and never the television's measurer, then the load. So `Loadable` means "parses and runs on this app", not
+//! "fits every language" and not "under its cost ceiling".
 //! Nothing is decided before that answer, and the sha the store trusts is always its own.
 //!
 //! **Layout** per candidate directory: `packs/<sha256>.plxhud.json` (content-addressed, so an update is

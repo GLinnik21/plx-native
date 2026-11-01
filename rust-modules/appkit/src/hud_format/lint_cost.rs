@@ -24,10 +24,10 @@
 //!
 //! **A state passes when no frame is late on the app's side, read from a kernel trace** (`tools/tv-sched-trace.sh`,
 //! `tools/analyze-sched-trace.py --latch`), not when the set shows zero late frames, because it never does:
-//! every state on this set has bursts of 24-35 ms frames about every 11 s, and in the three traced strip states the kernel traces class those as the
-//! compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken two ticks late). The other four
-//! pairs have not been traced yet. The three traces, one per strip state, found no CPU-late or GPU-late frame in
-//! any window, with an on-time margin (GPU done minus aim) at the 99th percentile of -4.0 to -5.9 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
+//! every state on this set has bursts of 24-35 ms frames about every 11 s, and in the seven traced states the kernel traces class those as the
+//! compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken one to three ticks late). The seven
+//! traces, one per pair, found no CPU-late or GPU-late frame in any window, with an on-time margin (GPU done minus
+//! aim) at the 99th percentile of -4.0 to -9.8 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
 //! compositor late is not determined; it is not specific to a HUD state. Every constant says which state and language it came from, and
 //! `the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
 //! all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every state and

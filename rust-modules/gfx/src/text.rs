@@ -3828,7 +3828,7 @@ mod price_model_tests {
         let model = read_price_model(&regular, &bold).expect("the shipped faces parse");
         assert!(model.face(false).width("Watchlist", 20) > 0.0 && model.face(true).width("Watchlist", 20) > 0.0);
 
-        let missing = pkg.join("appfont-nonexistent.ttf");
+        let missing = pkg.join("missing.ttf");
         let reason = read_price_model(&regular, &missing).err().expect("a missing bold face is an error");
         assert!(reason.starts_with(&format!("{}: ", missing.display())), "{reason}");
 

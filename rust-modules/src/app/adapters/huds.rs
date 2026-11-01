@@ -17,13 +17,19 @@
 //! * **Never on the frame path.** A tick with nothing in flight and nothing changed is a flag test. A compile is three
 //!   ticks, one stage each (the fit, the price, the load; [`Stage`]), never the draw, and until it lands the player draws
 //!   what it had. The television's lint alone takes a whole frame's budget, so one frame never carries two compiles. The
-//!   bytes landing is not a compile: the tick that lands them runs the fit. Nothing here runs on selection except through
-//!   the Settings page's commands and the seat trigger.
+//!   bytes landing is not a compile. The tick that lands them runs the fit unless a player is up; then the pack waits at
+//!   `Stage::Fit` for the first tick with no player. Nothing here runs on selection except through the Settings page's
+//!   commands and the seat trigger.
 //! * **Never while a player is up.** The measurer is the main thread's, so a pack that lands while a player page is
-//!   mounted or a playback is starting waits ([`Env::player`]), at whichever stage it has reached: no compile, no
-//!   hand-over and no `hud: fallback` line, and the player keeps what it has for that playback. The compile continues on
-//!   the first tick with no player, and the next playback draws the choice. Normal boots compile on the way to Home,
-//!   before any player.
+//!   mounted or a playback is starting waits ([`Env::player`]), at whichever stage it has reached: no compile and no
+//!   hand-over, and the player keeps what it has for that playback. A refusal found at landing is still logged then,
+//!   because landing does not wait for the player: an unreadable pack (`code=read`) or faces that cannot be read
+//!   (`code=faces`). The compile continues on the first tick with no player, and the next playback draws the choice.
+//!   Normal boots compile on the way to Home, before any player.
+//! * **Only the pack the selection names is compiled.** A pack the viewer has moved away from is dropped wherever it is:
+//!   a read that lands for it is dropped on landing (its price model is kept, being the process's), and a staged one
+//!   spends no more stages, so a `hud: fallback` line always concerns the wanted pack. A language change drops the staged
+//!   pack too, and the compile starts again at the fit in the new language.
 //! * **Fit is the TV's call; the price is the model's.** A package that parses and passes the invariants can still not
 //!   fit this language (`lint_fit` with the television's measurer, errors only: the TV applies no margin), or cost more
 //!   than a ceiling allows (`lint_price`, `HUD-E1401`). The price is NEVER the television's measure: the ceilings are numbers
@@ -36,7 +42,8 @@
 //!   touches a frame: the job of the first pack read that reaches the bytes reads them too (`plx_gfx::text::read_price_model`,
 //!   the paths `plx_gfx::text::app_font_path` returns), and the driver keeps the model for the process. If the faces
 //!   cannot be read or parsed, the package falls back to classic with the code `faces` and never reaches the player
-//!   unpriced: the price is fail-closed.
+//!   unpriced: the price is fail-closed. That is no verdict on the package: a store event (a re-pick, a Refresh, an
+//!   install) clears it and the next pack read tries the faces again, with no second `hud: fallback` line.
 //! * **With no seat a pick stays for the process.** A dev-token boot seats no profile, so a pick cannot be persisted: the
 //!   driver keeps it ([`HudDriver::selected_for`]), a reopened page and a `Refresh` resolve it, and a seat arriving
 //!   replaces it with that profile's own value.
@@ -361,13 +368,17 @@ impl HudRunner {
 // The driver: the store, its runner and what the player draws
 // ---------------------------------------------------------------------------------------------
 
-/// Why a package draws as classic in the language: the first error the fit pass found (its code, `HUD-E0601`), the
-/// first the price pass found (`HUD-E1401`), `states` or `parse` from the load, or `faces` when the price model could not
-/// be read.
+/// Why a package draws as classic in the language, and the `code` of its `hud: fallback` line: the first error the fit
+/// pass found (its code, `HUD-E0601`), `HUD-E1401` from the price pass, `faces` when the price model cannot be read, a
+/// load refusal (`parse`, `states`) or `utf8`. A pack that could not be read has the line's code `read` and no `Unfit`: it
+/// is a read that failed (`HudDriver::read_failed`), no verdict on the package, and the page does not mark its row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Unfit {
     pub code: &'static str,
 }
+
+/// The [`Unfit`] code of a package whose price model could not be read (`HudDriver::price`).
+const FACES: &str = "faces";
 
 /// What the compile of the resolved selection is waiting on.
 enum Want {
@@ -431,11 +442,14 @@ pub(crate) struct HudDriver {
     /// **The price model** every package is priced by (`lint_price`), whatever the television's text measure does: the
     /// whole-pixel advances of the two faces and a line height of 1.21 x size, so a package at a ceiling is accepted on
     /// every firmware. Read once for the process, on the storage worker, in the job of the first pack read that
-    /// reaches the bytes; `None` until it lands, and again after a read that failed (the next pack read tries
-    /// again). A package is never priced by anything else, so with no model it falls back (`faces`).
+    /// reaches the bytes; `None` until it lands, and again after a read that failed. That failure is no verdict on the
+    /// package either, like `read_failed`: it draws classic as `faces`, and the next store event (a re-pick, a Refresh,
+    /// an install) clears that entry from `unfit` (`HudDriver::step`), so the next pack read tries the faces again; `logged`
+    /// keeps its entry, so the line stays once. A package is never priced by anything else, so with no model it falls back.
     price: Option<WholePixelMeasure>,
     started: bool,
-    /// The language the last tick saw: a different one recompiles classic and the selection.
+    /// The language the last tick saw: a different one (no shipped process has two: `i18n`'s `CURRENT` is a `OnceLock`)
+    /// recompiles classic, drops the staged pack and compiles the selection again.
     language: Option<&'static str>,
     classic: Option<LoadedHud>,
     /// The compile of the last package that fit: (sha, language tag), and the result. One entry: the
@@ -598,7 +612,10 @@ impl HudDriver {
     }
 
     fn step(&mut self, event: HudEvent) {
+        // A store event tries again what failed for want of a file: a pack that could not be read and a pair of faces that
+        // could not be read are no verdict on the package. (`logged` stays: the line is once per package, language and cause.)
         self.read_failed.clear();
+        self.unfit.retain(|_, unfit| unfit.code != FACES);
         let mut fx = Vec::new();
         self.store.step(event, &mut fx);
         self.apply(fx);
@@ -630,6 +647,9 @@ impl HudDriver {
                 self.classic = Some(plx_appkit::player_hud::loaded::load_classic(env.app_version, env.cx, env.measure));
             }
             self.language = Some(language);
+            // A pack staged in the last language was fitted and priced in it: it starts again at the fit in this one, and is
+            // never loaded here unfitted and stamped for it.
+            self.pending = None;
             self.dirty = true;
         }
         let waiting = self.pending.is_some() && !env.player;
@@ -683,6 +703,11 @@ impl HudDriver {
         }
     }
 
+    /// Whether the resolved selection is the package `sha`.
+    fn wants(&self, sha: Sha) -> bool {
+        matches!(self.want(), Want::Pack(wanted) if wanted == sha)
+    }
+
     fn setup(&self) -> Setup {
         self.setup.clone().unwrap_or_else(live_setup)
     }
@@ -704,7 +729,9 @@ impl HudDriver {
         Reading { sha, slot: self.runner.exec.run(job) }
     }
 
-    /// The pack bytes landed: keep the price model that came with them, and wait for the compile's first stage.
+    /// The pack bytes landed: keep the price model that came with them, and, if the selection still names the pack, wait for
+    /// the compile's first stage. A pack the selection has moved away from is dropped: the model is the process's and is kept,
+    /// the pack is nobody's.
     fn land_pack(&mut self, env: &Env<'_>) {
         let Some(reading) = self.reading.as_mut() else { return };
         let Some(answer) = reading.slot.poll() else { return };
@@ -719,6 +746,11 @@ impl HudDriver {
             Some(Err(reason)) => self.log.push(format!("hud: price model unavailable: {reason}")),
             None => {}
         }
+        if !self.wants(sha) {
+            // The viewer moved on while the read was out: it lands as nothing. A pack nobody wants stages no compile, records
+            // no verdict and logs no line, and a `fall_back` always concerns the pack the selection names.
+            return;
+        }
         let Some(bytes) = bytes else {
             self.read_failed.insert(sha);
             if self.logged.insert((sha, language, "read")) {
@@ -728,7 +760,7 @@ impl HudDriver {
         };
         if self.price.is_none() {
             // Fail closed: a package is never handed to the player unpriced.
-            self.fall_back(sha, language, "faces");
+            self.fall_back(sha, language, FACES);
             return;
         }
         self.pending = Some(Pending { sha, bytes, stage: Stage::Fit });
@@ -737,13 +769,18 @@ impl HudDriver {
     /// One compile stage, off the player: the fit, the price or the load of the landed bytes in this language, each on
     /// its own tick. Nothing runs while a player is mounted or a playback is starting (`Env::player`): the text measure
     /// is the main thread's, so the bytes wait at their stage and the compile continues on the first tick with no player,
-    /// and the next playback draws the choice. Waiting is not a fallback and logs nothing.
+    /// and the next playback draws the choice. Waiting is not a fallback and logs nothing. A pack the selection no longer
+    /// names is dropped instead of advanced (after the player gate: a player up holds it too).
     fn advance(&mut self, env: &Env<'_>) {
         if env.player {
             return;
         }
         let Some(mut pending) = self.pending.take() else { return };
         self.dirty = true;
+        if !self.wants(pending.sha) {
+            // The selection moved on while the pack waited: it spends no stage, and what follows in the tick reads the new one.
+            return;
+        }
         self.revision += 1;
         let language = env.cx.language().tag();
         let sha = pending.sha;
@@ -806,7 +843,7 @@ impl HudDriver {
     /// firmware's SDL_ttf) must not move the verdict.
     fn price_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
         let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
-        let Some(price) = self.price.as_ref() else { return Err("faces") };
+        let Some(price) = self.price.as_ref() else { return Err(FACES) };
         Self::first_error(&lint_price(text, price, &[Self::lint_lang(env, language)]).findings)
     }
 
@@ -951,16 +988,22 @@ mod tests {
         REFERENCE.replace(TITLE_LINE, &format!("{TITLE_LINE},\n{KICKER}")).replace(REFERENCE_ID, HEAVY_ID)
     }
     const HEAVY_ID: &str = "com.example.heavy";
+    const MINIMAL_ID: &str = "com.plxnative.examples.minimal";
 
-    /// Drop `text` in the folder, install it and select it: the driver is now to compile it.
-    fn install_and_select(dir: &Dir, driver: &mut HudDriver, cx: &LocaleContext, name: &str, text: &str, id: &str) -> Sha {
+    /// Drop `text` in the folder and install it, selecting nothing.
+    fn install(dir: &Dir, driver: &mut HudDriver, cx: &LocaleContext, name: &str, text: &str, id: &str) -> Sha {
         dir.drop_file(name, text);
         driver.refresh(String::new());
         settle(driver, cx);
         let drop = driver.store().drops().into_iter().find(|d| d.name == name).expect("the file is listed");
         driver.install_drop(drop.sha.expect("a hashed file"), 1_700_000_000);
         settle(driver, cx);
-        let sha = entry(driver, id).expect("installed").sha.expect("a package");
+        entry(driver, id).expect("installed").sha.expect("a package")
+    }
+
+    /// [`install`] and select it: the driver is now to compile it.
+    fn install_and_select(dir: &Dir, driver: &mut HudDriver, cx: &LocaleContext, name: &str, text: &str, id: &str) -> Sha {
+        let sha = install(dir, driver, cx, name, text, id);
         driver.select(id.to_string());
         sha
     }
@@ -1648,6 +1691,223 @@ mod tests {
         std::fs::write(&pack, kept).unwrap();
         driver.select(REFERENCE_ID.to_string());
         assert_eq!(settle(&mut driver, &cx).len(), 1, "the next command tries again, and the package draws");
+    }
+
+    /// The staged packs the tests below leave in the driver: (the stage it waits at, the package, its id). The heavy one
+    /// passes the fit and is refused by the price, so a stage run for it that should not have run is a `hud: fallback` line.
+    fn staged_packs() -> [(Stage, String, &'static str); 3] {
+        [
+            (Stage::Fit, REFERENCE.to_string(), REFERENCE_ID),
+            (Stage::Price, over_a_ceiling(), HEAVY_ID),
+            (Stage::Load, REFERENCE.to_string(), REFERENCE_ID),
+        ]
+    }
+
+    /// Select the installed `id` and tick until its pack waits at `stage`, then stop. The fit is reached with a player up, because
+    /// the tick that lands the bytes runs it otherwise; the others wait at the stage the tick before them reached.
+    fn wait_at(driver: &mut HudDriver, cx: &LocaleContext, id: &str, stage: Stage) {
+        driver.select(id.to_string());
+        let env = Env { measure: &ShippedMeasure, cx, app_version: APP, player: stage == Stage::Fit };
+        let mut guard = 0;
+        while !driver.pending.as_ref().is_some_and(|p| p.stage == stage) {
+            assert!(driver.tick(&env).is_none());
+            guard += 1;
+            assert!(guard < 64, "the pack reaches {stage:?}");
+        }
+    }
+
+    /// Tick with no player until the pack `sha` has landed and been fitted, then once per remaining stage: the fit, the price
+    /// and the load on three successive ticks, the last one handing the package over.
+    fn compiles_in_three_ticks(driver: &mut HudDriver, cx: &LocaleContext, measure: &dyn Measure, sha: Sha, text: &str) {
+        let env = Env { measure, cx, app_version: APP, player: false };
+        let mut guard = 0;
+        while driver.pending.is_none() {
+            assert!(driver.tick(&env).is_none());
+            guard += 1;
+            assert!(guard < 64, "the bytes land");
+        }
+        assert!(driver.pending.as_ref().is_some_and(|p| p.sha == sha && p.stage == Stage::Price), "the tick that landed them fitted them");
+        assert!(driver.tick(&env).is_none() && driver.compiled.is_none());
+        assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Load), "priced, the load is next");
+        let shown = driver.tick(&env);
+        assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(text.as_bytes())), "the third tick hands the package over");
+        let language = cx.language().tag();
+        assert!(driver.compiled.as_ref().is_some_and(|(s, l, _)| *s == sha && *l == language) && driver.pending.is_none());
+    }
+
+    /// A language that is not English: the one a driver is moved to.
+    fn other_language() -> LocaleContext {
+        let other = Preference::SHIPPED.into_iter().find(|p| p.tag() != "en").expect("a second shipped language");
+        LocaleContext::resolve(other, None, None, None, None)
+    }
+
+    /// **A pack the viewer moved away from is dropped, at whatever stage it waits.** The new pick does not wait on it, it is
+    /// not compiled, it does not overwrite the compile, and a refusal it would have met is not logged against the pick that
+    /// replaced it (`fall_back` names the resolved selection). The new pack then takes the fit, the price and the load on
+    /// three successive ticks.
+    #[test]
+    fn a_pack_the_viewer_moved_away_from_is_dropped_at_every_stage() {
+        for (stage, text, id) in staged_packs() {
+            let dir = Dir::new("moved-on");
+            let cx = english();
+            let mut driver = driver(&dir);
+            let old = install(&dir, &mut driver, &cx, "old.plxhud.json", &text, id);
+            let new = install(&dir, &mut driver, &cx, "minimal.plxhud.json", MINIMAL, MINIMAL_ID);
+            wait_at(&mut driver, &cx, id, stage);
+            assert!(driver.pending.as_ref().is_some_and(|p| p.sha == old), "{stage:?}: the old pack waits");
+
+            driver.select(MINIMAL_ID.to_string());
+            let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player: false };
+            assert!(driver.tick(&env).is_none());
+            assert!(driver.pending.is_none(), "{stage:?}: the old pack is dropped, and spends no stage");
+            assert!(driver.compiled.is_none() && driver.unfit.is_empty(), "{stage:?}: it compiled nothing and was refused nothing");
+            assert!(driver.take_log().is_empty(), "{stage:?}: and said nothing, least of all about the new pick");
+            assert!(driver.reading.as_ref().is_some_and(|r| r.sha == new), "{stage:?}: the new pick is being read");
+
+            compiles_in_three_ticks(&mut driver, &cx, &ShippedMeasure, new, MINIMAL);
+            assert!(driver.take_log().is_empty() && driver.unfit.is_empty(), "{stage:?}");
+        }
+    }
+
+    /// **The same when the pick goes back to classic**: classic is what draws, the old pack is not compiled and no
+    /// `hud: fallback` line names `builtin:classic`.
+    #[test]
+    fn a_pack_the_viewer_went_back_to_classic_from_is_dropped_at_every_stage() {
+        for (stage, text, id) in staged_packs() {
+            let dir = Dir::new("back-to-classic");
+            let cx = english();
+            let mut driver = driver(&dir);
+            install(&dir, &mut driver, &cx, "old.plxhud.json", &text, id);
+            wait_at(&mut driver, &cx, id, stage);
+
+            driver.select(BUILTIN_CLASSIC.to_string());
+            let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player: false };
+            for _ in 0..20 {
+                assert!(driver.tick(&env).is_none(), "{stage:?}: classic is already what draws");
+            }
+            assert!(driver.pending.is_none() && driver.reading.is_none(), "{stage:?}: the old pack is dropped");
+            assert!(driver.compiled.is_none() && driver.unfit.is_empty(), "{stage:?}: it compiled nothing and was refused nothing");
+            let classic = driver.classic.as_ref().map(|c| Arc::clone(&c.compiled));
+            assert!(driver.shown.as_ref().zip(classic.as_ref()).is_some_and(|(shown, classic)| Arc::ptr_eq(shown, classic)), "{stage:?}: classic is shown");
+            assert!(driver.take_log().is_empty(), "{stage:?}: no fallback line, for the old pack or for classic");
+        }
+    }
+
+    /// **A read in flight across a pick lands as nothing.** The read was for a pack nobody wants any more: no pending, no
+    /// `read_failed`, no line for it (a read that found nothing is not a refusal of the new pick), but the price model that
+    /// came with the answer IS kept, because it is the process's and not the pack's.
+    #[test]
+    fn a_read_in_flight_across_a_pick_lands_as_nothing_but_keeps_the_price_model() {
+        for (found, wanted) in [(true, MINIMAL_ID), (false, MINIMAL_ID), (true, BUILTIN_CLASSIC), (false, BUILTIN_CLASSIC)] {
+            let dir = Dir::new("read-in-flight");
+            let cx = english();
+            let mut driver = driver(&dir);
+            let reference = install(&dir, &mut driver, &cx, "reference.plxhud.json", REFERENCE, REFERENCE_ID);
+            install(&dir, &mut driver, &cx, "minimal.plxhud.json", MINIMAL, MINIMAL_ID);
+            driver.select(REFERENCE_ID.to_string());
+            let (answer, slot) = std::sync::mpsc::channel();
+            driver.reading = Some(Reading { sha: reference, slot: Slot::Waiting(slot) });
+            driver.select(wanted.to_string());
+            assert!(driver.price.is_none());
+
+            let [regular, bold] = pkg_faces();
+            let model = plx_gfx::text::read_price_model(&regular, &bold);
+            let bytes = found.then(|| REFERENCE.as_bytes().to_vec());
+            answer.send(Landed { bytes, model: Some(model) }).unwrap();
+            let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player: false };
+            let shown = driver.tick(&env);
+            let what = format!("found={found}, wanted={wanted}");
+            assert!(shown.is_none(), "{what}");
+            assert!(driver.pending.is_none(), "{what}: the pack is not staged");
+            assert!(driver.read_failed.is_empty() && driver.unfit.is_empty(), "{what}: and no verdict is recorded");
+            assert!(driver.take_log().is_empty(), "{what}: and no line is logged");
+            assert!(driver.price.is_some(), "{what}: the price model that came with the answer is kept");
+        }
+    }
+
+    /// **A language change drops the staged pack, at whatever stage it waits**, and the compile in the new language starts
+    /// again at the fit: a pack staged in one language is never loaded in the next unfitted and unpriced and stamped for it.
+    /// No shipped process changes language (`i18n`'s `CURRENT` is a `OnceLock`), but the driver must hold where the branch exists.
+    #[test]
+    fn a_language_change_drops_the_staged_pack_and_the_compile_starts_again_at_the_fit() {
+        let other = other_language();
+        for stage in [Stage::Fit, Stage::Price, Stage::Load] {
+            let dir = Dir::new("language-moves");
+            let en = english();
+            let mut driver = driver(&dir);
+            let sha = install(&dir, &mut driver, &en, "reference.plxhud.json", REFERENCE, REFERENCE_ID);
+            wait_at(&mut driver, &en, REFERENCE_ID, stage);
+            assert!(driver.pending.as_ref().is_some_and(|p| p.sha == sha && p.stage == stage));
+
+            let asked = std::cell::Cell::new(0);
+            let measure = Counting(&asked);
+            let env = Env { measure: &measure, cx: &other, app_version: APP, player: false };
+            driver.tick(&env);
+            assert!(driver.pending.is_none(), "{stage:?}: the staged pack is dropped");
+            assert!(driver.compiled.is_none() && driver.unfit.is_empty(), "{stage:?}: nothing was loaded, stamped for the new language");
+
+            asked.set(0);
+            compiles_in_three_ticks(&mut driver, &other, &measure, sha, REFERENCE);
+            assert!(asked.get() > 0, "{stage:?}: the new language's compile was fitted");
+            assert!(driver.unfit.is_empty() && driver.take_log().is_empty(), "{stage:?}: and fits there");
+        }
+    }
+
+    /// **A face that cannot be read is not a verdict on the package.** The faces are missing: `code=faces`, one line. A
+    /// store event tries them again (still missing: the diagnostic line again, and no second `hud: fallback` line, which is
+    /// once per package, language and cause). With the faces back, the next event compiles the package.
+    #[test]
+    fn missing_faces_are_tried_again_after_a_store_event_and_the_package_then_compiles() {
+        let dir = Dir::new("faces-come-back");
+        let cx = english();
+        let mut driver = driver(&dir);
+        let faces = [dir.0.join("regular.ttf"), dir.0.join("bold.ttf")];
+        driver.faces = Some(faces.clone());
+        install_reference(&dir, &mut driver, &cx);
+        let sha = entry(&driver, REFERENCE_ID).unwrap().sha.unwrap();
+        driver.select(REFERENCE_ID.to_string());
+        assert!(settle(&mut driver, &cx).is_empty(), "classic draws while the price model is missing");
+        assert_eq!(driver.unfit(sha, "en"), Some(&Unfit { code: "faces" }));
+        let first = driver.take_log();
+        assert_eq!(first.iter().filter(|l| l.starts_with("hud: fallback ") && l.contains("code=faces")).count(), 1, "{first:?}");
+
+        // a store event with the faces still missing: tried again, and the verdict stands, with no second fallback line
+        driver.select(REFERENCE_ID.to_string());
+        assert!(settle(&mut driver, &cx).is_empty());
+        assert_eq!(driver.unfit(sha, "en"), Some(&Unfit { code: "faces" }));
+        let again = driver.take_log();
+        assert!(again.len() == 1 && again[0].starts_with("hud: price model unavailable: "), "the faces were read again: {again:?}");
+
+        // the faces are back: the next store event compiles the package
+        for (copy, shipped) in faces.iter().zip(pkg_faces()) {
+            std::fs::copy(shipped, copy).unwrap();
+        }
+        driver.select(REFERENCE_ID.to_string());
+        let shown = settle(&mut driver, &cx);
+        assert!(shown.len() == 1 && shown[0].key.sha256 == plx_base::sha256::sha256(REFERENCE.as_bytes()), "the package draws");
+        assert!(driver.unfit(sha, "en").is_none() && driver.price.is_some());
+        assert!(driver.take_log().is_empty(), "and no second `hud: fallback` line for the cause already logged");
+    }
+
+    /// **Faces that cannot be read are refused at landing, which does not wait for the player**: the line is logged while
+    /// a player is up (a refusal found at landing is not a compile), and nothing is staged.
+    #[test]
+    fn missing_faces_are_logged_at_landing_even_while_a_player_is_up() {
+        let dir = Dir::new("faces-player-up");
+        let cx = english();
+        let mut driver = driver(&dir);
+        driver.faces = Some([dir.0.join("regular.ttf"), dir.0.join("bold.ttf")]);
+        install_reference(&dir, &mut driver, &cx);
+        let sha = entry(&driver, REFERENCE_ID).unwrap().sha.unwrap();
+        driver.select(REFERENCE_ID.to_string());
+        let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player: true };
+        for _ in 0..64 {
+            assert!(driver.tick(&env).is_none());
+        }
+        assert!(driver.pending.is_none() && driver.compiled.is_none(), "nothing is staged or compiled");
+        assert_eq!(driver.unfit(sha, "en"), Some(&Unfit { code: "faces" }));
+        let lines = driver.take_log();
+        assert_eq!(lines.iter().filter(|l| l.starts_with("hud: fallback ") && l.contains("code=faces")).count(), 1, "{lines:?}");
     }
 
     #[test]
