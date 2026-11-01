@@ -75,6 +75,22 @@ pub enum AppFx {
     Player(PlayerReq),
     /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
     ItemMenu(ItemMenuReq),
+    /// The player-HUD page's commands on the package store, executed by the Bridge (PR10).
+    Huds(HudCmd),
+}
+
+/// What the Player HUD settings page asks of the package store (`plx_data::hudpacks::HudStore`). The
+/// answers come back as the page's own data (the published list), never as a reply here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HudCmd {
+    /// The page opened: read every candidate directory again.
+    Refresh,
+    /// Pick a package id (or `builtin:classic`) for the seated profile.
+    Select(String),
+    /// Delete an installed package.
+    Remove(String),
+    /// Install the drop file listed under this hash; the viewer has confirmed it.
+    InstallDrop(plx_data::hudpacks::Sha),
 }
 
 /// A private live receipt. Requests contain account credentials and are intentionally unsupported

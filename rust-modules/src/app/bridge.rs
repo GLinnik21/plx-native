@@ -393,6 +393,8 @@ pub(crate) struct Bridge {
     session_ready: Option<(u64, plx_session::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, plx_session::auth::owner::ReadyInstall)>,
     /// The seat the per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
     seat_watch: SeatWatch,
+    /// The player-HUD package store, its runner and the compile of the selection ([`super::adapters::huds`]). Off until boot starts it.
+    huds: super::adapters::huds::HudDriver,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
@@ -663,6 +665,7 @@ impl Bridge {
             session_adapter,
             session_ready: None,
             seat_watch: SeatWatch::new(),
+            huds: super::adapters::huds::HudDriver::off(),
             consent_adapter,
             store_runner,
             late_store_jobs: 0,
@@ -941,6 +944,70 @@ impl Bridge {
     /// [`AppMounter::player_compiled`]. Set at boot and again by `run::refresh_hud` when a controlled run or a dev package compiles on the first player frame.
     pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
         self.mounter.player_compiled = compiled;
+    }
+
+    /// Begin the player-HUD store with the compiled classic as what draws until a package lands, and read
+    /// what is installed. Boot calls it once, outside any frame; a controlled run never does.
+    pub(crate) fn huds_start(&mut self, classic: plx_appkit::player_hud::loaded::LoadedHud) {
+        self.huds.start(classic, plx_plex::plex::identity::version());
+        self.huds_refresh();
+    }
+
+    /// Read the installed packages again for the profile seated now (HUD settings opened, boot).
+    pub(crate) fn huds_refresh(&mut self) {
+        let seat = plx_plex::plex::session::current_seat();
+        self.huds_refresh_for(&seat);
+    }
+
+    fn huds_refresh_for(&mut self, seat: &plx_plex::plex::session::Seat) {
+        let selected = plx_plex::plex::session::stored_effective_hud(&plx_plex::plex::session::peek(), seat);
+        self.huds.refresh(selected);
+    }
+
+    /// One tick of the HUD driver, from the frame's prepare window: the compiled HUD the player must now draw, when
+    /// it changed. Three flag tests while nothing is in flight.
+    pub(crate) fn huds_tick(&mut self) -> Option<plx_appkit::player_hud::loaded::LoadedHud> {
+        let env = super::adapters::huds::Env {
+            measure: &self.measure,
+            cx: plx_platform::i18n::current(),
+            app_version: plx_plex::plex::identity::version(),
+        };
+        let hud = self.huds.tick(&env);
+        self.huds_settle();
+        hud
+    }
+
+    /// The viewer's commands on the HUD store, from the Settings page.
+    pub(crate) fn huds_command(&mut self, command: plx_screens::registry::HudCmd) {
+        use plx_screens::registry::HudCmd;
+        match command {
+            HudCmd::Refresh => self.huds_refresh(),
+            HudCmd::Select(id) => self.huds.select(id),
+            HudCmd::Remove(id) => self.huds.remove(id),
+            HudCmd::InstallDrop(sha) => {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                self.huds.install_drop(sha, now);
+            }
+        }
+        self.huds_settle();
+    }
+
+    /// Persist the picks the store made and log what the driver reports: the two things the driver
+    /// leaves to its owner.
+    fn huds_settle(&mut self) {
+        for id in self.huds.take_selections() {
+            match plx_plex::plex::session::ProfileWrite::capture() {
+                Some(write) => {
+                    let _ = plx_base::storage_worker::submit_retained(move || {
+                        plx_plex::plex::session::persist_profile_hud(&write, &id)
+                    });
+                }
+                None => plx_base::eventlog::log("hud: selection not saved: no profile is seated"),
+            }
+        }
+        for line in self.huds.take_log() {
+            plx_base::eventlog::log(&line);
+        }
     }
 
     /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
@@ -2365,6 +2432,7 @@ impl Bridge {
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Preferences(command) => super::preferences::execute(command),
+            AppFx::Huds(command) => self.huds_command(command),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
@@ -2440,7 +2508,10 @@ impl Bridge {
             SessionFx::PublishProfile(publication) => {
                 if self.session.publication_is_current(&publication) {
                     if let Some(seat) = self.session_adapter.publish_profile(publication) {
-                        self.seat_watch.arrive(seat);
+                        let arrived = seat.clone();
+                        if self.seat_watch.arrive(seat) {
+                            self.huds_refresh_for(&arrived);
+                        }
                     }
                     if let Some(io) = &mut self.home_io {
                         io.profile = self.session_adapter.profile_resource_view().expect("controlled publisher");

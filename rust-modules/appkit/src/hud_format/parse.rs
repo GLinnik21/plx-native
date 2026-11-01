@@ -2077,7 +2077,7 @@ fn is_semver(text: &str) -> bool {
     }
 }
 
-fn is_reverse_dns(text: &str) -> bool {
+pub(super) fn is_reverse_dns(text: &str) -> bool {
     if text == schema::BUILTIN_CLASSIC_ID {
         return true;
     }

@@ -433,6 +433,7 @@ pub(super) fn boot_hud(bridge: &mut super::bridge::Bridge, controlled: bool) -> 
         return None;
     }
     let loaded = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), plx_platform::i18n::current(), bridge.measure());
+    bridge.huds_start(loaded.clone());
     let mut hud = None;
     adopt_hud(bridge, &mut hud, loaded);
     hud
@@ -471,6 +472,12 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     super::adapters::poster::drain_decoded();
 
     fr.player = matches!(app.route(), AppArg::Player);
+    // The HUD package store's tick: three flag tests while nothing is in flight. A package the viewer
+    // picked, or a profile's own pick that a seat change brought in, is compiled in the tick its bytes
+    // land and taken into use here, so the player page below draws it from this very frame.
+    if let Some(hud) = app.bridge.huds_tick() {
+        adopt_hud(&mut app.bridge, &mut app.hud, hud);
+    }
     // ---- the player page's per-frame HUD SNAPSHOT (`HudModel`) ----
     //
     // Sampled ONCE here and pushed into the screen as a value, so nothing the page prepares or
