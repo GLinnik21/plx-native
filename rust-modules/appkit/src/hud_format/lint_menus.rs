@@ -16,10 +16,11 @@
 //! `CTRL_RIGHT - pw` and bottom 764 for both menus (the classic pin test below).
 //!
 //! **The panel's size** is `(MENU_MAX_W, need_h)`: the widest a menu hugs its rows (the track menu and More
-//! between `PLAYER_MENU_MIN_W` and `MENU_MAX_W`) and the menu's own `NEED_H`, the tallest app-owned page it can
-//! show. The side is decided by `need_h` alone (that is the placer's contract) and a side to the left or right
+//! between `PLAYER_MENU_MIN_W` and `MENU_MAX_W`) and the menu's own room: `track_menu::NEED_H`, and for More
+//! `more_menu::need_h(folds)`, which is the tallest page up to three folded rows and grows past it from four. The
+//! side is decided by `need_h` alone (that is the placer's contract) and a side to the left or right
 //! must hold the panel's WIDTH, so the widest width is the conservative one: a side that holds it holds any
-//! narrower panel. The numbers are the menus' own (`track_menu::NEED_H`, `more_menu::NEED_H`), copied nowhere.
+//! narrower panel. The numbers are the menus' own, copied nowhere.
 //!
 //! **The four invariants**, each a predicate below over the placed rect:
 //! - **M1 `HUD-E1301` menu-opener**: the menu never intersects its opener's rest or popped (`CTRL_FOCUS_SCALE`)

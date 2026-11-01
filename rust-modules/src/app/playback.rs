@@ -1183,8 +1183,8 @@ fn seed_menu_anchor(
 
 /// **THE performer of a [`HudCommand`](plx_appkit::player_hud::command::HudCommand)**: one `match` over the closed vocabulary, which every route to
 /// a command ends in. A disc pressed with OK (`PlayerReq::Command`), one clicked
-/// ([`activate_player_row`]) and, in a later change, a More-menu row folded from a package all call
-/// this function, so a command can never mean one thing from a control and another from a menu.
+/// ([`activate_player_row`]) and a More-menu row folded from a package (the overlay closes More and asks
+/// `PlayerReq::Command`) all end in this function, so a command can never mean one thing from a control and another from a menu.
 ///
 /// It performs and does not decide: whether the command is enabled is the caller's, from
 /// `HudCommand::enabled` over the frame's `HudModel` (the screen's stops are absent for a control

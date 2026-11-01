@@ -115,9 +115,9 @@ pub enum Action {
     Hud(HudCommand),
 }
 
-/// **One row of More's root for a folded command**, with the label it reads: the label is the caller's
-/// because one command reads two ways (`go_to_detail` is Go to Show for an episode and Go to Movie
-/// otherwise), and this module reads no metadata.
+/// **One row of More's root for a folded command**, with the label it reads: the label is chosen in
+/// [`folded_rows`] from the playing item's metadata through `info_panel::actions`, since `go_to_detail` reads Go to
+/// Show for an episode and Go to Movie otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FoldedRow {
     pub command: HudCommand,
@@ -253,8 +253,8 @@ pub struct MoreMenuState {
 
 /// **The tallest page this menu shows with app-owned rows** — the Quality page, its title band,
 /// seven rungs (Auto first) and the table's padding: 536 px in English. It decides the SIDE of the
-/// opener the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`), so it is the same on
-/// every page. 600 leaves room for a longer label that wraps. Classic's room above its row is 710,
+/// opener the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`) for a root with up to three folded
+/// rows; [`need_h`] decides it beyond that. The number is the same on every page. 600 leaves room for a longer label that wraps. Classic's room above its row is 710,
 /// which this stays under, so classic opens upward. `pub(crate)` because the HUD lint places this
 /// menu with it (`hud_format::lint_menus`, M2), through [`place_panel`].
 pub(crate) const NEED_H: f32 = 600.0;
