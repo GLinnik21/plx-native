@@ -12,8 +12,9 @@
 //! the scrub's chrome alpha and is skipped when that alpha is spent; a `Steady` one draws at full alpha.
 //! In a Skip state it walks [`CompiledState::skip_variant`], because the two labels have two widths. A MODAL
 //! section's page owns the middle: `transport` is false AND the state is the section's, and it draws whole. A
-//! compact state with the middle withheld (`!transport`, `open == 0`) draws only the scrim and the section tabs,
-//! which only a test constructs now.
+//! compact state with the middle withheld (`!transport`, `open == 0`) draws only the scrim and the section tabs
+//! when nothing moves, which only a test constructs now; while the page or a section spring moves
+//! (`Layers::moving`) the middle is never withheld, so the compact bands fading out under an open section draw.
 //! The section arms (a ground, a rule, an icon, the still, the sections' text, a facts row, an `actions`
 //! button) are `sections.rs`'s.
 //!
@@ -22,11 +23,26 @@
 //!
 //! **A section appears and fades as the panels did** (`docs/hud-plugins.md`, D6). Its appear spring is the
 //! page's ([`HudMotion::section_appear`], stepped by the screen's tick, never here); the spans a section owns
-//! ([`Span::section`]) are painted as ONE layer, faded by it and raised by `Popover::RISE * (1 - appear)`, and the
-//! tabs, the scrim and the title/bar/row stay outside it. A MODAL package draws the logical state whole and lays a
-//! section still fading out over it; an INLINE one draws the block of the presented sections, with each band above an
-//! appearing or fading section `(1 - appear)` of its lift lower than its rest place (`lift`). A `Shelf` stands at a
-//! screen y whatever its painter translates by, so the strip is told the layer's translate.
+//! ([`Span::section`]) are painted as ONE layer, faded by it and raised by `Popover::RISE * (1 - appear)`; a
+//! transport band ([`Span::section`] `== 0`) is outside it and moves on [`HudMotion::page_appear`]'s clock instead
+//! (`moves_of`). A MODAL package draws the logical state and lays a section still fading out over it; an INLINE one
+//! draws the block of the presented sections, with each band above an appearing or fading section `(1 - appear)` of
+//! its lift lower than its rest place (`lift`). A `Shelf` stands at a screen y whatever its painter translates by,
+//! so the strip is told the layer's translate.
+//!
+//! **The transport on the journey** (`docs/hud-plugins.md`, D6). A transport band present in only ONE end of the
+//! journey (the compact state, or the open ones) FADES on the page spring (`1 - page`, `page`), the alpha
+//! multiplying the scrub's chrome alpha; one present in only SOME open states fades on those sections' own appear;
+//! a band in BOTH ends TRAVELS, a MODAL one to `y = C + page * (M - C)` (`C` its y compact, `M` the appear-weighted
+//! mean of its y in the open states), an INLINE one by `lift` as it always has (only the fade is added). Hit rects,
+//! stops and focus stay at the band's logical rest. The scrim's TOP edge follows the same clock and the bottom edge
+//! stays, never a translate; a `fixed` scrim has one rect and stands still. [`draw`] walks, in this order: the
+//! compact bands the open state does not hold (fading out), the logical state with the table applied, then each
+//! section still leaving (its own spans, plus the transport bands only it holds). The compact walk and a moving
+//! frame never `reset_title`: the title's marquee is released once the motion is over. At rest the table is empty
+//! and the walk is today's, bit for bit (the frozen classic census holds it). On the opening frame the screen may
+//! already hand the discs for a stand-in, so the row fading out under the section is the discs'; the closing frame
+//! shows the real slot at once.
 //!
 //! **A section is drawn from its state.** The state's own bits say which sections are open, so a
 //! `toggle_section` control reads selected (a pill: `TabPill`'s selected face; a disc: its `solid` rest face)
@@ -115,28 +131,53 @@ fn state_for<'c>(compiled: &'c Compiled, open: u8, f: &Frame<'_>) -> Option<&'c 
     frame_state(compiled, open, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
 }
 
-/// **How the sections' motion shapes one walk** (`docs/hud-plugins.md`, "Sections"): each section's appear, which
-/// paints the spans it owns as ONE layer (faded by it, risen by `Popover::RISE` over `1 - appear`: what the panels
-/// drew), and, for an inline package, how far each band above an appearing or fading section stands below its
-/// place in the presented state.
-struct Layers {
-    /// Chapters, then Info
-    appear: [f32; 2],
-    /// `(band id, dy)` of the bands that stand lower than their rest place, in logical pixels
-    lift: Vec<(String, f32)>,
+/// **How a transport band moves this frame**: `dy` lower than the state it is walked from, seen at `alpha`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Move {
+    dy: f32,
+    alpha: f32,
 }
 
-impl Layers {
+/// Below this much weight a set of states counts as absent when a band's place in them is averaged ([`moves_of`]).
+const WEIGHT_EPS: f32 = 1e-3;
+
+/// **How the sections' and the page's motion shape one frame's walks** (`docs/hud-plugins.md`, "Sections"): each
+/// section's appear, which paints the spans it owns as ONE layer (faded by it, risen by `Popover::RISE` over
+/// `1 - appear`: what the panels drew), and how every band of the transport moves ([`Move`]): for an inline package
+/// how far each band above an appearing or fading section stands below its place in the presented state, for a modal
+/// one where the page's spring has taken each band between the compact state and the open ones, and for either what
+/// fades. Only the bands that move have an entry: the table of a frame at rest is empty.
+struct Layers<'c> {
+    /// Chapters, then Info
+    appear: [f32; 2],
+    /// `(band id, move)` of the bands that stand lower than their rest place or are not seen whole, in logical
+    /// pixels; the scrim is band `""` and its `dy` moves its top edge
+    moves: Vec<(&'c str, Move)>,
+    /// Is the page or a section still moving (or held at its first frame)? What keeps the title's marquee running
+    /// and the compact transport drawing while the middle is already withheld.
+    moving: bool,
+}
+
+impl<'c> Layers<'c> {
     /// Every section at rest: what a state walked on its own (a test's) draws.
     fn settled() -> Self {
-        Self { appear: [1.0; 2], lift: Vec::new() }
+        Self { appear: [1.0; 2], moves: Vec::new(), moving: false }
     }
 
     /// The layers of `state`, the state of the `base` bits, from the motion `row` holds.
-    fn of(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, inline: bool, row: &HudMotion) -> Self {
+    fn of(compiled: &'c Compiled, state: &'c CompiledState, base: u8, f: &Frame<'_>, inline: bool, row: &HudMotion) -> Self {
         let appear = [row.section_appear(Section::Chapters), row.section_appear(Section::Info)];
-        let lift = if inline { lift(compiled, state, base, f, &appear) } else { Vec::new() };
-        Self { appear, lift }
+        let mut moves = moves_of(compiled, state, base, f, inline, row);
+        if inline {
+            // the lift is an inline package's travel: it rides the section's own spring, not the page's
+            for (id, dy) in lift(compiled, state, base, f, &appear) {
+                match moves.iter_mut().find(|(band, _)| *band == id) {
+                    Some((_, m)) => m.dy += dy,
+                    None => moves.push((id, Move { dy, alpha: 1.0 })),
+                }
+            }
+        }
+        Self { appear, moves, moving: row.page_moving() || row.sections_moving() }
     }
 
     /// The appear of the first section named in `bits`, `1` for a span of the transport.
@@ -159,9 +200,116 @@ impl Layers {
         p.alpha(a).translate(0.0, plx_ui::popover::Popover::RISE * (1.0 - a))
     }
 
-    /// How far below its rest place the band `id` stands.
-    fn lift_of(&self, id: &str) -> f32 {
-        self.lift.iter().find(|(band, _)| band == id).map_or(0.0, |(_, dy)| *dy)
+    /// How the band `id` moves: not at all (`dy` 0, seen whole) when it has no entry.
+    fn motion_of(&self, id: &str) -> Move {
+        self.moves.iter().find(|(band, _)| *band == id).map_or(Move { dy: 0.0, alpha: 1.0 }, |(_, m)| *m)
+    }
+}
+
+/// A band's top in `state`, `None` where the state lays no such band out. The scrim is band `""`: its top is the
+/// scrim rect's.
+fn y_in(state: &CompiledState, id: &str) -> Option<f32> {
+    if id.is_empty() {
+        state.scrim.map(|r| r.y)
+    } else {
+        state.bands.iter().find(|(band, _)| band == id).map(|(_, rect)| rect.y)
+    }
+}
+
+/// The ids of `state`'s bands of the transport (a [`Span::section`] of `0`; the scrim is `""`), in draw order.
+fn transport_ids(state: &CompiledState) -> impl Iterator<Item = &str> {
+    state.spans.iter().filter(|span| span.section == 0).map(|span| span.band.as_str())
+}
+
+/// **Where the page's motion has taken each band of the transport** (`docs/hud-plugins.md`, D6): one entry per band
+/// that is not at its rest place and seen whole in `state`, the state the frame's open bits select. A band has a place
+/// `C` in the compact state and a place in each open state; the open states are the presented sections' (each weighted
+/// by its appear) for a modal package and `state` alone, at weight 1, for an inline one.
+///
+/// - in the compact state and in no open one: it fades, at `1 - page`, where the compact state puts it;
+/// - in an open state and not in the compact one: it fades in at `page`, or, when some open state lacks it, at the
+///   appear of the states that have it (`min(1, sum of their appear)`), so a band that only the Chapters state holds
+///   fades on Chapters' own spring through a switch;
+/// - in both: it travels to `M`, the mean of its places in the open states that have it weighted by their appear
+///   (`C` while they weigh nothing): `y = C + page * (M - C)`, faded by the appear of the open states that lack it
+///   (`1 - sum`). An inline package keeps its lift for this: only the fade is the table's.
+///
+/// `dy` is `y` less the band's place in the state it is WALKED from: `state` if that holds it, else the compact state
+/// (the bands that fade out with the page), else the first leaving section's. At a settled spring every `dy` is
+/// exactly `0` and every alpha exactly `1`, so a frame at rest has no entry at all.
+fn moves_of<'c>(compiled: &'c Compiled, state: &'c CompiledState, base: u8, f: &Frame<'_>, inline: bool, row: &HudMotion) -> Vec<(&'c str, Move)> {
+    let compact = state_for(compiled, 0, f);
+    // (weight, state, is it leaving: presented, and not in the frame's open bits)
+    let mut open: Vec<(f32, &'c CompiledState, bool)> = Vec::new();
+    if inline {
+        open.push((1.0, state, false));
+    } else {
+        let presented = row.presented();
+        for section in [Section::Chapters, Section::Info] {
+            let bit = section.open_bit();
+            if presented & bit == 0 {
+                continue;
+            }
+            if let Some(s) = state_for(compiled, bit, f) {
+                open.push((row.section_appear(section), s, base & bit == 0));
+            }
+        }
+    }
+    let page = row.page_appear();
+    let mut ids: Vec<&'c str> = Vec::new();
+    for id in compact.into_iter().chain([state]).flat_map(transport_ids) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    for id in open.iter().flat_map(|(_, s, _)| transport_ids(s)) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let mut out = Vec::new();
+    for id in ids {
+        let c = compact.and_then(|s| y_in(s, id));
+        let (mut has, mut lacks, mut first) = (0.0_f32, 0.0_f32, None);
+        for (weight, s, _) in &open {
+            match y_in(s, id) {
+                Some(y) => {
+                    has += weight;
+                    first.get_or_insert(y);
+                }
+                None => lacks += weight,
+            }
+        }
+        // the mean of its places in the open states, each by its share of their weight: one state of weight w is
+        // `(w / w) * y`, which is `y` itself
+        let mean = if has >= WEIGHT_EPS {
+            open.iter().filter_map(|(weight, s, _)| y_in(s, id).map(|y| (weight / has) * y)).fold(0.0, |sum, y| sum + y)
+        } else {
+            c.or(first).unwrap_or_default()
+        };
+        let (y, alpha) = match (c, first) {
+            (Some(c), None) => (c, 1.0 - page),
+            (Some(c), Some(_)) => (lerp(c, mean, page), (1.0 - lacks).clamp(0.0, 1.0)),
+            (None, Some(_)) => (mean, if lacks <= WEIGHT_EPS { page } else { has.min(1.0) }),
+            (None, None) => continue,
+        };
+        let walked = y_in(state, id).or(c).or_else(|| open.iter().filter(|(_, _, leaving)| *leaving).find_map(|(_, s, _)| y_in(s, id)));
+        let dy = if inline { 0.0 } else { walked.map_or(0.0, |w| y - w) };
+        if dy != 0.0 || alpha < 1.0 {
+            out.push((id, Move { dy, alpha }));
+        }
+    }
+    out
+}
+
+/// `a` at `t == 0` and `b` at `t == 1`, both exactly: `a + t * (b - a)` is off by a rounding at 1.
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    if t >= 1.0 {
+        b
+    } else if t <= 0.0 {
+        a
+    } else {
+        a + t * (b - a)
     }
 }
 
@@ -170,9 +318,14 @@ impl Layers {
 /// lift LOWER than its rest place in `state`, so at appear 0 the block is where the state without the section
 /// puts it and the mask drops with no jump. The lift is read from the compiler's geometry: the band's box in
 /// `state` against the same band's box in the state without the section, so it is whatever the package laid out
-/// (a keyed `gap_before` included) and nothing is tuned per package. No state is kept per op.
-fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, appear: &[f32; 2]) -> Vec<(String, f32)> {
-    let mut out: Vec<(String, f32)> = Vec::new();
+/// (a keyed `gap_before` included) and nothing is tuned per package. No state is kept per op. The scrim's top edge
+/// (band `""`) rides the same delta as the bands, on the section's clock.
+fn lift<'c>(compiled: &Compiled, state: &'c CompiledState, base: u8, f: &Frame<'_>, appear: &[f32; 2]) -> Vec<(&'c str, f32)> {
+    let mut out: Vec<(&'c str, f32)> = Vec::new();
+    let mut add = |id: &'c str, dy: f32| match out.iter_mut().find(|(band, _)| *band == id) {
+        Some(entry) => entry.1 += dy,
+        None => out.push((id, dy)),
+    };
     for section in [Section::Chapters, Section::Info] {
         let bit = section.open_bit();
         let a = appear[if bit == OPEN_CHAPTERS { 0 } else { 1 }];
@@ -180,15 +333,14 @@ fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, app
             continue;
         }
         let Some(without) = state_for(compiled, base & !bit, f) else { continue };
+        if let (Some(now), Some(rest)) = (state.scrim, without.scrim) {
+            add("", (1.0 - a) * (rest.y - now.y));
+        }
         let owned = |id: &str| state.spans.iter().any(|span| span.section & bit != 0 && span.band == id);
         let Some(first) = state.bands.iter().position(|(id, _)| owned(id)) else { continue };
         for (id, rect) in &state.bands[..first] {
             let Some((_, rest)) = without.bands.iter().find(|(other, _)| other == id) else { continue };
-            let dy = (1.0 - a) * (rest.y - rect.y);
-            match out.iter_mut().find(|(band, _)| band == id) {
-                Some(entry) => entry.1 += dy,
-                None => out.push((id.clone(), dy)),
-            }
+            add(id.as_str(), (1.0 - a) * (rest.y - rect.y));
         }
     }
     out
@@ -196,6 +348,11 @@ fn lift(compiled: &Compiled, state: &CompiledState, base: u8, f: &Frame<'_>, app
 
 /// Draw the transport from `compiled` into `p`. Returns false, having drawn nothing, when the package
 /// has no state for this frame (the caller then draws what it drew before the renderer existed).
+///
+/// **The walks, in order** (every frame; the first and the third are empty when nothing is owed): the bands of the
+/// compact state that the logical one does not hold, while they still fade out with the page; the logical state (the
+/// open bits' own; for an inline package the presented sections' block), each band moved by the table; and each
+/// leaving section of a modal package, as one layer, with the transport bands that only that state holds.
 pub fn draw<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter) -> bool
 where
     H::Elem: IndexElem,
@@ -205,27 +362,53 @@ where
         row.reset_title();
         return true;
     }
-    // A MODAL package draws the logical state whole (the transport comes back the moment a section is put away, as
-    // it did under the panels) and lays a section still fading out over it; an INLINE one draws the block as the
-    // presented sections lay it out.
+    // A MODAL package draws the logical state (the transport comes back the moment a section is put away, as it did
+    // under the panels, faded in by the page) and lays a section still fading out over it; an INLINE one draws the
+    // block as the presented sections lay it out.
     let presented = row.presented();
     let inline = !compiled.sections_modal();
     let base = if inline { f.open | presented } else { f.open };
     let Some(state) = state_for(compiled, base, f) else { return false };
     let layers = Layers::of(compiled, state, base, f, inline, row);
-    walk(compiled, state, f, df, row, p, &layers, 0);
+    let compact = state_for(compiled, 0, f);
+    if base != 0 {
+        if let Some(compact) = compact {
+            let fading = owed(compact, &layers, |id| y_in(state, id).is_some());
+            if !fading.is_empty() {
+                walk(compiled, compact, f, df, row, p, &layers, Pick::Bands(&fading));
+            }
+        }
+    }
+    walk(compiled, state, f, df, row, p, &layers, Pick::All);
     if !inline {
+        let mut walked: Vec<&str> = Vec::new();
         for section in [Section::Chapters, Section::Info] {
             let bit = section.open_bit();
             if presented & !base & bit == 0 {
                 continue;
             }
             if let Some(leaving) = state_for(compiled, bit, f) {
-                walk(compiled, leaving, f, df, row, p, &Layers::of(compiled, leaving, bit, f, false, row), bit);
+                let only_here = owed(leaving, &layers, |id| {
+                    y_in(state, id).is_some() || compact.is_some_and(|c| y_in(c, id).is_some()) || walked.contains(&id)
+                });
+                walk(compiled, leaving, f, df, row, p, &layers, Pick::Leaving(bit, &only_here));
+                walked.extend(only_here);
             }
         }
     }
     true
+}
+
+/// The ids of the transport bands of `from` that are drawn from it this frame: not held by a state that is walked
+/// before it (`held`), and not gone with their alpha.
+fn owed<'c>(from: &'c CompiledState, layers: &Layers<'_>, held: impl Fn(&str) -> bool) -> Vec<&'c str> {
+    let mut out: Vec<&str> = Vec::new();
+    for id in transport_ids(from) {
+        if !held(id) && layers.motion_of(id).alpha > 0.0 && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
 }
 
 /// Walk one compiled state's ops into `p`. [`draw`] hands it the state the frame's open bits select (the compact
@@ -236,11 +419,34 @@ pub fn draw_state<H: Host>(compiled: &Compiled, state: &CompiledState, f: &Frame
 where
     H::Elem: IndexElem,
 {
-    walk(compiled, state, f, df, row, p, &Layers::settled(), 0);
+    walk(compiled, state, f, df, row, p, &Layers::settled(), Pick::All);
 }
 
-/// [`draw_state`] under `layers`: the spans of the section bits `only` alone when it is not `0` (a section still
-/// fading out over a state that no longer holds it), else every span.
+/// **Which spans a walk takes.**
+enum Pick<'a> {
+    /// every span
+    All,
+    /// the spans of the section bits alone (a section still fading out over a state that no longer holds it) and the
+    /// transport bands named, which only that state holds
+    Leaving(u8, &'a [&'a str]),
+    /// only the transport bands named (the compact state's, fading out under the open one)
+    Bands(&'a [&'a str]),
+}
+
+impl Pick<'_> {
+    fn takes(&self, span: &Span) -> bool {
+        match self {
+            Pick::All => true,
+            Pick::Leaving(bits, bands) => span.section & bits != 0 || (span.section == 0 && bands.contains(&span.band.as_str())),
+            Pick::Bands(bands) => span.section == 0 && bands.contains(&span.band.as_str()),
+        }
+    }
+}
+
+/// [`draw_state`] under `layers`, taking the spans `pick` names. A band moves by its [`Layers::motion_of`]: it is
+/// translated by `dy` (the scrim's top edge moves instead, its foot stays on the screen's) and drawn at `alpha`, and
+/// skipped before any op once that is spent. While the page or a section moves (`Layers::moving`) the compact
+/// transport is not withheld with the middle, and the title's marquee is not reset: both are the fade's.
 #[allow(clippy::too_many_arguments)]
 fn walk<H: Host>(
     compiled: &Compiled,
@@ -249,14 +455,15 @@ fn walk<H: Host>(
     df: &DrawFrame<'_, '_, H>,
     row: &mut HudMotion,
     p: Painter,
-    layers: &Layers,
-    only: u8,
+    layers: &Layers<'_>,
+    pick: Pick<'_>,
 ) where
     H::Elem: IndexElem,
 {
     let e = hud_env();
-    // a panel owning the middle hides the compact state's transport; a section state IS the panel
-    let hides_transport = state.key.open == 0 && !f.transport;
+    // a panel owning the middle hides the compact state's transport, unless that transport is fading out under it; a
+    // section state IS the panel
+    let hides_transport = state.key.open == 0 && !f.transport && !layers.moving;
 
     // While a scrub is live the `fades` bands (the title block, the control row, the tabs) fade away so
     // the card has the room; the bar, the knob and both clocks stay. The same alpha restores them.
@@ -264,7 +471,7 @@ fn walk<H: Host>(
     let chrome = chrome_a > 0.004;
     let pc = p.alpha(chrome_a);
     let walked = p;
-    if !f.transport || !chrome {
+    if (!f.transport && !layers.moving) || !chrome {
         row.reset_title();
     }
 
@@ -273,16 +480,23 @@ fn walk<H: Host>(
     let mut kicker_rect: Option<(Rect, i32)> = None;
     let mut bar: Option<Playbar> = None;
     let mut run = |span: &Span| {
-        if only != 0 && span.section & only == 0 {
+        if !pick.takes(span) {
             return;
         }
         if span.chrome == Chrome::Fades && !chrome {
             return;
         }
+        let m = layers.motion_of(&span.band);
+        if m.alpha <= 0.0 {
+            return;
+        }
         let q = if span.chrome == Chrome::Fades { pc } else { p };
-        // an appearing or fading section lifts the bands above it; its own spans are one layer
-        let dy = layers.lift_of(&span.band);
+        // the page and an appearing or fading section move the band (the scrim's motion is its top edge's, below);
+        // a section's own spans are one layer
+        let scrim = span.band.is_empty();
+        let dy = if scrim { 0.0 } else { m.dy };
         let (q, p) = if dy != 0.0 { (q.translate(0.0, dy), p.translate(0.0, dy)) } else { (q, p) };
+        let (q, p) = if m.alpha < 1.0 { (q.alpha(m.alpha), p.alpha(m.alpha)) } else { (q, p) };
         let q = layers.paint(span.section, q);
         // a Shelf stands at a SCREEN y whatever translate its painter carries, so the strip is told the layer's
         let moved = q.dy() - walked.dy();
@@ -298,7 +512,8 @@ fn walk<H: Host>(
                 continue;
             }
             match op {
-                DrawOp::Scrim { rect } => draw_scrim_at(q, *rect),
+                // its top edge follows the clock and its foot stays on the screen's: a translate would open a gap
+                DrawOp::Scrim { rect } => draw_scrim_at(q, Rect { y: rect.y + m.dy, h: rect.h - m.dy, ..*rect }),
                 _ if hides_transport && !is_section_tab(op) => {}
                 DrawOp::Text { bind, rect, size, bold, ink, alpha, max_lines, leading } => match text_of(bind) {
                     Some(Text::Kicker) => kicker_rect = Some((*rect, *size)),
@@ -793,6 +1008,7 @@ mod tests {
     }
 
     mod panel_goldens;
+    mod transitions;
 
     /// **The Chapters strip through the renderer** (`draw_state` over classic's `OPEN_CHAPTERS` state, the
     /// strip a `cards::Shelf`) against what the hand-written strip drew on the same playing item (frozen in
