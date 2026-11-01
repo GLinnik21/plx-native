@@ -29,13 +29,17 @@
 //!
 //! **What this does not know.** The calibration notes record neither the television's language nor its
 //! chapters (the mock film has them, the mock has no episode with them). The numbers above are English, a
-//! film with chapters, and a state of a package or language nobody ran is a state nobody measured: the
-//! pushed head enforces nothing on those (the handoff of PR19 lists them with their four numbers).
+//! film with chapters. A state of a package nobody ran (Up Next, Skip, an episode with chapters on classic, the
+//! reference's episode and its Info alone) is not admitted by a neighbour's number, and neither is a measured
+//! state in another language, whose tab plates follow its labels; the lint's verdict on a state over its
+//! ceiling, `HUD-E1401`, waits for the television to measure them. Until then [`over`] reports the comparison
+//! and `--hud-lint` prints it ([`StateCostLine`]) without failing the run.
 //!
 //! Pure: no IO, no global. [`over`] and [`state_cost`] take plain values, so the television can ask the same
 //! question of a compiled state at selection (never in a frame) and the lint asks it of every state.
 
 use super::compile::{CompiledState, Cost, SkipKind};
+use super::lint::{slot_name, state_name, LangCtx};
 
 // ---------------------------------------------------------------------------------------------------
 // The twelve ceilings
@@ -197,6 +201,70 @@ pub fn state_cost(state: &CompiledState) -> Cost {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// The report: every state's cost against its class's ceiling
+// ---------------------------------------------------------------------------------------------------
+
+/// **One state's cost, as `--hud-lint` prints it** (`docs/hud-plugins.md`, "LLM authoring" item 2): not a finding,
+/// an information line. `over` lists the terms above the ceiling; the lint's verdict on them is the finding
+/// `HUD-E1401`, never this line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateCostLine {
+    /// the language it was compiled in; `None` when the cost is the same in every language that was linted
+    pub lang: Option<String>,
+    /// [`state_name`] of the state
+    pub state: String,
+    /// [`slot_name`] of the state
+    pub slot: &'static str,
+    pub class: Class,
+    pub cost: Cost,
+    pub ceiling: Ceiling,
+    pub over: Vec<Over>,
+}
+
+/// The cost line of every state of `cx`, in `Compiled::states()` order, tagged with the language.
+pub(super) fn lines(cx: &LangCtx<'_>) -> Vec<StateCostLine> {
+    cx.states()
+        .map(|s| {
+            let cost = state_cost(s.state);
+            let class = Class::of(s.key.open);
+            let ceiling = ceiling(class);
+            StateCostLine {
+                lang: Some(cx.lang.tag.to_owned()),
+                state: state_name(s.key),
+                slot: slot_name(s.key),
+                class,
+                over: over(ceiling, &cost),
+                cost,
+                ceiling,
+            }
+        })
+        .collect()
+}
+
+/// The lines of every language (`per_lang[i]` is language `i`'s, each tagged) as one list, in state order: a
+/// state whose cost is the same in every language is kept once with `lang` `None` (only `blended_px` moves with
+/// the language, through the tab and button plates, which follow their labels' widths); any other state keeps
+/// one line per language. With fewer than two languages nothing collapses.
+pub(super) fn collapse_lines(per_lang: Vec<Vec<StateCostLine>>) -> Vec<StateCostLine> {
+    let states = per_lang.first().map_or(0, Vec::len);
+    // the state graph does not depend on the language; if it ever did, nothing is claimed to be shared
+    if per_lang.len() < 2 || per_lang.iter().any(|lang| lang.len() != states) {
+        return per_lang.into_iter().flatten().collect();
+    }
+    let mut out = Vec::new();
+    for i in 0..states {
+        let first = &per_lang[0][i];
+        let shared = per_lang.iter().all(|lang| (&lang[i].state, lang[i].slot, &lang[i].cost) == (&first.state, first.slot, &first.cost));
+        if shared {
+            out.push(StateCostLine { lang: None, ..first.clone() });
+        } else {
+            out.extend(per_lang.iter().map(|lang| lang[i].clone()));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
@@ -311,6 +379,39 @@ mod tests {
             [Over { term: Term::DrawOps, value: 11, ceiling: 10 }, Over { term: Term::BlendedPx, value: 5001, ceiling: 5000 }]
         );
         assert_eq!(got.iter().map(|o| o.term.name()).collect::<Vec<_>>(), ["draw_ops", "blended_px"]);
+    }
+
+    fn line(lang: &str, state: &str, blended_px: u64) -> StateCostLine {
+        let cost = Cost { draw_ops: 9, glyph_runs: 6, texture_bytes: 49_152, blended_px };
+        let class = Class::Compact;
+        StateCostLine { lang: Some(lang.to_owned()), state: state.to_owned(), slot: "discs", class, over: over(ceiling(class), &cost), cost, ceiling: ceiling(class) }
+    }
+
+    #[test]
+    fn a_state_with_the_same_cost_in_every_language_is_reported_once() {
+        let per_lang = vec![
+            vec![line("en", "compact", 945_408), line("en", "chapters", 900_000)],
+            vec![line("de", "compact", 945_408), line("de", "chapters", 900_512)],
+        ];
+        let got = collapse_lines(per_lang.clone());
+        assert_eq!(got.len(), 3, "compact once, chapters once per language: {got:?}");
+        assert_eq!((got[0].lang.as_deref(), got[0].state.as_str()), (None, "compact"));
+        assert_eq!((got[1].lang.as_deref(), got[2].lang.as_deref()), (Some("en"), Some("de")));
+        // one language alone keeps its tag
+        let one = collapse_lines(vec![per_lang[0].clone()]);
+        assert!(one.iter().all(|l| l.lang.as_deref() == Some("en")) && one.len() == 2);
+    }
+
+    #[test]
+    fn the_lint_reports_every_state_of_a_package_against_its_class() {
+        let en = LintLang::for_tag("en").expect("en");
+        let lint = crate::hud_format::lint::lint_report(CLASSIC, &ShippedMeasure, &[en], &Default::default());
+        let compiled = english(CLASSIC);
+        assert_eq!(lint.costs.len(), compiled.states().len(), "one line per state");
+        let film = lint.costs.iter().find(|l| (l.state.as_str(), l.slot) == ("compact,movie", "discs")).expect("the film's line");
+        assert_eq!((film.class, film.cost.blended_px, film.ceiling.blended_px), (Class::Compact, 945_408, MAX_COMPACT_BLENDED_PX));
+        assert!(film.over.is_empty(), "the film is a measured state: {film:?}");
+        assert!(lint.costs.iter().any(|l| l.class == Class::OneSection) && lint.costs.iter().all(|l| l.lang.as_deref() == Some("en")));
     }
 
     #[test]

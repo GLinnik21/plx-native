@@ -1226,6 +1226,34 @@ HWCNT like the others, is what bounds a tall scrim or a screen-wide ground, each
 parser's input; package bytes follow from both. Every new `MAX_*` gets its `ci/list-caps.ini` line with the
 derivation.
 
+### The ceilings (PR19)
+
+PR8 ran seven states on the dev set (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, every one
+holding 59-61 fps with `dropped=0`). A class's ceiling in each term is the MAXIMUM of that term over the states of
+that class that were run, taken from what the compiler reports for those exact states (English, the television's
+advances `ShippedMeasure`), not rounded and with no headroom. Each class stands alone: two sections is not capped by
+one section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming the
+state it came from, and `lint_cost::the_ceilings_are_the_maximum_over_the_measured_states` recomputes all twelve from
+`classic.plxhud.json` and `reference.plxhud.json`, so a layout change that moves one fails until someone re-measures.
+
+| class | measured state (GPU_ACTIVE, M cycles a frame) | draw ops | glyph runs | texture bytes | blended px |
+| --- | --- | --- | --- | --- | --- |
+| compact | classic, a film with chapters (4.33) | 9 | **6** | 49152 | **945408** |
+| compact | classic, an episode with no chapters (4.17) | 10 | 5 | **81920** | 942912 |
+| compact | reference, a film (3.73) | **11** | 4 | 81280 | 838253 |
+| one section | classic Chapters (5.23) | 22 | 14 | **1119744** | 919296 |
+| one section | classic Info (6.84) | 10 | 14 | 230400 | **1383936** |
+| one section | reference Chapters (4.72) | **45** | **21** | 769920 | 1274323 |
+| two sections | reference Chapters and Info (4.92) | **52** | **28** | **814016** | **1592851** |
+
+The bold figure of a column is that class's ceiling and the row it came from. The class is the number of open
+sections; the slot (Discs, Up Next, Skip) never changes it. A state nobody ran is not admitted by a neighbour's
+number: Up Next and Skip, an episode with chapters on classic, the reference's episode and its Info alone are states
+the calibration did not reach, and so is any measured state in a language other than the one the numbers are in
+(only `blended_px` moves with the language, through the tab and button plates, which follow their labels' widths).
+`plxnative-sim --hud-lint` prints every state's cost beside its class's ceiling, as information lines (text) and a
+`costs` array (JSON), and exits 0 on a package whose only output is those.
+
 ## Storage per install mode
 
 New `paths::hud_candidates()` on F39's pattern, keyed by `app_id()`:
@@ -1366,8 +1394,9 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
   `radialGradient` and `stop` the hint reads "HUD assets are alpha masks tinted by the app; a gradient would be
   discarded, so draw the mark in one colour"); `HUD-E0702` an SVG attribute outside it (`fill`, `stroke`, `opacity`,
   `style`: "colour comes from the face's ink").
-- Information lines, not findings: the commands the app will fold into More, and the menu side each opener
-  gets in each state.
+- Information lines, not findings: every state's cost against its class's ceiling (`--hud-lint` prints them, a
+  `costs` array in JSON), the commands the app will fold into More, and the menu side each opener gets in each
+  state.
 - What JSON Schema cannot express, lint reports with numbers: the z-order census (both rects, their groups and
   z, the state and slot); the caption band (computed top, `MIN_CONTROLS_TOP_Y`, the element too high, by how
   many px); reachability (R1, R3, R4); menus (the room on each side against `need_h`); cost (per state against

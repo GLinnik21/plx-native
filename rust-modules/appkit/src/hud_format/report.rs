@@ -28,12 +28,20 @@
 //! between languages prints one line per language, and the lines must differ. The rects and the measured text
 //! are the JSON's; a lint message names the string itself.
 //!
+//! **Cost lines** ([`StateCostLine`], `docs/hud-plugins.md`, "Cost" and "LLM authoring" item 2) are information, not
+//! findings: they never change the exit code. [`to_json_with_costs`] adds a top-level `costs` array to the report,
+//! one object per state (`state`, `slot`, `class`, optionally `lang`, the `cost` and `ceiling` objects of the four
+//! terms, and `over`, the names of the terms above the ceiling), in the compiler's state order; [`text_with_costs`]
+//! prints one `cost` line per state after the findings. [`to_json`] and [`text`] are the findings alone.
+//!
 //! This module is PURE: findings in, text out.
 
 use std::cmp::Ordering;
 
 use plx_ui::rec::strict_json::{Map, Number, Value};
 
+use super::lint_cost::{Ceiling, StateCostLine};
+use super::compile::Cost;
 use super::{Context, Finding};
 
 /// The `lint` key's value: the version of this report shape.
@@ -181,6 +189,79 @@ pub fn json_text(file: &str, findings: &[Finding]) -> String {
     format!("{:#}\n", to_json(file, findings))
 }
 
+/// A cost's four terms as the JSON object the report prints.
+fn terms_json(draw_ops: u64, glyph_runs: u64, texture_bytes: u64, blended_px: u64) -> Value {
+    let mut map = Map::new();
+    for (key, value) in [("draw_ops", draw_ops), ("glyph_runs", glyph_runs), ("texture_bytes", texture_bytes), ("blended_px", blended_px)] {
+        map.insert(key.to_owned(), Value::from(value));
+    }
+    Value::Object(map)
+}
+
+fn cost_json(c: &Cost) -> Value {
+    terms_json(c.draw_ops as u64, c.glyph_runs as u64, c.texture_bytes, c.blended_px)
+}
+
+fn ceiling_json(c: &Ceiling) -> Value {
+    terms_json(c.draw_ops as u64, c.glyph_runs as u64, c.texture_bytes, c.blended_px)
+}
+
+fn cost_line_json(l: &StateCostLine) -> Value {
+    let mut map = Map::new();
+    map.insert("state".to_owned(), Value::String(l.state.clone()));
+    map.insert("slot".to_owned(), Value::String(l.slot.to_owned()));
+    map.insert("class".to_owned(), Value::String(l.class.name().to_owned()));
+    if let Some(lang) = &l.lang {
+        map.insert("lang".to_owned(), Value::String(lang.clone()));
+    }
+    map.insert("cost".to_owned(), cost_json(&l.cost));
+    map.insert("ceiling".to_owned(), ceiling_json(&l.ceiling));
+    map.insert("over".to_owned(), Value::Array(l.over.iter().map(|o| Value::String(o.term.name().to_owned())).collect()));
+    Value::Object(map)
+}
+
+/// [`to_json`] with the `costs` array (see the module doc).
+pub fn to_json_with_costs(file: &str, findings: &[Finding], costs: &[StateCostLine]) -> Value {
+    let mut json = to_json(file, findings);
+    if let Value::Object(map) = &mut json {
+        map.insert("costs".to_owned(), Value::Array(costs.iter().map(cost_line_json).collect()));
+    }
+    json
+}
+
+/// [`to_json_with_costs`] as printed: pretty, with one trailing newline.
+pub fn json_text_with_costs(file: &str, findings: &[Finding], costs: &[StateCostLine]) -> String {
+    format!("{:#}\n", to_json_with_costs(file, findings, costs))
+}
+
+/// One cost line: the state, its class, each term against its ceiling, and the terms that are over.
+fn cost_line(file: &str, l: &StateCostLine) -> String {
+    let (c, k) = (&l.cost, &l.ceiling);
+    let mut out = format!(
+        "{file}: cost {} {} ({}): draw_ops {}/{}, glyph_runs {}/{}, texture_bytes {}/{}, blended_px {}/{}",
+        l.state, l.slot, l.class.name(), c.draw_ops, k.draw_ops, c.glyph_runs, k.glyph_runs, c.texture_bytes, k.texture_bytes,
+        c.blended_px, k.blended_px
+    );
+    if let Some(lang) = &l.lang {
+        out.push_str(&format!(" [{lang}]"));
+    }
+    if !l.over.is_empty() {
+        let names: Vec<&str> = l.over.iter().map(|o| o.term.name()).collect();
+        out.push_str(&format!(" | over: {}", names.join(", ")));
+    }
+    out
+}
+
+/// [`text`], then one `cost` line per state in the compiler's order, each ending in a newline.
+pub fn text_with_costs(file: &str, findings: &[Finding], costs: &[StateCostLine]) -> String {
+    let mut out = text(file, findings);
+    for l in costs {
+        out.push_str(&cost_line(file, l));
+        out.push('\n');
+    }
+    out
+}
+
 /// One line of a finding, with no line break in it: a control character of the message becomes a space.
 fn line(file: &str, f: &Finding) -> String {
     let mut out = format!(
@@ -275,6 +356,57 @@ mod tests {
     fn a_finding_without_nearest_names_carries_an_empty_array() {
         let json = to_json("f", &[finding(&codes::E0103, "/layout", "missing")]);
         assert_eq!(json["findings"][0]["nearest"], Value::Array(Vec::new()));
+    }
+
+    fn cost_line_of(lang: Option<&str>, blended_px: u64) -> StateCostLine {
+        use crate::hud_format::compile::Cost;
+        use crate::hud_format::lint_cost::{ceiling, over, Class};
+        let cost = Cost { draw_ops: 9, glyph_runs: 6, texture_bytes: 49_152, blended_px };
+        let class = Class::Compact;
+        StateCostLine {
+            lang: lang.map(str::to_owned),
+            state: "compact,movie".to_owned(),
+            slot: "discs",
+            class,
+            over: over(ceiling(class), &cost),
+            cost,
+            ceiling: ceiling(class),
+        }
+    }
+
+    #[test]
+    fn the_costs_array_is_added_to_the_plans_three_keys_and_findings_alone_are_unchanged() {
+        let costs = [cost_line_of(None, 945_408), cost_line_of(Some("de"), 945_409)];
+        let json = to_json_with_costs("f", &[], &costs);
+        assert_eq!(json.as_object().unwrap().len(), 4, "{json:#}");
+        assert_eq!(to_json("f", &[]).as_object().unwrap().len(), 3, "findings alone: lint, file, findings");
+        let [shared, de] = json["costs"].as_array().unwrap().as_slice() else { panic!("two lines: {json:#}") };
+        fn keys(v: &Value) -> Vec<&str> {
+            v.as_object().unwrap().keys().map(String::as_str).collect()
+        }
+        assert_eq!(keys(shared), ["ceiling", "class", "cost", "over", "slot", "state"], "no lang when shared");
+        assert_eq!(keys(de), ["ceiling", "class", "cost", "lang", "over", "slot", "state"]);
+        assert_eq!(shared["class"], "compact");
+        assert_eq!(shared["cost"]["blended_px"], 945_408);
+        assert_eq!(shared["ceiling"]["blended_px"], 945_408);
+        assert_eq!(shared["over"], Value::Array(Vec::new()));
+        assert_eq!(de["over"], serde_json_array(&["blended_px"]));
+        assert!(json_text_with_costs("f", &[], &costs).ends_with("}\n"));
+    }
+
+    #[test]
+    fn a_cost_line_prints_after_the_findings_and_marks_the_terms_over() {
+        let f = finding(&codes::E0104, "/layout", "x");
+        let out = text_with_costs("f.json", &[f], &[cost_line_of(Some("de"), 945_409)]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        assert!(lines[0].starts_with("f.json#/layout: error HUD-E0104"), "{out}");
+        assert_eq!(
+            lines[1],
+            "f.json: cost compact,movie discs (compact): draw_ops 9/11, glyph_runs 6/6, texture_bytes 49152/81920, \
+             blended_px 945409/945408 [de] | over: blended_px"
+        );
+        assert_eq!(text_with_costs("f", &[], &[]), "");
     }
 
     #[test]

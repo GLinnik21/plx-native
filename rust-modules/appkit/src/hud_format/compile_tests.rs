@@ -412,7 +412,7 @@ fn kind_of(op: &DrawOp) -> &'static str {
 #[test]
 fn classic_compact_cost_is_pinned() {
     // Pinned so a later change to what a state costs is VISIBLE in review, not so the numbers are right
-    // for a television: the ceilings are PR7's and PR8's to calibrate. English and FixtureMeasure, because
+    // for a television: the television's numbers are `lint_cost`'s ceilings. English and FixtureMeasure, because
     // the two tab pills' plates are part of the blended area and their width is the label's.
     let _en = language_on_this_thread_for_test(Preference::En);
     let compiled = build(CLASSIC, &FM);

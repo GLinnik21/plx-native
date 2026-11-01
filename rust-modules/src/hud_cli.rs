@@ -8,7 +8,10 @@
 //! ```
 //!
 //! **Exit codes.** `--hud-lint`: 0 when the package has no finding, 1 when it has any (a warning is a
-//! finding: the registry's CI treats `HUD-W0602` as an error), 2 for a usage error. A usage error is
+//! finding: the registry's CI treats `HUD-W0602` as an error), 2 for a usage error. **Cost lines** (one per
+//! state, against its class's ceiling: `HUD-E1401`'s numbers, `docs/hud-plugins.md` "Cost") follow the findings
+//! in text and are the report's `costs` array in JSON; they are information and never change the exit code, so
+//! a clean package prints them and exits 0. A usage error is
 //! a bad command line, a file that cannot be read as UTF-8 text, or fonts that cannot be loaded; each
 //! is ONE line on stderr and nothing on stdout. A package that does not parse is not a usage error: its
 //! parse findings are the report, so the exit code is 1. `--hud-schema` and `--hud-export` exit 0, or 2
@@ -29,7 +32,7 @@
 //! television's 2.0.x sums whole-pixel ones (`plx_base::fontcov::advances`), so a width here can be
 //! a few pixels off the television's: the TV's own compile decides (`docs/hud-plugins.md`, "Text fit").
 
-use plx_appkit::hud_format::lint::{lint, LintLang};
+use plx_appkit::hud_format::lint::{lint_report, Linted, LintLang, LintOptions};
 use plx_appkit::hud_format::{report, schema, schema_emit, BUILTIN_CLASSIC};
 use plx_machine::machine::Measure;
 
@@ -41,7 +44,7 @@ const EXPORT: &str = "--hud-export";
 /// The packages `--hud-export` can print: id and bytes. One entry today; PR6's examples add theirs.
 const EXPORTS: &[(&str, &str)] = &[("builtin:classic", BUILTIN_CLASSIC)];
 
-/// Every finding of the linted package is reported on stdout; 0 means there was none.
+/// Every finding of the linted package is reported on stdout, then its cost lines; 0 means there was no finding.
 const EXIT_CLEAN: i32 = 0;
 /// The package has at least one finding.
 const EXIT_FINDINGS: i32 = 1;
@@ -198,11 +201,12 @@ pub fn run(
                 Ok(measure) => measure,
                 Err(reason) => return usage(&reason, false),
             };
-            let findings = lint(&text, measure.as_ref(), &langs);
+            let Linted { findings, costs } = lint_report(&text, measure.as_ref(), &langs, &LintOptions::default());
             out.push_str(&match format {
-                Format::Text => report::text(&file, &findings),
-                Format::Json => report::json_text(&file, &findings),
+                Format::Text => report::text_with_costs(&file, &findings, &costs),
+                Format::Json => report::json_text_with_costs(&file, &findings, &costs),
             });
+            // the exit code is the findings' alone: a cost line is information
             if findings.is_empty() {
                 EXIT_CLEAN
             } else {
@@ -244,6 +248,7 @@ pub fn main_from(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_appkit::hud_format::lint::lint;
     use plx_base::fontcov::advances::ShippedMeasure;
     use std::cell::Cell;
     use std::ffi::CStr;
@@ -312,18 +317,41 @@ mod tests {
         calls.get()
     }
 
+    /// The cost lines of a report: every line that is not a finding (`<file>: cost ...`).
+    fn cost_lines(out: &str) -> Vec<&str> {
+        out.lines().filter(|l| l.contains(": cost ")).collect()
+    }
+
     #[test]
-    fn hud_lint_exits_0_and_prints_nothing_for_the_builtin_classic() {
+    fn hud_lint_exits_0_for_the_builtin_classic_and_prints_its_cost_lines_and_nothing_else() {
         let (code, out, err) = go(&["--hud-lint", "classic.plxhud.json"], &serve(BUILTIN_CLASSIC), &shipped);
-        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+        assert_eq!((code, err.as_str()), (0, ""));
+        let lines = cost_lines(&out);
+        assert!(!lines.is_empty(), "{out}");
+        assert_eq!(lines.len(), out.lines().count(), "a clean package prints cost lines and no finding: {out}");
+        assert!(lines.iter().all(|l| l.starts_with("classic.plxhud.json: cost ")), "{out}");
         let (code, out, err) = go(
             &["--hud-lint", "classic.plxhud.json", "--format", "json", "--lang", "all"],
             &serve(BUILTIN_CLASSIC),
             &shipped,
         );
         assert_eq!((code, err.as_str()), (0, ""));
-        assert_eq!(out, report::json_text("classic.plxhud.json", &[]));
+        let costs = lint_report(BUILTIN_CLASSIC, &ShippedMeasure, &LintLang::shipped(), &LintOptions::default()).costs;
+        assert_eq!(out, report::json_text_with_costs("classic.plxhud.json", &[], &costs));
         assert!(out.contains("\"findings\": []"), "{out}");
+        assert!(out.contains("\"costs\": ["), "{out}");
+    }
+
+    #[test]
+    fn a_cost_line_names_the_state_its_class_and_each_term_against_its_ceiling() {
+        let (code, out, _) = go(&["--hud-lint", "c.json", "--lang", "en"], &serve(BUILTIN_CLASSIC), &shipped);
+        assert_eq!(code, 0);
+        let film = cost_lines(&out)
+            .into_iter()
+            .find(|l| l.contains(": cost compact,movie discs (compact):"))
+            .unwrap_or_else(|| panic!("the film's line: {out}"));
+        assert!(film.contains("draw_ops 9/11, glyph_runs 6/6, texture_bytes 49152/81920, blended_px 945408/945408"), "{film}");
+        assert!(film.ends_with("[en]"), "one language keeps its tag: {film}");
     }
 
     #[test]
@@ -365,9 +393,11 @@ mod tests {
             &reads(REFERENCE_FIXTURE.to_owned()),
             &shipped,
         );
-        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert_eq!(cost_lines(&out).len(), out.lines().count(), "no finding, only cost lines: {out}");
 
-        let expected = lint(&edited, &ShippedMeasure, &en);
+        let linted = lint_report(&edited, &ShippedMeasure, &en, &LintOptions::default());
+        let expected = linted.findings.clone();
         assert_eq!(expected.len(), 1, "{}", report::text("small-disc.plxhud.json", &expected));
         assert_eq!(expected[0].code, "HUD-E0603");
         let (code, out, err) = go(
@@ -376,7 +406,7 @@ mod tests {
             &shipped,
         );
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(out, report::json_text("small-disc.plxhud.json", &expected));
+        assert_eq!(out, report::json_text_with_costs("small-disc.plxhud.json", &expected, &linted.costs));
         assert!(out.contains("\"context\""), "a geometric finding carries its context: {out}");
         assert!(out.contains("\"code\": \"HUD-E0603\""), "{out}");
         assert!(out.contains("\"lint\": 1"), "{out}");
@@ -384,7 +414,7 @@ mod tests {
         let (code, text, err) =
             go(&["--hud-lint", "small-disc.plxhud.json", "--lang", "en"], &reads(edited), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(text, report::text("small-disc.plxhud.json", &expected));
+        assert_eq!(text, report::text_with_costs("small-disc.plxhud.json", &expected, &linted.costs));
         assert!(text.contains(" error HUD-E0603"), "{text}");
     }
 
@@ -479,14 +509,16 @@ mod tests {
         assert!(!expected.is_empty());
         let (code, out, err) = go(&["--hud-lint", "bad.plxhud.json", "--format", "json"], &serve(bytes), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(out, report::json_text("bad.plxhud.json", &expected));
+        // a package that does not parse has no states: an empty `costs`
+        assert_eq!(out, report::json_text_with_costs("bad.plxhud.json", &expected, &[]));
+        assert!(out.contains("\"costs\": []"), "{out}");
         assert!(out.starts_with("{\n"), "{out}");
         assert!(out.contains("\"file\": \"bad.plxhud.json\""), "{out}");
         assert!(out.contains("\"lint\": 1"), "{out}");
         assert!(out.ends_with("}\n"), "{out}");
         let (code, text, _) = go(&["--hud-lint", "bad.plxhud.json", "--format", "text"], &serve(bytes), &shipped);
         assert_eq!(code, 1);
-        assert_eq!(text, report::text("bad.plxhud.json", &expected));
+        assert_eq!(text, report::text("bad.plxhud.json", &expected), "no cost line without a package");
         let (_, default, _) = go(&["--hud-lint", "bad.plxhud.json"], &serve(bytes), &shipped);
         assert_eq!(default, text, "text is the default format");
     }
@@ -562,7 +594,8 @@ mod tests {
         let classic = concat!(env!("CARGO_MANIFEST_DIR"), "/appkit/src/hud_format/fixtures/classic.plxhud.json");
         let (mut out, mut err) = (String::new(), String::new());
         let code = run(&args(&["--hud-lint", classic, "--lang", "de"]), &read_package, &ttf_measure, &mut out, &mut err);
-        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert_eq!(cost_lines(&out).len(), out.lines().count(), "no finding, only cost lines: {out}");
     }
 
     #[test]

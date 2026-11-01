@@ -50,8 +50,9 @@
 //! never jumps when a segment begins. Skip has TWO labels and so two widths: the state carries both
 //! rects ([`SkipKind`]).
 //!
-//! **Cost** ([`Cost`]) is REPORTED per state, never enforced: the ceilings are calibrated on the
-//! television (PR7, PR8). Its terms: draw ops, glyph runs, texture bytes and blended pixel area.
+//! **Cost** ([`Cost`]) is REPORTED per state; the compile enforces nothing. The ceilings are the television's
+//! measured maxima per state class (`lint_cost`, I12), and the lint holds each state to them. Its terms: draw
+//! ops, glyph runs, texture bytes and blended pixel area.
 
 use std::ffi::CString;
 
@@ -480,7 +481,7 @@ pub struct Contributor {
     pub blended_px: u64,
 }
 
-/// A state's cost, REPORTED (the ceilings are calibrated on the television in PR7 and PR8).
+/// A state's cost, REPORTED (the ceilings it is held to are `lint_cost`'s, measured on the television).
 ///
 /// - `draw_ops`: one per op, except a strip (its cards' ops: `visible` x the template, plus the focus
 ///   ring; an upper bound where a card's `item.*` condition would drop an op) and the Up Next offer (two

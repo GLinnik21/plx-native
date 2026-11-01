@@ -45,7 +45,8 @@ use super::compile::{
 use super::parse::{self, Package};
 use super::reach::{check, Slot};
 use super::report::sorted_owned;
-use super::{lint_band, lint_menus, lint_safe, lint_size, lint_text, lint_zorder};
+use super::lint_cost::StateCostLine;
+use super::{lint_band, lint_cost, lint_menus, lint_safe, lint_size, lint_text, lint_zorder};
 use super::{Context, Finding, NamedRect};
 
 /// One language to lint in: its tag (`de`) and the app's own strings in it (tab labels, the Up Next and
@@ -102,14 +103,36 @@ pub fn lint_with(
     langs: &[LintLang],
     opts: &LintOptions,
 ) -> Vec<Finding> {
+    lint_report(text, measure, langs, opts).findings
+}
+
+/// What a lint run says: the findings, and (not findings) every state's cost against its class's ceiling.
+#[derive(Clone, Debug)]
+pub struct Linted {
+    /// exactly what [`lint_with`] returns
+    pub findings: Vec<Finding>,
+    /// one line per state of the package, collapsed across the languages (see [`lint_cost::collapse_lines`]);
+    /// empty when the package did not parse
+    pub costs: Vec<StateCostLine>,
+}
+
+/// [`lint_with`], and the cost of every state besides: the one pipeline, so the findings and the costs are of
+/// the same compile.
+pub fn lint_report(
+    text: &str,
+    measure: &dyn Measure,
+    langs: &[LintLang],
+    opts: &LintOptions,
+) -> Linted {
     let parse::Parsed { package, mut findings } = parse::parse(text.as_bytes());
     let Some(package) = package else {
-        return sorted_owned(&findings);
+        return Linted { findings: sorted_owned(&findings), costs: Vec::new() };
     };
     // No `has_error` stop here: the package parsed, so it compiles, and the geometric findings of this
     // round are reported with the reach and validate ones (see the module doc).
     findings.extend(check(&package).findings);
     let mut per_lang = Vec::with_capacity(langs.len());
+    let mut per_lang_costs = Vec::with_capacity(langs.len());
     for lang in langs {
         let compiled = compile(&package, measure, CompileCtx { labels: lang.labels.clone() });
         let cx = LangCtx { package: &package, compiled: &compiled, measure, lang, opts };
@@ -122,9 +145,10 @@ pub fn lint_with(
         lint_size::check(&cx, &mut out);
         tag_language(&mut out, lang.tag);
         per_lang.push(out);
+        per_lang_costs.push(lint_cost::lines(&cx));
     }
     findings.extend(collapse(per_lang));
-    sorted_owned(&findings)
+    Linted { findings: sorted_owned(&findings), costs: lint_cost::collapse_lines(per_lang_costs) }
 }
 
 /// Everything one check needs, for one language: the parsed package, its compile in that language, the
