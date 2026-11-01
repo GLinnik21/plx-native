@@ -33,6 +33,7 @@ const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
 const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
 const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
 const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+const RISING_TABS: &str = include_str!("fixtures/rising-tabs.plxhud.json");
 
 /// The fifteen codes the lint registers (`HUD-E0601` ... `HUD-E1401`).
 const LINT_CODES: [&str; 15] = [
@@ -126,14 +127,15 @@ fn reference_passes_every_invariant() {
     assert!(found.is_empty(), "the reference package has {}", describe("reference.plxhud.json", &found));
 }
 
-/// The four other example packages, and the `(code, pointer)` pairs each is pinned to lint to. Every list
-/// is empty: all four are clean in every shipped language, so a finding in one is a new finding and a
+/// The five other example packages, and the `(code, pointer)` pairs each is pinned to lint to. Every list
+/// is empty: all five are clean in every shipped language, so a finding in one is a new finding and a
 /// change to a check or to the fixture, to be justified where it is added to its list.
-const OTHER_FIXTURES: [(&str, &str, &[(&str, &str)]); 4] = [
+const OTHER_FIXTURES: [(&str, &str, &[(&str, &str)]); 5] = [
     ("hero-center", HERO, &[]),
     ("minimal", MINIMAL, &[]),
     ("palette", PALETTE, &[]),
     ("tabs", TABS, &[]),
+    ("rising-tabs", RISING_TABS, &[]),
 ];
 
 #[test]
