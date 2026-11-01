@@ -971,12 +971,14 @@ impl Bridge {
     }
 
     /// One tick of the HUD driver, from the frame's prepare window: the compiled HUD the player must now draw, when
-    /// it changed. Three flag tests while nothing is in flight.
-    pub(crate) fn huds_tick(&mut self) -> Option<plx_appkit::player_hud::loaded::LoadedHud> {
+    /// it changed. Three flag tests while nothing is in flight, and no compile while a player is up.
+    pub(crate) fn huds_tick(&mut self, route_player: bool) -> Option<plx_appkit::player_hud::loaded::LoadedHud> {
         let env = super::adapters::huds::Env {
             measure: &self.measure,
             cx: plx_platform::i18n::current(),
             app_version: plx_plex::plex::identity::version(),
+            // a player page is mounted, or a playback is live (starting included): no compile runs now
+            player: route_player || self.playback_live,
         };
         let hud = self.huds.tick(&env);
         self.huds_settle();

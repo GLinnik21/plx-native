@@ -473,9 +473,10 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
 
     fr.player = matches!(app.route(), AppArg::Player);
     // The HUD package store's tick: three flag tests while nothing is in flight. A package the viewer
-    // picked, or a profile's own pick that a seat change brought in, is compiled in the tick its bytes
-    // land and taken into use here, so the player page below draws it from this very frame.
-    if let Some(hud) = app.bridge.huds_tick() {
+    // picked, or a profile's own pick that a seat change brought in, is compiled over two ticks with no player up
+    // (never while one is mounted or a playback is starting) and taken into use here, so a mounted page below
+    // draws it from the frame it lands on.
+    if let Some(hud) = app.bridge.huds_tick(fr.player) {
         adopt_hud(&mut app.bridge, &mut app.hud, hud);
     }
     // ---- the player page's per-frame HUD SNAPSHOT (`HudModel`) ----

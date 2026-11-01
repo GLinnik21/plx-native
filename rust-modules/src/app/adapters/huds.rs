@@ -15,9 +15,16 @@
 //! `builtin:classic`.
 //!
 //! * **Never on the frame path.** A tick with nothing in flight and nothing changed is a flag test. A
-//!   compile happens in the tick that the package's bytes land in (one tick, never the draw), and until
-//!   it lands the player draws classic. Nothing here runs on selection except through the Settings
+//!   compile is two ticks (the lint, then the load), never the draw, and until it lands the player draws what it had. Nothing here runs on selection except through the Settings
 //!   page's commands and the seat trigger.
+//! * **Never while a player is up.** The measurer is the main thread's, so a pack that lands while a player page is
+//!   mounted or a playback is starting waits ([`Env::player`]); the compile runs on the first tick with no player, and the next
+//!   playback draws the choice. Normal boots compile on the way to Home, before any player. The lint and the load are two ticks,
+//!   so one frame never carries both compiles.
+//! * **Never while a player is up.** The measurer is the main thread's, so a pack that lands while a player page is
+//!   mounted or a playback is starting waits ([`Env::player`]); the compile runs on the first tick with no player, and the next
+//!   playback draws the choice. Normal boots compile on the way to Home, before any player. The lint and the load are two ticks,
+//!   so one frame never carries both compiles.
 //! * **Fit is the TV's call.** A package that parses and passes the invariants can still not fit this
 //!   language (`lint` with the TV's measurer, errors only: the TV applies no margin). It draws as classic
 //!   in that language, one `hud: fallback` line is logged per (package, language), the selection is
@@ -362,11 +369,22 @@ struct Reading {
     slot: Slot<Option<Vec<u8>>>,
 }
 
+/// A pack that was read and has not been compiled yet: the lint is one tick's work and the load the next's, so
+/// one frame never carries both.
+struct Pending {
+    sha: Sha,
+    bytes: Vec<u8>,
+    /// The lint passed: the next step is the load.
+    linted: bool,
+}
+
 /// What a compile needs from the app: the measurer and the language. Handed in per tick, never stored.
 pub(crate) struct Env<'a> {
     pub measure: &'a dyn Measure,
     pub cx: &'a LocaleContext,
     pub app_version: &'a str,
+    /// A player page is mounted or a playback is starting: no compile runs now ([`HudDriver`]'s rule).
+    pub player: bool,
 }
 
 pub(crate) struct HudDriver {
@@ -386,6 +404,8 @@ pub(crate) struct HudDriver {
     /// of a later fit failure.
     logged: BTreeSet<(Sha, &'static str, &'static str)>,
     reading: Option<Reading>,
+    /// The bytes that landed and wait for their compile ([`Pending`]).
+    pending: Option<Pending>,
     /// Packs whose bytes could not be read for the compile: classic draws until the next listing or command
     /// gives them another try (a read that failed once is not a verdict on the package).
     read_failed: BTreeSet<Sha>,
@@ -417,6 +437,7 @@ impl HudDriver {
             unfit: BTreeMap::new(),
             logged: BTreeSet::new(),
             reading: None,
+            pending: None,
             read_failed: BTreeSet::new(),
             shown: None,
             selection: Vec::new(),
@@ -547,7 +568,8 @@ impl HudDriver {
             self.language = Some(language);
             self.dirty = true;
         }
-        if self.runner.is_idle() && self.reading.is_none() && !self.dirty {
+        let waiting = self.pending.is_some() && !env.player;
+        if self.runner.is_idle() && self.reading.is_none() && !self.dirty && !waiting {
             return None;
         }
         self.worked += 1;
@@ -561,6 +583,7 @@ impl HudDriver {
             self.revision += 1;
         }
         self.land_pack(env);
+        self.advance(env);
         if !self.runner.is_idle() || self.store.busy() {
             return None;
         }
@@ -576,7 +599,7 @@ impl HudDriver {
                 if self.unfit.contains_key(&(sha, language)) || self.read_failed.contains(&sha) {
                     return self.show(self.classic.clone());
                 }
-                if self.reading.as_ref().is_none_or(|r| r.sha != sha) {
+                if self.reading.as_ref().is_none_or(|r| r.sha != sha) && self.pending.as_ref().is_none_or(|p| p.sha != sha) {
                     self.reading = Some(self.begin_read(sha));
                 }
                 None
@@ -621,9 +644,30 @@ impl HudDriver {
             self.revision += 1;
             return;
         };
-        let outcome = self.compile(&bytes, env, language);
-        match outcome {
-            Ok(hud) => {
+        self.pending = Some(Pending { sha, bytes, linted: false });
+        self.revision += 1;
+    }
+
+    /// One compile step, off the player: the lint of the landed bytes in this language, or on the tick after it the
+    /// load. Nothing runs while a player is mounted or a playback is starting (`Env::player`): the measurer is the main
+    /// thread's, so the bytes wait and the compile runs on the first tick with no player, and the next playback
+    /// draws the choice. Waiting is not a fallback and logs nothing.
+    fn advance(&mut self, env: &Env<'_>) {
+        if env.player {
+            return;
+        }
+        let Some(mut pending) = self.pending.take() else { return };
+        self.dirty = true;
+        self.revision += 1;
+        let language = env.cx.language().tag();
+        let sha = pending.sha;
+        let step = if pending.linted { self.load_step(&pending.bytes, env) } else { self.lint_step(&pending.bytes, env, language) };
+        match step {
+            Ok(None) => {
+                pending.linted = true;
+                self.pending = Some(pending);
+            }
+            Ok(Some(hud)) => {
                 self.unfit.remove(&(sha, language));
                 self.compiled = Some((sha, language, hud));
             }
@@ -634,24 +678,28 @@ impl HudDriver {
                 }
             }
         }
-        self.revision += 1;
     }
 
     fn resolved_id(&self) -> String {
         self.store.resolved().to_owned()
     }
 
-    /// Fit in this language, then compile: `Err(code)` is the first error finding.
-    fn compile(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<LoadedHud, &'static str> {
+    /// The fit check in this language: `Err(code)` is the first error finding, `Ok(None)` is "fits, load it next tick".
+    fn lint_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<Option<LoadedHud>, &'static str> {
         let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
         let lang = LintLang { tag: language, labels: plx_appkit::hud_format::compile::AppLabels::in_language(env.cx) };
         let findings = lint_with(text, env.measure, &[lang], &LintOptions { text_skew: 0.0 });
-        if let Some(first) = findings.iter().find(|f| f.severity == Severity::Error) {
-            return Err(first.code);
+        match findings.iter().find(|f| f.severity == Severity::Error) {
+            Some(first) => Err(first.code),
+            None => Ok(None),
         }
+    }
+
+    /// The compile the player draws from.
+    fn load_step(&self, bytes: &[u8], env: &Env<'_>) -> Result<Option<LoadedHud>, &'static str> {
         let hud = load(bytes, env.app_version, env.cx, env.measure).map_err(|_| "parse")?;
         // A package with no state for some frame the transport can be in draws nothing there: classic does instead.
-        if plx_appkit::player_hud::loaded::answers_every_frame(&hud.compiled) { Ok(hud) } else { Err("states") }
+        if plx_appkit::player_hud::loaded::answers_every_frame(&hud.compiled) { Ok(Some(hud)) } else { Err("states") }
     }
 
     /// Hand the player `hud` when it is not what it already draws.
@@ -717,7 +765,7 @@ mod tests {
 
     /// Tick until nothing changes; the HUDs the driver handed out, in order.
     fn settle(driver: &mut HudDriver, cx: &LocaleContext) -> Vec<LoadedHud> {
-        let env = Env { measure: &ShippedMeasure, cx, app_version: APP };
+        let env = Env { measure: &ShippedMeasure, cx, app_version: APP, player: false };
         let mut shown = Vec::new();
         for _ in 0..64 {
             shown.extend(driver.tick(&env));
@@ -936,6 +984,65 @@ mod tests {
         let _ = en;
     }
 
+    /// **No compile while a player is up.** The bytes of the chosen package land in the same tick a playback starts: they
+    /// wait (no compile, no hand-over, no fallback line, no fit verdict), and the compile runs after the player leaves,
+    /// the lint in one tick and the load in the next, so one frame never carries both.
+    #[test]
+    fn a_pack_that_lands_with_a_player_up_waits_and_compiles_in_two_ticks_after_it_leaves() {
+        let dir = Dir::new("player-up");
+        let cx = english();
+        let mut driver = driver(&dir);
+        install_reference(&dir, &mut driver, &cx);
+        driver.select(REFERENCE_ID.to_string());
+        let tick = |driver: &mut HudDriver, player: bool| {
+            let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player };
+            driver.tick(&env)
+        };
+        // the playback starts: every tick the listing, the read and the landing take has a player up
+        for _ in 0..64 {
+            assert!(tick(&mut driver, true).is_none(), "nothing is handed to a player that is up");
+        }
+        assert!(driver.pending.is_some(), "the bytes landed and wait");
+        assert!(driver.compiled.is_none() && driver.unfit.is_empty(), "no compile ran, and waiting is not a verdict");
+        assert!(driver.take_log().is_empty(), "waiting is not a fallback");
+        let before = driver.worked;
+        for _ in 0..100 {
+            tick(&mut driver, true);
+        }
+        assert!(driver.worked <= before + 100 && driver.pending.is_some() && driver.compiled.is_none(), "still waiting");
+
+        // the player leaves: the lint is one tick's work, the load the next's
+        assert!(tick(&mut driver, false).is_none());
+        assert!(driver.compiled.is_none(), "the lint tick compiles nothing the player draws from");
+        assert!(driver.pending.as_ref().is_some_and(|p| p.linted), "linted, the load is next");
+        let shown = tick(&mut driver, false);
+        assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(REFERENCE.as_bytes())), "the load tick hands the package over");
+        assert!(driver.pending.is_none() && driver.compiled.is_some());
+        assert!(driver.take_log().is_empty());
+    }
+
+    /// A player that comes up between the lint and the load holds the load too.
+    #[test]
+    fn a_player_that_starts_between_the_lint_and_the_load_holds_the_load() {
+        let dir = Dir::new("player-between");
+        let cx = english();
+        let mut driver = driver(&dir);
+        install_reference(&dir, &mut driver, &cx);
+        driver.select(REFERENCE_ID.to_string());
+        let env = |player| Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player };
+        let mut guard = 0;
+        while !driver.pending.as_ref().is_some_and(|p| p.linted) && guard < 64 {
+            driver.tick(&env(false));
+            guard += 1;
+        }
+        assert!(driver.pending.as_ref().is_some_and(|p| p.linted));
+        for _ in 0..10 {
+            assert!(driver.tick(&env(true)).is_none());
+        }
+        assert!(driver.compiled.is_none(), "the load waits for the player to leave");
+        assert!(driver.tick(&env(false)).is_some());
+    }
+
     /// **Classic with nothing installed adds nothing per frame.** Once the listing has settled, a tick changes
     /// no store state, starts no read, compiles nothing and hands the player nothing, however often it runs.
     #[test]
@@ -946,7 +1053,7 @@ mod tests {
         driver.refresh(String::new());
         assert!(settle(&mut driver, &cx).is_empty());
         let (revision, worked) = (driver.revision(), driver.worked);
-        let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP };
+        let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player: false };
         for _ in 0..1000 {
             assert!(driver.tick(&env).is_none());
         }
@@ -964,7 +1071,7 @@ mod tests {
         let cx = english();
         driver.refresh("x".into());
         driver.select("y".into());
-        let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP };
+        let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player: false };
         assert!(driver.tick(&env).is_none());
         assert!(!driver.started() && driver.runner.is_idle() && driver.revision() == 0);
     }
