@@ -669,6 +669,7 @@ impl CompiledState {
             title: shown.title,
             tabs: [self.tab("info"), self.tab("chapters")],
             band: self.band,
+            open_height: self.open_height(),
         };
         if let Some(bar) = self.playbar {
             g.grab = bar.grab;
@@ -694,9 +695,25 @@ impl CompiledState {
         g
     }
 
-    /// The pill of the `toggle_section` control that opens `section`.
+    /// **The height of the block a section has open** (`docs/hud-plugins.md`, "Captions"): `SCR_H` less the top
+    /// of the highest band this state lays out (the scrim's own `block_top`), `0` for a compact state. A modal
+    /// package's state holds the section's band and the tabs, so this is the section's card; an inline one's
+    /// holds the transport lifted over it, so it is the whole block, as the package laid it out.
+    pub fn open_height(&self) -> f32 {
+        if self.key.open == 0 {
+            return 0.0;
+        }
+        self.bands.iter().map(|(_, r)| r.y).reduce(f32::min).map_or(0.0, |top| (SCR_H - top).max(0.0))
+    }
+
+    /// **The tab of `section`: the PILL of the `toggle_section` control that opens it.** A section a DISC opens (the
+    /// reference's) has no tab: that disc is a stop of the row group and is pressed as one, so reporting it here too
+    /// would register a second stop at the same rect for the hit map to prefer.
     fn tab(&self, section: &str) -> Option<Rect> {
-        self.controls.iter().find(|c| c.command == "toggle_section" && c.section.as_deref() == Some(section)).map(|c| c.rect)
+        self.controls
+            .iter()
+            .find(|c| c.widget == Widget::Pill && c.command == "toggle_section" && c.section.as_deref() == Some(section))
+            .map(|c| c.rect)
     }
 
     /// **The extents the caption band counts** in this state, each with the node that drew it: interactive

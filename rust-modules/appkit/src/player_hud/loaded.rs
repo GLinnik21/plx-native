@@ -95,6 +95,22 @@ pub fn reference_for_test() -> Arc<Compiled> {
         .compiled
 }
 
+/// **The reference package with two buttons in its Info section** ([`reference_for_test`] otherwise): the
+/// fixture's `spacer` cell is an `actions` column of `from_beginning` and `go_to_detail`, as classic's Info card
+/// has. The reference's own Info places no stop, so a test of travel through an inline Info section needs it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reference_with_info_actions_for_test() -> Arc<Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+    let spacer = r#"{ "align": "end", "spacer": { "w": 150 } }"#;
+    assert_eq!(text.matches(spacer).count(), 1, "the reference fixture has one spacer cell");
+    let actions = r#"{ "align": "end", "valign": "center", "actions": { "axis": "column", "gap": 12, "item_h": 52, "min_w": 200,
+          "items": [ { "id": "from_beginning", "command": "from_beginning", "widget": "button", "size": 52 },
+                     { "id": "go_to_detail", "command": "go_to_detail", "widget": "button", "size": 52 } ] } }"#;
+    load(text.replace(spacer, actions).as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+        .expect("the reference fixture with Info actions loads")
+        .compiled
+}
+
 /// **The reference with its Chapters and Info discs taken out of the row**, under `policy` (`"modal"` or `"inline"`): the
 /// two section bands stay, so both sections are laid out, and the package places no opener for either. A More fold
 /// row is the only way to either section. Loaded like [`reference_for_test`].
