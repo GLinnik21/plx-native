@@ -727,10 +727,15 @@ fn the_rows_a_head_offers_follow_the_viewed_librarys_type_not_the_current_one() 
     // panel behind it will not draw.
     set_pinned_for_owner_test(&mut browse.state, 3, false); // "Animes"
     assert_eq!(
-        browse.state.source_rows_for(3).len(),
+        browse.state.source_rows_for(2).len(),
         1,
-        "a switched-off library draws no row here either"
+        "a switched-off library draws no row beside the one on view"
     );
+    // …but a switched-off library that IS the one on view (the Sort & Filter menu offers every
+    // reachable library) is named beside the favourites, and only while it is.
+    let rows = browse.state.source_rows_for(3);
+    let on_view: Vec<&str> = rows.iter().map(|r| r.title.as_str()).collect();
+    assert_eq!(on_view, vec!["TV Shows", "Animes"]);
     assert_eq!(
         browse.kind_position(3),
         None,
@@ -1304,6 +1309,100 @@ fn choosing_a_non_favourite_library_keeps_the_remembered_favourite() {
         Some(1),
         "a non-favourite pick leaves the remembered favourite where it was"
     );
+}
+
+/// **A pin change elsewhere does not move a reader off the non-favourite library they chose.**
+///
+/// The Library's Sort & Filter menu lets a reader browse any reachable library, and its Favorite
+/// libraries row opens the very editor that commits pins. `apply_pins_from` used to snap the
+/// current library back onto a favourite after EVERY change, so toggling one library's pin threw
+/// the reader off the unrelated library they had just opened. It still must when the change
+/// takes away the pin of the library on view: that one is no longer anyone's favourite.
+#[test]
+fn a_pin_change_keeps_a_chosen_non_favourite_library_and_follows_the_one_that_lost_its_pin() {
+    let _g = plx_base::testlock::serial();
+    let t = TempPins::new("pins-keep-chosen");
+    t.watching("u-managed");
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![a_household_source("mac-mini"), a_source("nas-home", "friend", true)]);
+    browse.append_sections(
+        0,
+        vec![(1, "Movies".into(), SecKind::Movie), (2, "Home Movies".into(), SecKind::Movie)],
+    );
+    browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+    assert!(browse.pinned(0) && browse.pinned(1) && !browse.pinned(2));
+
+    browse.state.set_cur(2);
+    browse.state.apply_pins(&[(1, false)]);
+    assert!(!browse.pinned(1), "the commit took effect");
+    assert_eq!(
+        browse.state.cur(),
+        2,
+        "toggling another library's pin leaves the chosen non-favourite on screen"
+    );
+
+    browse.state.set_cur(0);
+    browse.state.apply_pins(&[(0, false), (1, true)]);
+    assert!(!browse.pinned(0), "the commit took effect");
+    assert_eq!(
+        browse.state.cur(),
+        1,
+        "the library on view lost its pin: the reader follows to a favourite"
+    );
+}
+
+/// **A share landing while the reader browses a non-favourite does not move them either.**
+///
+/// A discovery landing re-resolves the whole pin table, and a pin it moves used to snap the
+/// current library onto a favourite. The Library's Sort & Filter menu pumps discovery, so landings
+/// happen while the reader is on a library they chose without it being a favourite.
+#[test]
+fn a_landing_that_moves_a_pin_keeps_a_chosen_non_favourite_library() {
+    let _g = plx_base::testlock::serial();
+    let t = TempPins::new("landing-keeps-chosen");
+    t.watching("u-managed");
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![a_household_source("mac-mini"), a_source("nas-home", "friend", true)]);
+    browse.append_sections(
+        0,
+        vec![(1, "Movies".into(), SecKind::Movie), (2, "Home Movies".into(), SecKind::Movie)],
+    );
+    browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+    assert!(!browse.pinned(2), "a friend's library defaults Off: it is not a favourite");
+
+    browse.state.set_cur(2);
+    // The household's first TV library lands: it defaults On, so the table MOVES.
+    browse.append_sections(0, vec![(3, "TV Shows".into(), SecKind::Show)]);
+    assert!(browse.pinned(3), "the landing moved a pin");
+    assert_eq!(browse.state.cur(), 2, "…and the reader stays on the library they chose");
+}
+
+/// **A chosen non-favourite is left once its type has no favourite at all.**
+///
+/// The tab strip lists only the types that have a favourite, so a reader left on a Movies library
+/// after the commit unpinned the last favourite of Movies would be on a page with no tab.
+#[test]
+fn a_chosen_non_favourite_library_is_left_when_its_type_loses_its_last_favourite() {
+    let _g = plx_base::testlock::serial();
+    let t = TempPins::new("chosen-type-loses-favourites");
+    t.watching("u-managed");
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![a_household_source("mac-mini"), a_source("nas-home", "friend", true)]);
+    browse.append_sections(
+        0,
+        vec![
+            (1, "Movies".into(), SecKind::Movie),
+            (2, "Home Movies".into(), SecKind::Movie),
+            (3, "TV Shows".into(), SecKind::Show),
+        ],
+    );
+    browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+    assert!(browse.pinned(0) && browse.pinned(1) && browse.pinned(2) && !browse.pinned(3));
+
+    browse.state.set_cur(3);
+    browse.state.apply_pins(&[(0, false), (1, false)]);
+    assert!(!browse.pinned(0) && !browse.pinned(1), "the commit took effect");
+    assert_eq!(browse.state.cur(), 2, "no Movies favourite is left: the reader lands on a favourite");
 }
 
 /// **`/api/v2/home/users` landing on its own re-resolves the whole pin table.**

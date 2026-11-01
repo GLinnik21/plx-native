@@ -2153,10 +2153,10 @@ impl BrowseState {
             tier: source.tier,
         }).collect()
     }
-    fn rows_where(&self, keep: impl Fn(&BrowseSection) -> bool) -> Vec<SrcRow> {
+    fn rows_where(&self, keep: impl Fn(usize, &BrowseSection) -> bool) -> Vec<SrcRow> {
         let last = self.pinned_count() == 1;
         let current = self.cur();
-        self.sections.iter().enumerate().filter(|(_, section)| keep(section))
+        self.sections.iter().enumerate().filter(|(index, section)| keep(*index, section))
             .map(|(index, section)| SrcRow {
                 src: section.src, section: index, title: section.title.clone(),
                 count_line: count_line(section.count, section.kind), pinned: section.pinned,
@@ -2164,14 +2164,16 @@ impl BrowseState {
             }).collect()
     }
     fn all_source_rows(&self) -> Vec<SrcRow> {
-        self.rows_where(|_| true)
+        self.rows_where(|_, _| true)
     }
+    /// The oracle of [`DirectoryView::rows_for`]: the libraries the Library header names while
+    /// `index` is on view — the favourites of its type, and `index` itself when it is not one.
     #[cfg(test)]
     fn source_rows_for(&self, index: usize) -> Vec<SrcRow> {
         let Some(kind) = self.section_kind(index) else {
             return Vec::new();
         };
-        self.rows_where(|section| section.kind == kind && section.pinned)
+        self.rows_where(|at, section| section.kind == kind && (section.pinned || at == index))
     }
     #[cfg(test)]
     fn rail_available(&self) -> bool {
@@ -2245,9 +2247,19 @@ impl BrowseState {
             }
         }).collect()
     }
-    fn repoint_cur(&mut self) {
+    /// Put the library on view back onto a favourite when it is not one.
+    ///
+    /// `visiting` says the reader opened it WITHOUT its being a favourite (the Library's Sort &
+    /// Filter menu offers every reachable library): it was not pinned before the change that is
+    /// being reconciled either, and a landing did not just put it there. A visit is not undone by
+    /// a pin or a share moving elsewhere, but it ends with the last favourite of its type: the tab
+    /// strip lists only the types that have one, and the page would have no tab.
+    fn repoint_cur(&mut self, visiting: bool) {
         let current = self.cur();
-        if self.sections.get(current).map(|section| section.pinned).unwrap_or(false) {
+        let Some(on_view) = self.sections.get(current) else {
+            return;
+        };
+        if on_view.pinned || (visiting && self.tab_has_favorite(on_view.kind)) {
             return;
         }
         let want = self.section_kind(current).and_then(|kind| self.section_of_kind(kind))
@@ -2293,6 +2305,7 @@ impl BrowseState {
             plx_plex::plex::pins::resolve(&libraries, record.as_ref())
         };
         self.recorded = record;
+        let was_pinned = self.sections.get(self.cur()).is_some_and(|section| section.pinned);
         let mut moved = false;
         for (index, on) in want.into_iter().enumerate() {
             if let Some(section) = self.sections.get_mut(index) {
@@ -2301,7 +2314,7 @@ impl BrowseState {
             }
         }
         if moved {
-            self.repoint_cur();
+            self.repoint_cur(!was_pinned);
         }
         moved
     }
@@ -2366,6 +2379,10 @@ impl BrowseState {
             self.states.push(SecState::default());
         }
         self.resolve_pins_from(session, user);
+        // A row that lands with the library on view is a default nobody chose, not a visit.
+        if self.cur() >= first_fresh {
+            self.repoint_cur(false);
+        }
         // After the resolve above, which is what (re)loads the profile's saved views.
         for index in first_fresh..self.sections.len() {
             self.seed_saved_view(index);
@@ -2459,6 +2476,10 @@ impl BrowseState {
     fn apply_pins_from(&mut self, answers: &[(usize, bool)], session: &plx_plex::plex::session::Session) {
         let mut touched = vec![false; self.sections.len()];
         let mut changed = false;
+        // A library the reader opened without its being a favourite (the Library's Sort & Filter
+        // menu offers every reachable library, and its Favorite libraries row opens this very
+        // commit) stays on view; one that was a favourite and is no longer is left.
+        let current_had_pin = self.sections.get(self.cur()).is_some_and(|section| section.pinned);
         for &(index, on) in answers {
             let Some(section) = self.sections.get_mut(index) else {
                 continue;
@@ -2473,7 +2494,7 @@ impl BrowseState {
         }
         let produced = self.record_pins_from(true, &touched, session);
         if changed {
-            self.repoint_cur();
+            self.repoint_cur(!current_had_pin);
             self.bump_sections_gen();
             plx_machine::idle::invalidate();
         }
