@@ -14,21 +14,21 @@
 //! with the television's own measurer and cached per (package sha256, app version, language), or
 //! `builtin:classic`.
 //!
-//! * **Never on the frame path.** A tick with nothing in flight and nothing changed is a flag test. A
-//!   compile is two ticks (the lint, then the load), never the draw, and until it lands the player draws what it had. Nothing here runs on selection except through the Settings
-//!   page's commands and the seat trigger.
+//! * **Never on the frame path.** A tick with nothing in flight and nothing changed is a flag test. A compile is two
+//!   ticks (the lint, then the load), never the draw, and until it lands the player draws what it had. Nothing here runs
+//!   on selection except through the Settings page's commands and the seat trigger.
 //! * **Never while a player is up.** The measurer is the main thread's, so a pack that lands while a player page is
-//!   mounted or a playback is starting waits ([`Env::player`]); the compile runs on the first tick with no player, and the next
-//!   playback draws the choice. Normal boots compile on the way to Home, before any player. The lint and the load are two ticks,
-//!   so one frame never carries both compiles.
-//! * **Never while a player is up.** The measurer is the main thread's, so a pack that lands while a player page is
-//!   mounted or a playback is starting waits ([`Env::player`]); the compile runs on the first tick with no player, and the next
-//!   playback draws the choice. Normal boots compile on the way to Home, before any player. The lint and the load are two ticks,
-//!   so one frame never carries both compiles.
+//!   mounted or a playback is starting waits ([`Env::player`]): no compile, no hand-over and no `hud: fallback` line, and the
+//!   player keeps what it has for that playback. The compile runs on the first tick with no player, and the next playback
+//!   draws the choice. Normal boots compile on the way to Home, before any player. The lint and the load are two ticks, so one
+//!   frame never carries both compiles.
 //! * **Fit is the TV's call.** A package that parses and passes the invariants can still not fit this
 //!   language (`lint` with the TV's measurer, errors only: the TV applies no margin). It draws as classic
-//!   in that language, one `hud: fallback` line is logged per (package, language), the selection is
-//!   kept, and the page shows the reason ([`HudDriver::unfit`]).
+//!   in that language, one `hud: fallback` line is logged per (package, language, cause) so a failed read does not hide a
+//!   later fit failure, the selection is kept, and the page shows the reason ([`HudDriver::unfit`]).
+//! * **With no seat a pick stays for the process.** A dev-token boot seats no profile, so a pick cannot be persisted: the
+//!   driver keeps it ([`HudDriver::selected_for`]), a reopened page and a `Refresh` resolve it, and a seat arriving
+//!   replaces it with that profile's own value.
 //! * **No second compile path.** The compile is `player_hud::loaded::load`, the one the dev package and
 //!   classic use.
 
@@ -548,7 +548,7 @@ impl HudDriver {
         std::mem::take(&mut self.notices)
     }
 
-    /// The `hud: fallback` lines to log, one per (package, language), each only the once.
+    /// The `hud: fallback` lines to log, one per (package, language, cause), each only the once.
     pub(crate) fn take_log(&mut self) -> Vec<String> {
         std::mem::take(&mut self.log)
     }
