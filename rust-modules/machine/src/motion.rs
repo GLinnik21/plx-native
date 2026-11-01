@@ -102,7 +102,10 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
 const REST_REL: f32 = 1e-3;
 const REST_CAP: f32 = 0.25;
 
-fn moving(pos: f32, target: f32, vel: f32, dt: f32) -> bool {
+/// **Is a spring still moving?** The rest test the integrators below report `Motion` by, public so a state that
+/// snaps a spring onto its target can snap by the SAME test: a copy of it would let the spring go quiet (no more
+/// frames asked for) a hair short of a target the copy had not yet reached.
+pub fn moving(pos: f32, target: f32, vel: f32, dt: f32) -> bool {
     let t = (REST_REL * (1.0 + pos.abs().max(target.abs()))).min(REST_CAP);
     (pos - target).abs() > t || (vel * dt).abs() > t
 }

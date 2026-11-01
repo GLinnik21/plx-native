@@ -669,6 +669,7 @@ impl CompiledState {
             title: shown.title,
             tabs: [self.tab("info"), self.tab("chapters")],
             band: self.band,
+            open_height: self.open_height(),
         };
         if let Some(bar) = self.playbar {
             g.grab = bar.grab;
@@ -692,6 +693,17 @@ impl CompiledState {
             Slot::Skip => g.items[0] = self.standin.skip.map(|s| s[skip as usize]),
         }
         g
+    }
+
+    /// **The height of the block a section has open** (`docs/hud-plugins.md`, "Captions"): `SCR_H` less the top
+    /// of the highest band this state lays out (the scrim's own `block_top`), `0` for a compact state. A modal
+    /// package's state holds the section's band and the tabs, so this is the section's card; an inline one's
+    /// holds the transport lifted over it, so it is the whole block, as the package laid it out.
+    pub fn open_height(&self) -> f32 {
+        if self.key.open == 0 {
+            return 0.0;
+        }
+        self.bands.iter().map(|(_, r)| r.y).reduce(f32::min).map_or(0.0, |top| (SCR_H - top).max(0.0))
     }
 
     /// The pill of the `toggle_section` control that opens `section`.

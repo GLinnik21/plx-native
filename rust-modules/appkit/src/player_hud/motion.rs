@@ -8,6 +8,7 @@
 //! would shift them by a frame. The prewarm ([`ClockWarm::queue`]) is a draw-side read and so takes
 //! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
 //! because the app's snapshot is a frame old by then.
+use super::caption_rise::CaptionRise;
 use super::classic::fmt_time;
 use super::geometry::{GROUP_ROW, GROUP_SECTION, GROUP_STRIP, MAX_ROW_ITEMS};
 use super::model::HudModel;
@@ -168,6 +169,9 @@ pub struct HudMotion {
     /// ([`step_appear`](Self::step_appear)). A panel's surface stepped its spring ahead of the frame's keys, so the
     /// frame a BACK landed on drew the card whole and the fade began on the next; the page steps after its keys.
     dismissed: [Option<u32>; 2],
+    /// **How far the captions have risen to stand clear of an open section** ([`super::caption_rise`]): the
+    /// limit's own springs, stepped beside the appear springs so both start on the same frame.
+    caption: CaptionRise,
 }
 
 /// Which spring is `section`'s.
@@ -209,6 +213,7 @@ impl HudMotion {
             wants: 0,
             held: [None; 2],
             dismissed: [None; 2],
+            caption: CaptionRise::new(),
         }
     }
 
@@ -251,6 +256,27 @@ impl HudMotion {
         self.held = [None; 2];
         self.dismissed = [None; 2];
         self.strip = None;
+        self.caption.cut();
+    }
+
+    /// **Aim the captions' rise at the sections that are open** (`open`: `StateKey::open` bits), from the
+    /// resting top `top` of the block the state for them lays out ([`super::geometry::HudGeometry::open_top`])
+    /// and the HUD's `band`. The screen's tick calls it with [`follow`](Self::follow) and before
+    /// [`step_appear`](Self::step_appear); a call with nothing changed does nothing.
+    pub fn follow_captions(&mut self, open: u8, band: plx_media::player::text_style::HudBand, top: Option<f32>) {
+        self.caption.follow(open, band, top);
+    }
+
+    /// The rise the captions are drawn at this frame, per Position: [`HudBand::with_rise`](plx_media::player::text_style::HudBand::with_rise)
+    /// carries it to every caption reader.
+    pub fn caption_rise(&self) -> [f32; 3] {
+        self.caption.presented()
+    }
+
+    /// Where the captions' rise is headed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn caption_rise_target(&self) -> [f32; 3] {
+        self.caption.target()
     }
 
     /// **Remember where `section`'s focus was as the page puts it away**: `focus` and `btn` are the page's cursor
@@ -293,6 +319,10 @@ impl HudMotion {
             }
             spring.tick(t, present);
         }
+        // the captions' rise takes its first step on the frame the section's appear takes its first: it waits
+        // for a spring still held at appear 0 and for the frame a section was dismissed on
+        let waits = self.appear.iter().any(PopoverMotion::held) || self.dismissed.contains(&Some(t.ms));
+        self.caption.step(t, present, waits);
         for section in SECTIONS {
             if faded(&self.appear[section_index(section)]) && self.wants & section.open_bit() == 0 {
                 self.held[section_index(section)] = None;
@@ -330,6 +360,14 @@ impl HudMotion {
             .into_iter()
             .filter(|s| !faded(&self.appear[section_index(*s)]))
             .fold(0, |bits, s| bits | s.open_bit())
+    }
+
+    /// **Does any section draw something this frame?** True while a section's appear is above 0: not on the frame
+    /// it is held at appear 0 (presented, drawn invisibly) and not once its spring has landed on 0 after a close,
+    /// where [`presented`](Self::presented) still counts it for the frames it is fading out. What the caption
+    /// draw order follows, so a caption changes layers only while a section is actually on screen.
+    pub fn sections_visible(&self) -> bool {
+        self.appear.iter().any(|spring| spring.appear > 0.0)
     }
 
     /// The strip's Shelf for a strip of this `geo`, under `entry`: held across frames so its springs live, and
