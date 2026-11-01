@@ -286,7 +286,7 @@ fn edit_distance(a: &[char], b: &[char]) -> usize {
 
 /// Every finding code, frozen. Each const is a [`Code`]; [`ALL`] lists them in id order (string order,
 /// so every `E` before every `W`). The doc line says when the code is emitted. The `06xx` and `10xx` to
-/// `13xx` families are the lint's (`super::lint`): they need a compiled package, and a language, a state
+/// `14xx` families are the lint's (`super::lint`): they need a compiled package, and a language, a state
 /// and a slot for context. `M5` of the menus rule (the overscan audit reads the placer) has no code here:
 /// it is the renderer's, in PR7.
 pub mod codes {
@@ -546,7 +546,7 @@ mod freeze_tests {
         }
     }
 
-    /// The lint's codes (`lint`'s families: `06xx`, `10xx` to `13xx`): the ones a check needs a compiled
+    /// The lint's codes (`lint`'s families: `06xx`, `10xx` to `14xx`): the ones a check needs a compiled
     /// package for. Their rows are in `lint_tests` (an invalid case each), not in the parser's corpus.
     #[test]
     fn the_lint_codes_are_registered_with_their_rules_and_severities() {

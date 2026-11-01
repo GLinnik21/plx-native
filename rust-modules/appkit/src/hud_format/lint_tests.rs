@@ -634,6 +634,46 @@ fn findings_are_sorted_by_pointer_and_deterministic() {
     }
 }
 
+/// **Splitting the lint into a fit pass and a price pass changed no byte of what it says.** The pipeline as it
+/// was (`lint::single_pipeline`, kept for this under `cfg(test)`) and the two passes joined, with one measure
+/// for both, are the same findings and the same cost lines: for the shipped fixtures in all eleven languages,
+/// for a package that does not parse, for no language at all, and for every invalid case.
+#[test]
+fn the_two_passes_say_what_the_one_pipeline_said() {
+    use super::lint::{lint_fit, lint_price, lint_report, single_pipeline, Linted};
+    let same = |what: &str, text: &str, langs: &[LintLang], opts: &LintOptions| {
+        let one = single_pipeline(text, &ShippedMeasure, langs, opts);
+        let two = lint_report(text, &ShippedMeasure, langs, opts);
+        assert_eq!(two.findings, one.findings, "{what}: the findings");
+        assert_eq!(two.costs, one.costs, "{what}: the cost lines");
+        // the passes alone are the halves: the fit pass has the pipeline's findings but the cost verdict, the
+        // price pass has the verdict and the lines
+        let (fit, price) = (lint_fit(text, &ShippedMeasure, langs, opts), lint_price(text, &ShippedMeasure, langs));
+        let cost = |f: &Finding| f.code == codes::E1401.id;
+        assert_eq!(fit, one.findings.iter().filter(|f| !cost(f)).cloned().collect::<Vec<_>>(), "{what}: the fit pass");
+        assert_eq!(price.findings, one.findings.iter().filter(|f| cost(f)).cloned().collect::<Vec<_>>(), "{what}: the price pass");
+        assert_eq!(price.costs, one.costs, "{what}: the price pass's lines");
+        assert_eq!(Linted::join(fit, price).findings, one.findings, "{what}: joined");
+    };
+    let all = LintLang::shipped();
+    for (name, text) in [
+        ("classic", BUILTIN_CLASSIC),
+        ("reference", REFERENCE),
+        ("minimal", MINIMAL),
+        ("hero-center", HERO),
+        ("tabs", TABS),
+        ("palette", PALETTE),
+        ("a package that does not parse", "{"),
+    ] {
+        same(name, text, &all, &LintOptions::default());
+        same(&format!("{name}, no language"), text, &[], &LintOptions::default());
+    }
+    let some: Vec<LintLang> = ["en", "be", "nl"].iter().map(|t| LintLang::for_tag(t).expect("shipped")).collect();
+    for case in invalid_cases() {
+        same(case.name, &apply(case.base, case.edits), &some, &LintOptions { text_skew: case.skew });
+    }
+}
+
 #[test]
 fn a_report_with_findings_at_several_pointers_reads_in_document_order() {
     // lint_menus' wide-row case: findings from four checks at five pointers across the title column, the

@@ -410,7 +410,9 @@ pub enum DrawOp {
         clock_rects: ClockRects,
         mark: MarkMode,
     },
-    /// The chapters strip: `visible` cards at `pitch`, each laid out as `template` is at card 0.
+    /// The chapters strip: cards at `pitch`, each laid out as `template` is at card 0. `visible` is the most cards its
+    /// Shelf paints at rest (`strip::Geometry::most_painted_at_rest`, a function of the row's style alone, never of the
+    /// chapter count), and only the COST reads it: drawing reads `rect`, `card`, `pitch` and `radius`.
     Strip {
         rect: Rect,
         card: Rect,
@@ -482,14 +484,15 @@ pub struct Contributor {
     pub blended_px: u64,
 }
 
-/// A state's cost, REPORTED (the ceilings it is held to are `lint_cost`'s, measured on the television).
+/// A state's cost, REPORTED (the ceilings it is held to are `lint_cost`'s, taken from states run on the television and
+/// priced by the one model `lint_cost` names, so a cost is the same number on every side).
 ///
-/// - `draw_ops`: one per op, except a strip (its cards' ops: `visible` x the template, plus the focus
-///   ring; an upper bound where a card's `item.*` condition would drop an op) and the Up Next offer (two
-///   pills, plus the still and the caption it draws).
+/// - `draw_ops`: one per op, except a strip (its cards' ops: [`DrawOp::Strip::visible`], the most cards its Shelf
+///   paints at rest, x the template, plus the focus ring; an upper bound where a card's `item.*` condition would drop
+///   an op) and the Up Next offer (two pills, plus the still and the caption it draws).
 /// - `glyph_runs`: one per text; the playbar's two clocks; a facts row's chips; a pill's or button's
 ///   label; the Up Next offer's two labels and caption; the Skip pill's label.
-/// - `texture_bytes`: 4 bytes per pixel of every image (a strip's per visible card, Up Next's still) and
+/// - `texture_bytes`: 4 bytes per pixel of every image (a strip's per card the Shelf paints, Up Next's still) and
 ///   every glyph a disc or an icon cell draws (`size` squared).
 /// - `blended_px`: the area, rounded per rect, of every translucent fill: the scrim, a ground or rule
 ///   whose ink is translucent, the playbar's track, a control's plate unless its rest face is `solid` or

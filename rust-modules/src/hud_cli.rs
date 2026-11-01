@@ -24,25 +24,27 @@
 //! and `--hud-export` never touch a font. [`main_from`] is the thin process shell and the ONLY IO here:
 //! it wires `std::fs`, the real measurers and the two standard streams.
 //!
-//! **Two measurers, one per question.** Text fit (`HUD-E0601` and the geometry) is measured by
-//! [`plx_gfx::text::TtfMeasure`] over the shipped `appfont*.ttf` faces from `PLXNATIVE_APP_DIR` (the
-//! simulator's `plx_base::paths::app_dir`), opened by [`plx_gfx::text::init_fonts_headless`] with no window
-//! and no GL context. The host's SDL_ttf sums fractional advances, where the television's 2.0.x sums
-//! whole-pixel ones (`plx_base::fontcov::advances`), so a width here can be a few pixels off the
-//! television's: for text fit the TV's own compile decides (`docs/hud-plugins.md`, "Text fit"). The COST is
-//! another matter: its ceilings are the television's own maxima, taken with the whole-pixel advances, and
-//! an advance a few pixels off moves `blended_px` and `texture_bytes` past a ceiling the television
-//! accepts (the classic's Up Next and Info states and every two-section state of the reference: 4 of the 12
-//! terms). So the cost is priced by
-//! [`WholePixelMeasure`], the same advances read from the same `appfont*.ttf` files, and the simulator and
-//! the television print one number (`lint_report_priced`). There is no unmeasured fallback: when the faces
-//! cannot be opened or read the run is a usage error, `cannot load fonts: ...`.
-
-use std::ffi::CStr;
+//! **Two measurers, one per question; the lint is two passes** (`plx_appkit::hud_format::lint`). Text FIT
+//! (`HUD-E0601` and the geometry: the fit pass, `lint_fit`) is measured by [`plx_gfx::text::TtfMeasure`] over
+//! the shipped `appfont*.ttf` faces from `PLXNATIVE_APP_DIR` (the simulator's `plx_base::paths::app_dir`),
+//! opened by [`plx_gfx::text::init_fonts_headless`] with no window and no GL context. The host's SDL_ttf sums
+//! fractional advances, where the television's 2.0.x sums whole-pixel ones (`plx_base::fontcov::advances`), so
+//! a width here can be a few pixels off the television's: for text fit the TV's own compile decides
+//! (`docs/hud-plugins.md`, "Text fit"). The COST (`HUD-E1401` and the cost lines: the price pass, `lint_price`)
+//! is another matter. Its ceilings are numbers taken with ONE model, the whole-pixel advances of `appfont.ttf`
+//! and `appfont-bold.ttf` and a line height of 1.21 x the size, on every side: priced by the host's SDL_ttf the
+//! classic's Up Next and Info states and every two-section state of the reference would read over a ceiling
+//! the same bytes pass on the television (4 of the 12 terms). So the cost is priced by
+//! [`WholePixelMeasure`], a pure value over the two [`Face`]s, which this module builds from the bytes of the
+//! two files `plx_gfx::text::app_font_path` returns (`appfont.ttf` and `appfont-bold.ttf`, the files the text
+//! fit's measurer opens): the read is the only IO, here ([`read_face`]), and the simulator and every other
+//! side print one number. The fallback faces (CJK, emoji, Arabic, Hebrew) are neither read nor priced: a
+//! character only one of them draws is priced at the base face's `.notdef` advance. There is no unmeasured
+//! fallback: when the two files cannot be opened or read the run is a usage error, `cannot load fonts: ...`.
 
 use plx_appkit::hud_format::lint::{lint_report_priced, Linted, LintLang, LintOptions};
 use plx_appkit::hud_format::{report, schema, schema_emit, BUILTIN_CLASSIC};
-use plx_base::fontcov::advances::{Face, CAP_HEIGHT, LINE_HEIGHT};
+use plx_base::fontcov::advances::{Face, WholePixelMeasure};
 use plx_machine::machine::Measure;
 
 /// The three flags that make the simulator binary run a HUD tool instead of the application.
@@ -240,39 +242,19 @@ fn ttf_measure() -> Result<Box<dyn Measure>, String> {
     Ok(Box::new(plx_gfx::text::TtfMeasure))
 }
 
-/// **The television's text measure, read from the application directory.** One whole-pixel advance per
-/// character from the shipped faces' own `hmtx` and `cmap` ([`Face`]), which is what the television's
-/// SDL_ttf 2.0.x sums, and the same numbers `ShippedMeasure` gives the host tests the cost ceilings were
-/// taken with. It reads `plx_gfx::text::app_font_path`, the files [`ttf_measure`] opens, so the text fit and
-/// the cost are of one font.
-struct WholePixelMeasure {
-    regular: Face,
-    bold: Face,
-}
-
-impl Measure for WholePixelMeasure {
-    fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
-        let face = if bold { &self.bold } else { &self.regular };
-        face.width(&s.to_string_lossy(), sz)
-    }
-    fn cap_h(&self, sz: i32) -> f32 {
-        sz as f32 * CAP_HEIGHT
-    }
-    fn line_h(&self, sz: i32) -> f32 {
-        sz as f32 * LINE_HEIGHT
-    }
-}
-
-/// The advances of one shipped face, with the reason as `path: reason` when it cannot be read.
+/// The advances of one shipped face, with the reason as `path: reason` when it cannot be read. The path is
+/// `plx_gfx::text::app_font_path`, the file [`ttf_measure`] opens, so the text fit and the cost are of one font.
 fn read_face(bold: bool) -> Result<Face, String> {
     let path = plx_gfx::text::app_font_path(bold);
     let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     Face::parse(&bytes).ok_or_else(|| format!("{}: unreadable metrics tables", path.display()))
 }
 
-/// The pricing measurer: [`WholePixelMeasure`] over the shipped base and bold faces. Needs no SDL.
-fn tv_measure() -> Result<Box<dyn Measure>, String> {
-    let faces = read_face(false).and_then(|regular| Ok(WholePixelMeasure { regular, bold: read_face(true)? }));
+/// **The pricing measurer**: [`WholePixelMeasure`], the cost model every side prices with, over the two files
+/// `app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf`. The reads are this function's (the
+/// simulator's IO); the model is a pure value from `plx_base`. Needs no SDL.
+fn price_measure() -> Result<Box<dyn Measure>, String> {
+    let faces = read_face(false).and_then(|regular| Ok(WholePixelMeasure::new(regular, read_face(true)?)));
     faces.map(|m| Box::new(m) as Box<dyn Measure>).map_err(|reason| format!("cannot load fonts: {reason}"))
 }
 
@@ -288,7 +270,7 @@ fn read_package(path: &str) -> Result<String, String> {
 pub fn main_from(args: &[String]) -> i32 {
     use std::io::Write;
     let (mut out, mut err) = (String::new(), String::new());
-    let code = run(args, &read_package, &ttf_measure, &tv_measure, &mut out, &mut err);
+    let code = run(args, &read_package, &ttf_measure, &price_measure, &mut out, &mut err);
     // Written whole and flushed here, not by `exit_now` alone: a closed pipe (`| head`) is the
     // reader's choice and must not turn the exit code into a panic.
     let _ = std::io::stdout().lock().write_all(out.as_bytes());
@@ -300,9 +282,11 @@ pub fn main_from(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_appkit::hud_format::lint::{lint, lint_report};
+    use plx_appkit::hud_format::lint::{lint_report_priced, Linted};
+    use plx_appkit::hud_format::Finding;
     use plx_base::fontcov::advances::ShippedMeasure;
     use std::cell::Cell;
+    use std::ffi::CStr;
     use std::rc::Rc;
 
     const SCHEMA_GOLDEN: &str = include_str!("../../site/hud/schema/1.0.json");
@@ -311,6 +295,16 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    /// The whole lint with the tests' one measure, `ShippedMeasure`, for both passes.
+    fn lint_report(text: &str, langs: &[LintLang], opts: &LintOptions) -> Linted {
+        lint_report_priced(text, &ShippedMeasure, &ShippedMeasure, langs, opts)
+    }
+
+    /// The findings of [`lint_report`] in every language, with the default options.
+    fn lint(text: &str, langs: &[LintLang]) -> Vec<Finding> {
+        lint_report(text, langs, &LintOptions::default()).findings
     }
 
     /// The shipped faces' real advances, the measurer the lint goldens use.
@@ -398,7 +392,7 @@ mod tests {
             &shipped,
         );
         assert_eq!((code, err.as_str()), (0, ""));
-        let costs = lint_report(BUILTIN_CLASSIC, &ShippedMeasure, &LintLang::shipped(), &LintOptions::default()).costs;
+        let costs = lint_report(BUILTIN_CLASSIC, &LintLang::shipped(), &LintOptions::default()).costs;
         assert_eq!(out, report::json_text_with_costs("classic.plxhud.json", &[], &costs));
         assert!(out.contains("\"findings\": []"), "{out}");
         assert!(out.contains("\"costs\": ["), "{out}");
@@ -458,7 +452,7 @@ mod tests {
         assert_eq!((code, err.as_str()), (0, ""));
         assert_eq!(cost_lines(&out).len(), out.lines().count(), "no finding, only cost lines: {out}");
 
-        let linted = lint_report(&edited, &ShippedMeasure, &en, &LintOptions::default());
+        let linted = lint_report(&edited, &en, &LintOptions::default());
         let expected = linted.findings.clone();
         assert_eq!(expected.len(), 1, "{}", report::text("small-disc.plxhud.json", &expected));
         assert_eq!(expected[0].code, "HUD-E0603");
@@ -605,7 +599,7 @@ mod tests {
     #[test]
     fn json_output_is_report_json_text_of_the_findings_lint_returns() {
         let bytes = "{\n  \"format\": \"1.0\" ,}";
-        let expected = lint(bytes, &ShippedMeasure, &LintLang::shipped());
+        let expected = lint(bytes, &LintLang::shipped());
         assert!(!expected.is_empty());
         let (code, out, err) = go(&["--hud-lint", "bad.plxhud.json", "--format", "json"], &serve(bytes), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
@@ -697,7 +691,7 @@ mod tests {
             &args(&["--hud-lint", classic, "--lang", "de"]),
             &read_package,
             &ttf_measure,
-            &tv_measure,
+            &price_measure,
             &mut out,
             &mut err,
         );
@@ -707,7 +701,7 @@ mod tests {
         // The pricing measurer: no SDL, the same files, and the host tests' whole-pixel advances (the child's
         // application directory is `pkg/`, which `ShippedMeasure` reads), so the simulator prices what the
         // ceilings were taken with.
-        let price = tv_measure().expect("the shipped faces' metrics read");
+        let price = price_measure().expect("the shipped faces' metrics read");
         for (text, size, bold) in [("Resume playback", 28, false), ("Resume playback", 28, true), ("Пачаць прагляд спачатку", 20, false), ("Następny odcinek", 40, true)] {
             let c = std::ffi::CString::new(text).expect("no NUL");
             assert_eq!(price.width(&c, size, bold), ShippedMeasure.width(&c, size, bold), "{text:?} at {size} bold={bold}");
@@ -719,9 +713,9 @@ mod tests {
             let file = format!("{name}.plxhud.json");
             let read = move |_: &str| -> Result<String, String> { Ok(text.to_owned()) };
             let (mut out, mut err) = (String::new(), String::new());
-            let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &read, &ttf_measure, &tv_measure, &mut out, &mut err);
+            let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &read, &ttf_measure, &price_measure, &mut out, &mut err);
             assert_eq!((code, err.as_str()), (0, ""), "{name}: {out}");
-            let tv = lint_report(text, &ShippedMeasure, &LintLang::shipped(), &LintOptions::default()).costs;
+            let tv = lint_report(text, &LintLang::shipped(), &LintOptions::default()).costs;
             assert_eq!(out, report::text_with_costs(&file, &[], &tv), "{name}: the cost lines are the television's");
         }
     }

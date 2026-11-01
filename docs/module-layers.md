@@ -457,7 +457,7 @@ What the extraction taught, beyond what the recipe above predicted:
   `../src` (it would otherwise have stopped reading the application, silently, and still passed:
   every later layer must be added to its root list); `paths` and `fontcov` climb one more `..`.
 - **No orphan-rule hazard appeared**: no `impl` in the application has both its trait and its type
-  in `plx_base` (`ShippedMeasure`'s impl is `machine`'s trait on a `plx_base` type, which is
+  in `plx_base` (`ShippedMeasure`'s and `WholePixelMeasure`'s impls are `machine`'s trait on a `plx_base` type, which is
   legal in the application crate and is legal in the `plx_machine` crate; Split 2 below).
 - **The tooling that knew the tree's shape**: `ci/module_graph.py` reads every sibling
   `rust-modules/<layer>/` package named `plx_*` as part of the same module tree (so the layer gate
@@ -509,13 +509,16 @@ is new. What it taught beyond the recipe:
   `idle::{take_local_damage, reset_for_test}`, `BareArg`, `BareMeasure`). The private
   `landgate::phase` wrapper and `Present::global` stay `cfg(test)`: only this crate's tests call
   them, and under `test-support` alone they would be dead code.
-- **The `Measure` impl for `fontcov::advances::ShippedMeasure` lives in `plx_machine`.** The trait
-  is the machine crate's and the type is `plx_base`'s, so the impl may sit in either crate; it
+- **The `Measure` impls for `fontcov::advances::ShippedMeasure` and `WholePixelMeasure` live in `plx_machine`.**
+  The trait is the machine crate's and the types are `plx_base`'s, so an impl may sit in either crate; it
   cannot sit in a third (E0117), which is why it could not stay in `ui` for the layers above.
-  The machine crate is the lowest one that names both. It is `test-support` only, and
+  The machine crate is the lowest one that names both. `ShippedMeasure`'s is `test-support` only, and
   `plx_machine/test-support` enables `plx_base/test-support`, because `fontcov::advances::ShippedMeasure`
-  is itself behind that feature (the module is also built under `hostsim`, for the `Face` alone: the simulator's
-  HUD lint prices with it, `hud_cli`). No other orphan-rule hazard appeared (the compiler is the checker:
+  is itself behind that feature (it reads the repository's `pkg/`). `WholePixelMeasure`'s is not behind
+  anything: it is the HUD cost model (two `Face`s parsed from the bytes of `appfont.ttf` and `appfont-bold.ttf`,
+  no IO, no global), the one price every side puts on a HUD state, so the whole `fontcov::advances` module
+  except `shipped` and `ShippedMeasure` is built in every configuration and `hud_cli` (the only code that
+  reads the two files) builds the model from it. No other orphan-rule hazard appeared (the compiler is the checker:
   an `impl` of a `plx_machine` trait for a `plx_base` type in the application would be the next
   one, and there is none).
 - **Moving a trait to another crate changes dead-code analysis.** `app/recorder.rs`'s

@@ -1113,6 +1113,21 @@ impl Measure for BareMeasure {
     }
 }
 
+/// **The HUD cost model**: whole-pixel advances of the two shipped faces and a line height of
+/// `LINE_HEIGHT` x size ([`plx_base::fontcov::advances`]). The type is `fontcov`'s (base) and the trait is this
+/// module's, so the impl lives here, beside [`ShippedMeasure`]'s.
+impl Measure for plx_base::fontcov::advances::WholePixelMeasure {
+    fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+        self.face(bold).width(&s.to_string_lossy(), sz)
+    }
+    fn cap_h(&self, sz: i32) -> f32 {
+        sz as f32 * plx_base::fontcov::advances::CAP_HEIGHT
+    }
+    fn line_h(&self, sz: i32) -> f32 {
+        sz as f32 * plx_base::fontcov::advances::LINE_HEIGHT
+    }
+}
+
 /// The host-test text measure over the shipped faces' real advances. The type is `fontcov`'s (base)
 /// and the trait is this module's, so the impl lives here: the lowest layer that names both, and
 /// the one place the orphan rule lets it sit once the layers are crates.

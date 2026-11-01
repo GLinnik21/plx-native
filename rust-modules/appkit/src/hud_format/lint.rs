@@ -1,25 +1,48 @@
 //! **The HUD lint** (`docs/hud-plugins.md`, "LLM authoring" item 2): a package's TEXT in, every finding
-//! out, in every language asked for. `plxnative-sim --hud-lint` prints what [`lint`] returns through
-//! [`super::report`]; the registry's CI reads the same JSON.
+//! out, in every language asked for. It is two passes over the one text, and `plxnative-sim --hud-lint` runs
+//! both ([`lint_report_priced`]) and prints what they return through [`super::report`]; the registry's CI
+//! reads the same JSON.
 //!
-//! **Pure.** No IO, no global, no clock, no `cfg(test)` fork in production code. The text measurer is the
+//! **Two passes, two questions, two measures.**
+//! - **The FIT pass** ([`lint_fit`]) is every check but the cost: the parse and validate findings, reachability,
+//!   and the geometric checks over each language's compile. It is measured by the LIVE text measure
+//!   (`measure`: the television's SDL_ttf there, the simulator's here), because whether a line fits is a
+//!   question about the text the set draws.
+//! - **The PRICE pass** ([`lint_price`]) is `HUD-E1401` and the cost lines alone, and nothing else. It is
+//!   priced by one model on every side, `price`: the whole-pixel advances of `appfont.ttf` and
+//!   `appfont-bold.ttf` with a line height of 1.21 x size
+//!   ([`WholePixelMeasure`](plx_base::fontcov::advances::WholePixelMeasure)). The ceilings
+//!   ([`lint_cost`]) are numbers taken with that model, so the same bytes get the same verdict wherever the
+//!   lint runs, whatever each firmware's SDL_ttf does with hinting.
+//!
+//! **There is no entry point that prices with the fit measure.** A caller that has one measure for both
+//! questions must say so by passing it twice to [`lint_report_priced`]; the tests' `lint`, `lint_with` and
+//! `lint_report` do exactly that and exist under `cfg(test)` only. A driver that runs the passes on separate
+//! ticks (the television's lint already takes a whole frame's budget) calls [`lint_fit`] and [`lint_price`]
+//! one tick each and joins them with [`Linted::join`].
+//!
+//! **Pure.** No IO, no global, no clock, no `cfg(test)` fork in production code. The text measurers are the
 //! existing [`Measure`] capability (the one [`compile`] takes, so every side
 //! measures identically), and the language is an ARGUMENT: [`LintLang`] carries the tag and the app's
 //! own strings looked up in THAT language's catalog (`LocaleContext::resolve` and the generated
 //! `msg::*_in`), so nothing here reads `i18n::current()` or any other process-wide registry.
 //!
-//! **The stages**, in this order. The run reports EVERY finding ("LLM authoring" item 2: one round fixes
-//! many), so the only stop is a package that does not exist: [`parse::parse`] returns `Some(package)` exactly
-//! when it found no error, and [`compile`] is total over a package that parsed, so a reachability or
-//! package-level error (stage 2) does not skip stage 3.
+//! **The stages of the fit pass**, in this order. The run reports EVERY finding ("LLM authoring" item 2: one
+//! round fixes many), so the only stop is a package that does not exist: [`parse::parse`] returns
+//! `Some(package)` exactly when it found no error, and [`compile`] is total over a package that parsed, so a
+//! reachability or package-level error (stage 2) does not skip stage 3.
 //! 1. the parse and validate findings ([`parse::parse`]); an error here leaves no package to go on with and
-//!    ends the run;
+//!    ends the run (the price pass parses again, finds no package and is empty: its parse findings are the
+//!    fit pass's);
 //! 2. reachability and the package-level invariants ([`check`]); its findings are kept and the run goes on;
 //! 3. [`compile`] once per language, then the six geometric checks over that language's [`Compiled`]
 //!    (`lint_zorder` I4, `lint_safe` I5, `lint_band` I6, `lint_menus` I7, `lint_text` I10 and
 //!    `lint_size` for `MIN_CONTROL_SIZE` and the compile's own item-keyed finding). Each check module
 //!    exports exactly `pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>)` and walks
 //!    [`LangCtx::states`] (state x slot) itself.
+//!
+//! The price pass is the third stage's other half: [`compile`] once per language with `price`, then
+//! [`lint_cost::check`] and [`lint_cost::lines`] over that compile.
 //!
 //! A finding of stage 3 carries a [`Context`](super::Context): the language ([`LintLang::tag`], set here
 //! on every finding a check did not already tag), the state ([`state_name`]) and the slot
@@ -76,7 +99,8 @@ impl LintLang {
     }
 }
 
-/// What a lint run is told besides the text, the measurer and the languages.
+/// What a lint run is told besides the text, the measurers and the languages (the FIT pass's; the price pass
+/// takes none).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LintOptions {
     /// `CI_TEXT_SKEW` in px: `HUD-W0602` is reported for app text that fits with less than this to spare
@@ -90,49 +114,94 @@ impl Default for LintOptions {
     }
 }
 
-/// Every finding of the package in `text`, linted in each of `langs`, sorted (see the module doc). `langs`
-/// may be empty: then only the language-free stages run.
-pub fn lint(text: &str, measure: &dyn Measure, langs: &[LintLang]) -> Vec<Finding> {
-    lint_with(text, measure, langs, &LintOptions::default())
-}
-
-/// [`lint`] with explicit [`LintOptions`].
-pub fn lint_with(
-    text: &str,
-    measure: &dyn Measure,
-    langs: &[LintLang],
-    opts: &LintOptions,
-) -> Vec<Finding> {
-    lint_report(text, measure, langs, opts).findings
-}
-
-/// What a lint run says: the findings, and (not findings) every state's cost against its class's ceiling.
+/// What a whole lint run says: the findings of both passes, and (not findings) every state's cost against its
+/// class's ceiling.
 #[derive(Clone, Debug)]
 pub struct Linted {
-    /// exactly what [`lint_with`] returns
+    /// the fit pass's findings and the price pass's `HUD-E1401`, sorted
     pub findings: Vec<Finding>,
     /// one line per state of the package, collapsed across the languages (see [`lint_cost::collapse_lines`]);
     /// empty when the package did not parse
     pub costs: Vec<StateCostLine>,
 }
 
-/// [`lint_with`], and the cost of every state besides: the one pipeline, so the findings and the costs are of
-/// the same compile.
-pub fn lint_report(
-    text: &str,
-    measure: &dyn Measure,
-    langs: &[LintLang],
-    opts: &LintOptions,
-) -> Linted {
-    lint_pipeline(text, measure, None, langs, opts)
+/// What the PRICE pass says: `HUD-E1401` alone, and the cost lines.
+#[derive(Clone, Debug, Default)]
+pub struct Priced {
+    /// every state over its class's ceiling, as [`lint_cost::check`] reports it, sorted
+    pub findings: Vec<Finding>,
+    /// one line per state, collapsed across the languages; empty when the package did not parse
+    pub costs: Vec<StateCostLine>,
 }
 
-/// [`lint_report`] with the COST priced by `price` and everything else (text fit, the geometry) measured by
-/// `measure`. The cost ceilings are the television's numbers (`lint_cost`), taken with the television's
-/// whole-pixel advances; a lint whose text measurer sums fractional ones (the simulator's SDL_ttf) prices a
-/// package a few pixels away from the television and could refuse a state the television accepts. So the
-/// package is compiled a second time, per language, with `price`, and `HUD-E1401` and the cost lines are
-/// that compile's; every other finding is `measure`'s.
+impl Linted {
+    /// The two passes of one text as one report: the fit pass's findings and the price pass's, sorted as
+    /// [`sorted_owned`] sorts a single list, and the price pass's cost lines.
+    pub fn join(fit: Vec<Finding>, priced: Priced) -> Linted {
+        let mut findings = fit;
+        findings.extend(priced.findings);
+        Linted { findings: sorted_owned(&findings), costs: priced.costs }
+    }
+}
+
+/// **The FIT pass**: every finding of the package in `text` but the cost verdict, linted in each of `langs`
+/// with the live text measure `measure`, sorted (see the module doc). `langs` may be empty: then only the
+/// language-free stages run.
+pub fn lint_fit(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Vec<Finding> {
+    let parse::Parsed { package, mut findings } = parse::parse(text.as_bytes());
+    let Some(package) = package else {
+        return sorted_owned(&findings);
+    };
+    // No `has_error` stop here: the package parsed, so it compiles, and the geometric findings of this
+    // round are reported with the reach and validate ones (see the module doc).
+    findings.extend(check(&package).findings);
+    let mut per_lang = Vec::with_capacity(langs.len());
+    for lang in langs {
+        let compiled = compile(&package, measure, CompileCtx { labels: lang.labels.clone() });
+        let cx = LangCtx { package: &package, compiled: &compiled, measure, lang, opts };
+        let mut out = Vec::new();
+        lint_zorder::check(&cx, &mut out);
+        lint_safe::check(&cx, &mut out);
+        lint_band::check(&cx, &mut out);
+        lint_menus::check(&cx, &mut out);
+        lint_text::check(&cx, &mut out);
+        lint_size::check(&cx, &mut out);
+        tag_language(&mut out, lang.tag);
+        per_lang.push(out);
+    }
+    findings.extend(collapse(per_lang));
+    sorted_owned(&findings)
+}
+
+/// **The PRICE pass**: `HUD-E1401` and the cost lines of the package in `text`, in each of `langs`, priced
+/// by `price` alone. The ceilings ([`lint_cost`]) are the numbers taken with the whole-pixel advances and a
+/// line height of 1.21 x size, so `price` is
+/// [`WholePixelMeasure`](plx_base::fontcov::advances::WholePixelMeasure) wherever this runs, never the live
+/// text measure: a lint whose text measurer sums fractional advances (the simulator's SDL_ttf) or hints
+/// differently (another firmware's) would price the same bytes a few pixels away and could refuse a package
+/// that another set accepts. Nothing here reads `price` for a fit question.
+///
+/// The package is parsed again and an unparseable one gives an empty [`Priced`]: its parse findings are the
+/// fit pass's.
+pub fn lint_price(text: &str, price: &dyn Measure, langs: &[LintLang]) -> Priced {
+    let Some(package) = parse::parse(text.as_bytes()).package else {
+        return Priced::default();
+    };
+    let mut per_lang = Vec::with_capacity(langs.len());
+    let mut per_lang_costs = Vec::with_capacity(langs.len());
+    for lang in langs {
+        let compiled = compile(&package, price, CompileCtx { labels: lang.labels.clone() });
+        let mut out = Vec::new();
+        lint_cost::check(lang, &compiled, &mut out);
+        tag_language(&mut out, lang.tag);
+        per_lang.push(out);
+        per_lang_costs.push(lint_cost::lines(lang, &compiled));
+    }
+    Priced { findings: sorted_owned(&collapse(per_lang)), costs: lint_cost::collapse_lines(per_lang_costs) }
+}
+
+/// **Both passes**: [`lint_fit`] with `measure` and [`lint_price`] with `price`, joined ([`Linted::join`]).
+/// What `--hud-lint` prints.
 pub fn lint_report_priced(
     text: &str,
     measure: &dyn Measure,
@@ -140,24 +209,37 @@ pub fn lint_report_priced(
     langs: &[LintLang],
     opts: &LintOptions,
 ) -> Linted {
-    lint_pipeline(text, measure, Some(price), langs, opts)
+    Linted::join(lint_fit(text, measure, langs, opts), lint_price(text, price, langs))
 }
 
-/// The one pipeline behind [`lint_report`] and [`lint_report_priced`]: `price` is `None` when `measure`
-/// prices the cost too, which compiles once per language.
-fn lint_pipeline(
-    text: &str,
-    measure: &dyn Measure,
-    price: Option<&dyn Measure>,
-    langs: &[LintLang],
-    opts: &LintOptions,
-) -> Linted {
+/// **Test only: one measure for both passes.** The tests have one measure (`ShippedMeasure`) and no firmware,
+/// so they say it once; production passes two to [`lint_report_priced`].
+#[cfg(test)]
+pub fn lint_report(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Linted {
+    lint_report_priced(text, measure, measure, langs, opts)
+}
+
+/// Test only: the findings of [`lint_report`].
+#[cfg(test)]
+pub fn lint_with(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Vec<Finding> {
+    lint_report(text, measure, langs, opts).findings
+}
+
+/// Test only: [`lint_with`] with the default [`LintOptions`].
+#[cfg(test)]
+pub fn lint(text: &str, measure: &dyn Measure, langs: &[LintLang]) -> Vec<Finding> {
+    lint_with(text, measure, langs, &LintOptions::default())
+}
+
+/// **Test only: the pipeline as it was before the two passes**, one compile per language with one measure and
+/// the cost check inside the same loop as the geometric ones. It is the oracle `lint_tests` holds
+/// [`lint_report`] against, so that splitting the lint changed no byte of what it says.
+#[cfg(test)]
+pub(super) fn single_pipeline(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Linted {
     let parse::Parsed { package, mut findings } = parse::parse(text.as_bytes());
     let Some(package) = package else {
         return Linted { findings: sorted_owned(&findings), costs: Vec::new() };
     };
-    // No `has_error` stop here: the package parsed, so it compiles, and the geometric findings of this
-    // round are reported with the reach and validate ones (see the module doc).
     findings.extend(check(&package).findings);
     let mut per_lang = Vec::with_capacity(langs.len());
     let mut per_lang_costs = Vec::with_capacity(langs.len());
@@ -171,22 +253,10 @@ fn lint_pipeline(
         lint_menus::check(&cx, &mut out);
         lint_text::check(&cx, &mut out);
         lint_size::check(&cx, &mut out);
-        // the cost is read from the compile `price` made, when there is one, else from this one
-        let priced = price.map(|price| {
-            (compile(&package, price, CompileCtx { labels: lang.labels.clone() }), price)
-        });
-        let priced_cx = priced.as_ref().map(|(compiled, price)| LangCtx {
-            package: &package,
-            compiled,
-            measure: *price,
-            lang,
-            opts,
-        });
-        let cost_cx = priced_cx.as_ref().unwrap_or(&cx);
-        lint_cost::check(cost_cx, &mut out);
+        lint_cost::check(lang, &compiled, &mut out);
         tag_language(&mut out, lang.tag);
         per_lang.push(out);
-        per_lang_costs.push(lint_cost::lines(cost_cx));
+        per_lang_costs.push(lint_cost::lines(lang, &compiled));
     }
     findings.extend(collapse(per_lang));
     Linted { findings: sorted_owned(&findings), costs: lint_cost::collapse_lines(per_lang_costs) }
@@ -213,8 +283,14 @@ impl<'a> LangCtx<'a> {
     /// Every compiled state, in `Compiled::states()` order (state x slot, valuation by valuation). A Skip
     /// state's credits layout is `state.skip_variant(SkipKind::Credits)`.
     pub fn states(&self) -> impl Iterator<Item = StateCtx<'a>> {
-        self.compiled.states().iter().map(|state| StateCtx { key: state.key, state })
+        states_of(self.compiled)
     }
+}
+
+/// Every compiled state of `compiled`, in `Compiled::states()` order: [`LangCtx::states`] for a check that
+/// has no [`LangCtx`] (the price pass has a compile and a language, no package, measure or options).
+pub fn states_of(compiled: &Compiled) -> impl Iterator<Item = StateCtx<'_>> {
+    compiled.states().iter().map(|state| StateCtx { key: state.key, state })
 }
 
 /// The name of a state as the report spells it (see the module doc): `compact`, `chapters`, `info` or
@@ -251,8 +327,13 @@ pub fn slot_name(key: StateKey) -> &'static str {
 /// The [`Context`] of a finding in `state` under `cx`: the language, the state and the slot. The check
 /// adds the `rects` and the `text` it has.
 pub fn ctx_for(cx: &LangCtx<'_>, state: &StateCtx<'_>) -> Context {
+    ctx_in(cx.lang, state)
+}
+
+/// The [`Context`] of a finding in `state` in the language `lang`: [`ctx_for`] without the rest of a [`LangCtx`].
+pub fn ctx_in(lang: &LintLang, state: &StateCtx<'_>) -> Context {
     Context {
-        lang: Some(cx.lang.tag.to_owned()),
+        lang: Some(lang.tag.to_owned()),
         state: Some(state_name(state.key)),
         slot: Some(slot_name(state.key).to_owned()),
         ..Context::default()

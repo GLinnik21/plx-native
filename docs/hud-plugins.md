@@ -414,8 +414,9 @@ ui/popover               the shared anchored placer (D9), used by the player men
 - Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing or hashing; all text
   goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each text draw. The one
   deliberate exception is an open section's text group (`CompiledState::groups`, `sections::group`): it re-stacks
-  from the heights it really wraps at draw time and allocates its item list each frame, so the PR8 section ceilings
-  in "Cost" are calibrated with it in the loop.
+  from the heights it really wraps at draw time and allocates its item list each frame, so the one- and two-section
+  ceilings in "Cost" (PR19's pairs 4 to 7; PR8 measured those states but stored no ceiling) are taken on states
+  run with it in the loop.
 - Package icons are rasterized through the same `plx_gfx::svg::rasterize` (F36); their textures belong to
   the `CompiledHud` instance `App` hands the player screen and are released when the HUD changes. The
   icon draw API takes `IconRef { Builtin(Icon), Pack(PackIcon) }`; no second cache, no new global.
@@ -732,7 +733,11 @@ three places:
 3. the TV, which compiles at install, at selection and when playback resolves the selection (D15), and again after a
    language change or an app update, with its OWN `Measure` for its current language. Its result is cached per
    (package sha256, app version, language). The TV's compile is the authority; 1 and 2 are early warnings, so an
-   unreviewed sideload is bound exactly as a registry package is.
+   unreviewed sideload is bound exactly as a registry package is. Only the FIT is the live measure: the cost
+   (`HUD-E1401`) is priced by the one model of "The ceilings (PR19)" on all three sides, so its verdict is not an
+   early warning and cannot differ between them. The driver that runs this on the TV (PR10) calls both passes of the
+   lint, the fit with the TV's `Measure` and the price with `WholePixelMeasure`; at PR19's head it does not exist and
+   nothing on the set lints.
 
 A package that fails on the TV does not load in that language: playback uses `builtin:classic`, one `hud: fallback`
 event-log line names the package, the language and the first finding's code, and Settings > Player HUD marks the
@@ -1225,15 +1230,16 @@ recompiles on a change; registry CI lints all eleven):
 A HUD's element count is an authoring budget, not content a user reaches, so the bounds are derived. The
 compiler computes a cost per STATE (draw ops, glyph runs, texture bytes, and BLENDED PIXEL AREA, the summed area of
 every translucent fill the state draws, scrims and grounds included, which is the fill the Mali frame-drop work measures;
-the strip counted by the cards a band
-can show, its width over the card pitch plus one, never by chapter count). The ceiling is per state class,
-each calibrated on the TV with the `profile-tv` tools (`ARM_PROFILE=release`, an `fps_floor` scene, zero late
-frames, Mali HWCNT per frame):
-- compact: classic's compact HUD, and the reference's;
-- one section open: classic's chapters and info states;
-- two sections open: classic has none, so the reference's chapters plus info state calibrates it, in the
-  sections PR. If that state does not run clean, its visible card count is cut until it does and that is the
-  ceiling; no ceiling ever admits a cost no measured state reached.
+the strip counted by the most cards its Shelf paints at rest, `card_row::most_painted_at_rest`, never by chapter
+count). The ceiling is per state class, each set from states run on the TV with the `profile-tv` tools
+(`ARM_PROFILE=release`, an `fps_floor` scene, zero late frames, Mali HWCNT per frame), and each term of a class from
+the state of the package that reaches it:
+- compact: the reference's compact episode sets draw ops; classic's Up Next sets glyph runs, texture bytes and
+  blended px;
+- one section open: the reference's Chapters sets draw ops and glyph runs, classic's Chapters sets texture bytes and
+  classic's Info sets blended px;
+- two sections open: classic has none, so the reference's Chapters plus Info state sets all four terms.
+No ceiling ever admits a cost no such state reached.
 A package's state cost must be at or under its class's ceiling in every term; the blended-area term, calibrated with
 HWCNT like the others, is what bounds a tall scrim or a screen-wide ground, each only a few draw ops. SVG bytes and path count per asset bound the C
 parser's input; package bytes follow from both. Every new `MAX_*` gets its `ci/list-caps.ini` line with the
@@ -1241,62 +1247,92 @@ derivation.
 
 ### The ceilings (PR19)
 
-A class's ceiling in each term is the MAXIMUM of that term over the states of that class that were run on the
-television (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, every one holding 59-61 fps with
-`dropped=0`), taken from what the compiler reports for those exact states (the television's advances,
-`ShippedMeasure`), not rounded and with no headroom. Each class stands alone: two sections is not capped by one
-section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming the
-state and language it came from, and `lint_cost::the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language`
-recomputes all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every
-state and slot (330 rows) and asserts each is attained by the pair it names, so a layout change that moves one
-fails until someone re-measures.
+**The price is one model on every side.** A cost is the compiler's accounting of a state laid out with the whole-pixel
+advances of `appfont.ttf` and `appfont-bold.ttf` and a line height of 1.21 x the size
+(`plx_base::fontcov::advances::WholePixelMeasure`, a pure value over two `Face`s; in the host tests `ShippedMeasure`,
+the same numbers read from `pkg/`). The text FIT keeps the live measure of the set that lints (the television's SDL_ttf,
+the simulator's own), but nothing that is priced does, so the same package bytes cost the same, and get the same
+`HUD-E1401` verdict, on the television, in the simulator and in registry CI, whatever each firmware's SDL_ttf does with
+hinting. A ceiling priced by a per-firmware measure would refuse, on a set that hints differently, a package that sits
+exactly at it. The lint is two passes for this reason (`lint::lint_fit`, every check but the cost, on the live measure;
+`lint::lint_price`, `HUD-E1401` and the cost lines alone, on the model; `lint_report_priced` joins them), and there is no
+entry point that prices with the fit measure. **The model is not the drawn frame**: a scrim on the set is a few pixels
+off the model's height (6605 px of `blended_px`, 0.4%, on the two-section state), so a ceiling is a number of the
+model's for the states the television ran, not a measurement of a frame. The fallback faces are neither read nor priced.
+
+**The ceilings.** A class's ceiling in each term is the MAXIMUM of that term, in the model, over the states of that
+class (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, every one holding 59-61 fps with `dropped=0`,
+for the states the television ran), not rounded and with no headroom. Each class stands alone: two sections is not capped
+by one section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming
+the state and language it came from, and
+`lint_cost::the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
+all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every state and slot (330
+rows) and asserts each is attained by the pair it names, so a layout change that moves one fails until someone
+re-measures.
+
+**A strip is priced by what its Shelf paints at rest.** `emit_strip` prices the chapters strip's cards with
+`card_row::most_painted_at_rest`, built from the same `RowStyle` and cull margin the Shelf is: the most cards the row
+paints at any resting scroll (scroll 0, the two positions `scroll_into_view` rests at moving right and moving left, and
+the end), which no chapter count changes. That is **ten** cards on the reference and **seven** on classic; the row paints
+a partial card on the left as well once it has scrolled, which the strip's width over its card pitch plus one (8 and 6) did
+not count. `DrawOp::Strip.visible` feeds the cost and nothing else (drawing reads the strip's geometry), and the HUD's
+Shelf has no glide, so a pointer glide is outside "at rest". The television ran the strips with ten chapters, each with a
+thumbnail, at scroll 0, where the Shelf paints nine (reference) and six (classic).
 
 **A measured state is (package, state, language).** The tab and button plates follow their labels' widths, so
 `blended_px` moves with the language; Up Next's still is as wide as the Next pill, so `texture_bytes` does too. Seven
-pairs attain the twelve maxima (no six do). The dev TV ran each on 2026-11-01 (`ARM_PROFILE=release`, debug flavour,
-`--guest --mock`, one boot for pacing and one for HWCNT, because HWCNT serializes the GPU): every pair held 59-61 fps
-with `dropped=0`. The chapter strips were run with `visible` image cards: the item served ten chapters, each with a
-thumbnail, so the reference drew nine cards and classic six. PR8's strip runs had no chapter thumbnails and drew blank
-cards, so their GPU figures (5.23, 4.72, 4.92) are replaced by pairs 5, 4 and 7.
+pairs attain the twelve maxima, and no six rows do (`lint_cost::seven_pairs_attain_the_twelve_maxima_and_no_six_rows_do`
+searches all 330). The dev TV ran each state on 2026-11-01 (`ARM_PROFILE=release`, debug flavour, `--guest --mock`, one
+boot for pacing and one for HWCNT, because HWCNT serializes the GPU) on an item that is an episode with chapters:
+every pair held 59-61 fps with `dropped=0`. PR8's strip runs had no chapter thumbnails and drew blank cards, so their GPU
+figures (5.23, 4.72, 4.92) are replaced by pairs 5, 4 and 7. **Pairs 4, 5 and 7 are priced at a card count the television
+did not run** (ten and seven, against the nine and six it ran), so their GPU_ACTIVE is left out of the table until it is
+measured at the priced count: it is not carried over from nine and six cards.
 
 | pair | class | package, state, slot, language | GPU_ACTIVE (M cycles a frame) | draw ops | glyph runs | texture bytes | blended px |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | compact | reference, an episode, Discs, en | 3.72 | **13** | 4 | 102912 | 838253 |
-| 2 | compact | classic, a film, Up Next, nl | 5.44 | 10 | **9** | **256120** | 978752 |
-| 3 | compact | classic, a film, Up Next, pl | 5.50 | 10 | 9 | 215064 | **985088** |
-| 4 | one section | reference Chapters, an episode, Discs, en | 5.09 | **47** | **21** | 791552 | 1274323 |
-| 5 | one section | classic Chapters, Discs, en | 5.10 | 22 | 14 | **1119744** | 919296 |
-| 6 | one section | classic Info, Discs, be | 7.02 | 10 | 14 | 230400 | **1395492** |
-| 7 | two sections | reference Chapters and Info, an episode, Discs, en | 4.87 | **54** | **28** | **835648** | **1592851** |
+| 2 | compact | classic, an episode, Up Next, nl | 5.44 | 10 | **9** | **256120** | 978752 |
+| 3 | compact | classic, an episode, Up Next, pl | 5.50 | 10 | 9 | 215064 | **985088** |
+| 4 | one section | reference Chapters, an episode, Discs, en (ten strip cards; ran with nine) | | **55** | **25** | 963712 | 1274323 |
+| 5 | one section | classic Chapters, an episode, Discs, en (seven strip cards; ran with six) | | 25 | 16 | **1306368** | 919296 |
+| 6 | one section | classic Info, an episode, Discs, be | 7.02 | 10 | 14 | 230400 | **1395492** |
+| 7 | two sections | reference Chapters and Info, an episode, Discs, en (ten strip cards; ran with nine) | | **62** | **32** | **970944** | **1592851** |
 
 The bold figure is a class's ceiling in that term and the pair it came from (the count of draw ops and glyph runs
-does not move with the language: every language ties). PR8's other runs stand, in English, and are under every
-ceiling: classic's film with chapters (4.33; 9, 6, 49152, 945408), classic's episode with no chapters (4.17; 10, 5,
-81920, 942912), the reference's film (3.73; 11, 4, 81280, 838253) and classic's Info (6.84; 10, 14, 230400, 1383936).
-Pair 6 is the heaviest state on the television. The class is the number of open sections; the slot (Discs, Up Next,
-Skip) never changes it. Not every one of the 330 rows was run: a row is admitted because it costs no more in each term
-than the states that were. The terms are the compiler's accounting, not the GPU's, so a package under every term can
-still read more GPU_ACTIVE than a measured state; PR12 measures that.
+does not move with the language: every language ties). Classic's Chapters has no discs while a section is open (its
+transport bands are `when: "!sections"`), so its texture bytes are the seven cards alone. PR8's other runs stand, in
+English, and are under every ceiling (none draws a strip): classic's film with chapters (4.33; 9, 6, 49152, 945408),
+classic's episode with no chapters (4.17; 10, 5, 81920, 942912), the reference's film (3.73; 11, 4, 81280, 838253) and
+classic's Info on a film (6.84; 10, 14, 230400, 1383936). Pair 6 is the heaviest state measured on the television. The class is
+the number of open sections; the slot (Discs, Up Next, Skip) never changes it. Not every one of the 330 rows was run: a
+row is admitted because it costs no more in each term than the states that were. The terms are the compiler's
+accounting, not the GPU's, so a package under every term can still read more GPU_ACTIVE than a measured state; PR12
+measures that.
 
 **The verdict is `HUD-E1401` (`cost-ceiling`).** The lint walks every state of the state graph, under every slot and in
 every language, and a state whose cost (a Skip state at the larger of its two pill layouts) is above its class's ceiling in
 any term is one error at `/layout`: the class, each term over as `value > ceiling`, and the three ops that weigh most, each
 by the pointer of the node that drew it (`CompiledState::top_contributors`, `CompiledState::origin`). It runs in the lint
-(`plxnative-sim --hud-lint`); nothing at runtime runs it, so it never rejects a package in a frame. The ceilings are not
+(`plxnative-sim --hud-lint`, both passes). At PR19's head no path on the set runs the lint: the television loads
+`builtin:classic` through `load_classic`, which never lints, and a package a user installs is linted by PR10's driver,
+which calls both passes (`lint_fit` with the live measure, `lint_price` with `WholePixelMeasure`, one tick each, because
+the television's lint already takes a whole frame's budget). So the verdict never rejects a package in a frame, and the
+builtin classic is safe because it is never linted, as well as because it passes. The ceilings are not
 raised and no state is exempt; because they carry no headroom, a package that adds a draw op, a glyph run or a pixel to the
 heaviest state of its class is over until it is run on the television and its figures set the ceiling. The builtin classic
-and the reference pass every state in every language, so the builtin is never rejected by its own lint.
+and the reference pass every state in every language.
 
-**The simulator prices the cost with the television's advances.** `plxnative-sim` measures text with the host's SDL_ttf,
-which sums fractional advances, where the television's sums whole-pixel ones. Under the simulator's own
-measure the classic's Up Next and Info states and every two-section state would read over a ceiling the television
-accepts, in 4 of the 12 terms (`blended_px` by 320 to 6605 px in three classes, `texture_bytes` by 2876 in the compact
-class; `draw_ops` and `glyph_runs` are the same under both). So `--hud-lint` compiles each language a second time with
-`hud_cli::WholePixelMeasure`, the same advances read from the application directory's own `appfont.ttf` and
-`appfont-bold.ttf` (`plx_base::fontcov::advances::Face`), and `HUD-E1401` and the cost lines are that compile's: the
-simulator and the television print one number. Text fit (`HUD-E0601` and the geometry) keeps SDL_ttf's measure, and a
-width there can still be a few pixels off the television's. `plxnative-sim --hud-lint` prints every state's cost beside its
-class's ceiling, as information lines (text) and a `costs` array (JSON), and exits 1 on `HUD-E1401` like any other error.
+**The simulator prices with the same model.** `plxnative-sim` measures text fit with the host's SDL_ttf, which sums
+fractional advances, where the television's sums whole-pixel ones. Priced by the simulator's own measure the classic's
+Up Next and Info states and every two-section state would read over a ceiling the television accepts, in 4 of the 12 terms
+(`blended_px` by 320 to 6605 px in three classes, `texture_bytes` by 2876 in the compact class; `draw_ops` and
+`glyph_runs` are the same under both). So `--hud-lint` runs the price pass with `WholePixelMeasure`, built in
+`hud_cli` from the bytes of the two files `plx_gfx::text::app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf`
+(`plx_base::fontcov::advances::Face`), and `HUD-E1401` and the cost lines are that compile's: every side prints one
+number. Text fit (`HUD-E0601` and the geometry) keeps SDL_ttf's measure, and a width there can still be a few pixels off
+the television's. `plxnative-sim --hud-lint` prints every state's cost beside its class's ceiling, as information lines
+(text) and a `costs` array (JSON), and exits 1 on `HUD-E1401` like any other error.
 
 ## Storage per install mode
 
@@ -1427,7 +1463,8 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
   rung of a `by: "setting"` face map is the warning), `path` (an RFC 6901 pointer), `rule` (the invariant's name
   as in this plan), `message`, `hint` (a concrete fix), `nearest` (closest valid names by edit distance over
   the closed vocabulary), and context `state`, `slot`, `lang`, `rects` where they apply. JSON output:
-  `{"lint": 1, "file": ..., "findings": [...]}`. SARIF 2.1.0 was weighed and left for later: a larger surface
+  `{"lint": 1, "file": ..., "findings": [...], "costs": [...]}` (`costs`, one object per state, is the information
+  lines of the last bullet below; the published `*.lint.json` examples carry the findings alone). SARIF 2.1.0 was weighed and left for later: a larger surface
   for no gain over JSON, which the registry CI turns into PR annotations.
 - Example: `{"code": "HUD-E0301", "path": "/layout/block/2/cells/0/segment/items/1/command", "rule":
   "command-known", "message": "unknown command skip_back", "hint": "a relative jump is the command seek with a
@@ -1578,7 +1615,8 @@ PR7. One renderer for the compact HUD.
   `:126`, test `:2400`), so the cold-clock drop does not return. A dev trigger `plxnative-hud=<path>` under
   `devtriggers` (F41) boots the sim with a package.
 - Verify: pixel-identical compact, Up Next and Skip states; the reference compact state renders in the sim; the
-  TV check with `ARM_PROFILE=release` and the `profile-tv` tools, which sets the compact ceiling (Cost).
+  TV check with `ARM_PROFILE=release` and the `profile-tv` tools, which measures the compact states (PR7 stored no
+  ceiling; PR19 sets all twelve from the states run, Cost).
 - Risks: frame time on the TV (the draw list must not allocate).
 
 PR8. Sections.
@@ -1594,7 +1632,8 @@ PR8. Sections.
   heartbeats they grade. UNVERIFIED on the set until a coordinator's `--fps-player` run enters both scenes.
 - Verify: classic's info state pixel-identical; classic's chapters state identical except D11's stated changes
   (scroll rule, focused-name marquee), shown before and after; modal Down-to-tabs and BACK sequences pinned; the
-  reference's three states render; TV calibration of the one- and two-section ceilings (Cost). Replay: no fixture
+  reference's three states render; TV measurement of the one- and two-section states (PR8 stored no ceiling; PR19 sets
+  all twelve from the states run, Cost). Replay: no fixture
   drives the player (F33), but if a recorded state SHAPE string moves (the player screens' shapes gain the section
   set and the control ids), `SCREEN_SHAPES_PIN` moves and all three anchors are re-recorded for the shape alone
   (README `:115-127`).
@@ -1664,7 +1703,7 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 - Goldens: `builtin_classic_passes_every_invariant`, `classic_is_pixel_identical`,
   `reference_passes_every_invariant`, one invalid fixture per invariant, the schema drift test, the agreement test.
 - Sim: the full state matrix for classic before and after PR2, PR7 and PR8; the reference's three states.
-- TV: the cost calibrations in PR7 and PR8 (`ARM_PROFILE=release`, `profile-tv`); the drop folder and the address
+- TV: the cost measurements in PR7 and PR8 (`ARM_PROFILE=release`, `profile-tv`; no ceiling stored, PR19 sets all twelve); the drop folder and the address
   install under Dev Mode; HBC if such an install exists here (UNVERIFIED).
 
 ## Out of scope

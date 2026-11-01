@@ -1,7 +1,9 @@
 //! **The lint report: findings as the JSON the plan's "Lint" item names, and as plain text.**
 //!
-//! `plxnative-sim --hud-lint <file> [--format text|json]` (PR5d) prints through [`json_text`] and
-//! [`text`]; the registry's CI reads the JSON. The shape is exactly the plan's, and nothing more:
+//! `plxnative-sim --hud-lint <file> [--format text|json]` prints through the `_with_costs` forms,
+//! [`json_text_with_costs`] and [`text_with_costs`] (the findings, then every state's cost: see "Cost lines"
+//! below); the registry's CI reads that JSON. [`json_text`] and [`text`] are the findings alone, which is all
+//! the published `*.lint.json` examples carry. The findings' shape is exactly the plan's, and nothing more:
 //!
 //! ```text
 //! {"lint": 1, "file": "<name>", "findings": [

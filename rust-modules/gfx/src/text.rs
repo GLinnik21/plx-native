@@ -117,7 +117,7 @@ fn app_font(bold: bool) -> &'static CStr {
 }
 
 /// The path [`app_font`] opens, as a path: for a caller that reads the face file itself and must read the
-/// one SDL_ttf opens (the HUD lint's pricing measure in `hud_cli`).
+/// one SDL_ttf opens (the HUD cost model's two faces, `hud_cli`'s `price_measure`).
 pub fn app_font_path(bold: bool) -> std::path::PathBuf {
     use std::os::unix::ffi::OsStrExt;
     std::path::PathBuf::from(std::ffi::OsStr::from_bytes(app_font(bold).to_bytes()))
