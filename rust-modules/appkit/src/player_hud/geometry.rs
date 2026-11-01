@@ -88,7 +88,9 @@ pub struct HudGeometry {
     pub tab_row: Rect,
     /// The title block's origin: the overscan audit's "player title / elapsed clock".
     pub title: Rect,
-    /// Tab `i`'s pill, `None` for a tab the row does not carry.
+    /// Tab `i`'s pill, `None` for a tab the row does not carry. **A tab is a PILL that opens a section**: a section a
+    /// disc of the row opens has none (that disc is a stop of the row, `items`), so this is the one report the tab
+    /// group, the pointer's tab stops and the travel order ([`super::travel::order`]) all read.
     pub tabs: [Option<Rect>; HUD_TABS],
     /// **The caption band this layout occupies** (`docs/hud-plugins.md`, "Captions: the band a HUD
     /// occupies"), the ONE value every caption reader takes: the same in every slot and every state, so
