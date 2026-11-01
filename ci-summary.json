@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T20:56:15Z",
+ "generated": "2026-11-01T21:04:07Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -90,9 +90,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 80,
-   "now": 198,
+   "now": 198.0,
    "prev7": 147.0,
    "shown": true,
    "state": "worse",
@@ -166,18 +166,18 @@
   },
   {
    "change30_pct": -63.5,
-   "change7_pct": 15.4,
+   "change7_pct": 15.1,
    "d30": 1076,
    "delta30": -683.5,
-   "delta7": 52.5,
+   "delta7": 51.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 248,
-   "n_prev": 195,
+   "n_prev": 193,
    "now": 392.5,
-   "prev7": 340,
+   "prev7": 341,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -187,17 +187,17 @@
   },
   {
    "change30_pct": -63.7,
-   "change7_pct": 15.8,
+   "change7_pct": 15.7,
    "d30": 1068,
-   "delta30": -680,
-   "delta7": 53,
+   "delta30": -680.5,
+   "delta7": 52.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 91,
+   "n_now": 92,
    "n_prev": 93,
-   "now": 388,
+   "now": 387.5,
    "prev7": 335,
    "shown": true,
    "state": "flat",
@@ -396,9 +396,9 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 80,
-   "now": 276,
+   "now": 276.0,
    "prev7": 265.0,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -79.1,
-   "change7_pct": 9.6,
+   "change30_pct": -79.2,
+   "change7_pct": 9.4,
    "d30": 1034.0,
-   "delta30": -818.0,
-   "delta7": 19,
+   "delta30": -818.5,
+   "delta7": 18.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 79,
-   "now": 216,
+   "now": 215.5,
    "prev7": 197,
    "shown": true,
    "state": "flat",
@@ -566,9 +566,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 80,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 71.6,
    "commits": [
     {
-     "pr": 1157,
-     "sha": "4974279b3",
-     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
-    },
-    {
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
@@ -715,6 +710,11 @@
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
+    },
+    {
+     "pr": 1195,
+     "sha": "2200ceb34",
+     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
     }
    ],
    "from": 190.0,
@@ -728,11 +728,6 @@
    "change_pct": 34.7,
    "commits": [
     {
-     "pr": 1157,
-     "sha": "4974279b3",
-     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
-    },
-    {
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
@@ -776,23 +771,23 @@
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
+    },
+    {
+     "pr": 1195,
+     "sha": "2200ceb34",
+     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
     }
    ],
    "from": 147.0,
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "since": "2026-10-31",
+   "since": "2026-11-01",
    "threshold_pct": 20.0,
-   "to": 198
+   "to": 198.0
   },
   {
    "change_pct": 25.5,
    "commits": [
-    {
-     "pr": 1157,
-     "sha": "4974279b3",
-     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
-    },
     {
      "pr": 1189,
      "sha": "acd247a76",
@@ -837,6 +832,11 @@
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
+    },
+    {
+     "pr": 1195,
+     "sha": "2200ceb34",
+     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
     }
    ],
    "from": 130.5,
@@ -850,11 +850,6 @@
    "change_pct": 21.2,
    "commits": [
     {
-     "pr": 1157,
-     "sha": "4974279b3",
-     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
-    },
-    {
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
@@ -898,6 +893,11 @@
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
+    },
+    {
+     "pr": 1195,
+     "sha": "2200ceb34",
+     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
     }
    ],
    "from": 273,
@@ -911,11 +911,6 @@
    "change_pct": 18.5,
    "commits": [
     {
-     "pr": 1157,
-     "sha": "4974279b3",
-     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
-    },
-    {
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
@@ -959,6 +954,11 @@
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
+    },
+    {
+     "pr": 1195,
+     "sha": "2200ceb34",
+     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
     }
    ],
    "from": 2099,
