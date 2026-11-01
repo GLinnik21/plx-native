@@ -966,7 +966,8 @@ impl Bridge {
     }
 
     fn huds_refresh_for(&mut self, seat: &plx_plex::plex::session::Seat) {
-        let selected = plx_plex::plex::session::stored_effective_hud(&plx_plex::plex::session::peek(), seat);
+        let stored = plx_plex::plex::session::stored_effective_hud(&plx_plex::plex::session::peek(), seat);
+        let selected = self.huds.selected_for(seat.user().is_some(), stored);
         self.huds.refresh(selected);
     }
 
@@ -1019,7 +1020,10 @@ impl Bridge {
                         }
                     });
                 }
-                None => plx_base::eventlog::log("hud: selection not saved: no profile is seated"),
+                None => {
+                    plx_base::eventlog::log("hud: selection not saved: no profile is seated; it stays until a profile is");
+                    self.huds.note_unsaved(id);
+                }
             }
         }
         for line in self.huds.take_log() {

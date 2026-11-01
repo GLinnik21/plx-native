@@ -411,6 +411,9 @@ pub(crate) struct HudDriver {
     read_failed: BTreeSet<Sha>,
     shown: Option<Arc<plx_appkit::hud_format::compile::Compiled>>,
     selection: Vec<String>,
+    /// The last pick that could not be persisted because no profile was seated: it stays for the process, and a
+    /// seat arriving replaces it ([`HudDriver::selected_for`]).
+    unsaved: Option<String>,
     notices: Vec<Notice>,
     log: Vec<String>,
     dirty: bool,
@@ -441,6 +444,7 @@ impl HudDriver {
             read_failed: BTreeSet::new(),
             shown: None,
             selection: Vec::new(),
+            unsaved: None,
             notices: Vec::new(),
             log: Vec::new(),
             dirty: false,
@@ -521,6 +525,22 @@ impl HudDriver {
     /// The picks to persist, oldest first.
     pub(crate) fn take_selections(&mut self) -> Vec<Selection> {
         std::mem::take(&mut self.selection)
+    }
+
+    /// A pick the owner could not persist (no seat): keep it for the process.
+    pub(crate) fn note_unsaved(&mut self, id: String) {
+        self.unsaved = Some(id);
+    }
+
+    /// The selection a `Refresh` starts from: with no seat, the unsaved pick of this process if there is one, else
+    /// `stored`; with a seat, the profile's own `stored` value, and the unsaved pick is dropped for good.
+    pub(crate) fn selected_for(&mut self, seated: bool, stored: String) -> String {
+        if seated {
+            self.unsaved = None;
+            stored
+        } else {
+            self.unsaved.clone().unwrap_or(stored)
+        }
     }
 
     /// What finished since the last call (an install, a removal, a refusal).
@@ -1041,6 +1061,35 @@ mod tests {
         }
         assert!(driver.compiled.is_none(), "the load waits for the player to leave");
         assert!(driver.tick(&env(false)).is_some());
+    }
+
+    /// **With no seat the pick stays for the process.** A dev-token boot never seats, so a pick cannot be persisted; it is
+    /// kept, survives a reopened page and a Refresh (which resolves it), and a seat arriving replaces it with that
+    /// profile's own value.
+    #[test]
+    fn a_pick_with_no_seat_survives_a_refresh_and_a_seat_replaces_it() {
+        let dir = Dir::new("unseated");
+        let cx = english();
+        let mut driver = driver(&dir);
+        install_reference(&dir, &mut driver, &cx);
+        driver.select(REFERENCE_ID.to_string());
+        let picks = driver.take_selections();
+        assert_eq!(picks, [REFERENCE_ID]);
+        // the owner found no seat to persist it for
+        for id in picks {
+            driver.note_unsaved(id);
+        }
+        // the page is reopened: the owner refreshes from the stored value, which is empty
+        let selected = driver.selected_for(false, String::new());
+        assert_eq!(selected, REFERENCE_ID, "the unsaved pick is what Refresh resolves");
+        driver.refresh(selected);
+        let shown = settle(&mut driver, &cx);
+        assert_eq!(driver.store().selected(), REFERENCE_ID);
+        assert!(shown.is_empty() || shown.len() == 1);
+        assert_eq!(driver.store().resolved(), REFERENCE_ID, "and the player still draws it");
+        // a profile is seated: its own value (here the built-in) replaces the process's pick
+        assert_eq!(driver.selected_for(true, String::new()), "");
+        assert_eq!(driver.selected_for(false, String::new()), "", "and the pick is gone for good");
     }
 
     /// **Classic with nothing installed adds nothing per frame.** Once the listing has settled, a tick changes
