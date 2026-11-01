@@ -1,4 +1,4 @@
-{"updated":"2026-11-01T00:02:34Z",
+{"updated":"2026-11-01T00:44:21Z",
 "ci":[
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4306,7 +4306,8 @@
 {"id":41253340818,"at":"2026-10-31T23:37:58Z","sha":"e046bd913","title":"Library switcher: a non-favourite pick is not remembered; docs follow the switcher","pr":1157,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":316,"Windows launcher syntax":15,"macOS tests against bundled FFmpeg and ASS":217,"macOS simulator build + launch":224}},
 {"id":41253712684,"at":"2026-10-31T23:43:30Z","sha":"6c917dee3","title":"Merge origin/main into flaky-tests","pr":1189,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":151,"Linux simulator build + launch":337,"macOS simulator build + launch":150}},
 {"id":41253863541,"at":"2026-10-31T23:45:43Z","sha":"4974279b3","title":"Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries","pr":1157,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":214,"Windows launcher syntax":30,"macOS simulator build + launch":194,"Linux simulator build + launch":241}},
-{"id":41254560872,"at":"2026-10-31T23:56:15Z","sha":"acd247a76","title":"Host-suite flakes fixed at their roots (test code only)","pr":1189,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":196,"Linux simulator build + launch":220,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":220}}
+{"id":41254560872,"at":"2026-10-31T23:56:15Z","sha":"acd247a76","title":"Host-suite flakes fixed at their roots (test code only)","pr":1189,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":196,"Linux simulator build + launch":220,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":220}},
+{"id":41257638429,"at":"2026-11-01T00:38:39Z","sha":"428e6fe18","title":"Playback: a transport stream's AAC keeps its one ADTS header instead of getting a second","pr":1190,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":216,"macOS simulator build + launch":238,"Linux simulator build + launch":314,"Windows launcher syntax":18}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
