@@ -11,7 +11,7 @@
 //! no allocation"), so the Info rows and the chapter list cannot join it as the PR7 handoff wrote; the
 //! frame's [`MetadataView`](plx_data::metadata::MetadataView) already carries both, sampled by the app,
 //! and `state_for` already asks it whether the item has chapters. The arms read the item through
-//! [`info_content`], the one reading the hand-written card draws from too.
+//! [`info_content`], the one reading of them.
 //!
 //! **What a text op's `y` is.** The compile places a text's BOX top at `rect.y` (the title and the chapter
 //! names are drawn by `Painter::text` there), whereas [`TextView`] takes the CAP top. [`line_frame`] is the
@@ -279,7 +279,7 @@ pub(super) fn group(compiled: &Compiled, f: &Frame<'_>, q: Painter, state: &Comp
     }
 }
 
-/// The glyph of an `actions` button: the hand-written card's (Play on From the Beginning, Info on Go to
+/// The glyph of an `actions` button: the one the Info card has always shown (Play on From the Beginning, Info on Go to
 /// Show / Movie), not the disc row's `Restart`, because a button has a label beside it.
 fn button_icon(act: Option<HudCommand>) -> Icon {
     match act {

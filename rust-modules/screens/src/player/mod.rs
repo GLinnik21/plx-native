@@ -1909,7 +1909,7 @@ impl PlayerScreen {
         )
         .and_then(|(state, skip)| player_hud::geometry::section_command(state.skip_variant(skip), i as usize));
         // A command that is not meaningful now (Go to details with no detail page) is not asked, but the press still
-        // puts the page away: the overlay's card closed on `InfoAction::None` too.
+        // puts the page away: the overlay's card closed when it had no action to report, too.
         let Some(command) = command else { return };
         if command.enabled(&self.model) {
             Self::ask(fx, PlayerReq::Command(command));

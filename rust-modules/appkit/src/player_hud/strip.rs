@@ -34,7 +34,7 @@ use plx_data::metadata::Chapter;
 const STILL_RES: (std::os::raw::c_int, std::os::raw::c_int) = (480, 270);
 
 /// The stiffness of the strip's focus pop and of its scroll: what its panel stepped them with
-/// (`ChaptersState::update`), kept so a card pops at the pace it always has.
+/// (300 and 220 in its `update`), kept so a card pops at the pace it always has.
 const STRIP_K_SCALE: f32 = 300.0;
 const STRIP_K_SCROLL: f32 = 220.0;
 
@@ -208,7 +208,7 @@ mod tests {
     use super::*;
 
     /// **The strip keeps the springs its own panel ran**: the pop stiffened at 300 and the scroll at 220
-    /// (`ChaptersState::update`), not the Shelf's defaults (320 and 170). Found in the simulator: opening the
+    /// (its `update` stepped them so), not the Shelf's defaults (320 and 170). Found in the simulator: opening the
     /// strip, its focused card was part-way up its pop a few frames ahead of the panel's.
     #[test]
     fn the_strip_pops_and_scrolls_at_the_springs_its_panel_ran() {

@@ -1,5 +1,5 @@
 //! **The chip row: a run of facts and badges fitted into one line, dropping whole chips tail first**
-//! (issue #26). Shared by the Info card (`info_panel`) and the HUD renderer's `facts` cell
+//! (issue #26). Shared by the Info section's card and the HUD renderer's `facts` cell
 //! (`player_hud::render`, `docs/hud-plugins.md` D10 and the package format's `facts` row): one
 //! packer, so a package's facts line and classic's Info card cannot disagree about what fits.
 //!

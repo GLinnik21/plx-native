@@ -24,7 +24,7 @@ use super::parse::{self, Package};
 use super::{check, Slot};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor};
 use crate::player_hud::{classic, Controls};
-use crate::{chapters_panel, info_panel};
+use crate::info_panel;
 
 const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
@@ -317,7 +317,7 @@ fn compiled_classic_info_section_matches_the_info_panel() {
             _ => None,
         });
         assert_eq!(ground, Some(card), "{name}: the info card's ground");
-        // the still: 320 x 180 at the card's padding, centred in its height (`InfoPanelState::draw`)
+        // the still: 320 x 180 at the card's padding, centred in its height (as the hand-written card drew it)
         let still = state.ops.iter().find_map(|op| match op {
             DrawOp::Image { rect, bind, .. } if bind == "info.still" => Some(*rect),
             _ => None,
@@ -330,14 +330,22 @@ fn compiled_classic_info_section_matches_the_info_panel() {
     }
 }
 
+/// The hand-written strip's layout, frozen (`ChaptersState::draw` at 6d4aded01: `CH_W` 288, `CH_H` 162,
+/// `CH_GAP` 24, `CH_TOP` 684, `MARGIN_X` 96, the name `CH_NAME_DROP` 26 and the time `CH_TIME_DROP` 34
+/// under the one before it): the first card, the pitch, and the name's and time's tops.
+const STRIP_CARD: Rect = Rect { x: 96.0, y: 684.0, w: 288.0, h: 162.0 };
+const STRIP_PITCH: f32 = 312.0;
+const STRIP_NAME_Y: f32 = 872.0;
+const STRIP_TIME_Y: f32 = 906.0;
+
 #[test]
 fn compiled_classic_chapters_section_matches_the_chapters_panel() {
-    // The hand-written strip is placed by its constants (`CH_TOP`), the compiled one by the chain from the
+    // The panel was placed by constants (`CH_TOP`), the compiled strip by the chain from the
     // tabs up. The timestamp is a LINE with a height in that chain, and a line's height is its measurer's
     // (`line_h` is the font's: 1.2 x the size in the fixture measure, 1.21 in the shipped advances, the
-    // face's own on the television), so no gap can land the strip on `CH_TOP` for all of them. The fixture
-    // gives `item.start` the smallest leading (1 px: the stand-in for `label_ys`'s zero-height origin) and
-    // the tabs a gap of 43 less that, so the top is the same number on every measure.
+    // face's own on the television), so no gap can land the strip on 684 for all of them. The fixture
+    // gives `item.start` the smallest leading (1 px: the stand-in for the zero-height origin the panel's
+    // `label_ys` used) and the tabs a gap of 43 less that, so the top is the same number on every measure.
     for (name, measure) in [("fixture", &FM as &dyn Measure), ("shipped", &ShippedMeasure)] {
         let compiled = build(CLASSIC, measure);
         let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
@@ -349,22 +357,18 @@ fn compiled_classic_chapters_section_matches_the_chapters_panel() {
                 _ => None,
             })
             .expect("the chapters strip");
-        let want = chapters_panel::card_rect(0, 0.0);
-        assert_eq!((card.x, card.w, card.h), (want.x, want.w, want.h), "{name}: the card's own shape");
+        assert_eq!((card.x, card.w, card.h), (STRIP_CARD.x, STRIP_CARD.w, STRIP_CARD.h), "{name}: the card's own shape");
         assert_eq!(rect.x, MARGIN_X);
-        assert_eq!(pitch, chapters_panel::card_rect(1, 0.0).x - want.x, "{name}: the cards' pitch");
-        // `card.y` is a difference of sums, so it equals `CH_TOP` to the last f32 bit only by luck:
+        assert_eq!(pitch, STRIP_PITCH, "{name}: the cards' pitch");
+        // `card.y` is a difference of sums, so it equals 684 to the last f32 bit only by luck:
         // compare to a thousandth of a pixel.
-        assert!((want.y - card.y).abs() < 0.001, "{name}: the strip's top is {} not the hand-written CH_TOP {}", card.y, want.y);
+        assert!((STRIP_CARD.y - card.y).abs() < 0.001, "{name}: the strip's top is {} not the panel's {}", card.y, STRIP_CARD.y);
     }
     let compiled = build(CLASSIC, &FM);
     let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
-    let (card, want) = (
-        state.ops.iter().find_map(|op| match op { DrawOp::Strip { card, .. } => Some(*card), _ => None }).expect("the strip"),
-        chapters_panel::card_rect(0, 0.0),
-    );
+    let card = state.ops.iter().find_map(|op| match op { DrawOp::Strip { card, .. } => Some(*card), _ => None }).expect("the strip");
     // Whatever the strip's top, the card is the same column: the name 26 px and the timestamp 34 px
-    // under the one before it (`CH_NAME_DROP`, `CH_TIME_DROP`), which `label_ys` stands for.
+    // under the one before it.
     let template = state
         .ops
         .iter()
@@ -379,11 +383,10 @@ fn compiled_classic_chapters_section_matches_the_chapters_panel() {
             _ => None,
         })
     };
-    let (name_y, time_y) = chapters_panel::label_ys();
-    for (bind, hand) in [("item.title", name_y), ("item.start", time_y)] {
+    for (bind, hand) in [("item.title", STRIP_NAME_Y), ("item.start", STRIP_TIME_Y)] {
         let compiled_drop = y_of(bind).expect(bind) - card.y;
-        let hand_drop = hand - want.y;
-        assert!((compiled_drop - hand_drop).abs() < 0.001, "{bind}: {compiled_drop} under the card, the hand-written layout has {hand_drop}");
+        let hand_drop = hand - STRIP_CARD.y;
+        assert!((compiled_drop - hand_drop).abs() < 0.001, "{bind}: {compiled_drop} under the card, the panel's layout has {hand_drop}");
     }
 }
 

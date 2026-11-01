@@ -92,7 +92,7 @@ REQUIRED = [
     ('ui/src/hero_logo.rs', 'HeroLogoText'),
     ('ui/src/hero_logo.rs', 'HeroLogoAbsent'),
     ('ui/src/widgets.rs', 'ProfileChip'),
-    ('appkit/src/info_panel.rs', 'InfoPanelStill'),
+    ('appkit/src/player_hud/sections.rs', 'InfoPanelStill'),
 ]
 
 

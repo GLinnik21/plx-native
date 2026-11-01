@@ -541,8 +541,8 @@ Each maps to an action the app already performs; the performer is shared with th
 | `open_tracks` | `tab`: `subtitles`, `audio` | `OverlayKind::Tracks { tab: 1 | 0 }` (F15) | always (F6) | none |
 | `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More { page }`; `quality` is what was `More { quality: true }` (F18); `speed` is the address PR3 added by turning that bool into `page: Option<MorePage>` (F16) | always | none |
 | `toggle_section` | `section`: `chapters`, `info` | opens or closes the section (D6) | chapters: the playing item has chapters (`chapters_panel::has_chapters`) | none |
-| `from_beginning` | - | `InfoAction::FromBeginning` (F17) | always | none |
-| `go_to_detail` | - | `InfoAction::GoToDetail(rk)`: leaves playback, opens the item's page (F17) | the playing item has a ratingKey | none |
+| `from_beginning` | - | seeks to 0 and resumes (F17) | always | none |
+| `go_to_detail` | - | leaves playback and opens the item's page (`info_panel::detail_rk`, F17) | the playing item has a ratingKey | none |
 | `toggle_stats` | - | `more_menu::Action::ToggleStats` (F16) | always | none |
 
 - `seek.by`: a literal has a static face, so no ladder-keyed map is needed, and a new rung on the app's

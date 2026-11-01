@@ -1924,7 +1924,7 @@ mod sections {
     }
 
     /// A press on a button whose command is not meaningful now (Go to details with no detail page to go to) asks
-    /// nothing and still puts the page away, as the overlay's card did (`InfoAction::None` then closed it).
+    /// nothing and still puts the page away, as the overlay's card did when it had no action to report.
     #[test]
     fn ok_on_a_disabled_info_button_asks_nothing_and_closes_the_page() {
         let _g = plx_base::testlock::serial();
