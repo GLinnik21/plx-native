@@ -1785,7 +1785,7 @@ mod sections {
         assert_eq!(
             run.held(),
             Some(ELEM_CHAPTER_BASE + 3),
-            "the press steps, then one repeat per 110 ms: the 150 ms and 200 ms ones",
+            "the press steps, then one repeat per 110 ms: the one at 150 ms (the one at 200 ms is inside the next 110 ms)",
         );
     }
 
