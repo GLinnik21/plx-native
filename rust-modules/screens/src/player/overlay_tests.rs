@@ -281,6 +281,70 @@ fn the_more_popover_mounts_on_the_speed_page_when_addressed_to_it() {
     assert_eq!(more_page(&page), None);
 }
 
+/// **A folded row closes More first, then asks the app's one performer for its command.** OK on each row of the
+/// root a package folds dismisses the menu and asks `PlayerReq::Command(command)`, in that order and with nothing
+/// else: the order the Tracks->Timing hand-off keeps, so a row that opens a panel or a section finds the menu
+/// gone, and never `PlayerReq::More`, which has no performer for a command.
+#[test]
+fn a_folded_row_closes_more_first_and_asks_the_one_performer() {
+    use plx_appkit::player_hud::command::HudCommand;
+    #[derive(Debug, PartialEq)]
+    enum Seen {
+        Dismiss,
+        Ask(PlayerReq),
+    }
+    let _g = plx_base::testlock::serial();
+    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let minimal = plx_appkit::player_hud::loaded::load(
+        include_str!("../../../appkit/src/hud_format/fixtures/minimal.plxhud.json").as_bytes(),
+        "0.0.0-test",
+        plx_platform::i18n::english(),
+        &FixtureMeasure,
+    )
+    .expect("the minimal fixture loads")
+    .compiled;
+    let model = plx_appkit::player_hud::model::HudModel {
+        controls: plx_appkit::player_hud::Controls::for_item(true, true, true, false),
+        chapters: true,
+        detail: true,
+        ..Default::default()
+    };
+    let folded = plx_appkit::more_menu::folded_rows(minimal.folds(), &model, meta.view());
+    assert!(folded.len() >= 5, "{folded:?}");
+    for row in &folded {
+        for by_click in [false, true] {
+            let mut page = PlayerOverlayScreen::new_folded(&ps, meta.view(), ENTRY, OverlayKind::More { page: None }, false, None, folded.clone());
+            let key = MoreRow::Act(MoreAction::Hud(row.command)).key().0;
+            let ev = if by_click {
+                ScreenEvent::Activate(key)
+            } else {
+                deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: key }, by: By::Dir });
+                ScreenEvent::Activate(key)
+            };
+            let mut out = Vec::new();
+            let mut present = plx_machine::present::Present::new();
+            page.step(&ev, &cx(), &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present));
+            let seen: Vec<Seen> = out
+                .into_iter()
+                .filter_map(|effect| match effect.fx {
+                    plx_machine::machine::Fx::Nav(NavOp::Dismiss(id)) if id == ENTRY => Some(Seen::Dismiss),
+                    plx_machine::machine::Fx::App(AppFx::Player(PlayerReq::ExtendHud(_))) => None,
+                    plx_machine::machine::Fx::App(AppFx::Player(req)) => Some(Seen::Ask(req)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(seen, [Seen::Dismiss, Seen::Ask(PlayerReq::Command(row.command))], "{:?} by_click {by_click}", row.command);
+        }
+    }
+    // the unfolded Options row still reports as it did
+    let mut page = PlayerOverlayScreen::new_folded(&ps, meta.view(), ENTRY, OverlayKind::More { page: None }, false, None, folded);
+    let (_, reqs, dismissed) = more_open(&mut page, MoreRow::Act(MoreAction::ToggleStats));
+    assert!(dismissed && reqs.contains(&PlayerReq::More(MoreAction::ToggleStats)), "{reqs:?}");
+    assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::Command(HudCommand::ToggleStats))));
+}
+
 /// Nothing but the read-time `ExtendHud` a menu move raises.
 fn only_hud(reqs: &[PlayerReq]) -> bool {
     reqs.iter().all(|r| matches!(r, PlayerReq::ExtendHud(_)))
@@ -1079,7 +1143,7 @@ fn every_classic_opener_hands_its_menu_the_control_rows_anchor() {
     let row = plx_appkit::player_hud::audit_geometry().row;
     assert_eq!(row.x + row.w, plx_appkit::player_hud::classic::CTRL_RIGHT);
     for (kind, name) in MENUS {
-        let page = PlayerOverlayScreen::new_with(&ps, meta.view(), ENTRY, kind, false);
+        let page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, kind);
         assert_eq!(menu_anchor_of(&page, name), row, "{name}");
     }
 }
@@ -1096,7 +1160,7 @@ fn every_menu_arm_latches_the_anchor_it_is_handed() {
     let anchor = plx_ui::Rect::new(333.0, 222.0, 111.0, 55.0);
     assert_ne!(anchor, plx_appkit::player_hud::audit_geometry().row);
     for (kind, name) in MENUS {
-        let page = PlayerOverlayScreen::new_anchored(&ps, meta.view(), ENTRY, kind, false, anchor);
+        let page = PlayerOverlayScreen::new_folded(&ps, meta.view(), ENTRY, kind, false, Some(anchor), Vec::new());
         assert_eq!(menu_anchor_of(&page, name), anchor, "{name}");
     }
 }

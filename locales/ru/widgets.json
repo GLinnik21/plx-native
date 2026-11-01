@@ -7,6 +7,7 @@
   "widgets.menu.quality_converted_note": "Сервер Plex преобразует это видео.",
   "widgets.menu.stats": "Статистика для гиков",
   "widgets.menu.diagnostics": "Отправить диагностику",
+  "widgets.menu.previous_episode": "Предыдущая серия",
   "widgets.badge.forced": "ПРИНУДИТЕЛЬНЫЕ",
   "widgets.toggle.on": "Вкл.",
   "widgets.toggle.off": "Выкл.",

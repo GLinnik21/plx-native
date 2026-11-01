@@ -2126,6 +2126,11 @@ pub struct AppMounter {
     /// a seed like `player_hud_ms` and for the same reason: the canonical `PlayerOverlayArg` is the panel's
     /// KIND, so a rect of floats cannot ride on it. `None` mounts the menu at its own default.
     pub player_menu_anchor: Option<plx_ui::Rect>,
+    /// **The folded rows the NEXT More menu lists** ([`plx_appkit::more_menu::folded_rows`], computed by the app at the
+    /// press from the compiled package and the playing item's predicates): a seed beside the anchor, consumed by
+    /// the same mount and for the same reason. Empty for classic, for a menu opened without a player HUD under it
+    /// (the failure read-out's recovery) and for every other overlay.
+    pub player_more_folds: Vec<plx_appkit::more_menu::FoldedRow>,
     /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument):
     /// compiled by the app once per process (at boot, outside any frame; a controlled run or a dev package
     /// compiles on its first player frame instead), and handed to the mount the way the seeds above are.
@@ -2167,12 +2172,9 @@ where
             AppArg::WatchlistMenu(arg) => Box::new(crate::watchlist::menu::WatchlistMenuScreen::new(entry, *arg)),
             AppArg::PlayerOverlay(arg) => {
                 let offer_search = H::subtitle_search(cx).is_some();
-                Box::new(match self.player_menu_anchor.take() {
-                    Some(anchor) => crate::player::overlay::PlayerOverlayScreen::new_anchored(
-                        H::session(cx), H::metadata(cx), entry, arg.kind, offer_search, anchor),
-                    None => crate::player::overlay::PlayerOverlayScreen::new_with(
-                        H::session(cx), H::metadata(cx), entry, arg.kind, offer_search),
-                })
+                Box::new(crate::player::overlay::PlayerOverlayScreen::new_folded(
+                    H::session(cx), H::metadata(cx), entry, arg.kind, offer_search,
+                    self.player_menu_anchor.take(), std::mem::take(&mut self.player_more_folds)))
             }
             AppArg::AltSources(arg) => Box::new(
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),

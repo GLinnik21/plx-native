@@ -282,23 +282,30 @@ impl PlayerOverlayScreen {
     /// no second id to reserve.
     const GROUP: GroupId = GroupId(0);
 
-    /// [`Self::new_with`] without a search offer — the tests' host; the app mounts through
-    /// `new_with`, asking its host.
+    /// [`Self::new_folded`] with the classic defaults: no search offer, the menus' own anchor, no folded row. The
+    /// tests' host; the app mounts through [`Self::new_folded`] alone (`AppMounter::mount`).
     #[cfg(test)]
     pub fn new(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
-        Self::new_with(ps, meta, entry, kind, false)
+        Self::new_folded(ps, meta, entry, kind, false, None, Vec::new())
     }
 
-    /// [`Self::new`] for a host that can run a subtitle search (`MetadataLike::subtitle_search`):
-    /// the Tracks panel is built offering it, never offered it later (`TrackMenuState::new_with`).
-    pub fn new_with(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind, offer_search: bool) -> Self {
-        Self::new_anchored(ps, meta, entry, kind, offer_search, menu_anchor())
-    }
-
-    /// [`Self::new_with`] for a menu opened beside `anchor` ([`menu_anchor`]'s answer in classic):
-    /// the rect the player screen hands to Tracks or More, which latches it. Panels that are not
-    /// menus ignore it.
-    pub fn new_anchored(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind, offer_search: bool, anchor: Rect) -> Self {
+    /// **The one constructor** (`AppMounter::mount`'s): the panel `kind` names, for a host that can run a subtitle
+    /// search when `offer_search` (`MetadataLike::subtitle_search`; the Tracks panel is built offering it, never
+    /// offered it later, `TrackMenuState::new_with`). `anchor` is the rect the player screen hands a menu to hang
+    /// from, which it latches (`None`: [`menu_anchor`], classic's row; panels that are not menus ignore it). `folded`
+    /// is what a More menu lists between Speed and Options ([`plx_appkit::more_menu::folded_rows`], which the app
+    /// computes from the compiled package when the menu is asked for); the folded rows are the root's alone: Tracks,
+    /// Timing and every other kind ignore them.
+    pub fn new_folded(
+        ps: &plx_media::route::PlaybackSession,
+        meta: plx_data::metadata::MetadataView<'_>,
+        entry: EntryId,
+        kind: OverlayKind,
+        offer_search: bool,
+        anchor: Option<Rect>,
+        folded: Vec<plx_appkit::more_menu::FoldedRow>,
+    ) -> Self {
+        let anchor = anchor.unwrap_or_else(menu_anchor);
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
                 plx_appkit::track_menu::TrackMenuState::new_with(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search)
@@ -308,7 +315,7 @@ impl PlayerOverlayScreen {
             // Quality section so there is no rung to land on, and so is a Speed entry when the
             // playback takes one speed only: `MoreMenuState::new_on` falls back to the root.
             OverlayKind::More { page } => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new_on(ps, page).with_anchor(anchor))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new_folded(ps, page, folded).with_anchor(anchor))
             }
             OverlayKind::Timing => {
                 let (lo, hi) = plx_media::player::subtitle_offset_range_ms();
@@ -538,6 +545,14 @@ impl PlayerOverlayScreen {
                 }
             },
             Panel::More(p) => match p.on_ok(ps) {
+                // A folded row is a HUD command: More closes FIRST, then the app's one performer runs it, the
+                // order the Tracks->Timing hand-off keeps, so a command that opens a panel or a section finds
+                // the menu gone (`open_player_overlay` presents a fresh entry rather than re-addressing this one).
+                MoreOk::Action(plx_appkit::more_menu::Action::Hud(command)) => {
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::Command(command));
+                    self.closing(fx);
+                }
                 MoreOk::Action(action) => {
                     self.dismiss(fx);
                     Self::ask(fx, PlayerReq::More(action));

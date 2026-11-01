@@ -949,6 +949,12 @@ impl Bridge {
         self.mounter.player_menu_anchor = anchor;
     }
 
+    /// The folded rows the next More menu lists — see [`AppMounter::player_more_folds`]. Empty clears them, for the
+    /// reason [`Self::seed_player_menu_anchor`] clears its rect.
+    pub(crate) fn seed_player_more_folds(&mut self, folded: Vec<plx_appkit::more_menu::FoldedRow>) {
+        self.mounter.player_more_folds = folded;
+    }
+
     fn home_focus(d: &Dispatcher<AppHost>) -> Option<FocusKey<u32>> {
         let entry = d.nav.top_page()?.id;
         d.input.engine.current(InputOwner::Entry(entry))

@@ -293,8 +293,9 @@ Other subsystems the plan touches
     More, the Info card's two actions.
   A key-less command that no control carries in any state the viewer can reach is FOLDED by the app into
   the app-owned More menu as a row (`more_menu::Action` gains a `Hud(HudCommand)` variant in place; the
-  menu still only reports, and `apply_more_action` hands it to the same performer a placed control
-  uses, F16). The ONE required control is the More opener (`open_more`), in the root state (compact,
+  menu reports `Action::Hud(command)`, the overlay closes More and asks `PlayerReq::Command`, and
+  `perform_hud_command` runs it, the performer a placed control uses, F16; `apply_more_action` never receives a
+  folded row). The ONE required control is the More opener (`open_more`), in the root state (compact,
   Discs slot): More holds Stats for nerds, which is how bug reports leave TVs (F16), and it is the home
   of every folded command, so it cannot fold into itself. Section "Reachability" defines the state graph;
   classic passes it as it is.
@@ -664,12 +665,16 @@ to Discs when its marker ends, when Watch Credits dismisses the offer, or when B
   root by the edges above places an enabled-capable control carrying it, under EVERY valuation in which the command is
   enabled (a valuation where its predicate fails, Previous for a movie, asks nothing); a command placed under only some
   of them folds. Each command that none places is
-  folded into More's root, after Quality and Speed and before Options (the More fold PR adds the rows, their
-  i18n keys in all eleven catalogs and a `fit_report` over More's FormTable; the section rows reuse
-  `widgets_player_chapters`/`widgets_player_info` (`player_hud.rs:1433-1434`) and the Info actions reuse
-  their button strings (`info_panel.rs:566-575`), so only Previous, Next and the track-menu row need new keys). A command that already has a
+  folded into More's root, after Quality and Speed and before Options (PR9 added the rows; the compiler keeps the
+  list, `Compiled::folds`, and a row is listed only when the app's own predicate for its command holds for the item
+  playing, so a movie has no Previous or Next row; the section rows reuse
+  `widgets_player_chapters`/`widgets_player_info` and the Info actions reuse their button strings; Next reuses
+  `widgets.next.episode` and the track-menu row `settings.audio.title`, which opens the track menu on its Subtitles
+  tab, so the one new key is `widgets.menu.previous_episode`). A command that already has a
   More row (`toggle_stats`, the Options switch) never folds. Reachability can therefore never fail except
-  by R1; lint lists the folded commands as information.
+  by R1; lint lists the folded commands as information. A section only a fold row opens is compiled like any
+  other (the compiler's walk adds the state the row reaches, `explore_with_folds`; the rules' own graph above does
+  not), so it opens, travels and closes as from a tab.
 - R3. A `toggle_section {section: s}` control implies a band with `when: panel.s` (lint error otherwise: an
   opener with nothing to open); a section band with no opener is reachable through the fold.
 - R4. Both Up Next buttons are placed in `layout.up_next`, the countdown presentation sits on or in
@@ -821,7 +826,9 @@ opener, through ONE shared placer.
   language; a server-length list (audio and subtitle tracks) may exceed it and scrolls. Classic's room above
   its row is 764 - 54 = 710. The track menu's cap moves from `bottom - 60` (704) to the room (710), and
   More's from `bottom * 0.86` (657) to 710: settled classic frames change only when a list is taller than
-  the old cap, which the More menu's tallest page (about 600) is not.
+  the old cap, which the More menu's tallest page (about 600) is not. A More root that lists folded rows is
+  taller than that page from the fourth row on (the root's own height is 344 px, plus 24 and 60 a row; `more_menu::need_h(folded)` is that or 600, whichever is taller), so
+  its `need_h` grows with the fold count and M2 asks the placer at every count the package can reach.
 - Motion and scrim stay app-owned and unchanged. Both menus keep `OpenStyle::Appear` (switching to `Morph`
   would be a visible change, and these panels stand over the video plane, not on glass); the container's
   appear spring (`K_APPEAR`, `popover.rs:84`) and `PanelMotion`'s resize springs are untouched; the rise now
@@ -1470,7 +1477,7 @@ PR8. Sections.
 PR9. The More fold.
 - Goal: `more_menu::Action::Hud(HudCommand)` performed through PR3's performer; the folded rows from the compiled
   package; i18n keys in all eleven catalogs (`be` looked up per the repo's dictionary rule) with a `fit_report` over
-  More's FormTable (new keys only for Previous, Next and the track-menu row; R2); `OverlayKind::More`'s
+  More's FormTable (one new key, `widgets.menu.previous_episode`; Next and the track-menu row reuse `widgets.next.episode` and `settings.audio.title`; R2); `OverlayKind::More`'s
   address becomes a `MorePage` so `page: speed` opens on Speed.
 - Verify: a package with no previous/next folds both and the rows perform them; classic folds nothing (its More
   root unchanged, pixel-identical); `fit_report` clean in every shipped language.
