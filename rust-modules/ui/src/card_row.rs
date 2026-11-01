@@ -210,11 +210,15 @@ impl RowStyle {
         label_drop: None,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
-    /// style's fixed radius scaled with the focus pop.
+    /// style's fixed radius scaled with the focus pop. A style with a [`rim`](Self::rim) keeps its radius
+    /// unscaled: the ring frames the card and rings at that radius, so a card grown past it shows its ground
+    /// beyond the ring's arc.
     #[inline]
     pub fn tile_radius(&self, rect: Rect, s: f32) -> f32 {
         if self.circular {
             rect.w * 0.5
+        } else if self.rim.is_some() {
+            self.radius
         } else {
             self.radius * s
         }
@@ -2607,6 +2611,23 @@ mod tests {
         assert_eq!(ring(&rimmed), vec![(rect, 10.0)], "the ring's corner is the style's 10, not 10 * 1.07");
         let round = RowStyle { circular: true, ..rimmed };
         assert_eq!(ring(&round), vec![(rect, rect.w * 0.5)], "a circle's ring keeps half its width");
+    }
+
+    /// **A rimmed tile's card keeps the style's corner under its ring** (the ring is the card's frame): `radius * s`
+    /// rounded the card ground to 10.7 at the pop's 1.07 while the ring stayed at 10, so the ground showed past the
+    /// ring's arc at every corner (found in the simulator against the hand-written strip, 87 pixels of up to 17 levels).
+    /// Every other style keeps growing its corner with the lift.
+    #[test]
+    fn a_rimmed_tile_keeps_the_styles_corner_at_every_pop() {
+        let plain = RowStyle { w: 288.0, h: 162.0, radius: 10.0, ..RowStyle::HOME };
+        let rimmed = plain.with_rim(Rim { width: 2.5, ink: theme::CONTROL_RIM_FOCUS_UNKEYED });
+        let rect = Rect::new(100.0, 100.0, 288.0, 162.0);
+        for s in [1.0f32, 1.035, 1.07] {
+            assert_eq!(plain.tile_radius(rect, s), 10.0 * s, "a plain style's corner grows with the lift");
+            assert_eq!(rimmed.tile_radius(rect, s), 10.0, "a rimmed tile's corner stays at the style's, at pop {s}");
+        }
+        let round = RowStyle { circular: true, ..rimmed };
+        assert_eq!(round.tile_radius(rect, 1.07), rect.w * 0.5, "a circle keeps half its width");
     }
 
     /// **`RowStyle::label_drop`**: a block of a style that sets one hangs that far under the card's UNSCALED
