@@ -50,8 +50,9 @@
 //! never jumps when a segment begins. Skip has TWO labels and so two widths: the state carries both
 //! rects ([`SkipKind`]).
 //!
-//! **Cost** ([`Cost`]) is REPORTED per state, never enforced: the ceilings are calibrated on the
-//! television (PR7, PR8). Its terms: draw ops, glyph runs, texture bytes and blended pixel area.
+//! **Cost** ([`Cost`]) is REPORTED per state; the compile enforces nothing. The ceilings are the television's
+//! measured maxima per state class (`lint_cost`, I12), and the lint holds each state to them. Its terms: draw
+//! ops, glyph runs, texture bytes and blended pixel area.
 
 use std::ffi::CString;
 
@@ -71,6 +72,7 @@ use super::schema;
 use super::{pointer_push, validate::each_object};
 use crate::player_hud::classic::{self, stand_in_w, CLOCK_TOP, KNOB_GLOW_R};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor, MAX_ROW_ITEMS};
+use crate::player_hud::strip::Geometry;
 use crate::up_next;
 
 /// `StateKey::open` bit for the chapters section.
@@ -408,7 +410,9 @@ pub enum DrawOp {
         clock_rects: ClockRects,
         mark: MarkMode,
     },
-    /// The chapters strip: `visible` cards at `pitch`, each laid out as `template` is at card 0.
+    /// The chapters strip: cards at `pitch`, each laid out as `template` is at card 0. `visible` is the most cards its
+    /// Shelf paints at rest (`strip::Geometry::most_painted_at_rest`, a function of the row's style alone, never of the
+    /// chapter count), and only the COST reads it: drawing reads `rect`, `card`, `pitch` and `radius`.
     Strip {
         rect: Rect,
         card: Rect,
@@ -480,14 +484,15 @@ pub struct Contributor {
     pub blended_px: u64,
 }
 
-/// A state's cost, REPORTED (the ceilings are calibrated on the television in PR7 and PR8).
+/// A state's cost, REPORTED (the ceilings it is held to are `lint_cost`'s, taken from states run on the television and
+/// priced by the one model `lint_cost` names, so a cost is the same number wherever the lint runs).
 ///
-/// - `draw_ops`: one per op, except a strip (its cards' ops: `visible` x the template, plus the focus
-///   ring; an upper bound where a card's `item.*` condition would drop an op) and the Up Next offer (two
-///   pills, plus the still and the caption it draws).
+/// - `draw_ops`: one per op, except a strip (its cards' ops: [`DrawOp::Strip::visible`], the most cards its Shelf
+///   paints at rest, x the template, plus the focus ring; an upper bound where a card's `item.*` condition would drop
+///   an op) and the Up Next offer (two pills, plus the still and the caption it draws).
 /// - `glyph_runs`: one per text; the playbar's two clocks; a facts row's chips; a pill's or button's
 ///   label; the Up Next offer's two labels and caption; the Skip pill's label.
-/// - `texture_bytes`: 4 bytes per pixel of every image (a strip's per visible card, Up Next's still) and
+/// - `texture_bytes`: 4 bytes per pixel of every image (a strip's per card the Shelf paints, Up Next's still) and
 ///   every glyph a disc or an icon cell draws (`size` squared).
 /// - `blended_px`: the area, rounded per rect, of every translucent fill: the scrim, a ground or rule
 ///   whose ink is translucent, the playbar's track, a control's plate unless its rest face is `solid` or
@@ -1995,7 +2000,6 @@ impl<'e, 'p> Env<'e, 'p> {
         let Some(card) = o.get("card").and_then(Val::as_object) else { return };
         let (card_w, card_h) = (self.num(o, "card_w").unwrap_or(0.0), self.num(o, "card_h").unwrap_or(0.0));
         let pitch = card_w + self.gap(o, "gap").unwrap_or(0.0);
-        let visible = if pitch > 0.0 { (r.w / pitch).floor() as usize + 1 } else { 0 };
         let art = Rect::new(r.x, r.y, card_w, card_h);
         let mut tmp = Out::default();
         let art_node = card.get("art").and_then(Val::as_object);
@@ -2023,14 +2027,18 @@ impl<'e, 'p> Env<'e, 'p> {
             tmp.gate.clear();
             y += h;
         }
-        let template = tmp
+        let template: Vec<CardOp> = tmp
             .ops
             .into_iter()
             .zip(tmp.present)
             .zip(tmp.origins)
             .map(|((op, present), origin)| CardOp { op, present, origin })
             .collect();
-        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
+        let radius = self.num(o, "radius").unwrap_or(0.0);
+        // A strip is priced by the cards its Shelf paints, not by its width over the pitch: the Shelf culls against the
+        // screen and a row at rest has scrolled (`Geometry::most_painted_at_rest`), read from the same style it is built with.
+        let visible = Geometry::new(r, art, pitch, radius, &template).most_painted_at_rest();
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
