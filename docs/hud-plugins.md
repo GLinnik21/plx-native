@@ -238,7 +238,8 @@ Other subsystems the plan touches
   (`:463-467`); the jail conf files are not vendored (`git ls-files | grep -i jail`); USB appears in neither
   `docs/distribution.md` nor `docs/two-installs.md` (`grep -i usb`).
 - F40. Net: `net/src/net.rs:2102-2104` refuses a redirect-following request that carries caller headers;
-  the only redirect door is `https_get_public(url)` with no headers and no body bound (`:2839-2840`),
+  the redirect doors are `https_get_public(url)` (no headers, no body bound) and, since PR11,
+  `https_get_public_bounded(url, max_body)` (the same request with `Some(max_body)`),
   `PUBLIC_MAX_REDIRECTS = 5` (`:146`); curl 7.53.1 (`:2098`). App text entry is `src/textinput.rs`; a QR
   encoder is `ui/src/qr.rs`. The site is static GitHub Pages (`site/CNAME`, `.github/workflows/pages.yml`).
 - F41. Crypto and parsing: no signature crate (`grep ed25519|minisign|ring =|signature` over every
@@ -1413,13 +1414,30 @@ and owned by the app's uid, so whether a Dev Mode `prisoner` can then write its 
 
 ## Sideload: getting a file onto the TV
 
-- (a) CHOSEN, every install mode: Settings > Player HUD > "Install from address", through the existing text
-  input (F40). It accepts `gh:owner/repo[@tag]` (that repo's release asset `hud.plxhud.json`, 15-25 typed
-  characters) or any `https://` URL, and `http://` only for RFC1918 hosts, labelled a dev source. The only
-  redirect door has no body bound (F40), so the address PR adds a bounded public fetch beside
-  `https_get_public`: the same headerless, redirect-following request with `Some(max_body)` through
-  `request`'s existing argument; no new curl option, but a curl-path change, so `fw-compat-reviewer`.
-  UNVERIFIED: whether the TV's CA set accepts `objects.githubusercontent.com`, where release redirects land.
+- (a) CHOSEN, every install mode, SHIPPED in PR11: Settings > Player HUD > "Install from address", through the
+  television keyboard the Search page uses (F40: `Delivery::Keyboard`, then the OS's text edits into a `TextBuffer`;
+  the settings surface re-addresses an inner page's keyboard delivery to its own instance). It accepts
+  `gh:owner/repo[@tag]` (that repo's release asset `hud.plxhud.json`, 15-25 typed characters) or any `https://` URL
+  with no userinfo, and `http://` only for a literal RFC1918 IPv4 host, shown as a development source in the
+  prompt. One pure parser (`hudpacks::address::parse`) gives a typed error per refusal; owner, repo and tag are held
+  to GitHub's own character sets and nothing is percent-decoded, so nothing walks out of the path.
+  The store (`HudEvent::Fetch`, idle only) asks the runner for `HudEffect::Fetch`; the runner performs it on its own
+  `task::spawn_small` network thread through `net::https_get_public_bounded(url, max_body)` (the headerless,
+  redirect-following door with `Some(max_body)` through `request`'s existing argument, `max_body` the package limit;
+  no new curl option, but a curl-path change, so `fw-compat-reviewer`), never on the storage worker, which a slow
+  request would hold behind `Refresh` and the pack reads. The answer (`HudEvent::Fetched`) goes through the same
+  `Validate` and `admit` a drop file does; a loadable package is OFFERED, not written: the page asks the drop file's
+  two-answer prompt (name, version, where it came from, "Unreviewed", Cancel focused) and only `InstallOffer` (the
+  sha the viewer saw) writes it, with `Source::Address`; `DeclineOffer`, or a `Refresh` that ends the offer, leaves
+  nothing on disk. A request while one is in flight is refused; a `Refresh` ends a fetch or an offer with the notice
+  an install gets, so leaving the page drops the offer rather than holding it for the return. Refusals are specific
+  (nothing at that address, too large, could not connect, the TV's certificate check failed, not a HUD package, and
+  every `admit` refusal) and a failure logs one `hud: fetch failed host=... code=...` line, never the query.
+  Redirects: an `https://` start allows only `https://` redirects, so a redirect never leaves https for http; a
+  plain `http://` start (the LAN dev source) allows `http://` and `https://` redirects to any host for up to
+  `PUBLIC_MAX_REDIRECTS = 5` hops, so a LAN URL can be sent off the LAN, upgraded to https but never the other way.
+  UNVERIFIED: whether the TV's CA set accepts `objects.githubusercontent.com`, where release redirects land; the
+  "certificate check failed" refusal and its log line (`curl60/x509-<n>`) are what a coordinator reads to measure it.
 - (b) CHOSEN, Dev Mode and rooted: copy the file into `<root>/drop/` over ssh; it is validated and listed when
   HUD settings open, and installed only when the user confirms it on the TV (`InstallDrop`, which re-reads the
   file and refuses it if it changed since the list). No network.
@@ -1726,8 +1744,10 @@ PR10. Store, local install, selection, drop folder.
   tests (event in, effect out), `ci/check-machine-shape.py`, ledgers not grown, the sim with a fixture
   pack in the drop folder, the TV under the Dev Mode install.
 
-PR11. Install from address: the bounded fetch in `net/src/net.rs` (`fw-compat-reviewer`), the Fetch effect, the
-address row. Verify with a mock HTTP server, then a real GitHub release fetch on the TV and the CA question.
+PR11. Install from address (shipped): the bounded fetch in `net/src/net.rs` (`fw-compat-reviewer`), the address parser
+in `hudpacks/address.rs`, the store's Fetch / Fetched / InstallOffer / DeclineOffer, the runner's fetch lane, the address
+row and the offer prompt. Verified on the host (parser, store, runner and page tests; the bounded door against a local
+server). STILL OWED on the set: a real GitHub release fetch and the CA question.
 
 PR12. Registry repository: `plxnative-huds` with CI (lint, xvfb previews, diff), the publisher (index, packs, revoked
 list), Pages, and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`, examples, the schema mirror, the
