@@ -1264,8 +1264,16 @@ Pair 6 is the heaviest state on the television. The class is the number of open 
 Skip) never changes it. Not every one of the 330 rows was run: a row is admitted because it costs no more in each term
 than the states that were. The terms are the compiler's accounting, not the GPU's, so a package under every term can
 still read more GPU_ACTIVE than a measured state; PR12 measures that.
-`plxnative-sim --hud-lint` prints every state's cost beside its class's ceiling, as information lines (text) and a
-`costs` array (JSON).
+
+**The verdict is `HUD-E1401` (`cost-ceiling`).** The lint walks every state of the state graph, under every slot and in
+every language, and a state whose cost (a Skip state at the larger of its two pill layouts) is above its class's ceiling in
+any term is one error at `/layout`: the class, each term over as `value > ceiling`, and the three ops that weigh most, each
+by the pointer of the node that drew it (`CompiledState::top_contributors`, `CompiledState::origin`). It runs in the lint
+(`plxnative-sim --hud-lint`); nothing at runtime runs it, so it never rejects a package in a frame. The ceilings are not raised and no state is exempt; because they carry no
+headroom, a package that adds a draw op, a glyph run or a pixel to the heaviest state of its class is over until it is run
+on the television and its figures set the ceiling. The builtin classic and the reference pass every state in every
+language, so the builtin is never rejected by its own lint. `plxnative-sim --hud-lint` prints every state's cost beside its
+class's ceiling, as information lines (text) and a `costs` array (JSON), and exits 1 on `HUD-E1401` like any other error.
 
 ## Storage per install mode
 

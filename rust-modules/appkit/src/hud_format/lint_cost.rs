@@ -44,14 +44,20 @@
 //! **What this does not know.** Not every one of the 330 rows was run: a row below a ceiling is admitted because
 //! it costs no more, in each term, than the states the television did run, not because it was run itself. The
 //! terms are the compiler's accounting of what the GPU draws, not the GPU's, so a package under every term can
-//! still read more GPU_ACTIVE than a measured one; PR12 measures that. [`over`] reports the comparison and
-//! `--hud-lint` prints it ([`StateCostLine`]).
+//! still read more GPU_ACTIVE than a measured one; PR12 measures that.
+//!
+//! **The verdict** is `HUD-E1401` ([`check`]): every state, under every slot and in every language, whose
+//! [`state_cost`] is above its class's ceiling in a term is one error at `/layout`. Classic and the reference pass
+//! every state in every language (`every_state_of_classic_and_the_reference_is_within_its_class`), so neither can
+//! be rejected by its own lint. `--hud-lint` prints every state's comparison ([`StateCostLine`]) whatever the
+//! verdict.
 //!
 //! Pure: no IO, no global. [`over`] and [`state_cost`] take plain values, so the television can ask the same
 //! question of a compiled state at selection (never in a frame) and the lint asks it of every state.
 
 use super::compile::{CompiledState, Cost, SkipKind};
-use super::lint::{slot_name, state_name, LangCtx};
+use super::lint::{ctx_for, slot_name, state_name, LangCtx};
+use super::{codes, Finding};
 
 // ---------------------------------------------------------------------------------------------------
 // The twelve ceilings
@@ -215,6 +221,50 @@ pub fn state_cost(state: &CompiledState) -> Cost {
 }
 
 // ---------------------------------------------------------------------------------------------------
+// The check: HUD-E1401
+// ---------------------------------------------------------------------------------------------------
+
+/// Report this module's findings for the language of `cx`: `HUD-E1401` for every state, under every slot, whose
+/// [`state_cost`] is above its class's ceiling in at least one term. One finding per state: it names the class,
+/// each term over as `value > ceiling` and the three ops that weigh most in the layout that cost the most (a Skip
+/// state's credits pill is a layout of its own), each by the pointer of the node that drew it
+/// ([`CompiledState::origin`]).
+pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
+    for s in cx.states() {
+        let cost = state_cost(s.state);
+        let class = Class::of(s.key.open);
+        let over = over(ceiling(class), &cost);
+        if over.is_empty() {
+            continue;
+        }
+        let credits = s.state.skip_variant(SkipKind::Credits);
+        let heaviest = if credits.cost.blended_px > s.state.cost.blended_px { credits } else { s.state };
+        let terms = over.iter().map(|o| format!("{} {} > {}", o.term.name(), o.value, o.ceiling)).collect::<Vec<_>>().join(", ");
+        let tops = heaviest
+            .top_contributors()
+            .iter()
+            .map(|c| format!("{} (blended_px {}, texture_bytes {}, glyph_runs {})", heaviest.origin(c.op), c.blended_px, c.texture_bytes, c.glyph_runs))
+            .collect::<Vec<_>>()
+            .join("; ");
+        out.push(
+            Finding::new(
+                &codes::E1401,
+                "/layout",
+                format!(
+                    "state `{}` under `{}` is a {} state over its ceiling: {terms}. Heaviest ops: {tops}",
+                    state_name(s.key),
+                    slot_name(s.key),
+                    class.name()
+                ),
+                "draw less in this state: drop or shrink the heaviest ops named, or fold their content into a section; \
+                 a class's ceiling is the most any state of the class cost when run on the television",
+            )
+            .with(ctx_for(cx, &s)),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
 // The report: every state's cost against its class's ceiling
 // ---------------------------------------------------------------------------------------------------
 
@@ -279,13 +329,46 @@ pub(super) fn collapse_lines(per_lang: Vec<Vec<StateCostLine>>) -> Vec<StateCost
 }
 
 #[cfg(test)]
+use super::lint::testing::{Base, InvalidCase};
+
+/// The title line the invalid package of `HUD-E1401` adds, and the line it follows (each occurs once in the reference).
+#[cfg(test)]
+const TITLE_LINE: &str =
+    r#"{ "text": { "bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } }"#;
+
+/// The invalid package of `HUD-E1401` (`lint::testing::assert_case` runs it): the reference with one more text line
+/// under its title. The reference's episode is AT the compact draw ops (13), Chapters at the one-section draw ops
+/// and glyph runs (47, 21) and Chapters and Info at the two-section ones (54, 28), so one more text op puts every
+/// state of the reference that has the title over its class; draw ops and glyph runs do not depend on the
+/// measurer, so the case reads the same under the television's advances and the simulator's.
+#[cfg(test)]
+pub(super) const INVALID: &[InvalidCase] = &[InvalidCase {
+    name: "the reference with a second text line under its title",
+    code: "HUD-E1401",
+    pointer: "/layout",
+    base: Base::Reference,
+    edits: &[(
+        TITLE_LINE,
+        r#"{ "text": { "bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } },
+          { "text": { "bind": "title.kicker", "size": "CAPTION", "ink": "TEXT_SECONDARY", "bold": false, "max_lines": 1, "w": "fill" } }"#,
+    )],
+    langs: &["en"],
+    skew: 0.0,
+    also: &[],
+}];
+
+/// No lint code of this module is out of a parseable package's reach.
+#[cfg(test)]
+pub(super) const UNIT_ONLY: &[(&str, &str)] = &[];
+
+#[cfg(test)]
 mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
 
     use super::*;
     use crate::hud_format::compile::{compile, CompileCtx, Compiled, OPEN_CHAPTERS, OPEN_INFO};
     use crate::hud_format::lint::LintLang;
-    use crate::hud_format::parse;
+    use crate::hud_format::{parse, Finding};
     use crate::hud_format::reach::Slot;
 
     const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
@@ -530,5 +613,75 @@ mod tests {
         let de = LintLang::for_tag("de").expect("de");
         let both = crate::hud_format::lint::lint_report(CLASSIC, &ShippedMeasure, &[en(), de], &Default::default());
         assert!(both.costs.len() > once.costs.len() && both.costs.iter().any(|l| l.lang.as_deref() == Some("de")));
+    }
+
+    /// every `HUD-E1401` of `text` linted in `langs` (all eleven when empty) with the television's advances
+    fn e1401(text: &str, langs: &[&str]) -> Vec<Finding> {
+        let langs: Vec<LintLang> = langs.iter().map(|t| LintLang::for_tag(t).expect("a shipped language")).collect();
+        let langs = if langs.is_empty() { LintLang::shipped() } else { langs };
+        let found = crate::hud_format::lint::lint_with(text, &ShippedMeasure, &langs, &Default::default());
+        found.into_iter().filter(|f| f.code == "HUD-E1401").collect()
+    }
+
+    /// The reference with the second title line of [`INVALID`].
+    fn reference_with_a_second_title_line() -> String {
+        crate::hud_format::lint::testing::apply(Base::Reference, INVALID[0].edits)
+    }
+
+    #[test]
+    fn a_state_over_its_class_is_one_finding_naming_each_term_over_and_three_contributors() {
+        let found = e1401(&reference_with_a_second_title_line(), &["en"]);
+        let at = |state: &str, slot: &str| {
+            let hits: Vec<&Finding> = found.iter().filter(|f| (f.ctx.state.as_deref(), f.ctx.slot.as_deref()) == (Some(state), Some(slot))).collect();
+            assert_eq!(hits.len(), 1, "one finding for `{state}` under `{slot}`: {:?}", found.iter().map(|f| (&f.ctx.state, &f.ctx.slot)).collect::<Vec<_>>());
+            hits[0]
+        };
+        // the compact episode is at 13 draw ops; one more text op is 14 over 13, and it is the only term over
+        let compact = at("compact", "discs");
+        assert_eq!(compact.pointer, "/layout");
+        assert!(compact.message.contains("a compact state over its ceiling: draw_ops 14 > 13. Heaviest ops: "), "{}", compact.message);
+        // Chapters is at 47 draw ops and 21 glyph runs: two terms over, each as `value > ceiling`, in term order
+        let chapters = at("chapters", "discs");
+        let (head, tops) = chapters.message.split_once("Heaviest ops: ").expect("the contributors");
+        assert!(head.contains("a one-section state over its ceiling: draw_ops 48 > 47, glyph_runs 22 > 21. "), "{head}");
+        assert!(!head.contains("texture_bytes") && !head.contains("blended_px"), "only the terms over are named: {head}");
+        // the three largest contributors, each by the pointer of the node that drew it
+        assert_eq!(tops.split("; ").count(), 3, "the three largest contributors: {tops}");
+        assert!(tops.split("; ").all(|t| t.starts_with("/layout/") && t.contains("(blended_px ")), "each by the pointer of its node: {tops}");
+        assert!(!chapters.hint.is_empty());
+        // Chapters and Info is a two-section state, over in its two terms as well; the taller title also
+        // grows the scrim behind it, so the pixels blended are over too
+        let both = at("chapters+info", "discs");
+        let head = both.message.split_once(" Heaviest ops: ").expect("the contributors").0;
+        assert!(head.contains("a two-sections state over its ceiling: draw_ops 55 > 54, glyph_runs 29 > 28, blended_px "), "{head}");
+        assert!(head.ends_with(&format!("> {MAX_TWO_SECTIONS_BLENDED_PX}.")) && !head.contains("texture_bytes"), "{head}");
+        // a state that has no title is not over: nothing but the findings of states that draw the title
+        assert!(found.iter().all(|f| f.code == "HUD-E1401" && f.ctx.lang.as_deref() == Some("en")));
+    }
+
+    #[test]
+    fn the_fixtures_every_state_of_which_fits_its_class_have_no_finding() {
+        for (name, text) in [
+            ("minimal", include_str!("fixtures/minimal.plxhud.json")),
+            ("hero-center", include_str!("fixtures/hero-center.plxhud.json")),
+            ("palette", include_str!("fixtures/palette.plxhud.json")),
+            ("tabs", include_str!("fixtures/tabs.plxhud.json")),
+        ] {
+            let found = e1401(text, &[]);
+            assert!(found.is_empty(), "{name}: {:?}", found.iter().map(|f| &f.message).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn every_state_of_classic_and_the_reference_is_within_its_class() {
+        // The builtin classic must never be rejected by its own lint, and the reference is the design's own
+        // example: no state of either, under any slot, in any of the eleven languages, is over a ceiling.
+        let mut over = Vec::new();
+        for (name, text) in PACKAGES {
+            for f in e1401(text, &[]) {
+                over.push(format!("{name}: {}", f.message));
+            }
+        }
+        assert!(over.is_empty(), "{} states over their class:\n{}", over.len(), over.join("\n"));
     }
 }

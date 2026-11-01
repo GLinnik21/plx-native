@@ -459,6 +459,11 @@ pub mod codes {
         /// menu`; the finding is on the later opener). Pointer: the opener's item. Context: `state`, `slot`,
         /// and the rects named above.
         E1303 = (Error, "HUD-E1303", "menu-side");
+        /// I12: a state's cost is above its class's ceiling in at least one term (`lint_cost`: the maximum of
+        /// that term over the states of the class that were run on the television). Pointer: `/layout`.
+        /// Context: `lang`, `state`, `slot`. The message names the class, each term over as `value > ceiling`
+        /// and the three ops that weigh most (their pointers, blended px, texture bytes and glyph runs).
+        E1401 = (Error, "HUD-E1401", "cost-ceiling");
         /// I10: app text fits but within `CI_TEXT_SKEW` of its room (a warning locally, an error in registry
         /// CI; 0 until PR12 measures it). Pointer: as `E0601`. Context: as `E0601`.
         W0602 = (Warning, "HUD-W0602", "text-fit-margin");
@@ -520,7 +525,7 @@ mod freeze_tests {
 
     #[test]
     fn the_code_table_is_unique_and_well_formed() {
-        assert_eq!(codes::ALL.len(), 52, "38 parse and check codes, 14 lint codes");
+        assert_eq!(codes::ALL.len(), 53, "38 parse and check codes, 15 lint codes");
         let ids: HashSet<_> = codes::ALL.iter().map(|c| c.id).collect();
         let rules: HashSet<_> = codes::ALL.iter().map(|c| c.rule).collect();
         assert_eq!(ids.len(), codes::ALL.len(), "a code id is never reused");
@@ -560,8 +565,9 @@ mod freeze_tests {
             (codes::E1301, "HUD-E1301", "menu-opener", Severity::Error),
             (codes::E1302, "HUD-E1302", "menu-safe", Severity::Error),
             (codes::E1303, "HUD-E1303", "menu-side", Severity::Error),
+            (codes::E1401, "HUD-E1401", "cost-ceiling", Severity::Error),
         ];
-        assert_eq!(lint.len(), 14);
+        assert_eq!(lint.len(), 15);
         for (code, id, rule, severity) in lint {
             assert_eq!((code.id, code.rule, code.severity), (id, rule, severity));
             assert!(codes::ALL.contains(&code), "{id} is in ALL");

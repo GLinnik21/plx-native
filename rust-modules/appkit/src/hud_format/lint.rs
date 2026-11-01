@@ -143,6 +143,7 @@ pub fn lint_report(
         lint_menus::check(&cx, &mut out);
         lint_text::check(&cx, &mut out);
         lint_size::check(&cx, &mut out);
+        lint_cost::check(&cx, &mut out);
         tag_language(&mut out, lang.tag);
         per_lang.push(out);
         per_lang_costs.push(lint_cost::lines(&cx));
@@ -273,8 +274,9 @@ pub(super) fn collapse(mut per_lang: Vec<Vec<Finding>>) -> Vec<Finding> {
 /// (`classic` or the reference), a few exact-once text edits, the code and pointer the edited package must
 /// yield (plus any `also`), the languages to lint in and the text skew; [`testing::assert_case`] lints it with
 /// the real font advances (`ShippedMeasure`) and asserts the SET of `(code, pointer)` pairs, nothing more and
-/// nothing less. Each check module holds its own `INVALID` and `UNIT_ONLY`; `lint_tests` unions them and
-/// requires every lint code to appear.
+/// nothing less, except that the cost verdict `HUD-E1401` is set aside unless the case is about it (see
+/// [`testing::without_cost`]). Each check module holds its own `INVALID` and `UNIT_ONLY`; `lint_tests` unions
+/// them and requires every lint code to appear.
 #[cfg(test)]
 pub(super) mod testing {
     use std::collections::BTreeSet;
@@ -282,7 +284,7 @@ pub(super) mod testing {
     use plx_base::fontcov::advances::ShippedMeasure;
 
     use super::{lint_with, LintLang, LintOptions};
-    use crate::hud_format::{Finding, BUILTIN_CLASSIC};
+    use crate::hud_format::{codes, Finding, BUILTIN_CLASSIC};
 
     /// The package an edit starts from.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -337,6 +339,16 @@ pub(super) mod testing {
         text
     }
 
+    /// `found` without the cost verdict (`HUD-E1401`). A cost is a fact about a whole state and the ceilings
+    /// are the television's exact maxima, with no headroom: an invalid case is an edit of the classic or the
+    /// reference, and any edit that adds a pixel or a draw op to their heaviest state is over a ceiling,
+    /// whatever fault the case is about. The tests that pin another rule therefore set the cost aside; the
+    /// verdict has its own case in `lint_cost` and its own tests, and the classic and the reference are
+    /// asserted within every ceiling there.
+    pub fn without_cost(found: Vec<Finding>) -> Vec<Finding> {
+        found.into_iter().filter(|f| f.code != codes::E1401.id).collect()
+    }
+
     fn dump(findings: &[Finding]) -> String {
         findings
             .iter()
@@ -360,6 +372,7 @@ pub(super) mod testing {
                 .collect()
         };
         let found = lint_with(&text, &ShippedMeasure, &langs, &LintOptions { text_skew: case.skew });
+        let found = if case.code == codes::E1401.id { found } else { without_cost(found) };
         let got: BTreeSet<(String, String)> =
             found.iter().map(|f| (f.code.to_owned(), f.pointer.clone())).collect();
         let want: BTreeSet<(String, String)> = std::iter::once((case.code, case.pointer))
