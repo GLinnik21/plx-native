@@ -410,6 +410,7 @@ impl HudDriver {
         self.dirty = true;
     }
 
+    #[cfg(test)]
     pub(crate) fn started(&self) -> bool {
         self.started
     }
@@ -453,6 +454,7 @@ impl HudDriver {
     }
 
     /// Why `sha` draws as classic in this process's language, when the lint refused it.
+    #[cfg(test)]
     pub(crate) fn unfit(&self, sha: Sha, language: &'static str) -> Option<&Unfit> {
         self.unfit.get(&(sha, language))
     }
@@ -608,7 +610,9 @@ impl HudDriver {
         if let Some(first) = findings.iter().find(|f| f.severity == Severity::Error) {
             return Err(first.code);
         }
-        load(bytes, env.app_version, env.cx, env.measure).map_err(|_| "parse")
+        let hud = load(bytes, env.app_version, env.cx, env.measure).map_err(|_| "parse")?;
+        // A package with no state for some frame the transport can be in draws nothing there: classic does instead.
+        if plx_appkit::player_hud::loaded::answers_every_frame(&hud.compiled) { Ok(hud) } else { Err("states") }
     }
 
     /// Hand the player `hud` when it is not what it already draws.

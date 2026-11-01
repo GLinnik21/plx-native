@@ -322,3 +322,26 @@ fn a_failed_playback_seeds_no_folded_rows_into_more() {
     page.busy = plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
     assert_eq!(page.more_folds(meta.view()), Vec::new(), "the failure read-out owns the frame: no route to a section or a seek");
 }
+
+/// **A package handed over while the page is live** (the app swaps `PlayerScreen::compiled` the frame a selection
+/// compiles, `run::prepare_window`): the held control index and the focus group of the OLD package may point past the
+/// new one's row. Every query the page answers from the compile (the press, the primary control, the row's length,
+/// the scrubber's place) must not panic, and a press on a control that is not there performs nothing. The DRAW
+/// needs a GL context and is the simulator's and the television's to prove.
+#[test]
+fn a_package_swapped_under_a_live_page_survives_a_stale_cursor() {
+    let _g = plx_base::testlock::serial();
+    for (from, to) in [(reference(), classic()), (classic(), reference()), (moved(), classic()), (classic(), moved())] {
+        let last = from.lookup(0, Slot::Discs, false, false, false).expect("the compact state").row_ids.len() as i32 - 1;
+        let mut page = page_with(from);
+        page.hud.nav.focus = GROUP_ROW;
+        page.hud.nav.btn = last;
+        page.compiled = to;
+        let held = page.hud.nav.btn;
+        let _ = page.row_command(held);
+        let _ = page.row_primary();
+        let _ = Focusable::<TestHost>::place(&page, &player_hud::ELEM_SCRUB, &cx(), At::Drawn);
+        let _ = Focusable::<TestHost>::place(&page, &player_hud::control_elem(held), &cx(), At::Drawn);
+        assert_eq!(page.row_command(i32::MAX), None, "a press on a control that is not there performs nothing");
+    }
+}

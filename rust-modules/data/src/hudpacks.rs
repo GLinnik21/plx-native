@@ -69,7 +69,7 @@ use serde_json::{Map, Value};
 /// The same literal as `appkit::hud_format::schema::BUILTIN_CLASSIC_ID` (the format accepts it so the
 /// built-in's own file parses). appkit is above this layer, so nothing here can compare the two: the
 /// test that pins them equal belongs where both are visible, with the runner that wires this store
-/// (PR10b).
+/// (`app/adapters/huds.rs::tests`).
 pub const BUILTIN_CLASSIC: &str = "builtin:classic";
 
 const PACKS_DIR: &str = "packs";
@@ -283,7 +283,7 @@ pub struct Setup {
     /// The most bytes of one file the store asks to read (`appkit::hud_format`'s package bound, which
     /// the validator enforces too; also bounds an `installed.json`) and the most an install may carry.
     /// `Setup::default()` leaves it 0, so an `Install` before the first `Refresh` is refused as
-    /// [`Refusal::TooLarge`]: the runner that wires the store (PR10b) sets it from `appkit`'s
+    /// [`Refusal::TooLarge`]: the runner that wires the store (`app/adapters/huds.rs`) sets it from `appkit`'s
     /// `MAX_PACKAGE_BYTES` in the `Setup` it sends.
     pub max_pack_bytes: usize,
 }

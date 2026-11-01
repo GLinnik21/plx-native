@@ -81,6 +81,7 @@ pub enum AppFx {
 
 /// What the Player HUD settings page asks of the package store (`plx_data::hudpacks::HudStore`). The
 /// answers come back as the page's own data, the list the Bridge sends down the channel `Open` carries.
+#[derive(Clone)]
 pub enum HudCmd {
     /// The page opened: read every candidate directory again, and publish the list (now and whenever it
     /// changes) down this channel until the page drops its end.
@@ -1390,6 +1391,8 @@ pub enum DetailRefreshPhase {
 pub enum AppMsg {
     Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),
+    /// A command of the player-HUD package store, delivered to [`MachineId::Huds`].
+    Huds(HudCmd),
     RestartReply { correlation: u32, accepted: bool },
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },

@@ -44,9 +44,8 @@
 //! episode's kicker is primary and bold, a context line secondary and regular) draws, and only the
 //! declared sizes are honoured.
 //!
-//! **What PR10b owes before a package can be installed** (only `builtin:classic` ships and the dev trigger is
-//! the one way in, so no shipped HUD reaches any of these; each is a way a package draws or behaves wrongly
-//! without a finding):
+//! **What a package that is installed can still get wrong** (a package reaches these through the Player HUD page
+//! as well as the dev trigger, and none is a finding; each is a way a package draws or behaves wrongly):
 //! - a package with `title.main` and no `title.kicker` still draws the kicker, at classic's y
 //!   (`draw_title`, from `TitleLook::default()`);
 //! - a `button`, or a `pill` with no `section`, gets a focus stop and draws nothing (`draw_control`);

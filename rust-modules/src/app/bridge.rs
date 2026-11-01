@@ -995,8 +995,7 @@ impl Bridge {
             HudCmd::Select(id) => self.huds.select(id),
             HudCmd::Remove(id) => self.huds.remove(id),
             HudCmd::InstallDrop(sha) => {
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                self.huds.install_drop(sha, now);
+                self.huds.install_drop(sha, plx_telemetry::telemetry::crashreport::now_secs());
             }
         }
         self.huds_settle();
@@ -2175,6 +2174,11 @@ impl Bridge {
             }
             return Handled::Yes;
         }
+        if let AppMsg::Huds(command) = msg {
+            if to != MachineId::Huds { return Handled::No; }
+            self.huds_command(command.clone());
+            return Handled::Yes;
+        }
         if let AppMsg::Session(event) = msg {
             use plx_session::auth::owner::SessionEvent;
             if to != MachineId::Session { return Handled::No; }
@@ -2477,7 +2481,7 @@ impl Bridge {
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Preferences(command) => super::preferences::execute(command),
-            AppFx::Huds(command) => self.huds_command(command),
+            AppFx::Huds(command) => out.push(Fx::Deliver(MachineId::Huds, Delivery::Machine(AppMsg::Huds(command)))),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
