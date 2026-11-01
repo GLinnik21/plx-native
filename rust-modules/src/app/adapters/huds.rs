@@ -382,7 +382,9 @@ pub(crate) struct HudDriver {
     /// resolved selection is one package, and the language and the app version are fixed per process.
     compiled: Option<(Sha, &'static str, LoadedHud)>,
     unfit: BTreeMap<(Sha, &'static str), Unfit>,
-    logged: BTreeSet<(Sha, &'static str)>,
+    /// The `hud: fallback` lines written, once per (package, language, code): a failed read must not use up the line
+    /// of a later fit failure.
+    logged: BTreeSet<(Sha, &'static str, &'static str)>,
     reading: Option<Reading>,
     /// Packs whose bytes could not be read for the compile: classic draws until the next listing or command
     /// gives them another try (a read that failed once is not a verdict on the package).
@@ -607,7 +609,7 @@ impl HudDriver {
         let language = env.cx.language().tag();
         let Some(bytes) = answer.flatten() else {
             self.read_failed.insert(sha);
-            if self.logged.insert((sha, language)) {
+            if self.logged.insert((sha, language, "read")) {
                 self.log.push(format!("hud: fallback package={} language={language} code=read", self.resolved_id()));
             }
             self.revision += 1;
@@ -621,7 +623,7 @@ impl HudDriver {
             }
             Err(code) => {
                 self.unfit.insert((sha, language), Unfit { code });
-                if self.logged.insert((sha, language)) {
+                if self.logged.insert((sha, language, code)) {
                     self.log.push(format!("hud: fallback package={} language={language} code={code}", self.resolved_id()));
                 }
             }
@@ -886,6 +888,46 @@ mod tests {
         assert_eq!(in_english.len(), 1, "back in a language it fits, the package draws");
         assert!(driver.unfit(sha, en.language().tag()).is_none());
         assert_eq!(driver.take_log().len(), 0);
+    }
+
+    /// A failed read and a later fit failure are two causes, and each is logged once: the first must not use up the
+    /// slot of the second.
+    #[test]
+    fn a_failed_read_does_not_hide_a_later_fit_failure_from_the_log() {
+        let dir = Dir::new("log-per-code");
+        let en = english();
+        let mut driver = driver(&dir);
+        let slack = |text: &str| -> f32 {
+            let lang = LintLang::for_tag("en").unwrap();
+            let found = lint_with(text, &ShippedMeasure, &[lang], &LintOptions { text_skew: 1e9 });
+            found.iter().find(|f| f.pointer == "/layout/block/4/cells/0/strip/card/below/1/text").and_then(|f| f.ctx.text.clone()).expect("measured").measured
+        };
+        let tight = REFERENCE.replace("\"card_w\": 192", &format!("\"card_w\": {}", slack(REFERENCE)));
+        let fits = |tag: &str| {
+            let lang = LintLang::for_tag(tag).unwrap();
+            lint_with(&tight, &ShippedMeasure, &[lang], &LintOptions { text_skew: 0.0 }).iter().all(|f| f.severity != Severity::Error)
+        };
+        let narrow_tag = Preference::SHIPPED.iter().map(|p| p.tag()).find(|t| !fits(t)).expect("a language needs more than English");
+        let narrow = LocaleContext::resolve(Preference::SHIPPED.into_iter().find(|p| p.tag() == narrow_tag).unwrap(), None, None, None, None);
+        dir.drop_file("tight.plxhud.json", &tight);
+        driver.refresh(String::new());
+        settle(&mut driver, &narrow);
+        let sha = driver.store().drops()[0].sha.unwrap();
+        driver.install_drop(sha, 1);
+        settle(&mut driver, &narrow);
+        let pack = dir.0.join("packs").join(format!("{}.plxhud.json", sha.hex()));
+        let kept = std::fs::read(&pack).unwrap();
+        std::fs::remove_file(&pack).unwrap();
+        driver.select(REFERENCE_ID.to_string());
+        settle(&mut driver, &narrow);
+        let first = driver.take_log();
+        assert!(first.len() == 1 && first[0].contains("code=read"), "{first:?}");
+        std::fs::write(&pack, kept).unwrap();
+        driver.select(REFERENCE_ID.to_string());
+        settle(&mut driver, &narrow);
+        let second = driver.take_log();
+        assert!(second.len() == 1 && second[0].contains("code=HUD-E0601"), "the real cause is logged too: {second:?}");
+        let _ = en;
     }
 
     /// **Classic with nothing installed adds nothing per frame.** Once the listing has settled, a tick changes
