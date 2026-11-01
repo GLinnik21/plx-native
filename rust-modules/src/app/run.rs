@@ -4912,6 +4912,44 @@ mod lifecycle_regression_tests {
         );
     }
 
+    /// **WILL and DID park twice in one drain** (`0x103` and `0x104` both reach `park_playback`, and the first park
+    /// keeps the URL): the second must not undo the first. A close that queues one TOGGLE per open section reopens
+    /// the page when the two are applied at the same step.
+    #[test]
+    fn parking_twice_in_one_drain_leaves_the_sections_closed() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::playback::perform_hud_command(
+            HudCommand::ToggleSection(Section::Info),
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            100,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        let mut now = 100;
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(super::super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.contains(Section::Info)));
+        park_playback(&mut app);
+        park_playback(&mut app);
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(
+            super::super::bridge::player(&app.pages).is_some_and(|p| !p.hud.sections.any()),
+            "two parks in one drain still leave the page closed",
+        );
+    }
+
     /// Chapters opens only for an item that has chapters: with none playing, `toggle_section` is a no-op.
     #[test]
     fn toggle_section_chapters_does_nothing_for_an_item_without_chapters() {

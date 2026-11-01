@@ -4019,16 +4019,17 @@ pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_ap
     );
 }
 
-/// **Close every open HUD section of the player page** — one `toggle_player_section` per open one, so each closes
-/// the way a press on its opener does (focus handed back through the screen's own `close_section`). The app
-/// switch and the decoder park use it where the overlay panels' `dismiss_player_overlays` once took the Info card
-/// and the Chapters strip down: a section is the page's state, not a surface, and the page stays mounted.
+/// **Close every open HUD section of the player page**: one addressed `AppMsg::HudSectionsClose`, which the page
+/// answers by closing each open section the way a press on its opener does (focus handed back through its own
+/// `close_section`). It names no section and reads none, so it is idempotent: WILL and DID both park the film in
+/// one drain, and a close built from the set as it is NOW (one toggle per open section, applied at the step)
+/// would reopen what the first park closed. The app switch and the decoder park use it where the overlay panels'
+/// `dismiss_player_overlays` once took the Info card and the Chapters strip down: a section is the page's state,
+/// not a surface, and the page stays mounted.
 pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
-    let open: Vec<plx_appkit::player_hud::command::Section> =
-        player(d).map(|p| p.hud.sections.iter().collect()).unwrap_or_default();
-    for section in open {
-        toggle_player_section(d, section);
-    }
+    let Some(instance) = d.top_page() else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSectionsClose))));
 }
 
 /// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half

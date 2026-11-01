@@ -1407,6 +1407,10 @@ pub enum AppMsg {
     /// if it is open, under the package's policy. The page owns the sections ([`crate::player::input::Sections`]),
     /// so the app asks for the change as an addressed event and never writes them.
     HudSection(plx_appkit::player_hud::command::Section),
+    /// **Close every open section** (an app switch, a decoder park): the page puts them all away, each the way a
+    /// press on its opener does. Idempotent, which a toggle is not: two of these in one frame (the app's WILL and
+    /// DID both park) leave the page closed, where two toggles would close it and reopen it.
+    HudSectionsClose,
 }
 
 /// What the consent machine is told (§2.3): a person's answer to both questions at once.

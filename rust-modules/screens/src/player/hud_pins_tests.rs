@@ -1667,6 +1667,16 @@ mod sections {
             let now = self.now;
             self.frame(now, vec![]);
         }
+        /// The app parking the film twice in one drain (WILL, then DID): the close-all message queued twice, both
+        /// applied at the same step (`app::bridge::close_player_sections`).
+        fn close_all_twice(&mut self) {
+            let page = MachineId::Instance(self.d.top_page().expect("the player page is mounted"));
+            for _ in 0..2 {
+                self.d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSectionsClose))));
+            }
+            let now = self.now;
+            self.frame(now, vec![]);
+        }
         /// Walk the keys with the tabs row reached by `DD` first (the transport is hidden at boot: the first
         /// press raises it), then press the tab at `tab`.
         fn open_from_tab(&mut self, tab: usize) {
@@ -2108,6 +2118,35 @@ mod sections {
         run.step('B');
         assert_eq!(run.open_sections(), Vec::<Section>::new());
         assert_eq!((run.group(), run.screen().hud.nav.btn), (GROUP_ROW.0, chapters));
+    }
+
+    /// **Parking closes every open section and stays closed**, when the app's WILL and DID both park in one drain:
+    /// the close names no section, so a second one finds nothing to undo. Both policies, both sections, and the
+    /// reference's two stacked.
+    #[test]
+    fn closing_all_sections_twice_in_one_frame_leaves_them_closed() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        for (name, tab) in [("Chapters", 1), ("Info", 0)] {
+            let mut run = classic_run(Occupant::Plain);
+            run.open_from_tab(tab);
+            assert_eq!(run.open_sections().len(), 1, "classic {name} is open");
+            run.close_all_twice();
+            assert_eq!(run.open_sections(), Vec::<Section>::new(), "classic {name}: closed by two closes in one frame");
+        }
+        let mut run = reference_run();
+        let chapters = opener_item(&mut run, Section::Chapters);
+        let info = opener_item(&mut run, Section::Info);
+        go_to_item(&mut run, chapters);
+        run.step('K');
+        run.step('U');
+        along_row_to(&mut run, info);
+        run.step('K');
+        assert_eq!(run.open_sections(), vec![Section::Info, Section::Chapters]);
+        run.close_all_twice();
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "the reference's two stacked sections: closed, and not reopened");
+        assert_eq!(run.group(), GROUP_ROW.0, "focus lands on a disc of the row");
     }
 
     // -- the sections' motion: what the panels' surfaces did, on the page's own springs ---------------------------

@@ -664,6 +664,13 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 self.toggle_section(*section, cx, fx);
                 Handled::Yes
             }
+            ScreenEvent::App(AppMsg::HudSectionsClose) => {
+                let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+                while let Some(latest) = self.hud.sections.latest() {
+                    self.close_section(latest, chapters, cx.tick.ms, fx);
+                }
+                Handled::Yes
+            }
             // **The engine moved focus: `hud.nav` follows.** The engine is the authority on where
             // focus is; `nav` is the mirror the HUD's motion, drawing and published state read. A
             // re-seat (`By::Restore`, `By::Reconcile`: the app's and this screen's own writes to
