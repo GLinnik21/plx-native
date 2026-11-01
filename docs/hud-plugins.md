@@ -321,12 +321,29 @@ Other subsystems the plan touches
   FocusEngine groups and keys read that set) and the draw keeps it, fading, until its spring is out (the
   Chapters Shelf with it). A failed playback, a stop and the page leaving cut it (`PopoverMotion::at(0.0)`),
   as `ModalStack::hide` did. A **modal** package gives the transport and any stand-in back at the dismissal
-  frame. An **inline** package lays the section's bands under the transport's, so the ops stacked above an
+  frame as STOPS and hit rects (the logical set decides them, so a key lands on the row at once); their PIXELS
+  come back on the `page` spring, below, over the section's fade. An **inline** package lays the section's bands under the transport's, so the ops stacked above an
   appearing or fading section are drawn `(1 - appear) * h` lower than their rest position in the
   presented-mask state, `h` being the lift the compiler's own layout gives that band (its box with the section
   against its box without it, a keyed `gap_before` included): at appear 0 the block stands where the closed
   state puts it and the mask drops without a jump. Their hit rects and focus stay at rest, and an inline
   package keeps the discs, not a stand-in, until the last section has faded.
+  **The page moves too, and the package is not asked.** One more spring, `HudMotion::page` (a `PopoverMotion`), runs
+  to 1 while ANY section is wanted and to 0 otherwise; a switch between two modal sections keeps it at 1, and it
+  holds one frame exactly when a section opens from nothing. It is pointed with the sections' springs, stepped
+  beside them under the same dismissed-frame rule and cut with them. A TRANSPORT band (one whose `when` names no
+  `panel.*` term) is drawn by where the journey finds it, the compact state at one end and the open section states
+  at the other: in the compact state only, it fades out on `1 - page`; in the open states only, it fades in on
+  `page` (in only some of them, on those sections' own appear); in both, it TRAVELS. An inline package's band
+  travels by the lift above, unchanged; a modal package's from its y in the compact state, `C`, to `M`, the mean of
+  its y in the open states weighted by each section's appear, as `y = C + page * (M - C)`, so one expression
+  covers an opening, a close, a switch between sections whose tabs stand at different ys, and a press that turns a
+  motion round with no jump. Hit rects, stops and focus stay at their logical rest, as the inline lift's do. A
+  scrim whose rect differs between the two ends moves its top edge on the same clock (an inline one on the lift's,
+  since `page` is already 1 when a second section opens); a `fixed` scrim stands still. Settled springs draw
+  exactly the state they stand on, so classic's census is unchanged. A package that lays its tabs above its
+  section gets a rising tab bar and a fading title for nothing it wrote; a package that lays them below gets
+  what classic gets.
 - D7. **Stand-ins draw only with no section open, as today.** `slot_for` depends only on the marker
   (F19), so Skip or Up Next can become due while a section is open; today such a stand-in waits, because
   the row only draws under `transport` (F1, F2). That rule is kept: while any section is open the row
@@ -1257,6 +1274,11 @@ What makes the compositor late is not determined, and it is not specific to a HU
   classic's Info sets blended px;
 - two sections open: classic has none, so the reference's Chapters plus Info state sets all four terms.
 No ceiling ever admits a cost no such state reached.
+**A transition frame costs more than any state.** While the page spring or a section's moves, the renderer draws
+two states' worth of ops: the compact bands fading out beside the open state's (or the reverse), and the leaving
+section over the logical state. No ceiling prices that, because the ceilings are measured per STATE and a transition
+is not one; it is not a measured cost either. The television has not measured these frames yet; they are measured
+there, not read from a state's numbers, and no ceiling moves for them.
 A package's state cost must be at or under its class's ceiling in every term; the blended-area term, calibrated with
 HWCNT like the others, is what bounds a tall scrim or a screen-wide ground, each only a few draw ops. SVG bytes and path count per asset bound the C
 parser's input; package bytes follow from both. Every new `MAX_*` gets its `ci/list-caps.ini` line with the
