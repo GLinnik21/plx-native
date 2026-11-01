@@ -2393,10 +2393,11 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         let subs_lift = self.subs_lift(ps, now);
         // The band the layout occupies, a value from its geometry this frame, not a constant.
         let band = self.caption_band();
-        // **Captions draw above an open section** (`docs/hud-plugins.md`, "Captions"): with a section on
-        // screen (open, or still fading) they are the frame's last layer under the read-outs, so its ground and
-        // scrim cannot cover them; with none they stay where they always were, under the transport's scrim.
-        let over_section = self.row.presented() != 0;
+        // **Captions draw above an open section** (`docs/hud-plugins.md`, "Captions"): while a section draws
+        // something (open, or fading out, `HudMotion::sections_visible`) they are the frame's last layer under
+        // the read-outs, so its ground and scrim cannot cover them; on a frame it draws nothing (held at appear 0,
+        // or faded) they stay where they always were, under the transport's scrim.
+        let over_section = self.row.sections_visible();
         if !over_section {
             self.draw_captions(ps, f.cx.measure, subs_lift, band);
         }
@@ -5182,11 +5183,41 @@ mod caption_order_tests {
         let at = closed.iter().position(|t| *t == notice).unwrap_or_else(|| panic!("the caption is drawn: {closed:?}"));
         assert!(at + 1 < closed.len(), "with nothing open the transport draws over it, as it always did: {closed:?}");
 
+        // A section the frame draws nothing of (held at appear 0, or faded out) leaves the caption where it was:
+        // the order, and the scrim's dimming with it, changes only while the section is visibly drawn.
+        let mut present = plx_machine::present::Present::new();
+        let mut ms = 1_000;
+        let mut step = |page: &mut PlayerScreen| {
+            ms += 16;
+            let mut ph = plx_machine::machine::PresentHandle::of(&mut present);
+            page.row.step_appear(Tick { ms, dt_us: 16_667 }, &mut ph);
+        };
+        let last = |page: &mut PlayerScreen| runs(page).last() == Some(&notice);
         page.hud.sections = Sections::NONE.toggled(Section::Info, true);
         page.row.follow(page.hud.sections.bits());
+        assert_eq!(page.row.section_appear(Section::Info), 0.0);
+        assert!(!last(&mut page), "the held frame draws the section invisibly: the caption stays under the transport");
+        step(&mut page); // held: the frame the spring is pinned on
+        assert!(!last(&mut page));
+        step(&mut page);
+        assert!(page.row.section_appear(Section::Info) > 0.0);
         let open = runs(&mut page);
         assert!(open.len() > 1, "the section drew its own text: {open:?}");
-        assert_eq!(open.last(), Some(&notice), "with a section on screen the caption is the last thing drawn: {open:?}");
+        assert_eq!(open.last(), Some(&notice), "the first frame the section is visible, the caption is the last thing drawn: {open:?}");
+
+        // closing: over the section for as long as it draws anything, under again on the first frame it draws nothing
+        page.hud.sections = Sections::NONE;
+        page.row.follow(0);
+        step(&mut page);
+        let mut over = 0;
+        while page.row.section_appear(Section::Info) > 0.0 {
+            assert!(last(&mut page), "fading out at appear {}: still over the section", page.row.section_appear(Section::Info));
+            over += 1;
+            step(&mut page);
+            assert!(over < 200, "the section never faded");
+        }
+        assert!(over > 2, "it faded over several frames");
+        assert!(!last(&mut page), "the first frame the section draws nothing, the caption is back under the transport");
         plx_media::player::sidecar::reset();
     }
 }

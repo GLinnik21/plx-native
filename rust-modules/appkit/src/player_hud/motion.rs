@@ -362,6 +362,14 @@ impl HudMotion {
             .fold(0, |bits, s| bits | s.open_bit())
     }
 
+    /// **Does any section draw something this frame?** True while a section's appear is above 0: not on the frame
+    /// it is held at appear 0 (presented, drawn invisibly) and not once its spring has landed on 0 after a close,
+    /// where [`presented`](Self::presented) still counts it for the frames it is fading out. What the caption
+    /// draw order follows, so a caption changes layers only while a section is actually on screen.
+    pub fn sections_visible(&self) -> bool {
+        self.appear.iter().any(|spring| spring.appear > 0.0)
+    }
+
     /// The strip's Shelf for a strip of this `geo`, under `entry`: held across frames so its springs live, and
     /// rebuilt when the strip it drew is not this one (another entry or another card geometry).
     pub fn strip(&mut self, entry: EntryId, geo: &super::strip::Geometry) -> &mut Shelf {
