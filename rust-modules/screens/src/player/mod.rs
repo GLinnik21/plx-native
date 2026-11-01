@@ -1766,9 +1766,14 @@ impl PlayerScreen {
         fx: &mut Effects<'_, H>,
     ) -> Option<CardEvent<u32>> {
         // …and keeps stepping while the strip fades out after the section was put away, so it fades as it was, not
-        // frozen: except that a strip fading out on the card it was on stands still, its pops and bands as they
-        // were at the dismissal (the engine's focus has left it, so a tick would let the card go)
-        if !self.hud.sections.contains(Section::Chapters) && self.row.held_card().is_some() {
+        // frozen. A strip fading out on the card it was on keeps that card as its focus for its Tick (the engine's
+        // focus has left it, and a plain tick would let the card go): its scroll and pop settle under the fade, and
+        // the focus moves and presses of the page are not its business any more.
+        let held = match self.hud.sections.contains(Section::Chapters) {
+            true => None,
+            false => self.row.held_card(),
+        };
+        if held.is_some() && !matches!(ev, ScreenEvent::Tick(_)) {
             return None;
         }
         let open = match self.hud.sections.contains(Section::Chapters) {
@@ -1776,7 +1781,11 @@ impl PlayerScreen {
             false => self.row.presented() & Section::Chapters.open_bit(),
         };
         let (geo, src) = self.strip_source_in(cx, open)?;
-        self.row.strip(self.entry, &geo).on(ev, cx, &src, fx)
+        let shelf = self.row.strip(self.entry, &geo);
+        match held {
+            Some(card) => shelf.on_held(ev, cx, &src, fx, card),
+            None => shelf.on(ev, cx, &src, fx),
+        }
     }
 
     /// Mirror the cursor onto `elem` and seat the engine there: the pairing every write to `hud.nav` makes.

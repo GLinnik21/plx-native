@@ -2353,6 +2353,49 @@ mod sections {
         assert!(run.screen().row.strip_shelf().is_none(), "…and goes with the last of the fade");
     }
 
+    /// **A strip put away during its scroll keeps settling while it fades** (the panel's springs went on stepping
+    /// under its fade): BACK a moment after a Right that started a scroll, the cards must glide on to where the
+    /// scroll was going, not stand where the dismissal found them. The focus paint stays the held card's.
+    #[test]
+    fn a_strip_dismissed_during_a_scroll_settles_while_it_fades() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install_n(12);
+        let seat = |run: &mut Run| {
+            run.open_from_tab(1);
+            run.frames(80);
+            for _ in 0..7 {
+                run.tap(Key::Right);
+            }
+        };
+        // where the scroll goes: settle with the strip left up
+        let mut up = classic_run(Occupant::Plain);
+        seat(&mut up);
+        up.frames(120);
+        let settled = up.screen().row.strip_shelf().expect("the strip is up").scroll();
+        assert!(settled > 100.0, "premise: seven Rights scroll the strip: {settled}");
+        // the same keys, put away while it still moves
+        let mut run = classic_run(Occupant::Plain);
+        seat(&mut run);
+        let moving = run.screen().row.strip_shelf().expect("the strip is up").scroll();
+        assert!((moving - settled).abs() > 1.0, "premise: the scroll is still travelling when BACK lands: {moving} of {settled}");
+        run.tap(Key::Back);
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        let held = run.screen().row.held_card();
+        assert!(held.is_some(), "the strip fades on the card it was on");
+        let first = run.screen().row.strip_shelf().expect("the strip is presented").scroll();
+        let mut last = first;
+        while run.presented() == vec![Section::Chapters] && run.appear(Section::Chapters) > 0.02 {
+            last = run.screen().row.strip_shelf().map(|s| s.scroll()).unwrap_or(last);
+            assert_eq!(run.screen().row.held_card(), held, "the focus paint stays the held card's");
+            run.frames(1);
+        }
+        assert!(
+            last - first > 20.0 && last <= settled + 1.0,
+            "the scroll goes on toward {settled} under the fade: {first} at the dismissal, {last} at its end"
+        );
+    }
+
     /// **A section fades out on the focus it had at the dismissal** (the panels drew from their own cursor): the
     /// strip on the card the engine held, Info's card on the button it held, whichever way the page was put away
     /// (BACK, a direction off the edge, a press on the page itself, the other section replacing it). The page's

@@ -268,11 +268,38 @@ impl Shelf {
         src: &S,
         fx: &mut Effects<'_, H>,
     ) -> Option<CardEvent<H::Elem>> {
+        self.on_holding(ev, cx, src, fx, None)
+    }
+
+    /// [`on`](Self::on) with the focused card named by the caller for the tick, as
+    /// [`paint_held`](Self::paint_held) names it for the paint: a strip fading out after its owner put it away
+    /// keeps settling on the card it was on (its scroll goes on to that card, its pop stays grown) while the
+    /// engine's focus is already elsewhere, instead of freezing mid-motion or letting the card go. `held` is an
+    /// index into `src`; every caller of `on` is untouched.
+    pub fn on_held<H: Host, S: CardSource<H>>(
+        &mut self,
+        ev: &ScreenEvent<H>,
+        cx: &Cx<'_, H>,
+        src: &S,
+        fx: &mut Effects<'_, H>,
+        held: usize,
+    ) -> Option<CardEvent<H::Elem>> {
+        self.on_holding(ev, cx, src, fx, Some(held))
+    }
+
+    fn on_holding<H: Host, S: CardSource<H>>(
+        &mut self,
+        ev: &ScreenEvent<H>,
+        cx: &Cx<'_, H>,
+        src: &S,
+        fx: &mut Effects<'_, H>,
+        held: Option<usize>,
+    ) -> Option<CardEvent<H::Elem>> {
         match ev {
             ScreenEvent::Tick(t) => {
                 self.retry.tick(t.ms);
                 self.observe_landing(src);
-                self.tick(t.dt(), cx, src);
+                self.tick(t.dt(), cx, src, held);
                 if self.landing.held() {
                     // a landing waits under a held page image: a frame must follow its release
                     fx.invalidate(Provenance::Lifecycle);
@@ -343,8 +370,8 @@ impl Shelf {
         super::focused_index(&cx.focus, self.entry, src).map(|i| (i, src.elem(i)))
     }
 
-    fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S) {
-        let seated = super::focused_index(&cx.focus, self.entry, src);
+    fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S, held: Option<usize>) {
+        let seated = held.filter(|&i| i < src.len()).or_else(|| super::focused_index(&cx.focus, self.entry, src));
         if !self.dormant {
             self.returning = false;
         }
