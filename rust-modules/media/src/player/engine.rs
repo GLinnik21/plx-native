@@ -2167,7 +2167,8 @@ fn start_bufferfeed_inner(
             let auto_original = crate::route::auto_original_watch(ps);
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
-            SHARED.side_subs_owner.store(side_target.is_some(), Ordering::Release);
+            // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
+            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only()), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
             });
@@ -2498,11 +2499,16 @@ fn reload_start_outcome(
 }
 
 /// Start the side subtitle reader for the live remux this engine run plays, drawing the track
-/// the route's target names.
+/// the route's target names (or, for a sidecar, measuring the clock only).
 fn start_side_reader(target: &crate::route::SideReaderTarget) {
     let started = super::subside::spec_for(target).is_some_and(super::subside::start);
     if !started {
         log("subside: could not start the reader thread");
+        if target.clock_only() {
+            // The app fetches that subtitle itself and no reader owns it: the sidecar is drawn on
+            // the remux's clock, as it was before the reader measured it. Never the server's burn.
+            return;
+        }
         // Nothing reads beside the stream: the demuxer must not leave the subtitle to a reader
         // that is not there.
         SHARED.side_subs_owner.store(false, Ordering::Release);

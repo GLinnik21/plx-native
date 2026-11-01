@@ -4241,9 +4241,19 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
         assert_eq!((t.sid, t.part_kbps), (live.sid, 7_400));
         commit_subtitle_selection(&mut ps, 1, 78, true);
         assert_eq!(side_reader_target(&ps).map(|t| t.ordinal), Some(1));
-        // A sidecar is fetched by the app itself: no reader.
+        // A sidecar is fetched by the app itself: the reader reads no track, it only measures the
+        // clock the sidecar is drawn on (`player::sidecar_clock_ns`)...
         commit_subtitle_selection(&mut ps, -1, 79, true);
-        assert!(side_reader_target(&ps).is_none());
+        let t = side_reader_target(&ps).expect("a sidecar over an admitted remux gets a clock-only reader");
+        assert!(t.clock_only());
+        assert_eq!((t.sid, t.part_kbps), (live.sid, 7_400));
+        // ...and only where an embedded track would be admitted too: off the gate, nothing runs.
+        ps.cur_transport_kbps = 30_001;
+        assert!(side_reader_target(&ps).is_none(), "a Part above the bitrate bound: no reader");
+        ps.cur_transport_kbps = 0;
+        assert!(side_reader_target(&ps).is_none(), "an unmeasured bitrate: no reader");
+        ps.cur_transport_kbps = 7_400;
+        assert!(side_reader_target(&ps).is_some());
         // Refused (failed) reader: the burn is the route, no reader.
         commit_subtitle_selection(&mut ps, 4, 77, true);
         ps.side_subs_refused = true;
@@ -4462,8 +4472,8 @@ fn switching_embedded_tracks_on_a_live_remux_queues_no_retranscode() {
     assert!(claim_route_action().is_none());
     assert_eq!(
         crate::player::subside::take_test_syncs(),
-        vec![Some(2), Some(5), None, Some(3)],
-        "track 2, switch to 5, a sidecar needs no reader, back to 3"
+        vec![Some(2), Some(5), Some(crate::player::subside::CLOCK_ONLY), Some(3)],
+        "track 2, switch to 5, a sidecar reads no track (clock only), back to 3"
     );
     assert!(ps.cur_contract.remux);
     assert!(decisions(&live.finish()).is_empty());

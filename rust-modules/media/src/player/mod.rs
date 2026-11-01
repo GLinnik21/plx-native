@@ -2161,9 +2161,29 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
     ass_source::selected(desired_sub_idx()).map(|source| (source, playhead))
 }
 
-/// The file-time position a SIDECAR is asked for at remux playhead `playhead_ns`.
-pub fn sidecar_clock_ns(_ps: &crate::route::PlaybackSession, playhead_ns: i64) -> i64 {
-    playhead_ns
+/// **The file-time position a SIDECAR is asked for at playhead `playhead_ns`.**
+///
+/// A sidecar's timestamps are the Part's. On a direct play the playhead is file time. Over a remux
+/// it is not: PMS starts the remux on the Part keyframe at or before the requested offset, but the
+/// engine labels that first frame with the REQUESTED offset (`disp_base`), so the playhead runs
+/// ahead of the content by the snap (measured: 0.6 s to 2.2 s on one file) and the sidecar drew
+/// early. The side reader measures that constant (`ff::subside`, `delta = part_time − playhead`)
+/// and this adds it, so the renderer is asked for the content time actually on screen. The viewer's
+/// timing offset is subtracted after this, by the caller, and composes with it.
+///
+/// Moved only when ALL hold: the selection is a sidecar, the app draws it over a live remux
+/// ([`crate::route::SubtitlePresenter::ClientOverRemux`]) and the reader matched this run's first
+/// keyframe byte for byte ([`subside::exact_delta_ns`]). Never for an embedded track — the reader
+/// has moved its cues by `-delta` already, so adding it here too would correct them twice — and
+/// never from an ASSUMED delta, which was measured 2.002 s wrong (see `ff_subside`'s
+/// `sidecar_clock_at_917…` test). **Off the reader's gate** (a remote link, a Part above the
+/// bitrate bound) nothing is measured, nothing is shifted, and a sidecar is drawn exactly as
+/// before; so is a run whose scan found no byte-exact match.
+pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) -> i64 {
+    if !crate::route::sidecar_over_remux(ps) {
+        return playhead_ns;
+    }
+    subside::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta))
 }
 
 /// The oldest cue end a store must still hold: the LATEST delay ([`SUBTITLE_OFFSET_LATEST_MS`])

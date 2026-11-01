@@ -12,7 +12,10 @@
 //!   which wakes a read blocked in the socket or in `curl_multi_wait`.
 //! - the clock mapping ([`Anchor`], [`delta_exact`], [`delta_assumed`]): the remux and the Part
 //!   disagree about time by a constant, because PMS snaps `offset` to a keyframe while the app
-//!   labels that keyframe `offset`; the cues are moved by `-delta` ([`SubCue::shifted`]).
+//!   labels that keyframe `offset`. An EMBEDDED track's cues are moved by `-delta`
+//!   ([`SubCue::shifted`]); a SIDECAR (file time, fetched by the app) is not read here at all —
+//!   a [`ReadCfg::clock_only`] pass measures the same `delta`, publishes it only when the keyframe
+//!   matched byte for byte, and `player::sidecar_clock_ns` adds it to the sidecar's render clock.
 //! - the pacing rule ([`pacing_parks`]): the reader stays [`WINDOW_NS`] ahead of the playhead.
 //!
 //! No URL, host, token or session identifier is ever logged from here.
@@ -368,6 +371,11 @@ pub(crate) struct ReadCfg<'a> {
     pub ordinal: usize,
     /// The Part's whole-file bitrate, for the log line.
     pub kbps: u32,
+    /// Measure the clock mapping only: open the Part, scan for the anchor's keyframe and return
+    /// ([`RunEnd::Measured`]). No subtitle track is opened, enumerated or read (`ordinal` is unused),
+    /// no render store is touched, and the Part's connection is closed on return. For a SIDECAR the
+    /// app fetches itself, drawn over a remux.
+    pub clock_only: bool,
 }
 
 /// How a pass of the reader ended.
@@ -379,6 +387,8 @@ pub(crate) enum RunEnd {
     Failed,
     /// Retrying cannot help: the Part has no such track, no video stream, or the open was refused.
     Unusable,
+    /// A [`ReadCfg::clock_only`] pass finished its scan (matched or not): nothing is left to read.
+    Measured,
 }
 
 /// One open `AVFormatContext` over a [`SideIo`], freed in the one order libavformat needs.
@@ -468,6 +478,11 @@ unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c
     }
     if vi < 0 {
         return Err(RunEnd::Unusable);
+    }
+    if cfg.clock_only {
+        // The scan needs the video stream and nothing else. A film with a sidecar often has no
+        // embedded subtitle at all, and the Part's ASS sources are not this run's to install.
+        return Ok((d, vi, 0));
     }
     let subs = SubTracks::open(d.fmt, streams);
     let generation = begin_ass_sources(cfg.url, d.fmt, streams, subs.entries());
@@ -707,6 +722,12 @@ pub(crate) fn read_once(
                 // Only a byte-exact match is the sidecar draw's to trust (`player::sidecar_clock_ns`).
                 crate::player::subside::publish_exact(chosen);
             }
+            if cfg.clock_only {
+                return RunEnd::Measured; // `d` drops here: the Part's connection is closed
+            }
+        }
+        if cfg.clock_only {
+            return RunEnd::Measured; // a delta was handed in: nothing to scan
         }
         let delta_ns = delta.unwrap_or(0);
         // Pass B: from `offset − 15 s` (or the playhead on a reopen) decode the track.
@@ -1090,7 +1111,7 @@ mod tests {
         let reader = {
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
-                let cfg = ReadCfg { url: &url, offset_ns: 2_000_000_000, ordinal: 0, kbps: 0 };
+                let cfg = ReadCfg { url: &url, offset_ns: 2_000_000_000, ordinal: 0, kbps: 0, clock_only: false };
                 let anchor = Anchor::of(0, &[0]); // matches no real keyframe: the assumed mapping
                 let mut delta = None;
                 let end = read_once(

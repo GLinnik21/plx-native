@@ -11,6 +11,17 @@
 //! only inputs are the [`Spec`], `SHARED`'s playhead and clock atomics, and the main demuxer's
 //! published keyframe anchor.
 //!
+//! **A SIDECAR gets the same reader CLOCK-ONLY** ([`CLOCK_ONLY`]): the app fetches that subtitle
+//! itself, so the reader reads no cue, owns no subtitle selection (`side_subs_owner` stays false,
+//! `desired_sub_idx` is untouched), fills no store, and can never raise the server-burn failure.
+//! It runs the keyframe scan only, to learn where in the Part the remux's first keyframe is: a
+//! sidecar is in file time, the remux is labelled with the REQUESTED offset, and PMS starts it on an
+//! earlier keyframe. A byte-exact match is published to [`exact_delta_ns`], which
+//! `player::sidecar_clock_ns` adds to the sidecar's render clock; without one nothing is shifted
+//! (the assumed mapping is not trusted for this: it was measured 2.002 s wrong). The run is bound
+//! by the same gate as an embedded one (`route::side_reader_target`): off it there is no reader
+//! and a sidecar is drawn on the remux's clock, as before.
+//!
 //! Logs: `subside: open|anchor|reopen|failed|stop …` — labels and numbers, never the URL, host,
 //! token or session identifier.
 
@@ -27,6 +38,11 @@ const BACKOFF: Duration = Duration::from_millis(500);
 /// How far before the playhead a reopen starts reading, so a cue already on screen comes back.
 const REOPEN_LEAD_NS: i64 = 15_000_000_000;
 
+/// [`Spec::ordinal`] of a CLOCK-ONLY run: no track is read (a sidecar is drawn), only the clock is
+/// measured. Negative, so it is never a track position and two runs of different roles never
+/// compare equal in `apply`.
+pub const CLOCK_ONLY: i32 = -1;
+
 /// Everything one run of the reader is started with. `url` carries the token: held, never logged.
 #[derive(Clone)]
 pub struct Spec {
@@ -36,7 +52,8 @@ pub struct Spec {
     pub offset_ns: i64,
     /// The Part's whole-file bitrate, for the log line only.
     pub part_kbps: u32,
-    /// The 0-based position of the drawn track among the Part's subtitle streams.
+    /// The 0-based position of the drawn track among the Part's subtitle streams, or
+    /// [`CLOCK_ONLY`].
     pub ordinal: i32,
     /// Start reading at the playhead instead of the run's start offset: the reader begins mid-play
     /// (a pick on a live remux), not with the engine run.
@@ -142,8 +159,10 @@ pub fn spec_for(target: &crate::route::SideReaderTarget) -> Option<Spec> {
 pub fn start(spec: Spec) -> bool {
     let _l = lifecycle();
     EPOCH.fetch_add(1, Ordering::AcqRel);
-    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = spec.delta;
     stop_locked("restart", false);
+    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = spec.delta;
+    // A new engine run: the last run's measurement describes a stream that is gone.
+    EXACT_DELTA_NS.store(NO_EXACT, Ordering::Release);
     start_locked(spec)
 }
 
@@ -151,14 +170,19 @@ fn start_locked(spec: Spec) -> bool {
     FAILED.store(false, Ordering::Release);
     let stop_handle = SideStop::new();
     let prev_selection = super::desired_sub_idx();
-    crate::player::SHARED.side_subs_owner.store(true, Ordering::Release);
-    super::request_subtitle(spec.ordinal);
+    let clock_only = spec.ordinal == CLOCK_ONLY;
+    if !clock_only {
+        crate::player::SHARED.side_subs_owner.store(true, Ordering::Release);
+        super::request_subtitle(spec.ordinal);
+    }
     let ordinal = spec.ordinal;
     let thread_stop = Arc::clone(&stop_handle);
     // `plx_base::task::spawn` hands back std's handle, whose `thread()` is what `stop` unparks.
     let Some(handle) = plx_base::task::spawn("subside", move || run(spec, thread_stop)) else {
-        crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
-        super::request_subtitle(prev_selection);
+        if !clock_only {
+            crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
+            super::request_subtitle(prev_selection);
+        }
         return false;
     };
     ACTIVE.store(true, Ordering::Release);
@@ -180,6 +204,10 @@ pub fn stop(reason: &str) {
     // The engine run is over: its anchor names a stream that no reader will match again, whether
     // or not a reader was running (the sync worker may have stopped it already, keeping the anchor).
     *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // The same reason: whether or not a reader ran, a run that gets none (off the gate) must not
+    // inherit the clock of the run before it, which would shift its sidecar by a stranger's snap.
+    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    EXACT_DELTA_NS.store(NO_EXACT, Ordering::Release);
 }
 
 /// `stop`'s body, under the lifecycle lock. `keep_anchor`: leave the main demuxer's published
@@ -195,14 +223,18 @@ fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
     // A failure the stopped reader raised and nobody has polled yet belongs to it, not to the
     // reader (or the sidecar) that replaces it.
     FAILED.store(false, Ordering::Release);
-    crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
     if !keep_anchor {
         *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
-    if super::desired_sub_idx() == r.ordinal {
-        super::request_subtitle(r.prev_selection);
+    // A clock-only run took no subtitle selection, owned no ownership flag and filled no store:
+    // there is nothing of it to give back.
+    if r.ordinal != CLOCK_ONLY {
+        crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
+        if super::desired_sub_idx() == r.ordinal {
+            super::request_subtitle(r.prev_selection);
+        }
+        crate::player::SHARED.sub_bitmaps.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
-    crate::player::SHARED.sub_bitmaps.lock().unwrap_or_else(|e| e.into_inner()).clear();
     plx_base::eventlog::log(&format!(
         "subside: stop reason={reason} join_ms={}",
         started.elapsed().as_millis()
@@ -316,9 +348,22 @@ fn playpos() -> i64 {
 }
 
 fn run(spec: Spec, stop: Arc<SideStop>) {
+    let clock_only = spec.ordinal == CLOCK_ONLY;
+    // A clock-only run that is handed a delta (a track switch within this engine run) has nothing
+    // left to find: the mapping is the run's, whether it was matched exactly (then `exact_delta_ns`
+    // already holds it) or not (the same anchor, Part and window would miss again).
+    if clock_only && spec.delta.is_some() {
+        return;
+    }
     // The anchor first: the heavy reads (the Part's own bytes) wait for the remux to have started.
     let Some(anchor) = wait_for_anchor(&stop) else { return };
-    let cfg = ReadCfg { url: &spec.url, offset_ns: spec.offset_ns, ordinal: spec.ordinal.max(0) as usize, kbps: spec.part_kbps };
+    let cfg = ReadCfg {
+        url: &spec.url,
+        offset_ns: spec.offset_ns,
+        ordinal: spec.ordinal.max(0) as usize,
+        kbps: spec.part_kbps,
+        clock_only,
+    };
     let mut delta: Option<i64> = spec.delta;
     let from_playhead = spec.from_playhead;
     let save = |d: Option<i64>| *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = d;
@@ -341,17 +386,23 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
         let end = read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock);
         save(delta);
         match end {
-            RunEnd::Stopped => return,
+            RunEnd::Stopped | RunEnd::Measured => return,
             RunEnd::Unusable => {
                 plx_base::eventlog::log("subside: failed");
-                FAILED.store(true, Ordering::Release);
+                // A clock-only run has no track to lose: its failure is delta 0 (the sidecar
+                // keeps the remux's clock), never the server's burn.
+                if !clock_only {
+                    FAILED.store(true, Ordering::Release);
+                }
                 return;
             }
             RunEnd::Failed => {
                 reopens += 1;
                 if reopens > MAX_REOPENS {
                     plx_base::eventlog::log("subside: failed");
-                    FAILED.store(true, Ordering::Release);
+                    if !clock_only {
+                        FAILED.store(true, Ordering::Release);
+                    }
                     return;
                 }
                 plx_base::eventlog::log(&format!("subside: reopen n={reopens}"));
