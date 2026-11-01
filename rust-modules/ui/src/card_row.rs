@@ -1788,10 +1788,18 @@ pub fn anchor_label_from(start: LabelStart, lead: f32, trail: f32, w: f32, want:
 /// as they do in [`anchor_label`]'s leading case — and glides inside it (the caller's marquee).
 /// The tile is the UNSCALED card, so the pop never re-decides which lines overflow.
 fn tile_window(lead: f32, tile_w: f32, run: f32) -> LabelPlace {
-    if run <= tile_w {
-        LabelPlace { x: lead + (tile_w - run) * 0.5, w: run, align: LabelAlign::Centre }
-    } else {
+    tile_window_from(LabelStart::Centre, lead, tile_w, run)
+}
+
+/// [`tile_window`] for a row whose [`RowStyle::label_start`] is `start`: a run that fits stays at the card's
+/// leading edge under [`LabelStart::Leading`] instead of being centred, as every block of such a row does.
+fn tile_window_from(start: LabelStart, lead: f32, tile_w: f32, run: f32) -> LabelPlace {
+    if run > tile_w {
         LabelPlace { x: lead, w: tile_w, align: LabelAlign::Leading }
+    } else if start == LabelStart::Leading {
+        LabelPlace { x: lead, w: run, align: LabelAlign::Leading }
+    } else {
+        LabelPlace { x: lead + (tile_w - run) * 0.5, w: run, align: LabelAlign::Centre }
     }
 }
 
@@ -2047,7 +2055,7 @@ fn draw_label_block(
     // ([`anchor_label`]).
     let want = title_w_val.map_or(0.0, |w| w + 2.0 * lead).max(caption_run);
     let at = if within_tile {
-        tile_window(rect.cx() - sty.w * 0.5, sty.w, want)
+        tile_window_from(sty.label_start, rect.cx() - sty.w * 0.5, sty.w, want)
     } else {
         place_label_wide(p, rect, sty, title_run.max(caption_run.min(full)), want, label.settle_lag)
     };
@@ -2669,6 +2677,21 @@ mod tests {
     /// A block held to its tile ([`TileLabel::within_tile`]) never has a window wider than the
     /// tile: a run that fits is centred like any block, one that does not leads from the tile's
     /// edge inside a tile-wide window.
+    #[test]
+    fn a_leading_row_keeps_a_fitting_block_at_the_cards_edge_inside_its_tile() {
+        assert_eq!(
+            tile_window_from(LabelStart::Leading, 100.0, 250.0, 100.0),
+            LabelPlace { x: 100.0, w: 100.0, align: LabelAlign::Leading },
+            "a name that fits starts at the card's edge, not centred"
+        );
+        assert_eq!(
+            tile_window_from(LabelStart::Leading, 100.0, 250.0, 900.0),
+            LabelPlace { x: 100.0, w: 250.0, align: LabelAlign::Leading },
+            "one that does not glides in the tile, never the neighbours' room"
+        );
+        assert_eq!(tile_window_from(LabelStart::Centre, 100.0, 250.0, 100.0), tile_window(100.0, 250.0, 100.0));
+    }
+
     #[test]
     fn a_block_held_to_its_tile_is_never_wider_than_the_tile() {
         assert_eq!(tile_window(100.0, 250.0, 100.0), LabelPlace { x: 175.0, w: 100.0, align: LabelAlign::Centre });

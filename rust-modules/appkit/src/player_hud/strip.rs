@@ -178,7 +178,7 @@ where
     }
     /// The focused card's name: the Shelf hangs it under the card and glides it when it does not fit.
     fn label(&self, i: usize) -> TileLabel {
-        TileLabel { title: CString::new(self.name(i)).ok(), ..TileLabel::default() }
+        TileLabel { title: CString::new(self.name(i)).ok(), ..TileLabel::default() }.within_tile()
     }
     fn holdable(&self, _i: usize) -> bool {
         false
