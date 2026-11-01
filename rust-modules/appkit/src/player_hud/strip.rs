@@ -33,6 +33,11 @@ use plx_data::metadata::Chapter;
 /// The art resolution a chapter still is asked for at: the episode picker's, and the strip's since it drew.
 const STILL_RES: (std::os::raw::c_int, std::os::raw::c_int) = (480, 270);
 
+/// The stiffness of the strip's focus pop and of its scroll: what its panel stepped them with
+/// (`ChaptersState::update`), kept so a card pops at the pace it always has.
+const STRIP_K_SCALE: f32 = 300.0;
+const STRIP_K_SCROLL: f32 = 220.0;
+
 /// What a strip op says about the strip: the viewport, a card at slot 0, the pitch, the corner and where the
 /// name and the time stand below a card (from the card's bottom edge to the text's top).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,8 +71,8 @@ impl Geometry {
         })
     }
 
-    /// The Shelf's style for this strip: the card's size, the gap and corner, the focus pop the strip has
-    /// always had, the rim over the video plane, labels from the card's leading edge and the name hung where
+    /// The Shelf's style for this strip: the card's size, the gap and corner, the focus pop and the springs
+    /// the strip has always had, the rim over the video plane, labels from the card's leading edge and the name hung where
     /// the op stands it.
     pub fn style(&self) -> RowStyle {
         RowStyle {
@@ -77,6 +82,8 @@ impl Geometry {
             margin_x: self.card.x,
             radius: self.radius,
             focus_scale: CARD_FOCUS_SCALE,
+            k_scale: STRIP_K_SCALE,
+            k_scroll: STRIP_K_SCROLL,
             ..RowStyle::HOME
         }
         .with_rim(Rim { width: CH_FOCUS_RING_W, ink: theme::CONTROL_RIM_FOCUS_UNKEYED })
@@ -192,5 +199,27 @@ where
         if let Ok(time) = CString::new(plx_ui::fmt::clock(self.chapters[i].start_ms)) {
             p.text(time.as_ptr(), x, bottom + self.geo.time_drop, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The strip keeps the springs its own panel ran**: the pop stiffened at 300 and the scroll at 220
+    /// (`ChaptersState::update`), not the Shelf's defaults (320 and 170). Found in the simulator: opening the
+    /// strip, its focused card was part-way up its pop a few frames ahead of the panel's.
+    #[test]
+    fn the_strip_pops_and_scrolls_at_the_springs_its_panel_ran() {
+        let geo = Geometry {
+            rect: Rect::new(0.0, 684.0, 1920.0, 223.0),
+            card: Rect::new(96.0, 684.0, 288.0, 162.0),
+            pitch: 312.0,
+            radius: 10.0,
+            name_drop: 26.0,
+            time_drop: 60.0,
+        };
+        let style = geo.style();
+        assert_eq!((style.k_scale, style.k_scroll), (300.0, 220.0));
     }
 }
