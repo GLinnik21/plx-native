@@ -328,7 +328,9 @@ pub enum LibraryReq {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LibraryMenuKind {
     Sort, Filter, Genre, Sources, Type,
-    /// The header's one Sort & Filter popover: Show / Sort / Filter sections. `Sort`, `Filter` and
+    /// The header's one Sort & Filter popover: Show / Sort / Filter sections, then (with two or more
+    /// libraries of the kind on offer) the Sources list's per-server sections and a headerless
+    /// Favorite libraries block. `Sort`, `Filter` and
     /// `Type` remain as the single-purpose menus the scripted pipeline names.
     SortFilter,
 }

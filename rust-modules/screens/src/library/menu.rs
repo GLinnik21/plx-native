@@ -378,8 +378,11 @@ fn filter_section(unwatched: bool, genre: Option<&GenreEntry>, genres_supported:
 /// **The one Sort & Filter menu** (redesign spec, "Header"): Show, Sort and Filter in one popover.
 /// Show lists the types the library offers besides Collections (which has its own control) and is
 /// absent when only one remains; Sort is the server's declared list; Filter is the genre and the
-/// Unwatched toggle, then (under a separator) one row per reachable library of the kind when there
-/// are two or more, and a Favorite libraries row that opens Settings on that page.
+/// Unwatched toggle and nothing else. When two or more libraries of the kind are offered (a
+/// favourite, or any library on a server `source_list::usable` accepts) the Sources list follows in
+/// sections of its own: a group per server, a faulty group dimmed with its fault said, the
+/// library on view ticked, the roster-refresh row last. The Favorite libraries row, which opens
+/// Settings on that page, is a headerless block of its own at the very bottom.
 fn sort_filter_draft(
     section_kind: SecKind,
     current: LibraryType,

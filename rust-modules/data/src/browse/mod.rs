@@ -310,8 +310,9 @@ pub struct BrowseSection {
     /// ([`tab_has_favorite`], so a type whose last favourite is switched off is out of the strip),
     /// and the Library's own Sources picker ([`source_rows`]). What still comes from the GRANT and
     /// not from this bit: access itself, the grid, sort and the A–Z rail — all downstream of a
-    /// library you have already chosen — and Search, which stays grant-wide and only RANKS
-    /// favourite-library hits first.
+    /// library you have already chosen — the Library's Sort & Filter menu, which also lists the
+    /// non-favourites on a server the Sources list can open, and Search, which stays grant-wide and
+    /// only RANKS favourite-library hits first.
     ///
     /// Your HOUSEHOLD's libraries start favourite and a friend's start favourite only where the
     /// household has no library of that type ([`plx_plex::plex::pins::default_on`]); the last

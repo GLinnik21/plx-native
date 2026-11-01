@@ -342,8 +342,10 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   once/sec heartbeat's `route=` field no longer reads `onboard` for the Settings-opened case — only
   for the first-run one. A picker that could
   turn into an editor would let a library be un-favourited from inside the list of favourites and
-  then vanish out of it under the cursor. **Browse** is a picker — one tick, OK closes, scoped to
-  the FAVOURITES of the type being browsed. **On Home** is a toggle — the word `On`/`Off` at the
+  then vanish out of it under the cursor. **Browse** is a picker — one tick, OK closes. The "+N"
+  panel scopes it to the favourites the header fold hid; the Library's Sort & Filter menu draws the
+  same level over every library of the type that is a favourite or sits on a server the list would
+  open. **On Home** is a toggle — the word `On`/`Off` at the
   trailing edge, OK flips, the list stays open.
   Grouped by server: header = machine, accessory = person. The last favourite library uses `value_dim`;
   an unreachable server's whole group dims at .52, header included. "Check for shared libraries" sits last
