@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T00:53:26Z",
+ "generated": "2026-11-01T01:00:23Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -85,14 +85,14 @@
    "change7_pct": 37.5,
    "d30": null,
    "delta30": null,
-   "delta7": 54,
+   "delta7": 54.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 87,
-   "now": 198,
+   "now": 198.0,
    "prev7": 144,
    "shown": true,
    "state": "worse",
@@ -145,18 +145,18 @@
   },
   {
    "change30_pct": -62.3,
-   "change7_pct": 14.5,
+   "change7_pct": 14.3,
    "d30": 1030.0,
    "delta30": -642.0,
-   "delta7": 49,
+   "delta7": 48.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 221,
-   "n_prev": 203,
+   "n_prev": 202,
    "now": 388,
-   "prev7": 339,
+   "prev7": 339.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -166,17 +166,17 @@
   },
   {
    "change30_pct": -63.3,
-   "change7_pct": 16.6,
+   "change7_pct": 16.8,
    "d30": 1053,
-   "delta30": -667,
-   "delta7": 55,
+   "delta30": -666.5,
+   "delta7": 55.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 101,
-   "now": 386,
+   "now": 386.5,
    "prev7": 331,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.6,
-   "change7_pct": 4.5,
+   "change30_pct": 30.5,
+   "change7_pct": 5.3,
    "d30": 213.0,
-   "delta30": 63.0,
-   "delta7": 12,
+   "delta30": 65.0,
+   "delta7": 14.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 87,
-   "now": 276,
+   "now": 278.0,
    "prev7": 264,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -78.5,
-   "change7_pct": 8.8,
+   "change30_pct": -78.6,
+   "change7_pct": 8.3,
    "d30": 1004.0,
-   "delta30": -788.0,
-   "delta7": 17.5,
+   "delta30": -789.0,
+   "delta7": 16.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 86,
-   "now": 216,
+   "now": 215.0,
    "prev7": 198.5,
    "shown": true,
    "state": "flat",
@@ -561,14 +561,14 @@
    "change7_pct": -5.3,
    "d30": 17.0,
    "delta30": 1.0,
-   "delta7": -1,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 87,
-   "now": 18,
+   "now": 18.0,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.5,
    "commits": [
     {
-     "pr": 1177,
-     "sha": "12cbaebb8",
-     "title": "A-Z rail for a TV library's Seasons and Episodes views"
-    },
-    {
      "pr": 1161,
      "sha": "d55bf672f",
      "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
@@ -715,6 +710,11 @@
      "pr": 1190,
      "sha": "a860ac894",
      "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
+    },
+    {
+     "pr": 1191,
+     "sha": "e463ccb19",
+     "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
     }
    ],
    "from": 189.0,
@@ -728,11 +728,6 @@
    "change_pct": 37.5,
    "commits": [
     {
-     "pr": 1177,
-     "sha": "12cbaebb8",
-     "title": "A-Z rail for a TV library's Seasons and Episodes views"
-    },
-    {
      "pr": 1161,
      "sha": "d55bf672f",
      "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
@@ -776,6 +771,11 @@
      "pr": 1190,
      "sha": "a860ac894",
      "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
+    },
+    {
+     "pr": 1191,
+     "sha": "e463ccb19",
+     "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
     }
    ],
    "from": 144,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 198
+   "to": 198.0
   },
   {
    "change_pct": 21.5,
    "commits": [
-    {
-     "pr": 1177,
-     "sha": "12cbaebb8",
-     "title": "A-Z rail for a TV library's Seasons and Episodes views"
-    },
     {
      "pr": 1161,
      "sha": "d55bf672f",
@@ -837,6 +832,11 @@
      "pr": 1190,
      "sha": "a860ac894",
      "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
+    },
+    {
+     "pr": 1191,
+     "sha": "e463ccb19",
+     "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
     }
    ],
    "from": 270,
@@ -850,11 +850,6 @@
    "change_pct": 18.6,
    "commits": [
     {
-     "pr": 1177,
-     "sha": "12cbaebb8",
-     "title": "A-Z rail for a TV library's Seasons and Episodes views"
-    },
-    {
      "pr": 1161,
      "sha": "d55bf672f",
      "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
@@ -898,6 +893,11 @@
      "pr": 1190,
      "sha": "a860ac894",
      "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
+    },
+    {
+     "pr": 1191,
+     "sha": "e463ccb19",
+     "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
     }
    ],
    "from": 2089.5,
