@@ -2304,10 +2304,8 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
   one left**; this line said "three" long after the other two (`home-grid`, `library-scroll`) were
-  given oscillators and real `fps_floor`s, which is the fix that note asks for. The other three
-  `loop_floor`-only scenes are the player-tier overlays (`info-panel`, `track-menu`, `chapters-panel` — take the list from `./tests/run.py --list --server`, not from here) and need no note, because
-  the video plane stays bound for the whole scene, so `fps=` grades neither an animator nor an
-  idle screen. Every run also reports
+  given oscillators and real `fps_floor`s, which is the fix that note asks for. The other `loop_floor`-only scenes need no note: the video plane stays bound for the whole scene, so `fps=` grades neither an animator nor an
+  idle screen. Take the list from `./tests/run.py --list --server`, not from here. Among them, `info-panel` and `chapters-panel` are HUD sections of the player page (they pin `overlay=none` and a `section` word), and `track-menu` is still an overlay. Every run also reports
   **`drift`** (last-third minus first-third mean): sorting used to destroy sample ORDER, so a
   monotone 60→53 decay and a flat 53 were byte-identical output. It is reported, never asserted —
   18–36 s is far too short to gate a thermal ramp on, and **the "the panel thermally throttles"

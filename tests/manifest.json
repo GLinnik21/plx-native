@@ -1583,7 +1583,7 @@
       "warmup_s": 9,
       "item": "movie_hevc_4k_hdr10_truehd",
       "comment": "The Chapters strip, a SECTION of the player page since PR8 (not a surface, so ` overlay=` stays `none` and the heartbeat's ` section=chapters` word selects the scene; tests/run.py `select_section`). Its boot trigger is plxnative-chapters. It sat outside the suite while info-panel and track-menu were gated, which is the gap this closes -- the strip carries a horizontal row of chapter THUMBNAILS over live video, so it is the only player scene whose cost scales with artwork rather than with rows of text.",
-      "_floor_note": "45, the player-overlay tier, exactly as info-panel and track-menu: same route, same live decode underneath, same cached-glass popover over it. No fps_floor and no fps_ceiling, and that is the tier's shape rather than an omission -- the present gate answers true while the hardware video plane stays bound (Player::set_video_plane_bound), which is this whole scene, so fps= on a player scene grades neither an animator nor an idle screen. loop= is the signal that exists here.",
+      "_floor_note": "45, the player-overlay tier, exactly as info-panel and track-menu: same route and the same live decode underneath. The Chapters strip is a HUD section drawn by the transport, not a popover, so no glass sits over the video for it. No fps_floor and no fps_ceiling, and that is the tier's shape rather than an omission -- the present gate answers true while the hardware video plane stays bound (Player::set_video_plane_bound), which is this whole scene, so fps= on a player scene grades neither an animator nor an idle screen. loop= is the signal that exists here.",
       "triggers": {
         "plxnative-play": "$rk",
         "plxnative-chapters": true
