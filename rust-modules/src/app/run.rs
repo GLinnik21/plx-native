@@ -2331,25 +2331,6 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     // (see the removed key/pointer arms above), so this deferred commit can never
                     // see either route.
                     // the transport's control row (discs or a stand-in)
-                    //
-                    // (The retained Info OVERLAY's) action column is the SURFACE's press, so it is asked
-                    // first and by identity rather than by a second `Route::Player` arm — the two
-                    // used to be two arms of one route, which reads as an ordering and compiles as
-                    // an unreachable branch.
-                    AppArg::Player
-                        if matches!(
-                            super::bridge::player_overlay_kind(&app.pages),
-                            Some(plx_screens::player::overlay::OverlayKind::Info)
-                        ) =>
-                    {
-                        commit_info_press(&mut app.player,
-                            &mut app.adapters.player,
-                            &mut app.repause_at,
-                            &mut app.refresh_hubs,
-                            &mut app.pages,
-                            &mut app.bridge,
-                        )
-                    }
                     AppArg::Player => activate_player_row(&mut app.player,
                         &mut app.adapters.player,
                         &mut app.repause_at,
@@ -3019,18 +3000,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // because `player::pump` republishes the state mid-iteration and this must
                         // be the post-pump value.
                         //
-                        // `transport` is the other per-frame fact the instance cannot resolve for
-                        // itself: whether a surface is over the bare picture. An open Info card or Chapters
-                        // strip is a SECTION, the page's own state, and `PlayerScreen::middle_up` withholds the
-                        // middle for it. The `bare_middle` below is false only while the RETAINED Info/Chapters
-                        // overlay is presented, which no live path does: it is always true on the shipped path
-                        // until stage 2b removes that overlay.
+                        // An open Info card or Chapters strip is a SECTION, the page's own state, and
+                        // `PlayerScreen::middle_up` withholds the middle for it: no surface takes the
+                        // transport's picture any more, so there is no per-frame fact to hand the page.
                         let busy = plx_appkit::player_hud::busy(&app.player.session);
-                        let bare_middle = !matches!(
-                            super::bridge::player_overlay_kind(&app.pages),
-                            Some(plx_screens::player::overlay::OverlayKind::Info)
-                                | Some(plx_screens::player::overlay::OverlayKind::Chapters)
-                        );
                         // Both subtitle paths lift clear of the transport for the same reason and
                         // by the same test — an open track menu counts, since that is exactly when
                         // the user is reading the bottom of the screen. The Timing capsule is the
@@ -3039,7 +3012,6 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         let hud_policy = super::bridge::player_hud_policy(&app.pages);
                         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
-                            player.transport = bare_middle;
                             player.set_hud_policy(hud_policy);
                         }
                         // THE PAGE, and its panels: `Dispatcher::draw(.., true)` runs the page

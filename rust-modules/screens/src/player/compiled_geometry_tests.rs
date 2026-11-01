@@ -193,7 +193,7 @@ fn classic_menus_hang_from_the_row_ending_at_the_segment_edge() {
 fn only_menus_under_a_package_have_an_anchor() {
     let _g = plx_base::testlock::serial();
     let page = page_with(classic());
-    for kind in [overlay::OverlayKind::Info, overlay::OverlayKind::Chapters, overlay::OverlayKind::Timing] {
+    for kind in [overlay::OverlayKind::Timing] {
         assert_eq!(page.menu_anchor(kind, false), None, "{kind:?}");
     }
 }

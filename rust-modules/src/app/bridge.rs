@@ -2857,7 +2857,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     // Library's, Search's and the content pages' fields are.
     //
     // The panel fields keep the spellings the characterization line has always used
-    // (`menu=`/`msel=`/`taudio=`/`tsub=`/`info=`/`isel=`/`infolast=`/`chap=`/`csel=`/`more=`/
+    // (`menu=`/`msel=`/`taudio=`/`tsub=`/`info=`/`isel=`/`chap=`/`csel=`/`more=`/
     // `osel=`), because a recording taken before this phase and one taken after must be
     // comparable. `haschap=` stays in `push_player`: it is a fact about the ITEM, not the panel.
     if matches!(page.arg, AppArg::Player) {
@@ -2877,13 +2877,12 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             Some(Panel::Tracks(t)) => (t.active_audio(), t.active_sub()),
             _ => (0, -1),
         };
-        let infolast = matches!(surface.map(|s| s.panel()), Some(Panel::Info(p)) if p.at_last());
         let menu = is(|k| matches!(k, OverlayKind::Tracks { .. }));
-        // Info and Chapters are the page's own sections now (`hud.sections`); the spellings stay so a recording
-        // taken before and one taken after remain comparable.
+        // Info and Chapters are the page's own sections (`hud.sections`), not surfaces; the spellings stay so a
+        // recording taken before and one taken after remain comparable.
         let sections = player.map(|p| p.hud.sections).unwrap_or(plx_screens::player::input::Sections::NONE);
-        let info = is(|k| matches!(k, OverlayKind::Info)) || sections.contains(plx_appkit::player_hud::command::Section::Info);
-        let chap = is(|k| matches!(k, OverlayKind::Chapters)) || sections.contains(plx_appkit::player_hud::command::Section::Chapters);
+        let info = sections.contains(plx_appkit::player_hud::command::Section::Info);
+        let chap = sections.contains(plx_appkit::player_hud::command::Section::Chapters);
         // the section's own cursor: Info's button, or the chapter card the engine holds
         let section_sel = if sections.contains(plx_appkit::player_hud::command::Section::Chapters) {
             d.input.engine.current(InputOwner::Entry(page.id))
@@ -2895,9 +2894,9 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let more = is(|k| matches!(k, OverlayKind::More { .. }));
         let _ = write!(
             out,
-            " menu={} msel={} taudio={taudio} tsub={tsub} info={} isel={} infolast={} chap={} csel={} more={} osel={}",
+            " menu={} msel={} taudio={taudio} tsub={tsub} info={} isel={} chap={} csel={} more={} osel={}",
             u8::from(menu), if menu { sel } else { 0 },
-            u8::from(info), if info { sel } else { 0 }, u8::from(infolast),
+            u8::from(info), if info { sel } else { 0 },
             u8::from(chap), if chap { sel } else { 0 },
             u8::from(more), if more { sel } else { 0 },
         );
@@ -4036,8 +4035,8 @@ pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
 /// of an APP-SIDE write to `hud.nav.focus`.
 ///
 /// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
-/// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in five
-/// places — a retained Chapters / Info overlay panel handing the ring back to the tabs (`PlayerReq::FocusTabs`; an open section hands it back through `close_section`), the
+/// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in four
+/// places — the
 /// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, the auto-hide
 /// park (in `run::update`) and the Skip / Up Next stand-in's departure (`run::follow_control_row`: the
 /// ring goes back to the scrubber, `standin_left_the_ring`'s contract) — and a bare write would leave

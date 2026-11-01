@@ -153,11 +153,6 @@ pub struct PlayerScreen {
     /// Who owns the "pipeline is working" signal this frame — resolved once, after `player::pump`,
     /// and handed to both the transport and the read-out so they can never both light.
     pub busy: plx_appkit::player_hud::Busy,
-    /// The container's per-frame fact: is the transport's picture bare (no surface over it)? It says nothing about
-    /// sections: an open section is the page's own state, and [`PlayerScreen::middle_up`] withholds the middle
-    /// for a MODAL one only. It is false only while the retained Info/Chapters OVERLAY is presented, which no live
-    /// path does, so it is always true on the shipped path until stage 2b removes that overlay.
-    pub transport: bool,
     /// What the surfaces over this page do to the transport this frame — see [`HudPolicy`].
     /// Pushed once per frame by `app/run.rs` through [`Self::set_hud_policy`].
     hud_policy: HudPolicy,
@@ -202,7 +197,6 @@ impl PlayerScreen {
             up_next: Countdown::default(),
             slot: ControlSlot::Discs(player_hud::Controls::NONE),
             busy: plx_appkit::player_hud::Busy::None,
-            transport: true,
             hud_policy: HudPolicy::Normal,
             origin: None,
             render: PlayerRender::default(),
@@ -1692,7 +1686,7 @@ impl PlayerScreen {
 
     /// Is the transport's MIDDLE (the scrubber and the control row) on screen? Not while a modal section holds it.
     fn middle_up(&self) -> bool {
-        self.transport && !(self.hud.sections.any() && self.modal())
+        !(self.hud.sections.any() && self.modal())
     }
 
     /// Where the strip's cards sit in screen space, as the Shelf's frame.
@@ -2908,25 +2902,27 @@ mod step_ladder_tests {
 
     /// The census's other half: a control the frame does NOT draw registers no stop, so a click
     /// there reaches the picture (play/pause) rather than a blind action. A hidden HUD registers
-    /// nothing; with an Info card or Chapters strip over the middle (`transport == false`) only
-    /// the tabs remain.
+    /// nothing; with a modal section (Info) over the middle only the tabs and the section's own
+    /// buttons remain, never the scrubber or the row.
     #[test]
     fn a_control_the_frame_does_not_draw_registers_no_stop() {
-        use plx_appkit::player_hud::ELEM_TAB_BASE;
+        use plx_appkit::player_hud::{ELEM_SECTION_BASE, ELEM_TAB_BASE};
         use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
-        for (transport, hud_drawn, want) in [
-            (true, false, vec![]),
+        for (info_open, hud_drawn, want) in [
             (false, false, vec![]),
-            (false, true, vec![ELEM_TAB_BASE]),
+            (true, false, vec![]),
+            (true, true, vec![ELEM_TAB_BASE, ELEM_SECTION_BASE, ELEM_SECTION_BASE + 1]),
         ] {
             let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-            page.transport = transport;
+            if info_open {
+                page.hud.sections = Sections::NONE.toggled(Section::Info, true);
+            }
             let cx = cx();
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, hud_drawn);
             let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
-            assert_eq!(got, want, "transport={transport} hud_drawn={hud_drawn}");
+            assert_eq!(got, want, "info_open={info_open} hud_drawn={hud_drawn}");
         }
     }
 
@@ -2979,7 +2975,6 @@ mod step_ladder_tests {
         use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.transport = true;
         let cx = cx();
         let ps = TestHost::session(&cx);
         page.set_hud_policy(HudPolicy::Lifted);
@@ -3004,15 +2999,14 @@ mod step_ladder_tests {
         let mut budget = Budget::new();
         let cx = cx();
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.transport = true;
         page.set_hud_policy(HudPolicy::Hidden);
         Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
         assert!(!plx_gfx::text::prewarm_pending(), "nothing is drawn under the capsule: nothing to warm");
         page.set_hud_policy(HudPolicy::Lifted);
-        page.transport = false;
+        page.hud.sections = Sections::NONE.toggled(Section::Info, true);
         Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
         assert!(!plx_gfx::text::prewarm_pending(), "an Info card owns the middle: no playbar, no clocks");
-        page.transport = true;
+        page.hud.sections = Sections::NONE;
         Screen::<TestHost>::prepare(&mut page, &mut budget, &cx);
         assert!(plx_gfx::text::prewarm_pending(), "the playbar's clocks were left for the draw to rasterise");
         plx_gfx::text::reset_prewarm_for_test();
@@ -3031,7 +3025,6 @@ mod step_ladder_tests {
         let mut budget = Budget::new();
         let cx = cx();
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.transport = true;
         page.set_hud_policy(HudPolicy::Lifted);
         page.model.playpos_ns = 10 * S;
         page.model.duration_ns = 7_200 * S;
@@ -3056,7 +3049,6 @@ mod step_ladder_tests {
         let cx = cx();
         let ps = TestHost::session(&cx);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.transport = true;
         assert!(page.hud_drawn(ps, 1_000), "paused: the transport is up before the capsule");
         page.set_hud_policy(HudPolicy::Hidden);
         assert!(!page.hud_drawn(ps, 1_000), "hidden under the capsule");
@@ -3078,7 +3070,6 @@ mod step_ladder_tests {
         let cx = cx();
         let ps = TestHost::session(&cx);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.transport = true;
         page.set_hud_policy(HudPolicy::Hidden);
         page.hud.dismissed = true;
         page.hud.note_fresh_press(ps, 1_000, true); // the LEFT that steps the capsule
@@ -3102,8 +3093,7 @@ mod step_ladder_tests {
         let map_of = |slot: ControlSlot| {
             let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
             page.slot = slot;
-            page.transport = true;
-            let cx = cx();
+                let cx = cx();
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, true);
             let mut map = HitMap::new();
@@ -3181,8 +3171,7 @@ mod step_ladder_tests {
             let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
             page.slot = slot;
             page.busy = busy;
-            page.transport = true;
-            let cx = cx();
+                let cx = cx();
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, true);
             let mut map = HitMap::new();
@@ -4323,7 +4312,6 @@ mod scrub_ownership_tests {
         };
         let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now);
         let mut page = page_on_the_bar();
-        page.transport = true;
         step(&mut page, 1_000);
         let before = elems(&page);
         assert!(before.contains(&(player_hud::ELEM_CONTROL_BASE + player_hud::BTN_SUBTITLES as u32)) && before.contains(&player_hud::ELEM_TAB_BASE));
@@ -4355,7 +4343,6 @@ mod scrub_ownership_tests {
         let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing);
         playhead(50 * S);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.transport = true;
         assert!(!page.hud.visible_at_press, "the fixture: the transport is hidden");
         let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now);
 
@@ -4376,7 +4363,6 @@ mod scrub_ownership_tests {
 
         // …whereas a hold that really TRAVELS is a scrub, and is published as one
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.transport = true;
         key(&mut page, SDLK_RIGHT, Edge::Down, 2_000);
         key(&mut page, SDLK_RIGHT, Edge::Repeat, 2_050);
         tick(&mut page, 2_400);

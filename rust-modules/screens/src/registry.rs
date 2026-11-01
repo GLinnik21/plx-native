@@ -196,31 +196,24 @@ pub enum PlayerReq {
     CommitSeek(i64),
     /// Apply the `…` popover's chosen row.
     More(plx_appkit::more_menu::Action),
-    /// Apply the Info card's focused action.
-    Info(plx_appkit::info_panel::InfoAction),
-    /// The panel took a DOWN past its own bottom: drop the HUD's ring onto the tabs row.
-    FocusTabs,
     /// Keep the transport alive while a panel is being read (`HUD_MENU_MS`), or hand it the
     /// ordinary linger as a panel closes (`HUD_LINGER_MS`).
     ExtendHud(u32),
-    /// The Info card's OK landed on a control FACE, which has a press dip of its own: arm the
-    /// tvOS press and commit on the spring-back rather than acting now.
-    ArmInfoPress,
     /// The track menu picked a row. `route::commit_audio_selection`/`commit_subtitle_selection`
     /// take the playback session's `&mut`, which a screen never has (§2.2) — so the panel decides
     /// and the loop performs, exactly as every other request in this enum.
     CommitTrack(plx_appkit::track_menu::TrackCommit),
     /// **Present one of the player's overlays directly** (restructure phase 12) — the failure read-out's own
     /// recovery escape (`OverlayKind::More` on its Quality page, the old `key_player_failed`'s `ChooseQuality`
-    /// arm) and the Tracks->Timing hand-off. (The tabs row's OK used to be here with `OverlayKind::Info` /
-    /// `::Chapters`; it asks `PlayerReq::Command(HudCommand::ToggleSection(..))` now, and no live path presents
-    /// those two kinds.) The first used to reach
+    /// arm) and the Tracks->Timing hand-off. (The tabs row's OK used to be here with the Info and Chapters
+    /// overlays; it asks `PlayerReq::Command(HudCommand::ToggleSection(..))` now, and those two are sections of
+    /// the page.) The first used to reach
     /// `super::bridge::open_player_overlay` straight from the loop's key ladder; `PlayerScreen`
     /// may not name that function itself (§2.2), so it asks instead.
     OpenOverlay(crate::player::overlay::OverlayKind),
     /// **A pointer click landed on the transport's own control row** — whichever disc, the Skip
-    /// pill or the Up Next tile currently occupies it. Arms the same tvOS press dip
-    /// [`ArmInfoPress`](PlayerReq::ArmInfoPress) does; the loop's commit-frame dispatch
+    /// pill or the Up Next tile currently occupies it. Arms a tvOS press dip;
+    /// the loop's commit-frame dispatch
     /// (`app/run.rs`'s `Route::Player => activate_player_row(...)`) performs whatever the row
     /// decides once the spring-back has played, through the same performer OK reaches by
     /// [`Command`](PlayerReq::Command) and [`StandIn`](PlayerReq::StandIn). OK on the row does not

@@ -28,7 +28,7 @@ use plx_ui::page_stack::TITLE_KEY;
 use plx_appkit::track_menu::{StyleField, TrackPage, TrackRow};
 use plx_machine::machine::{
     Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent, InputKind,
-    InputOwner, InstanceId, Machine, MachineId, NavOp, PressId, Source, Tick,
+    InputOwner, InstanceId, Machine, MachineId, NavOp, Source, Tick,
 };
 use plx_ui::screen::{At, By, Focusable, Placed, ScreenEvent};
 #[path = "hud_pins_tests.rs"] mod hud_pins;
@@ -156,20 +156,10 @@ fn activate(page: &mut PlayerOverlayScreen, elem: u32) -> (Handled, Vec<PlayerRe
     deliver(page, ScreenEvent::Activate(elem))
 }
 
-/// A keyboard OK's deferred commit — the engine's own press machinery arms on the down edge and
-/// delivers this on release (§7.4).
-fn press_commit(page: &mut PlayerOverlayScreen, id: u32) -> (Handled, Vec<PlayerReq>, bool) {
-    deliver(page, ScreenEvent::PressCommit(PressId(id)))
-}
+/// The panels a viewer reads WHILE the film runs. `More` is deliberately not here.
+const MODAL: [(OverlayKind, &str); 1] = [(OverlayKind::Tracks { tab: 0 }, "Menu (tracks)")];
 
-/// The three panels a viewer reads WHILE the film runs. `More` is deliberately not here.
-const MODAL: [(OverlayKind, &str); 3] = [
-    (OverlayKind::Tracks { tab: 0 }, "Menu (tracks)"),
-    (OverlayKind::Info, "Info"),
-    (OverlayKind::Chapters, "Chapters"),
-];
-
-/// **The reported bug.** A viewer holding the track menu, the Info card or the Chapters strip open
+/// **The reported bug.** A viewer holding the track menu open
 /// still expects PAUSE/PLAY to work — and the panel to stay up. The old ladder said this by NOT
 /// swallowing; the surface says it by forwarding the press to the loop, which spends it on the
 /// same toggle. Either way the panel is untouched, which is the half `Fx::Nav(Dismiss)` grades.
@@ -440,67 +430,6 @@ fn a_click_no_longer_scans_pixels_or_dismisses_inside_step() {
         assert!(reqs.is_empty(), "{name}: step raises nothing from a raw click");
         assert!(!dismissed, "{name}: step no longer dismisses a click itself");
     }
-}
-
-/// **(D2 repro)** `groups()` publishes the ACTIVE panel's real row count. On 2790f47a this
-/// answered one `Free` region of `len: 1` no matter what — `Info` always has exactly two action
-/// buttons regardless of what is playing, so this needs no external data to be a clean assertion
-/// either way, and it is the exact case the package brief names.
-#[test]
-fn groups_publishes_the_active_panels_real_row_count() {
-    let ps = plx_media::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
-    let mut groups = Vec::new();
-    Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
-    assert_eq!(groups.len(), 1, "one focus group for the action column");
-    assert_eq!(
-        groups[0].len, 2,
-        "From Beginning + Go to Show/Movie — not the stub's len 1",
-    );
-}
-
-/// **(D2 repro)** `place(k, At::Drawn)` answers each row's OWN drawn rect, not one `Rect::FULL`
-/// for every key regardless of which — the hit map needs the real rect to resolve a click at all.
-#[test]
-fn place_answers_each_rows_own_rect_not_one_full_screen_stop() {
-    let ps = plx_media::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
-    let first: Placed = Focusable::<TestHost>::place(&page, &0u32, &cx(), At::Drawn).expect("row 0 places");
-    let second: Placed = Focusable::<TestHost>::place(&page, &1u32, &cx(), At::Drawn).expect("row 1 places");
-    assert_ne!(
-        (first.rect.y, first.rect.h),
-        (second.rect.y, second.rect.h),
-        "each row is its own rect, not the whole screen twice",
-    );
-    let full = plx_ui::Rect::FULL;
-    assert_ne!(
-        (first.rect.x, first.rect.y, first.rect.w, first.rect.h),
-        (full.x, full.y, full.w, full.h),
-        "not the stub's whole-screen placement",
-    );
-    assert!(
-        Focusable::<TestHost>::place(&page, &99u32, &cx(), At::Drawn).is_none(),
-        "an out-of-range row does not place at all",
-    );
-}
-
-/// **(D2 repro)** §7.3 step 5: the ENGINE owns the current element; the owner's `step` only reacts
-/// to a `FocusMoved` it is told about. On 2790f47a nothing in `step` handled this event, so a
-/// panel's own cursor could never follow an engine-driven move at all.
-#[test]
-fn focus_moved_writes_the_new_cursor_into_the_open_panel() {
-    let ps = plx_media::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
-    assert_eq!(page.sel(), 0);
-    let (_, reqs, _) = deliver(
-        &mut page,
-        ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: 1 }, by: By::Dir },
-    );
-    assert_eq!(page.sel(), 1, "the panel's cursor follows the engine's FocusMoved");
-    assert!(
-        reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))),
-        "a moved cursor keeps the transport up for a menu's read time",
-    );
 }
 
 /// **(D2 repro)** `Tracks`' and `More`'s rows answer `ElemKind::Bare`: a key-down or pointer-click
@@ -840,7 +769,7 @@ fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
 #[test]
 fn timings_word_and_slot() {
     assert_eq!(OverlayKind::Timing.word(), "timing");
-    assert_eq!(OverlayKind::Timing.slot(), 4);
+    assert_eq!(OverlayKind::Timing.slot(), 2);
 }
 
 /// LEFT/RIGHT on the capsule commit a new `SubtitleOffset` through the ordinary `CommitTrack`
@@ -922,38 +851,6 @@ fn timing_ticks_do_not_extend_the_hud() {
     );
 }
 
-/// **Info's split, kept from the old ladder's `Key::Ok if p.focus_is_ctl()` arm** (restructure
-/// phase 12): a POINTER click's `Activate` is already a precise, instantaneous gesture, so it
-/// applies the card's action at once; a keyboard OK arms the engine's own (non-holdable) press and
-/// only reaches here as `PressCommit`, on release — which defers instead to the loop's tvOS dip
-/// (`PlayerReq::ArmInfoPress`, read back on the spring-back by `commit_info_press`).
-#[test]
-fn infos_activate_and_press_commit_take_different_roads() {
-    let ps = plx_media::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
-    let (_, reqs, dismissed) = activate(&mut page, 0);
-    assert!(dismissed, "a pointer click applies the card's action at once");
-    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::Info(_))));
-
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
-    let (_, reqs, dismissed) = press_commit(&mut page, 0);
-    assert!(!dismissed, "a keyboard OK defers instead of acting now");
-    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ArmInfoPress)));
-}
-
-/// `Chapters`' cards answer `ElemKind::Card` (a holdable press for the keyboard): OK's own
-/// `PressCommit` on release seeks and dismisses, exactly as the old ladder's `Key::Ok` did.
-#[test]
-fn chapters_press_commit_seeks_and_dismisses() {
-    let ps = plx_media::route::PlaybackSession::IDLE;
-    let mut page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Chapters);
-    let (_, _, dismissed) = press_commit(&mut page, 0);
-    assert!(
-        dismissed,
-        "Chapters: PressCommit (the Card's release) dismisses regardless of the seek target",
-    );
-}
-
 /// **The one thing a panel still decides outside its own scope**: the engine re-delivers a
 /// direction at this panel's group EDGE (`EdgeRule::Screen`), and Tracks answers by switching its
 /// tab rather than moving within the group — `TrackMenuState::focus_tab`, unchanged from the old
@@ -976,7 +873,7 @@ fn tracks_edge_key_switches_tab_instead_of_moving_within_the_group() {
 fn the_overlay_answers_engine_for_both_focus_and_hits() {
     use plx_ui::screen::{FocusSource, HitSource, Screen};
     let ps = plx_media::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { page: None });
     assert_eq!(Screen::<TestHost>::focus_source(&page), FocusSource::Engine);
     assert_eq!(Screen::<TestHost>::hit_source(&page), HitSource::Engine);
 }
@@ -986,10 +883,10 @@ fn the_overlay_answers_engine_for_both_focus_and_hits() {
 #[test]
 fn the_active_groups_seat_round_trips_through_group_of() {
     let ps = plx_media::route::PlaybackSession::IDLE;
-    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Info);
+    let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::More { page: None });
     let mut groups = Vec::new();
     Focusable::<TestHost>::groups(&page, &cx(), &mut groups);
-    assert_eq!(groups.len(), 1, "one focus group for the action column");
+    assert_eq!(groups.len(), 1, "one focus group for the rows");
     let seated = Focusable::<TestHost>::seat(
         &page,
         groups[0].id,
@@ -1011,7 +908,7 @@ fn the_active_groups_seat_round_trips_through_group_of() {
 /// the video plane, so the track menu and the `…` menu ask for a dim over
 /// [`UnderlaySource::Flat`](plx_ui::screen::UnderlaySource::Flat) at their `theme::underlay` roles
 /// and the playing item's UltraBlur envelope is not even carried to the player (`PlayingItem` has no
-/// `blur`): the artwork's colour never casts on it. The Info card and Chapters strip ask for no dim, as they drew none.
+/// `blur`): the artwork's colour never casts on it. The Timing capsule asks for none.
 ///
 /// Observed RED on main: the dims latched from the item's `blur` corners, so the source was
 /// `UnderlaySource::Corners(..)` for an item that carried an envelope (recorded before the field was
@@ -1030,8 +927,7 @@ fn the_player_panels_dim_through_the_container_in_the_neutral_dim_whatever_the_i
     for (kind, alpha) in [
         (OverlayKind::Tracks { tab: 0 }, DIM_PLAYER),
         (OverlayKind::More { page: None }, DIM_SHEET),
-        (OverlayKind::Info, 0.0),
-        (OverlayKind::Chapters, 0.0),
+        (OverlayKind::Timing, 0.0),
     ] {
         let page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, kind);
         let scrim = Screen::<TestHost>::scrim(&page);
@@ -1103,11 +999,11 @@ fn a_pointer_click_activates_the_row_it_hit_by_key() {
     assert_eq!(menu.selected_id(), Some(TrackRow::Sub(1)));
 }
 
-/// **Issue #162's census, for the four panels over the player**: every row a panel's `Focusable`
+/// **Issue #162's census, for the panels over the player**: every row a panel's `Focusable`
 /// declares — what the D-pad walks — is clickable with the pointer over its whole visible rect,
 /// against the map the panel's own paint-free `record_stops` fills. It grades the HIT MAP only —
 /// what a click there spends is `activate_commits_the_bare_rows_directly`'s — and with the empty
-/// test metadata the Tracks and Chapters panels declare no rows, so for those two it is vacuous.
+/// test metadata the Tracks panel declares no rows, so for it it is vacuous.
 #[test]
 fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
     use plx_ui::hit::{pointer_gaps, HitMap};
@@ -1117,8 +1013,6 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
     for kind in [
         OverlayKind::Tracks { tab: 0 },
         OverlayKind::Tracks { tab: 1 },
-        OverlayKind::Info,
-        OverlayKind::Chapters,
         OverlayKind::More { page: None },
         OverlayKind::More { page: Some(MorePage::Quality) },
     ] {
@@ -1148,7 +1042,7 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
                 }
             }
         }
-        if matches!(kind, OverlayKind::Info | OverlayKind::More { .. }) {
+        if matches!(kind, OverlayKind::More { .. }) {
             assert!(!rows.is_empty(), "{kind:?} always has rows to press");
         }
         let gaps = pointer_gaps(&mut map, ENTRY, &rows);
@@ -1164,8 +1058,6 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
 fn every_kind_is_listed_once() {
     let listed = |k: OverlayKind| match k {
         OverlayKind::Tracks { .. }
-        | OverlayKind::Info
-        | OverlayKind::Chapters
         | OverlayKind::More { .. }
         | OverlayKind::Timing => OverlayKind::ALL.iter().any(|a| a.slot() == k.slot()),
     };

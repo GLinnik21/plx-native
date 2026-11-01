@@ -73,7 +73,7 @@ use plx_machine::present::Present;
 use plx_ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use plx_ui::fixture::{key, key_up, tick, FixtureArg, FixtureMeasure};
 use plx_ui::frame::Budget;
-use plx_ui::screen::{At, Focusable, GroupSpec, Mounter, ReturnState, Screen, ScreenEvent};
+use plx_ui::screen::{At, Focusable, GroupSpec, Mounter, Placed, ReturnState, Screen, ScreenEvent};
 
 /// The longest key string any pin replays. Past it the clock this harness runs (600 ms a press)
 /// would reach the transport's own timeout and the Up Next countdown, and a pin would start to
@@ -2281,6 +2281,61 @@ mod sections {
         assert_eq!(run.screen().row.held_card(), Some(0), "the hold stands through the fade");
         run.toggle(Section::Chapters);
         assert_eq!(run.screen().row.held_card(), None, "opening it again takes the hold away");
+    }
+
+    // -- ported from the removed Info / Chapters overlays' own tests ----------------------------------------------
+
+    /// **A transport key under an open section reaches the toggle and leaves the page up** (issue 28; the overlay
+    /// forwarded it as `PlayerReq::Transport`, and the page's own ladder answers it before the section arms).
+    #[test]
+    fn a_transport_key_under_an_open_section_toggles_play_and_leaves_it_open() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        for (package, name) in [
+            (plx_appkit::player_hud::loaded::classic_for_test(), "classic"),
+            (plx_appkit::player_hud::loaded::reference_for_test(), "reference"),
+        ] {
+            for section in [Section::Info, Section::Chapters] {
+                for (wcode, want) in [
+                    (plx_ui::consts::WCODE_PAUSE, Some(false)),
+                    (plx_ui::consts::WCODE_PLAY, Some(true)),
+                    (plx_ui::consts::WCODE_PLAYPAUSE, None),
+                ] {
+                    let mut run = Run::boot_in(Occupant::Plain, std::sync::Arc::clone(&package), true);
+                    run.screen().model.chapters = true;
+                    run.toggle(section);
+                    run.asked();
+                    run.press_coded(Key::Other, wcode);
+                    assert_eq!(run.asked(), vec![PlayerReq::Transport(want)], "{name} {section:?} wcode {wcode}");
+                    assert_eq!(run.open_sections(), vec![section], "{name} {section:?} wcode {wcode}: the page stays up");
+                }
+            }
+        }
+    }
+
+    /// **Info's buttons are one focus group and place their own rects** (the overlay's `groups` / `place` / `seat`
+    /// pins, on the page): two stops in `GROUP_SECTION`, each its own rect rather than the screen, none past the
+    /// second, and a seat in the group reports back to it through `group_of`.
+    #[test]
+    fn the_info_sections_buttons_are_one_group_that_places_and_seats_its_own_rects() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut screen = census_screen(Occupant::Plain, false);
+        screen.hud.sections = Sections::NONE.toggled(Section::Info, true);
+        let cx: Cx<'static, TestHost> = super::super::cx();
+        let mut groups: Vec<GroupSpec> = Vec::new();
+        Focusable::<TestHost>::groups(&screen, &cx, &mut groups);
+        let info = groups.iter().find(|g| g.id == GROUP_SECTION).expect("the open Info page declares its group");
+        assert_eq!(info.len, 2, "From Beginning and Go to Show/Movie");
+        let place = |i: u32| Focusable::<TestHost>::place(&screen, &(ELEM_SECTION_BASE + i), &cx, At::Drawn);
+        let (first, second) = (place(0).expect("button 0 places"), place(1).expect("button 1 places"));
+        assert_ne!((first.rect.y, first.rect.h), (second.rect.y, second.rect.h), "each button is its own rect");
+        assert_ne!(ext(first.rect), ext(plx_ui::Rect::FULL), "not the whole screen");
+        assert!(place(2).is_none(), "a third button does not place");
+        let from = Placed { rect: plx_ui::Rect::FULL, rest_rect: plx_ui::Rect::FULL, clip: plx_ui::Rect::FULL, index: None };
+        let seated = Focusable::<TestHost>::seat(&screen, GROUP_SECTION, from, &cx);
+        assert_eq!(Focusable::<TestHost>::group_of(&screen, &seated.elem, &cx), Some(GROUP_SECTION));
     }
 
     /// **Info for Chapters is a swap, not a cut**: the new section opens at appear 0 while the old one is still
