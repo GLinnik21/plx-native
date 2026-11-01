@@ -1,5 +1,6 @@
-//! MPEG-TS/AAC timestamp handling: in-band parameter-set recovery and ADTS
-//! frame-clock backfill when the container timestamp is missing or unreliable.
+//! MPEG-TS/AAC timestamp handling: in-band parameter-set recovery, ADTS
+//! frame-clock backfill when the container timestamp is missing or unreliable, and the rebase of
+//! a transport stream whose clock does not start near zero.
 
 use super::*;
 #[allow(unused_imports)]
@@ -122,4 +123,39 @@ fn adts_detection_accepts_a_real_header_but_not_arbitrary_ff_bytes() {
     assert!(!packet_has_adts(&[0xff, 0x00, 0, 0, 0, 0, 0]));
     assert_eq!(adts_duration_ns(&frame), Some(21_333_333));
     assert_eq!(adts_duration_ns(&[0xff, 0x00, 0, 0, 0, 0, 0]), None);
+}
+
+// -- a start-code stream's clock (issue #1084) ----------------------------------------------
+//
+// The engine takes a fresh play's first keyframe to be near 0 (`rebase_pending` is armed only for a
+// seek), and `seek_to_ns` is content time. A broadcast capture's clock starts wherever the
+// transmitter's did: the report's first audio unit was fed at 45171.69 s, a pipeline 12.5 hours
+// ahead of its own start. So a stream with no avcC record is moved to 0 at the demuxer, once.
+
+#[test]
+fn a_start_code_stream_is_rebased_by_its_start_time() {
+    // `AVFormatContext.start_time` is in AV_TIME_BASE units (microseconds).
+    assert_eq!(stream_origin_ns(45_171_690_000, NalInput::StartCodes), 45_171_690_000_000);
+    assert_eq!(stream_origin_ns(1_400_000, NalInput::StartCodes), 1_400_000_000, "an ffmpeg-made TS starts at 1.4 s");
+}
+
+/// Only a stream with no config record changes: Matroska and MP4 keep the clock they have always had.
+#[test]
+fn a_length_prefixed_stream_keeps_its_clock() {
+    assert_eq!(stream_origin_ns(45_171_690_000, NalInput::LengthPrefixed), 0);
+    assert_eq!(stream_origin_ns(7_000, NalInput::LengthPrefixed), 0, "an MKV whose first block is at 7 ms");
+}
+
+#[test]
+fn an_unknown_or_negative_start_time_rebases_nothing() {
+    assert_eq!(stream_origin_ns(AV_NOPTS_VALUE, NalInput::StartCodes), 0);
+    assert_eq!(stream_origin_ns(-40_000, NalInput::StartCodes), 0, "never moves a stream forward");
+    assert_eq!(stream_origin_ns(0, NalInput::StartCodes), 0);
+}
+
+#[test]
+fn a_rebased_timestamp_moves_back_and_a_missing_one_stays_missing() {
+    assert_eq!(rebase_ts(4_065_452_100_000, 4_065_450_000_000), 2_100_000);
+    assert_eq!(rebase_ts(AV_NOPTS_VALUE, 4_065_450_000_000), AV_NOPTS_VALUE);
+    assert_eq!(rebase_ts(10, 40), -30, "a dts ahead of the stream's start stays negative; pts_ns reads pts first");
 }

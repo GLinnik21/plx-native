@@ -36,6 +36,12 @@
 //! the pipeline has popped some audio, and that an interleaved file never queues audio past its
 //! soft cap. The skew test drives the real lanes with a stand-in consumer ([`drive_consumer`]).
 //!
+//! **A video stream that is not length-prefixed (issue #1084, the tests at the very end).** The
+//! route direct-plays by the part's file NAME, so an MPEG-TS called `.mp4` reaches the demuxer with
+//! start codes in every packet and no avcC record. The same harness pins that its H.264 arrives as
+//! whole access units (SPS, PPS and the IDR slice, not a five-byte delimiter), that a capture cut
+//! mid-GOP starts on its first keyframe, and that HEVC in a transport stream is refused.
+//!
 //! **The fixture.** H.264 from a noise source at 12 Mbit/s: noise is how ~13 MB of video is made
 //! to precede the first audio packet in a few seconds of encoding (the real film got there with
 //! 9.5 Mbit/s of near-black frames over 11 s; black would need the same bitrate to be forced, and
@@ -290,6 +296,11 @@ struct DemuxRun {
 
 impl DemuxRun {
     fn start(port: u16) -> DemuxRun {
+        Self::start_with_audio(port, "eac3")
+    }
+
+    /// [`start`](Self::start) with the audio codec the Load payload names.
+    fn start_with_audio(port: u16, acodec: &'static str) -> DemuxRun {
         let (video_cap, audio_cap) = crate::player::engine::aq_caps();
         let mut video = crate::aq::aq_new(video_cap as c_long);
         let mut audio = crate::aq::aq_new(audio_cap as c_long);
@@ -303,7 +314,7 @@ impl DemuxRun {
         let thread = std::thread::spawn(move || {
             let off = plx_base::task::OffFrame::for_test();
             // `acodec` is the Load payload's audio codec: the demuxer feeds the track that matches.
-            demux(&off, origin, "/library/parts/1/file.mkv".into(), "eac3".into(), None, None, vp, ap, hp)
+            demux(&off, origin, "/library/parts/1/file.mkv".into(), acodec.into(), None, None, vp, ap, hp)
         });
         DemuxRun { video, audio, thread: Some(thread), hs }
     }
@@ -395,6 +406,17 @@ fn prepare(tag: &str, audio_delay_s: f64, video_s: u32) -> Option<Prepared> {
 
 /// [`prepare`] over a fixture `make` writes into the scratch directory.
 fn prepare_with(tag: &str, make: impl FnOnce(&Path) -> PathBuf) -> Option<Prepared> {
+    prepare_with_audio(tag, "eac3", make)
+}
+
+/// [`prepare_with`] for a fixture whose audio is `acodec` (the name the Load payload carries).
+fn prepare_with_audio(tag: &str, acodec: &'static str, make: impl FnOnce(&Path) -> PathBuf) -> Option<Prepared> {
+    prepare_at(tag, acodec, -1, make)
+}
+
+/// [`prepare_with_audio`] with a seek armed before the first read (`seek_ns`, content time; -1 for
+/// none): what a resume publishes, and what the demuxer services before it reads anything.
+fn prepare_at(tag: &str, acodec: &'static str, seek_ns: i64, make: impl FnOnce(&Path) -> PathBuf) -> Option<Prepared> {
     if !tool_present("ffmpeg") || !tool_present("ffprobe") {
         // A skip is for a developer machine; CI installs the tools, and a gate that skips there
         // is a gate that is not running (`CI` is set by GitHub Actions).
@@ -403,7 +425,7 @@ fn prepare_with(tag: &str, make: impl FnOnce(&Path) -> PathBuf) -> Option<Prepar
         return None;
     }
     let ffmpeg = bind_host_ffmpeg();
-    SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+    SHARED.seek_to_ns.store(seek_ns, Ordering::Relaxed);
     SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
     SHARED.dg_load_v.store(0, Ordering::Relaxed);
     SHARED.side_subs_owner.store(false, Ordering::Relaxed);
@@ -418,7 +440,7 @@ fn prepare_with(tag: &str, make: impl FnOnce(&Path) -> PathBuf) -> Option<Prepar
         "{tag}: fixture first audio packet at {first_audio_s:.3} s, {video_before} bytes of video before it"
     );
     let server = FileServer::start(&file);
-    let run = DemuxRun::start(server.port);
+    let run = DemuxRun::start_with_audio(server.port, acodec);
     Some(Prepared { run, first_audio_s, video_before, _server: server, _scratch: scratch, _ffmpeg: ffmpeg })
 }
 
@@ -773,15 +795,21 @@ fn audio_bytes_before_first_video(path: &Path) -> (u64, f64) {
 
 /// Wait until the video lane holds an AU, then pop it: `(pts_ns, key)`. `None` at the deadline.
 fn first_video_au(run: &mut DemuxRun, deadline: Duration) -> Option<(i64, i32)> {
+    first_video_au_bytes(run, deadline).map(|(pts, key, _)| (pts, key))
+}
+
+/// [`first_video_au`] with the access unit's bytes as the lane held them.
+fn first_video_au_bytes(run: &mut DemuxRun, deadline: Duration) -> Option<(i64, i32, Vec<u8>)> {
     let until = Instant::now() + deadline;
     while Instant::now() < until {
         if crate::aq::aq_bytes(&mut *run.video) > 0 {
             let node = crate::aq::aq_pop(&mut *run.video, std::ptr::null_mut());
             if !node.is_null() {
-                let (es, key, pts, _len, _data) = unsafe { crate::aq::au_fields(node) };
+                let (es, key, pts, len, data) = unsafe { crate::aq::au_fields(node) };
+                let bytes = unsafe { std::slice::from_raw_parts(data, len.max(0) as usize) }.to_vec();
                 unsafe { libc::free(node as *mut c_void) };
                 assert_eq!(es, 1, "the video lane carries es=1 AUs");
-                return Some((pts, key));
+                return Some((pts, key, bytes));
             }
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -1119,5 +1147,223 @@ fn a_constant_audio_skew_neither_hangs_the_start_nor_starves_video_mid_film() {
     assert!(
         audio > crate::player::engine::aq_caps().1,
         "the audio lane carries the skew over its base cap: {audio} bytes"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// A video stream that is not length-prefixed: MPEG-TS under a `.mp4` name (issue #1084).
+// ---------------------------------------------------------------------------------------------
+//
+// The route decides direct play from the part's file NAME (`part_is_streamable`), and libavformat
+// probes the CONTENT: a transport stream called `.mp4` reaches `ff::demux` as `mpegts`, whose H.264
+// has no avcC record and whose packets carry start codes. Walked as length-prefixed, every access
+// unit came out as `00 00 00 01 09` (the delimiter) and `key=false`, and the player sat on "Loading"
+// with `ff: param_sets=0 bytes` and `ff: AU#0 size=5` in the log.
+
+/// Write an MPEG-TS: 640x360 H.264 noise (a keyframe each second, the SPS/PPS in-band) and AAC.
+fn generate_ts(dir: &Path) -> PathBuf {
+    generate_ts_at(dir, 0)
+}
+
+/// [`generate_ts`] whose clock starts `clock_s` seconds in, as a broadcast capture's does (the
+/// report's first audio unit was at 45171.69 s); 0 leaves the muxer's own 1.4 s.
+fn generate_ts_at(dir: &Path, clock_s: u32) -> PathBuf {
+    let out = dir.join("capture.ts");
+    let offset = clock_s.to_string();
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y"])
+        .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=6,noise=alls=60:allf=t+u"])
+        .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=6"])
+        .args(["-map", "0:v", "-map", "1:a"])
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "25", "-bf", "0"])
+        .args(["-b:v", "2M", "-maxrate", "2M", "-bufsize", "2M"])
+        .args(["-c:a", "aac", "-b:a", "128k"])
+        .args(if clock_s > 0 { vec!["-output_ts_offset", offset.as_str()] } else { vec![] })
+        .args(["-f", "mpegts"])
+        .arg(&out)
+        .status()
+        .expect("run ffmpeg");
+    assert!(status.success(), "ffmpeg could not write the transport stream");
+    assert_eq!(ffprobe_format_name(&out), "mpegts", "fixture: not a transport stream");
+    out
+}
+
+fn ffprobe_format_name(path: &Path) -> String {
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=format_name", "-of", "default=nw=1:nk=1"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe");
+    assert!(probe.status.success(), "ffprobe could not read {}", path.display());
+    String::from_utf8_lossy(&probe.stdout).trim().to_string()
+}
+
+/// `(byte position, keyframe)` of every video packet, in file order.
+fn video_packet_positions(path: &Path) -> Vec<(u64, bool)> {
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v", "-show_entries", "packet=pos,flags", "-of", "compact"])
+        .arg(path)
+        .output()
+        .expect("run ffprobe");
+    assert!(probe.status.success(), "ffprobe could not list the video packets");
+    String::from_utf8_lossy(&probe.stdout)
+        .lines()
+        .filter_map(|l| {
+            let field = |k: &str| l.split('|').find_map(|f| f.strip_prefix(k)).map(str::to_string);
+            Some((field("pos=")?.parse().ok()?, field("flags=")?.starts_with('K')))
+        })
+        .collect()
+}
+
+/// The transport stream starting at a video packet in the middle of its second GOP, on a 188-byte
+/// boundary: a capture that began mid-GOP, the first picture it holds a P-slice with no parameter
+/// sets before it (the report's `non-existing PPS 0 referenced` and `PES packet size mismatch`).
+fn generate_ts_cut_mid_gop(dir: &Path) -> PathBuf {
+    let whole = generate_ts(dir);
+    let packets = video_packet_positions(&whole);
+    let second_key = packets.iter().enumerate().filter(|(_, p)| p.1).nth(1).map(|(i, _)| i).expect("two GOPs");
+    let cut_at = packets[second_key + 7].0 as usize / 188 * 188;
+    let bytes = std::fs::read(&whole).expect("read the transport stream");
+    let out = dir.join("capture_mid_gop.ts");
+    std::fs::write(&out, &bytes[cut_at..]).expect("write the cut transport stream");
+    assert_eq!(ffprobe_format_name(&out), "mpegts", "fixture: the cut file is no transport stream");
+    assert!(
+        video_packet_positions(&out).first().is_some_and(|p| !p.1),
+        "fixture: the cut file must open on a non-keyframe"
+    );
+    out
+}
+
+/// The NAL unit types of an Annex-B access unit, in order.
+fn annexb_nal_types(au: &[u8]) -> Vec<u8> {
+    let mut types = Vec::new();
+    let mut from = 0;
+    while let Some((start, prefix)) = annexb_start(au, from) {
+        types.push(au[start + prefix] & 0x1f);
+        from = start + prefix;
+    }
+    types
+}
+
+/// **The regression (issue #1084).** The first video AU is the transport stream's own first
+/// keyframe, whole: a delimiter, SPS, PPS and the IDR slice, not the five bytes of the delimiter.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI - see the module doc"]
+fn an_annexb_transport_stream_reaches_the_video_lane_whole() {
+    let _g = plx_base::testlock::serial();
+    let Some(mut p) = prepare_with_audio("ts", "aac", generate_ts) else {
+        return;
+    };
+    let (pts, key, au) = first_video_au_bytes(&mut p.run, FIRST_AUDIO_DEADLINE)
+        .expect("no video AU reached the video lane");
+    let types = annexb_nal_types(&au);
+    assert!((0..1_000_000_000).contains(&pts), "the muxer's own 1.4 s start is rebased to 0, got {pts} ns");
+    assert!(au.len() > 5, "the AU is {} bytes: {au:02x?}", au.len());
+    assert!(au.starts_with(&[0, 0, 0, 1]) || au.starts_with(&[0, 0, 1]), "start-code framed: {:02x?}", &au[..au.len().min(8)]);
+    for nal in [7u8, 8, 5] {
+        assert!(types.contains(&nal), "NAL type {nal} is missing; the AU holds {types:?}");
+    }
+    assert_eq!(key, 1, "the first AU is a keyframe");
+    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+}
+
+/// **A capture that began mid-GOP.** The demuxer must not hand the pipeline pictures that need
+/// parameter sets it has not seen: the first AU on the lane is the first keyframe, whole.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI - see the module doc"]
+fn a_transport_stream_cut_mid_gop_starts_on_its_first_keyframe() {
+    let _g = plx_base::testlock::serial();
+    let Some(mut p) = prepare_with_audio("ts-mid-gop", "aac", generate_ts_cut_mid_gop) else {
+        return;
+    };
+    let (_pts, key, au) = first_video_au_bytes(&mut p.run, FIRST_AUDIO_DEADLINE)
+        .expect("no video AU reached the video lane");
+    let types = annexb_nal_types(&au);
+    assert_eq!(key, 1, "the first AU on the lane is a keyframe, not a P-slice ({types:?})");
+    for nal in [7u8, 8, 5] {
+        assert!(types.contains(&nal), "NAL type {nal} is missing; the AU holds {types:?}");
+    }
+    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+}
+
+/// An HEVC elementary stream in a transport stream has start codes too, and this demuxer has no
+/// in-place framing for it (the DV and HDR10+ rewrites walk NALs by length). It must be REFUSED, as
+/// a codec with no framing is, not fed as the five-byte units the length walk made of it: a failed
+/// open recovers (Auto Original falls back to HLS) where a misframed one is a spinner nobody can leave.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI - see the module doc"]
+fn an_annexb_hevc_transport_stream_is_refused_not_misframed() {
+    let _g = plx_base::testlock::serial();
+    let Some(mut p) = prepare_with_audio("ts-hevc", "aac", generate_hevc_ts) else {
+        return;
+    };
+    let until = Instant::now() + FIRST_AUDIO_DEADLINE;
+    while !p.run.finished() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        SHARED.demux_failed.load(Ordering::Acquire),
+        "the open must fail ({} bytes of video queued: {:02x?})",
+        crate::aq::aq_bytes(&mut *p.run.video),
+        first_video_au_bytes(&mut p.run, Duration::from_millis(50)).map(|(_, _, au)| au)
+    );
+    assert_eq!(crate::aq::aq_bytes(&mut *p.run.video), 0, "no misframed unit reaches the video lane");
+}
+
+/// [`generate_ts`] with HEVC.
+fn generate_hevc_ts(dir: &Path) -> PathBuf {
+    let out = dir.join("capture_hevc.ts");
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y"])
+        .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=3,noise=alls=60:allf=t+u"])
+        .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3"])
+        .args(["-map", "0:v", "-map", "1:a"])
+        .args(["-c:v", "libx265", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-x265-params", "keyint=25:log-level=error"])
+        .args(["-b:v", "2M"])
+        .args(["-c:a", "aac", "-b:a", "128k"])
+        .args(["-f", "mpegts"])
+        .arg(&out)
+        .status()
+        .expect("run ffmpeg");
+    assert!(status.success(), "ffmpeg could not write the HEVC transport stream");
+    assert_eq!(ffprobe_format_name(&out), "mpegts", "fixture: not a transport stream");
+    out
+}
+
+/// **A capture's clock starts nowhere near zero (issue #1084's report: first audio at 45171.69 s).**
+/// The engine takes a fresh play's first keyframe to be near 0, so the lanes must carry the stream
+/// from 0, not from the transmitter's clock.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI - see the module doc"]
+fn a_transport_stream_whose_clock_starts_at_12_hours_reaches_the_lanes_from_zero() {
+    let _g = plx_base::testlock::serial();
+    let Some(mut p) = prepare_with_audio("ts-clock", "aac", |d| generate_ts_at(d, 45_171)) else {
+        return;
+    };
+    assert!(p.first_audio_s > 45_000.0, "fixture: the clock must start at 12.5 h, got {} s", p.first_audio_s);
+    let (pts, key, _au) = first_video_au_bytes(&mut p.run, FIRST_AUDIO_DEADLINE)
+        .expect("no video AU reached the video lane");
+    assert_eq!(key, 1);
+    assert!((0..1_000_000_000).contains(&pts), "the first video AU is at {pts} ns, not 0-based");
+    let seen = p.run.observe(Duration::from_secs(5), 500_000_000);
+    let audio = seen.first_audio_pts_ns.expect("no audio AU reached the audio lane");
+    assert!((0..1_000_000_000).contains(&audio), "the first audio AU is at {audio} ns, not 0-based");
+}
+
+/// **A resume into it.** `seek_to_ns` is content time, and the demuxer seeks in the stream's own
+/// clock, so without the origin added back a resume at 3 s lands on the stream's first packet.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI - see the module doc"]
+fn a_resume_into_a_transport_stream_with_a_late_clock_lands_at_its_content_time() {
+    let _g = plx_base::testlock::serial();
+    let Some(mut p) = prepare_at("ts-clock-resume", "aac", 3_000_000_000, |d| generate_ts_at(d, 45_171)) else {
+        return;
+    };
+    let (pts, key, _au) = first_video_au_bytes(&mut p.run, FIRST_AUDIO_DEADLINE)
+        .expect("no video AU reached the video lane");
+    assert_eq!(key, 1, "a seek lands on a keyframe");
+    assert!(
+        (1_900_000_000..=3_100_000_000).contains(&pts),
+        "a resume at 3 s landed at {pts} ns (the stream's first packet is at ~45172 s)"
     );
 }
