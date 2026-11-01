@@ -678,6 +678,48 @@ pub fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, vw: f32
     reveal(cur, lo, hi, max_sx)
 }
 
+/// **The most cards a row of style `sty` paints at once while it rests**, whatever its length: the number a
+/// price counts when it must hold for every chapter list, and the most `cards::Shelf` paints.
+///
+/// The Shelf paints a card when [`on_axis`](crate::on_axis)`(x - scroll, w, SCR_W, lead)` holds, `x` being
+/// [`tile_rect`]'s and `lead` its `cull_margin`: against the SCREEN, never against the row's own width (a
+/// strip whose rect is 1728 wide still paints the card that peeks out past it). And a row at rest is not at
+/// scroll 0: [`scroll_into_view`] moves it only when the focused card would clip, so it rests on one of four
+/// lattices, none of which depends on how many cards there are: scroll 0; the scroll that just fits the
+/// focused card's trailing edge (moving right, `lo`); the one that just fits its leading edge (moving left,
+/// `hi`); and the end (`max_sx`). The first and the last stand a whole card from an edge; the middle two
+/// leave a PARTIAL card at the left, and paint one more.
+///
+/// The four scrolls are `scroll_into_view`'s own answers on a synthetic row (a screenful past the focus each
+/// way), not formulas spelled out a second time, and each is counted with `on_axis`. `0` for a style with no
+/// pitch.
+pub fn most_painted_at_rest(sty: &RowStyle, lead: f32) -> usize {
+    let pitch = sty.w + sty.gap;
+    if !pitch.is_finite() || pitch <= 0.0 {
+        return 0;
+    }
+    let vw = SCR_W - 2.0 * sty.margin_x;
+    let focus = (SCR_W / pitch).ceil() as usize + 2;
+    let n = 3 * focus;
+    let into_view = |cur: f32, fc: usize| scroll_into_view(cur, fc, n, sty.w, sty.gap, vw);
+    let end = into_view(0.0, n - 1);
+    // `focus` is a whole screenful from both ends, so `lo` and `hi` are the scrolls it clamps to
+    let rests = [0.0, into_view(0.0, focus), into_view(end, focus), end];
+    let reach = sty.w.max(1.0);
+    rests
+        .into_iter()
+        .map(|scroll| {
+            // the cards that can be on the screen at all, one to spare either side; `on_axis` decides
+            let first = ((scroll - sty.margin_x - lead - reach) / pitch).floor().max(0.0) as usize;
+            let last = (((scroll - sty.margin_x + SCR_W) / pitch).ceil().max(0.0) as usize).min(n - 1);
+            (first..=last)
+                .filter(|&i| crate::on_axis(tile_rect(i, sty.margin_x, pitch, scroll, 0.0, (sty.w, sty.h)).x, sty.w, SCR_W, lead))
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// **The FULL height a `sty` heading ever rises by** — half the focus pop's growth, which is what a
 /// tile magnified about its own centre lifts its top edge by.
 ///
@@ -4078,5 +4120,101 @@ mod sort_caption_review_tests {
             let (regular, bold) = sort_value_weights(t, false);
             assert!(bold < t && regular == 1.0 - t, "the card giving focus up loses its bold texture first: {t}");
         }
+    }
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    /// The most cards `sty` paints at ANY rest of a row of `n` cards, found the long way: focus walks the
+    /// whole row right and back, then zigzags, [`scroll_into_view`] steering the scroll and [`on_axis`]
+    /// counting what the Shelf paints at every rest. Nothing here knows the four lattices.
+    fn walked(sty: &RowStyle, lead: f32, n: usize) -> usize {
+        let pitch = sty.w + sty.gap;
+        let vw = SCR_W - 2.0 * sty.margin_x;
+        let painted = |scroll: f32| {
+            (0..n).filter(|&i| crate::on_axis(tile_rect(i, sty.margin_x, pitch, scroll, 0.0, (sty.w, sty.h)).x, sty.w, SCR_W, lead)).count()
+        };
+        let (mut cur, mut most) = (0.0, painted(0.0));
+        let mut rest = |fc: usize, cur: &mut f32| {
+            *cur = scroll_into_view(*cur, fc, n, sty.w, sty.gap, vw);
+            most = most.max(painted(*cur));
+        };
+        for fc in (0..n).chain((0..n).rev()) {
+            rest(fc, &mut cur);
+        }
+        // and the way a hand moves: a few right, fewer left, a long run each way
+        let mut fc = 0usize;
+        for step in 0..4 * n {
+            fc = if step % 7 < 4 { (fc + 1).min(n - 1) } else { fc.saturating_sub(2) };
+            rest(fc, &mut cur);
+        }
+        most
+    }
+
+    fn style(w: f32, gap: f32, margin_x: f32) -> RowStyle {
+        RowStyle { w, gap, margin_x, h: w * 9.0 / 16.0, ..RowStyle::HOME }
+    }
+
+    /// The HUD's two strips: the reference's 192 + 16 cards and the classic's 288 + 24, at the margins their
+    /// packages place them (the reference's strip stands at x 136, the classic's at 96).
+    #[test]
+    fn the_most_a_row_paints_at_rest_is_what_walking_scroll_into_view_finds() {
+        for (name, sty) in [("reference", style(192.0, 16.0, 136.0)), ("classic", style(288.0, 24.0, 96.0))] {
+            for lead in [0.0, 136.0] {
+                // longer rows, and a shorter one, do not move it: no lattice depends on the length
+                let found = most_painted_at_rest(&sty, lead);
+                for n in [60, 61, 97] {
+                    assert_eq!(walked(&sty, lead, n), found, "{name}, lead {lead}, {n} cards");
+                }
+            }
+        }
+        // the numbers the strips are priced at: one more than the cards a width over the pitch counts
+        assert_eq!(most_painted_at_rest(&style(192.0, 16.0, 136.0), 0.0), 10);
+        assert_eq!(most_painted_at_rest(&style(288.0, 24.0, 96.0), 0.0), 7);
+    }
+
+    /// A row at scroll 0 paints fewer than one that has scrolled: a partial card stands at the left.
+    #[test]
+    fn a_scrolled_row_paints_one_card_more_than_a_row_at_scroll_zero() {
+        let sty = style(192.0, 16.0, 136.0);
+        let pitch = sty.w + sty.gap;
+        let at = |scroll: f32| {
+            (0..40).filter(|&i| crate::on_axis(tile_rect(i, sty.margin_x, pitch, scroll, 0.0, (sty.w, sty.h)).x, sty.w, SCR_W, 0.0)).count()
+        };
+        let vw = SCR_W - 2.0 * sty.margin_x;
+        assert_eq!(at(0.0), 9, "scroll 0: nine, the ninth peeking in at the right");
+        // the first scroll after 0: the focus reaches the trailing edge
+        let right = scroll_into_view(0.0, 8, 40, sty.w, sty.gap, vw);
+        assert_eq!(at(right), 10, "scrolled right: a partial card at the left");
+        let left = scroll_into_view(scroll_into_view(0.0, 30, 40, sty.w, sty.gap, vw), 20, 40, sty.w, sty.gap, vw);
+        assert_eq!(at(left), 10, "scrolled left: a partial card at the left");
+        let end = scroll_into_view(0.0, 39, 40, sty.w, sty.gap, vw);
+        assert_eq!(at(end), 9, "at the end: the last card stands a margin from the edge");
+        assert_eq!(most_painted_at_rest(&sty, 0.0), 10);
+    }
+
+    #[test]
+    fn a_lead_past_the_left_edge_paints_the_cards_it_keeps() {
+        let sty = style(192.0, 16.0, 136.0);
+        assert!(most_painted_at_rest(&sty, 208.0) > most_painted_at_rest(&sty, 0.0));
+        assert_eq!(most_painted_at_rest(&sty, 208.0), walked(&sty, 208.0, 60));
+    }
+
+    #[test]
+    fn a_style_with_no_pitch_paints_nothing() {
+        assert_eq!(most_painted_at_rest(&style(0.0, 0.0, 96.0), 0.0), 0);
+        assert_eq!(most_painted_at_rest(&style(-8.0, 4.0, 96.0), 0.0), 0);
+        assert_eq!(most_painted_at_rest(&style(f32::NAN, 4.0, 96.0), 0.0), 0);
+    }
+
+    /// Cards no wider than a pixel each still price in a bounded number of steps, and a card as wide as the
+    /// screen paints itself and at most a neighbour.
+    #[test]
+    fn extreme_cards_are_priced_without_walking_the_row() {
+        assert!(most_painted_at_rest(&style(1.0, 0.0, 0.0), 0.0) >= SCR_W as usize);
+        let wide = most_painted_at_rest(&style(1920.0, 0.0, 96.0), 0.0);
+        assert!((1..=3).contains(&wide), "{wide}");
     }
 }

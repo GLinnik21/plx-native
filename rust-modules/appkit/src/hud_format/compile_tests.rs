@@ -431,7 +431,7 @@ fn classic_compact_cost_is_pinned() {
 }
 
 #[test]
-fn classic_cost_of_the_chapters_strip_counts_its_visible_cards() {
+fn classic_cost_of_the_chapters_strip_counts_the_cards_its_shelf_paints() {
     let compiled = build(CLASSIC, &FM);
     let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
     let (visible, template) = state
@@ -442,10 +442,76 @@ fn classic_cost_of_the_chapters_strip_counts_its_visible_cards() {
             _ => None,
         })
         .expect("the strip");
-    // 1728 / (288 + 24) = 5.5: five whole cards and a sixth that peeks in
-    assert_eq!(visible, 6);
+    // 288 + 24 cards: six at scroll 0 (the sixth peeking in at the right), and a row that has scrolled paints the
+    // partial card at its left besides
+    assert_eq!(visible, 7);
     assert_eq!(template, 3, "the card's art and its two text lines");
-    assert_eq!(state.cost.texture_bytes, 6 * 4 * 288 * 162, "one 288 x 162 texture per visible card");
+    assert_eq!(state.cost.texture_bytes, 7 * 4 * 288 * 162, "one 288 x 162 texture per painted card");
+}
+
+/// What the Shelf paints at the most, found by moving focus along a row of 60 chapters and back with
+/// `scroll_into_view` steering the scroll, and counting `on_axis` at every rest: the Shelf's own rule, with no
+/// knowledge of the strip's width.
+fn most_a_shelf_paints(rect: Rect, card: Rect, pitch: f32) -> usize {
+    use plx_ui::cards::{scroll_into_view, tile_rect};
+    let n = 60;
+    let vw = SCR_W - 2.0 * card.x;
+    let painted = |scroll: f32| (0..n).filter(|&i| plx_ui::on_axis(tile_rect(i, card.x, pitch, scroll, rect.y, (card.w, card.h)).x, card.w, SCR_W, 0.0)).count();
+    let (mut cur, mut most) = (0.0, painted(0.0));
+    for fc in (0..n).chain((0..n).rev()) {
+        cur = scroll_into_view(cur, fc, n, card.w, pitch - card.w, vw);
+        most = most.max(painted(cur));
+    }
+    most
+}
+
+/// REGRESSION: the strip was priced at its width over the pitch plus one (`r.w / pitch + 1`). The Shelf ignores
+/// the width and culls against the screen, and a row at rest has scrolled, so it paints a card more: 10 on the
+/// reference where the price said 9, 7 on the classic where it said 6.
+#[test]
+fn a_strip_is_priced_by_the_cards_its_shelf_paints_at_rest_in_both_fixtures() {
+    for (name, text, painted) in [("classic", CLASSIC, 7), ("reference", REFERENCE, 10)] {
+        let compiled = build(text, &FM);
+        let mut strips = 0;
+        for state in compiled.states().iter().filter(|s| s.key.open & OPEN_CHAPTERS != 0) {
+            for op in &state.ops {
+                let DrawOp::Strip { rect, card, pitch, visible, .. } = op else { continue };
+                strips += 1;
+                assert_eq!(*visible, most_a_shelf_paints(*rect, *card, *pitch), "{name}: the cards its Shelf paints at the most");
+                assert_eq!(*visible, painted, "{name}: the figure the ceilings are measured at");
+                assert!(*visible > (rect.w / pitch).floor() as usize + 1, "{name}: more than the width over the pitch plus one");
+            }
+        }
+        assert!(strips > 0, "{name}: a chapters strip");
+    }
+}
+
+/// A strip's price does not move with the chapter count: it is a function of the geometry alone, and the
+/// compiler is never told how many chapters the item has.
+#[test]
+fn a_strips_price_does_not_depend_on_the_chapter_count() {
+    let compiled = build(REFERENCE, &FM);
+    let (rect, card, pitch) = compiled
+        .states()
+        .iter()
+        .flat_map(|s| s.ops.iter())
+        .find_map(|op| match op {
+            DrawOp::Strip { rect, card, pitch, .. } => Some((*rect, *card, *pitch)),
+            _ => None,
+        })
+        .expect("the strip");
+    let priced = crate::player_hud::strip::Geometry::new(rect, card, pitch, 0.0, &[]).most_painted_at_rest();
+    use plx_ui::cards::{scroll_into_view, tile_rect};
+    for n in [12usize, 60, 200] {
+        let vw = SCR_W - 2.0 * card.x;
+        let painted = |scroll: f32| (0..n).filter(|&i| plx_ui::on_axis(tile_rect(i, card.x, pitch, scroll, rect.y, (card.w, card.h)).x, card.w, SCR_W, 0.0)).count();
+        let (mut cur, mut most) = (0.0, painted(0.0));
+        for fc in (0..n).chain((0..n).rev()) {
+            cur = scroll_into_view(cur, fc, n, card.w, pitch - card.w, vw);
+            most = most.max(painted(cur));
+        }
+        assert_eq!(most, priced, "{n} chapters");
+    }
 }
 
 #[test]

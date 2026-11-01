@@ -381,7 +381,7 @@ impl HudMotion {
                 && old.label_drop == style.label_drop
         };
         if !self.strip.as_ref().is_some_and(same) {
-            self.strip = Some(Shelf::new(entry, style));
+            self.strip = Some(Shelf::new(entry, style).cull_margin(super::strip::STRIP_CULL_MARGIN));
         }
         self.strip.as_mut().expect("the strip's shelf was just built")
     }

@@ -25,7 +25,7 @@ use plx_ui::widgets::{Art, CARD_FOCUS_SCALE};
 use plx_ui::{Painter, Rect};
 
 use crate::chapters_panel::CH_FOCUS_RING_W;
-use crate::hud_format::compile::{CompiledState, DrawOp};
+use crate::hud_format::compile::{CardOp, CompiledState, DrawOp};
 use super::model::HudModel;
 use super::state::ELEM_CHAPTER_BASE;
 use plx_data::metadata::Chapter;
@@ -37,6 +37,11 @@ const STILL_RES: (std::os::raw::c_int, std::os::raw::c_int) = (480, 270);
 /// (300 and 220 in its `update`), kept so a card pops at the pace it always has.
 const STRIP_K_SCALE: f32 = 300.0;
 const STRIP_K_SCROLL: f32 = 220.0;
+
+/// How far past the screen's left edge a card still paints: none. [`super::motion::HudMotion::strip`] builds the
+/// strip's Shelf with it (`Shelf::cull_margin`), and [`Geometry::most_painted_at_rest`] counts with it, so the
+/// price of a strip and the cards it paints read one number.
+pub const STRIP_CULL_MARGIN: f32 = 0.0;
 
 /// What a strip op says about the strip: the viewport, a card at slot 0, the pitch, the corner and where the
 /// name and the time stand below a card (from the card's bottom edge to the text's top).
@@ -51,24 +56,41 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    /// The strip an op describes: its two labels' drops are read from the card template's `item.title` and
-    /// `item.start` texts (a package without them draws no label, so its drops are 0).
+    /// The strip an op describes (see [`Geometry::new`]).
     pub fn of(op: &DrawOp) -> Option<Geometry> {
         let DrawOp::Strip { rect, card, pitch, radius, template, .. } = op else { return None };
+        Some(Geometry::new(*rect, *card, *pitch, *radius, template))
+    }
+
+    /// The strip whose viewport is `rect`, with its first card `card`, `pitch` apart and rounded by `radius`; its
+    /// two labels' drops are read from the card `template`'s `item.title` and `item.start` texts (a package without
+    /// them draws no label, so its drops are 0). The ONE constructor: the compiler builds the geometry it prices
+    /// the strip by ([`Geometry::most_painted_at_rest`]) with it before it has the op, and the renderer reads the
+    /// op back through [`Geometry::of`].
+    pub fn new(rect: Rect, card: Rect, pitch: f32, radius: f32, template: &[CardOp]) -> Geometry {
         let drop_of = |bind: &str| {
             template.iter().find_map(|c| match &c.op {
                 DrawOp::Text { bind: b, rect: r, .. } if b == bind => Some(r.y - (card.y + card.h)),
                 _ => None,
             })
         };
-        Some(Geometry {
-            rect: *rect,
-            card: *card,
-            pitch: *pitch,
-            radius: *radius,
+        Geometry {
+            rect,
+            card,
+            pitch,
+            radius,
             name_drop: drop_of("item.title").unwrap_or(0.0),
             time_drop: drop_of("item.start").unwrap_or(0.0),
-        })
+        }
+    }
+
+    /// **The most cards this strip's Shelf paints at once while it rests**, whatever the chapter count: what the
+    /// compiler prices the strip by (`DrawOp::Strip::visible`, `docs/hud-plugins.md` "Cost"). The Shelf culls
+    /// against the screen, not against [`rect`](Self::rect), and a row at rest has scrolled, so the strip
+    /// paints a card more than its width over the pitch ([`plx_ui::cards::most_painted_at_rest`]). Counted
+    /// from [`style`](Self::style), the very style the Shelf is built with, and [`STRIP_CULL_MARGIN`].
+    pub fn most_painted_at_rest(&self) -> usize {
+        plx_ui::cards::most_painted_at_rest(&self.style(), STRIP_CULL_MARGIN)
     }
 
     /// The Shelf's style for this strip: the card's size, the gap and corner, the focus pop and the springs

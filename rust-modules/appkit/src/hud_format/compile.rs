@@ -72,6 +72,7 @@ use super::schema;
 use super::{pointer_push, validate::each_object};
 use crate::player_hud::classic::{self, stand_in_w, CLOCK_TOP, KNOB_GLOW_R};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor, MAX_ROW_ITEMS};
+use crate::player_hud::strip::Geometry;
 use crate::up_next;
 
 /// `StateKey::open` bit for the chapters section.
@@ -1996,7 +1997,6 @@ impl<'e, 'p> Env<'e, 'p> {
         let Some(card) = o.get("card").and_then(Val::as_object) else { return };
         let (card_w, card_h) = (self.num(o, "card_w").unwrap_or(0.0), self.num(o, "card_h").unwrap_or(0.0));
         let pitch = card_w + self.gap(o, "gap").unwrap_or(0.0);
-        let visible = if pitch > 0.0 { (r.w / pitch).floor() as usize + 1 } else { 0 };
         let art = Rect::new(r.x, r.y, card_w, card_h);
         let mut tmp = Out::default();
         let art_node = card.get("art").and_then(Val::as_object);
@@ -2024,14 +2024,18 @@ impl<'e, 'p> Env<'e, 'p> {
             tmp.gate.clear();
             y += h;
         }
-        let template = tmp
+        let template: Vec<CardOp> = tmp
             .ops
             .into_iter()
             .zip(tmp.present)
             .zip(tmp.origins)
             .map(|((op, present), origin)| CardOp { op, present, origin })
             .collect();
-        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
+        let radius = self.num(o, "radius").unwrap_or(0.0);
+        // A strip is priced by the cards its Shelf paints, not by its width over the pitch: the Shelf culls against the
+        // screen and a row at rest has scrolled (`Geometry::most_painted_at_rest`), read from the same style it is built with.
+        let visible = Geometry::new(r, art, pitch, radius, &template).most_painted_at_rest();
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
