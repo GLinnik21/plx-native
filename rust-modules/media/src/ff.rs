@@ -4270,6 +4270,22 @@ fn annexb_h264_access_unit(
     Ok(is_key)
 }
 
+/// One AAC access unit as the pipeline wants it: ADTS-framed, with exactly one header. Matroska and
+/// MP4 carry RAW AAC and need one added (`params`: the frequency index and channel configuration);
+/// MPEG-TS carries ADTS itself, libavformat leaves the header on the packet, and a second one ahead
+/// of it would put `FF F1` where the raw data block begins (#1084). `None`: raw AAC and nothing to
+/// frame it with.
+fn adts_framed(raw: &[u8], params: Option<(u8, u8)>) -> Option<std::borrow::Cow<'_, [u8]>> {
+    if packet_has_adts(raw) {
+        return Some(std::borrow::Cow::Borrowed(raw));
+    }
+    let (freq_idx, chan_cfg) = params?;
+    let mut framed = Vec::with_capacity(7 + raw.len());
+    framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, raw.len()));
+    framed.extend_from_slice(raw);
+    Some(std::borrow::Cow::Owned(framed))
+}
+
 fn packet_has_adts(data: &[u8]) -> bool {
     data.len() >= 7 && data[0] == 0xff && data[1] & 0xf6 == 0xf0
 }
@@ -5338,14 +5354,7 @@ unsafe fn hls_demux_segment(
             let duration_ns = packet_duration
                 .or_else(|| adts_duration_ns(raw))
                 .or(aac_duration);
-            let data = if packet_has_adts(raw) {
-                raw.to_vec()
-            } else if let Some((freq_idx, chan_cfg)) = aac_adts {
-                let mut framed = Vec::with_capacity(7 + raw.len());
-                framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, raw.len()));
-                framed.extend_from_slice(raw);
-                framed
-            } else {
+            let Some(data) = adts_framed(raw, aac_adts).map(std::borrow::Cow::into_owned) else {
                 av_packet_unref(input.pkt);
                 return Err(HlsExit::Failed("AAC packet is neither ADTS nor reframable"));
             };
@@ -10079,12 +10088,11 @@ pub fn demux(
                                 }
                             }
                             rv
-                        } else if let Some((freq_idx, chan_cfg)) = aac_adts {
-                            // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
-                            let plen = (*pkt).size as usize;
-                            let mut framed = Vec::with_capacity(7 + plen);
-                            framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
-                            framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
+                        } else if aac_adts.is_some() {
+                            // one 7-byte ADTS header so LG's decoder can frame the AAC: added to the raw
+                            // frames of Matroska/MP4, not stacked on a transport stream's own (#1084)
+                            let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
+                            let framed = adts_framed(raw, aac_adts).unwrap_or(std::borrow::Cow::Borrowed(raw));
                             crate::aq::aq_push_gated(
                                 aqa_p,
                                 framed.as_ptr(),

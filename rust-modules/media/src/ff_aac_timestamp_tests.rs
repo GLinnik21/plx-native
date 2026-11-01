@@ -159,3 +159,43 @@ fn a_rebased_timestamp_moves_back_and_a_missing_one_stays_missing() {
     assert_eq!(rebase_ts(AV_NOPTS_VALUE, 4_065_450_000_000), AV_NOPTS_VALUE);
     assert_eq!(rebase_ts(10, 40), -30, "a dts ahead of the stream's start stays negative; pts_ns reads pts first");
 }
+
+// -- AAC that is ADTS-framed already (issue #1084) ------------------------------------------
+//
+// Matroska and MP4 carry RAW AAC, so the pipeline's ADTS framing is added. An MPEG-TS carries ADTS
+// itself and libavformat leaves the header on the packet (`aac_adtstoasc` exists to take it off for
+// MP4): a second header ahead of it puts `FF F1` where the raw data block begins.
+
+fn raw_aac_frame() -> Vec<u8> {
+    vec![0x21, 0x10, 0x04, 0x60, 0x8c, 0x1c, 0x55, 0x66, 0x77]
+}
+
+#[test]
+fn raw_aac_is_framed_with_one_adts_header() {
+    let raw = raw_aac_frame();
+    let framed = adts_framed(&raw, Some((3, 2))).expect("parameters to frame it with");
+    assert_eq!(&framed[..7], &adts_header(3, 2, raw.len()));
+    assert_eq!(&framed[7..], &raw[..]);
+}
+
+#[test]
+fn aac_that_is_adts_already_is_passed_through_untouched() {
+    let raw = raw_aac_frame();
+    let mut ts_packet = adts_header(3, 2, raw.len()).to_vec();
+    ts_packet.extend_from_slice(&raw);
+    assert!(packet_has_adts(&ts_packet), "fixture: a transport stream's AAC packet");
+    let framed = adts_framed(&ts_packet, Some((3, 2))).expect("a unit");
+    assert_eq!(&framed[..], &ts_packet[..], "no second header");
+    assert!(!packet_has_adts(&framed[7..]), "the payload after the one header is the raw block");
+}
+
+/// Passing a framed unit through needs no parameters; reframing a raw one does.
+#[test]
+fn without_parameters_only_adts_is_usable() {
+    let raw = raw_aac_frame();
+    let mut ts_packet = adts_header(3, 2, raw.len()).to_vec();
+    ts_packet.extend_from_slice(&raw);
+    assert_eq!(adts_framed(&ts_packet, None).as_deref(), Some(&ts_packet[..]));
+    assert_eq!(adts_framed(&raw, None), None, "raw AAC with nothing to frame it with");
+}
+

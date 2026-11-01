@@ -1363,3 +1363,39 @@ fn a_resume_into_a_transport_stream_with_a_late_clock_lands_at_its_content_time(
         "a resume at 3 s landed at {pts} ns (the stream's first packet is at ~45172 s)"
     );
 }
+
+/// Wait until the audio lane holds an AU, then pop it: `(pts_ns, bytes)`. `None` at the deadline.
+fn first_audio_au_bytes(run: &mut DemuxRun, deadline: Duration) -> Option<(i64, Vec<u8>)> {
+    let until = Instant::now() + deadline;
+    while Instant::now() < until {
+        let node = crate::aq::aq_pop(&mut *run.audio, std::ptr::null_mut());
+        if !node.is_null() {
+            let (es, _key, pts, len, data) = unsafe { crate::aq::au_fields(node) };
+            let bytes = unsafe { std::slice::from_raw_parts(data, len.max(0) as usize) }.to_vec();
+            unsafe { libc::free(node as *mut c_void) };
+            assert_eq!(es, 2, "the audio lane carries es=2 AUs");
+            return Some((pts, bytes));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+/// **The audio of the same file.** A transport stream's AAC is ADTS-framed already, and the
+/// pipeline wants exactly one header on each unit: not the stream's own behind a second one.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI - see the module doc"]
+fn a_transport_streams_aac_gets_one_adts_header_not_two() {
+    let _g = plx_base::testlock::serial();
+    let Some(mut p) = prepare_with_audio("ts-aac", "aac", generate_ts) else {
+        return;
+    };
+    let (_pts, au) = first_audio_au_bytes(&mut p.run, FIRST_AUDIO_DEADLINE).expect("no audio AU reached the lane");
+    assert!(packet_has_adts(&au), "the unit is ADTS-framed: {:02x?}", &au[..au.len().min(16)]);
+    assert!(
+        !packet_has_adts(&au[7..]),
+        "a second ADTS header sits behind the first: {:02x?}",
+        &au[..au.len().min(16)]
+    );
+}
+
