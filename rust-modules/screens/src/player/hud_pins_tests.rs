@@ -2338,6 +2338,88 @@ mod sections {
         assert_eq!(Focusable::<TestHost>::group_of(&screen, &seated.elem, &cx), Some(GROUP_SECTION));
     }
 
+    // -- the pointer ------------------------------------------------------------------------------------------------
+
+    /// A pointer event at `(x, y)` against the stops the page registers NOW, as the last presented frame's hit map.
+    fn pointer_event(kind: plx_machine::machine::InputKind<u32>, now: u32) -> InputEvent<u32> {
+        InputEvent { kind, at: tick(now), source: plx_machine::machine::Source::Sdl }
+    }
+
+    impl Run {
+        /// Present the page's stops as the hit map and return the centre of `elem`'s.
+        fn present_stops_and_centre(&mut self, elem: u32) -> (f32, f32) {
+            use plx_ui::screen::DrawFrame;
+            let cx: Cx<'static, TestHost> = super::super::cx();
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
+            self.screen().record_stops(&mut f, true);
+            let stops = f.into_stops();
+            let r = stops.iter().find(|s| s.key.elem == elem).unwrap_or_else(|| panic!("no stop for element {elem}")).rect;
+            self.d.input.hit.fill(stops);
+            self.d.input.hit.swap();
+            (r.x + r.w * 0.5, r.y + r.h * 0.5)
+        }
+        /// A pointer move to `(x, y)` and the frames after it.
+        fn hover(&mut self, (x, y): (f32, f32)) {
+            let now = self.now;
+            self.frame(now, vec![pointer_event(plx_machine::machine::InputKind::Pointer { x, y, hit: None }, now)]);
+            self.settle(now);
+            self.now += 600;
+        }
+        /// A pointer click at `(x, y)` and the frames after it, through the engine's press and its commit. The
+        /// button-up is what the app makes of it: an `Ok` key on the `Up` edge (`bridge::release_input`).
+        fn click(&mut self, (x, y): (f32, f32)) {
+            let now = self.now;
+            self.frame(now, vec![pointer_event(plx_machine::machine::InputKind::Click { x, y, hit: None }, now)]);
+            self.frame(now + 60, vec![key_up(Key::Ok, tick(now + 60))]);
+            self.settle(now + 60);
+            self.now += 600;
+        }
+    }
+
+    /// **A pointer on a chapter card focuses it, and a click seeks to it** (the strip's stops are the Shelf's:
+    /// hover parks the engine on the card, the click arms its press, and the commit seeks and puts the strip away).
+    #[test]
+    fn a_pointer_over_a_chapter_card_focuses_it_and_a_click_seeks_to_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install_n(3);
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.frames(80);
+        run.asked();
+        let third = run.present_stops_and_centre(ELEM_CHAPTER_BASE + 2);
+        run.hover(third);
+        assert_eq!(run.held(), Some(ELEM_CHAPTER_BASE + 2), "the pointer parks the engine on the card under it");
+        assert_eq!((run.open_sections(), run.group()), (vec![Section::Chapters], GROUP_STRIP.0), "a hover opens and closes nothing");
+        assert!(run.asked().is_empty(), "a hover asks the app for nothing");
+        run.present_stops_and_centre(ELEM_CHAPTER_BASE + 2);
+        run.click(third);
+        assert_eq!(run.asked(), vec![PlayerReq::SeekTo(180_000_000_000)], "the click seeks to the third chapter's start");
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "…and puts the strip away");
+    }
+
+    /// **A pointer on an Info button focuses it, and a click performs its command and closes the page.**
+    #[test]
+    fn a_pointer_over_an_info_button_focuses_it_and_a_click_performs_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.screen().model.detail = true;
+        run.open_from_tab(0);
+        run.frames(80);
+        run.asked();
+        let second = run.present_stops_and_centre(ELEM_SECTION_BASE + 1);
+        run.hover(second);
+        assert_eq!(run.held(), Some(ELEM_SECTION_BASE + 1), "the pointer parks the engine on the button under it");
+        assert_eq!((run.open_sections(), run.group(), run.screen().hud.nav.btn), (vec![Section::Info], GROUP_SECTION.0, 1));
+        assert!(run.asked().is_empty(), "a hover asks the app for nothing");
+        run.present_stops_and_centre(ELEM_SECTION_BASE + 1);
+        run.click(second);
+        assert_eq!(run.asked(), vec![PlayerReq::Command(HudCommand::GoToDetail)], "the click performs the button's own command");
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "…and puts the page away");
+    }
+
     /// **Info for Chapters is a swap, not a cut**: the new section opens at appear 0 while the old one is still
     /// being drawn on its way out (the two panels' surfaces overlapped the same way).
     #[test]
