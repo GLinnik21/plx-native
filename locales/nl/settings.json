@@ -320,5 +320,18 @@
   "settings.hud.install": "Installeren",
   "settings.hud.install_question": "Deze HUD installeren?",
   "settings.hud.install_body": "Dit bestand is naar de tv gekopieerd en niet beoordeeld. Het verandert hoe de afspeelknoppen eruitzien.",
-  "settings.hud.remove": "Verwijderen"
+  "settings.hud.remove": "Verwijderen",
+  "settings.hud.address": "Installeren vanaf adres",
+  "settings.hud.address_hint": "Typ gh:owner/repo of een https://-adres",
+  "settings.hud.address_form": "Gebruik gh:owner/repo, gh:owner/repo@tag of een https://-adres.",
+  "settings.hud.address_lan": "Een gewoon http://-adres moet een apparaat in je thuisnetwerk zijn, zoals 192.168.1.20.",
+  "settings.hud.fetching": "Downloaden…",
+  "settings.hud.fetch_not_found": "Niets op dat adres",
+  "settings.hud.fetch_unreachable": "Kan geen verbinding maken met dat adres",
+  "settings.hud.fetch_certificate": "De certificaatcontrole van de tv is mislukt voor dat adres",
+  "settings.hud.too_large": "Dat bestand is te groot",
+  "settings.hud.not_a_hud": "Dat is geen HUD-pakket",
+  "settings.hud.offer_body": "Dit pakket is van een adres gedownload en niet beoordeeld. Het verandert hoe de afspeelknoppen eruitzien.",
+  "settings.hud.offer_from": "Van {host}",
+  "settings.hud.offer_dev": "Ontwikkelbron"
 }

@@ -309,6 +309,11 @@ impl RouteSurface {
                     MachineId::Instance(self.id),
                     Delivery::Screen(ScreenEvent::Enter(e)),
                 )),
+                // an inner page raising or lowering the television keyboard (the HUD page's address field): the
+                // keyboard belongs to the SURFACE's instance, the one the dispatcher seats input on
+                Fx::Deliver(_, Delivery::Keyboard { up }) => {
+                    fx.push(Fx::Deliver(MachineId::Instance(self.id), Delivery::Keyboard { up }))
+                }
                 Fx::App(a) => fx.push(Fx::App(a)),
                 Fx::Log(l) => fx.push(Fx::Log(l)),
                 Fx::Press(arm) => fx.push(Fx::Press(arm)),

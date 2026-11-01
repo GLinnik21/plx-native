@@ -326,5 +326,18 @@
   "settings.hud.install": "Zainstaluj",
   "settings.hud.install_question": "Zainstalować ten HUD?",
   "settings.hud.install_body": "Ten plik skopiowano na telewizor i nie został zweryfikowany. Zmienia wygląd elementów sterowania odtwarzaniem.",
-  "settings.hud.remove": "Usuń"
+  "settings.hud.remove": "Usuń",
+  "settings.hud.address": "Zainstaluj z adresu",
+  "settings.hud.address_hint": "Wpisz gh:owner/repo lub adres https://",
+  "settings.hud.address_form": "Użyj gh:owner/repo, gh:owner/repo@tag lub adresu https://.",
+  "settings.hud.address_lan": "Zwykły adres http:// musi wskazywać urządzenie w sieci domowej, np. 192.168.1.20.",
+  "settings.hud.fetching": "Pobieranie…",
+  "settings.hud.fetch_not_found": "Pod tym adresem nic nie ma",
+  "settings.hud.fetch_unreachable": "Nie udało się połączyć z tym adresem",
+  "settings.hud.fetch_certificate": "Telewizor nie zaakceptował certyfikatu tego adresu",
+  "settings.hud.too_large": "Ten plik jest za duży",
+  "settings.hud.not_a_hud": "To nie jest pakiet HUD",
+  "settings.hud.offer_body": "Ten pakiet pobrano z adresu i nie został zweryfikowany. Zmienia wygląd elementów sterowania odtwarzaniem.",
+  "settings.hud.offer_from": "Z {host}",
+  "settings.hud.offer_dev": "Źródło deweloperskie"
 }

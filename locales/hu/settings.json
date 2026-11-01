@@ -320,5 +320,18 @@
   "settings.hud.install": "Telepítés",
   "settings.hud.install_question": "Telepíted ezt a HUD-ot?",
   "settings.hud.install_body": "Ezt a fájlt a tévére másolták, és nem ellenőrizték. A lejátszásvezérlők megjelenését változtatja meg.",
-  "settings.hud.remove": "Eltávolítás"
+  "settings.hud.remove": "Eltávolítás",
+  "settings.hud.address": "Telepítés címről",
+  "settings.hud.address_hint": "Írj be gh:owner/repo-t vagy https:// címet",
+  "settings.hud.address_form": "Használj gh:owner/repo, gh:owner/repo@tag vagy https:// címet.",
+  "settings.hud.address_lan": "A sima http:// cím csak az otthoni hálózat egy eszköze lehet, például 192.168.1.20.",
+  "settings.hud.fetching": "Letöltés…",
+  "settings.hud.fetch_not_found": "Ezen a címen nincs semmi",
+  "settings.hud.fetch_unreachable": "Nem sikerült kapcsolódni ehhez a címhez",
+  "settings.hud.fetch_certificate": "A tévé tanúsítvány-ellenőrzése sikertelen volt ennél a címnél",
+  "settings.hud.too_large": "Ez a fájl túl nagy",
+  "settings.hud.not_a_hud": "Ez nem HUD-csomag",
+  "settings.hud.offer_body": "Ezt a csomagot egy címről töltötték le, és nem ellenőrizték. A lejátszásvezérlők megjelenését változtatja meg.",
+  "settings.hud.offer_from": "Innen: {host}",
+  "settings.hud.offer_dev": "Fejlesztői forrás"
 }

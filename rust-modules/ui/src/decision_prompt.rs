@@ -1,7 +1,8 @@
 //! Engine focus and input adapter for a reusable two-answer decision alert.
 //! The host consumes a boolean answer; no application command or persistence lives here.
+use std::borrow::Cow;
 use std::ffi::CStr;
-use crate::decision_alert::{Choice, DecisionAlert, Tone};
+use crate::decision_alert::{Answers, Choice, DecisionAlert, Tone};
 use plx_machine::machine::{Cx, Edge, EntryId, FocusKey, GroupId, Handled, Host, InputEvent, InputKind, Key};
 use crate::screen::{Activate, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, ScreenEvent, Seat, Step, Stop};
 use crate::{Painter, Rect};
@@ -26,6 +27,15 @@ impl DecisionPrompt {
         self.alert.set_tone(Tone::Neutral);
         self.alert.open_with_body(question, body);
     }
+    /// [`open`](Self::open) with a body of several paragraphs, each wrapped on its own: a question whose answer needs
+    /// facts the host only knows when it asks (the name of the package, where it came from).
+    pub fn open_paragraphs(&mut self, question: &'static CStr, paragraphs: Vec<Cow<'static, str>>) {
+        self.alert.set_tone(Tone::Neutral);
+        self.alert.open_card(question, paragraphs, Answers::Two);
+    }
+    /// The paragraphs the card holds, as last opened.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn body_for_test(&self) -> &[Cow<'static, str>] { self.alert.body_for_test() }
     pub fn is_open(&self) -> bool { self.alert.is_open() }
     pub fn visible(&self) -> bool { self.alert.visible() }
     pub fn owns(&self, elem: u32) -> bool { elem == self.cancel || elem == self.affirm }

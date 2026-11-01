@@ -3,7 +3,7 @@
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::hudpacks::{Meta, Source};
-use plx_machine::machine::{FocusRead, InputOwner, PressId, PressRead, Stamped, Tick};
+use plx_machine::machine::{FocusRead, PressId, PressRead, Stamped, Tick};
 use plx_machine::present::Present;
 use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
 use plx_ui::fixture::FixtureMeasure;
@@ -88,6 +88,8 @@ fn list() -> HudList {
         unfit: vec![],
         language: "English".into(),
         notice: None,
+        offer: None,
+        fetching: false,
     }
 }
 
@@ -131,10 +133,11 @@ fn the_page_opens_its_channel_once_and_lists_what_it_is_sent() {
             HudId::Pack(BUILTIN_CLASSIC.into()),
             HudId::Pack("com.example.a".into()),
             HudId::Remove("com.example.a".into()),
+            HudId::Address,
             HudId::Drop(Sha::of(&[9]))
         ]
     );
-    assert_eq!(page.state.rows, 4);
+    assert_eq!(page.state.rows, 5);
 }
 
 #[test]
@@ -180,7 +183,7 @@ fn a_drop_file_installs_only_after_the_prompt_is_confirmed() {
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
     assert!(huds(&emitted).is_empty(), "OK only asks");
     assert!(page.state.confirming && page.prompt.is_open());
-    assert_eq!(page.asking, Some(Sha::of(&[9])));
+    assert_eq!(page.asking, Some(Asking::Drop(Sha::of(&[9]))));
 
     let affirm = ALERT + 1;
     let emitted = drive(&mut page, ScreenEvent::PressCommit(PressId(0)), affirm);
@@ -242,7 +245,7 @@ fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
     let (mut page, _tx) = page_with(l);
     let rows = shown(&page);
     let huge = rows.iter().find(|r| r.1 == "huge.plxhud.json").expect("the file is on the page");
-    assert_eq!(huge.2, plx_platform::i18n::msg::settings_hud_cant_install());
+    assert_eq!(huge.2, plx_platform::i18n::msg::settings_hud_too_large());
     let key = page.form.key_at(page.form.index_of(&huge.0).unwrap()).unwrap().0;
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
     assert!(huds(&emitted).is_empty() && !page.prompt.is_open(), "nothing is installable from it");
@@ -251,11 +254,25 @@ fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
 #[test]
 fn the_notice_replaces_the_line_under_the_title_only_while_there_is_one() {
     let mut l = list();
-    assert_eq!(copy_of(&l), plx_platform::i18n::msg::settings_hud_copy());
+    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_copy());
     l.notice = Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::BuiltinId });
-    assert_eq!(copy_of(&l), plx_platform::i18n::msg::settings_hud_cant_install());
+    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_cant_install());
+    l.notice = Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::Invalid });
+    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_not_a_hud());
     l.notice = Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) });
-    assert_eq!(copy_of(&l), plx_platform::i18n::msg::settings_hud_not_saved());
+    assert_eq!(copy_of(&l, None), plx_platform::i18n::msg::settings_hud_not_saved());
+    for (reason, say) in [
+        (FetchError::NotFound, plx_platform::i18n::msg::settings_hud_fetch_not_found()),
+        (FetchError::TooLarge, plx_platform::i18n::msg::settings_hud_too_large()),
+        (FetchError::Unreachable, plx_platform::i18n::msg::settings_hud_fetch_unreachable()),
+        (FetchError::Certificate, plx_platform::i18n::msg::settings_hud_fetch_certificate()),
+    ] {
+        l.notice = Some(Notice::FetchFailed { reason });
+        assert_eq!(copy_of(&l, None), say, "{reason:?}");
+    }
+    assert!(plx_platform::i18n::msg::settings_hud_fetch_certificate().len() > 10, "the certificate refusal is named, not folded into 'could not connect'");
+    l.notice = Some(Notice::NotWritten { sha: None });
+    assert_eq!(copy_of(&l, Some(AddressError::Form)), plx_platform::i18n::msg::settings_hud_address_form(), "a refused address outranks a notice");
 }
 
 /// Every refusal the store can give a file, for the tests that must cover each: the match has no wildcard, so a
@@ -309,9 +326,19 @@ fn every_row_fits_its_column_in_every_language() {
         every.drops.push(drop_file("ok.plxhud.json", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
-        form.set(hud_form(&every), None);
+        form.set(hud_form(&every, None), None);
         for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
             out.push(e);
+        }
+        // The address row in each state it has: waiting, with a long address typed (the author's text, and the
+        // detail is cut to fit the column), and downloading.
+        for (fetching, draft) in [(false, None), (false, Some("https://example.com/a/very/long/path/hud.plxhud.json")), (true, None)] {
+            let mut busy = list();
+            busy.fetching = fetching;
+            let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
+            form.table.compact = false;
+            form.set(hud_form(&busy, draft), None);
+            out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));
         }
     }
     plx_ui::table::assert_no_fit_failures(&out);
@@ -331,10 +358,16 @@ fn the_line_under_the_title_fits_the_column_in_every_language() {
         let mut l = list();
         let notices = std::iter::once(("no notice".to_owned(), None))
             .chain(every_refusal().into_iter().map(|reason| (format!("refused {reason:?}"), Some(Notice::Refused { sha: Sha::of(&[9]), reason }))))
-            .chain(std::iter::once(("not written".to_owned(), Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) }))));
-        for (name, notice) in notices {
+            .chain(std::iter::once(("not written".to_owned(), Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) }))))
+            .chain(
+                [FetchError::NotFound, FetchError::TooLarge, FetchError::Unreachable, FetchError::Certificate]
+                    .into_iter()
+                    .map(|reason| (format!("fetch {reason:?}"), Some(Notice::FetchFailed { reason }))),
+            );
+        let refused = [None, Some(AddressError::Form), Some(AddressError::HttpNotPrivate)];
+        for (name, notice, refused) in notices.flat_map(|(n, notice)| refused.map(move |r| (format!("{n} / {r:?}"), notice.clone(), r))) {
             l.notice = notice;
-            let copy = copy_of(&l);
+            let copy = copy_of(&l, refused);
             let size = theme::size::LABEL;
             let view = plx_ui::text_view::TextView::new(&copy, size, theme::TEXT_READING)
                 .leading(size as f32 + theme::space::XS)
@@ -355,4 +388,155 @@ fn the_line_under_the_title_fits_the_column_in_every_language() {
         }
     }
     assert!(out.is_empty(), "{}", out.join("\n"));
+}
+
+// ---- install from an address ----
+
+fn input(kind: InputKind<u32>) -> ScreenEvent<InnerHost> {
+    ScreenEvent::Input(InputEvent { at: Tick::default(), source: plx_machine::machine::Source::Script, kind })
+}
+
+fn press(key: Key) -> ScreenEvent<InnerHost> {
+    input(InputKind::Key { key, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false })
+}
+
+fn typed(text: &str) -> ScreenEvent<InnerHost> {
+    input(InputKind::Text(TextEdit::Commit(text.into())))
+}
+
+/// The keyboard raises (`true`) and lowers (`false`) the page asked for, in order.
+fn keyboards(emitted: &[Stamped<InnerHost>]) -> Vec<bool> {
+    emitted.iter().filter_map(|e| match &e.fx { Fx::Deliver(_, Delivery::Keyboard { up }) => Some(*up), _ => None }).collect()
+}
+
+fn address_row(page: &HudPage) -> (String, String, bool) {
+    let rows = page.form.table.sections.iter().flat_map(|s| s.rows.iter());
+    let row = rows.into_iter().find(|r| r.label == plx_platform::i18n::msg::settings_hud_address()).expect("the address row");
+    (row.label.clone(), row.detail.clone(), row.dim)
+}
+
+/// **The row raises the keyboard, shows what is typed, and OK on the keyboard sends the parsed address**; nothing else
+/// leaves the page, and the keyboard is lowered again.
+#[test]
+fn the_address_row_types_into_its_detail_line_and_ok_sends_the_parsed_address() {
+    let (mut page, _tx) = page_with(list());
+    assert_eq!(address_row(&page).1, plx_platform::i18n::msg::settings_hud_address_hint());
+    let key = key_of(&page, &HudId::Address);
+    let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+    assert_eq!(keyboards(&emitted), [true], "OK on the row raises the keyboard");
+    assert!(huds(&emitted).is_empty() && page.state.editing);
+
+    drive(&mut page, typed("gh:owner/repo@v1.2"), key);
+    assert_eq!(address_row(&page).1, "gh:owner/repo@v1.2|", "the detail line shows the draft");
+    drive(&mut page, press(Key::Other), key);
+    let emitted = drive(&mut page, input(InputKind::Key { key: Key::Other, sym: plx_ui::consts::SDLK_BACKSPACE, wcode: 0, edge: Edge::Down, at_edge: false }), key);
+    assert!(huds(&emitted).is_empty());
+    assert_eq!(address_row(&page).1, "gh:owner/repo@v1.|", "Backspace edits the draft");
+    drive(&mut page, typed("2"), key);
+
+    let emitted = drive(&mut page, press(Key::Ok), key);
+    assert_eq!(keyboards(&emitted), [false], "OK on the keyboard lowers it");
+    match huds(&emitted).as_slice() {
+        [HudCmd::Fetch(address)] => assert_eq!(address.url(), "https://github.com/owner/repo/releases/download/v1.2/hud.plxhud.json"),
+        other => panic!("one fetch, got {}", other.len()),
+    }
+    assert!(!page.state.editing);
+    assert_eq!(address_row(&page).1, plx_platform::i18n::msg::settings_hud_address_hint());
+}
+
+/// A refused address sends nothing and says why under the title (the forms, or the LAN rule for a public `http://`);
+/// the next edit clears it; BACK lowers the keyboard and sends nothing; a keyboard the television took down closes the field.
+#[test]
+fn a_refused_address_is_said_under_the_title_and_back_sends_nothing() {
+    let (mut page, _tx) = page_with(list());
+    let key = key_of(&page, &HudId::Address);
+    for (text, say) in [
+        ("ftp://example.com/x", plx_platform::i18n::msg::settings_hud_address_form()),
+        ("http://example.com/x", plx_platform::i18n::msg::settings_hud_address_lan()),
+        ("http://127.0.0.1/x", plx_platform::i18n::msg::settings_hud_address_lan()),
+    ] {
+        drive(&mut page, ScreenEvent::Activate(key), key);
+        drive(&mut page, input(InputKind::Text(TextEdit::Clear)), key);
+        drive(&mut page, typed(text), key);
+        let emitted = drive(&mut page, press(Key::Ok), key);
+        assert!(huds(&emitted).is_empty(), "{text}: a refused address sends nothing");
+        assert_eq!(keyboards(&emitted), [false], "{text}");
+        assert_eq!(page.copy, say, "{text}");
+    }
+    drive(&mut page, ScreenEvent::Activate(key), key);
+    assert_eq!(page.copy, plx_platform::i18n::msg::settings_hud_copy(), "raising the field again clears the refusal");
+    let emitted = drive(&mut page, press(Key::Back), key);
+    assert!(huds(&emitted).is_empty() && keyboards(&emitted) == [false] && !page.state.editing, "BACK lowers the keyboard and sends nothing");
+
+    drive(&mut page, ScreenEvent::Activate(key), key);
+    let emitted = drive(&mut page, input(InputKind::SystemKeyboard(false)), key);
+    assert!(huds(&emitted).is_empty() && keyboards(&emitted).is_empty() && !page.state.editing, "the television's own close is not echoed back");
+}
+
+/// While a fetch is in flight the row is dimmed, says so, and OK on it does nothing: no second request, no keyboard.
+#[test]
+fn the_address_row_is_busy_while_a_fetch_runs() {
+    let mut l = list();
+    l.fetching = true;
+    let (mut page, _tx) = page_with(l);
+    assert_eq!(address_row(&page).1, plx_platform::i18n::msg::settings_hud_fetching());
+    assert!(address_row(&page).2, "dimmed");
+    let key = key_of(&page, &HudId::Address);
+    let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+    assert!(keyboards(&emitted).is_empty() && huds(&emitted).is_empty() && !page.state.editing);
+}
+
+fn offered() -> OfferView {
+    OfferView {
+        sha: Sha::of(&[7]),
+        meta: meta("com.example.fetched", "Fetched"),
+        source: Source::Address,
+        from: Some(address::parse("http://192.168.1.20:8080/hud.plxhud.json").unwrap()),
+    }
+}
+
+/// **A fetched package is offered through the same prompt a drop file gets**, Cancel focused; yes installs the offer
+/// that was shown, no and BACK decline it, and a listing that still carries the answered offer does not reopen it.
+#[test]
+fn an_offer_opens_the_prompt_with_cancel_focused_and_each_answer_names_the_offer() {
+    for (answer, back) in [(ALERT + 1, false), (ALERT, false), (0, true)] {
+        let mut l = list();
+        l.offer = Some(offered());
+        let (mut page, tx) = page_with(l.clone());
+        assert!(page.prompt.is_open() && page.state.confirming, "the listing carrying an offer opens the prompt");
+        assert_eq!(page.asking, Some(Asking::Offer(Sha::of(&[7]))));
+        assert!(!page.prompt.choice(), "Cancel is the answer focused");
+        assert_eq!(page.prompt.seat(ALERT_GROUP, EntryId(0)), Some(FocusKey { entry: EntryId(0), elem: ALERT }), "the engine seats Cancel");
+
+        let emitted = if back {
+            drive(&mut page, press(Key::Back), ALERT)
+        } else {
+            drive(&mut page, ScreenEvent::PressCommit(PressId(0)), answer)
+        };
+        match (huds(&emitted).as_slice(), answer == ALERT + 1) {
+            ([HudCmd::InstallOffer(sha)], true) | ([HudCmd::DeclineOffer(sha)], false) => assert_eq!(*sha, Sha::of(&[7])),
+            (other, _) => panic!("answer {answer} back {back}: {} commands", other.len()),
+        }
+        assert!(!page.state.confirming && page.asking.is_none());
+
+        // The store has not answered yet: the same listing arrives again and the prompt stays down.
+        l.fetching = false;
+        tx.send(l.clone()).unwrap();
+        l.language = "Deutsch".into();
+        tx.send(l).unwrap();
+        drive(&mut page, tick(), 0);
+        assert!(!page.prompt.is_open(), "an answered offer is not asked again");
+    }
+}
+
+/// The prompt names the package, where it came from, that a plain-http source is a development one, and that it is unreviewed.
+#[test]
+fn the_offer_prompt_says_what_it_is_about() {
+    let mut l = list();
+    l.offer = Some(offered());
+    let (page, _tx) = page_with(l);
+    let text = page.prompt.body_for_test();
+    assert_eq!(text[0], "Fetched 1.0.0");
+    assert_eq!(text[1], join(&[plx_platform::i18n::msg::settings_hud_offer_from("192.168.1.20"), plx_platform::i18n::msg::settings_hud_offer_dev().to_owned(), plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()]));
+    assert_eq!(text[2], plx_platform::i18n::msg::settings_hud_offer_body());
 }
