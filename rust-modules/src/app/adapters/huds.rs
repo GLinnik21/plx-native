@@ -864,6 +864,57 @@ mod tests {
         assert!(entry(&other, REFERENCE_ID).is_some(), "though the package is installed for the household");
     }
 
+    /// **Two profiles each pick, and each keeps its own.** The string that restarts a driver is not passed in by hand: it is
+    /// what the driver's pick became in the session record of the profile that was seated when it was made (the owner's
+    /// persist), read back for each seat. Profile A picks one installed package and B another; after a restart each draws its own.
+    #[test]
+    fn two_profiles_that_each_pick_keep_their_own_across_a_restart() {
+        let _serial = plx_base::testlock::serial();
+        let session = plx_plex::plex::session::TempSession::new("hud-two-profiles-driver");
+        let dir = Dir::new("two-profiles");
+        let cx = english();
+        let mut first = driver(&dir);
+        dir.drop_file("reference.plxhud.json", REFERENCE);
+        dir.drop_file("minimal.plxhud.json", MINIMAL);
+        first.refresh(String::new());
+        settle(&mut first, &cx);
+        for drop in first.store().drops() {
+            first.install_drop(drop.sha.expect("a hashed file"), 1_700_000_000);
+            settle(&mut first, &cx);
+        }
+        let minimal_id = "com.plxnative.examples.minimal";
+        assert!(entry(&first, REFERENCE_ID).is_some() && entry(&first, minimal_id).is_some(), "both are installed for the household");
+
+        // the owner's persist for the seat of the moment (`Bridge::huds_settle`)
+        let pick = |driver: &mut HudDriver, id: &str| {
+            driver.select(id.to_string());
+            settle(driver, &cx);
+            let write = plx_plex::plex::session::ProfileWrite::capture().expect("a profile is seated");
+            for picked in driver.take_selections() {
+                assert!(plx_plex::plex::session::persist_profile_hud(&write, &picked), "the pick is saved");
+            }
+        };
+        let stamp = session.seated("a", "account-token");
+        pick(&mut first, REFERENCE_ID);
+        session.seated("b", "account-token");
+        pick(&mut first, minimal_id);
+
+        let stored = plx_plex::plex::session::peek();
+        let seat = |user: &str| plx_plex::plex::session::Seat::Seated { user: user.into(), stamp: stamp.clone() };
+        for (user, id, sha) in [
+            ("a", REFERENCE_ID, plx_base::sha256::sha256(REFERENCE.as_bytes())),
+            ("b", minimal_id, plx_base::sha256::sha256(MINIMAL.as_bytes())),
+        ] {
+            let mut restarted = driver(&dir);
+            let own = plx_plex::plex::session::stored_effective_hud(&stored, &seat(user));
+            assert_eq!(own, id, "profile {user}'s own pick is what the persist left for it");
+            restarted.refresh(own);
+            let shown = settle(&mut restarted, &cx);
+            assert_eq!(restarted.store().selected(), id);
+            assert!(shown.len() == 1 && shown[0].key.sha256 == sha, "profile {user} draws its own package after a restart");
+        }
+    }
+
     /// A selected package that is gone or corrupt draws classic and the selection is kept.
     #[test]
     fn a_missing_or_corrupt_selected_package_draws_classic_and_keeps_the_selection() {

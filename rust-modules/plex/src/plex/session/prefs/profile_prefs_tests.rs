@@ -586,3 +586,37 @@ fn a_hud_pick_needs_a_stamp() {
     assert!(!put_own_hud(&mut records, "a", STAMP, "com.example.a"), "equal is no change");
     assert!(put_own_hud(&mut records, "a", STAMP, ""), "going back to the built-in is an own pick of empty");
 }
+
+/// **Both profiles pick, and both picks survive**: profile A's record is not rewritten by B's pick, and the other way
+/// round, in the records and on disk. (`put_own_hud` ignoring the user would leave one record holding the last pick.)
+#[test]
+fn two_profiles_each_keep_their_own_hud_pick() {
+    let _g = plx_base::testlock::serial();
+    let session = TempSession::new("hud-two-profiles");
+    let stamp = session.seated("a", "account-token");
+    let w_a = ProfileWrite::capture().expect("profile a is seated");
+    assert!(persist_profile_hud(&w_a, "com.example.a"));
+    session.seated("b", "account-token");
+    let w_b = ProfileWrite::capture().expect("profile b is seated");
+    assert_eq!((w_b.user(), w_b.stamp()), ("b", stamp.as_str()));
+    assert!(persist_profile_hud(&w_b, "com.example.b"));
+
+    let stored = stored();
+    let seat = |user: &str| Seat::Seated { user: user.into(), stamp: stamp.clone() };
+    assert_eq!(stored_effective_hud(&stored, &seat("a")), "com.example.a", "b's pick did not rewrite a's");
+    assert_eq!(stored_effective_hud(&stored, &seat("b")), "com.example.b");
+    assert_eq!(stored.prefs.profile_prefs.len(), 2, "one record each");
+
+    // a changes its mind: b's record is untouched
+    assert!(persist_profile_hud(&w_a, "com.example.a2"));
+    let stored = crate::plex::session::load();
+    assert_eq!(stored_effective_hud(&stored, &seat("a")), "com.example.a2");
+    assert_eq!(stored_effective_hud(&stored, &seat("b")), "com.example.b");
+
+    // the same in the pure half
+    let mut records = Vec::new();
+    assert!(put_own_hud(&mut records, "a", STAMP, "x"));
+    assert!(put_own_hud(&mut records, "b", STAMP, "y"));
+    assert_eq!(own_prefs(&records, "a", STAMP).and_then(|p| p.hud_selection.as_deref()), Some("x"));
+    assert_eq!(own_prefs(&records, "b", STAMP).and_then(|p| p.hud_selection.as_deref()), Some("y"));
+}
