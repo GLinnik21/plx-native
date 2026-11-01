@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T11:53:24Z",
+ "generated": "2026-11-01T12:48:18Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.5,
-   "change7_pct": 14.3,
+   "change30_pct": -63.6,
+   "change7_pct": 14.1,
    "d30": 1064.5,
-   "delta30": -676.0,
-   "delta7": 48.5,
+   "delta30": -676.5,
+   "delta7": 48.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 230,
+   "n_now": 231,
    "n_prev": 200,
-   "now": 388.5,
+   "now": 388,
    "prev7": 340.0,
    "shown": true,
    "state": "flat",
@@ -186,10 +186,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -64.2,
+   "change30_pct": -63.8,
    "change7_pct": 16.8,
-   "d30": 1078.5,
-   "delta30": -692.0,
+   "d30": 1068,
+   "delta30": -681.5,
    "delta7": 55.5,
    "group": "ci",
    "id": "push_wait",
@@ -324,10 +324,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.2,
+   "change30_pct": 29.5,
    "change7_pct": 5.1,
-   "d30": 770,
-   "delta30": 225,
+   "d30": 768.5,
+   "delta30": 226.5,
    "delta7": 48.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -429,10 +429,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -79.1,
+   "change30_pct": -79.2,
    "change7_pct": 9.1,
-   "d30": 1029.5,
-   "delta30": -814.5,
+   "d30": 1034.0,
+   "delta30": -819.0,
    "delta7": 18.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -517,8 +517,8 @@
   {
    "change30_pct": 117.6,
    "change7_pct": 100.0,
-   "d30": 17,
-   "delta30": 20,
+   "d30": 17.0,
+   "delta30": 20.0,
    "delta7": 18.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -536,10 +536,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 53.8,
+   "change30_pct": 60.0,
    "change7_pct": 14.3,
-   "d30": 13,
-   "delta30": 7,
+   "d30": 12.5,
+   "delta30": 7.5,
    "delta7": 2.5,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -601,8 +601,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 287,
-   "delta30": -284,
+   "d30": 286.5,
+   "delta30": -283.5,
    "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -622,8 +622,8 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 939,
-   "delta30": -936,
+   "d30": 936.5,
+   "delta30": -933.5,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
