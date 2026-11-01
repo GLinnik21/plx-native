@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T14:33:31Z",
+ "generated": "2026-11-01T14:39:03Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -90,9 +90,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 84,
-   "now": 198.0,
+   "now": 198,
    "prev7": 145.0,
    "shown": true,
    "state": "worse",
@@ -169,15 +169,15 @@
    "change7_pct": 15.0,
    "d30": 1067,
    "delta30": -676,
-   "delta7": 51.0,
+   "delta7": 51,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 235,
-   "n_prev": 200,
+   "n_prev": 199,
    "now": 391,
-   "prev7": 340.0,
+   "prev7": 340,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -186,18 +186,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.6,
-   "change7_pct": 16.4,
+   "change30_pct": -63.7,
+   "change7_pct": 16.3,
    "d30": 1063.0,
-   "delta30": -676.5,
-   "delta7": 54.5,
+   "delta30": -677.0,
+   "delta7": 54.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 98,
-   "now": 386.5,
+   "now": 386,
    "prev7": 332.0,
    "shown": true,
    "state": "flat",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 26.4,
-   "change7_pct": 5.1,
+   "change30_pct": 25.5,
+   "change7_pct": 4.3,
    "d30": 220.0,
-   "delta30": 58.0,
-   "delta7": 13.5,
+   "delta30": 56.0,
+   "delta7": 11.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 84,
-   "now": 278.0,
+   "now": 276,
    "prev7": 264.5,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -79.2,
-   "change7_pct": 9.1,
+   "change30_pct": -79.1,
+   "change7_pct": 9.6,
    "d30": 1034.0,
-   "delta30": -819.0,
-   "delta7": 18.0,
+   "delta30": -818.0,
+   "delta7": 19,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 83,
-   "now": 215.0,
+   "now": 216,
    "prev7": 197,
    "shown": true,
    "state": "flat",
@@ -566,9 +566,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 84,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.0,
    "commits": [
     {
-     "pr": 1186,
-     "sha": "62d869d6b",
-     "title": "The Watchlist's sort button is the Library's sort control"
-    },
-    {
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
@@ -715,6 +710,11 @@
      "pr": 1192,
      "sha": "b24e0a317",
      "title": "Belarusian: a space between a number and its hour/minute unit"
+    },
+    {
+     "pr": 1164,
+     "sha": "79dd54785",
+     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
     }
    ],
    "from": 189,
@@ -728,11 +728,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 1186,
-     "sha": "62d869d6b",
-     "title": "The Watchlist's sort button is the Library's sort control"
-    },
-    {
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
@@ -776,6 +771,11 @@
      "pr": 1192,
      "sha": "b24e0a317",
      "title": "Belarusian: a space between a number and its hour/minute unit"
+    },
+    {
+     "pr": 1164,
+     "sha": "79dd54785",
+     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
     }
    ],
    "from": 145.0,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 198.0
+   "to": 198
   },
   {
    "change_pct": 25.5,
    "commits": [
-    {
-     "pr": 1186,
-     "sha": "62d869d6b",
-     "title": "The Watchlist's sort button is the Library's sort control"
-    },
     {
      "pr": 1155,
      "sha": "387d98435",
@@ -837,6 +832,11 @@
      "pr": 1192,
      "sha": "b24e0a317",
      "title": "Belarusian: a space between a number and its hour/minute unit"
+    },
+    {
+     "pr": 1164,
+     "sha": "79dd54785",
+     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
     }
    ],
    "from": 130.5,
@@ -850,11 +850,6 @@
    "change_pct": 20.6,
    "commits": [
     {
-     "pr": 1186,
-     "sha": "62d869d6b",
-     "title": "The Watchlist's sort button is the Library's sort control"
-    },
-    {
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
@@ -898,6 +893,11 @@
      "pr": 1192,
      "sha": "b24e0a317",
      "title": "Belarusian: a space between a number and its hour/minute unit"
+    },
+    {
+     "pr": 1164,
+     "sha": "79dd54785",
+     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
     }
    ],
    "from": 272.0,
@@ -911,11 +911,6 @@
    "change_pct": 18.4,
    "commits": [
     {
-     "pr": 1186,
-     "sha": "62d869d6b",
-     "title": "The Watchlist's sort button is the Library's sort control"
-    },
-    {
      "pr": 1155,
      "sha": "387d98435",
      "title": "Detail: a Go to Show disc for an episode's hero"
@@ -959,6 +954,11 @@
      "pr": 1192,
      "sha": "b24e0a317",
      "title": "Belarusian: a space between a number and its hour/minute unit"
+    },
+    {
+     "pr": 1164,
+     "sha": "79dd54785",
+     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
     }
    ],
    "from": 2098,
