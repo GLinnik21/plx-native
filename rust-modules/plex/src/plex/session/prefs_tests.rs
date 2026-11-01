@@ -127,7 +127,7 @@ fn every_marker_names_its_own_field() {
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 18 + 5 + 2 + 1);
+    assert_eq!(DESCRIPTORS.len(), 18 + 5 + 2 + 1 + 1, "plus `HudSelectionPref`, a `String` row checked by `profile_prefs_tests`");
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -339,6 +339,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("deck_press", generic()),
         ("under_posters", generic()),
         ("audio_enhancements", generic()),
+        ("hud_selection", vec![Value::Null, json!(17), json!(true), json!([1, "x"]), json!({"unexpected": 1})]),
         // A5. A switch's garbage excludes the booleans, which are VALID values for it.
         ("auto_sign_in", not_a_bool()),
         ("ui_resolution", generic()),

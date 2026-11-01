@@ -62,6 +62,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         under_posters: Some(UnderPosters { title: true, details: UnderPostersDetails::Video, sort_value: false }),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),
         trailer_autoplay: Some(false),
+        hud_selection: Some("com.example.hud".into()),
     };
     let fields: BTreeSet<String> = serde_json::to_value(&full).unwrap().as_object().unwrap().keys().cloned().collect();
     let rows: BTreeSet<String> = DESCRIPTORS
@@ -69,7 +70,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 14, "every per-profile setting has a legacy fallback");
+    assert_eq!(rows.len(), 15, "every per-profile setting has a legacy fallback");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }
@@ -531,4 +532,57 @@ fn hdr_overlay_brightness_defaults_to_three_quarters_and_round_trips() {
     );
     let install: Preferences = serde_json::from_value(json!({ "hdr_overlay_brightness": "half" })).unwrap();
     assert_eq!(HdrOverlayBrightnessPref::get(&install), HdrOverlayBrightness::Half);
+}
+
+// ---- the chosen player HUD (a String, so a Row and not a Setting) -----------------------------
+
+/// A profile's own pick, else the install-wide key, else the built-in (empty). Garbage reads as unset.
+#[test]
+fn the_hud_selection_reads_own_then_legacy_then_empty() {
+    let none = prefs_with(json!([]));
+    assert_eq!(effective_hud(&none, None), "", "nothing anywhere is the built-in");
+    let legacy: Preferences = serde_json::from_value(json!({ "hud_selection": "com.example.tv" })).unwrap();
+    assert_eq!(effective_hud(&legacy, None), "com.example.tv");
+    let own = prefs_with(json!([record("kid", STAMP, json!({ "hud_selection": "com.example.kid" }))]));
+    let mine = own_prefs(&own.profile_prefs, "kid", STAMP);
+    assert_eq!(effective_hud(&legacy, mine), "com.example.kid", "the profile's pick beats the TV's");
+    let other = own_prefs(&own.profile_prefs, "sib", STAMP);
+    assert_eq!(effective_hud(&legacy, other), "com.example.tv", "a profile that never picked reads the TV's");
+    let garbage = prefs_with(json!([record("kid", STAMP, json!({ "hud_selection": 17 }))]));
+    assert_eq!(effective_hud(&legacy, own_prefs(&garbage.profile_prefs, "kid", STAMP)), "com.example.tv", "garbage is no pick");
+}
+
+/// **The pick is per profile, survives a reload, and never writes the frozen install key.** Profile A picks a
+/// package; B keeps reading the TV's value; A reads its own back from disk.
+#[test]
+fn a_hud_pick_is_per_profile_durable_and_never_the_install_key() {
+    let _g = plx_base::testlock::serial();
+    let session = TempSession::new("hud-pick");
+    let stamp = session.seated("a", "account-token");
+    let before = stored();
+    let w = ProfileWrite::capture().expect("a seated profile");
+    assert!(persist_profile_hud(&w, "com.example.a"));
+    assert!(persist_profile_hud(&w, "com.example.a"), "an unchanged pick is saved without a write");
+
+    let after = stored();
+    assert_eq!(without_profile_prefs(&before), without_profile_prefs(&after), "the install-wide key is not written");
+    let a = Seat::Seated { user: "a".into(), stamp: stamp.clone() };
+    let b = Seat::Seated { user: "b".into(), stamp: stamp.clone() };
+    assert_eq!(stored_effective_hud(&after, &a), "com.example.a");
+    assert_eq!(stored_effective_hud(&after, &b), "", "a second profile keeps its own (here: the built-in)");
+    assert_eq!(stored_effective_hud(&after, &Seat::Unseated), "");
+
+    let reloaded = stored();
+    assert_eq!(stored_effective_hud(&reloaded, &a), "com.example.a", "the pick survives a reload");
+}
+
+/// A pick made while nobody is seated captures no write, and the stamp rule refuses an unreadable record.
+#[test]
+fn a_hud_pick_needs_a_stamp() {
+    let mut records = Vec::new();
+    assert!(!put_own_hud(&mut records, "a", "", "com.example.a"));
+    assert!(records.is_empty());
+    assert!(put_own_hud(&mut records, "a", STAMP, "com.example.a"));
+    assert!(!put_own_hud(&mut records, "a", STAMP, "com.example.a"), "equal is no change");
+    assert!(put_own_hud(&mut records, "a", STAMP, ""), "going back to the built-in is an own pick of empty");
 }
