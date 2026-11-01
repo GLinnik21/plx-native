@@ -60,6 +60,8 @@
 //! A pair not listed (a result for a tag nothing awaits, an install while busy) is [`Handled::No`] and
 //! changes nothing. A runner that loses an answer is recovered by the next `Refresh`.
 
+pub mod address;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
