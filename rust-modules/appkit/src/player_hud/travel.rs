@@ -25,18 +25,18 @@ use super::state::ControlSlot;
 use super::strip::strip_of;
 use crate::hud_format::compile::{Compiled, Widget};
 
-/// The most groups the transport can have in the order at once.
-const MAX_STOPS: usize = 5;
+/// How many groups the transport has to order: one per kind of stop.
+const ORDER_SLOTS: usize = 5;
 
 /// **The groups with a stop in a state, top to bottom.** A value: copy it, compare it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Order {
-    groups: [GroupId; MAX_STOPS],
+    groups: [GroupId; ORDER_SLOTS],
     len: usize,
 }
 
 impl Order {
-    const EMPTY: Order = Order { groups: [GROUP_SCRUB; MAX_STOPS], len: 0 };
+    const EMPTY: Order = Order { groups: [GROUP_SCRUB; ORDER_SLOTS], len: 0 };
 
     /// The groups, topmost first.
     pub fn groups(&self) -> &[GroupId] {
@@ -77,7 +77,7 @@ pub fn order(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, p
     let geo = geometry(compiled, open, slot, chapters, paused);
     let state = state.skip_variant(skip);
     let middle = !(open != 0 && compiled.sections_modal());
-    let mut stops: [Option<(GroupId, f32)>; MAX_STOPS] = [None; MAX_STOPS];
+    let mut stops: [Option<(GroupId, f32)>; ORDER_SLOTS] = [None; ORDER_SLOTS];
     if middle && geo.playbar.w > 0.0 && geo.playbar.h > 0.0 {
         stops[0] = Some((GROUP_SCRUB, geo.playbar.y));
     }
@@ -111,7 +111,7 @@ pub fn order(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, p
     order
 }
 
-fn top_of(stops: &[Option<(GroupId, f32)>; MAX_STOPS], group: GroupId) -> f32 {
+fn top_of(stops: &[Option<(GroupId, f32)>; ORDER_SLOTS], group: GroupId) -> f32 {
     stops.iter().flatten().find(|(g, _)| *g == group).map_or(f32::MAX, |(_, top)| *top)
 }
 
