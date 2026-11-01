@@ -1980,8 +1980,13 @@ impl PlayerScreen {
 
     /// **The folded rows More's root lists** for the content playing: the commands the compiled package places in
     /// no reachable state (R2), each kept only when the app's own predicate for it holds on this frame's model
-    /// ([`plx_appkit::more_menu::folded_rows`]). Classic's list is empty.
+    /// ([`plx_appkit::more_menu::folded_rows`]). Classic's list is empty, and so is every list while the failure
+    /// read-out owns the frame: its Change Quality opens More over a failed playback, and a root with a section or a
+    /// seek in it would give the read-out a route it never had.
     pub fn more_folds(&self, meta: plx_data::metadata::MetadataView<'_>) -> Vec<plx_appkit::more_menu::FoldedRow> {
+        if player_hud::readout_owns_frame(self.busy) {
+            return Vec::new();
+        }
         plx_appkit::more_menu::folded_rows(self.compiled.folds(), &self.model, meta)
     }
 
