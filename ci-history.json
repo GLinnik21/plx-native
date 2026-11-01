@@ -1,6 +1,5 @@
-{"updated":"2026-10-31T23:56:46Z",
+{"updated":"2026-11-01T00:00:05Z",
 "ci":[
-{"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30922414156,"at":"2026-08-04T15:06:18Z","sha":"84f813d70","title":"docs: the README says why this exists, in the first person","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":97},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4305,7 +4304,8 @@
 {"id":41251480870,"at":"2026-10-31T23:11:35Z","sha":"e3efa56c5","title":"Library switcher: share the library row and press target with the Sources popover","pr":1157,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":192,"Windows launcher syntax":20,"Linux simulator build + launch":304,"macOS tests against bundled FFmpeg and ASS":213}},
 {"id":41253340818,"at":"2026-10-31T23:37:58Z","sha":"e046bd913","title":"Library switcher: a non-favourite pick is not remembered; docs follow the switcher","pr":1157,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":316,"Windows launcher syntax":15,"macOS tests against bundled FFmpeg and ASS":217,"macOS simulator build + launch":224}},
 {"id":41253712684,"at":"2026-10-31T23:43:30Z","sha":"6c917dee3","title":"Merge origin/main into flaky-tests","pr":1189,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":151,"Linux simulator build + launch":337,"macOS simulator build + launch":150}},
-{"id":41253863541,"at":"2026-10-31T23:45:43Z","sha":"4974279b3","title":"Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries","pr":1157,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":214,"Windows launcher syntax":30,"macOS simulator build + launch":194,"Linux simulator build + launch":241}}
+{"id":41253863541,"at":"2026-10-31T23:45:43Z","sha":"4974279b3","title":"Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries","pr":1157,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":214,"Windows launcher syntax":30,"macOS simulator build + launch":194,"Linux simulator build + launch":241}},
+{"id":41254560872,"at":"2026-10-31T23:56:15Z","sha":"acd247a76","title":"Host-suite flakes fixed at their roots (test code only)","pr":1189,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":196,"Linux simulator build + launch":220,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":220}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -4496,7 +4496,9 @@
 {"id":40960596573,"at":"2026-10-29T21:46:36Z","sha":"e073b0d0d","title":"CI: Bump the actions group across 2 directories with 1 update","pr":1146,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":16,"ARM build + gates / build + verify":1011,"publish nightly prerelease":37}}
 ],
 "cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":9,"pull_request":3},"2026-10-25":{"push":10,"pull_request":0},"2026-10-26":{"push":8,"pull_request":17},"2026-10-27":{"push":1,"pull_request":0},"2026-10-28":{"push":0,"pull_request":1},"2026-10-29":{"push":7,"pull_request":5},"2026-10-30":{"push":3,"pull_request":5},"2026-10-31":{"push":10,"pull_request":0}},
-"daily":[],
+"daily":[
+{"day":"2026-08-02","wf":"ci","event":"push","runs":1,"failed":1,"jobs":{"host checks (NOT a device gate)":119},"longest":119}
+],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
 {"run":40095074837,"at":"2026-10-24T12:52:27Z","sha":"13b6d88dc","pr":996,"job":"host unit tests (hostsim)","test":"plx_media::ff::body_heal_tests::an_unsized_body_is_not_given_the_silence_deadline","fail":[1],"pass":[2]},
