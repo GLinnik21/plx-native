@@ -52,6 +52,8 @@ enum HudId {
     Pack(String),
     Remove(String),
     Drop(Sha),
+    /// A file the store could not hash (over the size bound): its position in the folder listing.
+    DropFile(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +61,8 @@ enum HudAction {
     Select(String),
     Remove(String),
     Install(Sha),
+    /// A row with nothing to do: a file that cannot be installed and has no hash to name.
+    Inert,
 }
 
 /// Row keys: a package's position, then the removals and the drop files in their own ranges.
@@ -169,15 +173,17 @@ fn hud_form(list: &HudList) -> Form<HudId, HudAction, SettingsPage> {
     }
     let mut folder = FormSection::new(plx_platform::i18n::msg::settings_hud_folder()).visible(!list.drops.is_empty());
     for (i, file) in list.drops.iter().enumerate() {
-        let Some(sha) = file.sha else { continue };
         let name = file.meta.as_ref().map_or_else(|| file.name.clone(), |m| m.name.clone());
         let detail = match file.status {
             Ok(()) => join(&[plx_platform::i18n::msg::settings_hud_install().to_owned(), plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()]),
             Err(why) => refusal_text(why).to_owned(),
         };
         let row = Row::new(&name).server_label().detail(detail);
-        folder = folder.item_keyed(HudId::Drop(sha), RowKey(DROP_KEY + i as u32), RowKind::Button, HudAction::Install(sha), row)
-            .disabled(file.status.is_err());
+        let (id, action) = match file.sha {
+            Some(sha) => (HudId::Drop(sha), HudAction::Install(sha)),
+            None => (HudId::DropFile(i), HudAction::Inert),
+        };
+        folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).disabled(file.status.is_err());
     }
     Form::new().section(packs).section(removals).section(folder)
 }
@@ -277,7 +283,7 @@ impl HudPage {
                 self.state.alert_scroll = self.prompt.scroll_target_bits();
                 self.focus(fx, ALERT_GROUP);
             }
-            None => {}
+            Some(HudAction::Inert) | None => {}
         }
         fx.invalidate(plx_machine::present::Provenance::Input);
     }

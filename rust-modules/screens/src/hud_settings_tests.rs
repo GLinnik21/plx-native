@@ -60,6 +60,22 @@ fn drop_file(name: &str, byte: u8, status: Result<(), Refusal>) -> DropFile {
     DropFile { name: name.into(), sha: Some(Sha::of(&[byte])), meta: Some(meta("com.example.dropped", "Dropped")), status }
 }
 
+/// What the store lists for a file over the size bound: no hash, no meta, and the refusal (`hudpacks::drops`).
+fn too_large_drop(name: &str) -> DropFile {
+    DropFile { name: name.into(), sha: None, meta: None, status: Err(Refusal::TooLarge) }
+}
+
+/// The page's rows as (id, label, detail, checked), read from its own form.
+fn shown(page: &HudPage) -> Vec<(HudId, String, String, bool)> {
+    (0..page.form.table.n_rows() as usize)
+        .filter_map(|i| {
+            let id = page.form.id_at(i)?.clone();
+            let row = page.form.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i)?;
+            Some((id, row.label.clone(), row.detail.clone(), row.checked))
+        })
+        .collect()
+}
+
 fn list() -> HudList {
     HudList {
         entries: vec![builtin(false), pack("com.example.a", "Alpha", 1, true)],
@@ -180,9 +196,40 @@ fn the_unfit_reason_names_the_language_and_the_selection_is_still_shown_checked(
     l.language = "Deutsch".into();
     let facts = facts_of(&l.entries[1], &l);
     assert!(facts.iter().any(|f| *f == plx_platform::i18n::msg::settings_hud_unfit_language("Deutsch")), "{facts:?}");
-    assert!(l.entries[1].selected);
     let (page, _tx) = page_with(l);
-    assert_eq!(page.form.table.n_rows(), 4);
+    let rows = shown(&page);
+    let alpha = rows.iter().find(|r| r.0 == HudId::Pack("com.example.a".into())).expect("the package's row");
+    assert!(alpha.3, "the unfit package is still the checked row: the selection is kept");
+    assert!(alpha.2.contains(&plx_platform::i18n::msg::settings_hud_unfit_language("Deutsch")), "{alpha:?}");
+    let classic = rows.iter().find(|r| r.0 == HudId::Pack(BUILTIN_CLASSIC.into())).expect("the built-in's row");
+    assert!(!classic.3, "and the built-in is not");
+}
+
+/// The checkmark follows the selection: exactly one row is checked, and it is the selected entry's.
+#[test]
+fn exactly_the_selected_package_is_checked() {
+    for (builtin_selected, expect) in [(true, BUILTIN_CLASSIC), (false, "com.example.a")] {
+        let mut l = list();
+        l.entries[0].selected = builtin_selected;
+        l.entries[1].selected = !builtin_selected;
+        let (page, _tx) = page_with(l);
+        let checked: Vec<HudId> = shown(&page).into_iter().filter(|r| r.3).map(|r| r.0).collect();
+        assert_eq!(checked, [HudId::Pack(expect.into())]);
+    }
+}
+
+/// A file over the size bound has no hash, and still appears with its reason; it cannot be installed.
+#[test]
+fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
+    let mut l = list();
+    l.drops = vec![too_large_drop("huge.plxhud.json")];
+    let (mut page, _tx) = page_with(l);
+    let rows = shown(&page);
+    let huge = rows.iter().find(|r| r.1 == "huge.plxhud.json").expect("the file is on the page");
+    assert_eq!(huge.2, plx_platform::i18n::msg::settings_hud_cant_install());
+    let key = page.form.key_at(page.form.index_of(&huge.0).unwrap()).unwrap().0;
+    let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+    assert!(huds(&emitted).is_empty() && !page.prompt.is_open(), "nothing is installable from it");
 }
 
 #[test]
@@ -226,16 +273,54 @@ fn every_row_fits_its_column_in_every_language() {
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
         every.drops = all_refusals.iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud.json"), 20 + i as u8, Err(*r))).collect();
         every.drops.push(drop_file("ok.plxhud.json", 40, Ok(())));
-        for notice in [None, Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::Invalid }), Some(Notice::NotWritten { sha: Sha::of(&[9]) })] {
-            every.notice = notice;
-            let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-            form.table.compact = false;
-            form.set(hud_form(&every), None);
-            for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
-                out.push(e);
-            }
+        every.drops.push(too_large_drop("huge.plxhud.json"));
+        let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
+        form.table.compact = false;
+        form.set(hud_form(&every), None);
+        for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
+            out.push(e);
         }
-        let _ = ShippedMeasure;
     }
     plx_ui::table::assert_no_fit_failures(&out);
+}
+
+/// **The line under the title fits the column complete in every language**, whichever text it carries (the page's
+/// own copy, a refused file, a store that could not write): never cut at the line cap, never taller than the room
+/// between the title and the action band, and short enough to read as a note.
+#[test]
+fn the_line_under_the_title_fits_the_column_in_every_language() {
+    const MAX_COPY_LINES: usize = 5;
+    let layout = RouteLayout::screen();
+    let mut out = Vec::new();
+    for language in SHIPPED {
+        let _guard = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        let mut l = list();
+        for (name, notice) in [
+            ("no notice", None),
+            ("refused", Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::Invalid })),
+            ("not written", Some(Notice::NotWritten { sha: Sha::of(&[9]) })),
+        ] {
+            l.notice = notice;
+            let copy = copy_of(&l);
+            let size = theme::size::LABEL;
+            let view = plx_ui::text_view::TextView::new(&copy, size, theme::TEXT_READING)
+                .leading(size as f32 + theme::space::XS)
+                .max_lines(12)
+                .with_measure(&ShippedMeasure);
+            let top = layout.narrative_copy_frame(true, plx_platform::i18n::msg::settings_hud_title(), layout.action.y, &ShippedMeasure).y;
+            let room = layout.action.y - theme::space::XL - top;
+            let (lines, h) = (view.line_count(layout.narrative.w), view.measure_h(layout.narrative.w));
+            if view.truncates(layout.narrative.w) {
+                out.push(format!("{tag} {name}: the copy is cut at the line cap"));
+            }
+            if h > room {
+                out.push(format!("{tag} {name}: the copy is {h}px tall, the column has {room}px"));
+            }
+            if lines > MAX_COPY_LINES {
+                out.push(format!("{tag} {name}: {lines} lines, more than {MAX_COPY_LINES}"));
+            }
+        }
+    }
+    assert!(out.is_empty(), "{}", out.join("\n"));
 }
