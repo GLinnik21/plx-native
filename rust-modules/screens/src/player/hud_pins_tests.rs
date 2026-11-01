@@ -1981,6 +1981,149 @@ mod sections {
         assert!(run.asked().is_empty());
     }
 
+    // -- rising-tabs: a modal package whose tabs stand ABOVE its page -------------------------------------------
+
+    /// The `rising-tabs` fixture: a MODAL package whose tab pills are compiled above the page an open section draws,
+    /// so the way into the page is Down from a tab and the way out is Up off the page (`travel::Order::toward_tabs`).
+    fn rising_tabs_run() -> Run {
+        let text = include_str!("../../../appkit/src/hud_format/fixtures/rising-tabs.plxhud.json");
+        let package = plx_appkit::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+            .expect("the rising-tabs fixture loads")
+            .compiled;
+        let mut run = Run::boot_in(Occupant::Plain, package, true);
+        run.screen().model.chapters = true;
+        run
+    }
+
+    impl Run {
+        /// The ring on tab `tab` while a section is open. A key cannot put it there (every way into a page seats the
+        /// page, and the way out closes it) and a hover cannot (the transport's stops are `Hover::Ignore`): what does
+        /// is a pointer click on a control, which seats the element it landed on (`PlayerScreen::seat_elem`) before it
+        /// presses. This is that seat alone, with no press.
+        fn seat_tab(&mut self, tab: u32) {
+            let page = MachineId::Instance(self.d.top_page().expect("the player page is mounted"));
+            let focus = plx_ui::screen::FocusTarget::Elem(plx_machine::machine::FocusKey { entry: self.id, elem: ELEM_TAB_BASE + tab });
+            self.d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh { focus }))));
+            let now = self.now;
+            self.frame(now, vec![]);
+            self.settle(now);
+            self.now += 600;
+            assert_eq!(self.held(), Some(ELEM_TAB_BASE + tab), "the ring is on the tab");
+        }
+    }
+
+    /// **Tabs above the page: Down from a tab enters it.** The way into the page is the direction the page lies in.
+    #[test]
+    fn rising_tabs_down_from_a_tab_enters_the_page() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = rising_tabs_run();
+        run.open_from_tab(1);
+        assert_eq!((run.open_sections(), run.group()), (vec![Section::Chapters], GROUP_STRIP.0), "the strip is open and has the ring");
+        run.seat_tab(1);
+        assert_eq!((run.group(), run.screen().hud.nav.tab), (GROUP_TABS.0, 1));
+        run.asked();
+        run.step('D');
+        assert_eq!((run.group(), run.held()), (GROUP_STRIP.0, Some(ELEM_CHAPTER_BASE)), "Down from the tab seats the strip");
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "entering the page closes nothing");
+        assert!(run.asked().is_empty());
+    }
+
+    /// The same for Info's buttons: Down from the Info tab seats the first.
+    #[test]
+    fn rising_tabs_down_from_the_info_tab_enters_the_info_page() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = rising_tabs_run();
+        run.open_from_tab(0);
+        assert_eq!((run.open_sections(), run.held()), (vec![Section::Info], Some(ELEM_SECTION_BASE)));
+        run.seat_tab(0);
+        run.step('D');
+        assert_eq!((run.group(), run.held()), (GROUP_SECTION.0, Some(ELEM_SECTION_BASE)));
+        assert_eq!(run.open_sections(), vec![Section::Info]);
+    }
+
+    /// **Tabs above the page: Up off the page puts it away** and seats the tab that opened it, asking the app for
+    /// nothing, and leaves the transport up.
+    #[test]
+    fn rising_tabs_up_off_the_strip_puts_it_away_and_seats_its_tab() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = rising_tabs_run();
+        run.open_from_tab(1);
+        run.asked();
+        run.step('U');
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "Up off the page closes a modal page whose tabs are above it");
+        assert_eq!((run.group(), run.screen().hud.nav.tab), (GROUP_TABS.0, 1));
+        assert_eq!(run.held(), Some(ELEM_TAB_BASE + 1), "the Chapters tab, the one that opened it");
+        assert!(run.asked().is_empty());
+        assert!(!run.screen().hud.dismissed, "…and the transport is not hidden");
+    }
+
+    /// Info: Down walks its two buttons, Up off the first puts the page away and seats the Info tab.
+    #[test]
+    fn rising_tabs_up_off_the_info_buttons_puts_the_page_away() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = rising_tabs_run();
+        run.open_from_tab(0);
+        run.step('D');
+        assert_eq!(run.held(), Some(ELEM_SECTION_BASE + 1), "Info's second button");
+        run.step('U');
+        assert_eq!(run.held(), Some(ELEM_SECTION_BASE), "Up inside the page walks it");
+        assert_eq!(run.open_sections(), vec![Section::Info]);
+        run.step('U');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!((run.group(), run.held()), (GROUP_TABS.0, Some(ELEM_TAB_BASE)));
+    }
+
+    /// **Tabs above the page: Down off the page stays put.** The far edge is a wall: nothing closes, focus does not
+    /// move, nothing is asked. It does not raise the linger either, and needs no more: an open page holds the
+    /// transport up by itself (`HudState::visible`), and closing it extends the linger from there (`close_section`).
+    #[test]
+    fn rising_tabs_down_off_the_page_stays_put() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = rising_tabs_run();
+        run.open_from_tab(1);
+        run.asked();
+        run.step('D');
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "Down off the page closes nothing");
+        assert_eq!((run.group(), run.held()), (GROUP_STRIP.0, Some(ELEM_CHAPTER_BASE)), "…and the ring has not moved");
+        assert!(run.asked().is_empty());
+        assert!(!run.raised, "the wall does not touch the linger");
+        run.step('B');
+        assert_eq!(run.open_sections(), Vec::<Section>::new(), "BACK still closes it");
+        let mut run = rising_tabs_run();
+        run.open_from_tab(0);
+        run.walk("DD");
+        assert_eq!(run.open_sections(), vec![Section::Info], "Down off Info's last button closes nothing either");
+        assert_eq!((run.group(), run.held()), (GROUP_SECTION.0, Some(ELEM_SECTION_BASE + 1)));
+    }
+
+    /// **Up off a tab with a section open is swallowed**: the transport cannot hide under an open page, so the press
+    /// moves nothing and closes nothing.
+    #[test]
+    fn rising_tabs_up_off_a_tab_with_a_section_open_is_swallowed() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = rising_tabs_run();
+        run.open_from_tab(1);
+        run.seat_tab(1);
+        run.asked();
+        run.step('U');
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "the section is still open");
+        assert_eq!((run.group(), run.held()), (GROUP_TABS.0, Some(ELEM_TAB_BASE + 1)), "the ring has not moved");
+        assert!(!run.screen().hud.dismissed, "…and nothing hid the transport");
+        assert!(run.asked().is_empty());
+    }
+
     // -- a section with no opener: the More fold -----------------------------------------------------
 
     fn without_openers(policy: &str) -> std::sync::Arc<plx_appkit::hud_format::compile::Compiled> {

@@ -12,18 +12,24 @@
 //!
 //! One pure function from the compiled state to a value, small enough to build on every frame (a fixed
 //! array, no heap): the screen's `links()` and its edge answer both read it.
+//!
+//! **A modal page is entered and left toward where the tabs are compiled** ([`Order::toward_tabs`]): classic
+//! draws its tabs under the page, so Up from a tab enters it and Down off it puts it away; a package whose
+//! tabs stand above the page (`rising-tabs`) has them the other way round. The lint asks the same geometry
+//! whether that direction exists ([`tabs_span`], [`page_span`]: `HUD-E1501`).
 
 use plx_machine::machine::GroupId;
 use plx_ui::screen::{Dir, Link};
 use plx_ui::Rect;
 
 use super::geometry::{
-    frame_state, geometry, row_len, section_buttons, GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP, GROUP_TABS,
+    frame_state, geometry, row_len, section_buttons, HudGeometry, GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP,
+    GROUP_TABS,
 };
 use super::command::Section;
 use super::state::ControlSlot;
 use super::strip::strip_of;
-use crate::hud_format::compile::Compiled;
+use crate::hud_format::compile::{Compiled, CompiledState};
 
 /// How many groups the transport has to order: one per kind of stop.
 const ORDER_SLOTS: usize = 5;
@@ -51,6 +57,30 @@ impl Order {
     /// The bottom group: Down off it stays put.
     pub fn bottom(&self) -> Option<GroupId> {
         self.groups().last().copied()
+    }
+
+    /// **The direction from the page to the tabs**: [`Dir::Up`] when the tabs are compiled ABOVE the page an open
+    /// section draws (the strip or the section's buttons), [`Dir::Down`] when they are below it, and `Down` when
+    /// the state has no tabs or no page, which is the way a modal page has always been left. A modal page is
+    /// entered from a tab in [`Order::toward_page`] and left toward the tabs: with classic's tabs under the page,
+    /// Up from a tab enters it and Down off the page puts it away; with the tabs above it, the other way round.
+    ///
+    /// Read off the order, which already sorts the two by their tops; the lint (`HUD-E1501`) is what makes sure the
+    /// two never share a height.
+    pub fn toward_tabs(&self) -> Dir {
+        let at = |want: &[GroupId]| self.groups().iter().position(|g| want.contains(g));
+        match (at(&[GROUP_TABS]), at(&[GROUP_STRIP, GROUP_SECTION])) {
+            (Some(tabs), Some(page)) if tabs < page => Dir::Up,
+            _ => Dir::Down,
+        }
+    }
+
+    /// **The direction from the tabs to the page**: the opposite of [`Order::toward_tabs`].
+    pub fn toward_page(&self) -> Dir {
+        match self.toward_tabs() {
+            Dir::Up => Dir::Down,
+            _ => Dir::Up,
+        }
     }
 
     /// **Each group links to its neighbours**: Down to the one below, Up to the one above. Appends to `out`.
@@ -86,15 +116,12 @@ pub fn order(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, p
         stops[1] = Some((GROUP_ROW, geo.row.y));
     }
     // the tab pills (`HudGeometry::tabs` reports pills only: a section a disc opens is a stop of the row)
-    if let Some(top) = geo.tabs.iter().flatten().map(|pill| pill.y).reduce(f32::min) {
-        stops[2] = Some((GROUP_TABS, top));
-    }
+    stops[2] = tabs_span(&geo).map(|(top, _)| (GROUP_TABS, top));
     if open & Section::Chapters.open_bit() != 0 {
-        stops[3] = strip_of(state).map(|strip| (GROUP_STRIP, strip.rect.y));
+        stops[3] = strip_span(state).map(|(top, _)| (GROUP_STRIP, top));
     }
     if open & Section::Info.open_bit() != 0 {
-        let top = section_buttons(state).map(|c| c.rect).reduce(|a: Rect, b| a.union(b)).map(|r| r.y);
-        stops[4] = top.map(|y| (GROUP_SECTION, y));
+        stops[4] = buttons_span(state).map(|(top, _)| (GROUP_SECTION, top));
     }
     // insertion sort over at most five entries: stable, so equal tops keep the fixed order above
     let mut order = Order::EMPTY;
@@ -108,6 +135,43 @@ pub fn order(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, p
         order.len += 1;
     }
     order
+}
+
+/// A vertical extent: `(top, bottom)`.
+type Span = (f32, f32);
+
+fn span_of(rect: Rect) -> Span {
+    (rect.y, rect.y + rect.h)
+}
+
+fn merged(a: Span, b: Span) -> Span {
+    (a.0.min(b.0), a.1.max(b.1))
+}
+
+/// **The vertical extent of the tab pills** a geometry report places (`HudGeometry::tabs` reports pills only), `None`
+/// with none.
+pub(crate) fn tabs_span(geo: &HudGeometry) -> Option<Span> {
+    geo.tabs.iter().flatten().map(|pill| span_of(*pill)).reduce(merged)
+}
+
+/// The vertical extent of the strip a state places, `None` for a state with no strip.
+fn strip_span(state: &CompiledState) -> Option<Span> {
+    strip_of(state).map(|strip| span_of(strip.rect))
+}
+
+/// The vertical extent of an open section's buttons, `None` for a state that places none.
+fn buttons_span(state: &CompiledState) -> Option<Span> {
+    section_buttons(state).map(|c| span_of(c.rect)).reduce(merged)
+}
+
+/// **The vertical extent of the stops an open section's page places** in `state`, the strip while `open` has Chapters
+/// and the section's buttons while it has Info (one section at a time under a modal package), `None` when the page
+/// places no stop. The same reads [`order`] takes the page's place in the order from, so the lint's verdict on how
+/// the tabs stand against the page ([`tabs_span`]) is the travel order's.
+pub(crate) fn page_span(state: &CompiledState, open: u8) -> Option<Span> {
+    let strip = (open & Section::Chapters.open_bit() != 0).then(|| strip_span(state)).flatten();
+    let buttons = (open & Section::Info.open_bit() != 0).then(|| buttons_span(state)).flatten();
+    [strip, buttons].into_iter().flatten().reduce(merged)
 }
 
 fn top_of(stops: &[Option<(GroupId, f32)>; ORDER_SLOTS], group: GroupId) -> f32 {
@@ -131,9 +195,17 @@ mod tests {
         fixture(include_str!("../hud_format/fixtures/reference.plxhud.json"))
     }
 
-    fn walk(compiled: &Compiled, open: u8) -> Vec<GroupId> {
+    fn order_of(compiled: &Compiled, open: u8) -> Order {
         let slot = ControlSlot::Discs(Controls { previous: false, next: false, restart: false });
-        order(compiled, open, slot, true, false).groups().to_vec()
+        order(compiled, open, slot, true, false)
+    }
+
+    fn walk(compiled: &Compiled, open: u8) -> Vec<GroupId> {
+        order_of(compiled, open).groups().to_vec()
+    }
+
+    fn rising_tabs() -> std::sync::Arc<Compiled> {
+        fixture(include_str!("../hud_format/fixtures/rising-tabs.plxhud.json"))
     }
 
     /// Classic draws its row above the bar and its tabs below: today's row, bar, tabs.
@@ -233,6 +305,58 @@ mod tests {
             assert!(out.contains(&want), "{want:?} missing from {out:?}");
         }
         assert_eq!((order.top(), order.bottom()), (Some(GROUP_ROW), Some(GROUP_TABS)));
+    }
+
+    /// `rising-tabs` compiles its tabs ABOVE the page an open section draws, so the order has the tabs first.
+    #[test]
+    fn rising_tabs_puts_its_tabs_above_the_page() {
+        let rising = rising_tabs();
+        assert_eq!(walk(&rising, CHAPTERS), [GROUP_TABS, GROUP_STRIP]);
+        assert_eq!(walk(&rising, INFO), [GROUP_TABS, GROUP_SECTION]);
+    }
+
+    /// **The way into and out of a modal page is the way the tabs lie.** Classic's tabs are under the page: toward the
+    /// tabs is Down (Down off the page puts it away) and toward the page is Up (Up from a tab enters it). Rising-tabs'
+    /// are above it, so both turn round. A state with no tabs, or no page, keeps today's Down.
+    #[test]
+    fn the_way_into_a_modal_page_follows_where_the_tabs_are_compiled() {
+        let classic = classic_for_test();
+        let rising = rising_tabs();
+        for open in [CHAPTERS, INFO] {
+            let below = order_of(&classic, open);
+            assert_eq!((below.toward_tabs(), below.toward_page()), (Dir::Down, Dir::Up), "classic, open {open}");
+            let above = order_of(&rising, open);
+            assert_eq!((above.toward_tabs(), above.toward_page()), (Dir::Up, Dir::Down), "rising-tabs, open {open}");
+        }
+        // no page open: nothing to enter, today's Down
+        for compiled in [&classic, &rising] {
+            assert_eq!(order_of(compiled, 0).toward_tabs(), Dir::Down);
+        }
+        // no tabs in the state (the reference's openers are discs of the row): Down, with the page in the order or not
+        let reference = reference();
+        for open in [0, CHAPTERS, INFO] {
+            assert_eq!(order_of(&reference, open).toward_tabs(), Dir::Down, "reference, open {open}");
+        }
+        assert_eq!((Order::EMPTY.toward_tabs(), Order::EMPTY.toward_page()), (Dir::Down, Dir::Up));
+    }
+
+    /// The lint and the order read one geometry: the page's span is the strip's (Chapters) or the buttons' (Info), the
+    /// tabs' is the pills', and rising-tabs' pills stand wholly above the page in both its states, classic's wholly below.
+    #[test]
+    fn the_spans_the_lint_reads_are_the_orders_and_the_tabs_clear_the_page() {
+        let slot = ControlSlot::Discs(Controls { previous: false, next: false, restart: false });
+        for (compiled, tabs_above) in [(classic_for_test(), false), (rising_tabs(), true)] {
+            for open in [CHAPTERS, INFO] {
+                let (state, skip) = frame_state(&compiled, open, slot, true, false).expect("the state");
+                let tabs = tabs_span(&state.geometry(skip)).expect("the state places tabs");
+                let page = page_span(state, open).expect("the page places stops");
+                if tabs_above {
+                    assert!(tabs.1 <= page.0, "open {open}: tabs {tabs:?} above page {page:?}");
+                } else {
+                    assert!(page.1 <= tabs.0, "open {open}: page {page:?} above tabs {tabs:?}");
+                }
+            }
+        }
     }
 
     /// A package with no state for the frame has nothing to travel between.

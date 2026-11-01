@@ -35,9 +35,10 @@
 //!    ends the run (the price pass parses again, finds no package and is empty: its parse findings are the
 //!    fit pass's);
 //! 2. reachability and the package-level invariants ([`check`]); its findings are kept and the run goes on;
-//! 3. [`compile`] once per language, then the six geometric checks over that language's [`Compiled`]
-//!    (`lint_zorder` I4, `lint_safe` I5, `lint_band` I6, `lint_menus` I7, `lint_text` I10 and
-//!    `lint_size` for `MIN_CONTROL_SIZE` and the compile's own item-keyed finding). Each check module
+//! 3. [`compile`] once per language, then the seven geometric checks over that language's [`Compiled`]
+//!    (`lint_zorder` I4, `lint_safe` I5, `lint_band` I6, `lint_menus` I7, `lint_text` I10,
+//!    `lint_size` for `MIN_CONTROL_SIZE` and the compile's own item-keyed finding, and `lint_travel` for the
+//!    way into a modal page). Each check module
 //!    exports exactly `pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>)` and walks
 //!    [`LangCtx::states`] (state x slot) itself.
 //!
@@ -69,7 +70,7 @@ use super::parse::{self, Package};
 use super::reach::{check, Slot};
 use super::report::sorted_owned;
 use super::lint_cost::StateCostLine;
-use super::{lint_band, lint_cost, lint_menus, lint_safe, lint_size, lint_text, lint_zorder};
+use super::{lint_band, lint_cost, lint_menus, lint_safe, lint_size, lint_text, lint_travel, lint_zorder};
 use super::{Context, Finding, NamedRect};
 
 /// One language to lint in: its tag (`de`) and the app's own strings in it (tab labels, the Up Next and
@@ -166,6 +167,7 @@ pub fn lint_fit(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &Li
         lint_menus::check(&cx, &mut out);
         lint_text::check(&cx, &mut out);
         lint_size::check(&cx, &mut out);
+        lint_travel::check(&cx, &mut out);
         tag_language(&mut out, lang.tag);
         per_lang.push(out);
     }
@@ -253,6 +255,7 @@ pub(super) fn single_pipeline(text: &str, measure: &dyn Measure, langs: &[LintLa
         lint_menus::check(&cx, &mut out);
         lint_text::check(&cx, &mut out);
         lint_size::check(&cx, &mut out);
+        lint_travel::check(&cx, &mut out);
         lint_cost::check(lang, &compiled, &mut out);
         tag_language(&mut out, lang.tag);
         per_lang.push(out);
@@ -417,6 +420,8 @@ pub(super) mod testing {
         /// `fixtures/minimal.plxhud.json`: it places only `open_more`, so it folds the most rows of any fixture
         /// that lays out no section
         Minimal,
+        /// `fixtures/rising-tabs.plxhud.json`: a modal package whose tabs are compiled above its page
+        RisingTabs,
     }
 
     impl Base {
@@ -425,6 +430,7 @@ pub(super) mod testing {
                 Base::Classic => BUILTIN_CLASSIC,
                 Base::Reference => include_str!("fixtures/reference.plxhud.json"),
                 Base::Minimal => include_str!("fixtures/minimal.plxhud.json"),
+                Base::RisingTabs => include_str!("fixtures/rising-tabs.plxhud.json"),
             }
         }
     }

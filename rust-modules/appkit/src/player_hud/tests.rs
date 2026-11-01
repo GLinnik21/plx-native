@@ -1669,6 +1669,11 @@ mod caption_rise_pins {
                 self.frame();
             }
         }
+        fn frames_n(&mut self, n: usize) {
+            for _ in 0..n {
+                self.frame();
+            }
+        }
         fn band(&self) -> HudBand {
             self.c.band().with_rise(self.m.caption_rise())
         }
@@ -1926,6 +1931,42 @@ mod caption_rise_pins {
         plx_gfx::text::latch_surface_text_pending(false);
         assert!(held >= 3, "the hold lasted {held} frames: the pin needs a multi-frame hold");
         assert!(started.is_some(), "and the section started once the bound was up");
+    }
+
+    /// **The page rides the section's hold and adds none of its own**: it starts on the frame the section and the
+    /// limit do, through a multi-frame hold, and the captions' pause (`HudMotion::step_appear`'s `waits`) is still the
+    /// sections' alone. Opening a section while another fades out turns the page round, which holds nothing, and the
+    /// limit starts with the section that is held.
+    #[test]
+    fn the_page_starts_on_the_frame_the_section_and_the_limit_do() {
+        plx_gfx::text::latch_surface_text_pending(true);
+        let mut rig = classic();
+        rig.open(OPEN_INFO);
+        let mut starts = (None, None, None);
+        for i in 0..40 {
+            rig.frame();
+            let (appear, rise, page) = (rig.m.section_appear(Section::Info), rig.m.caption_rise()[LOW], rig.m.page_appear());
+            for (at, moved) in [(&mut starts.0, appear > 0.0), (&mut starts.1, rise > 0.0), (&mut starts.2, page > 0.0)] {
+                if moved && at.is_none() {
+                    *at = Some(i);
+                }
+            }
+        }
+        plx_gfx::text::latch_surface_text_pending(false);
+        assert!(starts.0.is_some_and(|i| i >= 3), "the hold lasted several frames: {starts:?}");
+        assert_eq!((starts.0, starts.1), (starts.2, starts.2), "the section, the limit and the page start together: {starts:?}");
+
+        // a section opened while another is fading: the page is turned round, no hold, the limit starts with the held section
+        let mut rig = classic();
+        rig.open(OPEN_CHAPTERS);
+        rig.settle();
+        rig.close(0, Section::Chapters);
+        rig.frames_n(4);
+        let page = rig.m.page_appear();
+        rig.open(OPEN_INFO);
+        rig.frame();
+        assert_ne!(rig.m.page_appear(), page, "the page is not held: it moved on the first frame");
+        assert_eq!(rig.m.section_appear(Section::Info), 0.0, "…while the fresh section is held");
     }
 
     /// The limit's first moving frame is the section's first appear frame, on open and on close, and it passes
