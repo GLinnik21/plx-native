@@ -1,4 +1,4 @@
-{"updated":"2026-11-01T15:15:50Z",
+{"updated":"2026-11-01T15:16:42Z",
 "ci":[
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4363,7 +4363,8 @@
 {"id":41318273342,"at":"2026-11-01T14:51:42Z","sha":"bb6e3ca34","title":"Player HUD page: the checked row is read from the form, the header copy is measured, a too-large drop is listed","pr":1195,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":220,"Linux simulator build + launch":260,"macOS tests against bundled FFmpeg and ASS":230}},
 {"id":41318328062,"at":"2026-11-01T14:52:23Z","sha":"22b02fa9c","title":"HUD plugins: the More fold","pr":1194,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS tests against bundled FFmpeg and ASS":195,"macOS simulator build + launch":223,"Linux simulator build + launch":266}},
 {"id":41318363272,"at":"2026-11-01T14:52:50Z","sha":"1655bd70e","title":"Merge remote-tracking branch 'origin/main' into hud/pr17-caption-lift","pr":1196,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":259,"macOS tests against bundled FFmpeg and ASS":205,"macOS simulator build + launch":144}},
-{"id":41319711050,"at":"2026-11-01T15:08:46Z","sha":"be8115d86","title":"locales: add Dutch translations for Live TV chrome and home row labels","pr":993,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":321,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":122},"failed":["macOS simulator build + launch"]}
+{"id":41319711050,"at":"2026-11-01T15:08:46Z","sha":"be8115d86","title":"locales: add Dutch translations for Live TV chrome and home row labels","pr":993,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":321,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":122},"failed":["macOS simulator build + launch"]},
+{"id":41319995910,"at":"2026-11-01T15:11:59Z","sha":"72de84aab","title":"Captions rise clear of an open player section","pr":1196,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":271,"macOS tests against bundled FFmpeg and ASS":195,"macOS simulator build + launch":231,"Windows launcher syntax":23}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
