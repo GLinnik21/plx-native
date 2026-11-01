@@ -92,6 +92,13 @@ pub enum HudCmd {
     Remove(String),
     /// Install the drop file listed under this hash; the viewer has confirmed it.
     InstallDrop(plx_data::hudpacks::Sha),
+    /// Fetch the package at this address, parsed by `plx_data::hudpacks::address::parse`. Nothing is installed:
+    /// what comes back is validated and published as the list's `offer` for the viewer to confirm.
+    Fetch(plx_data::hudpacks::address::Address),
+    /// Install the offered package listed under this hash; the viewer has confirmed it.
+    InstallOffer(plx_data::hudpacks::Sha),
+    /// The viewer declined the offered package under this hash: nothing is written.
+    DeclineOffer(plx_data::hudpacks::Sha),
 }
 
 /// A private live receipt. Requests contain account credentials and are intentionally unsupported

@@ -766,6 +766,12 @@ impl RequestFailure {
     /// body ever comes back with it.
     pub fn too_large(&self) -> bool { self.body_limit.is_some() }
 
+    /// `true` when libcurl refused the server's certificate: `60` (the chain did not verify: an issuer
+    /// this trust store lacks, a self-signed certificate, a wrong clock) or `51` (the name check, on the
+    /// television's 7.53.1). [`Self::untrusted_chain`] and [`Self::verify`] say which; this says only
+    /// that the television's certificate check, and not the network, is what failed.
+    pub fn certificate_refused(&self) -> bool { matches!(self.curl_rc, Some(keypin::TLS_VERIFY_FAILED | 51)) }
+
     /// The verify result when this failure is a certificate chain the television's trust store could
     /// not verify — see [`keypin::untrusted_chain_verify`] for the closed set — and `None` for
     /// everything else, the clock cases (9, 10) and a name mismatch included.
@@ -4196,6 +4202,7 @@ mod request_tests {
             .err()
             .expect("nothing listens");
         assert!(!failure.too_large());
+        assert!(!failure.certificate_refused());
         assert_eq!(failure.status, None);
         assert_eq!(failure.untrusted_chain(), None);
         assert_eq!(failure.curl_rc, Some(7), "CURLE_COULDNT_CONNECT");

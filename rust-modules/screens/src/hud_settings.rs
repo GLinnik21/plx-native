@@ -18,7 +18,7 @@
 use std::borrow::Cow;
 use std::sync::mpsc::{self, Receiver};
 
-use plx_data::hudpacks::{DropFile, Entry, Notice, Refusal, Sha, Trust, Unloadable, BUILTIN_CLASSIC};
+use plx_data::hudpacks::{DropFile, Entry, Notice, OfferView, Refusal, Sha, Trust, Unloadable, BUILTIN_CLASSIC};
 use plx_machine::machine::{Canon, Cx, Delivery, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InstanceId, LogicalState, Machine, MachineId};
 use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
 use plx_ui::form::{Form, FormSection, FormTable, RowKey, RowKind};
@@ -45,6 +45,10 @@ pub struct HudList {
     pub language: String,
     /// What the last install or removal said, until the page is opened again.
     pub notice: Option<Notice>,
+    /// A package fetched from an address, validated and waiting for the viewer's answer: the prompt shows it.
+    pub offer: Option<OfferView>,
+    /// A fetch from an address is in flight (the row is busy and takes no second request).
+    pub fetching: bool,
 }
 
 /// A row's id: what it IS, so the cursor keeps its place across a re-listing.
@@ -267,6 +271,7 @@ impl HudPage {
             Some(Notice::Removed { .. }) => 4,
             Some(Notice::RemoveIncomplete { .. }) => 5,
             Some(Notice::ReplacedUnreadable { .. }) => 6,
+            Some(Notice::FetchFailed { .. }) => 7,
         };
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
     }

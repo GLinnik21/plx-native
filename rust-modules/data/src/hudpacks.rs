@@ -690,6 +690,16 @@ impl HudStore {
         out
     }
 
+    /// Whether a fetch from an address is in flight: waiting for the network, or for the validator's verdict on what
+    /// came back. An offer waiting for the viewer is not (it is [`offer`](Self::offer)).
+    pub fn fetching(&self) -> bool {
+        matches!(
+            &self.op,
+            Op::Installing(Installing { step: Step::Fetching { .. }, .. })
+                | Op::Installing(Installing { step: Step::Validating(Offer { from: Some(_), .. }), .. })
+        )
+    }
+
     /// The validated fetch waiting for the viewer's answer, if any: [`HudEvent::InstallOffer`] installs
     /// it, [`HudEvent::DeclineOffer`] drops it, and a `Refresh` ends it with [`Notice::NotWritten`].
     pub fn offer(&self) -> Option<OfferView> {

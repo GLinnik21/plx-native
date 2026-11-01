@@ -660,6 +660,7 @@ fn a_real_failed_handshake_reports_its_x509_verify_result_on_the_failure() {
     assert!(matches!(failure.verify, Some(2 | 20 | 21)), "an unknown issuer: {:?}", failure.verify);
     assert_eq!(failure.untrusted_chain(), failure.verify.map(|v| v as u8));
     assert!(failure.untrusted_chain().is_some());
+    assert!(failure.certificate_refused(), "the television's certificate check is what failed");
     // The bundle was tried and did not hold the root either: still the same verdict.
     let other_roots = mint_cert(&["another-root.invalid"]).pem;
     let out = request_to(PLEX_DIRECT, Arc::clone(&cert), &unrelated_store(), Some(&other_roots), "roots-verify-lacks");
@@ -671,4 +672,5 @@ fn a_real_failed_handshake_reports_its_x509_verify_result_on_the_failure() {
     assert_eq!(failure.curl_rc, Some(60));
     assert_eq!(failure.verify, Some(10));
     assert_eq!(failure.untrusted_chain(), None);
+    assert!(failure.certificate_refused(), "a wrong clock is still the certificate check failing");
 }

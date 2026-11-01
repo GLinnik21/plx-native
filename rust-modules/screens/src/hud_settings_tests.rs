@@ -254,7 +254,7 @@ fn the_notice_replaces_the_line_under_the_title_only_while_there_is_one() {
     assert_eq!(copy_of(&l), plx_platform::i18n::msg::settings_hud_copy());
     l.notice = Some(Notice::Refused { sha: Sha::of(&[9]), reason: Refusal::BuiltinId });
     assert_eq!(copy_of(&l), plx_platform::i18n::msg::settings_hud_cant_install());
-    l.notice = Some(Notice::NotWritten { sha: Sha::of(&[9]) });
+    l.notice = Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) });
     assert_eq!(copy_of(&l), plx_platform::i18n::msg::settings_hud_not_saved());
 }
 
@@ -331,7 +331,7 @@ fn the_line_under_the_title_fits_the_column_in_every_language() {
         let mut l = list();
         let notices = std::iter::once(("no notice".to_owned(), None))
             .chain(every_refusal().into_iter().map(|reason| (format!("refused {reason:?}"), Some(Notice::Refused { sha: Sha::of(&[9]), reason }))))
-            .chain(std::iter::once(("not written".to_owned(), Some(Notice::NotWritten { sha: Sha::of(&[9]) }))));
+            .chain(std::iter::once(("not written".to_owned(), Some(Notice::NotWritten { sha: Some(Sha::of(&[9])) }))));
         for (name, notice) in notices {
             l.notice = notice;
             let copy = copy_of(&l);
