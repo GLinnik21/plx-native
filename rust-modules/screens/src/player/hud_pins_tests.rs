@@ -2149,6 +2149,30 @@ mod sections {
         assert_eq!(run.group(), GROUP_ROW.0, "focus lands on a disc of the row");
     }
 
+    /// **Up off the row under an open inline page hides nothing**: the page keeps the transport up, so the hide the
+    /// row's Up asks for would be invisible now and fire when the page closes (the whole transport gone at the
+    /// moment it should linger). The press is swallowed, the ring stays on the row, and closing the page leaves
+    /// the transport to linger as it always does.
+    #[test]
+    fn up_off_the_row_under_an_open_inline_page_arms_no_hidden_dismissal() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = reference_run();
+        let disc = opener_item(&mut run, Section::Chapters);
+        go_to_item(&mut run, disc);
+        run.step('K');
+        run.step('U');
+        assert_eq!(run.group(), GROUP_ROW.0, "Up from the strip is the row beside it");
+        run.step('U');
+        assert_eq!(run.open_sections(), vec![Section::Chapters], "the page stays up");
+        assert_eq!(run.group(), GROUP_ROW.0, "the ring stays on the row");
+        assert!(!run.screen().hud.dismissed, "no hide is armed behind the open page");
+        run.step('B');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert!(!run.screen().hud.dismissed, "the transport lingers once the page has closed");
+    }
+
     // -- the sections' motion: what the panels' surfaces did, on the page's own springs ---------------------------
 
     impl Run {

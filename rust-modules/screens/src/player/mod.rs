@@ -1342,7 +1342,8 @@ impl PlayerScreen {
     ///
     /// * UP off the top of the control row HIDES the transport (and the film plays on): the
     ///   scrubber is parked for the next reveal, the pending target dropped, and NOT re-armed — a
-    ///   hide that extended its own linger would not hide.
+    ///   hide that extended its own linger would not hide. With a section open the transport cannot
+    ///   hide, so the press is swallowed (an inline package's row has no Up link).
     /// * DOWN off the bottom of the tabs has nowhere to go and stays: the target is dropped and the
     ///   press re-arms the linger like any other.
     /// * DOWN off a MODAL section's page (the strip, or the Info buttons) CLOSES that section and seats its
@@ -1358,6 +1359,9 @@ impl PlayerScreen {
         fx: &mut Effects<'_, H>,
     ) -> Handled {
         match (focused.and_then(Self::hud_group_of), key) {
+            // an open page holds the transport up, so the hide this press asks for would show nothing now and
+            // fire when the page closes: it is swallowed, and the ring stays on the row
+            (Some(GROUP_ROW), consts::Key::Up) if self.hud.sections.any() => {}
             (Some(GROUP_ROW), consts::Key::Up) => {
                 self.hud.nav.focus = GROUP_SCRUB;
                 self.scrub.ns = -1;
