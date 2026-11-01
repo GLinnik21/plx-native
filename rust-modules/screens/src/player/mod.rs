@@ -1810,6 +1810,7 @@ impl PlayerScreen {
         // a modal page the new one replaces fades out on the focus it had
         for gone in before.iter().filter(|s| !self.hud.sections.contains(*s)) {
             self.row.hold_focus(gone, self.hud.nav.focus, self.hud.nav.btn);
+            self.row.dismissed_on(gone, now);
         }
         // the springs start now: the presented frame draws the section at appear 0
         self.row.follow(self.hud.sections.bits());
@@ -1844,6 +1845,7 @@ impl PlayerScreen {
         self.hud.sections = self.hud.sections.closed(section);
         // the section stays on screen, fading, until its spring is out (its Shelf with it): only the logical set changed
         self.row.follow(self.hud.sections.bits());
+        self.row.dismissed_on(section, now);
         self.hud.extend(now, input::HUD_LINGER_MS);
         let opener = player_hud::geometry::frame_state(
             &self.compiled,

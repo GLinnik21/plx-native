@@ -164,6 +164,10 @@ pub struct HudMotion {
     /// section is open or had no focus, and cleared when it opens again or has gone. It is paint only: a closing
     /// section registers no stop and answers no key.
     held: [Option<usize>; 2],
+    /// **The frame (`Tick::ms`) a section was dismissed on**, per section: its spring takes no step on that frame
+    /// ([`step_appear`](Self::step_appear)). A panel's surface stepped its spring ahead of the frame's keys, so the
+    /// frame a BACK landed on drew the card whole and the fade began on the next; the page steps after its keys.
+    dismissed: [Option<u32>; 2],
 }
 
 /// Which spring is `section`'s.
@@ -183,6 +187,13 @@ impl Default for HudMotion {
     }
 }
 
+/// **A section's spring has left**: at rest at 0, which is when a panel's `Surface` was pruned
+/// (`ModalStack::prune`, `PopoverMotion::settled`), not at `CLOSING_GONE`: the tail between the two is a few frames
+/// of an almost invisible card, and the old panel drew them.
+fn faded(spring: &PopoverMotion) -> bool {
+    spring.settled() && spring.appear < 0.5
+}
+
 impl HudMotion {
     pub fn new() -> Self {
         Self {
@@ -197,6 +208,7 @@ impl HudMotion {
             appear: [PopoverMotion::at(0.0); 2],
             wants: 0,
             held: [None; 2],
+            dismissed: [None; 2],
         }
     }
 
@@ -214,10 +226,15 @@ impl HudMotion {
             let spring = &mut self.appear[section_index(section)];
             if open & section.open_bit() != 0 {
                 self.held[section_index(section)] = None;
-                let fresh = spring.gone();
+                self.dismissed[section_index(section)] = None;
+                let fresh = faded(spring);
                 spring.to(1.0);
                 if fresh {
                     spring.hold_one_frame();
+                    // a new card, as a panel's surface was: every button at rest, not a hair off it
+                    if section == Section::Info {
+                        self.section_pop.reset();
+                    }
                 }
             } else {
                 spring.to(0.0);
@@ -232,6 +249,7 @@ impl HudMotion {
         self.appear = [PopoverMotion::at(0.0); 2];
         self.wants = 0;
         self.held = [None; 2];
+        self.dismissed = [None; 2];
         self.strip = None;
     }
 
@@ -245,6 +263,12 @@ impl HudMotion {
             Section::Info => GROUP_SECTION,
         };
         self.held[section_index(section)] = (focus == own).then(|| usize::try_from(btn).ok()).flatten();
+    }
+
+    /// **`section` was dismissed on the frame `now`** (the `Tick::ms` of the key or event that put it away): its spring
+    /// takes its first step on the next frame. Called with [`follow`](Self::follow) by every path that closes one.
+    pub fn dismissed_on(&mut self, section: Section, now: u32) {
+        self.dismissed[section_index(section)] = Some(now);
     }
 
     /// The chapter card the closing strip paints as focused, if it fades with one.
@@ -262,15 +286,19 @@ impl HudMotion {
     /// every machine and its surfaces alike, so no fingerprint term is needed. The Chapters strip's Shelf is
     /// forgotten once its section has faded out.
     pub fn step_appear(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
-        for spring in &mut self.appear {
+        for (spring, dismissed) in self.appear.iter_mut().zip(self.dismissed) {
+            if dismissed == Some(t.ms) {
+                present.note(plx_machine::present::PresentEvent::Motion);
+                continue;
+            }
             spring.tick(t, present);
         }
         for section in SECTIONS {
-            if self.appear[section_index(section)].gone() && self.wants & section.open_bit() == 0 {
+            if faded(&self.appear[section_index(section)]) && self.wants & section.open_bit() == 0 {
                 self.held[section_index(section)] = None;
             }
         }
-        if self.appear[section_index(Section::Chapters)].gone() && self.wants & Section::Chapters.open_bit() == 0 {
+        if faded(&self.appear[section_index(Section::Chapters)]) && self.wants & Section::Chapters.open_bit() == 0 {
             self.strip = None;
         }
     }
@@ -295,7 +323,7 @@ impl HudMotion {
     pub fn presented(&self) -> u8 {
         SECTIONS
             .into_iter()
-            .filter(|s| !self.appear[section_index(*s)].gone())
+            .filter(|s| !faded(&self.appear[section_index(*s)]))
             .fold(0, |bits, s| bits | s.open_bit())
     }
 

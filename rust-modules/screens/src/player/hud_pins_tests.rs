@@ -2186,6 +2186,85 @@ mod sections {
         assert_eq!(run.appear(Section::Info), 0.0);
     }
 
+    /// **The fade starts on the frame AFTER the key that dismissed the section.** A panel's surface stepped its
+    /// spring in the modal stack's tick, ahead of the frame's keys: the frame BACK landed on drew the card whole,
+    /// and the first step was the next frame's (found in the simulator: the section's whole fade ran one frame
+    /// early, 30 frames of difference). The key's own frame is the one the spring must NOT step in.
+    #[test]
+    fn the_fade_starts_on_the_frame_after_the_back_that_dismissed_the_section() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        for section in [Section::Info, Section::Chapters] {
+            let _chapters = Chaptered::install();
+            let mut run = classic_run(Occupant::Plain);
+            run.toggle(section);
+            run.frames(80);
+            assert_eq!(run.appear(section), 1.0);
+            let now = run.now + 16;
+            run.now = now;
+            let ps = plx_media::route::idle_session_for_test();
+            run.screen().hud.note_fresh_press(ps, now, false);
+            run.frame(now, vec![key(Key::Back, tick(now))]);
+            assert!(run.open_sections().is_empty(), "{section:?}: BACK closed it");
+            assert_eq!(run.appear(section), 1.0, "{section:?}: the frame BACK landed on draws it whole");
+            run.frame(now + 16, vec![]);
+            let a = run.appear(section);
+            assert!(a < 1.0 && a > 0.9, "{section:?}: the next frame takes the first step, at {a}");
+        }
+    }
+
+    /// **An Info card opens with every button at rest, as a new panel's surface did.** The section's pop springs
+    /// outlive the card (they are the HUD's), so a button the last opening had popped must be let go the moment the
+    /// section is gone: a spring left a hair off 1.0 drew the second button's edge one level off, for as long as
+    /// the card stayed open (found in the simulator).
+    #[test]
+    fn an_info_card_reopens_with_every_button_at_rest() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(0);
+        run.step('D');
+        run.frames(30);
+        assert!(run.screen().row.section_scale(1) > 1.0, "the second button is popped while it holds the focus");
+        run.step('D');
+        run.frames(300);
+        assert!(run.presented().is_empty());
+        run.toggle(Section::Info);
+        // the first button has begun to grow toward the focus the card opens on; the second has none
+        let scale = run.screen().row.section_scale(1);
+        assert_eq!(scale.to_bits(), 1.0f32.to_bits(), "the second button opens at rest, not at {scale}");
+    }
+
+    /// **A fading section leaves where a panel's surface was pruned: at rest, not at `CLOSING_GONE`.** The panel
+    /// drew every frame down to the spring's rest (`ModalStack::prune`, within 0.002 and spent), so the frames
+    /// between 2 percent and rest (found in the simulator as nine frames of one level of difference) belong to
+    /// the picture.
+    #[test]
+    fn a_closing_section_is_drawn_down_to_the_springs_rest() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        for section in [Section::Info, Section::Chapters] {
+            let _chapters = Chaptered::install();
+            let mut run = classic_run(Occupant::Plain);
+            run.toggle(section);
+            run.frames(80);
+            run.tap(Key::Back);
+            let mut tail = 0;
+            for _ in 0..200 {
+                run.frames(1);
+                let a = run.appear(section);
+                if !run.presented().is_empty() && a < 0.02 && a > 0.0 {
+                    tail += 1;
+                }
+                if run.presented().is_empty() {
+                    assert!(a < 0.002, "{section:?} left at appear {a}, above the spring's rest");
+                    break;
+                }
+            }
+            assert!(tail > 0, "{section:?}: the frames between 2 percent and rest are drawn");
+        }
+    }
+
     /// **A direction out of the strip fades it like BACK does, and its Shelf stays until it is gone** (a draw
     /// that finds the section presented and no Shelf would have nothing to paint).
     #[test]
