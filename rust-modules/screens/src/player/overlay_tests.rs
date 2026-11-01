@@ -1143,7 +1143,7 @@ fn every_classic_opener_hands_its_menu_the_control_rows_anchor() {
     let row = plx_appkit::player_hud::audit_geometry().row;
     assert_eq!(row.x + row.w, plx_appkit::player_hud::classic::CTRL_RIGHT);
     for (kind, name) in MENUS {
-        let page = PlayerOverlayScreen::new_with(&ps, meta.view(), ENTRY, kind, false);
+        let page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, kind);
         assert_eq!(menu_anchor_of(&page, name), row, "{name}");
     }
 }
@@ -1160,7 +1160,7 @@ fn every_menu_arm_latches_the_anchor_it_is_handed() {
     let anchor = plx_ui::Rect::new(333.0, 222.0, 111.0, 55.0);
     assert_ne!(anchor, plx_appkit::player_hud::audit_geometry().row);
     for (kind, name) in MENUS {
-        let page = PlayerOverlayScreen::new_anchored(&ps, meta.view(), ENTRY, kind, false, anchor);
+        let page = PlayerOverlayScreen::new_folded(&ps, meta.view(), ENTRY, kind, false, Some(anchor), Vec::new());
         assert_eq!(menu_anchor_of(&page, name), anchor, "{name}");
     }
 }

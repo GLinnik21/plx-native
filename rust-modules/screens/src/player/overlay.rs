@@ -282,30 +282,20 @@ impl PlayerOverlayScreen {
     /// no second id to reserve.
     const GROUP: GroupId = GroupId(0);
 
-    /// [`Self::new_with`] without a search offer — the tests' host; the app mounts through
-    /// `new_with`, asking its host.
+    /// [`Self::new_folded`] with the classic defaults: no search offer, the menus' own anchor, no folded row. The
+    /// tests' host; the app mounts through [`Self::new_folded`] alone (`AppMounter::mount`).
     #[cfg(test)]
     pub fn new(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
-        Self::new_with(ps, meta, entry, kind, false)
+        Self::new_folded(ps, meta, entry, kind, false, None, Vec::new())
     }
 
-    /// [`Self::new`] for a host that can run a subtitle search (`MetadataLike::subtitle_search`):
-    /// the Tracks panel is built offering it, never offered it later (`TrackMenuState::new_with`).
-    pub fn new_with(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind, offer_search: bool) -> Self {
-        Self::new_anchored(ps, meta, entry, kind, offer_search, menu_anchor())
-    }
-
-    /// [`Self::new_with`] for a menu opened beside `anchor` ([`menu_anchor`]'s answer in classic):
-    /// the rect the player screen hands to Tracks or More, which latches it. Panels that are not
-    /// menus ignore it.
-    pub fn new_anchored(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind, offer_search: bool, anchor: Rect) -> Self {
-        Self::new_folded(ps, meta, entry, kind, offer_search, Some(anchor), Vec::new())
-    }
-
-    /// [`Self::new_anchored`] for a More menu that lists `folded` between Speed and Options
-    /// ([`plx_appkit::more_menu::folded_rows`], which the app computes from the compiled package when the menu is
-    /// asked for); `anchor` `None` is the classic default. The folded rows are the root's alone: Tracks, Timing
-    /// and every other kind ignore them.
+    /// **The one constructor** (`AppMounter::mount`'s): the panel `kind` names, for a host that can run a subtitle
+    /// search when `offer_search` (`MetadataLike::subtitle_search`; the Tracks panel is built offering it, never
+    /// offered it later, `TrackMenuState::new_with`). `anchor` is the rect the player screen hands a menu to hang
+    /// from, which it latches (`None`: [`menu_anchor`], classic's row; panels that are not menus ignore it). `folded`
+    /// is what a More menu lists between Speed and Options ([`plx_appkit::more_menu::folded_rows`], which the app
+    /// computes from the compiled package when the menu is asked for); the folded rows are the root's alone: Tracks,
+    /// Timing and every other kind ignore them.
     pub fn new_folded(
         ps: &plx_media::route::PlaybackSession,
         meta: plx_data::metadata::MetadataView<'_>,
