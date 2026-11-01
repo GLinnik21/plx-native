@@ -133,7 +133,8 @@ impl std::fmt::Display for LoadRefusal {
 }
 
 /// The audio the pipeline was fed: the stream's declared codec (`route::stream_acodec`) and the
-/// carried track's channel count (`route::stream_achannels`, 0 when unknown).
+/// carried track's channel count (`route::stream_achannels`: the width the Load declares for an Opus
+/// lane, which a server conversion sets to the width it was asked for; 0 when unknown).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamAudio {
     /// The codec in any spelling [`plx_platform::devcaps::audio_codec_id`] knows (`dca` for DTS).
@@ -199,15 +200,15 @@ pub struct StreamVideo {
     pub height: u32,
 }
 
-/// The audio a pipeline refusal puts under suspicion: outside the codecs every set decodes (`aac`,
-/// `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which [`Caps::without`]
+/// The audio a pipeline refusal puts under suspicion: outside the codecs every set decodes
+/// ([`plx_platform::devcaps::BASELINE_AUDIO`]: `aac`, `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which [`Caps::without`]
 /// reads as "not at all", the conservative choice. Audio the app decoded itself
 /// ([`StreamAudio::app_decoded_lossy`]) names nothing: the pipeline was fed PCM, and a facet of
 /// that codec would narrow, and could store as a refusal, the set's NATIVE decoder.
 fn suspect_audio(audio: Option<&StreamAudio>) -> Option<Facet> {
     let a = audio.filter(|a| !a.app_decoded_lossy)?;
     let id = plx_platform::devcaps::audio_codec_id(&a.codec);
-    (!matches!(&*id, "aac" | "ac3" | "eac3")).then(|| Facet::Audio { codec: id.into_owned(), channels: a.channels })
+    (!plx_platform::devcaps::BASELINE_AUDIO.contains(&&*id)).then(|| Facet::Audio { codec: id.into_owned(), channels: a.channels })
 }
 
 /// The video a pipeline refusal puts under suspicion: the source's, at a raster the pipeline was fed
@@ -1265,7 +1266,7 @@ mod tests {
         let s = |codec: &str, channels| suspect(audio(codec, channels).as_ref(), None);
         assert_eq!(s("dca", 6), Some(dts6()));
         assert_eq!(s("opus", 6), Some(opus6()));
-        for known in ["aac", "ac3", "eac3"] {
+        for known in plx_platform::devcaps::BASELINE_AUDIO {
             assert_eq!(s(known, 6), None, "{known}");
         }
         assert_eq!(suspect(None, None), None);

@@ -1244,7 +1244,7 @@ fn opus_head(channels: i64) -> Option<Vec<u8>> {
         (4, 3, &[0, 4, 1, 2, 3, 5, 6]),
         (5, 3, &[0, 6, 1, 2, 3, 4, 5, 7]),
     ];
-    let ch = u8::try_from(channels).ok().filter(|c| (1..=8).contains(c))?;
+    let ch = u8::try_from(channels).ok().filter(|c| (1..=plx_platform::devcaps::OPUS_LOAD_CHANNELS).contains(&u32::from(*c)))?;
     let mut head = b"OpusHead".to_vec();
     head.extend_from_slice(&[1, ch]);
     head.extend_from_slice(&312u16.to_le_bytes());
@@ -1253,7 +1253,8 @@ fn opus_head(channels: i64) -> Option<Vec<u8>> {
     if ch <= 2 {
         head.push(0);
     } else {
-        let (streams, coupled, mapping) = FAMILY1[usize::from(ch) - 3];
+        // A width the constant admits but the table has no row for is refused, never indexed past it.
+        let (streams, coupled, mapping) = *FAMILY1.get(usize::from(ch) - 3)?;
         head.extend_from_slice(&[1, streams, coupled]);
         head.extend_from_slice(mapping);
     }
@@ -1263,8 +1264,10 @@ fn opus_head(channels: i64) -> Option<Vec<u8>> {
 /// The `contents.opusInfo` node an `OPUS` Load needs: SMP has no in-band way to learn a
 /// multistream layout, so the channel count and the identification header travel in the payload
 /// (`streamHeader` is standard padded base64, as ss4s sends it).
-/// `None` when the count cannot be described or the payload has no `contents` anchor: the caller
-/// refuses the Load rather than declaring a layout the stream does not have.
+/// `channels` is `route::opus_lane(ps).width`: the carried track's for a copy, the width the server was
+/// asked for on a converted lane. `None` when the count cannot be described (outside
+/// `1..=devcaps::OPUS_LOAD_CHANNELS`) or the payload has no `contents` anchor: the caller refuses the
+/// Load rather than declaring a layout the stream does not have.
 fn with_opus_info(p: &str, channels: i64) -> Option<String> {
     let head = opus_head(channels)?;
     let anchor = r#""provider":"plxnative""#;
@@ -2039,13 +2042,21 @@ fn start_bufferfeed_inner(
             sink_env = sink_envelope_now(ps, lv);
             let av = build_av_payload(ps, lv.payload_name(), ac, sink_env);
             stream_payload = if ac == "OPUS" {
-                let channels = crate::route::stream_achannels(ps);
+                // The ONE derivation of the declared width and of why (`route::opus_lane`): the log line
+                // below reads the same value the Load declares from.
+                let lane = crate::route::opus_lane(ps);
+                let channels = lane.width;
                 let Some(p) = with_opus_info(&av, channels) else {
                     log(&format!("start_bufferfeed: no Opus layout for {channels} channel(s); refusing the Load"));
                     SHARED.demux_failed.store(true, Ordering::Release);
                     return Err(crate::route::RouteStartResult::StartFailed);
                 };
-                log(&format!("start_bufferfeed: opusInfo channels={channels}"));
+                log(&format!(
+                    "start_bufferfeed: opusInfo channels={channels} lane={} source={} bound={}",
+                    if lane.converted { "converted" } else { "copy" },
+                    lane.source,
+                    lane.bound
+                ));
                 p
             } else {
                 av
