@@ -1208,7 +1208,7 @@ fn caption_lines_stay_inside_the_wrap_width() {
     assert!(lines.iter().all(|l| measure(l) <= 80.0 || !l.contains(' ')), "{lines:?}");
 }
 
-/// `text_style::today_baseline`/`today_layout` are a port of `caption_geometry`/`caption_layout`
+/// `text_style::today_baseline`/`today_layout` are a port of `caption_geometry_for`/`caption_layout`
 /// with hard-coded constants (the synthesized ASS header is built from them); this pins that the
 /// port and the code it replaces cannot drift: 3 positions x 5 sizes x HUD up/down, 1-3 lines.
 #[test]

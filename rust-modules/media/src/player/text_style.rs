@@ -4,7 +4,7 @@
 //!
 //! Media cannot use appkit and the synthesized header needs these values, so the mapping lives
 //! here and appkit reads it (plan `libass-text-subs` §2.5). [`today_baseline`] and its companions
-//! mirror the maths `player_hud::caption_geometry`/`caption_layout` use, kept with hard-coded
+//! mirror the maths `player_hud::caption_geometry_for`/`caption_layout` use, kept with hard-coded
 //! constants so a tie test in appkit can pin that the two cannot drift apart.
 
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
@@ -249,7 +249,7 @@ pub fn generation() -> u32 {
     TextStyle::current().generation()
 }
 
-/// What `player_hud::caption_geometry` computes today: the viewer's scale, the y the caption
+/// What `player_hud::caption_geometry_for` computes today: the viewer's scale, the y the caption
 /// block's bottom is placed at, and the lowest y the block may reach.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TodayBaseline {
@@ -258,7 +258,7 @@ pub struct TodayBaseline {
     pub floor: f32,
 }
 
-/// Port of `player_hud::caption_geometry(hud_up)` for a given `scale`, `position` and HUD `band`.
+/// Port of `player_hud::caption_geometry_for` (with `hud_up` and a zero-height block) for a given `scale`, `position` and HUD `band`.
 pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand) -> TodayBaseline {
     let rise = if hud_up { band.rise_for(position) } else { 0.0 };
     let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise;

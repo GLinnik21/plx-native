@@ -102,7 +102,8 @@ impl AssSubtitles {
     }
 
     /// `lift` is the transport HUD being up, and `band` the HUD's, as its layout reports it: the
-    /// distance a bottom region moves is the band's `lift`. It moves a text subtitle's bottom regions
+    /// bottom region moves by the band's `lift` plus the `rise` an open section asks, zero with none (see
+    /// `lift_dys`). It moves a text subtitle's bottom regions
     /// and nothing else: an authored script keeps its own placement. `model` is the frame's HUD
     /// snapshot, which the caption ink's tone is read from.
     pub fn draw(&mut self, lift: bool, band: HudBand, model: &plx_appkit::player_hud::model::HudModel) {

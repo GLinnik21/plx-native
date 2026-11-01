@@ -39,7 +39,7 @@ HUD drawing and state
 - F3. The draw path reads process globals, not values: `TX.paused` (`player_hud.rs:2095`, `:1847`); in
   `Playbar::live` `TX.scrub_ns` `:1826`, `playpos_ns()` `:1833`, `seek_display_ns()` `:1836`,
   `duration_ns()` `:1850`; `draw_scrub_preview` `TX.scrub_ns` `:2204`; `ClockWarm` `:93-97`; `slot()`
-  `:905-906`; `busy()` `:1047`; `caption_geometry` `:151`; the bitmap path `:345`. The three player
+  `:905-906`; `busy()` `:1047`; the bitmap path `:345`. The three player
   reads are `SHARED.*.load` (`media/src/player/mod.rs:682-696`).
 - F4. App-owned state logic already sits in its own functions: `slot_for` `:878`, `slot` `:899`,
   `standin_left_the_ring` `:934`, `busy_surface` `:977`, `readout_owns_frame` `:1010`,
@@ -333,7 +333,8 @@ Other subsystems the plan touches
   is false behind any overlay or open section, F19), and the stand-in takes its segments when the last
   section closes, if the marker is still active.
 - D8. **The caption band is derived from the COMPACT state only, one value per package.** Today the
-  ceiling is the fixed 780 whenever the HUD is up, and an open card or strip covers a lifted caption (F28).
+  ceiling is the fixed 780 whenever the HUD is up and no section is open; with a section open the caption rises
+  clear of it and draws over the section (section "Captions clear of an open section").
   A band that moved per section would move classic's captions in its info and chapters states and break
   pixel identity there. So the band is the union over the compact state's slot states (Discs, Up Next,
   Skip), measured on DRAWN extents, and the base band does not move with a section. Lifting captions
@@ -827,10 +828,11 @@ gives 530.8 / 530.8 / 437.2, Info S 572.2 gives 560.2 / 560.2 / 437.2, both S 37
   region), parts above stay, nothing is rescaled. A libass frame is rasterised when its cue changes, never per
   frame: the travel moves the cached textures (`AssSubtitles::draw`), and a PGS or VobSub set moves its cached
   rectangles, so a travel frame costs the quads it already drew. An authored ASS script keeps its placement.
-- **Draw order.** With a section on screen (open or fading: `HudMotion::presented`) every caption path draws after
-  the HUD, so the section's ground and the scrim cannot cover it; with none it draws before the transport, under
-  the scrim, as it always did. A caption therefore stops being dimmed by the scrim from the frame a section is
-  presented and is dimmed again when the section has faded.
+- **Draw order.** While a section draws something (`HudMotion::sections_visible`: any section's appear above 0,
+  open or fading out) every caption path draws after the HUD, so the section's ground and the scrim cannot cover
+  it; on a frame it draws nothing (held at appear 0, or faded) it draws before the transport, under the scrim, as it
+  always did. A caption therefore stops being dimmed by the scrim on the first frame a section is visibly drawn and
+  is dimmed again on the first frame it draws nothing.
 - The Compact HUD, the HUD down and a frame with no section keep every number they had.
 
 ## Menus and other HUD popovers
@@ -1162,7 +1164,7 @@ at 768 and the title at 802.
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |
 | Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left; cards past `SAFE` culled at the screen edge; an empty name draws "Chapter N" | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 42 = 949 - 684 - (162 + 26 + 34 + 1): `item.start` carries `leading: 1`, the smallest leading, as the stand-in for `chapters_panel::label_ys`'s zero-height origin, because a one-line text's box is its measurer's line height and no gap lands the top on 684 for the fixture, the shipped and the television's measure at once); scroll and marquee per D11 |
 | Info card | ground x 80, w 1760, h 236, top `SCR_H - 176 - 236` = 668, pad 28 (`info_panel.rs:581-588`); still radius 16 (`:216`); text 34 from the still and from the buttons (`:252-255`); title to synopsis 6, tags `before(12)` (`:436-446`); synopsis `leading(29)` (`:386-389`); buttons a column 70 tall, 16 apart, centred, width max(352, widest of all three labels) (`:594-608`), right edge 1812 inside `SAFE`'s 1824 | band `info`, `when: panel.info`: `rect {bleed: 16, pad: 28, h: 236, gap: 34, ink: PANEL_TOP, radius: 28}` holding `image info.still` 320 x 180 radius 16; a `vstack {gap: 6, w: fill, valign: center}` of the title (`max_lines: 1`), the synopsis (`leading: 29`, `max_lines: 2`) and `facts` with `gap_before: 12` (`order: [genres, year, duration]`, `genres_max: 2`, `bold: true`, `ink: TEXT_PRIMARY`, `playback_fact: true`, `badges: [content_rating, audio_format, cc, sdh, ad]`); `actions {axis: column, gap: 16, item_h: 70, min_w: 352, items: [from_beginning, go_to_detail]}`, `align: end`, `valign: center`; the tabs band's `gap_before` 45 under `panel.info` (949 - 904) |
-| Captions | ceiling 780 whenever the HUD is up (F28) | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
+| Captions | ceiling 780 whenever the HUD is up and no section is open (F28); with one open, the limit is `min(P, S - 12)` (section "Captions clear of an open section") | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
 
 ## Invariants
 
