@@ -1,11 +1,11 @@
-//! **The lint's own tests** (`lint.rs`, the seven `lint_*` check modules): the shipped languages and their
+//! **The lint's own tests** (`lint.rs`, the eight `lint_*` check modules): the shipped languages and their
 //! labels, the language collapse, the state and slot names, the compile's provenance accessors, the
 //! invalid-case support, the union of every check module's [`INVALID`](super::lint_zorder::INVALID) and
 //! [`UNIT_ONLY`](super::lint_zorder::UNIT_ONLY) lists and what the whole pipeline says about them.
 //!
 //! The goldens are here: `builtin_classic_passes_every_invariant` and `reference_passes_every_invariant`
 //! (zero findings in all eleven shipped languages, measured with the real font advances), the four other
-//! fixtures (`other_fixtures_lint_without_an_error`), the requirement that every one of the fifteen lint
+//! fixtures (`other_fixtures_lint_without_an_error`), the requirement that every one of the sixteen lint
 //! codes has an invalid case or a stated reason it has none (`every_new_code_has_an_invalid_case`), and the
 //! behaviours of the whole run: sorted and deterministic output, every finding of a package reported in one
 //! run, the JSON report and the language context.
@@ -25,7 +25,7 @@ use super::lint::{
 use super::parse::{self, Object, Package};
 use super::reach::Slot;
 use super::validate::each_object;
-use super::{codes, lint_band, lint_cost, lint_menus, lint_safe, lint_size, lint_text, lint_zorder, report};
+use super::{codes, lint_band, lint_cost, lint_menus, lint_safe, lint_size, lint_text, lint_travel, lint_zorder, report};
 use super::{Context, Finding, Severity, BUILTIN_CLASSIC};
 
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
@@ -35,10 +35,10 @@ const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
 const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
 const RISING_TABS: &str = include_str!("fixtures/rising-tabs.plxhud.json");
 
-/// The fifteen codes the lint registers (`HUD-E0601` ... `HUD-E1401`).
-const LINT_CODES: [&str; 15] = [
+/// The sixteen codes the lint registers (`HUD-E0601` ... `HUD-E1501`).
+const LINT_CODES: [&str; 16] = [
     "HUD-E0601", "HUD-W0602", "HUD-E0603", "HUD-E0604", "HUD-E1001", "HUD-E1002", "HUD-E1003", "HUD-E1101",
-    "HUD-E1102", "HUD-E1103", "HUD-E1201", "HUD-E1301", "HUD-E1302", "HUD-E1303", "HUD-E1401",
+    "HUD-E1102", "HUD-E1103", "HUD-E1201", "HUD-E1301", "HUD-E1302", "HUD-E1303", "HUD-E1401", "HUD-E1501",
 ];
 
 fn package(text: &str) -> Package {
@@ -490,6 +490,7 @@ fn invalid_cases() -> Vec<&'static InvalidCase> {
         lint_text::INVALID,
         lint_size::INVALID,
         lint_cost::INVALID,
+        lint_travel::INVALID,
     ]
     .into_iter()
     .flatten()
@@ -506,6 +507,7 @@ fn unit_only() -> Vec<(&'static str, &'static str)> {
         lint_text::UNIT_ONLY,
         lint_size::UNIT_ONLY,
         lint_cost::UNIT_ONLY,
+        lint_travel::UNIT_ONLY,
     ]
     .into_iter()
     .flatten()
@@ -553,17 +555,17 @@ fn case_for(code: &str) -> &'static InvalidCase {
     invalid_cases().into_iter().find(|c| c.code == code).unwrap_or_else(|| panic!("no invalid case for {code}"))
 }
 
-/// Every one of the fifteen codes the lint registers has an invalid case of its own (a case whose `code`
+/// Every one of the sixteen codes the lint registers has an invalid case of its own (a case whose `code`
 /// it is: being only in another case's `also` list proves the code fires, not that its own fault is
 /// pinned), or is in a check module's `UNIT_ONLY` with the reason no parseable package reaches it.
 #[test]
 fn every_new_code_has_an_invalid_case() {
-    // the fifteen are the whole of the lint families: a code registered in one of them without a case is
+    // the sixteen are the whole of the lint families: a code registered in one of them without a case is
     // caught here, whatever LINT_CODES says
     let registered: BTreeSet<&str> = codes::ALL
         .iter()
         .map(|c| c.id)
-        .filter(|id| ["HUD-E06", "HUD-W06", "HUD-E10", "HUD-E11", "HUD-E12", "HUD-E13", "HUD-E14"].iter().any(|p| id.starts_with(p)))
+        .filter(|id| ["HUD-E06", "HUD-W06", "HUD-E10", "HUD-E11", "HUD-E12", "HUD-E13", "HUD-E14", "HUD-E15"].iter().any(|p| id.starts_with(p)))
         .collect();
     assert_eq!(registered, LINT_CODES.iter().copied().collect::<BTreeSet<_>>(), "the lint's code families");
 
