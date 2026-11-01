@@ -306,7 +306,7 @@ Other subsystems the plan touches
   transport middle is hidden while it is open (F2, F18). The reference keeps the row live beside the strip
   and opens both sections at once. So `layout.sections` is `"modal"` (one section at a time, opening one
   closes the other; focus that leaves the open section's own groups by a direction closes it; classic) or
-  `"inline"` (any set may be open; focus travels freely; the reference). In both, OK on a control
+  `"inline"` (any set may be open; focus travels freely: Up and Down walk the drawn order, below; the reference). In both, OK on a control
   carrying `toggle_section` toggles that section, BACK closes the most recently opened section and then
   hides the HUD as today, the HUD stays up while a section is open, opening Chapters seats focus on the
   chapter containing the shown position (from `HudModel`, not the global, F24), opening Info seats on its
@@ -530,6 +530,19 @@ figure is WCAG 2.1's non-text contrast floor (UNVERIFIED here: no web access).
 Segments of one band form ONE FocusEngine Row group; Left/Right crosses segments in x order. Segments in
 other bands are other groups. Previous and Next come and go together (F6), so a centred hero stays centred
 for a movie; an absent item collapses.
+
+**Up and Down follow the drawn order.** The groups that have a stop in the current state (the bar, the control row,
+the tab pills, an open Chapters strip, an open Info section that places buttons) are ordered top to bottom by the
+rects the layout places (`player_hud::travel::order`), and each links to its neighbours both ways. A package states
+no travel and needs none: put the row above the bar and Up from the bar reaches it (classic: row, bar, tabs); put it
+below and Down does (the reference: bar, row, then an open section under the row). A group with no stop in the state
+is skipped; two groups at the same height (the `tabs` fixture's pills share the row's band) keep the order bar, row,
+tabs, strip, section. Up off the topmost group hides the transport (swallowed while a section is open, which holds it
+up) and Down off the bottom one stays put. Up or Down into the control that opened an open section lands on that
+control, a disc or a pill, as BACK does; a section no control opens (reachable through More) lands where the group
+usually seats. Only a pill is a tab: a disc that opens a section is a stop of the row, so a click on it and OK on it are
+one press of the same disc (the reference has no tab group). A modal package's open section is unchanged: it takes the
+middle, Up from its tab enters it and Down off its bottom closes it.
 
 ### Commands
 

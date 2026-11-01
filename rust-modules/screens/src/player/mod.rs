@@ -1367,16 +1367,16 @@ impl PlayerScreen {
 
     /// **The screen's answer to `Step::Edge`**: the dispatcher re-delivers a direction the engine
     /// could not move, from a group whose edge rule is `EdgeRule::Screen`, as the same key with
-    /// `at_edge` set. `focused` names the group it left.
+    /// `at_edge` set. `focused` names the group it left. The ends are the ends of the drawn order
+    /// ([`PlayerScreen::travel_order`]), whichever groups those are:
     ///
-    /// * UP off the top of the control row HIDES the transport (and the film plays on): the
-    ///   scrubber is parked for the next reveal, the pending target dropped, and NOT re-armed — a
-    ///   hide that extended its own linger would not hide. With a section open the transport cannot
-    ///   hide, so the press is swallowed (an inline package's row has no Up link).
-    /// * DOWN off the bottom of the tabs has nowhere to go and stays: the target is dropped and the
-    ///   press re-arms the linger like any other.
+    /// * UP off the TOPMOST group HIDES the transport (and the film plays on): the scrubber is parked for
+    ///   the next reveal, the pending target dropped, and NOT re-armed — a hide that extended its own linger
+    ///   would not hide. With a section open the transport cannot hide, so the press is swallowed.
+    /// * DOWN off the BOTTOM group has nowhere to go and stays: the target is dropped and the press re-arms
+    ///   the linger like any other.
     /// * DOWN off a MODAL section's page (the strip, or the Info buttons) CLOSES that section and seats its
-    ///   opener's tab (D6). Only a modal package takes this arm (`self.modal()`); an inline page keeps its links to the row.
+    ///   opener's tab (D6). Only a modal package takes this arm (`self.modal()`); an inline page is in the order.
     ///
     /// Anything else swallows the press; an edge nobody answers would be dropped as a dead key.
     fn answer_edge<H: AppLike>(
@@ -1387,24 +1387,27 @@ impl PlayerScreen {
         now: u32,
         fx: &mut Effects<'_, H>,
     ) -> Handled {
-        match (focused.and_then(Self::hud_group_of), key) {
+        let group = focused.and_then(Self::hud_group_of);
+        let order = self.travel_order(chapters);
+        let transport = matches!(group, Some(GROUP_SCRUB | GROUP_ROW | GROUP_TABS));
+        match (group, key) {
             // an open page holds the transport up, so the hide this press asks for would show nothing now and
-            // fire when the page closes: it is swallowed, and the ring stays on the row
-            (Some(GROUP_ROW), consts::Key::Up) if self.hud.sections.any() => {}
-            (Some(GROUP_ROW), consts::Key::Up) => {
+            // fire when the page closes: it is swallowed, and the ring stays where it is
+            (Some(_), consts::Key::Up) if transport && order.top() == group && self.hud.sections.any() => {}
+            (Some(_), consts::Key::Up) if transport && order.top() == group => {
                 self.hud.nav.focus = GROUP_SCRUB;
                 self.scrub.ns = -1;
                 self.scrub.disengage();
                 self.hud.hide(false);
                 Self::repair_focus(fx, GROUP_SCRUB);
             }
-            (Some(GROUP_TABS), consts::Key::Down) => {
+            (Some(_), consts::Key::Down) if transport && order.bottom() == group => {
                 self.scrub.ns = -1;
                 self.scrub.disengage();
                 self.hud.extend(now, input::HUD_LINGER_MS);
             }
             // **Down off the bottom of a modal section's page puts the page away** and lands on the control that
-            // opened it (D6); an inline page has the row beside it and nothing below, so the edge stays put.
+            // opened it (D6); an inline page is in the order and, as its bottom, stays put.
             (Some(GROUP_STRIP | GROUP_SECTION), consts::Key::Down) if self.modal() => {
                 if let Some(latest) = self.hud.sections.latest() {
                     self.close_section(latest, chapters, now, fx);
@@ -1703,7 +1706,8 @@ impl PlayerScreen {
 
 impl PlayerScreen {
     /// **The package's section policy** (D6): modal sections replace one another and take the middle of the
-    /// transport; inline sections open beside the row.
+    /// transport; inline sections open in the layout's own bands and sit in the focus order with everything else
+    /// (`player_hud::travel`).
     fn modal(&self) -> bool {
         self.compiled.sections_modal()
     }
@@ -1771,6 +1775,36 @@ impl PlayerScreen {
         let geo = player_hud::strip::strip_of(state.skip_variant(skip))?;
         let src = player_hud::strip::cards_for::<u32>(geo, meta, H::session(cx))?;
         Some((geo, src))
+    }
+
+    /// **The order vertical travel follows this frame**: the transport's groups that have a stop, top to bottom as
+    /// the layout draws them ([`player_hud::travel::order`]). `chapters` is whether the item has any.
+    fn travel_order(&self, chapters: bool) -> player_hud::travel::Order {
+        player_hud::travel::order(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)
+    }
+
+    /// **The control that opened the open section focus is leaving**, when it is in group `into`: where Up (or
+    /// Down) from a section lands, the way BACK does (`close_section`). `None` when focus is not on an open
+    /// section's stop, the package places no opener for it, or the opener belongs to another group (the row's
+    /// usual landing then).
+    fn opener_to_land_on<H: PlayerLike + crate::registry::MetadataLike>(&self, into: GroupId, cx: &Cx<'_, H>) -> Option<u32> {
+        let section = match Self::hud_group_of(cx.focus.current?.elem)? {
+            GROUP_STRIP => Section::Chapters,
+            GROUP_SECTION => Section::Info,
+            _ => return None,
+        };
+        if !self.hud.sections.contains(section) {
+            return None;
+        }
+        let (state, skip) = player_hud::geometry::frame_state(
+            &self.compiled,
+            self.hud.sections.bits(),
+            self.eff_slot(),
+            plx_appkit::chapters_panel::has_chapters(H::metadata(cx)),
+            self.model.paused,
+        )?;
+        let elem = player_hud::geometry::opener_elem(state.skip_variant(skip), section)?;
+        (Self::hud_group_of(elem) == Some(into)).then_some(elem)
     }
 
     /// The rects of the open section's own buttons (Info's two), in the order its group addresses them.
@@ -2101,25 +2135,31 @@ impl PlayerScreen {
                 kind: GroupKind::Row { wrap: false },
                 seat: Seat::First,
                 reachable: AxisMask::BOTH,
-                // Up off the row's top is the screen's to answer (`answer_edge`: it hides the HUD);
-                // Down is a declared link back to the scrubber (`links`), and the row's ends stay put.
-                edge: [EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
+                // Up off the top of the order and Down off its bottom are the screen's to answer (`answer_edge`);
+                // between groups they are declared links (`links`), and the row's ends stay put.
+                edge: [EdgeRule::Screen, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop],
                 extent: geo.row,
                 len: row_len,
                 elem: plx_ui::screen::ElemKind::Control,
             });
         }
         let has_ch = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
-        out.push(GroupSpec {
-            id: GROUP_TABS,
-            kind: GroupKind::Row { wrap: false },
-            seat: Seat::First,
-            reachable: AxisMask::BOTH,
-            edge: [EdgeRule::Screen; 4],
-            extent: geo.tabs[0].unwrap_or(Rect::FULL),
-            len: if has_ch { 2 } else { 1 },
-            elem: plx_ui::screen::ElemKind::Control,
-        });
+        // The tab group exists where the layout draws a tab: a PILL that opens a section (`HudGeometry::tabs`, which
+        // reports pills only). A package whose openers are discs of the row (the reference's) has none, and its discs are
+        // stops of the row group; a group with no stop in the state is not declared, so no step can land on it.
+        // `len` reaches the last tab drawn, as the stops are addressed `ELEM_TAB_BASE + tab`.
+        if let (Some(first), Some(last)) = (geo.tabs.iter().flatten().next(), geo.tabs.iter().rposition(Option::is_some)) {
+            out.push(GroupSpec {
+                id: GROUP_TABS,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                edge: [EdgeRule::Screen; 4],
+                extent: *first,
+                len: last + 1,
+                elem: plx_ui::screen::ElemKind::Control,
+            });
+        }
         // An open section's page. Both take Up as the page's own top (nothing above it but a declared link), and
         // Down off the bottom as the screen's to answer (`answer_edge`): a modal page is put away there.
         let page_edge = [EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop];
@@ -2289,13 +2329,15 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             },
             GROUP_SECTION => player_hud::geometry::section_elem(0),
             GROUP_SCRUB => player_hud::ELEM_SCRUB,
-            GROUP_ROW => player_hud::control_elem(self.row_primary()),
-            // the tab the user last stood on (Down from the scrubber returns to it), held to the
-            // tabs this item has
-            GROUP_TABS => {
+            GROUP_ROW => self
+                .opener_to_land_on(g, cx)
+                .unwrap_or_else(|| player_hud::control_elem(self.row_primary())),
+            // the control that opened the section focus is leaving, when it is a tab; else the tab the user last
+            // stood on (a move down from the scrubber returns to it), held to the tabs this item has
+            GROUP_TABS => self.opener_to_land_on(g, cx).unwrap_or_else(|| {
                 let last = if plx_appkit::chapters_panel::has_chapters(H::metadata(cx)) { 1 } else { 0 };
                 player_hud::ELEM_TAB_BASE + self.hud.nav.tab.clamp(0, last) as u32
-            }
+            }),
             GROUP_FAILURE => player_hud::ELEM_FAILURE_BASE,
             GROUP_REPAIR => REPAIR_CANCEL,
             _ => player_hud::ELEM_SCRUB,
@@ -2347,37 +2389,25 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    /// **The HUD's travel between its three regions**, as declared links (§7.3 step 3): the
-    /// scrubber's Up is the control row and its Down the tabs; Down from the row and Up from the
-    /// tabs come back to the scrubber. Where a link lands is the destination group's `seat`. What
-    /// no link covers is the group's edge rule: Up off the row and Down off the tabs are
-    /// `EdgeRule::Screen`, which the dispatcher re-delivers to [`PlayerScreen::step`] as the key
-    /// with `at_edge` set — [`PlayerScreen::answer_edge`] is the screen's answer.
+    /// **The HUD's vertical travel is the drawn order** (D6, §7.3 step 3): the groups with a stop in this state,
+    /// ordered top to bottom by the rects the layout reports ([`player_hud::travel::order`]), each linked to its
+    /// neighbours both ways. Classic draws its row above the bar and its tabs below, so it is row, bar, tabs; the
+    /// reference draws the row below the bar, so it is bar, row, and an open inline section follows the row it
+    /// is drawn under. Where a link lands is the destination group's `seat`. What no link covers is the group's
+    /// edge rule: Up off the top group and Down off the bottom one are `EdgeRule::Screen`, which the dispatcher
+    /// re-delivers to [`PlayerScreen::step`] as the key with `at_edge` set — [`PlayerScreen::answer_edge`] is the
+    /// screen's answer.
+    ///
+    /// **A MODAL section changes it** (D6/D8): it has taken the middle, so the one way into it is Up from the tab
+    /// that opened it, and the way out is Down off its bottom edge (`answer_edge`) or BACK.
     fn links(&self, out: &mut Vec<Link>) {
-        // **An open section changes the travel** (D6/D8). A modal one has taken the middle: the one way into it
-        // is Up from the tab that opened it, and the way out is Down off its bottom edge (`answer_edge`) or BACK.
-        // An inline one lives beside the row: Down from the row enters the latest open section and Up from it
-        // returns to the row (the scrubber is reached by closing the section; a pointer still reaches it).
-        if let Some(latest) = self.hud.sections.latest() {
-            if self.modal() {
+        if self.hud.sections.any() && self.modal() {
+            if let Some(latest) = self.hud.sections.latest() {
                 out.push(Link { from: GROUP_TABS, dir: Dir::Up, to: Sections::group_of(latest) });
-            } else {
-                out.extend([
-                    Link { from: GROUP_SCRUB, dir: Dir::Up, to: GROUP_ROW },
-                    Link { from: GROUP_SCRUB, dir: Dir::Down, to: GROUP_TABS },
-                    Link { from: GROUP_TABS, dir: Dir::Up, to: GROUP_SCRUB },
-                    Link { from: GROUP_ROW, dir: Dir::Down, to: Sections::group_of(latest) },
-                ]);
-                out.extend(self.hud.sections.iter().map(|s| Link { from: Sections::group_of(s), dir: Dir::Up, to: GROUP_ROW }));
             }
             return;
         }
-        out.extend([
-            Link { from: GROUP_SCRUB, dir: Dir::Up, to: GROUP_ROW },
-            Link { from: GROUP_SCRUB, dir: Dir::Down, to: GROUP_TABS },
-            Link { from: GROUP_ROW, dir: Dir::Down, to: GROUP_SCRUB },
-            Link { from: GROUP_TABS, dir: Dir::Up, to: GROUP_SCRUB },
-        ]);
+        self.travel_order(self.model.chapters).links(out);
     }
     /// The transport's clocks, queued for the presenting side to rasterise before the draw's
     /// back-buffer wait (`player_hud::motion::ClockWarm`). Only while the playbar is drawn: the gate is
