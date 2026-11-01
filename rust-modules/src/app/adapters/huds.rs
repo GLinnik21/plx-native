@@ -1073,14 +1073,15 @@ mod tests {
         for _ in 0..64 {
             assert!(tick(&mut driver, true).is_none(), "nothing is handed to a player that is up");
         }
-        assert!(driver.pending.is_some(), "the bytes landed and wait");
+        assert!(driver.pending.as_ref().is_some_and(|p| !p.linted), "the bytes landed and wait, not even linted");
         assert!(driver.compiled.is_none() && driver.unfit.is_empty(), "no compile ran, and waiting is not a verdict");
         assert!(driver.take_log().is_empty(), "waiting is not a fallback");
         let before = driver.worked;
         for _ in 0..100 {
             tick(&mut driver, true);
         }
-        assert!(driver.worked <= before + 100 && driver.pending.is_some() && driver.compiled.is_none(), "still waiting");
+        assert_eq!(driver.worked, before, "a tick with a player up and bytes waiting returns on its flag tests: it is no work per frame");
+        assert!(driver.pending.is_some() && driver.compiled.is_none(), "still waiting");
 
         // the player leaves: the lint is one tick's work, the load the next's
         assert!(tick(&mut driver, false).is_none());
@@ -1089,6 +1090,35 @@ mod tests {
         let shown = tick(&mut driver, false);
         assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(REFERENCE.as_bytes())), "the load tick hands the package over");
         assert!(driver.pending.is_none() && driver.compiled.is_some());
+        assert!(driver.take_log().is_empty());
+    }
+
+    /// **The playback starts in the very tick the bytes land** (a cold launch with a play link): every tick before it had no
+    /// player and put the read in flight, the one that lands it has one. The bytes wait unlinted, with no fallback line.
+    #[test]
+    fn a_playback_that_starts_in_the_tick_the_bytes_land_waits_for_it_to_end() {
+        let dir = Dir::new("player-same-tick");
+        let cx = english();
+        let mut driver = driver(&dir);
+        install_reference(&dir, &mut driver, &cx);
+        driver.select(REFERENCE_ID.to_string());
+        let env = |player| Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player };
+        let mut guard = 0;
+        while driver.reading.is_none() && guard < 64 {
+            assert!(driver.tick(&env(false)).is_none());
+            guard += 1;
+        }
+        assert!(driver.reading.is_some() && driver.pending.is_none(), "the read is in flight and has not landed");
+        assert!(driver.tick(&env(true)).is_none(), "the tick the playback starts in lands the bytes");
+        assert!(driver.reading.is_none() && driver.pending.as_ref().is_some_and(|p| !p.linted), "landed in that tick, and not linted");
+        assert!(driver.compiled.is_none() && driver.unfit.is_empty() && driver.take_log().is_empty(), "no compile, no verdict, no fallback line");
+        let before = driver.worked;
+        for _ in 0..50 {
+            assert!(driver.tick(&env(true)).is_none());
+        }
+        assert_eq!(driver.worked, before, "and the playback's ticks add no work");
+        assert!(driver.tick(&env(false)).is_none(), "the first tick after it lints");
+        assert!(driver.tick(&env(false)).is_some(), "the next loads and hands the package over");
         assert!(driver.take_log().is_empty());
     }
 
