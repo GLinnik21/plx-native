@@ -3,7 +3,7 @@
 //! Authored placement is retained even while the transport HUD is visible; a text subtitle's
 //! bottom-anchored regions rise clear of it (plan `libass-text-subs` §2.4).
 use plx_media::player::{
-    ass, ass_source, sidecar,
+    ass, ass_source,
     text_style::{self, HudBand},
     video_geometry::Viewport,
 };
@@ -39,13 +39,7 @@ const UNKNOWN_ALIGNS: ass::AlignSet = ass::AlignSet { bottom: true, middle: true
 
 impl AssSubtitles {
     pub fn update(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
-        let source = if plx_media::route::subtitles_burned(ps) || plx_media::player::loading(ps) {
-            None
-        } else {
-            sidecar::ass_source(false)
-                .or_else(|| ass_source::selected(plx_media::player::desired_sub_idx()))
-        };
-        let Some(source) = source else {
+        let Some((source, position_ns)) = plx_media::player::subtitle_draw(ps) else {
             if self.source != 0 {
                 ass::clear();
             }
@@ -60,7 +54,7 @@ impl AssSubtitles {
             self.aligns = None;
         }
         let clock = self.clock.sample(
-            plx_media::player::playpos_ns(),
+            position_ns,
             now,
             plx_media::player::is_playing(ps),
         );

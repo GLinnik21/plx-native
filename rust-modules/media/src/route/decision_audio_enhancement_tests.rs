@@ -4253,6 +4253,135 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
     });
 }
 
+// ---- a sidecar over a remux is drawn on the CONTENT's clock ---------------------------------------
+
+/// A live admitted remux with a sidecar picked: the app draws it, over a remux whose clock the side
+/// reader maps onto the Part's (`player::subside`, `ff::subside`).
+fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
+    let live = Live::start(EnhMode::Honor("ac3"));
+    install_truehd_remux(ps, &live);
+    admit_side_reader(ps);
+    commit_subtitle_selection(ps, -1, 79, true);
+    assert!(ps.cur_sub_sidecar);
+    assert_eq!(subtitle_presenter(ps), SubtitlePresenter::ClientOverRemux);
+    live
+}
+
+/// The engine's state `reload_transcode_start` leaves for a remux asked to start at `requested_ns`
+/// whose first frame (stream time `first_pts_ns`) is shown at once: `disp_base` is the REQUESTED
+/// offset, and the playhead the position callback stores is `fed - pts_shift + disp_base`. Returns
+/// the playhead of that first frame.
+fn remux_started_at(requested_ns: i64, first_pts_ns: i64) -> i64 {
+    use crate::ff::subside::playhead_of;
+    let s = &crate::player::SHARED;
+    s.pts_shift.store(0, std::sync::atomic::Ordering::Relaxed);
+    s.disp_base.store(requested_ns, std::sync::atomic::Ordering::Relaxed);
+    let playhead = playhead_of(first_pts_ns, 0, requested_ns);
+    s.playpos_ns.store(playhead, std::sync::atomic::Ordering::Relaxed);
+    playhead
+}
+
+/// The reader's measurement for such a run, published the way `read_once` publishes it.
+fn measured(part_kf_ns: i64, first_pts_ns: i64, requested_ns: i64) -> i64 {
+    let delta = crate::ff::subside::delta_exact(part_kf_ns, first_pts_ns, 0, requested_ns);
+    crate::player::subside::publish_exact(delta);
+    delta
+}
+
+fn clear_remux_run() {
+    crate::player::subside::stop("test");
+    let s = &crate::player::SHARED;
+    s.disp_base.store(0, std::sync::atomic::Ordering::Relaxed);
+    s.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **The measured case.** With Boost Dialog on, a direct play is a PMS remux that (re)starts on the
+/// Part keyframe at or before the requested offset while the app labels that frame with the
+/// REQUESTED offset (`disp_base`), so the playhead runs ahead of the content by `offset + 0.083 s -
+/// keyframe` and an external subtitle (file time) drew early. `(requested, remux started on)`, the
+/// first remux frame at 0.083 s, GOP 2.002 s: the four rows measured on one real file.
+#[test]
+fn sidecar_clock_a_sidecar_over_a_remux_is_drawn_on_the_clock_of_the_content_it_belongs_to() {
+    const FIRST_FRAME: i64 = 83_000_000;
+    let rows: [(i64, i64, i64); 4] = [
+        // requested, Part keyframe the remux started on, the app clock's lead in ms
+        (439_000_000_000, 438_438_000_000, 645),
+        (475_000_000_000, 474_474_000_000, 609),
+        (564_000_000_000, 562_562_000_000, 1_521),
+        (917_000_000_000, 914_914_000_000, 2_169),
+    ];
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = sidecar_over_admitted_remux(&mut ps);
+    for (requested, kf, lead_ms) in rows {
+        let playhead = remux_started_at(requested, FIRST_FRAME);
+        assert_eq!(playhead - kf, lead_ms * 1_000_000, "fixture: the app clock leads the content by the measured amount");
+        let delta = measured(kf, FIRST_FRAME, requested);
+        assert_eq!(delta, -lead_ms * 1_000_000);
+        assert_eq!(
+            crate::player::sidecar_clock_ns(&ps, crate::player::playpos_ns()),
+            kf,
+            "the first frame shows the content of the Part keyframe {kf} ns, requested {requested} ns"
+        );
+        // and it keeps that offset while playing
+        assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead + 10_000_000_000), kf + 10_000_000_000);
+        clear_remux_run();
+    }
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// An EMBEDDED track's cues were moved onto the remux clock by the reader (`-delta`), so the draw
+/// must not move the playhead again; a route the app is not drawing a sidecar over must not either,
+/// whatever an earlier run left behind.
+#[test]
+fn sidecar_clock_only_a_sidecar_over_a_live_remux_is_moved_and_only_by_a_measured_delta() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = sidecar_over_admitted_remux(&mut ps);
+    let playhead = remux_started_at(917_000_000_000, 83_000_000);
+    // nothing measured: unchanged
+    assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), playhead);
+    measured(914_914_000_000, 83_000_000, 917_000_000_000);
+    assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), 914_914_000_000);
+    // an embedded pick on the same run: its cues carry the correction already
+    commit_subtitle_selection(&mut ps, 2, 77, true);
+    assert!(!ps.cur_sub_sidecar);
+    assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), playhead, "embedded cues are not corrected twice");
+    // the reader gave up and the server burns: no app drawing at all
+    commit_subtitle_selection(&mut ps, -1, 79, true);
+    ps.side_subs_refused = true;
+    assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), playhead);
+    ps.side_subs_refused = false;
+    // the engine run is over: its measurement does not survive it
+    crate::player::subside::stop("test");
+    assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), playhead);
+    clear_remux_run();
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// The screen subtracts the viewer's timing offset from the clock it samples; the offset composes
+/// with the correction, and its range stays the sidecar's.
+#[test]
+fn sidecar_clock_the_viewers_timing_offset_composes_with_the_remux_correction() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = sidecar_over_admitted_remux(&mut ps);
+    let range = crate::player::subtitle_offset_range_ms();
+    let playhead = remux_started_at(475_000_000_000, 83_000_000);
+    measured(474_474_000_000, 83_000_000, 475_000_000_000);
+    crate::player::restore_subtitle_offset(500);
+    // what `AssSubtitles::update` asks the renderer: the sampled position less the offset
+    let asked_ms = crate::player::sidecar_clock_ns(&ps, playhead) / 1_000_000 - crate::player::subtitle_offset_ms();
+    assert_eq!(asked_ms, 474_474 - 500, "a +500 ms delay shows the cue authored 500 ms earlier, in content time");
+    assert_eq!(crate::player::subtitle_offset_range_ms(), range, "the correction does not move the offset range");
+    crate::player::restore_subtitle_offset(0);
+    clear_remux_run();
+    live.finish();
+    cleanup(&mut ps);
+}
+
 /// PMS discards a DOWNLOADED subtitle when the part's selection moves off it, so while the app
 /// draws a subtitle beside the remux (an admitted embedded track, then a sidecar) no PUT the route
 /// sends — the pick itself, an enhancement toggle, an audio change, a seek rebuild — may name

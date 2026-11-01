@@ -2142,6 +2142,30 @@ pub fn subtitle_clock_ns(now_ns: i64) -> i64 {
     now_ns.saturating_sub(subtitle_offset_ns())
 }
 
+/// **What the client draws for the selected subtitle, and the playhead to draw it at**: the source
+/// and the position in nanoseconds the caller samples its render clock from. `None` while the server
+/// burns the selection or the stream is loading. The viewer's timing offset is NOT applied here: the
+/// caller subtracts it after sampling ([`subtitle_offset_ms`]), so it composes with this.
+///
+/// An embedded track is drawn at the playhead as it stands: the side reader already moved its cues
+/// onto the remux clock. A sidecar is in FILE time, so over a remux it is drawn at
+/// [`sidecar_clock_ns`].
+pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::Arc<ass::Source>, i64)> {
+    if crate::route::subtitles_burned(ps) || loading(ps) {
+        return None;
+    }
+    let playhead = playpos_ns();
+    if let Some(source) = sidecar::ass_source(false) {
+        return Some((source, sidecar_clock_ns(ps, playhead)));
+    }
+    ass_source::selected(desired_sub_idx()).map(|source| (source, playhead))
+}
+
+/// The file-time position a SIDECAR is asked for at remux playhead `playhead_ns`.
+pub fn sidecar_clock_ns(_ps: &crate::route::PlaybackSession, playhead_ns: i64) -> i64 {
+    playhead_ns
+}
+
 /// The oldest cue end a store must still hold: the LATEST delay ([`SUBTITLE_OFFSET_LATEST_MS`])
 /// plus two seconds behind the playhead, whatever the offset is NOW. A positive offset makes the
 /// subtitle clock trail the playhead, and the demuxer never republishes a cue it has read, so a

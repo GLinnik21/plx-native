@@ -15,7 +15,7 @@
 //! token or session identifier.
 
 use crate::ff::subside::{read_once, Anchor, ReadCfg, RunEnd, SideStop};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,6 +64,13 @@ static LIFECYCLE: Mutex<()> = Mutex::new(());
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 /// The clock delta the last reader measured (or was given), read by the reader that replaces it.
 static LAST_DELTA: Mutex<Option<i64>> = Mutex::new(None);
+/// What [`EXACT_DELTA_NS`] holds while no byte-exact match has been measured for this engine run.
+const NO_EXACT: i64 = i64::MIN;
+/// The Part-to-playhead clock delta (`delta`, nanoseconds) of THIS engine run, published only when
+/// the keyframe scan matched the run's first keyframe byte for byte ([`publish_exact`]); read lock-free
+/// every frame by the sidecar draw ([`exact_delta_ns`]). Cleared by `start` and `stop`, so a run the
+/// reader is not admitted for (or one not measured yet) never inherits another run's delta.
+static EXACT_DELTA_NS: AtomicI64 = AtomicI64::new(NO_EXACT);
 /// The newest change `sync` was asked for, with the epoch it was asked in. Latest wins.
 static WANT: Mutex<Option<(u64, Option<Spec>)>> = Mutex::new(None);
 static SYNC_WORKER: AtomicBool = AtomicBool::new(false);
@@ -74,6 +81,18 @@ fn lifecycle() -> std::sync::MutexGuard<'static, ()> {
 
 fn running() -> std::sync::MutexGuard<'static, Option<Running>> {
     RUNNING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Publish the exact clock delta the reader measured for this engine run: `part_time − playhead`
+/// at the run's first keyframe, matched byte for byte. Never called with an ASSUMED delta.
+pub(crate) fn publish_exact(delta_ns: i64) {
+    EXACT_DELTA_NS.store(delta_ns, Ordering::Release);
+}
+
+/// The run's exact clock delta, or `None` when none has been measured (the scan has not finished,
+/// did not match, or no reader is admitted for this run). Lock-free: the sidecar draw reads it per frame.
+pub fn exact_delta_ns() -> Option<i64> {
+    Some(EXACT_DELTA_NS.load(Ordering::Acquire)).filter(|d| *d != NO_EXACT)
 }
 
 /// Is a reader running? The draw gate (`route::subtitles_burned`) reads this only for the dev

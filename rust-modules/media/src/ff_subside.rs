@@ -79,12 +79,12 @@ fn fingerprint(data: &[u8]) -> ([u8; FINGERPRINT], [u8; FINGERPRINT]) {
 /// The remux playhead that the packet at remux stream time `anchor_pts_ns` is shown at —
 /// `fed − pts_shift + disp_base`, the formula `player::mod`'s position callback stores in
 /// `playpos_ns`.
-pub(super) fn playhead_of(anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
+pub(crate) fn playhead_of(anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
     anchor_pts_ns.saturating_sub(pts_shift).saturating_add(disp_base)
 }
 
 /// `delta = part_time − playhead` from a keyframe the scan matched byte for byte.
-pub(super) fn delta_exact(part_kf_pts: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
+pub(crate) fn delta_exact(part_kf_pts: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
     part_kf_pts.saturating_sub(playhead_of(anchor_pts_ns, pts_shift, disp_base))
 }
 
@@ -703,6 +703,10 @@ pub(crate) fn read_once(
                 started.elapsed().as_millis(),
             ));
             *delta = Some(chosen);
+            if scan.matched.is_some() {
+                // Only a byte-exact match is the sidecar draw's to trust (`player::sidecar_clock_ns`).
+                crate::player::subside::publish_exact(chosen);
+            }
         }
         let delta_ns = delta.unwrap_or(0);
         // Pass B: from `offset − 15 s` (or the playhead on a reopen) decode the track.
@@ -947,6 +951,28 @@ mod tests {
         assert_eq!(keyframe_at_or_before(&[], offset), None);
         // the remux's first keyframe is stamped 0 and labelled with disp_base = offset
         assert_eq!(delta_assumed(k, 0, 0, offset), -1_500_000_000);
+    }
+
+    /// **The counterexample the assumed mapping cannot survive.** Measured on one real file (GOP
+    /// 2.002 s, first remux frame at 0.083 s): a remux asked for 917 s started on the Part keyframe
+    /// at 914.914 s, although 916.916 s is the keyframe at or before the offset (0.084 s earlier).
+    /// "The last keyframe at or before the offset" is therefore NOT what PMS starts on, and
+    /// [`delta_assumed`] is 2.002 s wrong here; only the byte-exact match
+    /// ([`Anchor::matches`] over the scanned keyframes) names the right one. Do not fit an epsilon
+    /// to this one data point.
+    #[test]
+    fn sidecar_clock_at_917_the_assumed_delta_is_two_seconds_wrong_and_only_the_exact_match_is_right() {
+        const MS: i64 = 1_000_000;
+        let keyframes = [912_914 * MS, 914_914 * MS, 916_916 * MS, 918_918 * MS];
+        let offset = 917_000 * MS;
+        let first_frame = 83 * MS;
+        let at_or_before = keyframe_at_or_before(&keyframes, offset).unwrap();
+        assert_eq!(at_or_before, 916_916 * MS, "the keyframe at or before 917 s");
+        let assumed = delta_assumed(at_or_before, first_frame, 0, offset);
+        let exact = delta_exact(914_914 * MS, first_frame, 0, offset);
+        assert_eq!(exact, -2_169 * MS, "the app clock led the content by 2.169 s");
+        assert_eq!(assumed, -167 * MS);
+        assert_eq!(assumed - exact, 2_002 * MS, "one GOP wrong");
     }
 
     #[test]
