@@ -1228,31 +1228,44 @@ derivation.
 
 ### The ceilings (PR19)
 
-PR8 ran seven states on the dev set (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, every one
-holding 59-61 fps with `dropped=0`). A class's ceiling in each term is the MAXIMUM of that term over the states of
-that class that were run, taken from what the compiler reports for those exact states (English, the television's
-advances `ShippedMeasure`), not rounded and with no headroom. Each class stands alone: two sections is not capped by
-one section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming the
-state it came from, and `lint_cost::the_ceilings_are_the_maximum_over_the_measured_states` recomputes all twelve from
-`classic.plxhud.json` and `reference.plxhud.json`, so a layout change that moves one fails until someone re-measures.
+A class's ceiling in each term is the MAXIMUM of that term over the states of that class that were run on the
+television (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, every one holding 59-61 fps with
+`dropped=0`), taken from what the compiler reports for those exact states (the television's advances,
+`ShippedMeasure`), not rounded and with no headroom. Each class stands alone: two sections is not capped by one
+section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming the
+state and language it came from, and `lint_cost::the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language`
+recomputes all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every
+state and slot (330 rows) and asserts each is attained by the pair it names, so a layout change that moves one
+fails until someone re-measures.
 
-| class | measured state (GPU_ACTIVE, M cycles a frame) | draw ops | glyph runs | texture bytes | blended px |
-| --- | --- | --- | --- | --- | --- |
-| compact | classic, a film with chapters (4.33) | 9 | **6** | 49152 | **945408** |
-| compact | classic, an episode with no chapters (4.17) | 10 | 5 | **81920** | 942912 |
-| compact | reference, a film (3.73) | **11** | 4 | 81280 | 838253 |
-| one section | classic Chapters (5.23) | 22 | 14 | **1119744** | 919296 |
-| one section | classic Info (6.84) | 10 | 14 | 230400 | **1383936** |
-| one section | reference Chapters (4.72) | **45** | **21** | 769920 | 1274323 |
-| two sections | reference Chapters and Info (4.92) | **52** | **28** | **814016** | **1592851** |
+**A measured state is (package, state, language).** The tab and button plates follow their labels' widths, so
+`blended_px` moves with the language; Up Next's still is as wide as the Next pill, so `texture_bytes` does too. Seven
+pairs attain the twelve maxima (no six do). The dev TV ran each on 2026-11-01 (`ARM_PROFILE=release`, debug flavour,
+`--guest --mock`, one boot for pacing and one for HWCNT, because HWCNT serializes the GPU): every pair held 59-61 fps
+with `dropped=0`. The chapter strips were run with `visible` image cards: the item served ten chapters, each with a
+thumbnail, so the reference drew nine cards and classic six. PR8's strip runs had no chapter thumbnails and drew blank
+cards, so their GPU figures (5.23, 4.72, 4.92) are replaced by pairs 5, 4 and 7.
 
-The bold figure of a column is that class's ceiling and the row it came from. The class is the number of open
-sections; the slot (Discs, Up Next, Skip) never changes it. A state nobody ran is not admitted by a neighbour's
-number: Up Next and Skip, an episode with chapters on classic, the reference's episode and its Info alone are states
-the calibration did not reach, and so is any measured state in a language other than the one the numbers are in
-(only `blended_px` moves with the language, through the tab and button plates, which follow their labels' widths).
+| pair | class | package, state, slot, language | GPU_ACTIVE (M cycles a frame) | draw ops | glyph runs | texture bytes | blended px |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | compact | reference, an episode, Discs, en | 3.72 | **13** | 4 | 102912 | 838253 |
+| 2 | compact | classic, a film, Up Next, nl | 5.44 | 10 | **9** | **256120** | 978752 |
+| 3 | compact | classic, a film, Up Next, pl | 5.50 | 10 | 9 | 215064 | **985088** |
+| 4 | one section | reference Chapters, an episode, Discs, en | 5.09 | **47** | **21** | 791552 | 1274323 |
+| 5 | one section | classic Chapters, Discs, en | 5.10 | 22 | 14 | **1119744** | 919296 |
+| 6 | one section | classic Info, Discs, be | 7.02 | 10 | 14 | 230400 | **1395492** |
+| 7 | two sections | reference Chapters and Info, an episode, Discs, en | 4.87 | **54** | **28** | **835648** | **1592851** |
+
+The bold figure is a class's ceiling in that term and the pair it came from (the count of draw ops and glyph runs
+does not move with the language: every language ties). PR8's other runs stand, in English, and are under every
+ceiling: classic's film with chapters (4.33; 9, 6, 49152, 945408), classic's episode with no chapters (4.17; 10, 5,
+81920, 942912), the reference's film (3.73; 11, 4, 81280, 838253) and classic's Info (6.84; 10, 14, 230400, 1383936).
+Pair 6 is the heaviest state on the television. The class is the number of open sections; the slot (Discs, Up Next,
+Skip) never changes it. Not every one of the 330 rows was run: a row is admitted because it costs no more in each term
+than the states that were. The terms are the compiler's accounting, not the GPU's, so a package under every term can
+still read more GPU_ACTIVE than a measured state; PR12 measures that.
 `plxnative-sim --hud-lint` prints every state's cost beside its class's ceiling, as information lines (text) and a
-`costs` array (JSON), and exits 0 on a package whose only output is those.
+`costs` array (JSON).
 
 ## Storage per install mode
 

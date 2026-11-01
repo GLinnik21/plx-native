@@ -7,33 +7,45 @@
 //!
 //! **The ceilings are measured, never chosen.** A class's ceiling in each of the four terms is the MAXIMUM of
 //! that term over the states of that class that were run on the television (`ARM_PROFILE=release`, 500 or more
-//! frames of Mali HWCNT each, every one holding 59-61 fps with `dropped=0`; PR8's "TV cost calibration",
-//! #1164), taken from what the compiler reports for those exact states, not rounded and with no headroom: no
-//! ceiling admits a cost no measured state reached. Every constant says which state it came from, and
-//! `the_ceilings_are_the_maximum_over_the_measured_states` recomputes all twelve from `classic.plxhud.json`
-//! and `reference.plxhud.json`, so a layout change that moves one fails until someone re-measures.
+//! frames of Mali HWCNT each, every one holding 59-61 fps with `dropped=0`; PR8's "TV cost calibration", #1164,
+//! and PR19's seven pairs below), taken from what the compiler reports for those exact states, not rounded and
+//! with no headroom: no ceiling admits a cost no measured state reached. Every constant says which state and
+//! language it came from, and `the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language`
+//! recomputes all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every
+//! state and slot (330 rows), and asserts each is attained by the pair the constant names, so a layout change that
+//! moves one fails until someone re-measures.
 //!
-//! **The measured states**, with what the compiler reports for each (English, the television's advances
-//! [`ShippedMeasure`](plx_base::fontcov::advances::ShippedMeasure); draw ops, glyph runs, texture bytes,
-//! blended px; GPU_ACTIVE in M cycles a frame in brackets):
+//! **A measured state is (package, state, language).** The tab and button plates follow their labels' widths, so
+//! `blended_px` moves with the language, and Up Next's still is as wide as the Next pill, so `texture_bytes` does
+//! too: the English figure of a state is not the television's in Polish. Seven pairs attain the twelve maxima (no
+//! six do), all run with `--guest --mock` on the dev TV (`ARM_PROFILE=release`, debug flavour). Cost is the
+//! compiler's: draw ops, glyph runs, texture bytes, blended px, by the television's advances
+//! ([`ShippedMeasure`](plx_base::fontcov::advances::ShippedMeasure)); GPU_ACTIVE is the mean in M cycles a frame
+//! over the HWCNT boot (a pacing boot is separate, HWCNT serializes the GPU). A strip was run with `visible`
+//! image cards: the item served ten chapters, each with its own thumbnail, so the reference drew nine cards and
+//! classic six (PR8's strip runs had no chapter thumbnails and drew blank cards, which is why their figures,
+//! 5.23, 4.72 and 4.92, are replaced by pairs 5, 4 and 7):
 //!
-//! | class | state | cost |
-//! | --- | --- | --- |
-//! | compact | classic, a film with chapters: Discs slot, More, Audio, Subtitles, tabs Info and Chapters (4.33) | 9, 6, 49152, 945408 |
-//! | compact | classic, an episode with no chapters: Previous, Next, Subtitles, Audio, More, tab Info (4.17) | 10, 5, 81920, 942912 |
-//! | compact | reference, a film (3.73) | 11, 4, 81280, 838253 |
-//! | one section | classic Chapters (5.23) | 22, 14, 1119744, 919296 |
-//! | one section | classic Info (6.84) | 10, 14, 230400, 1383936 |
-//! | one section | reference Chapters (4.72) | 45, 21, 769920, 1274323 |
-//! | two sections | reference Chapters and Info (4.92) | 52, 28, 814016, 1592851 |
+//! | pair | class | package, state, slot, language | GPU_ACTIVE | cost |
+//! | --- | --- | --- | --- | --- |
+//! | 1 | compact | reference, an episode, Discs, en | 3.72 | 13, 4, 102912, 838253 |
+//! | 2 | compact | classic, a film, Up Next, nl | 5.44 | 10, 9, 256120, 978752 |
+//! | 3 | compact | classic, a film, Up Next, pl | 5.50 | 10, 9, 215064, 985088 |
+//! | 4 | one section | reference Chapters, an episode, Discs, en | 5.09 | 47, 21, 791552, 1274323 |
+//! | 5 | one section | classic Chapters, Discs, en | 5.10 | 22, 14, 1119744, 919296 |
+//! | 6 | one section | classic Info, Discs, be | 7.02 | 10, 14, 230400, 1395492 |
+//! | 7 | two sections | reference Chapters and Info, an episode, Discs, en | 4.87 | 54, 28, 835648, 1592851 |
 //!
-//! **What this does not know.** The calibration notes record neither the television's language nor its
-//! chapters (the mock film has them, the mock has no episode with them). The numbers above are English, a
-//! film with chapters. A state of a package nobody ran (Up Next, Skip, an episode with chapters on classic, the
-//! reference's episode and its Info alone) is not admitted by a neighbour's number, and neither is a measured
-//! state in another language, whose tab plates follow its labels; the lint's verdict on a state over its
-//! ceiling, `HUD-E1401`, waits for the television to measure them. Until then [`over`] reports the comparison
-//! and `--hud-lint` prints it ([`StateCostLine`]) without failing the run.
+//! PR8's other runs stand and are under every ceiling (English; `earlier_runs_stand_and_are_within_their_class`
+//! asserts their cost): classic's film with chapters (4.33; 9, 6, 49152, 945408), classic's episode with no
+//! chapters (4.17; 10, 5, 81920, 942912), the reference's film (3.73; 11, 4, 81280, 838253) and classic's Info in
+//! English (6.84; 10, 14, 230400, 1383936).
+//!
+//! **What this does not know.** Not every one of the 330 rows was run: a row below a ceiling is admitted because
+//! it costs no more, in each term, than the states the television did run, not because it was run itself. The
+//! terms are the compiler's accounting of what the GPU draws, not the GPU's, so a package under every term can
+//! still read more GPU_ACTIVE than a measured one; PR12 measures that. [`over`] reports the comparison and
+//! `--hud-lint` prints it ([`StateCostLine`]).
 //!
 //! Pure: no IO, no global. [`over`] and [`state_cost`] take plain values, so the television can ask the same
 //! question of a compiled state at selection (never in a frame) and the lint asks it of every state.
@@ -45,37 +57,38 @@ use super::lint::{slot_name, state_name, LangCtx};
 // The twelve ceilings
 // ---------------------------------------------------------------------------------------------------
 
-/// **Compact, draw ops: 11**, from the reference's compact film (11 draw ops; classic's film is 9 and its
-/// episode with no chapters 10).
-pub const MAX_COMPACT_DRAW_OPS: usize = 11;
-/// **Compact, glyph runs: 6**, from classic's compact film (6; the episode with no chapters is 5, the
-/// reference's film 4).
-pub const MAX_COMPACT_GLYPH_RUNS: usize = 6;
-/// **Compact, texture bytes: 81920**, from classic's compact episode with no chapters (five discs at
-/// 64 x 64 x 4; the reference's film is 81280, classic's film 49152).
-pub const MAX_COMPACT_TEXTURE_BYTES: u64 = 81_920;
-/// **Compact, blended px: 945408**, from classic's compact film (the scrim and the two tab plates; the
-/// episode with no chapters is 942912, the reference's film 838253).
-pub const MAX_COMPACT_BLENDED_PX: u64 = 945_408;
+/// **Compact, draw ops: 13**, from the reference's compact episode with chapters, Discs slot, English (pair 1 of
+/// the television's seven; classic's compact states are 9 to 10).
+pub const MAX_COMPACT_DRAW_OPS: usize = 13;
+/// **Compact, glyph runs: 9**, from classic's Up Next, Dutch (pair 2; the count does not move with the language,
+/// all eleven tie).
+pub const MAX_COMPACT_GLYPH_RUNS: usize = 9;
+/// **Compact, texture bytes: 256120**, from classic's Up Next, Dutch (pair 2): the still is 16:9 and as wide as the
+/// Next pill, which follows its label, so Dutch's 337 x 190 is the largest of the eleven (English's 243 x 137 is
+/// 133164).
+pub const MAX_COMPACT_TEXTURE_BYTES: u64 = 256_120;
+/// **Compact, blended px: 985088**, from classic's Up Next, Polish (pair 3; only Polish attains it).
+pub const MAX_COMPACT_BLENDED_PX: u64 = 985_088;
 
-/// **One section, draw ops: 45**, from the reference's Chapters (classic's Chapters is 22, its Info 10).
-pub const MAX_ONE_SECTION_DRAW_OPS: usize = 45;
-/// **One section, glyph runs: 21**, from the reference's Chapters (classic's Chapters and Info are 14).
+/// **One section, draw ops: 47**, from the reference's Chapters, an episode, Discs slot, English (pair 4).
+pub const MAX_ONE_SECTION_DRAW_OPS: usize = 47;
+/// **One section, glyph runs: 21**, from the reference's Chapters, an episode, Discs slot, English (pair 4).
 pub const MAX_ONE_SECTION_GLYPH_RUNS: usize = 21;
-/// **One section, texture bytes: 1119744**, from classic's Chapters (six 288 x 162 cards at 4 bytes and
-/// five discs; the reference's Chapters is 769920, classic's Info 230400).
+/// **One section, texture bytes: 1119744**, from classic's Chapters, Discs slot, English (pair 5: six `visible`
+/// 288 x 162 image cards at 4 bytes and five discs).
 pub const MAX_ONE_SECTION_TEXTURE_BYTES: u64 = 1_119_744;
-/// **One section, blended px: 1383936**, from classic's Info, the costliest state measured (6.84 M cycles; the
-/// reference's Chapters is 1274323, classic's Chapters 919296).
-pub const MAX_ONE_SECTION_BLENDED_PX: u64 = 1_383_936;
+/// **One section, blended px: 1395492**, from classic's Info, Discs slot, Belarusian (pair 6, the costliest state
+/// on the television at 7.02 M GPU cycles a frame; only Belarusian attains it, English is 1383936).
+pub const MAX_ONE_SECTION_BLENDED_PX: u64 = 1_395_492;
 
-/// **Two sections, draw ops: 52**, from the reference's Chapters and Info, the only two-section state.
-pub const MAX_TWO_SECTIONS_DRAW_OPS: usize = 52;
-/// **Two sections, glyph runs: 28**, from the reference's Chapters and Info.
+/// **Two sections, draw ops: 54**, from the reference's Chapters and Info, an episode, Discs slot, English (pair 7,
+/// the only two-section package).
+pub const MAX_TWO_SECTIONS_DRAW_OPS: usize = 54;
+/// **Two sections, glyph runs: 28**, from the reference's Chapters and Info, an episode, English (pair 7).
 pub const MAX_TWO_SECTIONS_GLYPH_RUNS: usize = 28;
-/// **Two sections, texture bytes: 814016**, from the reference's Chapters and Info.
-pub const MAX_TWO_SECTIONS_TEXTURE_BYTES: u64 = 814_016;
-/// **Two sections, blended px: 1592851**, from the reference's Chapters and Info.
+/// **Two sections, texture bytes: 835648**, from the reference's Chapters and Info, an episode, English (pair 7).
+pub const MAX_TWO_SECTIONS_TEXTURE_BYTES: u64 = 835_648;
+/// **Two sections, blended px: 1592851**, from the reference's Chapters and Info, an episode, English (pair 7).
 pub const MAX_TWO_SECTIONS_BLENDED_PX: u64 = 1_592_851;
 
 // ---------------------------------------------------------------------------------------------------
@@ -270,7 +283,7 @@ mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
 
     use super::*;
-    use crate::hud_format::compile::{compile, CompileCtx, Compiled, StateKey, OPEN_CHAPTERS, OPEN_INFO};
+    use crate::hud_format::compile::{compile, CompileCtx, Compiled, OPEN_CHAPTERS, OPEN_INFO};
     use crate::hud_format::lint::LintLang;
     use crate::hud_format::parse;
     use crate::hud_format::reach::Slot;
@@ -278,46 +291,15 @@ mod tests {
     const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
     const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
 
-    /// `text` compiled the way the television compiles it: English, the television's advances.
-    fn english(text: &str) -> Compiled {
+    /// `text` compiled the way the television compiles it in the language `lang`: the television's advances.
+    fn compile_in(text: &str, lang: &LintLang) -> Compiled {
         let package = parse::parse(text.as_bytes()).package.expect("a package");
-        let en = LintLang::for_tag("en").expect("English is shipped");
-        compile(&package, &ShippedMeasure, CompileCtx { labels: en.labels })
+        compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() })
     }
 
-    /// One state the television ran: the package, the state, and the class's term it set.
-    struct Measured {
-        name: &'static str,
-        text: &'static str,
-        key: StateKey,
-    }
-
-    const fn key(open: u8, chapters: bool, episode: bool) -> StateKey {
-        StateKey { open, slot: Slot::Discs, chapters, episode, paused: false }
-    }
-
-    /// The seven states of the calibration, by class. A film is a non-episode with chapters; the one episode
-    /// has none.
-    fn measured(class: Class) -> Vec<Measured> {
-        let m = |name, text, key| Measured { name, text, key };
-        match class {
-            Class::Compact => vec![
-                m("classic, a film", CLASSIC, key(0, true, false)),
-                m("classic, an episode with no chapters", CLASSIC, key(0, false, true)),
-                m("reference, a film", REFERENCE, key(0, true, false)),
-            ],
-            Class::OneSection => vec![
-                m("classic Chapters", CLASSIC, key(OPEN_CHAPTERS, true, false)),
-                m("classic Info", CLASSIC, key(OPEN_INFO, true, false)),
-                m("reference Chapters", REFERENCE, key(OPEN_CHAPTERS, true, false)),
-            ],
-            Class::TwoSections => vec![m("reference Chapters and Info", REFERENCE, key(OPEN_CHAPTERS | OPEN_INFO, true, false))],
-        }
-    }
-
-    fn cost_of(m: &Measured) -> Cost {
-        let compiled = english(m.text);
-        state_cost(compiled.state(m.key).unwrap_or_else(|| panic!("{}: the package has no such state", m.name)))
+    /// `text` in English.
+    fn english(text: &str) -> Compiled {
+        compile_in(text, &LintLang::for_tag("en").expect("English is shipped"))
     }
 
     /// The four terms as `(name, value)`.
@@ -329,27 +311,121 @@ mod tests {
         [("draw_ops", c.draw_ops as u64), ("glyph_runs", c.glyph_runs as u64), ("texture_bytes", c.texture_bytes), ("blended_px", c.blended_px)]
     }
 
-    /// The state each constant's doc names as its source, per class and term.
-    const SOURCES: [(Class, [&str; 4]); 3] = [
-        (Class::Compact, ["reference, a film", "classic, a film", "classic, an episode with no chapters", "classic, a film"]),
-        (Class::OneSection, ["reference Chapters", "reference Chapters", "classic Chapters", "classic Info"]),
-        (Class::TwoSections, ["reference Chapters and Info"; 4]),
+    /// The two packages the ceilings are measured over.
+    const PACKAGES: [(&str, &str); 2] = [("classic", CLASSIC), ("reference", REFERENCE)];
+
+    /// **One pair the television ran**: a package, one of its states under one slot, and the language, with the
+    /// GPU_ACTIVE it read (M cycles a frame, `ARM_PROFILE=release`, 500 or more frames of Mali HWCNT, 59-61 fps and
+    /// `dropped=0` on the pacing boot). The strips were run with `visible` image cards. `states` is the state in
+    /// the lint's own spelling (`lint::state_name`): no `,movie` is an episode, no `,no-chapters` has chapters.
+    struct Pair {
+        n: u8,
+        package: &'static str,
+        state: &'static str,
+        slot: &'static str,
+        lang: &'static str,
+        gpu: f32,
+    }
+
+    /// The seven pairs of the television's calibration (`docs/hud-plugins.md`, "The ceilings"): the smallest set of
+    /// (package, state, language) that attains the twelve maxima.
+    const PAIRS: [Pair; 7] = [
+        Pair { n: 1, package: "reference", state: "compact", slot: "discs", lang: "en", gpu: 3.72 },
+        Pair { n: 2, package: "classic", state: "compact,movie", slot: "up_next", lang: "nl", gpu: 5.44 },
+        Pair { n: 3, package: "classic", state: "compact,movie", slot: "up_next", lang: "pl", gpu: 5.50 },
+        Pair { n: 4, package: "reference", state: "chapters", slot: "discs", lang: "en", gpu: 5.09 },
+        Pair { n: 5, package: "classic", state: "chapters", slot: "discs", lang: "en", gpu: 5.10 },
+        Pair { n: 6, package: "classic", state: "info", slot: "discs", lang: "be", gpu: 7.02 },
+        Pair { n: 7, package: "reference", state: "chapters+info", slot: "discs", lang: "en", gpu: 4.87 },
+    ];
+
+    /// The pair each constant's doc names as its source, per class and term (draw ops, glyph runs, texture bytes,
+    /// blended px).
+    const SOURCES: [(Class, [u8; 4]); 3] = [(Class::Compact, [1, 2, 2, 3]), (Class::OneSection, [4, 4, 5, 6]), (Class::TwoSections, [7; 4])];
+
+    /// One state of one package in one language, as the lint costs it.
+    struct Row {
+        package: &'static str,
+        lang: &'static str,
+        state: String,
+        slot: &'static str,
+        class: Class,
+        cost: Cost,
+    }
+
+    /// **Every state and slot of `classic` and the reference in each of the eleven shipped languages** (330 rows),
+    /// costed as `--hud-lint` prints them ([`state_cost`], the television's advances).
+    fn every_row() -> Vec<Row> {
+        let mut rows = Vec::new();
+        for (package, text) in PACKAGES {
+            for lang in LintLang::shipped() {
+                for s in compile_in(text, &lang).states() {
+                    rows.push(Row { package, lang: lang.tag, state: state_name(s.key), slot: slot_name(s.key), class: Class::of(s.key.open), cost: state_cost(s) });
+                }
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language() {
+        let rows = every_row();
+        assert_eq!(rows.len(), 330, "classic 18 states x 11 languages, the reference 12 x 11");
+        for (class, sources) in SOURCES {
+            let of_class: Vec<&Row> = rows.iter().filter(|r| r.class == class).collect();
+            assert!(!of_class.is_empty(), "{}: no state", class.name());
+            for (i, (term, ceil)) in ceiling_terms(ceiling(class)).into_iter().enumerate() {
+                let max = of_class.iter().map(|r| terms(&r.cost)[i].1).max().expect("a state");
+                assert_eq!(ceil, max, "{} {term}: the ceiling is the maximum over every state", class.name());
+                // ... attained by the pair the constant's doc names, and that pair is one the television ran
+                let pair = PAIRS.iter().find(|p| p.n == sources[i]).expect("a pair of the calibration");
+                let row = of_class
+                    .iter()
+                    .find(|r| (r.package, r.state.as_str(), r.slot, r.lang) == (pair.package, pair.state, pair.slot, pair.lang))
+                    .unwrap_or_else(|| panic!("{} {term}: pair {} ({} {} {} {}) is not a {} state", class.name(), pair.n, pair.package, pair.state, pair.slot, pair.lang, class.name()));
+                assert_eq!(terms(&row.cost)[i].1, ceil, "{} {term}: pair {} is the named source", class.name(), pair.n);
+            }
+        }
+    }
+
+    /// PR8's runs that stand (English, GPU_ACTIVE in M cycles a frame): the cost they were measured at.
+    const EARLIER: [(&str, &str, &str, f32, [u64; 4]); 4] = [
+        ("classic", "compact,movie", "discs", 4.33, [9, 6, 49_152, 945_408]),
+        ("classic", "compact,no-chapters", "discs", 4.17, [10, 5, 81_920, 942_912]),
+        ("reference", "compact,movie", "discs", 3.73, [11, 4, 81_280, 838_253]),
+        ("classic", "info,movie", "discs", 6.84, [10, 14, 230_400, 1_383_936]),
     ];
 
     #[test]
-    fn the_ceilings_are_the_maximum_over_the_measured_states() {
-        for (class, sources) in SOURCES {
-            let states = measured(class);
-            let costs: Vec<Cost> = states.iter().map(cost_of).collect();
-            let want = ceiling_terms(ceiling(class));
-            for (i, (term, ceil)) in want.into_iter().enumerate() {
-                let max = costs.iter().map(|c| terms(c)[i].1).max().expect("a measured state");
-                assert_eq!(ceil, max, "{} {term}: the ceiling is the maximum over the measured states", class.name());
-                // ... and the state the constant's doc names as its source is a state that reaches it
-                let source = states.iter().position(|m| m.name == sources[i]).unwrap_or_else(|| panic!("{}: no state `{}`", class.name(), sources[i]));
-                assert_eq!(terms(&costs[source])[i].1, ceil, "{} {term}: `{}` is the named source", class.name(), sources[i]);
-            }
+    fn earlier_runs_stand_and_are_within_their_class() {
+        let rows = every_row();
+        for (package, state, slot, gpu, want) in EARLIER {
+            let row = rows
+                .iter()
+                .find(|r| (r.package, r.state.as_str(), r.slot, r.lang) == (package, state, slot, "en"))
+                .unwrap_or_else(|| panic!("{package} {state} {slot}: no such state"));
+            assert_eq!(terms(&row.cost).map(|t| t.1), want, "{package} {state} {slot} ({gpu} M cycles) costs what it was measured at");
+            assert!(over(ceiling(row.class), &row.cost).is_empty(), "{package} {state} {slot} is within its class");
         }
+    }
+
+    #[test]
+    fn the_television_ran_each_pair_and_each_is_within_its_class() {
+        // every pair is a state the compile has, ran clean (59-61 fps, `dropped=0`), and is under its ceiling
+        let rows = every_row();
+        for pair in &PAIRS {
+            let row = rows
+                .iter()
+                .find(|r| (r.package, r.state.as_str(), r.slot, r.lang) == (pair.package, pair.state, pair.slot, pair.lang))
+                .unwrap_or_else(|| panic!("pair {}: no such state", pair.n));
+            assert!(over(ceiling(row.class), &row.cost).is_empty(), "pair {} is over its class: {:?}", pair.n, row.cost);
+            assert!(pair.gpu > 0.0 && pair.gpu < 7.1, "pair {}: GPU_ACTIVE {} M cycles a frame", pair.n, pair.gpu);
+        }
+        // the pairs are the seven distinct (package, state, slot, language) the table says
+        let mut keys: Vec<_> = PAIRS.iter().map(|p| (p.package, p.state, p.slot, p.lang)).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), 7);
     }
 
     #[test]

@@ -350,7 +350,7 @@ mod tests {
             .into_iter()
             .find(|l| l.contains(": cost compact,movie discs (compact):"))
             .unwrap_or_else(|| panic!("the film's line: {out}"));
-        assert!(film.contains("draw_ops 9/11, glyph_runs 6/6, texture_bytes 49152/81920, blended_px 945408/945408"), "{film}");
+        assert!(film.contains("draw_ops 9/13, glyph_runs 6/9, texture_bytes 49152/256120, blended_px 945408/985088"), "{film}");
         assert!(film.ends_with("[en]"), "one language keeps its tag: {film}");
     }
 

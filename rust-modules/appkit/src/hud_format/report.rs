@@ -376,7 +376,9 @@ mod tests {
 
     #[test]
     fn the_costs_array_is_added_to_the_plans_three_keys_and_findings_alone_are_unchanged() {
-        let costs = [cost_line_of(None, 945_408), cost_line_of(Some("de"), 945_409)];
+        // a cost AT the compact ceiling passes, one px above it is over (whatever the ceiling is)
+        let at = crate::hud_format::lint_cost::MAX_COMPACT_BLENDED_PX;
+        let costs = [cost_line_of(None, at), cost_line_of(Some("de"), at + 1)];
         let json = to_json_with_costs("f", &[], &costs);
         assert_eq!(json.as_object().unwrap().len(), 4, "{json:#}");
         assert_eq!(to_json("f", &[]).as_object().unwrap().len(), 3, "findings alone: lint, file, findings");
@@ -387,8 +389,8 @@ mod tests {
         assert_eq!(keys(shared), ["ceiling", "class", "cost", "over", "slot", "state"], "no lang when shared");
         assert_eq!(keys(de), ["ceiling", "class", "cost", "lang", "over", "slot", "state"]);
         assert_eq!(shared["class"], "compact");
-        assert_eq!(shared["cost"]["blended_px"], 945_408);
-        assert_eq!(shared["ceiling"]["blended_px"], 945_408);
+        assert_eq!(shared["cost"]["blended_px"], at);
+        assert_eq!(shared["ceiling"]["blended_px"], at);
         assert_eq!(shared["over"], Value::Array(Vec::new()));
         assert_eq!(de["over"], serde_json_array(&["blended_px"]));
         assert!(json_text_with_costs("f", &[], &costs).ends_with("}\n"));
@@ -397,14 +399,18 @@ mod tests {
     #[test]
     fn a_cost_line_prints_after_the_findings_and_marks_the_terms_over() {
         let f = finding(&codes::E0104, "/layout", "x");
-        let out = text_with_costs("f.json", &[f], &[cost_line_of(Some("de"), 945_409)]);
+        use crate::hud_format::lint_cost::{MAX_COMPACT_BLENDED_PX as PX, MAX_COMPACT_DRAW_OPS as OPS, MAX_COMPACT_GLYPH_RUNS as RUNS, MAX_COMPACT_TEXTURE_BYTES as TEX};
+        let out = text_with_costs("f.json", &[f], &[cost_line_of(Some("de"), PX + 1)]);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 2, "{out}");
         assert!(lines[0].starts_with("f.json#/layout: error HUD-E0104"), "{out}");
         assert_eq!(
             lines[1],
-            "f.json: cost compact,movie discs (compact): draw_ops 9/11, glyph_runs 6/6, texture_bytes 49152/81920, \
-             blended_px 945409/945408 [de] | over: blended_px"
+            format!(
+                "f.json: cost compact,movie discs (compact): draw_ops 9/{OPS}, glyph_runs 6/{RUNS}, texture_bytes 49152/{TEX}, \
+                 blended_px {}/{PX} [de] | over: blended_px",
+                PX + 1
+            )
         );
         assert_eq!(text_with_costs("f", &[], &[]), "");
     }
