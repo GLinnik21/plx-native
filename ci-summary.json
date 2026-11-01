@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T06:57:07Z",
+ "generated": "2026-11-01T08:09:26Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.5,
+   "change30_pct": -2.8,
    "change7_pct": 18.6,
-   "d30": 2547,
-   "delta30": -63,
+   "d30": 2555.5,
+   "delta30": -71.5,
    "delta7": 390.0,
    "group": "ci",
    "id": "minutes",
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.1,
+   "change30_pct": -63.4,
    "change7_pct": 14.1,
-   "d30": 1052,
-   "delta30": -664,
+   "d30": 1061,
+   "delta30": -673,
    "delta7": 48.0,
    "group": "ci",
    "id": "pr_wait",
@@ -165,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.5,
+   "change30_pct": -63.7,
    "change7_pct": 16.6,
-   "d30": 1058,
-   "delta30": -672,
+   "d30": 1063.0,
+   "delta30": -677.0,
    "delta7": 55,
    "group": "ci",
    "id": "push_wait",
@@ -324,10 +324,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.7,
+   "change30_pct": 29.2,
    "change7_pct": 5.1,
-   "d30": 767,
-   "delta30": 228,
+   "d30": 770,
+   "delta30": 225,
    "delta7": 48.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -387,10 +387,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.2,
+   "change30_pct": 26.9,
    "change7_pct": 5.3,
-   "d30": 218.5,
-   "delta30": 59.5,
+   "d30": 219,
+   "delta30": 59.0,
    "delta7": 14.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -431,8 +431,8 @@
   {
    "change30_pct": -79.1,
    "change7_pct": 9.1,
-   "d30": 1027.0,
-   "delta30": -812.0,
+   "d30": 1028,
+   "delta30": -813.0,
    "delta7": 18.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -536,10 +536,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 66.7,
+   "change30_pct": 53.8,
    "change7_pct": 14.3,
-   "d30": 12,
-   "delta30": 8,
+   "d30": 13,
+   "delta30": 7,
    "delta7": 2.5,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -559,7 +559,7 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -5.3,
-   "d30": 17.0,
+   "d30": 17,
    "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
@@ -601,7 +601,7 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 286.0,
+   "d30": 286,
    "delta30": -283.0,
    "delta7": 0.0,
    "group": "ci",
@@ -622,8 +622,8 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 936.5,
-   "delta30": -933.5,
+   "d30": 939,
+   "delta30": -936.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
