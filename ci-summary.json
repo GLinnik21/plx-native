@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T19:23:20Z",
+ "generated": "2026-11-01T19:30:10Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -85,14 +85,14 @@
    "change7_pct": 35.6,
    "d30": null,
    "delta30": null,
-   "delta7": 52.0,
+   "delta7": 52,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 81,
-   "now": 198.0,
+   "now": 198,
    "prev7": 146,
    "shown": true,
    "state": "worse",
@@ -186,18 +186,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.7,
-   "change7_pct": 15.8,
+   "change30_pct": -63.8,
+   "change7_pct": 15.7,
    "d30": 1068,
-   "delta30": -680.5,
-   "delta7": 53.0,
+   "delta30": -681,
+   "delta7": 52.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 90,
+   "n_now": 91,
    "n_prev": 94,
-   "now": 387.5,
+   "now": 387,
    "prev7": 334.5,
    "shown": true,
    "state": "flat",
@@ -391,14 +391,14 @@
    "change7_pct": 4.2,
    "d30": 220.0,
    "delta30": 56.0,
-   "delta7": 11.0,
+   "delta7": 11,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 81,
-   "now": 276.0,
+   "now": 276,
    "prev7": 265,
    "shown": true,
    "state": "flat",
@@ -438,9 +438,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 80,
-   "now": 216.0,
+   "now": 216,
    "prev7": 198.5,
    "shown": true,
    "state": "flat",
@@ -561,14 +561,14 @@
    "change7_pct": -5.3,
    "d30": 17.0,
    "delta30": 1.0,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 81,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 71.1,
    "commits": [
     {
-     "pr": 1187,
-     "sha": "42077a1e0",
-     "title": "HUD: dismiss an offer through the metadata store's skipped set"
-    },
-    {
      "pr": 1157,
      "sha": "4974279b3",
      "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
@@ -715,6 +710,11 @@
      "pr": 1199,
      "sha": "3d381ea13",
      "title": "HUD plugins: the reference's gear is a gear"
+    },
+    {
+     "pr": 1198,
+     "sha": "fede88a18",
+     "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
     }
    ],
    "from": 190,
@@ -728,11 +728,6 @@
    "change_pct": 35.6,
    "commits": [
     {
-     "pr": 1187,
-     "sha": "42077a1e0",
-     "title": "HUD: dismiss an offer through the metadata store's skipped set"
-    },
-    {
      "pr": 1157,
      "sha": "4974279b3",
      "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
@@ -776,6 +771,11 @@
      "pr": 1199,
      "sha": "3d381ea13",
      "title": "HUD plugins: the reference's gear is a gear"
+    },
+    {
+     "pr": 1198,
+     "sha": "fede88a18",
+     "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
     }
    ],
    "from": 146,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 198.0
+   "to": 198
   },
   {
    "change_pct": 25.5,
    "commits": [
-    {
-     "pr": 1187,
-     "sha": "42077a1e0",
-     "title": "HUD: dismiss an offer through the metadata store's skipped set"
-    },
     {
      "pr": 1157,
      "sha": "4974279b3",
@@ -837,6 +832,11 @@
      "pr": 1199,
      "sha": "3d381ea13",
      "title": "HUD plugins: the reference's gear is a gear"
+    },
+    {
+     "pr": 1198,
+     "sha": "fede88a18",
+     "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
     }
    ],
    "from": 130.5,
@@ -850,11 +850,6 @@
    "change_pct": 20.5,
    "commits": [
     {
-     "pr": 1187,
-     "sha": "42077a1e0",
-     "title": "HUD: dismiss an offer through the metadata store's skipped set"
-    },
-    {
      "pr": 1157,
      "sha": "4974279b3",
      "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
@@ -898,6 +893,11 @@
      "pr": 1199,
      "sha": "3d381ea13",
      "title": "HUD plugins: the reference's gear is a gear"
+    },
+    {
+     "pr": 1198,
+     "sha": "fede88a18",
+     "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
     }
    ],
    "from": 273.0,
@@ -911,11 +911,6 @@
    "change_pct": 18.5,
    "commits": [
     {
-     "pr": 1187,
-     "sha": "42077a1e0",
-     "title": "HUD: dismiss an offer through the metadata store's skipped set"
-    },
-    {
      "pr": 1157,
      "sha": "4974279b3",
      "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
@@ -959,6 +954,11 @@
      "pr": 1199,
      "sha": "3d381ea13",
      "title": "HUD plugins: the reference's gear is a gear"
+    },
+    {
+     "pr": 1198,
+     "sha": "fede88a18",
+     "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
     }
    ],
    "from": 2099.0,
