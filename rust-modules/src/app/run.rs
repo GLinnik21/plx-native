@@ -4896,6 +4896,111 @@ mod lifecycle_regression_tests {
         assert_eq!(globals.seek_to(), 0, "Previous past the threshold restarts the item");
     }
 
+    /// **A section no control opens is reached through More, and focus ends on a drawn control.** The package places
+    /// no Chapters or Info opener (the reference with its two discs taken out), under both section policies. More
+    /// lists the Chapters row; OK on it closes More, the performer opens the strip, and the engine holds the strip's
+    /// first card, not the gear More was opened from. BACK then closes the section, and with no opener disc to hand focus
+    /// back to it lands on the scrub bar, which the package draws and the compact state focuses (the page's own rule: the
+    /// opener, else the latest section, else the scrubber).
+    #[test]
+    fn a_section_no_control_opens_is_reached_through_more_and_back_leaves_focus_on_a_drawn_control() {
+        use plx_appkit::more_menu::{Action, MoreRow};
+        use plx_appkit::player_hud::command::{HudCommand, MorePage, Section};
+        use plx_appkit::player_hud::geometry::{GROUP_SCRUB, GROUP_STRIP};
+        use plx_appkit::player_hud::ELEM_SCRUB;
+        use plx_machine::machine::{Delivery, Fx, InputOwner, MachineId, Tick};
+        use plx_ui::form::FormId;
+        use plx_ui::screen::ScreenEvent;
+        let _serial = plx_base::testlock::serial();
+        let chapter = |index: i64| plx_data::metadata::Chapter { index, start_ms: index * 60_000, title: format!("Chapter {index}"), thumb: String::new() };
+        for policy in ["modal", "inline"] {
+            let mut app = self::app();
+            app.bridge.seed_player_compiled(plx_appkit::player_hud::loaded::reference_without_openers_for_test(policy));
+            assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
+                sid: plx_plex::plex::ServerId::from_raw(0),
+                rk: "rk".into(),
+                show_rk: String::new(),
+                kind: String::new(),
+                audio: Vec::new(),
+                subs: Vec::new(),
+                video_fps: 0.0,
+                width: 0,
+                height: 0,
+                bitrate: 0,
+                dovi: Default::default(),
+                markers: Vec::new(),
+                chapters: (1..=2).map(chapter).collect(),
+                hdr: false,
+            }))));
+            super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+            frame(&mut app, 16);
+            // the loop pushes the frame's model into the page; the test pushes the one fact the rows read
+            super::super::bridge::player_mut(&mut app.pages).expect("mounted").model.chapters = true;
+            let page_entry = app.pages.nav.top_page().expect("the player page").id;
+            let held = |app: &App| app.pages.input.engine.current(InputOwner::Entry(page_entry)).map(|k| k.elem);
+
+            super::playback::perform_hud_command(
+                HudCommand::OpenMore(MorePage::Root),
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                100,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+                &mut app.bridge,
+            );
+            for later in [116, 132, 148, 164] {
+                frame(&mut app, later);
+            }
+            let row = MoreRow::Act(Action::Hud(HudCommand::ToggleSection(Section::Chapters)));
+            let InputOwner::Entry(more) = app.pages.nav.input_owner().expect("More owns input") else { panic!("an entry") };
+            let instance = app.pages.nav.entry(more).and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("More's instance");
+            let to = MachineId::Instance(instance);
+            app.pages.emit(to, Fx::Deliver(to, Delivery::Screen(ScreenEvent::Activate(row.key().0))));
+            frame(&mut app, 200);
+            let reqs = app.bridge.take_player_reqs();
+            player_requests(
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                reqs,
+                216,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+                &mut app.bridge,
+                &mut app.ok_armed,
+                &mut app.input.press,
+            );
+            for later in [232, 248, 264, 280, 296, 312, 328, 344] {
+                frame(&mut app, later);
+            }
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None, "{policy}: More is gone");
+            let sections = |app: &App| super::super::bridge::player(&app.pages).expect("mounted").hud.sections.iter().collect::<Vec<_>>();
+            assert_eq!(sections(&app), vec![Section::Chapters], "{policy}: the section opened");
+            assert_eq!(
+                held(&app),
+                Some(plx_appkit::player_hud::ELEM_CHAPTER_BASE),
+                "{policy}: the engine holds the strip's first card, not the gear More was opened from"
+            );
+            assert_eq!(super::super::bridge::player(&app.pages).expect("mounted").hud.nav.focus, GROUP_STRIP, "{policy}");
+
+            // BACK closes the section; there is no opener disc to give focus back to
+            let key = |edge_down: bool, at: u32| {
+                let tick = Tick { ms: at, dt_us: 16_000 };
+                if edge_down { plx_ui::fixture::key(plx_machine::machine::Key::Back, tick) } else { plx_ui::fixture::key_up(plx_machine::machine::Key::Back, tick) }
+            };
+            super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: 400, dt_us: 16_000 }, vec![key(true, 400)]);
+            frame(&mut app, 416);
+            super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: 512, dt_us: 16_000 }, vec![key(false, 512)]);
+            for later in [528, 560, 600, 700, 800] {
+                frame(&mut app, later);
+            }
+            assert_eq!(sections(&app), Vec::<Section>::new(), "{policy}: BACK closed it");
+            assert_eq!(held(&app), Some(ELEM_SCRUB), "{policy}: focus is on the scrub bar, which the package draws");
+            assert_eq!(super::super::bridge::player(&app.pages).expect("mounted").hud.nav.focus, GROUP_SCRUB, "{policy}");
+        }
+    }
+
     /// **A folded From Beginning row performs the Info card's own action**: the performer seeks to 0, wherever the
     /// playhead is, and keeps the transport up. (The reference folds this command and `go_to_detail`.)
     #[test]

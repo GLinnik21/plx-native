@@ -1983,21 +1983,8 @@ mod sections {
 
     // -- a section with no opener: the More fold -----------------------------------------------------
 
-    /// The reference with its Chapters and Info discs taken out of the row (the two bands stay, so both sections are
-    /// laid out), under `policy`: a package that places no section opener.
     fn without_openers(policy: &str) -> std::sync::Arc<plx_appkit::hud_format::compile::Compiled> {
-        let text = include_str!("../../../appkit/src/hud_format/fixtures/reference.plxhud.json");
-        let openers = concat!(
-            "          { \"id\": \"chapters\", \"command\": \"toggle_section\", \"section\": \"chapters\", \"widget\": \"disc\", \"size\": 52,\n",
-            "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"list\" },\n",
-            "          { \"id\": \"info\", \"command\": \"toggle_section\", \"section\": \"info\", \"widget\": \"disc\", \"size\": 52,\n",
-            "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"builtin:info\" },\n",
-        );
-        assert_eq!(text.matches(openers).count(), 1, "the reference's two section discs, as written");
-        let text = text.replace(openers, "").replace("\"sections\": \"inline\"", &format!("\"sections\": \"{policy}\""));
-        plx_appkit::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
-            .expect("the edited reference loads")
-            .compiled
+        plx_appkit::player_hud::loaded::reference_without_openers_for_test(policy)
     }
 
     /// **A package that places no section opener reaches the section through its fold row**, under both policies, and
