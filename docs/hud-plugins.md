@@ -1456,8 +1456,11 @@ PR8. Sections.
   shared appkit module; `rect.bleed` and `rect.h`, `actions.axis`, `text.leading`. `OverlayKind::Info` and `OverlayKind::Chapters` go: 48 sites in 9 files
   (`git grep -n "OverlayKind::Chapters\|OverlayKind::Info" -- 'rust-modules/*.rs' | wc -l` prints 48, `-l` 9);
   Tracks, More and Timing stay overlays. The fps scenes selected by overlay word (`tests/manifest.json:1418`
-  "info", `:1577` "chapters") move to the HUD's section word; how the heartbeat publishes it is UNVERIFIED (today
-  the word is the topmost surface's `Screen::name`) and this PR settles it.
+  "info", `:1577` "chapters") move to the HUD's section word. Settled in stage 2b: `overlay=` keeps meaning the
+  topmost modal surface (`none` over a bare player), the heartbeat prints ` section=<chapters|info|chapters_info>`
+  right after it while the page holds a section open (`app/words.rs::section_word`, absent with none open), and the
+  two scenes pin `"overlay": "none"` plus a `"section"` key that `tests/run.py::select_section` applies to the
+  heartbeats they grade. UNVERIFIED on the set until a coordinator's `--fps-player` run enters both scenes.
 - Verify: classic's info state pixel-identical; classic's chapters state identical except D11's stated changes
   (scroll rule, focused-name marquee), shown before and after; modal Down-to-tabs and BACK sequences pinned; the
   reference's three states render; TV calibration of the one- and two-section ceilings (Cost). Replay: no fixture
@@ -1550,7 +1553,8 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 - Whether `p.text`'s y is the glyph top or a baseline (changes no offset; Package format, `leading`).
 - Whether the strict reader exposes an object's pairs in document order (state-keyed values).
 - Whether `card_row`'s tile paint can draw the over-video rim in place of the shader ring (D11).
-- The heartbeat word for an open section (PR8).
+- That the `info-panel` and `chapters-panel` fps scenes enter their scene on the set under the ` section=` word (PR8
+  stage 2b settled the word; the host tests grade the table, only a TV run grades the scenes).
 - Whether a rooted set runs under one of the two jails; HBC availability for testing; USB mounts.
 - The TV's CA set and `objects.githubusercontent.com`; DNS for a registry subdomain; GitHub's unauthenticated rate
   limit figure; Homebrew 4.0's API move.

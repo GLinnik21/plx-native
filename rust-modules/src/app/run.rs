@@ -3433,7 +3433,13 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             // as the opposite of what it says: the field that used to be `FPS=` is now `loop=`,
             // and `fps=` now means what it always should have — frames actually presented,
             // previously `pres=`. An old `FPS=60` is a LOOP rate and says nothing about frames.
-            let ov = super::words::overlay_suffix(&app.pages, &app.route());
+            // …and an open HUD section's own word right after it (` section=info`): a section is the page's
+            // state, not a surface, so it never changes what ` overlay=` says (`words::section_word`).
+            let ov = format!(
+                "{}{}",
+                super::words::overlay_suffix(&app.pages, &app.route()),
+                super::words::section_suffix(&app.pages)
+            );
             // `pos=<s>` rides the heartbeat while frames are actually being presented: the
             // same SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
             // that reporter's 10s cadence. tests/run.py grades playback progress from this.

@@ -2188,11 +2188,15 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   through it once the route no longer gets a free pass.
 - **The heartbeat's WIRE ORDER, since phase 11** (`rust-modules/base/src/diag/heartbeat.rs::heartbeat_tail` is the one
   definition; anything here that disagrees with it is this file being stale):
-  `loop= route= [overlay=] [pos= play=] [vtick= vgap=] fps= [load= snap= period=] [worstframe=
+  `loop= route= [overlay=] [section=] [pos= play=] [vtick= vgap=] fps= [load= snap= period=] [worstframe=
   worstprep=] carried= dropped= budget=<admitted>/<refused>[/solo:<class>] evicted_hot= [rec=]
   [sim=1]`. **Nothing may be inserted ahead of `fps=` or `worstframe=`** — `tests/run.py`'s
   `FPS_RE` and `WORST_RE` anchor on `loop=`/`route=`/`overlay=` and then reach forward with a lazy
-  `.*?`, so appending is free and inserting is not. The bracketed pairs are conditional;
+  `.*?`, so appending is free and inserting is not. `section=<chapters|info|chapters_info>` is the player page's
+  open HUD section (`app/words.rs::section_word`), printed right after `overlay=` only while one is open; a
+  section is the page's state and not a surface, so `overlay=` stays the topmost modal surface's name (`none` over
+  a bare player) and a scene that needs a section carries its own `"section"` key (`tests/run.py::select_section`).
+  The bracketed pairs are conditional;
   `worstframe=`/`worstprep=` need `plxnative-framedrop`, and the four frame-plan fields do NOT —
   they print in every build, because each is a counter its owner already keeps rather than a
   measurement anybody pays for. `budget=`'s `/solo:<class>` third field appears only when a solo
