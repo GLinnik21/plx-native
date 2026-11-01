@@ -131,7 +131,9 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
         plx_appkit::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps),
-        plx_appkit::more_menu::Action::None => {}
+        // A folded row is a HUD command, and the overlay asks for it as `PlayerReq::Command` (the one performer,
+        // `perform_hud_command`), never as `PlayerReq::More`.
+        plx_appkit::more_menu::Action::Hud(_) | plx_appkit::more_menu::Action::None => {}
     }
 }
 
@@ -1171,6 +1173,12 @@ fn seed_menu_anchor(
         })
         .flatten();
     bridge.seed_player_menu_anchor(anchor);
+    // The More menu's folded rows (R2) ride the same press, and are cleared by every other open for the same reason.
+    let folded = (!readdress && matches!(kind, plx_screens::player::overlay::OverlayKind::More { .. }))
+        .then(|| super::bridge::player(pages).map(|screen| screen.more_folds(bridge.metadata_view())))
+        .flatten()
+        .unwrap_or_default();
+    bridge.seed_player_more_folds(folded);
 }
 
 /// **THE performer of a [`HudCommand`](plx_appkit::player_hud::command::HudCommand)**: one `match` over the closed vocabulary, which every route to

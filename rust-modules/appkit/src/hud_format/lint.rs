@@ -267,6 +267,9 @@ pub(super) mod testing {
         Classic,
         /// `fixtures/reference.plxhud.json`, the design's reference package
         Reference,
+        /// `fixtures/minimal.plxhud.json`: it places only `open_more`, so it folds the most rows of any fixture
+        /// that lays out no section
+        Minimal,
     }
 
     impl Base {
@@ -274,6 +277,7 @@ pub(super) mod testing {
             match self {
                 Base::Classic => BUILTIN_CLASSIC,
                 Base::Reference => include_str!("fixtures/reference.plxhud.json"),
+                Base::Minimal => include_str!("fixtures/minimal.plxhud.json"),
             }
         }
     }

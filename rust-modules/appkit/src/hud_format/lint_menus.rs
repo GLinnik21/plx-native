@@ -66,9 +66,14 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
         // a Skip state whose credits pill changes the layout is a second layout of the same state
         for variant in std::iter::once(state.state).chain(state.state.skip_alt.as_deref()) {
             let here = StateCtx { key: state.key, state: variant };
-            for finding in findings(cx, &here) {
-                if !out.iter().any(|f| f.code == finding.code && f.pointer == finding.pointer) {
-                    out.push(finding);
+            // More's root grows with the folded rows (R2), so its room is asked at every count from none up to
+            // the most the package folds: the rows a movie or a playback leaves out shorten the root, and each
+            // shorter root must still find its room
+            for folds in 0..=cx.compiled.folds().len() {
+                for finding in findings(cx, &here, folds) {
+                    if !out.iter().any(|f| f.code == finding.code && f.pointer == finding.pointer) {
+                        out.push(finding);
+                    }
                 }
             }
         }
@@ -105,19 +110,19 @@ impl Menu {
         }
     }
 
-    /// The menu's own `NEED_H`.
-    fn need_h(self) -> f32 {
+    /// The menu's own `NEED_H`; More's root asks more when it lists `folds` folded rows ([`more_menu::need_h`]).
+    fn need_h(self, folds: usize) -> f32 {
         match self {
             Menu::Tracks => track_menu::NEED_H,
-            Menu::More => more_menu::NEED_H,
+            Menu::More => more_menu::need_h(folds),
         }
     }
 
-    /// The menu's own call of the shared placer.
-    fn place(self, anchor: Rect, size: (f32, f32)) -> Anchored {
+    /// The menu's own call of the shared placer, deciding the side on `need_h`.
+    fn place(self, anchor: Rect, size: (f32, f32), need_h: f32) -> Anchored {
         match self {
             Menu::Tracks => track_menu::place_panel(anchor, size),
-            Menu::More => more_menu::place_panel(anchor, size),
+            Menu::More => more_menu::place_panel(anchor, size, need_h),
         }
     }
 }
@@ -133,13 +138,15 @@ struct Opener<'a> {
     /// the pointer of the segment holding it
     segment: &'a str,
     menu: Menu,
+    /// the height the menu needs of its room for this fold count ([`Menu::need_h`])
+    need_h: f32,
     align: SegmentAlign,
     anchor: Rect,
     placed: Anchored,
 }
 
-/// Every control of `state` that opens a menu, with its menu placed.
-fn openers(state: &CompiledState) -> Vec<Opener<'_>> {
+/// Every control of `state` that opens a menu, with its menu placed for a More root listing `folds` folded rows.
+fn openers(state: &CompiledState, folds: usize) -> Vec<Opener<'_>> {
     let mut out = Vec::new();
     for (index, control) in state.controls.iter().enumerate() {
         let Some(menu) = Menu::opened_by(&control.command) else { continue };
@@ -147,8 +154,9 @@ fn openers(state: &CompiledState) -> Vec<Opener<'_>> {
         let segment = segment_of(pointer);
         let align = state.segment_align(segment);
         let anchor = state.menu_anchor(index).expect("an index of `controls`");
-        let placed = menu.place(anchor, (MENU_MAX_W, menu.need_h()));
-        out.push(Opener { index, control, pointer, segment, menu, align, anchor, placed });
+        let need_h = menu.need_h(folds);
+        let placed = menu.place(anchor, (MENU_MAX_W, need_h), need_h);
+        out.push(Opener { index, control, pointer, segment, menu, need_h, align, anchor, placed });
     }
     out
 }
@@ -232,8 +240,8 @@ fn where_(state: &StateCtx<'_>) -> String {
 }
 
 /// Every finding of the openers of `state`.
-fn findings(cx: &LangCtx<'_>, state: &StateCtx<'_>) -> Vec<Finding> {
-    let found = openers(state.state);
+fn findings(cx: &LangCtx<'_>, state: &StateCtx<'_>, folds: usize) -> Vec<Finding> {
+    let found = openers(state.state, folds);
     let mut out = Vec::new();
     for o in &found {
         out.extend(m1(cx, state, o));
@@ -273,7 +281,7 @@ fn m1(cx: &LangCtx<'_>, state: &StateCtx<'_>, o: &Opener<'_>) -> Option<Finding>
 }
 
 fn m2(cx: &LangCtx<'_>, state: &StateCtx<'_>, o: &Opener<'_>) -> Option<Finding> {
-    let need_h = o.menu.need_h();
+    let need_h = o.need_h;
     let why = safe_shortfall(o.placed.rect, need_h)?;
     let mut ctx = ctx_for(cx, state);
     ctx.rects = vec![named("menu", o.placed.rect), named("safe", SAFE)];
@@ -418,6 +426,29 @@ pub(super) const INVALID: &[super::lint::testing::InvalidCase] = &[
         skew: 0.0,
         also: &[],
     },
+    // the minimal package places only `open_more`, so More's root lists five folded rows (Previous, Next, the track
+    // menu, From Beginning, Go to Detail) and asks 668 px of room where the menus' 600 used to be (`more_menu::need_h`).
+    // The row is lifted to y 737, which leaves 655 px above it: 600 held, 668 does not. A second control in the
+    // segment, 1000 px away, widens `more`'s anchor to x 680..1784, so neither the Start side (556 px) nor the End side
+    // holds the 650-wide panel either, and the placer cuts it to the 655 px above. Without the fold the same package
+    // is clean (`a_folded_root_asks_for_the_room_its_rows_need`)
+    InvalidCase {
+        name: "a minimal package whose folded More root outgrows the room above its opener",
+        code: "HUD-E1302",
+        pointer: "/layout/block/1/cells/0/segment/items/0",
+        base: Base::Minimal,
+        edits: &[
+            (r#""inset": "MD","#, r#""inset": 237,"#),
+            (r#""segment": { "id": "right", "items": ["#, r#""segment": { "id": "right", "gap": 1000, "items": ["#),
+            (
+                r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 52 }"#,
+                r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 52 }, { "id": "play", "command": "toggle_play", "widget": "disc", "size": 52 }"#,
+            ),
+        ],
+        langs: &[],
+        skew: 0.0,
+        also: &[],
+    },
 ];
 
 /// `(code, reason)` for a code of this module that no parseable package can reach, covered by a synthetic
@@ -498,7 +529,7 @@ mod tests {
     fn classic_places_both_menus_where_the_constants_did() {
         with_cx(BUILTIN_CLASSIC, |cx| {
             let state = state_of(cx, 0, Slot::Discs);
-            let found = openers(state.state);
+            let found = openers(state.state, 0);
             assert_eq!(found.iter().map(|o| o.control.id.as_str()).collect::<Vec<_>>(), ["subs", "audio", "more"]);
             // (opener, the panel sizes of its menu's pins): (width, height)
             let pins: [(&str, &[(f32, f32)]); 3] = [
@@ -516,7 +547,7 @@ mod tests {
                 assert_eq!(o.anchor.x + o.anchor.w, CTRL_RIGHT, "{id}: the anchor runs to the segment's outer edge");
                 assert_eq!((o.anchor.y, o.anchor.h), (CTRL_Y, CTRL_H), "{id}: the opener's own band");
                 for &(w, h) in sizes {
-                    let placed = o.menu.place(o.anchor, (w, h));
+                    let placed = o.menu.place(o.anchor, (w, h), o.need_h);
                     assert_eq!(placed.side, Side::Above, "{id}");
                     assert_eq!(
                         (placed.rect.x + placed.rect.w, placed.rect.y + placed.rect.h, placed.rect.w, placed.rect.h),
@@ -525,7 +556,7 @@ mod tests {
                     );
                     assert_eq!(placed.rect.x, CTRL_RIGHT - w, "{id}");
                 }
-                let widest = o.menu.place(o.anchor, (MENU_MAX_W, SCR_H)).rect;
+                let widest = o.menu.place(o.anchor, (MENU_MAX_W, SCR_H), o.need_h).rect;
                 assert_eq!(widest, if o.menu == Menu::Tracks { tracks_audit } else { more_audit }, "{id}: the overscan audit's rect");
                 // and the whole answer for this opener is clean
                 assert!(m1(cx, &state, o).is_none() && m2(cx, &state, o).is_none() && m3(cx, &state, o).is_none(), "{id}");
@@ -539,10 +570,37 @@ mod tests {
     fn the_reference_opens_more_beside_the_gear_when_the_sections_are_up() {
         with_cx(REFERENCE, |cx| {
             let state = state_of(cx, super::super::compile::OPEN_CHAPTERS | super::super::compile::OPEN_INFO, Slot::Discs);
-            let found = openers(state.state);
+            let found = openers(state.state, 0);
             let more = found.iter().find(|o| o.menu == Menu::More).expect("the gear");
             assert_eq!(more.placed.side, Side::Start, "{:?}", more.placed);
             assert!(found.iter().all(|o| m1(cx, &state, o).is_none() && m2(cx, &state, o).is_none() && m3(cx, &state, o).is_none()));
+        });
+    }
+
+    /// **A folded root asks for the room its rows need, and only a package that folds them is asked.** The case
+    /// above is clean at every count of folded rows below its five (the root asks 600 up to three rows, 608 at four,
+    /// and 655 px is room enough), and the fifth makes it 668. Classic folds nothing, so its More menu asks 600 as it
+    /// always did.
+    #[test]
+    fn a_folded_root_asks_for_the_room_its_rows_need() {
+        assert_eq!(more_menu::need_h(0), more_menu::NEED_H, "no folded row: the tallest page decides, as before");
+        assert_eq!(more_menu::need_h(3), more_menu::NEED_H, "three rows still fit the 600 the Quality page asks");
+        assert_eq!(more_menu::need_h(4), 608.0);
+        assert_eq!(more_menu::need_h(5), 668.0);
+        assert_eq!(more_menu::need_h(7), 788.0);
+        let text = super::super::lint::testing::apply(Base::Minimal, INVALID[3].edits);
+        with_cx(&text, |cx| {
+            assert_eq!(cx.compiled.folds().len(), 5, "the package folds five commands");
+            let state = state_of(cx, 0, Slot::Discs);
+            for folds in 0..=5 {
+                let found = openers(state.state, folds);
+                let more = found.iter().find(|o| o.menu == Menu::More).expect("the gear");
+                assert_eq!(m2(cx, &state, more).is_some(), folds == 5, "{folds} folded rows: {:?}", more.placed);
+            }
+        });
+        with_cx(BUILTIN_CLASSIC, |cx| {
+            assert!(cx.compiled.folds().is_empty());
+            assert!(cx.states().all(|s| openers(s.state, 0).iter().all(|o| o.need_h == 600.0)));
         });
     }
 
@@ -645,7 +703,7 @@ mod tests {
     fn with_placement<R>(rect: Rect, side: Side, f: impl FnOnce(&LangCtx<'_>, &StateCtx<'_>, &Opener<'_>) -> R) -> R {
         with_cx(BUILTIN_CLASSIC, |cx| {
             let state = state_of(cx, 0, Slot::Discs);
-            let mut found = openers(state.state);
+            let mut found = openers(state.state, 0);
             let mut more = found.pop().expect("the gear");
             more.placed = Anchored { rect, side };
             f(cx, &state, &more)

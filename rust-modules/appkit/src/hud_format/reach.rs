@@ -22,9 +22,11 @@
 //! segment is not one of `up_next.replaces`. A strip card's cells are not focus stops and are not walked.
 //!
 //! **R2 folds** are computed from the package's own controls only: a folded More row is not an edge of
-//! this graph, so a section's content can fold (`from_beginning` in an Info band whose opener is missing)
-//! although a folded Info row would reach it. The row is then redundant, never missing. A section the package
-//! does not lay out never folds: its More row would enter a state where nothing is drawn.
+//! this graph ([`check`] walks [`Layout::explore`]), so a section's content can fold (`from_beginning` in an Info
+//! band whose opener is missing) although a folded Info row would reach it. The row is then redundant, never
+//! missing. A section the package does not lay out never folds: its More row would enter a state where nothing is
+//! drawn. The COMPILER walks [`Layout::explore_with_folds`], which adds the states a folded section row opens, so
+//! the page holds a compiled state for a section that only More reaches.
 //!
 //! **R1 checks presence only.** The size floor `MIN_CONTROL_SIZE` is a geometric bound and belongs to the
 //! compiler, which has the rects; no value is invented here.
@@ -84,15 +86,7 @@ pub fn check(package: &Package) -> Checked {
     for v in layout.valuations() {
         let reachable = layout.explore(v);
         states += reachable.len();
-        for (i, fold) in FOLDABLE.iter().enumerate() {
-            let placed = reachable.iter().any(|&s| {
-                layout
-                    .controls
-                    .iter()
-                    .any(|c| carries(c, fold) && layout.placed(c, s, v))
-            });
-            folded[i] |= !placed && layout.enabled(fold, v);
-        }
+        layout.accumulate_folds(v, &reachable, &mut folded);
         if more_missing.is_none() && !layout.more_is_placed(v) {
             more_missing = Some(v);
         }
@@ -107,13 +101,18 @@ pub fn check(package: &Package) -> Checked {
 
     Checked {
         findings,
-        folds: FOLDABLE
-            .iter()
-            .zip(folded)
-            .filter_map(|(fold, folded)| folded.then_some(*fold))
-            .collect(),
+        folds: fold_list(folded),
         states,
     }
+}
+
+/// The folds the flags name, in [`FOLDABLE`]'s order.
+fn fold_list(flags: [bool; FOLDABLE.len()]) -> Vec<Fold> {
+    FOLDABLE
+        .iter()
+        .zip(flags)
+        .filter_map(|(fold, folded)| folded.then_some(*fold))
+        .collect()
 }
 
 /// What occupies the control row: the package's controls, the Up Next offer or the Skip pill.
@@ -339,6 +338,31 @@ impl<'a> Layout<'a> {
                 .any(|paused| self.blocker(control, state, v, paused).is_none())
     }
 
+    /// Add to `folded` every foldable command no state of `reachable` places under `v`, where a row for it
+    /// would do something there (R2). Accumulates across valuations: a command placed under only some of
+    /// them folds.
+    fn accumulate_folds(&self, v: Valuation, reachable: &[State], folded: &mut [bool; FOLDABLE.len()]) {
+        for (i, fold) in FOLDABLE.iter().enumerate() {
+            let placed = reachable.iter().any(|&s| {
+                self.controls
+                    .iter()
+                    .any(|c| carries(c, fold) && self.placed(c, s, v))
+            });
+            folded[i] |= !placed && self.enabled(fold, v);
+        }
+    }
+
+    /// **R2 as data**: the commands this package leaves unplaced in every state a row for them would do
+    /// something in, in the command table's order. [`check`] reports the same list in [`Checked::folds`];
+    /// the compiler stores it ([`super::compile::Compiled::folds`]) so More's root can list the rows.
+    pub(super) fn folds(&self) -> Vec<Fold> {
+        let mut folded = [false; FOLDABLE.len()];
+        for v in self.valuations() {
+            self.accumulate_folds(v, &self.explore(v), &mut folded);
+        }
+        fold_list(folded)
+    }
+
     /// Whether a folded row for the command would do something under `v`: Previous and Next need an
     /// episode, the chapters section needs chapters, and a section row needs a section the package lays
     /// out (a row that enters a section with no band would open nothing); the rest always.
@@ -364,8 +388,41 @@ impl<'a> Layout<'a> {
         })
     }
 
-    /// The states reachable from the root under `v`, breadth first.
+    /// The states reachable from the root under `v`, breadth first, by the edges of the package's own controls (R2's
+    /// graph: a folded More row is not one of them).
     pub(super) fn explore(&self, v: Valuation) -> Vec<State> {
+        self.walk(v, 0)
+    }
+
+    /// [`Self::explore`] plus the states a FOLDED section row reaches: a section the package lays out whose opener
+    /// no state of the plain walk places is opened from More's root (R2), so the page must hold a compiled state for
+    /// it, drawn like any other. The plain walk decides which sections fold, so a state reachable only through a
+    /// fold row never makes another section's opener look placed. The compiler walks this one; the rules and the
+    /// fold computation walk [`Self::explore`].
+    pub(super) fn explore_with_folds(&self, v: Valuation) -> Vec<State> {
+        let plain = self.explore(v);
+        let folded = SECTIONS
+            .iter()
+            .filter(|&&(bit, name)| {
+                self.laid & bit != 0
+                    && (name != "chapters" || v.chapters)
+                    && !plain.iter().any(|&s| {
+                        self.controls
+                            .iter()
+                            .any(|c| c.command == "toggle_section" && c.section() == Some(name) && self.placed(c, s, v))
+                    })
+            })
+            .fold(0, |bits, &(bit, _)| bits | bit);
+        if folded == 0 {
+            plain
+        } else {
+            self.walk(v, folded)
+        }
+    }
+
+    /// Breadth first from the root; the sections in `by_fold` also open from any state that places More's root
+    /// (the fold row lives there).
+    fn walk(&self, v: Valuation, by_fold: u8) -> Vec<State> {
         let mut seen = [false; 4 * SLOTS.len()];
         let mut order = vec![State::ROOT];
         seen[State::ROOT.index()] = true;
@@ -373,7 +430,7 @@ impl<'a> Layout<'a> {
         while next < order.len() {
             let state = order[next];
             next += 1;
-            for to in self.successors(state, v) {
+            for to in self.successors(state, v, by_fold) {
                 if !std::mem::replace(&mut seen[to.index()], true) {
                     order.push(to);
                 }
@@ -382,16 +439,17 @@ impl<'a> Layout<'a> {
         order
     }
 
-    fn successors(&self, state: State, v: Valuation) -> Vec<State> {
+    fn successors(&self, state: State, v: Valuation, by_fold: u8) -> Vec<State> {
         let mut opens = Vec::new();
+        let more_here = by_fold != 0 && self.root_more().any(|c| self.placed(c, state, v));
         for (bit, name) in SECTIONS {
             let opener = self.laid & bit != 0
                 && (name != "chapters" || v.chapters)
-                && self.controls.iter().any(|c| {
+                && (self.controls.iter().any(|c| {
                     c.command == "toggle_section"
                         && c.section() == Some(name)
                         && self.placed(c, state, v)
-                });
+                }) || (more_here && by_fold & bit != 0));
             if opener {
                 opens.push(if state.open & bit != 0 {
                     state.open & !bit
