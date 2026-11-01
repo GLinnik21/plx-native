@@ -46,6 +46,10 @@
     "value": "Send diagnostics",
     "description": "Option or section label in the player overflow menu."
   },
+  "widgets.menu.previous_episode": {
+    "value": "Previous Episode",
+    "description": "Row in the player overflow menu, shown when the playing episode has an earlier one (or can restart): starts the previous episode, or this one over. Same noun as widgets.next.episode, in the same capitalisation."
+  },
   "widgets.badge.forced": {
     "value": "FORCED",
     "description": "Compact media-track badge. This describes a subtitle or audio track."

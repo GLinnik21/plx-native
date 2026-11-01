@@ -7,6 +7,7 @@
   "widgets.speed.normal": "Normale",
   "widgets.menu.stats": "Statistiques avancées",
   "widgets.menu.diagnostics": "Envoyer les diagnostics",
+  "widgets.menu.previous_episode": "Épisode précédent",
   "widgets.badge.forced": "FORCÉ",
   "widgets.toggle.on": "On",
   "widgets.toggle.off": "Off",

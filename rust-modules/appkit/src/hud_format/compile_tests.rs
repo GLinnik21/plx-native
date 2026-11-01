@@ -1169,3 +1169,52 @@ fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
     let Some(parse::Val::Keyed(gap_before)) = tabs.get("gap_before") else { panic!("the tabs' gap is keyed on the open section") };
     assert_eq!(gap_before.base.as_f64(), Some(f64::from(gap)), "the fixture's literal");
 }
+
+/// **The compiler carries R2's folds**, the list More's root is built from: the same commands, in the same order,
+/// `check` reports, for every fixture, and none for classic (so its More root is the one it always had).
+#[test]
+fn a_compile_carries_the_folds_check_reports() {
+    use super::reach::Fold;
+    let fold = |command, section| Fold { command, section };
+    assert_eq!(build(CLASSIC, &FM).folds(), [], "classic places everything: nothing folds");
+    assert_eq!(
+        build(REFERENCE, &FM).folds(),
+        [fold("from_beginning", None), fold("go_to_detail", None)],
+        "the reference folds its two Info actions"
+    );
+    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero", HERO), ("tabs", TABS), ("palette", PALETTE)] {
+        assert_eq!(build(text, &FM).folds(), check(&package(text)).folds, "{name}");
+    }
+    assert_eq!(Compiled::default().folds(), [], "a compile with no state folds nothing");
+}
+
+/// **A section that only a folded More row opens is compiled**, so the page has a state to draw when the fold row
+/// asks for it: the reference with its two section discs taken out places no opener, folds both rows, and
+/// still holds the Chapters-open and Info-open states (and, `inline`, both open). `check` does not count them: its graph is
+/// the package's own controls (R2), which is why the compiler walks `explore_with_folds`.
+#[test]
+fn a_section_only_a_fold_row_opens_is_compiled() {
+    let openers = concat!(
+        "          { \"id\": \"chapters\", \"command\": \"toggle_section\", \"section\": \"chapters\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"list\" },\n",
+        "          { \"id\": \"info\", \"command\": \"toggle_section\", \"section\": \"info\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"builtin:info\" },\n",
+    );
+    assert_eq!(REFERENCE.matches(openers).count(), 1);
+    let bare = REFERENCE.replace(openers, "");
+    let open_states = |compiled: &Compiled| {
+        let mut open: Vec<u8> = compiled.states().iter().filter(|s| s.key.chapters).map(|s| s.key.open).collect();
+        open.sort_unstable();
+        open.dedup();
+        open
+    };
+    let with_openers = build(REFERENCE, &FM);
+    assert_eq!(open_states(&with_openers), [0, OPEN_CHAPTERS, OPEN_INFO, OPEN_CHAPTERS | OPEN_INFO], "the reference's own openers reach all four");
+    let without = build(&bare, &FM);
+    let folded: Vec<_> = without.folds().iter().filter(|f| f.command == "toggle_section").map(|f| f.section).collect();
+    assert_eq!(folded, [Some("chapters"), Some("info")]);
+    assert_eq!(open_states(&without), [0, OPEN_CHAPTERS, OPEN_INFO, OPEN_CHAPTERS | OPEN_INFO], "the fold rows reach them too");
+    // modal: one at a time
+    let modal = build(&bare.replace("\"sections\": \"inline\"", "\"sections\": \"modal\""), &FM);
+    assert_eq!(open_states(&modal), [0, OPEN_CHAPTERS, OPEN_INFO]);
+}

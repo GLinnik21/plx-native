@@ -1034,6 +1034,54 @@ fn a_seeded_menu_anchor_is_mounted_into_the_next_menu_and_only_that_one() {
     }
 }
 
+/// **The folded rows the app seeds are mounted into the next More menu, once, and into no other panel.** Like the
+/// opener's rect they ride the mounter (`Bridge::seed_player_more_folds`): a press that seeds nothing mounts the root
+/// More always had, and a Tracks menu opened with a seed pending ignores it (and leaves none for a later More).
+#[test]
+fn seeded_folded_rows_are_mounted_into_the_next_more_menu_and_only_that_one() {
+    use plx_appkit::more_menu::{Action, FoldedRow, MoreRow};
+    use plx_appkit::player_hud::command::HudCommand;
+    use plx_screens::player::overlay::{OverlayKind, Panel};
+    use plx_ui::form::FormId;
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = || plx_data::stores::metadata::MetadataStore::default();
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
+    let seeded = || vec![FoldedRow { command: HudCommand::FromBeginning, label: "From Beginning" }];
+    let folded_key = MoreRow::Act(Action::Hud(HudCommand::FromBeginning)).key().0;
+    let has_row = |d: &mut Dispatcher<AppHost>| match player_overlay_mut(d).expect("a panel is up").panel() {
+        Panel::More(p) => p.keys().contains(&folded_key),
+        _ => false,
+    };
+    let at = std::cell::Cell::new(1);
+    let next = || at.replace(at.get() + 1);
+    let open = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, kind| {
+        open_player_overlay(&ps, meta().view(), d, kind);
+        frame(d, rig, AppArg::Player, tick(next()), vec![]);
+    };
+    let close = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge| {
+        dismiss_player_overlays(d);
+        for _ in 0..2 {
+            frame(d, rig, AppArg::Player, tick(next()), vec![]);
+        }
+    };
+    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    rig.seed_player_more_folds(seeded());
+    open(&mut d, &mut rig, OverlayKind::More { page: None });
+    assert!(has_row(&mut d), "More mounts with the rows it was handed");
+    close(&mut d, &mut rig);
+    open(&mut d, &mut rig, OverlayKind::More { page: None });
+    assert!(!has_row(&mut d), "the seed is spent: the next More is the root it always was");
+    close(&mut d, &mut rig);
+    rig.seed_player_more_folds(seeded());
+    open(&mut d, &mut rig, OverlayKind::Tracks { tab: 1 });
+    close(&mut d, &mut rig);
+    open(&mut d, &mut rig, OverlayKind::More { page: None });
+    assert!(!has_row(&mut d), "a Tracks menu spent the seed");
+}
+
 /// **`ScreenArg::same_instance` compares the PLAYBACK, never the panel** (§16.9), and the two
 /// arguments are different KINDS: a panel is `AppArg::PlayerOverlay`, so it can never be
 /// mistaken for the page it stands on. Two panels of different kinds are two instances —
