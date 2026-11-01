@@ -418,10 +418,41 @@ mod tests {
     fn a_skip_state_costs_the_larger_of_its_two_pill_layouts() {
         let compiled = english(CLASSIC);
         let skip = compiled.states().iter().find(|s| s.key.slot == Slot::Skip).expect("a Skip state");
-        let c = state_cost(skip);
-        assert!(c.blended_px >= skip.cost.blended_px && c.blended_px >= skip.skip_variant(SkipKind::Credits).cost.blended_px);
+        // English lays the credits pill out no larger than the intro pill, so make it larger in two terms
+        // and smaller in a third: the cost is the termwise maximum, not either layout
+        let mut state = skip.clone();
+        let mut credits = skip.clone();
+        credits.skip_alt = None;
+        credits.cost = Cost {
+            draw_ops: skip.cost.draw_ops + 2,
+            glyph_runs: skip.cost.glyph_runs.saturating_sub(1),
+            texture_bytes: skip.cost.texture_bytes,
+            blended_px: skip.cost.blended_px + 1_000,
+        };
+        state.skip_alt = Some(Box::new(credits));
+        let c = state_cost(&state);
+        assert_eq!(
+            (c.draw_ops, c.glyph_runs, c.texture_bytes, c.blended_px),
+            (skip.cost.draw_ops + 2, skip.cost.glyph_runs, skip.cost.texture_bytes, skip.cost.blended_px + 1_000)
+        );
+        // as compiled, English's credits layout is not larger, so the cost is the state's own
+        assert_eq!(state_cost(skip), skip.cost);
         // a state with no credits layout of its own costs exactly itself
         let discs = compiled.lookup(0, Slot::Discs, true, false, false).expect("a compact state");
         assert_eq!(state_cost(discs), discs.cost);
+    }
+
+    #[test]
+    fn the_lint_reports_a_state_once_when_every_language_linted_costs_it_the_same() {
+        // the same language twice moves no cost: every state is one line, not two
+        let en = || LintLang::for_tag("en").expect("en");
+        let twice = crate::hud_format::lint::lint_report(CLASSIC, &ShippedMeasure, &[en(), en()], &Default::default());
+        let once = crate::hud_format::lint::lint_report(CLASSIC, &ShippedMeasure, &[en()], &Default::default());
+        assert_eq!(twice.costs.len(), once.costs.len(), "one line per state, not per state and language");
+        assert!(twice.costs.iter().all(|l| l.lang.is_none()), "no language is named for a cost that is the same in all");
+        // two different languages: a state whose tab plates differ is one line per language
+        let de = LintLang::for_tag("de").expect("de");
+        let both = crate::hud_format::lint::lint_report(CLASSIC, &ShippedMeasure, &[en(), de], &Default::default());
+        assert!(both.costs.len() > once.costs.len() && both.costs.iter().any(|l| l.lang.as_deref() == Some("de")));
     }
 }
