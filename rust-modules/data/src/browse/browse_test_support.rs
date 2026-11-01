@@ -191,7 +191,7 @@ impl TestBrowse {
         let Some(kind) = self.state.section_kind(self.state.cur()) else {
             return Vec::new();
         };
-        self.state.rows_where(|section| section.kind == kind && section.pinned)
+        self.state.rows_where(|_, section| section.kind == kind && section.pinned)
     }
 
     pub(super) fn kind_position(&self, index: usize) -> Option<(usize, usize)> {

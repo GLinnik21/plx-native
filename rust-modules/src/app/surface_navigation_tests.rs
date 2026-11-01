@@ -822,7 +822,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
 /// **The Settings row hands one surface to another without ever un-freezing the host** (§16.5).
 ///
 /// The two ops are parked one frame apart — the screen's own `NavOp::Dismiss` commits on the
-/// press frame, and `LoopReq::AccountSettings` is drained after `bridge::frame` returns, so
+/// press frame, and `LoopReq::OpenSettings` is drained after `bridge::frame` returns, so
 /// `open_settings`' `Present` commits on the next one. The window between them is the risk: if
 /// the account sheet let go of the host on its press frame, the page would be re-rendered in
 /// full for one frame and re-snapshotted for the next, under a panel nobody can see, on the
@@ -841,7 +841,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
 /// Red first, simulated: with the screen's `Dismiss` removed from `activate`, the account
 /// sheet stays `Open` `(Frozen, Cached)` under the Settings surface and this passes — so the
 /// discriminating half is the `Closing` assertion below, which fails without it. With
-/// `LoopReq::AccountSettings` mapped to `dismiss_surfaces` + `open_settings` in the WRONG
+/// `LoopReq::OpenSettings` mapped to `dismiss_surfaces` + `open_settings` in the WRONG
 /// order (present first, then dismiss all) the fold reads `(Frozen, Cached)` throughout and
 /// the Settings surface is dismissed with the sheet — caught by the `settings_up` assertion.
 #[test]
@@ -888,7 +888,11 @@ fn account_to_settings_never_unfreezes_the_host() {
 
     // …and the loop's drain performs the request on the next frame.
     let reqs = rig.take_reqs();
-    assert_eq!(reqs, vec![LoopReq::AccountSettings], "one request, and it is the Settings row's");
+    assert_eq!(
+        reqs,
+        vec![LoopReq::OpenSettings(plx_screens::family::SettingsPage::Root)],
+        "one request, and it is the Settings row's"
+    );
     open_settings(&mut d);
     for i in 0..12u32 {
         frame(&mut d, &mut rig, AppArg::Home, tick(20 + i), vec![]);

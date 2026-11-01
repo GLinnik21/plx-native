@@ -319,7 +319,7 @@ impl AccountMenuScreen {
             Action::ChangeProfile => LoopReq::AccountChangeProfile,
             Action::SignIn => LoopReq::AccountSignIn,
             Action::SignOut => LoopReq::AccountSignOut,
-            Action::Settings => LoopReq::AccountSettings,
+            Action::Settings => LoopReq::OpenSettings(crate::registry::SettingsPage::Root),
             Action::SendDiagnostics => LoopReq::AccountSendDiagnostics,
         });
         if let Some(req) = req {

@@ -1,11 +1,12 @@
-//! **The Sources ROW MODEL** — one list of libraries grouped by server, drawn on two surfaces.
+//! **The Sources ROW MODEL** — one list of libraries grouped by server, drawn on three surfaces.
 //!
-//! The Library toolbar's Source panel (`screens::library::menu`, deliverable A) and the Favorite libraries
-//! editor — first run, and its Settings twin (`crate::screens::onboard`, deliverable F) — show
-//! the SAME list:
+//! The Library toolbar's Source panel (`screens::library::menu`, deliverable A), the Library's
+//! Sort & Filter menu (the same module, which embeds the list whole as its library switcher) and
+//! the Favorite libraries editor — first run, and its Settings twin (`crate::screens::onboard`,
+//! deliverable F) — show the SAME list:
 //! your servers, each server's libraries, and which of them are favorites. The canvas says so in as
 //! many words — F "is the same list as A's On Home level, in the flow's own frame rather than a
-//! panel" — so it is one builder, and the two screens differ only in the frame around it, in the
+//! panel" — so it is one builder, and the surfaces differ only in the frame around it, in the
 //! LEVEL they ask for, and in whether the roster-refresh row rides along.
 //!
 //! **They no longer differ in a control.** The panel used to carry a `TabPill::segment` pair at its
@@ -38,8 +39,11 @@ use std::convert::Infallible;
 /// and no words, OnHome draws every row's word and no ticks — neither level mirrors the other's
 /// marks.
 ///
-/// The Library panel is [`Level::Browse`] and nothing else, and is scoped to the FAVOURITES of the
-/// type being browsed. The Favorite libraries editor is [`Level::OnHome`] and nothing else — it has
+/// The Library's "+N" panel and its Sort & Filter menu are [`Level::Browse`] and nothing else. The
+/// panel is scoped to the FAVOURITES of the type being browsed that the header's fold hid; the menu
+/// draws the same level over every library of the type that is a favourite or sits on a server
+/// [`usable`] accepts, and ticks the one on view. The Favorite libraries editor is
+/// [`Level::OnHome`] and nothing else — it has
 /// no current library to point at, because first run happens before there is a Library screen to
 /// have been on, and it is the one surface that lists every granted library so a non-favourite has
 /// a way back.
@@ -158,7 +162,10 @@ fn tier_word(t: Location) -> Option<&'static str> {
 ///
 /// Written as an exhaustive match rather than `reachable() && state != Unauthorized`, so that a
 /// fifth state has to be given an answer here instead of quietly inheriting one.
-fn usable(g: &SrcGroup) -> bool {
+///
+/// Public because it is also the answer to "is a library that is NOT a favourite worth offering?"
+/// (the Library's Sort & Filter menu lists every library of the kind that passes it).
+pub fn usable(g: &SrcGroup) -> bool {
     match g.state {
         SourceState::NotProbed | SourceState::Reachable | SourceState::Unreachable => g.reachable(),
         SourceState::Unauthorized => false,
@@ -218,9 +225,8 @@ fn header_accessory(sec: Section, g: &SrcGroup) -> Section {
 }
 
 /// A library as a picker row: its title is the server's, and a library on a shared server carries
-/// the owner's handle beside it, dimmed (an own server has none). The Library's Sort & Filter
-/// switcher draws its rows with this too, so the two pickers cannot drift.
-pub fn library_row(title: &str, handle: &str) -> Row {
+/// the owner's handle beside it, dimmed (an own server has none).
+fn library_row(title: &str, handle: &str) -> Row {
     let row = Row::new(title).server_label();
     if handle.is_empty() { row } else { row.value(handle).server_value().value_dim(true) }
 }
@@ -254,7 +260,8 @@ pub fn form(
         // working also SAYS so there, and says it FIRST — see [`accessory`]. It is a state in the
         // same register as the rows' own `On`/`Off`.
         //
-        // The Browse picker (the header's "+N" list) names a shared group by what it IS, "Shared
+        // The Browse picker (the header's "+N" list and the Sort & Filter switcher) names a shared
+        // group by what it IS, "Shared
         // with you", and puts the owner's handle on each row, dimmed (library-redesign board
         // `LibraryMore`); the group's own state words still lead its header.
         let shared_pick = level == Level::Browse && !g.handle.is_empty();
@@ -268,13 +275,14 @@ pub fn form(
         let mut sec = FormSection::from_head(head);
         for r in mine {
             let mut row = if level == Level::Browse {
-                library_row(&r.title, &g.handle)
+                // The tick is the library on view: the Sources popover's +N list never holds it
+                // (the fold hid only the others), the Sort & Filter menu's list does.
+                library_row(&r.title, &g.handle).checked(r.current)
             } else {
                 Row::new(r.title.clone()).server_label()
             };
             let kind = match level {
-                // One line a row: the +N list holds only libraries the fold hid, so no tick
-                // (the library on view is never in it) and no count line.
+                // One line a row: a tick on the library on view and no count line.
                 Level::Browse => RowKind::Choice,
                 Level::OnHome => {
                     row = row

@@ -789,6 +789,19 @@ mod tests {
             view.rows_for(1).cloned().collect::<Vec<_>>(),
             state.source_rows_for(1)
         );
+        // A library on view that is not a favourite (section 2: the friend's films default Off) is
+        // named beside the favourites of its type, and only while it is on view; the view and the
+        // store's oracle agree on it.
+        assert!(!state.pinned_for_test(2));
+        assert_eq!(
+            view.rows_for(2).map(|row| row.section).collect::<Vec<_>>(),
+            vec![0, 2],
+        );
+        assert_eq!(view.rows_for(0).map(|row| row.section).collect::<Vec<_>>(), vec![0]);
+        assert_eq!(
+            view.rows_for(2).cloned().collect::<Vec<_>>(),
+            state.source_rows_for(2)
+        );
         assert_eq!(view.rows_for(999).count(), 0);
         state.source_mut(0).unwrap().name = "Changed".into();
         state.bump_source_facts_gen();

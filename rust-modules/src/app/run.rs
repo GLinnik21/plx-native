@@ -2549,19 +2549,13 @@ fn loop_requests(app: &mut App) {
             // `(Frozen, Cached)` and never returns the page to `HostRender::Live` — the snapshot
             // survives the handover, which is what
             // `account_to_settings_never_unfreezes_the_host` pins.
-            plx_screens::registry::LoopReq::AccountSettings => {
-                super::bridge::open_settings(&mut app.pages);
+            plx_screens::registry::LoopReq::OpenSettings(page) => {
+                super::bridge::open_settings_at(&mut app.pages, page);
             }
             // `ps` is threaded rather than read from a global (lane D's lab gate: `player::diag`
             // has taken a `&PlaybackSession` since phase 9, and `lab::request_upload` with it).
             plx_screens::registry::LoopReq::AccountSendDiagnostics => {
                 crate::lab::request_upload("menu", &app.player.session);
-            }
-            plx_screens::registry::LoopReq::LibraryFavourites => {
-                super::bridge::open_settings_at(
-                    &mut app.pages,
-                    plx_screens::family::SettingsPage::Favourites,
-                );
             }
         }
     }
