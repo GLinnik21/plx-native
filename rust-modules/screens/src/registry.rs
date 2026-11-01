@@ -80,11 +80,11 @@ pub enum AppFx {
 }
 
 /// What the Player HUD settings page asks of the package store (`plx_data::hudpacks::HudStore`). The
-/// answers come back as the page's own data (the published list), never as a reply here.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// answers come back as the page's own data, the list the Bridge sends down the channel `Open` carries.
 pub enum HudCmd {
-    /// The page opened: read every candidate directory again.
-    Refresh,
+    /// The page opened: read every candidate directory again, and publish the list (now and whenever it
+    /// changes) down this channel until the page drops its end.
+    Open(std::sync::mpsc::Sender<crate::hud_settings::HudList>),
     /// Pick a package id (or `builtin:classic`) for the seated profile.
     Select(String),
     /// Delete an installed package.
@@ -1523,6 +1523,8 @@ pub mod word {
     pub const PLAYBACK: &str = "playback";
     pub const AUDIO: &str = "audio";
     pub const PICKER: &str = "picker";
+    /// The Player HUD page (`screens::hud_settings`), a page of the Settings family's inner stack.
+    pub const PLAYER_HUD: &str = "player-hud";
     pub const CONSENT: &str = "consent";
     pub const ONBOARD: &str = "onboard";
     /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::words::route_word`'s

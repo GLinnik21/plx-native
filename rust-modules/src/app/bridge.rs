@@ -395,6 +395,10 @@ pub(crate) struct Bridge {
     seat_watch: SeatWatch,
     /// The player-HUD package store, its runner and the compile of the selection ([`super::adapters::huds`]). Off until boot starts it.
     huds: super::adapters::huds::HudDriver,
+    /// The open Player HUD page's channel and what it was last sent ([`Bridge::huds_publish`]).
+    huds_page: Option<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
+    /// What the last install or removal said, for the page, until it is opened again.
+    huds_notice: Option<plx_data::hudpacks::Notice>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
@@ -666,6 +670,8 @@ impl Bridge {
             session_ready: None,
             seat_watch: SeatWatch::new(),
             huds: super::adapters::huds::HudDriver::off(),
+            huds_page: None,
+            huds_notice: None,
             consent_adapter,
             store_runner,
             late_store_jobs: 0,
@@ -981,7 +987,11 @@ impl Bridge {
     pub(crate) fn huds_command(&mut self, command: plx_screens::registry::HudCmd) {
         use plx_screens::registry::HudCmd;
         match command {
-            HudCmd::Refresh => self.huds_refresh(),
+            HudCmd::Open(page) => {
+                self.huds_notice = None;
+                self.huds_page = Some((page, u64::MAX));
+                self.huds_refresh();
+            }
             HudCmd::Select(id) => self.huds.select(id),
             HudCmd::Remove(id) => self.huds.remove(id),
             HudCmd::InstallDrop(sha) => {
@@ -1007,6 +1017,41 @@ impl Bridge {
         }
         for line in self.huds.take_log() {
             plx_base::eventlog::log(&line);
+        }
+        if let Some(last) = self.huds.take_notices().pop() {
+            self.huds_notice = Some(last);
+        }
+        self.huds_publish();
+    }
+
+    /// Send the open page the store's listing when anything it draws changed since the last send; a page that
+    /// closed (its end of the channel dropped) is forgotten.
+    fn huds_publish(&mut self) {
+        let Some((_, sent)) = &self.huds_page else { return };
+        let (revision, notice) = (self.huds.revision(), self.huds_notice.as_ref().map_or(0, |_| 1));
+        let stamp = revision * 2 + notice;
+        if *sent == stamp {
+            return;
+        }
+        let tag = plx_platform::i18n::current().language().tag();
+        let list = plx_screens::hud_settings::HudList {
+            entries: self.huds.store().entries(),
+            drops: self.huds.store().drops(),
+            unfit: self.huds.unfit_shas(tag),
+            language: plx_platform::i18n::Preference::SHIPPED
+                .into_iter()
+                .find(|p| p.tag() == tag)
+                .map_or_else(|| tag.to_owned(), |p| p.native_name().to_owned()),
+            notice: self.huds_notice.clone(),
+        };
+        let delivered = self.huds_page.as_mut().is_some_and(|(page, sent)| {
+            *sent = stamp;
+            page.send(list).is_ok()
+        });
+        if delivered {
+            plx_machine::idle::invalidate();
+        } else {
+            self.huds_page = None;
         }
     }
 

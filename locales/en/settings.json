@@ -1250,5 +1250,80 @@
   "settings.consent.placeholder.webos_codename_short": {
     "value": "webOS codename",
     "description": "Placeholder shown inside angle brackets in the data preview, standing for the TV software's release codename."
+  },
+  "settings.hud.title": {
+    "value": "Player HUD",
+    "description": "Settings > Playback row and page title: the look of the playback controls (the player HUD)."
+  },
+  "settings.hud.copy": {
+    "value": "Choose how the playback controls look. Packages copied to this TV's HUD folder are listed here.",
+    "description": "Settings > Playback > Player HUD: the line under the page title."
+  },
+  "settings.hud.classic": {
+    "value": "Classic",
+    "description": "Settings > Playback > Player HUD: the name of the built-in HUD."
+  },
+  "settings.hud.builtin": {
+    "value": "Built-in",
+    "description": "Settings > Playback > Player HUD: the trust label of the HUD that ships with the app."
+  },
+  "settings.hud.unreviewed": {
+    "value": "Unreviewed",
+    "description": "Settings > Playback > Player HUD: the trust label of a package nobody has reviewed (a file copied to the TV)."
+  },
+  "settings.hud.until_restart": {
+    "value": "Installed until restart",
+    "description": "Settings > Playback > Player HUD: a package that only the temporary storage took, which a restart clears."
+  },
+  "settings.hud.unfit_language": {
+    "value": "Doesn't fit in {language}",
+    "description": "Settings > Playback > Player HUD: a package whose text does not fit in the current language, so the built-in HUD is drawn. {language} is the language's own name.",
+    "args": {
+      "language": "str"
+    }
+  },
+  "settings.hud.newer_format": {
+    "value": "Made for a newer PlxNative",
+    "description": "Settings > Playback > Player HUD: a package in a format this app version cannot read yet."
+  },
+  "settings.hud.older_format": {
+    "value": "Uses an older HUD format",
+    "description": "Settings > Playback > Player HUD: a package in a format this app version no longer reads."
+  },
+  "settings.hud.app_range": {
+    "value": "Not for this version",
+    "description": "Settings > Playback > Player HUD: a package that says it does not run on this app release."
+  },
+  "settings.hud.cant_install": {
+    "value": "Can't install this file",
+    "description": "Settings > Playback > Player HUD: a file in the HUD folder that cannot be installed (not a valid package, too large, or changed since it was listed)."
+  },
+  "settings.hud.already": {
+    "value": "Already installed",
+    "description": "Settings > Playback > Player HUD: a file in the HUD folder whose package is installed already, or an equal or newer version of it is."
+  },
+  "settings.hud.not_saved": {
+    "value": "Couldn't save it: the storage is read-only",
+    "description": "Settings > Playback > Player HUD: an install that no storage location on the TV accepted."
+  },
+  "settings.hud.folder": {
+    "value": "In the HUD folder",
+    "description": "Settings > Playback > Player HUD: the header over the files found in the HUD folder on the TV."
+  },
+  "settings.hud.install": {
+    "value": "Install",
+    "description": "Settings > Playback > Player HUD: the action word on a file in the HUD folder, and the confirming answer of the install question."
+  },
+  "settings.hud.install_question": {
+    "value": "Install this HUD?",
+    "description": "Settings > Playback > Player HUD: the question before an unreviewed file is installed."
+  },
+  "settings.hud.install_body": {
+    "value": "This file was copied to the TV and has not been reviewed. It only changes how the playback controls look.",
+    "description": "Settings > Playback > Player HUD: the body of the install question."
+  },
+  "settings.hud.remove": {
+    "value": "Remove",
+    "description": "Settings > Playback > Player HUD: the action word on an installed package's removal row."
   }
 }

@@ -51,6 +51,8 @@ pub enum SettingsPage {
     ConsentStage(u8),
     /// One playback / account preference's choice list, pushed from Playback or Audio & Subtitles.
     Picker(PickerKind),
+    /// The Player HUD page: the installed packages, the drop folder and the chosen HUD (`hud_settings`).
+    PlayerHud,
 }
 
 /// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
@@ -87,6 +89,7 @@ impl SettingsPage {
         match self {
             SettingsPage::Picker(kind) if kind.parent() == SettingsPage::Root => vec![SettingsPage::Root, self],
             SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
+            SettingsPage::PlayerHud => vec![SettingsPage::Root, SettingsPage::Playback, self],
             page => vec![page],
         }
     }
@@ -124,6 +127,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Preview(_) => 106,
             SettingsPage::ConsentStage(_) => 107,
             SettingsPage::Picker(_) => 112,
+            SettingsPage::PlayerHud => 115,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -161,6 +165,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Favourites
             | SettingsPage::Privacy
             | SettingsPage::Legal
+            | SettingsPage::PlayerHud
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
@@ -183,6 +188,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Preview(_) => "preview",
             SettingsPage::ConsentStage(_) => "stage",
             SettingsPage::Picker(_) => "picker",
+            SettingsPage::PlayerHud => "player-hud",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
@@ -343,6 +349,7 @@ mod tests {
             SettingsPage::Preview(0),
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
+            SettingsPage::PlayerHud,
         ];
         let mut ids: Vec<u32> = pages.iter().map(|p| plx_ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();

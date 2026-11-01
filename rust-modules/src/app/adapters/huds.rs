@@ -457,6 +457,11 @@ impl HudDriver {
         self.unfit.get(&(sha, language))
     }
 
+    /// The packages the television refused in `language` (what the page marks).
+    pub(crate) fn unfit_shas(&self, language: &'static str) -> Vec<Sha> {
+        self.unfit.keys().filter(|(_, l)| *l == language).map(|(sha, _)| *sha).collect()
+    }
+
     /// The picks to persist, oldest first.
     pub(crate) fn take_selections(&mut self) -> Vec<Selection> {
         std::mem::take(&mut self.selection)

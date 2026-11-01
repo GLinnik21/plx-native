@@ -326,7 +326,7 @@ impl Txn {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RowId { Field(PickerKind), Retry }
+enum RowId { Field(PickerKind), PlayerHud, Retry }
 impl FormId for RowId {
     /// Hand-assigned, per page: each field's position in ITS page's list (what its table index was
     /// before the page moved onto a form, so a recorded focus on a field row is unchanged), Retry
@@ -345,6 +345,7 @@ impl FormId for RowId {
             Self::Field(PickerKind::UiResolution) => 9,
             Self::Field(PickerKind::InstantDpadSeeking) => 10,
             Self::Field(PickerKind::DolbyVision) => 11,
+            Self::PlayerHud => 12,
             Self::Retry => 6,
         })
     }
@@ -580,6 +581,9 @@ fn field_form(inputs: &FieldListInputs<'_>) -> Form<RowId, Action, SettingsPage>
         section = section.item(RowId::Field(field), RowKind::Nav(SettingsPage::Picker(field)), Action::Open, row)
             .disabled(inputs.read_only);
     }
+    section = section.item_if(inputs.kind == Kind::Playback, RowId::PlayerHud, RowKind::Nav(SettingsPage::PlayerHud), Action::Open,
+        Row::new(plx_platform::i18n::msg::settings_hud_title()).chevron(true).dim(inputs.busy))
+        .disabled(inputs.read_only);
     section = section.item_if(inputs.kind == Kind::AudioSubtitles && !inputs.busy && inputs.show_retry,
         RowId::Retry, RowKind::Button, Action::Retry,
         Row::new(plx_platform::i18n::msg::settings_audio_retry()).detail(plx_platform::i18n::msg::settings_audio_retry_detail()));
