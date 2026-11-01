@@ -1883,6 +1883,28 @@ mod caption_rise_pins {
         }
     }
 
+    /// The spring stops asking for frames once it is within the motion module's relative rest distance
+    /// (about 0.125 px at a 124 px rise), so it must land exactly on its target there: a limit left 0.1 px
+    /// short would draw captions off today's 780 with the section gone.
+    #[test]
+    fn the_rise_lands_exactly_where_the_spring_stops_asking_for_frames() {
+        for open in [true, false] {
+            let mut rig = classic();
+            rig.open(OPEN_INFO);
+            rig.settle();
+            if !open {
+                rig.close(0, Section::Info);
+            }
+            for i in 0..300 {
+                rig.frame();
+                let (rise, target) = (rig.m.caption_rise()[LOW], rig.m.caption_rise_target()[LOW]);
+                let d = (rise - target).abs();
+                let rest = (1e-3 * (1.0 + rise.abs().max(target.abs()))).min(0.25);
+                assert!(d == 0.0 || d > rest, "open={open} frame {i}: {rise} is {d} px short of {target} (rest distance {rest})");
+            }
+        }
+    }
+
     /// The limit's first moving frame is the section's first appear frame, on open and on close, and it passes
     /// neither end (critically damped).
     #[test]

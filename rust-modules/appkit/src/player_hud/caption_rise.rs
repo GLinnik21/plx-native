@@ -79,7 +79,8 @@ impl CaptionRise {
         }
         for i in 0..3 {
             motion::spring(&mut self.rise[i], &mut self.vel[i], self.target[i], K_APPEAR, t, present);
-            if (self.rise[i] - self.target[i]).abs() < SETTLED_PX && self.vel[i].abs() < SETTLED_VEL {
+            let near = (REST_REL * (1.0 + self.rise[i].abs().max(self.target[i].abs()))).min(REST_CAP);
+            if (self.rise[i] - self.target[i]).abs() <= near && (self.vel[i] * t.dt()).abs() <= near {
                 let changed = self.rise[i] != self.target[i] || self.vel[i] != 0.0;
                 self.rise[i] = self.target[i];
                 self.vel[i] = 0.0;
@@ -108,7 +109,8 @@ impl CaptionRise {
     }
 }
 
-/// A spring is on its target inside a hundredth of a pixel at less than a pixel a second, as the sections'
-/// own appear (`PopoverMotion::settled`) is, in pixels.
-const SETTLED_PX: f32 = 0.01;
-const SETTLED_VEL: f32 = 0.5;
+/// The distance (and per-frame travel) the spring stops asking for frames inside: `plx_machine::motion`'s own
+/// rest test (`REST_REL`, `REST_CAP`), so the rise lands exactly on its target in the step where it goes quiet
+/// and not a tenth of a pixel short of it.
+const REST_REL: f32 = 1e-3;
+const REST_CAP: f32 = 0.25;
