@@ -3438,10 +3438,10 @@ impl NalInput {
 /// (`AV_TIME_BASE` units, µs). The engine takes a fresh play's first keyframe to be near 0 and
 /// `seek_to_ns` to be content time, and a broadcast capture's clock starts wherever the
 /// transmitter's did (the report's first audio unit was at 45171.69 s). **Only a stream with no
-/// config record is moved**: Matroska and MP4 keep the clock they have always had. An unknown or
-/// negative start moves nothing; a stream is never moved forward.
+/// config record is moved**: Matroska and MP4 keep the clock they have always had. An unknown
+/// (`AV_NOPTS_VALUE`, `i64::MIN`) or negative start moves nothing; a stream is never moved forward.
 fn stream_origin_ns(start_time_us: i64, input: NalInput) -> i64 {
-    if input == NalInput::StartCodes && start_time_us != AV_NOPTS_VALUE && start_time_us > 0 {
+    if input == NalInput::StartCodes && start_time_us > 0 {
         start_time_us.saturating_mul(1_000)
     } else {
         0
@@ -3781,6 +3781,17 @@ fn h264_slice_is_intra(nal: &[u8]) -> bool {
     ue().and_then(|_| ue()).is_some_and(|t| t == 2 || t == 7)
 }
 
+/// Does this H.264 NAL open a random access point: an IDR slice, or, when `intra_ok`, a non-IDR
+/// I-slice. `intra_ok` is the caller's evidence that one is a keyframe here (the container flagged
+/// the packet, or an SPS came ahead of the slice); both framings ask the same question.
+fn h264_is_rap(nal: &[u8], intra_ok: bool) -> bool {
+    match nal.first().map(|b| b & 0x1f) {
+        Some(5) => true,
+        Some(1) => intra_ok && h264_slice_is_intra(nal),
+        _ => false,
+    }
+}
+
 /// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out` (a packet
 /// that carries start codes already is `annexb_h264_access_unit`'s: see [`NalInput`]),
 /// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5, or a non-IDR
@@ -3830,10 +3841,7 @@ unsafe fn packet_to_annexb(
             (16..=23).contains(&((b0 >> 1) & 0x3f))
         } else {
             in_band_sps |= (b0 & 0x1f) == 7;
-            (b0 & 0x1f) == 5
-                || ((container_key || in_band_sps)
-                    && (b0 & 0x1f) == 1
-                    && h264_slice_is_intra(&d[i..i + nl]))
+            h264_is_rap(&d[i..i + nl], container_key || in_band_sps)
         };
         if key {
             is_key = true;
@@ -4180,8 +4188,16 @@ enum Rap {
     /// An IDR slice only.
     IdrOnly,
     /// An IDR slice, or a non-IDR I-slice: one the container flagged (`container_key`), or one
-    /// behind an in-band SPS. The rule `packet_to_annexb` applies to a length-prefixed packet.
+    /// behind an in-band SPS. The rule `packet_to_annexb` applies to a length-prefixed packet
+    /// ([`h264_is_rap`]).
     IdrOrIntra { container_key: bool },
+}
+
+impl Rap {
+    /// Whether a non-IDR I-slice counts, `has_sps` being an SPS already seen in this unit.
+    fn intra_ok(self, has_sps: bool) -> bool {
+        matches!(self, Rap::IdrOrIntra { container_key } if container_key || has_sps)
+    }
 }
 
 /// Validate an H.264 packet that already carries start codes (MPEG-TS, a raw elementary stream),
@@ -4215,12 +4231,7 @@ fn annexb_h264_access_unit(
         let end = annexb_start(data, payload).map_or(data.len(), |(next, _)| next);
         let nal_type = data[payload] & 0x1f;
         match nal_type {
-            5 => is_key = true,
-            1 if matches!(rap, Rap::IdrOrIntra { container_key } if container_key || has_sps)
-                && h264_slice_is_intra(&data[payload..end]) =>
-            {
-                is_key = true
-            }
+            5 | 1 if h264_is_rap(&data[payload..end], rap.intra_ok(has_sps)) => is_key = true,
             7 => {
                 params.sps.clear();
                 params.sps.extend_from_slice(&[0, 0, 0, 1]);
@@ -9751,11 +9762,7 @@ pub fn demux(
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
                     (Vec::new(), 0)
                 } else {
-                    parse_extradata(
-                        (*vcp).extradata,
-                        (*vcp).extradata_size.max(0) as usize,
-                        is_hevc,
-                    )
+                    parse_extradata(extradata.as_ptr(), extradata.len(), is_hevc)
                 };
                 let av1_cfg = if is_av1 { parse_av1c(extradata) } else { Vec::new() };
                 let av1_framing = if is_av1 {
@@ -9793,9 +9800,9 @@ pub fn demux(
                 // Such a stream can open mid-GOP (a capture cut where it was): pictures that need
                 // parameter sets the pipeline has not been given are held back until the first
                 // keyframe, here and after every seek, where the file is not a length-prefixed one
-                // whose first packet is a keyframe by construction.
-                let mut annexb_wait_key = nal_input == NalInput::StartCodes;
-                let mut annexb_held_back = 0u32;
+                // whose first packet is a keyframe by construction. `Some(n)`: still waiting, `n`
+                // pictures held back so far.
+                let mut annexb_wait_key = (nal_input == NalInput::StartCodes).then_some(0u32);
                 let mut annexb_rejected = 0u32;
 
                 let pkt = av_packet_alloc();
@@ -9873,8 +9880,7 @@ pub fn demux(
                             seek_began.elapsed().as_millis()
                         ));
                         headroom.restart(aq_p);
-                        annexb_wait_key = nal_input == NalInput::StartCodes;
-                        annexb_held_back = 0;
+                        annexb_wait_key = (nal_input == NalInput::StartCodes).then_some(0u32);
                         if let Some(dec) = pcm_dec.as_mut() {
                             dec.reset_stream();
                         }
@@ -9915,12 +9921,12 @@ pub fn demux(
                             *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) =
                                 Some(subside::Anchor::of(pts_ns(pkt, vst), raw));
                         }
+                        let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
+                            &[]
+                        } else {
+                            std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
+                        };
                         let is_key = if is_av1 {
-                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
-                                &[]
-                            } else {
-                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
-                            };
                             av1_packet_to_tu(
                                 pkt_bytes,
                                 (*pkt).flags & AV_PKT_FLAG_KEY != 0,
@@ -9929,18 +9935,8 @@ pub fn demux(
                                 &mut aubuf,
                             )
                         } else if is_vp9 {
-                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
-                                &[]
-                            } else {
-                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
-                            };
                             vp9_packet_to_frame(pkt_bytes, (*pkt).flags & AV_PKT_FLAG_KEY != 0, &mut aubuf)
                         } else if nal_input == NalInput::StartCodes {
-                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
-                                &[]
-                            } else {
-                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
-                            };
                             let rap = Rap::IdrOrIntra { container_key: (*pkt).flags & AV_PKT_FLAG_KEY != 0 };
                             match annexb_h264_access_unit(pkt_bytes, rap, &mut annexb_params, &mut aubuf) {
                                 Ok(key) => key,
@@ -9976,20 +9972,22 @@ pub fn demux(
                             // skips this iteration's Auto Original bookkeeping below, which the next
                             // packet runs; the run is bounded by a GOP, or by the audio lane's ceiling
                             // (`NoUsableVideo`) for a stream with no keyframe at all.
-                            if aubuf.is_empty() || (annexb_wait_key && !is_key) {
-                                if !aubuf.is_empty() {
-                                    annexb_held_back += 1;
-                                }
+                            if aubuf.is_empty() {
                                 av_packet_unref(pkt);
                                 continue;
                             }
-                            if annexb_wait_key {
-                                annexb_wait_key = false;
-                                if annexb_held_back > 0 {
+                            if let Some(held_back) = annexb_wait_key.as_mut() {
+                                if !is_key {
+                                    *held_back += 1;
+                                    av_packet_unref(pkt);
+                                    continue;
+                                }
+                                if *held_back > 0 {
                                     crate::player::log(&format!(
-                                        "ff: start-code stream: first keyframe after {annexb_held_back} video packets that needed parameter sets not yet seen"
+                                        "ff: start-code stream: first keyframe after {held_back} video packets that needed parameter sets not yet seen"
                                     ));
                                 }
+                                annexb_wait_key = None;
                             }
                         }
                         if DIAG_FIRST.swap(false, Ordering::Relaxed) {

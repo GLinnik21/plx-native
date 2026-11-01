@@ -295,12 +295,8 @@ struct DemuxRun {
 }
 
 impl DemuxRun {
-    fn start(port: u16) -> DemuxRun {
-        Self::start_with_audio(port, "eac3")
-    }
-
-    /// [`start`](Self::start) with the audio codec the Load payload names.
-    fn start_with_audio(port: u16, acodec: &'static str) -> DemuxRun {
+    /// `acodec` is the audio codec the Load payload names.
+    fn start(port: u16, acodec: &'static str) -> DemuxRun {
         let (video_cap, audio_cap) = crate::player::engine::aq_caps();
         let mut video = crate::aq::aq_new(video_cap as c_long);
         let mut audio = crate::aq::aq_new(audio_cap as c_long);
@@ -440,7 +436,7 @@ fn prepare_at(tag: &str, acodec: &'static str, seek_ns: i64, make: impl FnOnce(&
         "{tag}: fixture first audio packet at {first_audio_s:.3} s, {video_before} bytes of video before it"
     );
     let server = FileServer::start(&file);
-    let run = DemuxRun::start_with_audio(server.port, acodec);
+    let run = DemuxRun::start(server.port, acodec);
     Some(Prepared { run, first_audio_s, video_before, _server: server, _scratch: scratch, _ffmpeg: ffmpeg })
 }
 
