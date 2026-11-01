@@ -27,6 +27,15 @@ def rd_size(b, p):
     unknown = v == (1 << (7 * n)) - 1
     return (None if unknown else v), p + n
 
+def rd_uint(b, p, e, what):
+    """The unsigned integer stored in b[p:e]. EBML integers are at most 8 bytes wide; a wider field
+    is refused with a message, because read as a plain integer it would reach the summary line as a
+    huge number (a ValueError past 4300 digits). This bounds the field's WIDTH only (zero padding is
+    fine); a value that has to fit a fixed width where it is written back is checked there (`emit`)."""
+    if e - p > 8:
+        sys.exit(f"mkv_audio_lead: {what} is {e - p} bytes wide, at most 8 are read")
+    return int.from_bytes(b[p:e], "big")
+
 def wr_size(n):  # 8-byte size vint
     return bytes([0x01]) + n.to_bytes(7, "big")
 
@@ -71,13 +80,13 @@ def main(src, dst, lead_s, skew=False):
                         if tid != TRACK_ENTRY: continue
                         num = typ = None
                         for fid, fp, fq, fe in children(b, tq, te):
-                            if fid == 0xD7: num = int.from_bytes(b[fq:fe], "big")
-                            if fid == 0x83: typ = int.from_bytes(b[fq:fe], "big")
+                            if fid == 0xD7: num = rd_uint(b, fq, fe, "TrackNumber")
+                            if fid == 0x83: typ = rd_uint(b, fq, fe, "TrackType")
                         tracks_types[num] = typ
             elif cid == CLUSTER:
                 cts = 0
                 for kid, kp, kq, ke in children(b, cq, ce):
-                    if kid == TIMESTAMP: cts = int.from_bytes(b[kq:ke], "big")
+                    if kid == TIMESTAMP: cts = rd_uint(b, kq, ke, "Cluster Timestamp")
                     elif kid == SIMPLEBLOCK:
                         tr, r, rel = block_track_rel(b, kq)
                         blocks.append((cts + rel, tr, bytes(b[kp:ke]), r - kp))
@@ -107,6 +116,13 @@ def main(src, dst, lead_s, skew=False):
         phase2 = [x for _, x in sorted(keyed, key=lambda k: k[0])]
     def emit(group):
         cts = min(x[0] for x in group)
+        # The new cluster's Timestamp is written in four bytes, unsigned. It is the earliest block of
+        # the group (a Cluster Timestamp plus a signed 16-bit block offset), so neither a four-byte
+        # Timestamp near its maximum nor a negative offset below a small one is covered by the width
+        # the Timestamp was read at.
+        if not 0 <= cts < 1 << 32:
+            sys.exit(f"mkv_audio_lead: the cluster timestamp {cts} ms (a Cluster Timestamp plus a block "
+                     f"offset) does not fit the four unsigned bytes it is written back in")
         body = elem(TIMESTAMP, cts.to_bytes(4, "big"))
         for ts, tr, raw, off in group:
             raw = bytearray(raw); raw[off:off+2] = struct.pack(">h", ts - cts); body += raw
