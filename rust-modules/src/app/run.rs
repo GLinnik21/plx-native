@@ -5001,6 +5001,41 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// **A folded Go to Show/Movie row performs `go_to_detail`**: the performer leaves playback for the page of the
+    /// playing item's `detail_rk` (the Info card's own destination), landing the Detail page on top and taking the
+    /// player down. The row's own gate (no row without a ratingKey) is `folded_tests::the_reference_folds_the_two_info_actions`.
+    #[test]
+    fn go_to_detail_leaves_playback_for_the_playing_items_page() {
+        use plx_appkit::player_hud::command::HudCommand;
+        use plx_screens::registry::ContentArg;
+        let _serial = plx_base::testlock::serial();
+        let mut app = self::app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
+            is_episode: false,
+            is_real_episode: false,
+            title: String::new(),
+            ep_title: String::new(),
+            season: 0,
+            index: 0,
+            summary: String::new(),
+            year: 0,
+            dur_ms: 0,
+            rating: String::new(),
+            thumb: String::new(),
+            detail_rk: "777".into(),
+        }))));
+        assert!(super::super::bridge::player(&app.pages).is_some(), "the player is up before the command");
+        perform_on_a_mounted_player(&mut app, HudCommand::GoToDetail, 100);
+        for later in [116, 132, 148, 164, 180, 196, 212] {
+            frame(&mut app, later);
+        }
+        let top = app.pages.nav.top_page().expect("a page is on top");
+        assert!(matches!(&top.arg, AppArg::Content(ContentArg::Detail { rk, .. }) if rk == "777"), "the item's own page is on top");
+        assert!(super::super::bridge::player(&app.pages).is_none(), "and the player is gone");
+    }
+
     /// **A folded From Beginning row performs the Info card's own action**: the performer seeks to 0, wherever the
     /// playhead is, and keeps the transport up. (The reference folds this command and `go_to_detail`.)
     #[test]
