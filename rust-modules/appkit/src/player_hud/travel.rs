@@ -20,10 +20,10 @@ use plx_ui::Rect;
 use super::geometry::{
     frame_state, geometry, row_len, section_buttons, GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP, GROUP_TABS,
 };
-use super::command::{HudCommand, Section};
+use super::command::Section;
 use super::state::ControlSlot;
 use super::strip::strip_of;
-use crate::hud_format::compile::{Compiled, Widget};
+use crate::hud_format::compile::Compiled;
 
 /// How many groups the transport has to order: one per kind of stop.
 const ORDER_SLOTS: usize = 5;
@@ -67,9 +67,10 @@ impl Order {
 /// takes the transport's middle (the bar and the row are not on screen, so neither is in the order).
 ///
 /// Presence is read from the report, not from a package: the bar is in the order when the layout places a
-/// bar, the row when it has a stop, the tabs when it draws a pill that opens a section, the strip while Chapters is open and the
-/// state has one, and the section group while an open section places buttons. Position is the top of each
-/// group's rect, the bar's own track and not the taller grab band; a tie keeps the order above.
+/// bar, the row when it has a stop, the tabs when `HudGeometry::tabs` reports a pill (a tab is a pill that opens a
+/// section, a disc that opens one is a stop of the row), the strip while Chapters is open and the state has one, and the
+/// section group while an open section places buttons. Position is the top of each group's rect, the bar's own track
+/// and not the taller grab band; a tie keeps the order above.
 pub fn order(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> Order {
     let Some((state, skip)) = frame_state(compiled, open, slot, chapters, paused) else {
         return Order::EMPTY;
@@ -84,10 +85,8 @@ pub fn order(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, p
     if middle && row_len(compiled, open, slot, chapters, paused) > 0 {
         stops[1] = Some((GROUP_ROW, geo.row.y));
     }
-    // a tab is a PILL that opens a section: `HudGeometry::tabs` also reports a section's disc in the row
-    // (the reference's), which is a stop of the row, not of the tab group
-    let pills = state.controls.iter().filter(|c| c.widget == Widget::Pill && matches!(c.act, Some(HudCommand::ToggleSection(_))));
-    if let Some(top) = pills.map(|c| c.rect.y).reduce(f32::min) {
+    // the tab pills (`HudGeometry::tabs` reports pills only: a section a disc opens is a stop of the row)
+    if let Some(top) = geo.tabs.iter().flatten().map(|pill| pill.y).reduce(f32::min) {
         stops[2] = Some((GROUP_TABS, top));
     }
     if open & Section::Chapters.open_bit() != 0 {
@@ -118,7 +117,8 @@ fn top_of(stops: &[Option<(GroupId, f32)>; ORDER_SLOTS], group: GroupId) -> f32 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hud_format::compile::{OPEN_CHAPTERS as CHAPTERS, OPEN_INFO as INFO};
+    use crate::hud_format::compile::{Widget, OPEN_CHAPTERS as CHAPTERS, OPEN_INFO as INFO};
+    use crate::player_hud::command::HudCommand;
     use crate::player_hud::loaded::{classic_for_test, load};
     use crate::player_hud::state::Controls;
     use plx_ui::fixture::FixtureMeasure;
@@ -194,6 +194,27 @@ mod tests {
         assert_eq!(walk(&tabs, 0), [GROUP_SCRUB, GROUP_ROW, GROUP_TABS]);
         assert_eq!(walk(&tabs, CHAPTERS), [GROUP_SCRUB, GROUP_ROW, GROUP_TABS, GROUP_STRIP]);
         assert_eq!(walk(&tabs, CHAPTERS | INFO), [GROUP_SCRUB, GROUP_ROW, GROUP_TABS, GROUP_STRIP]);
+    }
+
+    /// **A tab is a PILL that opens a section.** A disc that opens one (the reference's) is a stop of the row group, the
+    /// one it is pressed as, so `HudGeometry::tabs` does not report it: the report is the one place the pointer's stops,
+    /// the tab group and this order all ask, and a disc reported there would be a second stop at the same rect.
+    #[test]
+    fn a_section_a_disc_opens_has_no_tab() {
+        let slot = ControlSlot::Discs(Controls { previous: false, next: false, restart: false });
+        let reference = reference();
+        for open in [0, CHAPTERS, INFO, CHAPTERS | INFO] {
+            let geo = geometry(&reference, open, slot, true, false);
+            assert_eq!(geo.tabs, [None, None], "open {open}: the reference's openers are discs of the row");
+            let want = Some(HudCommand::ToggleSection(Section::Info));
+            let (state, _) = frame_state(&reference, open, slot, true, false).expect("the reference has the state");
+            let info = state.controls.iter().find(|c| c.act == want).expect("the Info disc");
+            assert_eq!(info.widget, Widget::Disc);
+            assert!(geo.items.contains(&Some(info.rect)), "open {open}: the Info disc is an item of the row");
+        }
+        let tabs = fixture(include_str!("../hud_format/fixtures/tabs.plxhud.json"));
+        let geo = geometry(&tabs, 0, slot, true, false);
+        assert!(geo.tabs.iter().all(Option::is_some), "a pill is a tab: {:?}", geo.tabs);
     }
 
     #[test]

@@ -706,9 +706,14 @@ impl CompiledState {
         self.bands.iter().map(|(_, r)| r.y).reduce(f32::min).map_or(0.0, |top| (SCR_H - top).max(0.0))
     }
 
-    /// The pill of the `toggle_section` control that opens `section`.
+    /// **The tab of `section`: the PILL of the `toggle_section` control that opens it.** A section a DISC opens (the
+    /// reference's) has no tab: that disc is a stop of the row group and is pressed as one, so reporting it here too
+    /// would register a second stop at the same rect for the hit map to prefer.
     fn tab(&self, section: &str) -> Option<Rect> {
-        self.controls.iter().find(|c| c.command == "toggle_section" && c.section.as_deref() == Some(section)).map(|c| c.rect)
+        self.controls
+            .iter()
+            .find(|c| c.widget == Widget::Pill && c.command == "toggle_section" && c.section.as_deref() == Some(section))
+            .map(|c| c.rect)
     }
 
     /// **The extents the caption band counts** in this state, each with the node that drew it: interactive

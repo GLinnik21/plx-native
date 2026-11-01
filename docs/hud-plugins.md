@@ -540,8 +540,9 @@ is skipped; two groups at the same height (the `tabs` fixture's pills share the 
 tabs, strip, section. Up off the topmost group hides the transport (swallowed while a section is open, which holds it
 up) and Down off the bottom one stays put. Up or Down into the control that opened an open section lands on that
 control, a disc or a pill, as BACK does; a section no control opens (reachable through More) lands where the group
-usually seats. A modal package's open section is unchanged: it takes the middle, Up from its tab enters it and Down
-off its bottom closes it.
+usually seats. Only a pill is a tab: a disc that opens a section is a stop of the row, so a click on it and OK on it are
+one press of the same disc (the reference has no tab group). A modal package's open section is unchanged: it takes the
+middle, Up from its tab enters it and Down off its bottom closes it.
 
 ### Commands
 

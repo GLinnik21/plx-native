@@ -2144,16 +2144,22 @@ impl PlayerScreen {
             });
         }
         let has_ch = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
-        out.push(GroupSpec {
-            id: GROUP_TABS,
-            kind: GroupKind::Row { wrap: false },
-            seat: Seat::First,
-            reachable: AxisMask::BOTH,
-            edge: [EdgeRule::Screen; 4],
-            extent: geo.tabs[0].unwrap_or(Rect::FULL),
-            len: if has_ch { 2 } else { 1 },
-            elem: plx_ui::screen::ElemKind::Control,
-        });
+        // The tab group exists where the layout draws a tab: a PILL that opens a section (`HudGeometry::tabs`, which
+        // reports pills only). A package whose openers are discs of the row (the reference's) has none, and its discs are
+        // stops of the row group; a group with no stop in the state is not declared, so no step can land on it.
+        // `len` reaches the last tab drawn, as the stops are addressed `ELEM_TAB_BASE + tab`.
+        if let (Some(first), Some(last)) = (geo.tabs.iter().flatten().next(), geo.tabs.iter().rposition(Option::is_some)) {
+            out.push(GroupSpec {
+                id: GROUP_TABS,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                edge: [EdgeRule::Screen; 4],
+                extent: *first,
+                len: last + 1,
+                elem: plx_ui::screen::ElemKind::Control,
+            });
+        }
         // An open section's page. Both take Up as the page's own top (nothing above it but a declared link), and
         // Down off the bottom as the screen's to answer (`answer_edge`): a modal page is put away there.
         let page_edge = [EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop];

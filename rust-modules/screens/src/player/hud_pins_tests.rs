@@ -2414,6 +2414,177 @@ mod sections {
         assert_eq!(run.open_sections(), vec![Section::Info], "the page stays up");
     }
 
+    // -- the reference: a click on a disc is a press of that disc ----------------------------------------------------
+
+    /// What the page and the engine show: the group the page says focus is in, the element the engine holds, the row's
+    /// cursor, the tab cursor and the open sections.
+    #[derive(Debug, PartialEq)]
+    struct Shown {
+        group: u32,
+        held: Option<u32>,
+        btn: i32,
+        tab: i32,
+        open: Vec<Section>,
+    }
+
+    /// How a section is opened from its disc: OK on the disc by keys, or a Magic Remote click on it.
+    #[derive(Clone, Copy, Debug)]
+    enum Opened {
+        ByKeys,
+        ByClick,
+    }
+
+    impl Run {
+        fn shown(&mut self) -> Shown {
+            let (group, held) = (self.group(), self.held());
+            let s = self.screen();
+            let (btn, tab) = (s.hud.nav.btn, s.hud.nav.tab);
+            Shown { group, held, btn, tab, open: self.open_sections() }
+        }
+
+        /// **What the app does with `ArmControlRow`** (a click on the control row): the press dips, and the loop's commit
+        /// frame performs the command of the row item the cursor holds (`app::playback::activate_player_row`). Here the
+        /// part that reaches the page: a `toggle_section` is answered with the addressed event, as `perform` does for the
+        /// command OK asks.
+        fn perform_armed_row(&mut self) {
+            if !self.rig.perform || !self.rig.reqs.contains(&PlayerReq::ArmControlRow) {
+                return;
+            }
+            let btn = self.screen().hud.nav.btn;
+            if let Some(HudCommand::ToggleSection(section)) = self.screen().row_command(btn) {
+                let page = MachineId::Instance(self.d.top_page().expect("the player page is mounted"));
+                self.d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section)))));
+            }
+        }
+    }
+
+    /// The reference with `section` opened from its disc, `how`, and the disc's row index. A click needs a drawn
+    /// transport (a hidden one has no stops), so the keys raise it first.
+    fn opened_from_its_disc(run: &mut Run, section: Section, how: Opened) -> i32 {
+        let disc = opener_item(run, section);
+        match how {
+            Opened::ByKeys => {
+                go_to_item(run, disc);
+                run.step('K');
+            }
+            Opened::ByClick => {
+                run.step('U');
+                let at = run.present_stops_and_centre(plx_appkit::player_hud::control_elem(disc));
+                run.click(at);
+            }
+        }
+        disc
+    }
+
+    /// The reference with `section` opened `how`, then `then` pressed: what the page shows.
+    fn shown_after(section: Section, how: Opened, then: &str) -> Shown {
+        let mut run = reference_run();
+        opened_from_its_disc(&mut run, section, how);
+        run.walk(then);
+        run.shown()
+    }
+
+    /// **A click on a disc that opens a section is OK on that disc.** The reference opens Info and Chapters with
+    /// discs of its row; the screen used to register each disc a second time, as a hidden tab stop at the same rect, and
+    /// the hit map resolves the later stop, so a click was a press of a TAB: focus went to the tab group, which the
+    /// reference does not travel through. Now it is the row's own stop, and the click ends where OK ends.
+    #[test]
+    fn a_click_on_a_disc_that_opens_a_section_is_ok_on_that_disc() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        for section in [Section::Info, Section::Chapters] {
+            let by_keys = shown_after(section, Opened::ByKeys, "");
+            let by_click = shown_after(section, Opened::ByClick, "");
+            assert_eq!(by_click, by_keys, "{section:?}: the click and OK end in one state");
+            assert_eq!(by_click.open, vec![section], "{section:?}: the section is open");
+            assert_ne!(by_click.group, GROUP_TABS.0, "{section:?}: the reference has no tab to be on");
+        }
+    }
+
+    /// **Up from a clicked Info disc reaches the bar.** Info has no stop in the reference (its card is text), so the
+    /// ring stays on the disc, and the disc's group is the row: Up is the row's link to the bar. From the tab group
+    /// the click had put it in, nothing was linked and the press was swallowed.
+    #[test]
+    fn up_after_a_click_on_the_info_disc_reaches_the_bar() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = reference_run();
+        opened_from_its_disc(&mut run, Section::Info, Opened::ByClick);
+        assert_eq!(run.open_sections(), vec![Section::Info]);
+        run.step('U');
+        assert_eq!((run.group(), run.held()), (GROUP_SCRUB.0, Some(plx_appkit::player_hud::ELEM_SCRUB)), "the bar");
+        assert_eq!(run.open_sections(), vec![Section::Info], "the page stays up");
+        assert_eq!(shown_after(Section::Info, Opened::ByClick, "U"), shown_after(Section::Info, Opened::ByKeys, "U"));
+    }
+
+    /// **After a click, every key is what it is from that disc by keys**: Down (the reference's row is the bottom of
+    /// the order, so it stays, or enters the strip under it), Left and Right (the row's neighbours) and BACK (the
+    /// section closes onto the disc that opened it).
+    #[test]
+    fn down_left_right_and_back_after_a_click_are_what_they_are_from_the_disc_by_keys() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        for section in [Section::Info, Section::Chapters] {
+            for then in ["D", "L", "R", "LL", "RR", "B", "UD", "UDD"] {
+                assert_eq!(
+                    shown_after(section, Opened::ByClick, then),
+                    shown_after(section, Opened::ByKeys, then),
+                    "{section:?} opened by a click, then {then}",
+                );
+            }
+            let mut run = reference_run();
+            let disc = opened_from_its_disc(&mut run, section, Opened::ByClick);
+            run.step('B');
+            assert_eq!(run.open_sections(), Vec::<Section>::new(), "{section:?}: BACK closes it");
+            assert_eq!(
+                (run.group(), run.held(), run.screen().hud.nav.btn),
+                (GROUP_ROW.0, Some(plx_appkit::player_hud::control_elem(disc)), disc),
+                "{section:?}: BACK lands on the disc",
+            );
+        }
+    }
+
+    /// **The reference registers no tab group.** Its openers are discs of the row; a group with no stop in the state
+    /// is not declared (travel skips it), and no element of the tab range places.
+    #[test]
+    fn the_reference_declares_no_tab_group() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let screen = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::reference_for_test());
+        let cx: Cx<'static, TestHost> = super::super::cx();
+        let mut groups: Vec<GroupSpec> = Vec::new();
+        Focusable::<TestHost>::groups(&screen, &cx, &mut groups);
+        let ids: Vec<u32> = groups.iter().map(|g| g.id.0).collect();
+        assert_eq!(ids, vec![GROUP_SCRUB.0, GROUP_ROW.0], "the groups the reference declares, in z-order");
+        for tab in 0..2 {
+            assert!(Focusable::<TestHost>::place(&screen, &(ELEM_TAB_BASE + tab), &cx, At::Drawn).is_none(), "tab {tab}");
+        }
+    }
+
+    /// **Pin: a package that draws a PILL for its opener keeps its tab stop.** Classic and the `tabs` fixture click the
+    /// Info pill exactly as before: the stop is the tab group's, the click lands on the tab and asks `toggle_section`.
+    #[test]
+    fn a_pill_that_opens_a_section_keeps_its_tab_stop() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let tabs_text = include_str!("../../../appkit/src/hud_format/fixtures/tabs.plxhud.json");
+        let tabs = plx_appkit::player_hud::loaded::load(tabs_text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+            .expect("the tabs fixture loads")
+            .compiled;
+        for (name, package) in [("classic", plx_appkit::player_hud::loaded::classic_for_test()), ("tabs", tabs)] {
+            let mut run = Run::boot_in(Occupant::Plain, package, true);
+            run.step('U');
+            let at = run.present_stops_and_centre(ELEM_TAB_BASE);
+            run.click(at);
+            assert_eq!(run.asked(), vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Info))], "{name}: the click asks for Info");
+            assert_eq!(run.open_sections(), vec![Section::Info], "{name}: Info is open");
+            assert_eq!(run.screen().hud.nav.tab, 0, "{name}: the click landed on the Info tab");
+        }
+    }
+
     // -- the sections' motion: what the panels' surfaces did, on the page's own springs ---------------------------
 
     impl Run {
@@ -2871,6 +3042,7 @@ mod sections {
             let now = self.now;
             self.frame(now, vec![pointer_event(plx_machine::machine::InputKind::Click { x, y, hit: None }, now)]);
             self.frame(now + 60, vec![key_up(Key::Ok, tick(now + 60))]);
+            self.perform_armed_row();
             self.settle(now + 60);
             self.now += 600;
         }
