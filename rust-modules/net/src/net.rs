@@ -761,6 +761,11 @@ impl From<RequestError> for RequestFailure {
 }
 
 impl RequestFailure {
+    /// `true` when the transfer was aborted because the body ran past the `max_body` bound: the
+    /// bound a caller passed is echoed in [`Self::body_limit`] only for that failure, and no partial
+    /// body ever comes back with it.
+    pub fn too_large(&self) -> bool { self.body_limit.is_some() }
+
     /// The verify result when this failure is a certificate chain the television's trust store could
     /// not verify — see [`keypin::untrusted_chain_verify`] for the closed set — and `None` for
     /// everything else, the clock cases (9, 10) and a name mismatch included.
@@ -2097,8 +2102,8 @@ fn request_tls_sink(
     // re-sends custom headers to a redirect's target (it strips only `Authorization` and `Cookie`
     // when the host changes, and the television's 7.53.1 predates even that), so a `X-Plex-Token:`
     // line on a request that follows `Location:` would reach whatever host the answer names. The
-    // one caller that follows redirects (`https_get_public`, the QR fetch) sends none; this is what
-    // keeps it so for the next one.
+    // callers that follow redirects (`https_get_public`, the QR fetch, and `https_get_public_bounded`,
+    // the HUD install-from-address fetch) send none; this is what keeps it so for the next one.
     if follow_redirects && !headers.is_empty() {
         plx_base::eventlog::log("net: request refused: a request that follows redirects carries no caller headers");
         return Err(RequestError::Transport.into());
@@ -2833,11 +2838,28 @@ fn shipped_ca_bundle(dir: &std::path::Path) -> Option<String> {
 /// debugging a 400 and guessing at one.
 const TELEMETRY_MAX_REPLY: usize = 4096;
 
-/// Redirect-following HTTPS GET for a PUBLIC, credential-free resource. The QR image fetch is the
-/// only caller: at most five HTTP(S)-only redirects are followed, and an HTTPS request may never
-/// downgrade. Account/PMS requests keep redirects off because replayed headers/URLs carry tokens.
+/// Redirect-following HTTPS GET for a PUBLIC, credential-free resource. The QR image fetch
+/// (`session::auth`) calls it, and [`https_get_public_bounded`] is its body-bounded twin for the
+/// HUD-package install-from-address fetch: at most five HTTP(S)-only redirects are followed, and an
+/// HTTPS request may never downgrade. Account/PMS requests keep redirects off because replayed
+/// headers/URLs carry tokens.
 pub fn https_get_public(url: &str) -> Option<Resp> {
     request(url, &[], "GET", None, API, true, None, None)
+}
+
+/// [`https_get_public`] with a body bound, answering the whole [`RequestFailure`] instead of folding
+/// it to `None`: the address a viewer typed (`hudpacks::address`) can be a 404, a host that does not
+/// answer, a certificate this television's trust store cannot verify
+/// ([`RequestFailure::untrusted_chain`]) or a body past `max_body`, and each is told apart on the
+/// page. The same headerless, redirect-following request as [`https_get_public`] through the same
+/// entry, so the redirect and no-downgrade rules are [`allowed_redirect_protocols`]'s and no curl
+/// option is added.
+///
+/// A body over `max_body` is never returned truncated: the transfer is aborted and the failure
+/// carries `body_limit` ([`RequestFailure::too_large`]). A reply that completed within the bound is
+/// `Ok` whatever its status, so a `404` is a value here, not an error.
+pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, RequestFailure> {
+    request_result_evidence(url, &[], "GET", None, API, true, Some(max_body), None, false)
 }
 
 /// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
@@ -4126,6 +4148,57 @@ mod request_tests {
                 });
             }
         }
+    }
+
+    /// The install-from-address door: a body over the bound is a typed "too large" and never a
+    /// truncated `Ok`, a body within it (the bound itself included) is delivered, and a `404` is
+    /// a value the caller maps, not a transport failure.
+    #[test]
+    fn bounded_public_get_refuses_over_the_bound_and_delivers_under_it() {
+        let _serial = plx_base::testlock::serial();
+        assert!(global_init() && available());
+        for len in [31usize, 32, 33, 65536] {
+            let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n").into_bytes();
+            reply.extend(vec![b'x'; len]);
+            with_response(reply, false, |url| {
+                let got = https_get_public_bounded(url, 32);
+                if len <= 32 {
+                    let resp = got.ok().expect("a body within the bound is delivered");
+                    assert_eq!((resp.status, resp.body.len()), (200, len));
+                } else {
+                    let failure = got.err().expect("a body over the bound is refused, never truncated");
+                    assert!(failure.too_large(), "{failure:?}");
+                    assert_eq!(failure.body_limit, Some(32));
+                }
+            });
+        }
+        // The same over-bound answer without a Content-Length: the bound is enforced on the bytes
+        // that arrive, not on a header a server may omit or understate.
+        let mut chunked = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+        chunked.extend(vec![b'x'; 64]);
+        with_response(chunked, false, |url| {
+            let failure = https_get_public_bounded(url, 32).err().expect("unframed over-bound body");
+            assert!(failure.too_large(), "{failure:?}");
+        });
+        with_response(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(), false, |url| {
+            let resp = https_get_public_bounded(url, 32).ok().expect("a 404 completes");
+            assert_eq!((resp.status, resp.body.len()), (404, 0));
+        });
+    }
+
+    /// A host that answers nothing is a failure without a status or a bound, so the page says "could
+    /// not connect" and not "not found" or "too large".
+    #[test]
+    fn bounded_public_get_names_a_refused_connection() {
+        let _serial = plx_base::testlock::serial();
+        assert!(global_init() && available());
+        let failure = https_get_public_bounded(&format!("http://127.0.0.1:{}/", dead_port()), 32)
+            .err()
+            .expect("nothing listens");
+        assert!(!failure.too_large());
+        assert_eq!(failure.status, None);
+        assert_eq!(failure.untrusted_chain(), None);
+        assert_eq!(failure.curl_rc, Some(7), "CURLE_COULDNT_CONNECT");
     }
 
     #[test]
