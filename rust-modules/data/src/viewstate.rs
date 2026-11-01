@@ -1091,7 +1091,7 @@ pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
 
 /// The key a hand-built [`Req`] of a fixture carries: no registry stands behind it.
 #[cfg(any(test, feature = "test-support"))]
-const UNKEYED: ClientKey = ClientKey { instance: 0, token: 0 };
+const UNKEYED: ClientKey = ClientKey { instance: 0, token: 0, grant: 0 };
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, PartialEq, Eq)]
@@ -1808,7 +1808,7 @@ mod tests {
 
     const PROFILE: u32 = 4;
 
-    fn key(instance: u32, token: u32) -> ClientKey { ClientKey { instance, token } }
+    fn key(instance: u32, token: u32) -> ClientKey { ClientKey { instance, token, grant: 0 } }
 
     fn keys_of(entries: &[(ServerId, ClientKey)]) -> ClientKeys {
         ClientKeys::from_keys(entries.iter().copied())

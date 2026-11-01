@@ -117,6 +117,11 @@ pub(crate) struct AppViews<'a> {
     /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
     /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
     pub(crate) session: &'a plx_media::route::PlaybackSession,
+    /// **Today's calendar date as this frame's publication**, `[year, month, day]` in the viewer's
+    /// time zone: published by the loop once per iteration ([`Bridge::publish_today`]) the way the
+    /// playback session is, so a screen RECEIVES the date it words ("Today", "27 Oct") and fetches
+    /// none. `None` before the first publication and when the platform cannot say.
+    pub(crate) today: Option<[i32; 3]>,
     /// **The kind of page beneath the page these views are read for** on the navigation stack,
     /// folded in by the dispatcher per page ([`Host::views_over`]); `None` for a root, and for
     /// every context that is not a page's own. What a page that names where BACK goes reads
@@ -137,7 +142,7 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, today: self.today, beneath: None }
     }
 }
 
@@ -250,6 +255,7 @@ impl plx_screens::registry::LibraryLike for AppHost {
     fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
         super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
     }
+    fn today(cx: &Cx<'_, Self>) -> Option<[i32; 3]> { cx.views.today }
 }
 
 impl plx_screens::registry::PersonLike for AppHost {
@@ -407,6 +413,9 @@ pub(crate) struct Bridge {
     /// Was the publication above refreshed on the last frame? The one bit that lets the retirement
     /// of a stale publication be a single assignment rather than a per-frame one.
     playback_live: bool,
+    /// This frame's publication of the calendar date — see `AppViews::today`. Refreshed by
+    /// [`Bridge::publish_today`] from the loop, once per iteration; `None` until the first one.
+    today: Option<[i32; 3]>,
     /// **Is the hardware video plane bound?** `Player::video_plane_bound`, published here by the
     /// loop on its edges — the rig's own copy of the one bit, for the privileged call at draw
     /// entry (`clear_opaque_region`), which the `Rig` trait gives no argument.
@@ -662,6 +671,7 @@ impl Bridge {
             mounter: AppMounter::default(),
             playback: plx_media::route::PlaybackSession::IDLE,
             playback_live: false,
+            today: None,
             video_plane: false,
             measure: plx_ui::rec::Measurements::Live(measure),
             hubs: reads.hubs,
@@ -2004,6 +2014,14 @@ impl Bridge {
             self.playback_live = false;
         }
     }
+
+    /// **Publish this frame's calendar date** — see `AppViews::today`. Called once per iteration by
+    /// the loop, beside [`Self::publish_playback`] and before the dispatcher frame and the draw, with
+    /// `clock::today()` (the loop is that door's one caller). Time arrives as an input: a screen
+    /// that words a date reads it from its views and reads no clock.
+    pub(crate) fn publish_today(&mut self, today: Option<[i32; 3]>) {
+        self.today = today;
+    }
 }
 
 impl Bridge {
@@ -2055,7 +2073,7 @@ impl Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -2253,7 +2271,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
             },
             measure: &self.measure,
         }
@@ -3805,8 +3823,8 @@ pub(crate) fn open_settings(d: &mut Dispatcher<AppHost>) {
     open_settings_at(d, SettingsPage::Root);
 }
 
-/// …and the DEV boot target's door: the same surface, rooted at `page` (see [`AppArg`] for why
-/// the target is a root rather than a push).
+/// …and the door for a surface rooted at `page`: the DEV boot target, and the Library's Favorite
+/// libraries row (see [`AppArg`] for why the target is a root rather than a push).
 pub(crate) fn open_settings_at(d: &mut Dispatcher<AppHost>, page: SettingsPage) {
     if surface_up(d, is_settings) {
         return;
@@ -4031,15 +4049,33 @@ pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
 /// A no-op when no player page is mounted. The engine acts on an `Enter` only for the page that owns
 /// input at the moment it drains; for a page under a panel it only reaches the screen, which mirrors it.
 pub(crate) fn reseat_player_focus(d: &mut Dispatcher<AppHost>) {
+    reseat_player(d, |player, _| Some(FocusTarget::ContainerGroup(player.hud.nav.focus)));
+}
+
+/// Re-seat the player's ring on the element its row currently calls primary — the APP's half of a
+/// row swap, used after it re-resolves a slot the page changed while the frame was in flight
+/// (BACK over an offer), so the engine lands on the primary of the row the loop will draw.
+pub(crate) fn reseat_player_focus_on_primary(d: &mut Dispatcher<AppHost>) {
+    reseat_player(d, |player, entry| {
+        let elem = plx_appkit::player_hud::control_elem(player.row_primary());
+        entry.map(|entry| FocusTarget::Elem(FocusKey { entry, elem }))
+    });
+}
+
+/// The one delivery both re-seats make: hand the top page the `Enter::Fresh` that `target` names
+/// for the mounted player (given the page's entry, when it has one). Nothing is delivered when no
+/// player page is mounted or `target` answers `None`.
+fn reseat_player(
+    d: &mut Dispatcher<AppHost>,
+    target: impl FnOnce(&plx_screens::player::PlayerScreen, Option<EntryId>) -> Option<FocusTarget<u32>>,
+) {
     let Some(instance) = d.top_page() else { return };
-    let Some(group) = player(d).map(|player| player.hud.nav.focus) else { return };
+    let entry = d.nav.entry_of_instance(instance);
+    let Some(focus) = player(d).and_then(|player| target(player, entry)) else { return };
     let page = MachineId::Instance(instance);
     d.emit(
         page,
-        Fx::Deliver(
-            page,
-            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(group) })),
-        ),
+        Fx::Deliver(page, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))),
     );
 }
 

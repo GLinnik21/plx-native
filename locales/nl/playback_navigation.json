@@ -1,0 +1,9 @@
+{
+  "settings.playback.instant_dpad_seeking": "Direct spoelen met pijltjes",
+  "settings.playback.instant_dpad_seeking.copy": "Bij verborgen bediening springt Links/Rechts met het spoelinterval. Is de bediening zichtbaar, dan bevestigt OK. 'Uit' toont altijd eerst de bediening.",
+  "settings.playback.instant_dpad_seeking.off": "Uit",
+  "settings.playback.instant_dpad_seeking.on": "Aan",
+  "settings.playback.dolby_vision": "Dolby Vision",
+  "settings.playback.dolby_vision.copy": "Auto gebruikt Dolby Vision als de tv dit ondersteunt. Uit speelt de HDR10-laag af. Bestanden zonder HDR10-laag converteert je Plex-server, en ze spelen mogelijk niet af.",
+  "settings.playback.dolby_vision.off": "Uit"
+}

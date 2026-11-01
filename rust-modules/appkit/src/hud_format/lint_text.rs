@@ -183,7 +183,7 @@ impl<'a> Texts<'a> {
         }
     }
 
-    /// The catalog of the language. `None` for a tag that is not one of the ten shipped (a `LintLang` built by
+    /// The catalog of the language. `None` for a tag that is not one of the eleven shipped (a `LintLang` built by
     /// hand): its numbered strings are then not checked.
     fn locale(&self) -> Option<&LocaleContext> {
         self.locale.get_or_init(|| locale_of(self.tag)).as_ref()
@@ -1036,7 +1036,7 @@ mod tests {
         )
     }
 
-    /// Every text finding of `lint_with` on `text` in all ten languages.
+    /// Every text finding of `lint_with` on `text` in all eleven languages.
     fn text_findings(text: &str, skew: f32) -> Vec<Finding> {
         lint_with(
             text,
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn classic_and_the_fixtures_have_no_text_findings_in_any_language() {
         let langs = LintLang::shipped();
-        assert_eq!(langs.len(), 10);
+        assert_eq!(langs.len(), 11);
         for (name, text) in [
             ("classic", BUILTIN_CLASSIC),
             ("reference", REFERENCE),
@@ -1134,7 +1134,7 @@ mod tests {
             .filter(|f| f.pointer == CHAPTERS_LABEL)
             .map(|f| f.ctx.lang.clone())
             .collect();
-        assert_eq!(tags.len(), 10, "{tags:?}");
+        assert_eq!(tags.len(), 11, "{tags:?}");
         // ... and the clock is the same in all of them, so its finding collapsed to one.
         let clocks: Vec<_> = found.iter().filter(|f| f.pointer == CLOCK).collect();
         assert!(clocks.iter().all(|f| f.ctx.lang.is_none()), "{clocks:?}");
@@ -1317,7 +1317,7 @@ mod tests {
         );
     }
 
-    /// The label is the language's: each of the ten languages names its own, and a language whose button fits
+    /// The label is the language's: each of the eleven languages names its own, and a language whose button fits
     /// is silent (a pill or button is judged by its own rect, not by a fixed list of languages).
     #[test]
     fn a_button_past_its_vstack_is_found_in_the_languages_it_is_wider_in() {
@@ -1326,7 +1326,7 @@ mod tests {
         let tags: BTreeSet<&str> = found.iter().filter_map(|f| f.ctx.lang.as_deref()).collect();
         assert_eq!(
             tags.len(),
-            10,
+            11,
             "the button outgrows 200 px in every shipped language: {tags:?}"
         );
         assert!(
@@ -1382,10 +1382,10 @@ mod tests {
             .filter(|f| f.pointer == FALLBACK)
             .map(|f| f.ctx.lang.clone().unwrap())
             .collect();
-        assert_eq!(fallback.len(), 10, "{fallback:?}");
+        assert_eq!(fallback.len(), 11, "{fallback:?}");
         assert_eq!(
             found.iter().filter(|f| f.pointer == FALLBACK).count(),
-            10,
+            11,
             "{found:?}"
         );
     }

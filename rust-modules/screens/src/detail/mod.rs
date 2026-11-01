@@ -1817,6 +1817,15 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 }
             }
         }
+        // A page BACK has just returned to asks its server for its item again, and until the item
+        // lands the hero is what a page without an item offers: Play and the watch disc. A control
+        // the item brings back (Go to Show, Restart, Play Version) is not gone, only not here yet, so
+        // a focus held on one stays there: sent to Play for the length of the load, it would be
+        // Play's by the time the item landed, and the restore (`restore_focus`) is spent on a focus
+        // that has already been moved. `pump_restore` ends the wait when the request fails.
+        if self.return_pending && self.detail(meta).is_none() && hero::HeroCtl::of_elem(want.elem).is_some() {
+            return want;
+        }
         let known = self.keys.iter().any(|key| key.elem == want.elem);
         // `self.refresh != None` is the page's OWN outstanding server obligation, and it belongs
         // beside the store's answer rather than behind it. The store's `Some(true)` only reports a
@@ -3106,6 +3115,7 @@ impl DetailScreen {
                         hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
                         // At either rest the plain face; only a flip in flight layers the fill.
                         hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist.pos()).0,
+                        hero::HeroCtl::GoToShow => hero::GO_TO_SHOW_ICON,
                         hero::HeroCtl::Version => hero::VERSION_ICON,
                         _ => unreachable!(),
                     };
@@ -4314,6 +4324,7 @@ impl DetailScreen {
         // handling stays correct even though the disc itself is never shown.)
         hero::HeroSet {
             version: self.detail(meta).is_some_and(|d| hero_versions(d).len() >= 2),
+            go_show: self.detail(meta).is_some_and(|d| hero::go_to_show_target(d).is_some()),
             restart,
             trailer: false,
             alt: self.alt_available(meta),
@@ -4479,6 +4490,24 @@ impl DetailScreen {
                     version: None,
                 };
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
+            }
+            // The disc asks the item menu's own navigation (`Action::GoToShow`), which is the one
+            // route that carries an episode's season with it: the app opens the show page with that
+            // season selected, so a press here lands exactly where the card menu's Go to Show row
+            // does. A screen cannot push a seeded page itself (`bridge::open_detail` takes the
+            // bridge), and a second navigation spelling would be a second place for the season to
+            // be dropped.
+            hero::HeroCtl::GoToShow => {
+                let Some(d) = self.detail(meta) else { return };
+                let Some((show_rk, season)) = hero::go_to_show_target(d) else { return };
+                fx.push(Fx::App(AppFx::ItemMenu(crate::registry::ItemMenuReq {
+                    act: crate::registry::ItemMenuAction::GoToShow(show_rk.to_string(), season as i32),
+                    sid: d.sid,
+                    item: None,
+                    season: None,
+                    loaded_episode: false,
+                    from_home: false,
+                })));
             }
             hero::HeroCtl::Alt | hero::HeroCtl::Version => {
                 let set = self.hero_set(meta);

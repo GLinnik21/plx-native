@@ -58,9 +58,13 @@ pub(super) fn recorder_end_frame(
 }
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
-/// (`Frame::begin`); every field is written by exactly one phase and read by the ones after it.
+/// (`Frame::begin`); every field is written by one phase and read by the ones after it, except
+/// `ctrl`, which `content_requests` may re-resolve once after a player request changes the
+/// metadata store's skipped set.
 pub(crate) struct Frame {
-    /// The HUD's control slot for this frame, sampled once before input is read.
+    /// The HUD's control slot for this frame, sampled by `Frame::begin` for input and the pump.
+    /// `content_requests` re-resolves it once, and pushes it to the page, on a frame where BACK
+    /// dismissed an offer; `update` and `report` read the refreshed value.
     pub(crate) ctrl: plx_appkit::player_hud::ControlSlot,
     /// `clock::now()` at the ingest boundary — THE frame time every phase after it uses.
     pub(crate) now: u32,
@@ -204,9 +208,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the tree and the loop's route mirror ("the tree still says player, the route already
         // says home"); with one authority it is an EDGE, read either side of the frame.
         let was_player = super::bridge::player(&app.pages).is_some();
-        // **Publish the playback session into the tree** (spec §2.3) before the dispatcher's frame
-        // and the draw that follows it, so every owned screen in one frame reads one consistent
-        // picture. Only while something that reads it is mounted — see `Bridge::publish_playback`.
+        // **Publish the frame's inputs into the tree** (spec §2.3) before the dispatcher's frame and
+        // the draw, so every owned screen in one frame reads one consistent picture: the playback
+        // session and the calendar date, see `publish_frame`.
         if app.adapters.player.poll_repair(&mut app.player.repair) {
             plx_machine::idle::invalidate();
         }
@@ -217,7 +221,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
         plx_media::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
-        app.bridge.publish_playback(&app.player.session, was_player);
+        publish_frame(&mut app.bridge, &app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
@@ -303,6 +307,17 @@ pub(crate) unsafe fn run(app: &mut App) {
         report(app, fr);
         heartbeat(app, fr);
     }
+}
+
+/// **What the loop publishes into the Bridge once per iteration**, ahead of the dispatcher frame and
+/// the draw: the playback session ([`super::bridge::Bridge::publish_playback`]) and today's
+/// calendar date ([`super::bridge::Bridge::publish_today`]). The date comes from [`clock::today`],
+/// which this call is the one caller of: it answers [`clock::REPLAY_DATE`] under a replay (the
+/// recorded tick is set at the top of the iteration) and the platform's date, read at most once a
+/// minute, otherwise. A screen then receives the date through `AppViews::today` and reads no clock.
+fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route::PlaybackSession, was_player: bool) {
+    bridge.publish_playback(session, was_player);
+    bridge.publish_today(clock::today());
 }
 
 /// **The frame's clock and the click's spring** (spec §3.3 step 3's head).
@@ -763,6 +778,8 @@ unsafe fn present_and_swap(
         app.glass.sources.borrow_mut().finish();
         // …and a queued underlay-field reduction has had one more drawn frame to finish in.
         plx_gfx::gfx::field_frame_end();
+        // …and a region texture no page asked for this frame goes back to the driver.
+        plx_gfx::gfx::region_frame_end();
         // …and a frame that captured the page leaves a fence the next frames wait on.
         plx_gfx::gfx::snapshot_frame_end();
         // …and a ground probe's queued copy is read back here, between frames, if it is done.
@@ -2536,8 +2553,8 @@ fn loop_requests(app: &mut App) {
             // `(Frozen, Cached)` and never returns the page to `HostRender::Live` — the snapshot
             // survives the handover, which is what
             // `account_to_settings_never_unfreezes_the_host` pins.
-            plx_screens::registry::LoopReq::AccountSettings => {
-                super::bridge::open_settings(&mut app.pages);
+            plx_screens::registry::LoopReq::OpenSettings(page) => {
+                super::bridge::open_settings_at(&mut app.pages, page);
             }
             // `ps` is threaded rather than read from a global (lane D's lab gate: `player::diag`
             // has taken a `&PlaybackSession` since phase 9, and `lab::request_upload` with it).
@@ -2714,10 +2731,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // are stepped from its own `Tick` for the reason `HudMotion::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
         // rate that depended on which panel was open. What the loop still owes the instance is
-        // this frame's ONE resolve of the control-row slot (`slot()`'s own doc: `playpos_ns` is
-        // written by LG's media thread and `player::pump` runs between the input handlers and
-        // the draw, so re-deriving it per call site let a keypress dispatch to a control the
-        // same frame then declined to draw).
+        // this frame's resolved control-row slot (`content_requests` re-resolves it after a
+        // dismissal; `slot()`'s own doc: `playpos_ns` is written by LG's media thread and
+        // `player::pump` runs between the input handlers and the draw, so re-deriving it per
+        // call site let a keypress dispatch to a control the same frame then declined to draw).
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.slot = fr.ctrl;
         }
@@ -4011,9 +4028,9 @@ mod lifecycle_regression_tests {
         assert!(app.route() == AppArg::Watchlist);
         let instance = app.pages.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
         let hex = [0x5d, 0x77, 0x6b, 0x1d, 0x96, 0xb6, 0x55, 0x00, 0x1f, 0x2a, 0x9c, 0x3e];
-        let fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         app.bridge.push_watchlist_req_for_test(MachineId::Instance(instance), WatchlistOut::OpenCatalog("plex://movie/not-a-hex".into()));
-        content_requests(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
         for i in 40..80 {
             frame(&mut app, i * 16);
         }
@@ -4022,7 +4039,7 @@ mod lifecycle_regression_tests {
             MachineId::Instance(instance),
             WatchlistOut::OpenCatalog("plex://movie/5d776b1d96b655001f2a9c3e".into()),
         );
-        content_requests(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
         for i in 80..140 {
             frame(&mut app, i * 16);
         }
@@ -4048,7 +4065,7 @@ mod lifecycle_regression_tests {
                 fr.now = *t;
                 let inputs = if n == 0 { keys.clone() } else { vec![] };
                 super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
-                content_requests(app, &fr);
+                content_requests(app, &mut fr);
                 loop_requests(app);
             }
         };
@@ -4100,7 +4117,7 @@ mod lifecycle_regression_tests {
                     fr.now = *t;
                     let inputs = if n == 0 { keys.clone() } else { vec![] };
                     super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
-                    content_requests(app, &fr);
+                    content_requests(app, &mut fr);
                     loop_requests(app);
                 }
             };
@@ -4562,6 +4579,58 @@ mod lifecycle_regression_tests {
         assert_eq!(player.hud.nav.tab, 0);
         assert_ne!(app.pages.focus().map(|k| k.elem), Some(ELEM_SCRUB), "the engine left the scrubber");
         assert_eq!(app.pages.focus().map(|k| k.elem), Some(ELEM_TAB_BASE), "…for the tab the pin named");
+    }
+
+    /// **BACK over an offer swaps the discs in on the frame that took it.** The frame's slot is
+    /// sampled before the dispatcher runs, so the page asks the metadata store to retire the
+    /// segment and the loop re-resolves the row after draining that request. Without the re-resolve
+    /// the offer would be handed back to the page once more; without the store the next frame's
+    /// `slot()` would offer it again. Both are asserted here, on a mounted player whose slot the
+    /// REAL `player_hud::slot` produced.
+    #[test]
+    fn back_over_an_offer_swaps_in_the_discs_on_the_same_frame() {
+        use plx_appkit::player_hud::{control_elem, geometry::GROUP_ROW, ControlSlot};
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED back_over_an_offer_swaps_in_the_discs_on_the_same_frame: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = playing_inside_final_credits(&mut rig);
+        {
+            let player = super::super::bridge::player_mut(&mut rig.app.pages).expect("the player page is mounted");
+            assert!(matches!(player.slot, ControlSlot::UpNext(_)), "the credits offer is up");
+            assert_eq!(player.hud.nav.focus, GROUP_ROW, "the offer parked the ring on the row");
+            // This harness injects a key straight into the dispatcher, so it stands in for
+            // `note_global_press`, which the real input path runs before the page sees the press.
+            player.hud.visible_at_press = true;
+        }
+        let back = back_key(t);
+        step(&mut rig.app, &mut t, vec![back]);
+        let player = super::super::bridge::player(&rig.app.pages).expect("the player page is mounted");
+        assert!(
+            matches!(player.slot, ControlSlot::Discs(_)),
+            "the frame that took BACK draws the discs, not the offer it just dismissed"
+        );
+        assert_eq!(player.hud.nav.btn, player.row_primary(), "the cursor is on a real disc");
+        let primary = player.row_primary();
+        // The app's re-seat is a delivery, drained at the top of the next frame — before any key
+        // that frame can be read. No press can land between these two frames.
+        step(&mut rig.app, &mut t, vec![]);
+        assert_eq!(
+            rig.app.pages.focus().map(|k| k.elem),
+            Some(control_elem(primary)),
+            "the FocusEngine followed the cursor, so OK presses what is drawn"
+        );
+        assert!(
+            plx_media::player::is_playing(&rig.app.player.session),
+            "the rig is still Playing, so a Discs row below can only come from the store"
+        );
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(
+            fr.ctrl.is_discs(),
+            "the segment is retired in the store, so the next frame's row is the discs, not the offer again"
+        );
     }
 
     /// Offer `standin` on a mounted player, let the offer seat the engine, retire it for `discs`,
@@ -5034,6 +5103,9 @@ mod lifecycle_regression_tests {
         entered: mpsc::Receiver<()>,
         requests: Arc<Mutex<Vec<String>>>,
         stop: Arc<AtomicBool>,
+        /// The fixture's answer gate: while it is closed ([`Self::hold_answers`]) every request that
+        /// reaches the fixture waits, unanswered, until [`Self::answer_held`] opens it.
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
@@ -5082,6 +5154,8 @@ mod lifecycle_regression_tests {
             let log = requests.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let stopping = stop.clone();
+            let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let fixture_gate = gate.clone();
             let worker = match plx_base::task::spawn_small_keeping("lifecycle-fixture", move || {
                 let mut first = true;
                 while !stopping.load(Ordering::Acquire) {
@@ -5120,6 +5194,13 @@ mod lifecycle_regression_tests {
                         arrived.send(()).unwrap();
                         let _ = wait.recv_timeout(Duration::from_secs(5));
                     }
+                    {
+                        let (closed, opened) = &*fixture_gate;
+                        let mut held = closed.lock().unwrap();
+                        while *held && !stopping.load(Ordering::Acquire) {
+                            held = opened.wait_timeout(held, Duration::from_millis(50)).unwrap().0;
+                        }
+                    }
                     let body = respond(&request);
                     // a handler answers `!503` for a refusal: a 5xx with an empty body
                     let (status, body) = match body.as_str() {
@@ -5154,8 +5235,21 @@ mod lifecycle_regression_tests {
                 entered,
                 requests,
                 stop,
+                gate,
                 worker: Some(worker),
             })
+        }
+
+        /// Close the answer gate: every request the fixture receives from now on is logged and then
+        /// waits, unanswered, until [`Self::answer_held`]. The worker that sent it blocks on its reply,
+        /// so a resolve started after this cannot land inside the frame that started it.
+        fn hold_answers(&self) {
+            *self.gate.0.lock().unwrap() = true;
+        }
+
+        fn answer_held(&self) {
+            *self.gate.0.lock().unwrap() = false;
+            self.gate.1.notify_all();
         }
 
         fn request(&mut self) {
@@ -5236,6 +5330,7 @@ mod lifecycle_regression_tests {
 
     impl Drop for Rig {
         fn drop(&mut self) {
+            self.answer_held();
             let _ = self.release.send(());
             plx_media::route::cancel_play(&mut self.app.player.session);
             // `cancel_play` withdraws the landing but leaves the detached resolve worker running,
@@ -5567,7 +5662,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe {
             update(app, &mut fr);
@@ -6828,7 +6923,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
         app.bridge.assert_no_store_jobs_left_for_test();
@@ -7577,7 +7672,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
     }
@@ -8638,6 +8733,10 @@ mod lifecycle_regression_tests {
             "inside the credits the tile takes over",
         );
         assert!(!plx_media::route::play_pending(), "the countdown is still running");
+        // The successor's resolve answers at once (only the first request is held), so a worker
+        // scheduled between `playback_tick` and `update` inside one `step` lands and is pumped before
+        // the assertion below: hold its answers, so the request it makes is what is graded.
+        rig.hold_answers();
         t += plx_appkit::up_next::COUNTDOWN_MS;
         step(&mut rig.app, &mut t, vec![]);
         assert!(plx_media::route::play_pending(), "the countdown requests the successor");
@@ -9005,6 +9104,53 @@ mod pump_wiring_tests {
             "pump_detail() and pump_season() must be pumped from the same function — found what \
              looks like an intervening function boundary between them"
         );
+    }
+}
+
+#[cfg(test)]
+mod frame_publication_tests {
+    //! **The loop publishes the calendar date once per iteration** (`Bridge::publish_today`), so a
+    //! screen receives it through `AppViews::today` and reads no clock. `App` has no host fixture
+    //! (it needs a real SDL/GL context), so the behaviour is graded on [`publish_frame`] — the one
+    //! call the loop makes — and the loop's own text is pinned for that call, the idiom of
+    //! `pump_wiring_tests`.
+    use super::{clock, publish_frame};
+    use crate::app::bridge::Bridge;
+
+    #[test]
+    fn an_iteration_publishes_the_replay_pinned_date_and_a_new_one_replaces_it() {
+        let mut bridge = Bridge::for_test(|| 0);
+        let session = plx_media::route::idle_session_for_test();
+        assert_eq!(bridge.views().today, None, "nothing is published before the first iteration");
+        // A replay frame runs on the recorded tick, and with it the pinned date: the same on every
+        // run and every day, whatever the wall clock says.
+        clock::set_replay(100);
+        publish_frame(&mut bridge, session, false);
+        assert_eq!(bridge.views().today, Some(clock::REPLAY_DATE));
+        // The publication is the frame's: the next iteration replaces it, so a midnight is carried.
+        bridge.publish_today(Some([2001, 2, 3]));
+        assert_eq!(bridge.views().today, Some([2001, 2, 3]));
+        publish_frame(&mut bridge, session, false);
+        assert_eq!(bridge.views().today, Some(clock::REPLAY_DATE), "every iteration publishes anew");
+    }
+
+    #[test]
+    fn the_loop_publishes_the_frame_before_the_dispatcher_frame_and_the_draw() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player);";
+        assert_eq!(
+            src.lines().filter(|l| *l == CALL).count(),
+            1,
+            "`publish_frame` must be called exactly once, at the loop body's own depth: unnested, \
+             so no route skips the date",
+        );
+        let call = src.find(CALL.trim_start()).expect("the call");
+        let frame = src.find("let supplied = match app.rec.replay_results(").expect("the dispatcher's frame");
+        let draw = src.find("let (_vx, _vy, _vw, _vh) = draw(app, fr);").expect("the loop's draw");
+        assert!(call < frame && call < draw, "the date is published before the frame that reads it");
     }
 }
 

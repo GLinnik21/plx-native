@@ -47,8 +47,9 @@
 //! ## Favourites RANK here; they never filter
 //!
 //! The **Favorite libraries** switch governs every other browsing surface — Home's shelves, which
-//! type pills the top strip draws, the Library's Sources picker — and this screen is the deliberate
-//! exception. It stays **grant-scoped**: every library the account may reach is searched, and the
+//! type pills the top strip draws, the Library's Sources picker — and this screen is a deliberate
+//! exception (the Library's Sort & Filter menu is the other: it lists every library of the type
+//! that is a favourite or on a server the Sources list can open). It stays **grant-scoped**: every library the account may reach is searched, and the
 //! favourites only decide the ORDER ([`merge`], favourites first, each pass stable so the server's
 //! own ranking survives inside it).
 //!

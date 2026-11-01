@@ -33,7 +33,7 @@ is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has 
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
 so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
 `docs/agent-reference.md` linking section for why. It
-emits Annex-B video AUs (param sets prepended at each keyframe) and, for AV1, Section-5 temporal units (TD OBU first, the av1C sequence header and metadata OBUs in-band on keyframes; `/tmp/plxnative-av1obu` = notd,noseq,raw tokens varies it on a debug build), for VP9 the demuxed packet unchanged (a frame carries its own headers and libpf's `video/x-vp9` caps have no `codec_data`), and AC3/EAC3, ADTS-framed AAC, or DTS core audio frames,
+emits Annex-B video AUs (param sets prepended at each keyframe; a stream with no avcC/hvcC record, which is what an MPEG-TS or raw elementary stream under a `.mp4` name looks like since the route trusts the part's file NAME, arrives with start codes already: `ff::NalInput` decides it once per stream from the extradata, H.264 is framed in place and held back until its first keyframe, and HEVC is refused like a codec with no framing; its clock is also moved to 0 at the demuxer (`ff::stream_origin_ns`: packets rebased after the read, the origin added back on a seek) because the engine takes a fresh play's first keyframe to be near 0 and a capture's clock starts wherever the transmitter's did; Matroska and MP4 keep theirs; #1084) and, for AV1, Section-5 temporal units (TD OBU first, the av1C sequence header and metadata OBUs in-band on keyframes; `/tmp/plxnative-av1obu` = notd,noseq,raw tokens varies it on a debug build), for VP9 the demuxed packet unchanged (a frame carries its own headers and libpf's `video/x-vp9` caps have no `codec_data`), and AC3/EAC3, ADTS-framed AAC, or DTS core audio frames,
 and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
@@ -109,8 +109,11 @@ something.
   Methods returning a `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO)
   for short replies like `"Ok"`/`"BufferFull"`.
 - **Dolby Vision and Dolby Atmos have their own document: `docs/dolby-vision.md`.** A DV node is
-  emitted only after the boot-time configd probe definitely confirms hardware support. The route
-  freezes that capability + presentation decision, and every Load/reload/recovery consumes the
+  emitted only when the boot-time configd probe definitely confirms hardware support and the seated
+  profile's Dolby Vision setting is Auto (`ResolveEnv::dolby_vision_mode`, applied by
+  `DolbyVisionMode::gate` where the route plans, to the presentation only). The route freezes the
+  probe's own capability (for read-outs) + that gated presentation decision, and every
+  Load/reload/recovery consumes the
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
   exception. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.

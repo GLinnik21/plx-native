@@ -124,14 +124,28 @@ pub const TEXT_READING: [f32; 4] = COOL_200;
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
 pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
 /// A page-header control's label at rest (`PageHeader`): white at 65%. A value segment beside it
-/// stays full white, so "Sort & Filter · Title" reads as a label and a value.
+/// stays full white, so "Collections · 24" reads as a label and a value.
 pub const CONTROL_TEXT_REST: [f32; 4] = with_a(WHITE, 0.65);
 /// The "312 of 1,284" read-out beside the header controls while a filter is on: white at 50%,
 /// quieter than [`CONTROL_TEXT_REST`] because it is not a control and takes no focus.
 pub const COUNT_FILTERED_INK: [f32; 4] = with_a(WHITE, 0.50);
+/// The chevron a header PLACE wears ("Collections · 24 ›", "Recommended ›": the control opens a
+/// page): white at 45%, a step under [`CONTROL_TEXT_REST`] so the mark reads as the control's
+/// affordance and not as part of its name.
+pub const HEADER_PLACE_INK: [f32; 4] = with_a(WHITE, 0.45);
+/// The hairline between the header's places and its sort control (2 x 32 px): white at 16%.
+pub const HEADER_DIVIDER_INK: [f32; 4] = with_a(WHITE, 0.16);
 /// The details line under a focused poster (Under posters: "2019 · 2h 6m"): white at 82%, a step
 /// below the title above it and neutral where [`TEXT_SECONDARY`] read bluish over the ground.
 pub const CAPTION_DETAIL_INK: [f32; 4] = with_a(WHITE, 0.82);
+/// The sort value under every poster of a library grid sorted by something other than Title or
+/// Random (Settings > Libraries > Under posters > Sort value): white at 80% at rest. The focused
+/// poster's value is [`TEXT_PRIMARY`] in bold.
+pub const SORT_VALUE_INK: [f32; 4] = with_a(WHITE, 0.80);
+/// An empty sort value under a poster: the en dash for data the server does not have, the word
+/// "Never" under Date viewed and Plays for something nobody played. White at 50%, a step below
+/// [`SORT_VALUE_INK`] so the gap reads as absence.
+pub const SORT_VALUE_MISSING_INK: [f32; 4] = with_a(WHITE, 0.50);
 /// The `·` between fine-print facts, and **only** that — a step below the words it separates.
 /// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is
 /// worth keeping: a dot at the full ink of its neighbours joins the list instead of punctuating

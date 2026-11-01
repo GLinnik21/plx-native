@@ -1,0 +1,31 @@
+{
+  "under_posters.title": "Onder posters",
+  "under_posters.detail": "Voor films en series.",
+  "under_posters.copy": "De meeste posters tonen hun titel al. Kies wat eronder verschijnt, voor films en series. Het voorbeeld gebruikt de laatst geopende bibliotheek.",
+  "under_posters.title_row": "Titel",
+  "under_posters.title_detail": "De naam, vetgedrukt.",
+  "under_posters.details_row": "Details",
+  "under_posters.details_detail": "Eén regel voor een film of serie.",
+  "under_posters.details_copy": "Elke keuze past bij de poster: een film toont 2019 · 2 u 14 min, een serie 2019 · 6 seizoenen of 4 nieuwe afleveringen zodra je bent begonnen. Begonnen en komende titels en collecties tonen in plaats daarvan resterende tijd, releasedatum of aantal titels.",
+  "under_posters.year_length": "Jaar · Duur",
+  "under_posters.genre": "Genre",
+  "under_posters.video": "Video",
+  "under_posters.video_detail": "Series hebben geen vaste kwaliteit en tonen het jaar.",
+  "under_posters.age_rating_score": "Leeftijd · Score",
+  "under_posters.none": "Niets",
+  "under_posters.reset": "Standaard herstellen",
+  "under_posters.reset_detail": "Jaar en duur, sorteerwaarde aan, geen titel.",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drama",
+  "under_posters.sort_value": "Sorteerwaarde",
+  "under_posters.sort_value_detail": "Vervangt de detailregel zolang een bibliotheek gesorteerd is.",
+  "under_posters.value_today": "Vandaag",
+  "under_posters.value_yesterday": "Gisteren",
+  "under_posters.value_never": "Nooit",
+  "under_posters.value_plays": {
+    "one": "{count} keer afgespeeld",
+    "other": "{count} keer afgespeeld"
+  },
+  "under_posters.sorted_by": "Gesorteerd op jaar",
+  "under_posters.last_opened": "De laatst geopende bibliotheek"
+}

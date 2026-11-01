@@ -618,6 +618,7 @@ mod tests {
         ("no-break space", '\u{00A0}'),
         ("copyright", '\u{00A9}'),
         ("registered", '\u{00AE}'),
+        ("vulgar fraction one half (rail duration bands)", '\u{00BD}'),
     ];
 
     // LINK 2 — `appfont-cjk.ttf` (Noto Sans CJK KR, cut by tools/cut-noto-cjk.py). Checklist #6

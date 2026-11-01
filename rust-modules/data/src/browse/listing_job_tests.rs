@@ -30,7 +30,7 @@ fn a_filter_menu_step_emits_a_job_and_starts_no_worker_of_its_own() {
     let (_cleanup, mut browse, sid, _client) = loopback_page_source();
     browse.refill();
     let target = SectionAddress { epoch: browse.state.table_epoch(), sid, section: 1 };
-    for work in [crate::stores::browse::LibraryWork::Genres, crate::stores::browse::LibraryWork::Letters] {
+    for work in [crate::stores::browse::LibraryWork::Genres, crate::stores::browse::LibraryWork::Letters { today: None }] {
         assert!(browse.state.addressed_with_adapter(&browse.adapter, target, work, &browse.keys, &mut browse.jobs));
     }
     assert_eq!(browse.jobs.len(), 2, "one read per directory: {:?}", browse.jobs);

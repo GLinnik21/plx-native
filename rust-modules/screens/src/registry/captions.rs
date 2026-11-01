@@ -1,11 +1,13 @@
 //! **The one place a focused poster's caption is read and built** from the Under posters setting
-//! (Settings > Libraries > Under posters), except movie grids with Show sort information on
-//! (those use persistent title/year/sort captions): the Library grid, the Collections
+//! (Settings > Libraries > Under posters), except a movie or TV show library grid (movies, shows, seasons or
+//! episodes) showing its sort value (Sort value On and a sort that has a value for that kind of row: one value
+//! line under every card, `registry::sort_info`): the Library grid, the Collections
 //! page, the Watchlist, Home's shelves, the Library's Recommended poster shelves, Search's poster rows,
 //! the person page's filmography, Detail's Related and collection shelves and the Collection screen's
 //! members. (A landscape still or a headshot is not a poster and is not on the policy: the Library's
 //! Episodes listing, Search's Episode and Person rows, Detail's Extras and Cast and Recommended's
-//! landscape rows keep the legacy block, [`still_label`] / [`still_block`].)
+//! landscape rows keep the legacy block, [`still_label`] / [`still_block`], except while the
+//! Library's Episodes view shows its sort value, which reads `sort_info::label` instead.)
 //!
 //! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
 //!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
@@ -35,17 +37,19 @@
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_ui::cards::TileLabel;
 
-/// Whether movie-library grids show sort information, with the same test override as policy().
-pub fn show_sort_info() -> bool {
+/// Whether library grids sorted by something that has a value (not Title, Random or the Show order) show the
+/// sort value under every card (the Under posters page's Sort value switch), with the same test override as policy().
+pub fn sort_value() -> bool {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
-        return setting.show_sort_info;
+        return setting.sort_value;
     }
-    plx_media::route::under_posters().show_sort_info
+    plx_media::route::under_posters().sort_value
 }
 
-/// The standard focused-poster policy; movie grids with sort information enabled use their
-/// persistent title/year/sort block instead.
+/// The standard focused-poster policy; a movie or TV show library grid (movies, shows, seasons or episodes) showing
+/// its sort value (Sort value On, sorted by something that has a value for that kind of row) draws that one line under
+/// every card instead.
 pub fn policy() -> CaptionPolicy {
     #[cfg(test)]
     if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
@@ -60,6 +64,35 @@ thread_local! {
     /// other tests read through [`policy`].
     pub(crate) static TEST_UNDER_POSTERS: std::cell::Cell<Option<plx_plex::plex::session::UnderPosters>> =
         const { std::cell::Cell::new(None) };
+}
+
+/// **Pins the thread's Under posters setting to its default while it lives**, for a test fixture that
+/// draws a grid or a shelf and does not take `testlock::serial()` (or that must not depend on what the
+/// Settings tests last wrote). The grid and the shelves read the setting every frame ([`policy`]) to
+/// size the focused row's caption band, 80 px under one line and 112 under two; unpinned, that read is
+/// the process-wide cell the Settings tests write (`restore_under_posters`), and a write between two
+/// frames of a fixture moves every row under the focused one by the 32 px between the bands
+/// (`watchlist::page_tests::a_remove_changes_nothing_on_the_grid_until_the_landing_starts`,
+/// intermittent). The pin is the per-thread override above, so it writes nothing another thread can
+/// read. A setting the test pinned itself before the guard stands (the pin is the default only where
+/// nothing was pinned), and what was there is put back on the way out, a panic included.
+#[cfg(test)]
+pub(crate) struct PolicyPin(Option<plx_plex::plex::session::UnderPosters>);
+
+#[cfg(test)]
+impl PolicyPin {
+    pub(crate) fn default_setting() -> Self {
+        let before = TEST_UNDER_POSTERS.with(|cell| cell.get());
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(before.unwrap_or(plx_plex::plex::session::UnderPosters::DEFAULT))));
+        PolicyPin(before)
+    }
+}
+
+#[cfg(test)]
+impl Drop for PolicyPin {
+    fn drop(&mut self) {
+        TEST_UNDER_POSTERS.with(|cell| cell.set(self.0));
+    }
 }
 
 /// **The policy the Continue Watching deck follows** (the owner's 2026-10-22 call): the progress
@@ -110,7 +143,8 @@ pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_co
 
 /// **A landscape STILL's focused block** (an episode's 16:9 art): NOT a poster and so off the Under
 /// posters policy, in its own legacy band (114 px, [`plx_ui::cards::LEGACY_BAND_H`]: this 92 px
-/// block and its air), under every setting: the episode's own title (its address when it has none,
+/// block and its air), under every setting except while the Library's Episodes view shows its sort
+/// value, which reads `sort_info::label` instead: the episode's own title (its address when it has none,
 /// or when it only repeats the show's name) over one fact, the time it has left on the Continue
 /// Watching deck (`is_continue`), else its release date. `credit` is the server a result is borrowed
 /// from (Search's results), named after the fact. The Library's Episodes listing, the Recommended
@@ -279,13 +313,17 @@ pub fn rating_mark(art: plx_data::metadata::RatingArt) -> &'static [plx_ui::widg
 
 #[cfg(test)]
 #[test]
-fn sort_information_reads_the_same_thread_override_as_policy() {
+fn the_sort_value_switch_reads_the_same_thread_override_as_policy() {
     use plx_plex::plex::session::UnderPosters;
     for enabled in [false, true] {
-        let setting = UnderPosters { show_sort_info: enabled, ..UnderPosters::DEFAULT };
+        let setting = UnderPosters { sort_value: enabled, ..UnderPosters::DEFAULT };
         TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
-        assert_eq!(show_sort_info(), enabled);
+        assert_eq!(sort_value(), enabled);
         assert_eq!(policy(), crate::registry::caption_policy_of(setting));
+        // The Sort value switch reaches the Library grid only: every other poster surface reads the
+        // Title/Details policy, which is the same value with the switch On or Off.
+        assert_eq!(crate::registry::caption_policy_of(setting),
+            crate::registry::caption_policy_of(UnderPosters { sort_value: !enabled, ..setting }));
     }
     TEST_UNDER_POSTERS.with(|cell| cell.set(None));
 }

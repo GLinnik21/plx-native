@@ -235,6 +235,12 @@ pub enum PlayerReq {
     /// same dip. A stand-in's meaning depends on the segment it offers, which the app resolves on
     /// the committing frame (`app::playback::activate_ctrl_row`), so it carries no command.
     StandIn,
+    /// **BACK over a Skip / Up Next offer** — retire this exact segment in the metadata store's
+    /// skipped set (`MetadataCmd::MarkSkipped`). The store's skipped set is the only dismissal
+    /// state and the row is re-resolved from it every frame, which is what turns the offer into
+    /// the discs; the same set also retires a synthesized tail, which is what keeps a silent
+    /// credits marker from coming back.
+    DismissOffer(plx_data::metadata::Marker),
     /// **Leave the player** — the one ritual the STOP key, a BACK with nothing else open, and the
     /// failure read-out's own BACK escape all perform (`exit_player`; restructure phase 12,
     /// replacing `app/run.rs`'s direct calls to it from the player's own key arms).
@@ -323,7 +329,9 @@ pub enum LibraryReq {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LibraryMenuKind {
     Sort, Filter, Genre, Sources, Type,
-    /// The header's one Sort & Filter popover: Show / Sort / Filter sections. `Sort`, `Filter` and
+    /// The header's one Sort & Filter popover: Show / Sort / Filter sections, then (with two or more
+    /// libraries of the kind on offer) the Sources list's per-server sections and a headerless
+    /// Favorite libraries block. `Sort`, `Filter` and
     /// `Type` remain as the single-purpose menus the scripted pipeline names.
     SortFilter,
 }
@@ -1320,6 +1328,20 @@ pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn collections_count(_cx: &Cx<'_, Self>, _section: usize) -> Option<Result<u32, Forbidden>> {
         None
     }
+
+    /// **Today's calendar date** in the viewer's time zone, `[year, month, day]`: an INPUT the
+    /// Library words its date values by ("Today", "Yesterday", "27 Oct" this year, "Oct 2024" any
+    /// other), `None` when the host has none (every date then reads as month and year). A screen
+    /// reads no clock and fetches no date: the application's loop publishes it once per frame (it
+    /// reads the platform's calendar date at most once a minute, `app::clock::today`) and a screen
+    /// only receives the answer through its views, the way a frame's time arrives on a `Tick` and
+    /// the playback session on the frame's publication. The caption cache keys its labels on it, so
+    /// they rebuild when the day turns.
+    ///
+    /// CONTRACT FREEZE: a provided method so every existing host compiles.
+    fn today(_cx: &Cx<'_, Self>) -> Option<[i32; 3]> {
+        None
+    }
 }
 
 /// The server refused the collections listing (HTTP 401/403): the answer is final for the identity
@@ -1432,11 +1454,13 @@ pub enum LoopReq {
     AccountChangeProfile,
     AccountSignIn,
     AccountSignOut,
-    /// PRESENTS the Settings surface over the same page, so the host route does not move.
+    /// PRESENTS the Settings surface, rooted at the page, over the same page, so the host route
+    /// does not move: `Root` for the account menu's Settings row, `Favourites` for the Library's
+    /// Sort & Filter menu's Favorite libraries row.
     /// Reachable signed OUT as well: a person who cannot sign in has still received a copy of this
     /// software, and LG requires the privacy notice to be readable in the app rather than only on
     /// the store listing.
-    AccountSettings,
+    OpenSettings(SettingsPage),
     /// Lab builds only, and it changes no route: the tester stays where they were and the toast
     /// says what happened.
     AccountSendDiagnostics,
@@ -1878,7 +1902,8 @@ pub enum AppArg {
     /// are two entries (`person → detail → person` is three), which is the whole reason the
     /// identity rides on the argument instead of being a variant of a page alphabet.
     Content(ContentArg),
-    /// The Settings family, rooted at this page (`SettingsPage::Root` for every real opening).
+    /// The Settings family, rooted at this page (`SettingsPage::Root` for every opening but the
+    /// Library's Favorite libraries row, `LoopReq::OpenSettings(SettingsPage::Favourites)`).
     Settings(SettingsPage),
     /// The first-run consent question, rooted at this stage byte (0 for every real opening;
     /// `screens::consent`'s `STAGE_PRODUCT` for `/tmp/plxnative-consent=product`).

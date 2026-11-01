@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn classic_and_reference_have_no_findings_of_this_module_in_any_shipped_language() {
         let langs = LintLang::shipped();
-        assert_eq!(langs.len(), 10);
+        assert_eq!(langs.len(), 11);
         for base in [Base::Classic, Base::Reference] {
             let found: Vec<_> = lint(base.text(), &ShippedMeasure, &langs)
                 .into_iter()

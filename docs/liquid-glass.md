@@ -322,10 +322,11 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 - **The tab track's weight is SOLVED, not chosen** (`widgets::track_alpha_for`). A panel carries a
   page of copy at `TEXT_PRIMARY` and can hold one number; a 76px band whose idle labels are the
   dimmest ink in the app cannot, because the ground it sits on is a different picture every eight
-  seconds. So the ink stands still and the material moves: five pixels are read back from under the
-  bar every thirtieth drawn frame, and the scrim is set to the lightest weight at which those labels
-  still clear 3:1 — floored at the design's `--glass-track-top` and capped at the flat capsule's own
-  `.72`. Measured on the set: a dark hero leaves it at the floor, a bright cyan one takes it to .562.
+  seconds. So the ink stands still and the material moves: five patches of the bar's own backdrop
+  image (the blurred ground the labels sit on, which the frame already holds) are copied at a frame
+  boundary and read back once per `GROUND_SAMPLE_EVERY` drawn frames, and the scrim is set to the
+  lightest weight at which those labels still clear 3:1 — floored at the design's
+  `--glass-track-top` and capped at the flat capsule's own `.72`. Measured on the set: a dark hero leaves it at the floor, a bright cyan one takes it to .562.
   The readback is why the rate is low — it stalls a tiler — and the frame rate is unchanged at it.
   **Do not read the ground from `UltraBlurColors`.** That is Plex's derived palette for an ambient
   wash, not the top of the picture: for the hero that measures (0.00, 0.68, 0.91) on the panel it
@@ -338,7 +339,7 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 **Glass: the chrome and the standing notes.** The top bar's standing track and the profile chip's capsule, the
 "Hold OK for options" capsule (`ui::hold_hint`, once per install on the card screens and once on the Detail season pill — the track's material at a fixed weight, its own
 source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), and the
-Library's scroll capsule (`ui::scroll_capsule`: the same standing container, `GlassRim::Standing` and `Material::UltraThin`, wearing the
+Library's scroll capsule (`ui::scroll_capsule`: the library's name, count and sort ("Films 1,284 · Date viewed") on the same standing container, `GlassRim::Standing` and `Material::UltraThin`, wearing the
 hold hint's fixed face; flat track fallback; drawn only while the chrome is tucked on a page whose header names two or more libraries;
 region-budgeted by `scroll_capsule::tests::a_long_names_capsule_stays_inside_the_glass_region_budget`), on
 `Glass::DYNAMIC_BACKDROP` (the one preset left). **Popovers and sheets over a UI page were not glass, until DS6 (menus are again, on frozen ground with no blur chain; the field below is every sheet's ground and a menu's fallback)**:
@@ -353,6 +354,11 @@ no longer priced by §2.
 `chrome_alpha` exists so it holds still while the pages swap under it — so a material that changes
 when you cross between those three breaks the one illusion that code was written to preserve. Either
 all three or none; "glass on Home only" is not an option, however tempting the frame budget makes it.
+**Nor does the bar's WIDTH decide it (2026-10-30):** the bar gains entries and its labels change
+length with the language, so no strip drops to the flat capsule for being wide (it used to, past a
+~672 px cap that silently took the glass from the Belarusian bar); a strip past `TAB_VIEW_MAX`
+scrolls inside a track that stays glass, and the unfurled profile chip is kept off the track by
+eliding its name to the room the bar leaves (`widgets::chip_name_budget`).
 It ships, and `/tmp/plxnative-flattabs` is the way back to the flat capsule for a comparison.
 Its density is not a constant — see §6.
 
@@ -372,6 +378,7 @@ it never joins the top band's grab — and the 300k px² moving-host ceiling the
 - Never over video.
 - Whole surfaces, not scattered ornaments — area alone does not predict the five-pass cost.
 - In steady state, adjacent glass samples the page rather than refracting adjacent glass.
+- Neighbours in the shared band keep one source unless their drawn rects overlap: sitting inside each other's blur reach (68 px) does not split the band.
 - Keep 68 px clear of the screen edge, 60 px minimum short side.
 - Put it over something with colour in it, or it is an expensive way to draw the flat material.
 - Over still chrome it is free; moving glass targets every changed successful present.

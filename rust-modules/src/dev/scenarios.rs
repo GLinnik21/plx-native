@@ -303,6 +303,14 @@ pub(crate) fn arm_cardsplit() {
     if plx_base::devtrig::flag("nocardsplit") {
         plx_gfx::overdraw::set_card_split(false);
     }
+    // `/tmp/plxnative-nopreviewcache` draws the Under posters preview live every frame (as before
+    // `gfx::region_paint`); `/tmp/plxnative-previewsnap` puts the cached quad on whole pixels.
+    if plx_base::devtrig::flag("nopreviewcache") {
+        plx_gfx::overdraw::set_region_cache(false);
+    }
+    if plx_base::devtrig::flag("previewsnap") {
+        plx_gfx::overdraw::set_region_snap(true);
+    }
 }
 
 /// `/tmp/plxnative-heroground` — the one-pass hero ground A/B.
@@ -1245,6 +1253,7 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 // root → the Interface resolution picker
                 "picker-resolution" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::UiResolution),
                 "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
+                "picker-dolby-vision" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DolbyVision),
                 "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
                 "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
                 _other => {

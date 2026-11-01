@@ -1868,6 +1868,37 @@ mod sections {
         assert_eq!(run.held(), Some(ELEM_TAB_BASE + 1));
     }
 
+    /// **BACK over an open section closes the section; it never dismisses the Skip offer under it** (#1161's BACK
+    /// meets D6). The section arm of the ladder comes first, in both policies: the offer is still offered when the
+    /// section has gone, and only the next BACK, with the ring on the row, retires it.
+    #[test]
+    fn back_over_an_open_section_closes_it_and_leaves_the_skip_offer_standing() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        for inline in [false, true] {
+            let package = if inline {
+                plx_appkit::player_hud::loaded::reference_for_test()
+            } else {
+                plx_appkit::player_hud::loaded::classic_for_test()
+            };
+            let mut run = Run::boot_in(Occupant::SkipIntro, package, true);
+            run.screen().model.chapters = true;
+            run.walk("D");
+            run.toggle(Section::Chapters);
+            assert_eq!(run.open_sections(), vec![Section::Chapters], "inline={inline}");
+            run.asked();
+            run.step('B');
+            let asked = run.asked();
+            assert_eq!(run.open_sections(), Vec::<Section>::new(), "inline={inline}: BACK closed the section");
+            assert!(
+                !asked.iter().any(|r| matches!(r, PlayerReq::DismissOffer(_))),
+                "inline={inline}: the press that closed the section dismissed no offer: {asked:?}"
+            );
+            assert!(run.screen().slot.marker().is_some(), "inline={inline}: the offer is still standing");
+        }
+    }
+
     // -- classic: Info, modal --------------------------------------------------------------------
 
     /// OK on the Info tab opens the page and seats its first button; Down walks the buttons; OK on one performs

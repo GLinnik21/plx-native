@@ -608,8 +608,9 @@ pub(crate) fn player_requests(
     bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
     press: &mut plx_ui::press::Press,
-) {
+) -> bool {
     use plx_screens::registry::PlayerReq;
+    let mut slot_refresh = false;
     for req in reqs {
         match req {
             PlayerReq::RetryPlayback => {
@@ -679,6 +680,13 @@ pub(crate) fn player_requests(
                     activate_stand_in(player, pa, repause_at, ctrl, now, refresh_hubs, pages, bridge);
                 }
             }
+            // BACK over an offer: retire the segment in the store that resolves offers. The
+            // store's `skipped` set is read by `active_marker` and `synthesized_tail_marker`, so
+            // the row becomes the discs on the next resolve.
+            PlayerReq::DismissOffer(marker) => {
+                bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(marker));
+                slot_refresh = true;
+            }
             // The STOP key, a BACK with nothing else open and the failure read-out's own BACK
             // escape all reach the same ritual.
             PlayerReq::Exit => {
@@ -686,6 +694,7 @@ pub(crate) fn player_requests(
             }
         }
     }
+    slot_refresh
 }
 
 // (`reveal_played_episode` stood here. It answered one question — "is the page this session was

@@ -60,7 +60,8 @@ impl TestBrowse {
                     ran += 1;
                     let (sid, key) = job.req.server();
                     match held(sid, key) {
-                        Some(client) => listing_jobs::finish_browse_directory_job(&port, job.addr, client, job.req),
+                        Some(client) => listing_jobs::finish_browse_directory_job(&port, job.addr, client, job.req,
+                            bands::utc_zone()),
                         None => plx_machine::job::Port::refused(&port, job.addr),
                     }
                 }
@@ -190,7 +191,7 @@ impl TestBrowse {
         let Some(kind) = self.state.section_kind(self.state.cur()) else {
             return Vec::new();
         };
-        self.state.rows_where(|section| section.kind == kind && section.pinned)
+        self.state.rows_where(|_, section| section.kind == kind && section.pinned)
     }
 
     pub(super) fn kind_position(&self, index: usize) -> Option<(usize, usize)> {

@@ -146,6 +146,11 @@ const OFF_STREAM_METADATA: usize = 80;
 const OFF_FMT_DURATION: usize = 64;
 #[cfg(target_pointer_width = "64")]
 const OFF_FMT_DURATION: usize = 104;
+/// `AVFormatContext.start_time`, in AV_TIME_BASE units: the `int64` right before `duration`.
+#[cfg(target_pointer_width = "32")]
+const OFF_FMT_START_TIME: usize = 56;
+#[cfg(target_pointer_width = "64")]
+const OFF_FMT_START_TIME: usize = 96;
 
 /// `AVDictionaryEntry` — two `char *`. Modelled rather than opaque because the whole point of the
 /// call is to read both halves; `ci/ffabi-assert.c` holds the layout.
@@ -155,10 +160,17 @@ pub struct AVDictionaryEntry {
     value: *const c_char,
 }
 
-/// The only field this app reads past `AVFormatContext.streams`.
+/// `AVFormatContext.duration`, one of the two fields this app reads past `AVFormatContext.streams`.
 #[inline]
 unsafe fn fmt_duration(fmt: *const AVFormatContext) -> i64 {
     *((fmt as *const u8).add(OFF_FMT_DURATION) as *const i64)
+}
+
+/// `AVFormatContext.start_time` (the other): where the earliest stream's clock starts, or
+/// `AV_NOPTS_VALUE`. Valid once `avformat_find_stream_info` has returned.
+#[inline]
+unsafe fn fmt_start_time(fmt: *const AVFormatContext) -> i64 {
+    *((fmt as *const u8).add(OFF_FMT_START_TIME) as *const i64)
 }
 
 // ---- structs (exact n3.3 field order; 32-bit ARM/AAPCS sizes) ----
@@ -288,9 +300,9 @@ pub struct AVChannelLayout {
 //
 // It STOPS at `filename` because that is where the two majors stop agreeing: FFmpeg 4.0 inserted
 // `char *url` at +1056, pushing start_time to +1064 and duration to +1072. Everything above is
-// identical on 3.3 and 4.x. `duration` — the only field past that point this app reads — is
-// reached through [`fmt_duration`] at the offset the runtime ABI table gives, rather than by
-// declaring it here at an offset that is right on exactly one of the two.
+// identical on 3.3 and 4.x. `duration` and `start_time` — the only fields past that point this app
+// reads — are reached through [`fmt_duration`] and [`fmt_start_time`] at the offsets the runtime ABI
+// table gives, rather than by declaring them here at offsets that are right on exactly one of the two.
 #[repr(C)]
 pub struct AVFormatContext {
     pub av_class: *const AVClass,    // +0
@@ -303,9 +315,10 @@ pub struct AVFormatContext {
     pub streams: *mut *mut AVStream, // +28
                                      // STOPS HERE. Everything past `streams` shifts between majors — `duration` is at +48 on
                                      // FFmpeg 6, +64 on 9, and +1064 on the n3.3 the televisions ship, because 5.0 deleted
-                                     // `filename[1024]` and later releases kept rearranging what replaced it. It is the only field
-                                     // beyond this point the app reads, so it is read at OFF_FMT_DURATION rather than declared at
-                                     // a position that would be quietly wrong after a version bump.
+                                     // `filename[1024]` and later releases kept rearranging what replaced it. It and `start_time`
+                                     // are the only fields beyond this point the app reads, so they are read at OFF_FMT_DURATION
+                                     // and OFF_FMT_START_TIME rather than declared at a position that would be quietly wrong
+                                     // after a version bump.
 }
 
 // AVBSFContext is NOT modelled. The app does its own AVCC->Annex-B conversion in Rust, so the
@@ -3361,8 +3374,9 @@ fn av1_packet_to_tu(pkt: &[u8], key: bool, cfg: &[u8], f: Av1Framing, out: &mut 
 /// decoder rejects with nothing in the log naming the cause).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VideoFraming {
-    /// Length-prefixed NAL units rewritten to Annex-B with the parameter sets prepended at each
-    /// keyframe (`packet_to_annexb`).
+    /// NAL units rewritten to Annex-B with the parameter sets prepended at each keyframe. How the
+    /// packet delimits them is [`NalInput`]: a length before each NAL (`packet_to_annexb`), or start
+    /// codes already (`annexb_h264_access_unit`, H.264 only).
     AnnexB { hevc: bool },
     /// Section-5 temporal units with the av1C configuration in-band (`av1_packet_to_tu`).
     Av1,
@@ -3393,6 +3407,66 @@ impl VideoFraming {
             Self::Vp9 => LoadVideo::Vp9,
         }
     }
+}
+
+/// How the NAL units inside one demuxed H.264/HEVC packet are delimited, decided once per stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NalInput {
+    /// A big-endian length before each NAL (avcC / hvcC): Matroska and MP4.
+    LengthPrefixed,
+    /// Start codes between the NALs and the parameter sets in-band: MPEG-TS, a raw elementary stream.
+    StartCodes,
+}
+
+impl NalInput {
+    /// FFmpeg's own rule (`ff_h264_decode_extradata`): extradata that is an avcC / hvcC record
+    /// (its first byte is the version, 1) means length-prefixed packets; none, or parameter sets
+    /// that kept their start codes, means the packets carry start codes too. Anything else keeps the
+    /// length walk, so only a stream with NO config record changes behaviour. **Never decided from
+    /// a packet:** a length-prefixed NAL of 256..=511 bytes begins `00 00 01 xx`, a valid 3-byte
+    /// start code, and a small P-slice is exactly that.
+    pub(crate) fn of_extradata(extradata: &[u8]) -> Self {
+        if extradata.is_empty() || extradata.starts_with(&[0, 0, 1]) || extradata.starts_with(&[0, 0, 0, 1]) {
+            Self::StartCodes
+        } else {
+            Self::LengthPrefixed
+        }
+    }
+}
+
+/// The clock a start-code stream's packet timestamps are rebased by, in ns: its `start_time`
+/// (`AV_TIME_BASE` units, µs). The engine takes a fresh play's first keyframe to be near 0 and
+/// `seek_to_ns` to be content time, and a broadcast capture's clock starts wherever the
+/// transmitter's did (the report's first audio unit was at 45171.69 s). **Only a stream with no
+/// config record is moved**: Matroska and MP4 keep the clock they have always had. An unknown
+/// (`AV_NOPTS_VALUE`, `i64::MIN`) or negative start moves nothing; a stream is never moved forward.
+fn stream_origin_ns(start_time_us: i64, input: NalInput) -> i64 {
+    if input == NalInput::StartCodes && start_time_us > 0 {
+        start_time_us.saturating_mul(1_000)
+    } else {
+        0
+    }
+}
+
+/// A packet timestamp moved back by `by` ticks; "no value" stays no value.
+fn rebase_ts(t: i64, by: i64) -> i64 {
+    if t == AV_NOPTS_VALUE {
+        t
+    } else {
+        t.saturating_sub(by)
+    }
+}
+
+/// Move a demuxed packet onto the rebased clock ([`stream_origin_ns`]), in its stream's time base,
+/// so everything downstream (the lanes' pts, subtitle cues, the side reader's anchor) reads 0-based
+/// time without knowing about it. `origin_ns == 0` is a no-op.
+unsafe fn rebase_packet(pkt: *mut AVPacket, st: *mut AVStream, origin_ns: i64) {
+    if origin_ns == 0 {
+        return;
+    }
+    let by = av_rescale_q(origin_ns, NS_TB, stream_time_base(st));
+    (*pkt).pts = rebase_ts((*pkt).pts, by);
+    (*pkt).dts = rebase_ts((*pkt).dts, by);
 }
 
 /// Hand one demuxed VP9 packet to the decoder as it came, returning `key` unchanged.
@@ -3707,7 +3781,19 @@ fn h264_slice_is_intra(nal: &[u8]) -> bool {
     ue().and_then(|_| ue()).is_some_and(|t| t == 2 || t == 7)
 }
 
-/// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
+/// Does this H.264 NAL open a random access point: an IDR slice, or, when `intra_ok`, a non-IDR
+/// I-slice. `intra_ok` is the caller's evidence that one is a keyframe here (the container flagged
+/// the packet, or an SPS came ahead of the slice); both framings ask the same question.
+fn h264_is_rap(nal: &[u8], intra_ok: bool) -> bool {
+    match nal.first().map(|b| b & 0x1f) {
+        Some(5) => true,
+        Some(1) => intra_ok && h264_slice_is_intra(nal),
+        _ => false,
+    }
+}
+
+/// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out` (a packet
+/// that carries start codes already is `annexb_h264_access_unit`'s: see [`NalInput`]),
 /// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5, or a non-IDR
 /// I-slice at a random access point, see `container_key`; HEVC IRAP types 16-23). Returns true if
 /// it is a keyframe. Mirrors mkv_handle_block.
@@ -3755,10 +3841,7 @@ unsafe fn packet_to_annexb(
             (16..=23).contains(&((b0 >> 1) & 0x3f))
         } else {
             in_band_sps |= (b0 & 0x1f) == 7;
-            (b0 & 0x1f) == 5
-                || ((container_key || in_band_sps)
-                    && (b0 & 0x1f) == 1
-                    && h264_slice_is_intra(&d[i..i + nl]))
+            h264_is_rap(&d[i..i + nl], container_key || in_band_sps)
         };
         if key {
             is_key = true;
@@ -4089,11 +4172,42 @@ fn annexb_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// Validate an MPEG-TS H.264 packet as Annex-B, retain its in-band SPS/PPS and prepend whichever
-/// set is missing on an IDR. The progressive demuxer cannot be reused here: it interprets the
-/// first `00 00 00 01` as an AVCC length of one and corrupts the access unit.
+/// An HLS segment's access unit: [`annexb_h264_access_unit`] where only an IDR is a keyframe, which
+/// is how PMS's x264 opens every segment.
 fn ts_h264_access_unit(
     data: &[u8],
+    params: &mut H264ParamSets,
+    out: &mut Vec<u8>,
+) -> Result<bool, &'static str> {
+    annexb_h264_access_unit(data, Rap::IdrOnly, params, out)
+}
+
+/// What makes an H.264 slice a random access point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rap {
+    /// An IDR slice only.
+    IdrOnly,
+    /// An IDR slice, or a non-IDR I-slice: one the container flagged (`container_key`), or one
+    /// behind an in-band SPS. The rule `packet_to_annexb` applies to a length-prefixed packet
+    /// ([`h264_is_rap`]).
+    IdrOrIntra { container_key: bool },
+}
+
+impl Rap {
+    /// Whether a non-IDR I-slice counts, `has_sps` being an SPS already seen in this unit.
+    fn intra_ok(self, has_sps: bool) -> bool {
+        matches!(self, Rap::IdrOrIntra { container_key } if container_key || has_sps)
+    }
+}
+
+/// Validate an H.264 packet that already carries start codes (MPEG-TS, a raw elementary stream),
+/// retain its in-band SPS/PPS and prepend whichever set is missing on a keyframe. `packet_to_annexb`
+/// cannot take such a packet: it reads the first `00 00 00 01` as a NAL length of one and the next
+/// four bytes as a length past the end, leaving every unit as `00 00 00 01 09` (#1084). Which of the
+/// two a stream needs is [`NalInput`]'s decision. `Err` names why the packet is not a usable unit.
+fn annexb_h264_access_unit(
+    data: &[u8],
+    rap: Rap,
     params: &mut H264ParamSets,
     out: &mut Vec<u8>,
 ) -> Result<bool, &'static str> {
@@ -4117,7 +4231,7 @@ fn ts_h264_access_unit(
         let end = annexb_start(data, payload).map_or(data.len(), |(next, _)| next);
         let nal_type = data[payload] & 0x1f;
         match nal_type {
-            5 => is_key = true,
+            5 | 1 if h264_is_rap(&data[payload..end], rap.intra_ok(has_sps)) => is_key = true,
             7 => {
                 params.sps.clear();
                 params.sps.extend_from_slice(&[0, 0, 0, 1]);
@@ -4154,6 +4268,22 @@ fn ts_h264_access_unit(
     }
     out.extend_from_slice(data);
     Ok(is_key)
+}
+
+/// One AAC access unit as the pipeline wants it: ADTS-framed, with exactly one header. Matroska and
+/// MP4 carry RAW AAC and need one added (`params`: the frequency index and channel configuration);
+/// MPEG-TS carries ADTS itself, libavformat leaves the header on the packet, and a second one ahead
+/// of it would put `FF F1` where the raw data block begins (#1084). `None`: raw AAC and nothing to
+/// frame it with.
+fn adts_framed(raw: &[u8], params: Option<(u8, u8)>) -> Option<std::borrow::Cow<'_, [u8]>> {
+    if packet_has_adts(raw) {
+        return Some(std::borrow::Cow::Borrowed(raw));
+    }
+    let (freq_idx, chan_cfg) = params?;
+    let mut framed = Vec::with_capacity(7 + raw.len());
+    framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, raw.len()));
+    framed.extend_from_slice(raw);
+    Some(std::borrow::Cow::Owned(framed))
 }
 
 fn packet_has_adts(data: &[u8]) -> bool {
@@ -5224,14 +5354,7 @@ unsafe fn hls_demux_segment(
             let duration_ns = packet_duration
                 .or_else(|| adts_duration_ns(raw))
                 .or(aac_duration);
-            let data = if packet_has_adts(raw) {
-                raw.to_vec()
-            } else if let Some((freq_idx, chan_cfg)) = aac_adts {
-                let mut framed = Vec::with_capacity(7 + raw.len());
-                framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, raw.len()));
-                framed.extend_from_slice(raw);
-                framed
-            } else {
+            let Some(data) = adts_framed(raw, aac_adts).map(std::borrow::Cow::into_owned) else {
                 av_packet_unref(input.pkt);
                 return Err(HlsExit::Failed("AAC packet is neither ADTS nor reframable"));
             };
@@ -9521,6 +9644,38 @@ pub fn demux(
                     free_avio(avio);
                     break;
                 };
+                // How the stream delimits its NAL units, from its extradata (`NalInput`). The route
+                // trusts the part's file NAME, so a transport or elementary stream called `.mp4`
+                // arrives here with no avcC/hvcC record and start codes in every packet; walked by
+                // length, each access unit came out as the five bytes `00 00 00 01 09` (#1084).
+                // H.264 is framed in place (`annexb_h264_access_unit`); HEVC has no such framing, so
+                // it is refused here, like a codec with no framing, rather than misframed.
+                let extradata: &[u8] = if (*vcp).extradata.is_null() || (*vcp).extradata_size <= 0 {
+                    &[]
+                } else {
+                    std::slice::from_raw_parts((*vcp).extradata, (*vcp).extradata_size as usize)
+                };
+                let nal_input = match framing {
+                    VideoFraming::AnnexB { .. } => NalInput::of_extradata(extradata),
+                    VideoFraming::Av1 | VideoFraming::Vp9 => NalInput::LengthPrefixed,
+                };
+                // Such a stream's clock is moved to 0 here, once (`stream_origin_ns`).
+                let origin_ns = stream_origin_ns(fmt_start_time(fmt), nal_input);
+                if origin_ns != 0 {
+                    crate::player::log(&format!(
+                        "ff: the stream's clock starts at {}ms; rebased to 0",
+                        origin_ns / 1_000_000
+                    ));
+                }
+                if nal_input == NalInput::StartCodes && framing == (VideoFraming::AnnexB { hevc: true }) {
+                    crate::player::log(
+                        "ff: HEVC with start codes and no hvcC record (a transport or elementary stream) has no framing here; refusing the stream",
+                    );
+                    SHARED.fail_demux(DemuxExitClass::NoFraming);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
                 // What the Load declared (`dg_load_v`, 0 when this start sent a static payload) must
                 // be what the file is: a Load that says one codec over another codec's bitstream is a
                 // black screen, so stop and name both.
@@ -9616,18 +9771,9 @@ pub fn demux(
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
                     (Vec::new(), 0)
                 } else {
-                    parse_extradata(
-                        (*vcp).extradata,
-                        (*vcp).extradata_size.max(0) as usize,
-                        is_hevc,
-                    )
+                    parse_extradata(extradata.as_ptr(), extradata.len(), is_hevc)
                 };
-                let av1_ed: &[u8] = if (*vcp).extradata.is_null() || (*vcp).extradata_size <= 0 {
-                    &[]
-                } else {
-                    std::slice::from_raw_parts((*vcp).extradata, (*vcp).extradata_size as usize)
-                };
-                let av1_cfg = if is_av1 { parse_av1c(av1_ed) } else { Vec::new() };
+                let av1_cfg = if is_av1 { parse_av1c(extradata) } else { Vec::new() };
                 let av1_framing = if is_av1 {
                     Av1Framing::from_trigger(plx_base::devtrig::read("av1obu").as_deref())
                 } else {
@@ -9647,15 +9793,26 @@ pub fn demux(
                 // cannot outlive it.
                 *SHARED.container_hdr.lock().unwrap() = if is_vp9 { Some(container_hdr(vcp)) } else { None };
                 crate::player::log(&format!(
-                    "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B",
+                    "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B nal_input={:?}",
                     param_blob.len(),
                     nal_len_size,
                     is_hevc,
                     is_av1,
                     is_vp9,
-                    av1_cfg.len()
+                    av1_cfg.len(),
+                    nal_input
                 ));
                 let mut aubuf: Vec<u8> = Vec::with_capacity(4 * 1024 * 1024);
+                // A start-code stream's own parameter sets, cached from the units that carry them so
+                // a keyframe without its own can take them (`annexb_h264_access_unit`).
+                let mut annexb_params = H264ParamSets::default();
+                // Such a stream can open mid-GOP (a capture cut where it was): pictures that need
+                // parameter sets the pipeline has not been given are held back until the first
+                // keyframe, here and after every seek, where the file is not a length-prefixed one
+                // whose first packet is a keyframe by construction. `Some(n)`: still waiting, `n`
+                // pictures held back so far.
+                let mut annexb_wait_key = (nal_input == NalInput::StartCodes).then_some(0u32);
+                let mut annexb_rejected = 0u32;
 
                 let pkt = av_packet_alloc();
                 if pkt.is_null() {
@@ -9718,7 +9875,9 @@ pub fn demux(
                             // adopt that ownership; teardown will replace it.
                             original_watch = None;
                         }
-                        let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
+                        // Content time to the stream's own clock: a rebased stream's clock starts at
+                        // `origin_ns`, so a seek to 0 lands on its first packet, not before it.
+                        let ts = av_rescale_q(seek_ns.saturating_add(origin_ns), NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
                         crate::player::ass_source::seek(ass_generation);
                         crate::player::log(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
@@ -9730,6 +9889,7 @@ pub fn demux(
                             seek_began.elapsed().as_millis()
                         ));
                         headroom.restart(aq_p);
+                        annexb_wait_key = (nal_input == NalInput::StartCodes).then_some(0u32);
                         if let Some(dec) = pcm_dec.as_mut() {
                             dec.reset_stream();
                         }
@@ -9752,6 +9912,15 @@ pub fn demux(
                         break;
                     }
                     let si = (*pkt).stream_index;
+                    // The array is read LIVE, with its bound: a transport stream can grow new streams
+                    // while it is read (`AVFMTCTX_NOHEADER`), which reallocates `streams`, so the
+                    // pointer taken at open is not the one the live `nb_streams` describes.
+                    if origin_ns != 0 {
+                        let live = (*fmt).streams;
+                        if si >= 0 && (si as c_uint) < (*fmt).nb_streams && !live.is_null() {
+                            rebase_packet(pkt, *live.add(si as usize), origin_ns);
+                        }
+                    }
                     if si == vi {
                         // The side subtitle reader's clock anchor: the first keyframe this run reads,
                         // fingerprinted BEFORE the Annex-B conversion rewrites it.
@@ -9761,12 +9930,12 @@ pub fn demux(
                             *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) =
                                 Some(subside::Anchor::of(pts_ns(pkt, vst), raw));
                         }
+                        let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
+                            &[]
+                        } else {
+                            std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
+                        };
                         let is_key = if is_av1 {
-                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
-                                &[]
-                            } else {
-                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
-                            };
                             av1_packet_to_tu(
                                 pkt_bytes,
                                 (*pkt).flags & AV_PKT_FLAG_KEY != 0,
@@ -9775,12 +9944,24 @@ pub fn demux(
                                 &mut aubuf,
                             )
                         } else if is_vp9 {
-                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
-                                &[]
-                            } else {
-                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
-                            };
                             vp9_packet_to_frame(pkt_bytes, (*pkt).flags & AV_PKT_FLAG_KEY != 0, &mut aubuf)
+                        } else if nal_input == NalInput::StartCodes {
+                            let rap = Rap::IdrOrIntra { container_key: (*pkt).flags & AV_PKT_FLAG_KEY != 0 };
+                            match annexb_h264_access_unit(pkt_bytes, rap, &mut annexb_params, &mut aubuf) {
+                                Ok(key) => key,
+                                Err(why) => {
+                                    // An empty unit is the signal below: nothing is pushed for it.
+                                    aubuf.clear();
+                                    annexb_rejected += 1;
+                                    if annexb_rejected <= 3 {
+                                        crate::player::log(&format!(
+                                            "ff: dropped a start-code video packet ({} bytes): {why}",
+                                            pkt_bytes.len()
+                                        ));
+                                    }
+                                    false
+                                }
+                            }
                         } else {
                             packet_to_annexb(
                                 (*pkt).data,
@@ -9794,6 +9975,30 @@ pub fn demux(
                             )
                         };
                         let pts = pts_ns(pkt, vst);
+                        if nal_input == NalInput::StartCodes {
+                            // Neither a packet the framing refused (`aubuf` is empty) nor a picture
+                            // ahead of the first keyframe reaches the lane. A skipped packet also
+                            // skips this iteration's Auto Original bookkeeping below, which the next
+                            // packet runs; the run is bounded by a GOP, or by the audio lane's ceiling
+                            // (`NoUsableVideo`) for a stream with no keyframe at all.
+                            if aubuf.is_empty() {
+                                av_packet_unref(pkt);
+                                continue;
+                            }
+                            if let Some(held_back) = annexb_wait_key.as_mut() {
+                                if !is_key {
+                                    *held_back += 1;
+                                    av_packet_unref(pkt);
+                                    continue;
+                                }
+                                if *held_back > 0 {
+                                    crate::player::log(&format!(
+                                        "ff: start-code stream: first keyframe after {held_back} video packets that needed parameter sets not yet seen"
+                                    ));
+                                }
+                                annexb_wait_key = None;
+                            }
+                        }
                         if DIAG_FIRST.swap(false, Ordering::Relaxed) {
                             let n = aubuf.len().min(40);
                             let head: String = aubuf[..n]
@@ -9883,12 +10088,11 @@ pub fn demux(
                                 }
                             }
                             rv
-                        } else if let Some((freq_idx, chan_cfg)) = aac_adts {
-                            // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
-                            let plen = (*pkt).size as usize;
-                            let mut framed = Vec::with_capacity(7 + plen);
-                            framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
-                            framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
+                        } else if aac_adts.is_some() {
+                            // one 7-byte ADTS header so LG's decoder can frame the AAC: added to the raw
+                            // frames of Matroska/MP4, not stacked on a transport stream's own (#1084)
+                            let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
+                            let framed = adts_framed(raw, aac_adts).unwrap_or(std::borrow::Cow::Borrowed(raw));
                             crate::aq::aq_push_gated(
                                 aqa_p,
                                 framed.as_ptr(),

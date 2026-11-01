@@ -197,8 +197,14 @@ row is omitted when there is no face to offer, and a press flips then reverts. R
 `/tmp/plxnative-nowan` or the failing-closure tests.
 
 **The count (Q7, decided: option D; reshaped onto the Library's header row).** The page header is the
-Library's one row (`plx_ui::page_header::PageHeader`; `watchlist/header.rs`): the title "Watchlist" on
-the selected plate at the left, and at the right the control "Sort & Filter · <value> ▾". The list's
+Library's one row (`plx_ui::page_header::PageHeader`; `watchlist/header.rs`): the title "Watchlist" as
+plain text at the left, and at the right the Library's own sort control (`HeaderItem::sort_control`):
+the sort icon, the chosen sort ("Date added") and a quiet down chevron, with "Sort & Filter" as its
+name (the item carries it; it is never drawn). The criterion is the SORT alone, a Type or Show filter
+never changes it (the read-out below says "N of M"), and it has no reserved slot: the control ends on the
+row's right text edge, x 1771, and a changed sort swaps on the page's `HeaderSwap` (the old criterion
+fades out at its own place and the new one in at its own, in the page's pass and in the opener lift
+alike, begun from the row's rebuild with `SharedRow::get_replacing`) as the Library's does. The list's
 count is a filter read-out and nothing else: "{shown} of {total}" (the Library's sentence,
 `library.header.filtered_of`, numbers grouped as it groups them) stands ahead of the control while a
 Type or Show filter narrows the list (Sort alone does not), including "0 of N" beside the
@@ -211,7 +217,7 @@ tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the
 The row's pills are the Library's, one component. With one focus stop the focus pill has nowhere to
 travel from: it lands on the control and fades in on the top bar's alpha spring, then pops on the
 page's `CtlPop`; the title is plain text, no plate (`HeaderItem::title`, design review S10; `plx_ui::page_header`; the page holds
-the row's `TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps), and the Sort & Filter
+the row's `TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps; the `HeaderSwap` is decoration beside them and is not in `SHAPE`), and the Sort & Filter
 panel is as wide as its longest label or as the control's focused pill, whichever is wider
 (`TableView::menu_panel_width_from`, the rule the Library's Sort & Filter hangs by too).
 
