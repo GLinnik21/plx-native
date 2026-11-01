@@ -57,6 +57,10 @@ pub struct RowStyle {
     /// laid over the video plane (the HUD's chapters, `docs/hud-plugins.md` D11), where the tile's
     /// own sheen does not read against moving picture.
     pub rim: Option<Rim>,
+    /// **A seat grows from rest**: a focused card the shelf is handed without a deliberate move (a restore, a reconcile,
+    /// the seat an opening page makes) is adopted at full pop for every row but a strip that OPENS with its seat
+    /// ([`with_growing_seat`](Self::with_growing_seat)), which pops it in from 1.0 like a deliberate move does.
+    pub seat_grows: bool,
     /// **A label block that hangs `Some(d)` px under the card's UNSCALED bottom edge and is whole from
     /// the first frame**, `None` for every row but the HUD's chapter strip (`docs/hud-plugins.md` D11):
     /// the shelf's block hangs [`UNDER_DROP`] below and rides its band, which opens when the row takes
@@ -88,6 +92,11 @@ impl RowStyle {
     pub fn max_scroll(&self, n: usize) -> f32 {
         let viewport = SCR_W - 2.0 * self.margin_x;
         (n as f32 * (self.w + self.gap) - self.gap - viewport).max(0.0)
+    }
+
+    /// This style with its adopted seat growing from rest ([`RowStyle::seat_grows`]).
+    pub const fn with_growing_seat(self) -> RowStyle {
+        RowStyle { seat_grows: true, ..self }
     }
 
     /// This style with its focused tile ringed by `rim` ([`RowStyle::rim`]).
@@ -131,6 +140,7 @@ impl RowStyle {
         right_reserve: 0.0,
         label_start: LabelStart::Centre,
         rim: None,
+        seat_grows: false,
         label_drop: None,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
@@ -160,6 +170,7 @@ impl RowStyle {
         right_reserve: 0.0,
         label_start: LabelStart::Centre,
         rim: None,
+        seat_grows: false,
         label_drop: None,
     };
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
@@ -184,6 +195,7 @@ impl RowStyle {
         right_reserve: 0.0,
         label_start: LabelStart::Centre,
         rim: None,
+        seat_grows: false,
         label_drop: None,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
@@ -207,6 +219,7 @@ impl RowStyle {
         right_reserve: 0.0,
         label_start: LabelStart::Centre,
         rim: None,
+        seat_grows: false,
         label_drop: None,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
@@ -388,6 +401,9 @@ impl CardRow {
     /// move (a restore, a reconcile, a landing), so the tile must be drawn as it was left rather than
     /// growing from rest. The cell past the spring array shares `overflow`, as in [`CardRow::scale`].
     pub fn adopt(&mut self, i: usize, sty: &RowStyle) {
+        if sty.seat_grows {
+            return;
+        }
         if i < MAX_ROW_ITEMS { self.scale[i].jump(sty.focus_scale) } else { self.overflow.jump(sty.focus_scale) }
     }
     /// Put the springs that settle around a focused card where focus on cell `i` of `n` rests them,
@@ -2576,9 +2592,9 @@ mod tests {
         assert_eq!(anchor_label_from(LabelStart::Centre, lead, trail, 200.0, 200.0, ROOM), centred, "the default is the old function");
         let leading = anchor_label_from(LabelStart::Leading, lead, trail, 200.0, 200.0, ROOM);
         assert_eq!((leading.x, leading.w, leading.align), (lead, 200.0, LabelAlign::Leading));
-        // every shipped style keeps the centred case, and none carries a rim
+        // every shipped style keeps the centred case, and none carries a rim or a growing seat
         for sty in [RowStyle::HOME, RowStyle::EPISODE, RowStyle::CAST] {
-            assert_eq!((sty.label_start, sty.rim), (LabelStart::Centre, None));
+            assert_eq!((sty.label_start, sty.rim, sty.seat_grows), (LabelStart::Centre, None, false));
         }
         let strip = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME }.with_leading_labels();
         let p = Painter::root();

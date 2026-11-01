@@ -2213,6 +2213,32 @@ mod sections {
         }
     }
 
+    /// **The strip's seat grows from rest as it opens**, the way its panel's card popped in: the card the
+    /// playhead holds is at pop 1 when the section's spring first moves, and reaches the focus scale after (found in
+    /// the simulator: an opening strip's seat stood at the full 1.07 from the first frame, 173 px against the
+    /// panel's 168 at the sixth).
+    #[test]
+    fn the_chapter_seat_grows_from_rest_as_the_strip_opens() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        let seat = (run.held().unwrap() - ELEM_CHAPTER_BASE) as usize;
+        let mut first = None;
+        for _ in 0..40 {
+            if first.is_none() && run.appear(Section::Chapters) > 0.0 {
+                first = Some(run.screen().row.strip_shelf().unwrap().pop_of(seat));
+            }
+            run.frames(1);
+        }
+        let first = first.expect("the section appears");
+        assert!(first < 1.02, "the seat is at pop {first} when the section first moves, not grown from rest");
+        run.frames(120);
+        let settled = run.screen().row.strip_shelf().unwrap().pop_of(seat);
+        assert!((settled - plx_ui::widgets::CARD_FOCUS_SCALE).abs() < 0.001, "…and reaches the focus scale: {settled}");
+    }
+
     /// **An Info card opens with every button at rest, as a new panel's surface did.** The section's pop springs
     /// outlive the card (they are the HUD's), so a button the last opening had popped must be let go the moment the
     /// section is gone: a spring left a hair off 1.0 drew the second button's edge one level off, for as long as

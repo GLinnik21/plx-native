@@ -303,6 +303,11 @@ impl HudMotion {
         }
     }
 
+    /// Is `section`'s spring still held at its first frame (`PopoverMotion::held`)?
+    pub fn section_held(&self, section: Section) -> bool {
+        self.appear[section_index(section)].held()
+    }
+
     /// `section`'s appear this frame: `0` held or gone, `1` at rest.
     pub fn section_appear(&self, section: Section) -> f32 {
         self.appear[section_index(section)].appear

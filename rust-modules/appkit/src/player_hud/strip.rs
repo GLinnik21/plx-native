@@ -89,6 +89,7 @@ impl Geometry {
         .with_rim(Rim { width: CH_FOCUS_RING_W, ink: theme::CONTROL_RIM_FOCUS_UNKEYED })
         .with_leading_labels()
         .with_label_drop(self.name_drop)
+        .with_growing_seat()
     }
 }
 

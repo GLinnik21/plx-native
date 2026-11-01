@@ -656,7 +656,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
         }
         // The open Chapters strip's Shelf steps on every event this screen receives (its springs on the Tick, its
         // pop and scroll on the focus moves, a committed press as `CardEvent::Activate`); the draw only paints it.
-        let strip_ev = self.step_strip(ev, cx, fx);
+        // (its Tick waits for the Tick arm: it steps after the sections' appear springs, below)
+        let strip_ev = if matches!(ev, ScreenEvent::Tick(_)) { None } else { self.step_strip(ev, cx, fx) };
         match ev {
             // The app performed a `toggle_section` command (a tab's OK or click, a package's disc).
             ScreenEvent::App(AppMsg::HudSection(section)) => {
@@ -749,6 +750,11 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // `hud.sections` that did not tell them is caught up here) and stepped once per frame.
                 self.row.follow(self.hud.sections.bits());
                 self.row.step_appear(*tick, &mut fx.present());
+                // …and the strip's Shelf on the same Tick as the spring that carries it in, not while that spring is
+                // still held at appear 0: the panel's card began to pop with its fade, not ahead of it
+                if !self.row.section_held(Section::Chapters) {
+                    self.step_strip(ev, cx, fx);
+                }
                 // …and the Up Next countdown, which arms on APPEARANCE and is dropped with the
                 // segment. Stepped for the whole route, not per-overlay: the countdown must keep
                 // running whichever panel is up (`up_next::tick`).

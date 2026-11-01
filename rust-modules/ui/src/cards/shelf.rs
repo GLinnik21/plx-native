@@ -166,6 +166,12 @@ impl Shelf {
         self.landing.ghosts().iter().map(|g| g.alpha.pos.clamp(0.0, 1.0)).collect()
     }
 
+    /// Card `i`'s pop scale right now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pop_of(&self, i: usize) -> f32 {
+        self.row.scale(i)
+    }
+
     /// Each ghost's pop scale right now, in [`ghost_keys`](Self::ghost_keys) order.
     #[cfg(any(test, feature = "test-support"))]
     pub fn ghost_scales(&self) -> Vec<f32> {
