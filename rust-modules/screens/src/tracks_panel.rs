@@ -107,7 +107,7 @@ const FEATHER: f32 = theme::alert::FEATHER;
 /// panel with no focus has nothing for a line-step to land on.
 const PAGE_STEP: f32 = 370.0;
 
-/// Scroll-spring stiffness. `220.0` is `chapters_panel`'s scroll constant — the same gesture
+/// Scroll-spring stiffness. `220.0` is the Chapters strip's scroll constant (`player_hud::strip::STRIP_K_SCROLL`) — the same gesture
 /// (a discrete jump the eye follows) so it gets the same rate.
 const K_SCROLL: f32 = 220.0;
 

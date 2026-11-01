@@ -109,7 +109,7 @@ pub use avatars::AvatarRow;
 // those modules can stay `pub(crate)`).
 pub use crate::card_row::{
     column_near_x, credit_role_dy, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
-    resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, RowStyle, SortValue, TileLabel,
+    resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, Rim, RowStyle, SortValue, TileLabel,
     band_open_for, BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, SORT_VALUE_BAND_H, SORT_VALUE_PLUS, SORT_VALUE_REACH, SORT_VALUE_ROW_GAP, UNDER_LABEL_H,
 };
 pub use crate::poster_grid::{

@@ -2857,7 +2857,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     // Library's, Search's and the content pages' fields are.
     //
     // The panel fields keep the spellings the characterization line has always used
-    // (`menu=`/`msel=`/`taudio=`/`tsub=`/`info=`/`isel=`/`infolast=`/`chap=`/`csel=`/`more=`/
+    // (`menu=`/`msel=`/`taudio=`/`tsub=`/`info=`/`isel=`/`chap=`/`csel=`/`more=`/
     // `osel=`), because a recording taken before this phase and one taken after must be
     // comparable. `haschap=` stays in `push_player`: it is a fact about the ITEM, not the panel.
     if matches!(page.arg, AppArg::Player) {
@@ -2877,16 +2877,26 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             Some(Panel::Tracks(t)) => (t.active_audio(), t.active_sub()),
             _ => (0, -1),
         };
-        let infolast = matches!(surface.map(|s| s.panel()), Some(Panel::Info(p)) if p.at_last());
         let menu = is(|k| matches!(k, OverlayKind::Tracks { .. }));
-        let info = is(|k| matches!(k, OverlayKind::Info));
-        let chap = is(|k| matches!(k, OverlayKind::Chapters));
+        // Info and Chapters are the page's own sections (`hud.sections`), not surfaces; the spellings stay so a
+        // recording taken before and one taken after remain comparable.
+        let sections = player.map(|p| p.hud.sections).unwrap_or(plx_screens::player::input::Sections::NONE);
+        let info = sections.contains(plx_appkit::player_hud::command::Section::Info);
+        let chap = sections.contains(plx_appkit::player_hud::command::Section::Chapters);
+        // the section's own cursor: Info's button, or the chapter card the engine holds
+        let section_sel = if sections.contains(plx_appkit::player_hud::command::Section::Chapters) {
+            d.input.engine.current(InputOwner::Entry(page.id))
+                .and_then(|k| k.elem.checked_sub(plx_appkit::player_hud::ELEM_CHAPTER_BASE)).unwrap_or(0) as usize
+        } else {
+            player.map_or(0, |p| p.hud.nav.btn.max(0) as usize)
+        };
+        let sel = if sections.any() { section_sel as i32 } else { sel };
         let more = is(|k| matches!(k, OverlayKind::More { .. }));
         let _ = write!(
             out,
-            " menu={} msel={} taudio={taudio} tsub={tsub} info={} isel={} infolast={} chap={} csel={} more={} osel={}",
+            " menu={} msel={} taudio={taudio} tsub={tsub} info={} isel={} chap={} csel={} more={} osel={}",
             u8::from(menu), if menu { sel } else { 0 },
-            u8::from(info), if info { sel } else { 0 }, u8::from(infolast),
+            u8::from(info), if info { sel } else { 0 },
             u8::from(chap), if chap { sel } else { 0 },
             u8::from(more), if more { sel } else { 0 },
         );
@@ -3162,11 +3172,19 @@ pub(crate) fn player_hud_policy(d: &Dispatcher<AppHost>) -> HudPolicy {
     }
 }
 
+/// Is a HUD section of the player page up, one still fading out included? Chapters and Info are the page's own
+/// state, not surfaces, so [`player_overlay_up`] cannot see them; the presented set is the logical one plus what
+/// has not finished fading ([`HudMotion::presented`](plx_appkit::player_hud::motion::HudMotion::presented)), the
+/// way a closing panel still counted as up.
+pub(crate) fn player_section_up(d: &Dispatcher<AppHost>) -> bool {
+    player(d).is_some_and(|p| p.hud.sections.any() || p.row.presented() != 0)
+}
+
 /// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
 ///
-/// No, while any of the player's own overlay panels (`OverlayKind::Tracks`/`Info`/
-/// `Chapters`/`More`/`Timing`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
-/// the screen, but during playback that content routinely spans ~90% of the screen's width from
+/// No, while any of the player's own panels is up: an overlay (`OverlayKind::Tracks`/`More`/`Timing`) or an open
+/// HUD section (Info, Chapters; fading ones count). `app/diagnostics.rs`'s panel is sized to its content rather than
+/// to the screen, but during playback that content routinely spans ~90% of the screen's width from
 /// the left safe margin — wide enough to reach every one of those panels' bottom-right-anchored
 /// rects — and on the player route it has always painted genuinely last, i.e. on TOP of them.
 /// `More` is the sharpest case: it carries the very "Stats for nerds" toggle this panel answers
@@ -3174,9 +3192,10 @@ pub(crate) fn player_hud_policy(d: &Dispatcher<AppHost>) -> HudPolicy {
 /// routes never had this problem because `app/run.rs`'s other `diagnostics.draw()` call already
 /// sits UNDER that route's own popovers (the account/item menu carries the same toggle there) —
 /// this is the player route catching up to a rule the rest of the app already keeps, now that one
-/// of its own panels carries a control too.
+/// of its own panels carries a control too. Info and Chapters were surfaces when this rule was made and
+/// are sections now; the rule did not change, only where it reads them.
 pub(crate) fn player_diagnostics_visible(d: &Dispatcher<AppHost>) -> bool {
-    !player_overlay_up(d)
+    !player_overlay_up(d) && !player_section_up(d)
 }
 
 /// Dismiss every player panel — the exit ritual's half of `close_player_overlays`.
@@ -3996,12 +4015,38 @@ pub(crate) fn player_mut(
         .downcast_mut::<plx_screens::player::PlayerScreen>()
 }
 
+/// **Ask the player page to toggle a section** (Chapters, Info): the `toggle_section` command's performer
+/// (`app::playback::perform_hud_command`) addresses the page with `AppMsg::HudSection`. The page owns the
+/// sections, so it opens or closes under the package's policy and seats its own focus; the app writes nothing of
+/// it. A no-op when no player page is mounted.
+pub(crate) fn toggle_player_section(d: &mut Dispatcher<AppHost>, section: plx_appkit::player_hud::command::Section) {
+    let Some(instance) = d.top_page() else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(
+        page,
+        Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(section)))),
+    );
+}
+
+/// **Close every open HUD section of the player page**: one addressed `AppMsg::HudSectionsClose`, which the page
+/// answers by closing each open section the way a press on its opener does (focus handed back through its own
+/// `close_section`). It names no section and reads none, so it is idempotent: WILL and DID both park the film in
+/// one drain, and a close built from the set as it is NOW (one toggle per open section, applied at the step)
+/// would reopen what the first park closed. The app switch and the decoder park use it where the overlay panels'
+/// `dismiss_player_overlays` once took the Info card and the Chapters strip down: a section is the page's state,
+/// not a surface, and the page stays mounted.
+pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
+    let Some(instance) = d.top_page() else { return };
+    let page = MachineId::Instance(instance);
+    d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::App(AppMsg::HudSectionsClose))));
+}
+
 /// **Seat the player page's `FocusEngine` on the group its HUD cursor names** — the engine's half
 /// of an APP-SIDE write to `hud.nav.focus`.
 ///
 /// Up, Down and OK on the HUD travel by the engine's groups, and `nav.focus` IS the group the engine
-/// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in five
-/// places — a Chapters / Info panel handing the ring back to the tabs (`PlayerReq::FocusTabs`), the
+/// sits on (the screen mirrors every move it is told of). The app writes the cursor itself in four
+/// places — the
 /// headless pin (`run::pin_headless_hud`), a fresh segment offer raising the row, the auto-hide
 /// park (in `run::update`) and the Skip / Up Next stand-in's departure (`run::follow_control_row`: the
 /// ring goes back to the scrubber, `standin_left_the_ring`'s contract) — and a bare write would leave

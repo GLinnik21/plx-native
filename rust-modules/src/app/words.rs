@@ -122,6 +122,35 @@ pub(crate) fn overlay_suffix(pages: &plx_ui::dispatch::Dispatcher<bridge::AppHos
     overlay_word(pages, route).map_or(String::new(), |w| format!(" overlay={w}"))
 }
 
+/// The heartbeat's ` section=` WORD for the player page's open HUD sections, or `None` when none is open.
+///
+/// **A section is the page's own state, not a surface**, so it has no `Screen::name` and ` overlay=` (the topmost
+/// MODAL surface's name, `none` over a bare player) stays what it always was. The fps scenes `info-panel` and
+/// `chapters-panel` used to select on `overlay=info` / `overlay=chapters`; they select on `overlay=none` and this
+/// word now. It names the LOGICAL set (`HudState::sections`), not the sections still fading out, so a scene's
+/// samples are the frames the page holds the section open for.
+///
+/// Both sections can be open under an inline package: `chapters_info`, in the fixed order Chapters then Info (the
+/// order the springs and the state key use), not the order they were opened in. Every word is a `\w+` token
+/// the harness's regexes can capture.
+pub(crate) fn section_word(pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>) -> Option<&'static str> {
+    use plx_appkit::player_hud::command::Section;
+    let sections = bridge::player(pages)?.hud.sections;
+    match (sections.contains(Section::Chapters), sections.contains(Section::Info)) {
+        (false, false) => None,
+        (true, false) => Some("chapters"),
+        (false, true) => Some("info"),
+        (true, true) => Some("chapters_info"),
+    }
+}
+
+/// The heartbeat's ` section=<word>` suffix, prefix and all, empty when no section is open. It rides right after
+/// ` overlay=` (`tests/run.py`'s `select_section` reads it from there) and is absent, not `none`, with nothing open,
+/// so the line every other scene reads is byte-identical to what it was.
+pub(crate) fn section_suffix(pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>) -> String {
+    section_word(pages).map_or(String::new(), |w| format!(" section={w}"))
+}
+
 /// **Every `route=` word [`route_word`] can print, and every ` overlay=` word [`overlay_word`]
 /// can — DERIVED, not transcribed** (restructure phase 10, item 4).
 ///
@@ -147,6 +176,32 @@ fn overlay_words() -> Vec<&'static str> {
     let mut words = bridge::every_surface_word();
     words.push(NO_OVERLAY);
     words
+}
+
+/// Every ` section=` word [`section_word`] can print, DERIVED: each combination of the two sections put on the real
+/// player page, read back through the function the heartbeat calls. Held under `testlock::serial()` like
+/// [`overlay_words`] (it runs real frames).
+#[cfg(test)]
+fn section_words() -> Vec<&'static str> {
+    use plx_appkit::player_hud::command::Section;
+    use plx_screens::player::input::Sections;
+    let mut d = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+    let mut rig = bridge::Bridge::for_test(|| 0);
+    bridge::show_page(&mut d, AppArg::Player);
+    bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick { ms: 0, dt_us: 16_000 }, vec![]);
+    let mut out = Vec::new();
+    for (chapters, info) in [(true, false), (false, true), (true, true)] {
+        let mut sections = Sections::NONE;
+        if chapters {
+            sections = sections.toggled(Section::Chapters, false);
+        }
+        if info {
+            sections = sections.toggled(Section::Info, false);
+        }
+        bridge::player_mut(&mut d).expect("the player page is mounted").hud.sections = sections;
+        out.push(section_word(&d).expect("an open section names a word"));
+    }
+    out
 }
 
 /// The heartbeat word table versus `tests/manifest.json`. Every fps scene selects its samples by
@@ -301,6 +356,63 @@ mod heartbeat_word_tests {
                 kind.word()
             );
         }
+    }
+
+    /// **An open HUD section prints its own word and leaves ` overlay=` alone**: a section is the page's state, not a
+    /// surface, so over a bare player the line still says `overlay=none` and gains ` section=<word>` right after it;
+    /// with nothing open the suffix is empty and the line is what it was.
+    #[test]
+    fn an_open_section_prints_its_own_word_and_leaves_the_overlay_word_alone() {
+        use plx_appkit::player_hud::command::Section;
+        use plx_screens::player::input::Sections;
+        let _guard = plx_base::testlock::serial();
+        let mut d = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
+        let mut rig = super::bridge::Bridge::for_test(|| 0);
+        super::bridge::show_page(&mut d, AppArg::Player);
+        super::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick { ms: 0, dt_us: 16_000 }, vec![]);
+        assert_eq!(super::section_word(&d), None);
+        assert_eq!(super::section_suffix(&d), "", "nothing open: no field");
+        for (sections, word) in [
+            (Sections::NONE.toggled(Section::Chapters, true), "chapters"),
+            (Sections::NONE.toggled(Section::Info, true), "info"),
+            (Sections::NONE.toggled(Section::Chapters, false).toggled(Section::Info, false), "chapters_info"),
+        ] {
+            super::bridge::player_mut(&mut d).expect("the player page").hud.sections = sections;
+            assert_eq!(super::section_word(&d), Some(word));
+            assert_eq!(
+                format!("{}{}", super::overlay_suffix(&d, &AppArg::Player), super::section_suffix(&d)),
+                format!(" overlay=none section={word}"),
+                "{word}: the overlay word is the bare player's, the section word follows it"
+            );
+        }
+        let derived = super::section_words();
+        assert_eq!(derived, ["chapters", "info", "chapters_info"]);
+        for w in derived {
+            assert!(w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{w:?} is not a heartbeat token");
+        }
+    }
+
+    /// **The two scenes that used to select on `overlay=info` / `overlay=chapters` select on a section word**, over a
+    /// bare player (`overlay=none`): a scene naming a section word the heartbeat cannot print would read on the
+    /// television as "scene never entered this screen". Only these two scenes carry one.
+    #[test]
+    fn the_manifests_section_scenes_name_words_the_heartbeat_prints() {
+        let _guard = plx_base::testlock::serial();
+        let words = super::section_words();
+        let mut seen = Vec::new();
+        for s in scenes() {
+            let name = s["name"].as_str().unwrap_or("?").to_owned();
+            let Some(word) = s.get("section").and_then(|w| w.as_str()) else { continue };
+            assert!(words.contains(&word), "scene {name}: section word {word:?} is not in {words:?}");
+            assert_eq!(s["route"].as_str(), Some("player"), "scene {name}: a section is the player page's");
+            assert_eq!(s["overlay"].as_str(), Some(NO_OVERLAY), "scene {name}: over a bare player");
+            seen.push((name, word.to_owned()));
+        }
+        assert_eq!(
+            seen,
+            [("info-panel".to_owned(), "info".to_owned()), ("chapters-panel".to_owned(), "chapters".to_owned())],
+            "the player's two section scenes"
+        );
     }
 
     /// **A word the app can print but no scene uses is fine; the reverse is not** — and the

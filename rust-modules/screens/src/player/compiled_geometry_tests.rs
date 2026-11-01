@@ -155,7 +155,9 @@ fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
     let store = plx_data::stores::metadata::MetadataStore::default();
     assert!(!page.render.no_state_logged);
     for _ in 0..3 {
-        let drawn = plx_ui::draw_census::capture(|| page.draw_hud(&ps, 0, &FixtureMeasure, store.view()));
+        let (cx, ) = (cx(), );
+        let df = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        let drawn = plx_ui::draw_census::capture(|| page.draw_hud(&ps, 0, &df, store.view()));
         assert!(drawn.is_empty(), "nothing is drawn for a frame the package has no state for: {drawn:?}");
     }
     assert!(page.render.no_state_logged, "…and it was reported");
@@ -191,7 +193,7 @@ fn classic_menus_hang_from_the_row_ending_at_the_segment_edge() {
 fn only_menus_under_a_package_have_an_anchor() {
     let _g = plx_base::testlock::serial();
     let page = page_with(classic());
-    for kind in [overlay::OverlayKind::Info, overlay::OverlayKind::Chapters, overlay::OverlayKind::Timing] {
+    for kind in [overlay::OverlayKind::Timing] {
         assert_eq!(page.menu_anchor(kind, false), None, "{kind:?}");
     }
 }

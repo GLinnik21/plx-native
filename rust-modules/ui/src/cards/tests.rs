@@ -155,7 +155,7 @@ trait Section {
 
 impl Section for Shelf {
     fn new() -> Self {
-        Shelf::new(ENTRY, &RowStyle::HOME)
+        Shelf::new(ENTRY, RowStyle::HOME)
     }
     fn on(&mut self, ev: &ScreenEvent<FixtureHost>, cx: &Cx9<'_>, src: &Cards, fx: &mut Effects<'_, FixtureHost>)
         -> Option<CardEvent<u32>> {
@@ -1071,7 +1071,7 @@ fn a_source_can_refuse_a_hold() {
     }
     let r = settled::<Shelf>(4);
     let src = NoHold(Cards::new(r.src.elems.clone(), false));
-    let mut shelf = Shelf::new(ENTRY, &RowStyle::HOME);
+    let mut shelf = Shelf::new(ENTRY, RowStyle::HOME);
     let mut r2 = r;
     r2.focus = Some(r2.key(100));
     let mut present = Present::new();
@@ -2389,7 +2389,7 @@ fn a_shelf_that_returned_adopts_a_landing_whole_under_the_image() {
 fn a_cull_margin_keeps_a_card_just_off_the_left_edge() {
     let mut plain = settled::<Shelf>(60);
     let mut margined = settled::<Shelf>(60);
-    margined.sect = Shelf::new(ENTRY, &RowStyle::HOME).cull_margin(400.0);
+    margined.sect = Shelf::new(ENTRY, RowStyle::HOME).cull_margin(400.0);
     for r in [&mut plain, &mut margined] {
         r.land_focus(130, By::Restore);
         r.run(300);
@@ -4079,7 +4079,7 @@ fn landing_rig() -> Rig<Shelf> {
 fn landing_rig_at(elem: u32) -> Rig<Shelf> {
     crate::containers::transition::set_page_image_held(false);
     let mut r = Rig::<Shelf>::new(40);
-    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     r.run(2);
     r.land_focus(elem, By::Restore);
     r.run(240);
@@ -4210,7 +4210,7 @@ fn a_sliding_card_starts_where_it_stood_and_its_stop_follows() {
 fn nothing_animates_on_the_first_load() {
     crate::containers::transition::set_page_image_held(false);
     let mut r = Rig::<Shelf>::new(0);
-    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     r.run(2);
     r.src.elems = (100..108).collect();
     r.run(1);
@@ -4220,7 +4220,7 @@ fn nothing_animates_on_the_first_load() {
     assert!(r.sect.ghost_probe().0.is_empty() && !r.sect.landing_pending());
 
     let mut p = Rig::<Shelf>::new(8);
-    p.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    p.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     p.src.unloaded = 0..8;
     p.run(2);
     p.src.elems = (200..208).collect();
@@ -4883,7 +4883,7 @@ fn an_external_grid_ghost_stays_in_its_row_when_the_page_shifts() {
 
 fn mount_animated_shelf(n: usize) -> Box<dyn CardHarness> {
     let mut r = Rig::<Shelf>::new(n);
-    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     Box::new(r)
 }
 fn mount_animated_grid(n: usize) -> Box<dyn CardHarness> {
@@ -5605,4 +5605,15 @@ fn a_value_line_grid_borrows_labels_only_after_culling() {
     grid.set_columns(GRID.cols, GRID.style, crate::consts::MARGIN_X);
     assert!(!grid.caption_probe(&frame, painter, &src).is_empty());
     assert!(!src.reads.borrow().is_empty(), "visible captions use the borrowed path");
+}
+
+/// **A Shelf takes its style by value** (`docs/hud-plugins.md` D11): a style built at runtime, here a
+/// package's 288 x 162 chapter cards, lives in the Shelf and is read back unchanged, and the pitch every
+/// geometry reads is that style's, not a `'static` constant's.
+#[test]
+fn a_shelf_holds_a_style_built_at_runtime() {
+    let wide = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME };
+    let shelf = Shelf::new(ENTRY, wide);
+    assert_eq!((shelf.style().w, shelf.style().h, shelf.style().gap), (288.0, 162.0, 24.0));
+    assert_eq!(Shelf::new(ENTRY, RowStyle::HOME).style().w, RowStyle::HOME.w, "a shipped style passes by value too");
 }

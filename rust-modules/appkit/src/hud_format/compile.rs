@@ -1,6 +1,8 @@
 //! **The HUD layout compiler** (`docs/hud-plugins.md`, "Architecture", "Package format 1.0", "Cost"):
 //! a parsed [`Package`] laid out ONCE in every state [`reach`](super::reach) enumerates, into the rects
-//! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards.
+//! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards, with one
+//! exception: a `vstack` whose content is data ([`OpGroup`]) is emitted at its worst case for the lint, the cost
+//! and the census, and the renderer stacks it again per frame from the real heights.
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork. The two things a layout needs from
 //! outside arrive as values: text measurement as the existing [`Measure`] capability (the one the
@@ -59,7 +61,7 @@ use plx_platform::i18n::{msg, LocaleContext};
 use plx_ui::consts::{SAFE, SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::vstack::{Anchor, VStack};
-use plx_ui::widgets::{Button, TabPill, CTRL_FOCUS_SCALE, HAIRLINE_H};
+use plx_ui::widgets::{Button, TabPill, BADGE_H, CTRL_FOCUS_SCALE, HAIRLINE_H};
 use plx_ui::{theme, Rect};
 
 use super::clocks::{self, ClockRects};
@@ -433,6 +435,40 @@ pub struct CardOp {
     pub origin: String,
 }
 
+/// **A `vstack` whose content is decided by DATA, left for the draw to place** (`docs/hud-plugins.md`, D6 and
+/// PR8): a section's text group (`info.*` text, a `facts` row, and fixed `image` / `icon` / `rule` cells). The
+/// compile places every child at its WORST case (a text at its `max_lines`, a facts row present) and emits
+/// the ops there, which is what the lint, the cost and the census read; the renderer stacks the children
+/// again from the REAL heights ([`OpGroup::children`] says which ops are whose), through the same
+/// `plx_ui::vstack::VStack`, in cap-top coordinates, collapsing what the item has nothing to say for. The
+/// result is never taller than `rect`, so it never leaves it. A `vstack` that holds the title pair, a
+/// control or a nested cell is not a group: the compile's place for it is final.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpGroup {
+    /// every op of the group, as a range of [`CompiledState::ops`]
+    pub ops: std::ops::Range<usize>,
+    /// the `vstack`'s box at its worst case
+    pub rect: Rect,
+    /// the stack's gap
+    pub gap: f32,
+    /// where the real run stands in `rect`: its top, its middle or its bottom, by the cell's `valign`
+    pub anchor: Anchor,
+    pub children: Vec<GroupChild>,
+}
+
+/// One child of an [`OpGroup`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupChild {
+    /// the child's ops, a range of [`CompiledState::ops`] (empty for a `spacer`)
+    pub ops: std::ops::Range<usize>,
+    /// the top the compile put the child at, and its height there
+    pub y: f32,
+    pub h: f32,
+    /// the cell's `gap_before` / `gap_after`
+    pub before: Option<f32>,
+    pub after: Option<f32>,
+}
+
 /// One op's share of the cost terms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Contributor {
@@ -472,6 +508,10 @@ pub struct Cost {
 pub struct Span {
     /// the band's id; empty for the scrim
     pub band: String,
+    /// The section the band belongs to (`StateKey::open`'s bit: [`OPEN_CHAPTERS`], [`OPEN_INFO`]) when its `when`
+    /// names `panel.chapters` / `panel.info`, `0` for a band of the transport. The renderer paints a section's
+    /// spans as one layer, faded and raised by that section's own appear (`HudMotion::section_appear`).
+    pub section: u8,
     pub chrome: Chrome,
     pub ops: std::ops::Range<usize>,
 }
@@ -512,6 +552,9 @@ pub struct CompiledState {
     /// `control_origins[i]` is the pointer of the item that produced `controls[i]`
     /// ([`CompiledState::control_pointer`])
     control_origins: Vec<String>,
+    /// The `vstack`s the renderer stacks again from the real heights ([`OpGroup`]): additive to `ops`, no
+    /// op index moves.
+    pub groups: Vec<OpGroup>,
     /// `(pointer, rect)` of each `vstack` this state places ([`CompiledState::vstack_rect`])
     vstacks: Vec<(String, Rect)>,
     /// `(pointer, align)` of each `segment` this state packs in a row ([`CompiledState::segment_align`])
@@ -758,6 +801,10 @@ pub struct Compiled {
     /// interactive ones alone? Read once, here, by [`Compiled::compact_band_extents`] for the compiler and
     /// the lint alike
     block: bool,
+    /// the package's section policy (`layout.sections`, D6): `modal` (the default) opens one section at a time,
+    /// `inline` lets any set be open. Read once here for the player's `HudState::sections`, as `reach` reads it
+    /// for the state graph, so the two cannot disagree
+    modal: bool,
     findings: Vec<CompileFinding>,
     /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
     assets: Vec<(String, String)>,
@@ -782,6 +829,7 @@ impl Default for Compiled {
             named: Named { chapters: false, episode: false, paused: false },
             band: HudBand::CLASSIC,
             block: false,
+            modal: true,
             findings: Vec::new(),
             assets: Vec::new(),
         }
@@ -822,6 +870,13 @@ impl Compiled {
             episode: episode || !self.named.episode,
             paused: paused && self.named.paused,
         })
+    }
+
+    /// **Are the package's sections modal?** (`layout.sections`, D6): one section at a time, the row hidden
+    /// while it is open, and focus leaving the section's groups by a direction closes it. `false` is `inline`:
+    /// any set may be open and focus travels freely. The player's `HudState::sections` obeys it.
+    pub fn sections_modal(&self) -> bool {
+        self.modal
     }
 
     /// What the compiler could not carry as written (see [`CompileFinding`]); empty for a package that
@@ -897,6 +952,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
         named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
+        modal: package.layout.get("sections").and_then(Val::as_str) != Some("inline"),
         findings,
         assets: package.assets.clone(),
     };
@@ -1079,6 +1135,8 @@ struct Out {
     spans: Vec<Span>,
     /// `controls[i]`'s provenance: the pointer of the item
     control_origins: Vec<String>,
+    /// each [`OpGroup`] placed, with its ops as ranges of `ops`
+    groups: Vec<OpGroup>,
     /// `(pointer, rect)` of each `vstack` placed
     vstacks: Vec<(String, Rect)>,
     /// `(pointer, align)` of each `segment` a row packs
@@ -1099,8 +1157,19 @@ impl Out {
     }
 }
 
+/// The section a band belongs to: the bit of the `panel.*` term its `when` names without a negation, else `0`.
+fn section_of(band: &Object) -> u8 {
+    let Some(Val::Cond(cond)) = band.get("when") else { return 0 };
+    cond.terms.iter().filter(|t| !t.negated).fold(0, |bits, t| match t.name.as_str() {
+        "panel.chapters" => bits | OPEN_CHAPTERS,
+        "panel.info" => bits | OPEN_INFO,
+        _ => bits,
+    })
+}
+
 struct Band<'p> {
     id: &'p str,
+    section: u8,
     chrome: Chrome,
     before: Option<f32>,
     gap: f32,
@@ -1462,7 +1531,8 @@ impl<'e, 'p> Env<'e, 'p> {
                 let h = self.num(o, "h").unwrap_or_else(|| self.row_h(&self.objects(o, "cells")) + 2.0 * pad);
                 Size::new(Dim::Fill, h)
             }
-            "facts" => Size::new(Dim::Fill, self.measure.line_h(self.size_px(o, "size"))),
+            // as tall as its tallest chip: a badge is `BADGE_H` whatever the type rung
+            "facts" => Size::new(Dim::Fill, self.measure.line_h(self.size_px(o, "size")).max(BADGE_H)),
             "vstack" => {
                 let (heights, widest) = self.vstack_items(o);
                 let h = VStack::new(&heights.0, heights.1, Anchor::Top(0.0)).height();
@@ -1612,16 +1682,17 @@ impl<'e, 'p> Env<'e, 'p> {
         out
     }
 
-    /// The left edges the fill of an earlier group must stop short of: each control scaled by the focus
-    /// pop it may reach, any other cell as it stands.
-    fn left_edges(&self, cell: &CellIn<'p>, x: f32, w: f32) -> Vec<f32> {
+    /// The left edges the fill of an earlier group must stop short of: each segment control scaled by the
+    /// focus pop it may reach, any other cell as it stands. An `actions` column stands as placed: the Info
+    /// card's text ran to the buttons' REST edge less the gap (`info_panel::button_rect`), and a pop of a few
+    /// pixels lands inside that gap.
+    fn left_edges(&self, cell: &CellIn<'p>, x: f32) -> Vec<f32> {
         let scaled = |x: f32, w: f32| Rect::new(x, 0.0, w, 1.0).scaled(CTRL_FOCUS_SCALE).x;
         match cell.kind {
             "segment" => {
                 let c = self.controls(cell.o, self.gap(cell.o, "gap").unwrap_or(0.0), false);
                 HStack::new(&c.items, c.gap, Align::Leading(x)).placed().map(|s| scaled(s.x, s.w)).collect()
             }
-            "actions" => vec![scaled(x, w)],
             _ => vec![x],
         }
     }
@@ -1673,7 +1744,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 .fold(x, f32::max);
             let later = (0..row.len())
                 .filter(|&i| row[i].grp != SegmentAlign::Start && !(mode.hide && row[i].replaced))
-                .flat_map(|i| self.left_edges(&row[i], at[i].0, at[i].1))
+                .flat_map(|i| self.left_edges(&row[i], at[i].0))
                 .chain(mode.standin_left)
                 .reduce(f32::min);
             let limit = later.map_or(boxr.x + boxr.w, |l| l - gap);
@@ -1701,14 +1772,14 @@ impl<'e, 'p> Env<'e, 'p> {
             }
             let mark = out.gate.len();
             out.gate.extend(cell.gate.iter().cloned());
-            self.emit(cell.kind, cell.o, r, mode, out);
+            self.emit(cell.kind, cell.o, r, cell.valign, mode, out);
             out.gate.truncate(mark);
         }
     }
 
     // ---- emission ----
 
-    fn emit(&self, kind: &str, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
+    fn emit(&self, kind: &str, o: &'p Object, r: Rect, valign: VAlign, mode: &Mode<'_>, out: &mut Out) {
         match kind {
             "text" => {
                 let bind = o.get("bind").and_then(Val::as_str).unwrap_or("").to_owned();
@@ -1749,7 +1820,7 @@ impl<'e, 'p> Env<'e, 'p> {
             }),
             "spacer" => {}
             "rect" => self.emit_rect(o, r, mode, out),
-            "vstack" => self.emit_vstack(o, r, mode, out),
+            "vstack" => self.emit_vstack(o, r, valign, mode, out),
             "playbar" => {
                 // the cell holds the track at its top and the clocks' line under it (`size_of`)
                 let track = Rect::new(r.x, r.y, r.w, self.num(o, "thickness").unwrap_or(0.0));
@@ -1823,7 +1894,7 @@ impl<'e, 'p> Env<'e, 'p> {
         self.place_row(&cells, self.gap(o, "gap").unwrap_or(0.0), inner, mode, out);
     }
 
-    fn emit_vstack(&self, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
+    fn emit_vstack(&self, o: &'p Object, r: Rect, valign: VAlign, mode: &Mode<'_>, out: &mut Out) {
         if o.get("cells").and_then(Val::as_list).is_some_and(|c| {
             c.iter().filter_map(Val::as_object).any(|cell| {
                 cell.get("text").and_then(Val::as_object).and_then(|t| t.get("bind")).and_then(Val::as_str).is_some_and(|b| b.starts_with("title."))
@@ -1836,6 +1907,8 @@ impl<'e, 'p> Env<'e, 'p> {
         let ((items, gap), _) = self.vstack_items(o);
         let stack = VStack::new(&items, gap, Anchor::Top(r.y));
         let cells: Vec<&Object> = self.objects(o, "cells").into_iter().filter(|c| self.when(c)).filter(|c| content(c).is_some()).collect();
+        let group = self.data_stack(&cells);
+        let (first, mut children) = (out.ops.len(), Vec::new());
         for span in stack.placed() {
             let cell = cells[span.i];
             let Some((kind, c)) = content(cell) else { continue };
@@ -1845,9 +1918,45 @@ impl<'e, 'p> Env<'e, 'p> {
             };
             let mark = out.gate.len();
             out.gate.extend(item_terms(cell));
-            self.emit(kind, c, Rect::new(r.x, span.y, w, span.h), mode, out);
+            let start = out.ops.len();
+            self.emit(kind, c, Rect::new(r.x, span.y, w, span.h), VAlign::Top, mode, out);
+            if group {
+                children.push(GroupChild {
+                    ops: start..out.ops.len(),
+                    y: span.y,
+                    h: span.h,
+                    before: self.gap(cell, "gap_before"),
+                    after: self.gap(cell, "gap_after"),
+                });
+            }
             out.gate.truncate(mark);
         }
+        if group {
+            let anchor = match valign {
+                VAlign::Top => Anchor::Top(r.y),
+                VAlign::Center => Anchor::Centre(r.y + r.h * 0.5),
+                VAlign::Bottom => Anchor::Bottom(r.y + r.h),
+            };
+            out.groups.push(OpGroup { ops: first..out.ops.len(), rect: r, gap, anchor, children });
+        }
+    }
+
+    /// **Is this `vstack` a group** ([`OpGroup`])? Its present cells are all data the item decides the height
+    /// of (`info.*` text, a `facts` row) or a fixed leaf (`image`, `icon`, `rule`, `spacer`), and at least
+    /// one is data. A cell of any other kind (a control, a nested `rect` or `vstack`) or a text of another
+    /// bind (the title pair, drawn by its own marquee) keeps the compile's place.
+    fn data_stack(&self, cells: &[&Object]) -> bool {
+        let mut data = false;
+        for cell in cells {
+            let Some((kind, c)) = content(cell) else { continue };
+            match kind {
+                "text" if c.get("bind").and_then(Val::as_str).is_some_and(|b| b.starts_with("info.")) => data = true,
+                "facts" => data = true,
+                "image" | "icon" | "rule" | "spacer" => {}
+                _ => return false,
+            }
+        }
+        data
     }
 
     fn emit_strip(&self, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
@@ -1878,7 +1987,7 @@ impl<'e, 'p> Env<'e, 'p> {
             };
             // the cell keeps its room on every card; a card draws it when its `item.*` terms hold
             tmp.gate = item_terms(cell);
-            self.emit("text", text, Rect::new(art.x, y, w, h), mode, &mut tmp);
+            self.emit("text", text, Rect::new(art.x, y, w, h), VAlign::Top, mode, &mut tmp);
             tmp.gate.clear();
             y += h;
         }
@@ -1919,6 +2028,7 @@ impl<'e, 'p> Env<'e, 'p> {
             .filter(|b| self.when(b))
             .map(|b| Band {
                 id: b.get("id").and_then(Val::as_str).unwrap_or(""),
+                section: section_of(b),
                 chrome: if b.get("chrome").and_then(Val::as_str) == Some("steady") { Chrome::Steady } else { Chrome::Fades },
                 before: self.gap(b, "gap_before"),
                 gap: self.gap(b, "gap").unwrap_or(0.0),
@@ -1941,7 +2051,7 @@ impl<'e, 'p> Env<'e, 'p> {
             };
             let start = out.ops.len();
             self.place_row(&bands[i].cells, bands[i].gap, boxes[i], &band_mode, &mut out);
-            let span = Span { band: bands[i].id.to_owned(), chrome: bands[i].chrome, ops: start..out.ops.len() };
+            let span = Span { band: bands[i].id.to_owned(), section: bands[i].section, chrome: bands[i].chrome, ops: start..out.ops.len() };
             out.spans.push(span);
         }
         out
@@ -2045,12 +2155,13 @@ impl<'e, 'p> Env<'e, 'p> {
         let shift = ops.len();
         let mut spans: Vec<Span> = Vec::new();
         if shift > 0 {
-            spans.push(Span { band: String::new(), chrome: Chrome::Steady, ops: 0..shift });
+            spans.push(Span { band: String::new(), section: 0, chrome: Chrome::Steady, ops: 0..shift });
         }
         spans.extend(out.spans.iter().map(|s| Span { ops: s.ops.start + shift..s.ops.end + shift, ..s.clone() }));
         if out.ops.len() > band_ops {
             let chrome = bands.iter().find(|b| b.id == host).map_or(Chrome::Fades, |b| b.chrome);
-            spans.push(Span { band: host.to_owned(), chrome, ops: band_ops + shift..out.ops.len() + shift });
+            let section = bands.iter().find(|b| b.id == host).map_or(0, |b| b.section);
+            spans.push(Span { band: host.to_owned(), section, chrome, ops: band_ops + shift..out.ops.len() + shift });
         }
         ops.append(&mut out.ops);
         // the scrim op is the node `layout.scrim` (its owner is the layout when there is none to name)
@@ -2080,6 +2191,19 @@ impl<'e, 'p> Env<'e, 'p> {
             skip_alt: None,
             origins,
             control_origins: out.control_origins,
+            groups: out
+                .groups
+                .into_iter()
+                .map(|g| OpGroup {
+                    ops: g.ops.start + shift..g.ops.end + shift,
+                    children: g
+                        .children
+                        .into_iter()
+                        .map(|c| GroupChild { ops: c.ops.start + shift..c.ops.end + shift, ..c })
+                        .collect(),
+                    ..g
+                })
+                .collect(),
             vstacks: out.vstacks,
             segment_aligns: out.segment_aligns,
             standin_origin: up.map_or_else(String::new, |u| u.pointer.clone()),

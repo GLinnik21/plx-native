@@ -1669,11 +1669,11 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
             pin_headless_hud(app, fr.now, None);
         }
         if plx_base::devtrig::flag("info") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::Info);
+            crate::app::bridge::toggle_player_section(&mut app.pages, plx_appkit::player_hud::command::Section::Info);
             pin_headless_hud(app, fr.now, Some(0));
         }
         if plx_base::devtrig::flag("chapters") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::Chapters);
+            crate::app::bridge::toggle_player_section(&mut app.pages, plx_appkit::player_hud::command::Section::Chapters);
             pin_headless_hud(app, fr.now, Some(1));
         }
     }

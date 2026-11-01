@@ -445,12 +445,20 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     // resolve above, so a load longer than the 4.5 s linger expired the HUD before it was ever
     // drawn and the user got a blank screen instead of a transport.
     bridge.seed_player_hud(hud_ms);
+    // An open section goes with the old film; the engine is on one of its stops, so it is told where the reset put
+    // the cursor (`reseat_player_focus`, the write-then-reseat rule every app-side `hud.nav` write follows).
+    let mut sections_were_open = false;
     if let Some(player) = super::bridge::player_mut(pages) {
+        sections_were_open = player.hud.sections.any();
         player.hud = HudState::IDLE;
         player.scrub = Scrub::IDLE;
         player.up_next.reset();
+        player.row.drop_strip();
         player.hud.extend(clock::now(), hud_ms);
         player.publish();
+    }
+    if sections_were_open {
+        super::bridge::reseat_player_focus(pages);
     }
     set_paused(false);
     entering
@@ -507,28 +515,6 @@ fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_da
 pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::dismiss_player_overlays(pages);
     crate::app::diagnostics::close(); // a diagnostics panel must not survive into the next session
-}
-
-/// **The Info card's tvOS press, committed on the spring-back.** The card's own OK arm cannot
-/// perform this: `InfoAction` reaches a detail page or a seek, which needs the route, the trail and
-/// the player adapter, and — the reason it is DEFERRED at all — the dip has to be on screen
-/// before the card goes away. So the surface arms `PlayerReq::ArmInfoPress`, the loop's press
-/// machine holds the frame, and this reads the decision back out of the panel that is still up.
-pub(crate) unsafe fn commit_info_press(
-    player: &mut plx_media::player::machine::Player,
-    pa: &mut plx_media::player::adapter::PlayerAdapter,
-    repause_at: &mut i64,
-    refresh_hubs: &mut bool,
-    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
-    bridge: &mut super::bridge::Bridge,
-) {
-    let Some(action) = super::bridge::player_overlay_mut(pages)
-        .and_then(|o| o.info_press_action(bridge.metadata_view()))
-    else {
-        return;
-    };
-    close_player_overlays(pages);
-    apply_info_action(player, pa, repause_at, action, refresh_hubs, pages, bridge);
 }
 
 /// **Perform the track menu's pick.**
@@ -624,12 +610,6 @@ pub(crate) fn player_requests(
                     player.publish();
                 }
             }
-            PlayerReq::FocusTabs => {
-                if let Some(player) = super::bridge::player_mut(pages) {
-                    player.hud.nav.focus = plx_appkit::player_hud::geometry::GROUP_TABS;
-                }
-                super::bridge::reseat_player_focus(pages);
-            }
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
             PlayerReq::Transport(play) => apply_transport(pa, play, now, pages),
@@ -639,22 +619,15 @@ pub(crate) fn player_requests(
             PlayerReq::CommitSeek(ns) => commit_seek(ns),
             PlayerReq::More(action) => apply_more_action(&mut player.session, pa, bridge, action),
             PlayerReq::CommitTrack(commit) => commit_track(&mut player.session, commit),
-            PlayerReq::ArmInfoPress => {
-                press.begin_ctl(now);
-                *ok_armed = true;
-            }
-            PlayerReq::Info(action) => {
-                apply_info_action(player, pa, repause_at, action, refresh_hubs, pages, bridge)
-            }
-            // The old `key_ok`'s tabs-row (`focus == 2`) and failure-read-out (`ChooseQuality`)
-            // arms, both of which presented a panel immediately rather than through the deferred
-            // press `ArmControlRow`/`ArmInfoPress` use.
+            // The failure-read-out's recovery escape (`ChooseQuality`) and the Tracks->Timing hand-off, which
+            // present a panel immediately rather than through the deferred press `ArmControlRow` uses. The
+            // tabs row is not an asker: it asks `ToggleSection` (Info and Chapters are sections).
             PlayerReq::OpenOverlay(kind) => {
                 seed_menu_anchor(pages, bridge, kind);
                 super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
             }
-            // A pointer click on the control row: dip the same tvOS press `ArmInfoPress` does,
-            // for the transport's OWN control row rather than a panel's action column. The loop's
+            // A pointer click on the control row: dip a tvOS press for the transport's OWN control
+            // row, not a panel's. The loop's
             // existing commit-frame dispatch (`Route::Player => activate_player_row(...)`, below
             // in this same call chain) is unchanged and performs whatever the row decides.
             PlayerReq::ArmControlRow => {
@@ -1128,27 +1101,6 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
 /// adapter, the route and the trail in scope arrive back here as `PlayerReq`, drained by
 /// [`player_requests`].)
 
-/// **Perform the Info card's chosen action** — the half of the old `commit_info_panel` that needs
-/// the player adapter, the route and the trail. The card itself decided (its own `on_ok`) and
-/// is already dismissing; this is what the loop does about it.
-fn apply_info_action(
-    player: &mut plx_media::player::machine::Player,
-    pa: &mut plx_media::player::adapter::PlayerAdapter,
-    repause_at: &mut i64,
-    action: plx_appkit::info_panel::InfoAction,
-    refresh_hubs: &mut bool,
-    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
-    bridge: &mut super::bridge::Bridge,
-) {
-    match action {
-        plx_appkit::info_panel::InfoAction::FromBeginning => from_beginning(pa),
-        plx_appkit::info_panel::InfoAction::GoToDetail(rk) => {
-            go_to_detail(player, pa, repause_at, refresh_hubs, &rk, pages, bridge)
-        }
-        plx_appkit::info_panel::InfoAction::None => {}
-    }
-}
-
 /// Start the playing item over, playing: the Info card's *From beginning* and the
 /// `from_beginning` command.
 fn from_beginning(pa: &mut plx_media::player::adapter::PlayerAdapter) {
@@ -1246,7 +1198,7 @@ pub(crate) fn perform_hud_command(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
-    use plx_appkit::player_hud::command::{HudCommand, Section};
+    use plx_appkit::player_hud::command::HudCommand;
     use plx_media::route::QueueStep;
     use plx_screens::player::overlay::OverlayKind;
     use plx_screens::registry::PlayerReq;
@@ -1284,17 +1236,9 @@ pub(crate) fn perform_hud_command(
             seed_menu_anchor(pages, bridge, kind);
             super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
         }
-        HudCommand::ToggleSection(section) => {
-            let kind = match section {
-                Section::Chapters => OverlayKind::Chapters,
-                Section::Info => OverlayKind::Info,
-            };
-            if super::bridge::player_overlay_kind(pages).is_some_and(|up| up.slot() == kind.slot()) {
-                super::bridge::dismiss_player_overlays(pages);
-            } else {
-                super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
-            }
-        }
+        // A section is the player page's own state: the performer addresses the page with the toggle, and the
+        // page opens or closes it under the package's policy and seats its own focus.
+        HudCommand::ToggleSection(section) => super::bridge::toggle_player_section(pages, section),
         HudCommand::FromBeginning => from_beginning(pa),
         HudCommand::GoToDetail => {
             if let Some(rk) = plx_appkit::info_panel::detail_rk(bridge.metadata_view()).map(str::to_owned) {

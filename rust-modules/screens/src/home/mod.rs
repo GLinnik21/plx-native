@@ -1010,7 +1010,7 @@ impl HomeScreen {
             for (row, projection) in rows.iter().enumerate() {
                 // a shelf stays with its identity, wherever the row went
                 let kept = matched[row].and_then(|old| old_shelves.get_mut(old)?.take());
-                let shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD)
+                let shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, RowStyle::HOME).cull_margin(GLOW_PAD)
                     .animate_landings(projection.identity == HomeHubIdentity::ContinueWatching));
                 self.grid.shelves.push(shelf);
             }
@@ -2580,7 +2580,7 @@ impl LogicalState for HomeScreen {
             // a row with no shelf yet (the grid trails the rows by a sync) hashes as a resting one
             match self.grid.shelves.get(index) {
                 Some(shelf) => shelf.write(c),
-                None => Shelf::new(self.entry, &RowStyle::HOME).write(c),
+                None => Shelf::new(self.entry, RowStyle::HOME).write(c),
             }
         }
         c.seq(self.restored_scroll.len());

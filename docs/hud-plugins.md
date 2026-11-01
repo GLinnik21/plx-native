@@ -311,6 +311,20 @@ Other subsystems the plan touches
   first action when the package places one, and a failed playback closes every section (today's
   `survives_failure` is false for both, F18). Without a stated policy the FocusEngine would just move focus
   to the tabs and leave classic's strip open, a behaviour change.
+  **Sections move as the panels did.** Each section has its own `PopoverMotion` (the appear spring the panels'
+  surfaces ran), pointed at the logical set (`HudState::sections`) and stepped at the screen's tick, never in a
+  draw. The frame that presents a section draws it at appear 0 (`hold_one_frame`); everything the section paints is
+  ONE layer, faded by the appear and raised by `Popover::RISE * (1 - appear)`; the tabs, the scrim and the
+  title/bar/row stay outside it. A close drops the section from the logical set at once (stops, hit rects,
+  FocusEngine groups and keys read that set) and the draw keeps it, fading, until its spring is out (the
+  Chapters Shelf with it). A failed playback, a stop and the page leaving cut it (`PopoverMotion::at(0.0)`),
+  as `ModalStack::hide` did. A **modal** package gives the transport and any stand-in back at the dismissal
+  frame. An **inline** package lays the section's bands under the transport's, so the ops stacked above an
+  appearing or fading section are drawn `(1 - appear) * h` lower than their rest position in the
+  presented-mask state, `h` being the lift the compiler's own layout gives that band (its box with the section
+  against its box without it, a keyed `gap_before` included): at appear 0 the block stands where the closed
+  state puts it and the mask drops without a jump. Their hit rects and focus stay at rest, and an inline
+  package keeps the discs, not a stand-in, until the last section has faded.
 - D7. **Stand-ins draw only with no section open, as today.** `slot_for` depends only on the marker
   (F19), so Skip or Up Next can become due while a section is open; today such a stand-in waits, because
   the row only draws under `transport` (F1, F2). That rule is kept: while any section is open the row
@@ -394,9 +408,11 @@ ui/popover               the shared anchored placer (D9), used by the player men
   Unloadable(Meta, Unloadable), Invalid }` (`Meta` is id, name, version, format; `Unloadable` is
   `NewerFormat`, `OlderFormat` or `AppRange`). The supported format range stays with the runner, which owns the
   validator: the store is handed no range.
-- Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing, allocation or
-  hashing; all text goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each
-  text draw.
+- Per frame the renderer walks a flat `Vec<DrawOp>` and reads `HudModel` fields: no parsing or hashing; all text
+  goes through `measure`, which `player_hud/render.rs` takes from its `Frame` and passes to each text draw. The one
+  deliberate exception is an open section's text group (`CompiledState::groups`, `sections::group`): it re-stacks
+  from the heights it really wraps at draw time and allocates its item list each frame, so the PR8 section ceilings
+  in "Cost" are calibrated with it in the loop.
 - Package icons are rasterized through the same `plx_gfx::svg::rasterize` (F36); their textures belong to
   the `CompiledHud` instance `App` hands the player screen and are released when the HUD changes. The
   icon draw API takes `IconRef { Builtin(Icon), Pack(PackIcon) }`; no second cache, no new global.
@@ -448,7 +464,13 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `badges` (ordered subset of `content_rating audio_format cc sdh ad`), `size`}: content rating appears
   in `order` OR `badges`, never both; all of it is fitted by `ChipRow` (moved out of `info_panel.rs` into a
   shared appkit module), which drops whole chips tail first;
-- `vstack` {`gap`, `w`, `cells`}; `spacer` {`w`};
+- `vstack` {`gap`, `w`, `cells`}; `spacer` {`w`}. The compiler places a `vstack`'s children at their WORST case
+  (a `text` at `max_lines` x `leading`, a `facts` row at the badge height `BADGE_H` or its line, whichever is taller), which
+  is what lint, Cost and the census read. A `vstack` of text, `facts` and static children in an open section is also
+  a GROUP (`CompiledState::groups`): the renderer restacks it at draw time through the shared `VStack`, in cap-top
+  coordinates, from the heights it really wraps, so a block with no text (`max_lines` above 1, empty) and a `facts`
+  row that keeps no chip take no room and no gap, as the Info card's own stack does, and the group never leaves
+  its worst-case rect. A `vstack` that holds the title pair, a control or a nested cell stays static;
 - `playbar` {`w`, `fill`, `track`, `thickness`, `knob` (`tick` classic, `always`), `clocks` (`follow_head`
   classic, `ends`), `clock_size`, `mark` (`after_elapsed`, `busy_only`: the paused glyph may go when a
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
@@ -491,9 +513,9 @@ or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
 glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`ui/src/widgets.rs:1394`).
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
-A `toggle_section` item draws a SELECTED face while its section is open (`hud_tab_state`'s second flag,
-`player_hud.rs:1587-1590`): `pill` uses `TabPill`'s own selected face, `disc` its `solid` face; the focus face wins when
-both hold. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
+A `toggle_section` item draws a SELECTED face while its section is open: `pill` uses `TabPill`'s own selected face,
+`disc` its `solid` face; the focus face wins when both hold. The face is read from the compiled state's own open bits
+(`render::section_open`, `appkit/src/player_hud/render.rs`), so it holds under both policies, with the transport live or hidden: a `toggle_section` pill's selected face is `hud_tab_state`'s second flag OR the open bit, and the compiled renderer is the only caller. A control's `size` is a plain number, never state-keyed, at or above `MIN_CONTROL_SIZE` (26 px, derived
 in PR5d from the narrowest seat the app's own screens place and pinned by a test, see "Unverified items"; it admits the
 reference's 52). A control has no alpha key and the palette is `#rrggbb` (D12), but an allow-list ink
 can be translucent (`HAIRLINE` is `with_a(WHITE, 0.10)`, `ui/src/theme.rs:949`), so a rest face's GLYPH ink, composited
@@ -518,8 +540,8 @@ Each maps to an action the app already performs; the performer is shared with th
 | `open_tracks` | `tab`: `subtitles`, `audio` | `OverlayKind::Tracks { tab: 1 | 0 }` (F15) | always (F6) | none |
 | `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More { page }`; `quality` is what was `More { quality: true }` (F18); `speed` is the address PR3 added by turning that bool into `page: Option<MorePage>` (F16) | always | none |
 | `toggle_section` | `section`: `chapters`, `info` | opens or closes the section (D6) | chapters: the playing item has chapters (`chapters_panel::has_chapters`) | none |
-| `from_beginning` | - | `InfoAction::FromBeginning` (F17) | always | none |
-| `go_to_detail` | - | `InfoAction::GoToDetail(rk)`: leaves playback, opens the item's page (F17) | the playing item has a ratingKey | none |
+| `from_beginning` | - | seeks to 0 and resumes (F17) | always | none |
+| `go_to_detail` | - | leaves playback and opens the item's page (`info_panel::detail_rk`, F17) | the playing item has a ratingKey | none |
 | `toggle_stats` | - | `more_menu::Action::ToggleStats` (F16) | always | none |
 
 - `seek.by`: a literal has a static face, so no ladder-keyed map is needed, and a new rung on the app's
@@ -1026,7 +1048,7 @@ a package is never the default.
 Classic's compact state, tabs, scrim and Up Next, as the `layout` of `classic.plxhud.json` (every number is a constant
 cited in the table below; faces are omitted, so each control draws its command's classic glyph; the file in the repo
 (`appkit/src/hud_format/fixtures/classic.plxhud.json`) already has the two section bands of the table and the tabs
-band's keyed `gap_before` (its chapters value is a placeholder, below), and PR6's `--hud-export builtin:classic` prints the
+band's keyed `gap_before` (its chapters value takes `item.start`'s one-pixel leading, below), and PR6's `--hud-export builtin:classic` prints the
 whole file):
 
 ```json
@@ -1088,7 +1110,7 @@ at 768 and the title at 802.
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
 | Skip | `ctrl_slot` of its own label (`skip_pill.rs:75-77`) | the Skip rule (Package format) |
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |
-| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left (`chapters_panel.rs:27-40`); cards past `SAFE` culled at the screen edge (`:140-147`); an empty name draws "Chapter N" (`:176-179`) | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 43 = 949 - 684 - (162 + 26 + 34), takes the `item.start` line as zero-height as `chapters_panel::label_ys` does; a one-line text's box is its rung's line height, so PR8 recomputes it from the compiled strip box and the fixture's number is a placeholder until then); scroll and marquee per D11 |
+| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left; cards past `SAFE` culled at the screen edge; an empty name draws "Chapter N" | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 42 = 949 - 684 - (162 + 26 + 34 + 1): `item.start` carries `leading: 1`, the smallest leading, as the stand-in for `chapters_panel::label_ys`'s zero-height origin, because a one-line text's box is its measurer's line height and no gap lands the top on 684 for the fixture, the shipped and the television's measure at once); scroll and marquee per D11 |
 | Info card | ground x 80, w 1760, h 236, top `SCR_H - 176 - 236` = 668, pad 28 (`info_panel.rs:581-588`); still radius 16 (`:216`); text 34 from the still and from the buttons (`:252-255`); title to synopsis 6, tags `before(12)` (`:436-446`); synopsis `leading(29)` (`:386-389`); buttons a column 70 tall, 16 apart, centred, width max(352, widest of all three labels) (`:594-608`), right edge 1812 inside `SAFE`'s 1824 | band `info`, `when: panel.info`: `rect {bleed: 16, pad: 28, h: 236, gap: 34, ink: PANEL_TOP, radius: 28}` holding `image info.still` 320 x 180 radius 16; a `vstack {gap: 6, w: fill, valign: center}` of the title (`max_lines: 1`), the synopsis (`leading: 29`, `max_lines: 2`) and `facts` with `gap_before: 12` (`order: [genres, year, duration]`, `genres_max: 2`, `bold: true`, `ink: TEXT_PRIMARY`, `playback_fact: true`, `badges: [content_rating, audio_format, cc, sdh, ad]`); `actions {axis: column, gap: 16, item_h: 70, min_w: 352, items: [from_beginning, go_to_detail]}`, `align: end`, `valign: center`; the tabs band's `gap_before` 45 under `panel.info` (949 - 904) |
 | Captions | ceiling 780 whenever the HUD is up (F28) | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
 
@@ -1433,8 +1455,11 @@ PR8. Sections.
   shared appkit module; `rect.bleed` and `rect.h`, `actions.axis`, `text.leading`. `OverlayKind::Info` and `OverlayKind::Chapters` go: 48 sites in 9 files
   (`git grep -n "OverlayKind::Chapters\|OverlayKind::Info" -- 'rust-modules/*.rs' | wc -l` prints 48, `-l` 9);
   Tracks, More and Timing stay overlays. The fps scenes selected by overlay word (`tests/manifest.json:1418`
-  "info", `:1577` "chapters") move to the HUD's section word; how the heartbeat publishes it is UNVERIFIED (today
-  the word is the topmost surface's `Screen::name`) and this PR settles it.
+  "info", `:1577` "chapters") move to the HUD's section word. Settled in stage 2b: `overlay=` keeps meaning the
+  topmost modal surface (`none` over a bare player), the heartbeat prints ` section=<chapters|info|chapters_info>`
+  right after it while the page holds a section open (`app/words.rs::section_word`, absent with none open), and the
+  two scenes pin `"overlay": "none"` plus a `"section"` key that `tests/run.py::select_section` applies to the
+  heartbeats they grade. UNVERIFIED on the set until a coordinator's `--fps-player` run enters both scenes.
 - Verify: classic's info state pixel-identical; classic's chapters state identical except D11's stated changes
   (scroll rule, focused-name marquee), shown before and after; modal Down-to-tabs and BACK sequences pinned; the
   reference's three states render; TV calibration of the one- and two-section ceilings (Cost). Replay: no fixture
@@ -1527,7 +1552,8 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 - Whether `p.text`'s y is the glyph top or a baseline (changes no offset; Package format, `leading`).
 - Whether the strict reader exposes an object's pairs in document order (state-keyed values).
 - Whether `card_row`'s tile paint can draw the over-video rim in place of the shader ring (D11).
-- The heartbeat word for an open section (PR8).
+- That the `info-panel` and `chapters-panel` fps scenes enter their scene on the set under the ` section=` word (PR8
+  stage 2b settled the word; the host tests grade the table, only a TV run grades the scenes).
 - Whether a rooted set runs under one of the two jails; HBC availability for testing; USB mounts.
 - The TV's CA set and `objects.githubusercontent.com`; DNS for a registry subdomain; GitHub's unauthenticated rate
   limit figure; Homebrew 4.0's API move.

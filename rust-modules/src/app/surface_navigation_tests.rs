@@ -363,7 +363,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]).0, "player");
-    open_player_overlay(plx_media::route::idle_session_for_test(), plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
+    open_player_overlay(plx_media::route::idle_session_for_test(), plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::More { page: None });
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
     assert!(player_overlay_up(&d), "the panel is on the player page's own ModalStack");
     // …`exit_player`'s own order: the panels are dismissed, then the route is the origin's.
@@ -378,8 +378,8 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
 /// answers to, so a viewer who turned Stats on from `More` had no way back to the control that
 /// turns it off. `bridge::player_diagnostics_visible` is the decision `app/run.rs`'s player
 /// branch gates `app.diagnostics.draw()` on; this exercises it directly against the real
-/// `ModalStack`, across all four overlay kinds — the bug generalizes to `Tracks`/`Info`/
-/// `Chapters` too, since each is anchored well inside the panel's near-full-width rect.
+/// `ModalStack`, across every overlay kind — the bug generalizes to `Tracks` too, since each is
+/// anchored well inside the panel's near-full-width rect.
 #[test]
 fn player_diagnostics_hide_behind_any_open_player_overlay() {
     use plx_screens::player::overlay::OverlayKind;
@@ -398,8 +398,6 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
     );
     for kind in [
         OverlayKind::Tracks { tab: 0 },
-        OverlayKind::Info,
-        OverlayKind::Chapters,
         OverlayKind::More { page: None },
     ] {
         open_player_overlay(
@@ -429,6 +427,43 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
             "{kind:?} closed — the panel draws again once the dismiss fade settles"
         );
     }
+}
+
+/// **The Stats panel stays behind an open HUD section too.** On `main` the Info card and the Chapters strip were
+/// `PlayerOverlay` surfaces, so `player_diagnostics_visible` held the panel back while either was up (and while one
+/// faded out); a section is the page's own state, not a surface, so the gate reads the page's sections as well. The
+/// rows are the ones `player_diagnostics_hide_behind_any_open_player_overlay` had before the switch: open, and
+/// closed once the fade has settled.
+#[test]
+fn player_diagnostics_hide_behind_an_open_hud_section() {
+    use plx_appkit::player_hud::command::Section;
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    let mut t = 0u32;
+    let mut next = |d: &mut Dispatcher<AppHost>| {
+        t += 1;
+        frame(d, &mut rig, AppArg::Player, tick(t * 16), vec![])
+    };
+    next(&mut d);
+    assert!(player_diagnostics_visible(&d), "nothing is open yet");
+    toggle_player_section(&mut d, Section::Info);
+    for _ in 0..4 {
+        next(&mut d);
+    }
+    assert!(player(&d).is_some_and(|p| p.hud.sections.contains(Section::Info)), "premise: the section opened");
+    assert!(!player_diagnostics_visible(&d), "Info is open: the panel stays clear of it");
+    toggle_player_section(&mut d, Section::Info);
+    next(&mut d);
+    assert!(player(&d).is_some_and(|p| !p.hud.sections.any()), "premise: the section is closed");
+    assert!(!player_diagnostics_visible(&d), "a section fading out still counts, as a fading panel did");
+    for _ in 0..200 {
+        next(&mut d);
+        if player_diagnostics_visible(&d) {
+            break;
+        }
+    }
+    assert!(player_diagnostics_visible(&d), "closed: the panel draws again once the fade has settled");
 }
 
 /// Phase 5b: the Settings surface is PRESENTED on the tree, owns input from its first frame,
@@ -1018,9 +1053,9 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
         );
         assert!(panel.same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg { kind })));
     }
-    assert!(!AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Info })
+    assert!(!AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } })
         .same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg {
-            kind: OverlayKind::Chapters
+            kind: OverlayKind::More { page: None }
         })));
     // The panel that carries a parameter is still ONE panel: reopening the track menu on the
     // other tab reuses the entry rather than stacking a second one, exactly as

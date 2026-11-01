@@ -1,5 +1,6 @@
-//! `Popover` — the ONE open/appear choreography every modal panel shares (track menu, Info card,
-//! Chapters strip, profile menu): an OPEN flag + a critically-damped 0→1 appear spring driving a
+//! `Popover` — the ONE open/appear choreography the modal panels share (the track menu among them; the
+//! player's Info card and Chapters strip are HUD sections of the page, not modal panels, and ride its appear
+//! spring, `PopoverMotion` in `containers/modal.rs`, too): an OPEN flag + a critically-damped 0→1 appear spring driving a
 //! fade + slide-into-place, with an optional full-screen scrim. Each panel used to hand-wire its
 //! own `static OPEN + APPEAR` pair, so any motion change was a four-file edit.
 //!

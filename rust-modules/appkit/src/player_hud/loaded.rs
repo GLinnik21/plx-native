@@ -67,6 +67,17 @@ pub fn classic_for_test() -> Arc<Compiled> {
     load_classic("0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).compiled
 }
 
+/// **The reference package for a test that builds a player page**: the fixture the format's own tests draw
+/// (`inline` sections, a `toggle_section` disc for each in its row), loaded on the same English and fixture
+/// advances as [`classic_for_test`]. It is how a screen test runs the package-drawn opener and the inline policy.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reference_for_test() -> Arc<Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+    load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+        .expect("the reference fixture loads")
+        .compiled
+}
+
 /// **The dev trigger's value**: the path of the package to draw instead of classic, the first line of the
 /// trigger file, trimmed. `None` for an empty file (nothing armed).
 pub fn dev_package_path(value: &str) -> Option<&str> {

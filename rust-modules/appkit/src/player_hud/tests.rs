@@ -62,7 +62,7 @@ fn draw_player_title(
 /// `title_right` reported, frozen in `classic-title-right.golden.tsv`.
 fn compiled_title_right(compiled: &crate::hud_format::compile::Compiled, slot: ControlSlot) -> f32 {
     use crate::hud_format::compile::DrawOp;
-    let (state, skip) = frame_state(compiled, slot, true, false).expect("classic has a state for every slot");
+    let (state, skip) = frame_state(compiled, 0, slot, true, false).expect("classic has a state for every slot");
     state
         .skip_variant(skip)
         .ops
@@ -91,7 +91,7 @@ fn long_hud_titles_fit_before_every_control_slot() {
         ];
         for slot in slots {
             let right = compiled_title_right(&compiled, slot);
-            let items = geometry(&compiled, slot, true, false).items;
+            let items = geometry(&compiled, 0, slot, true, false).items;
             let mut row = HudMotion::new();
             for focused in 0..slot.items() {
                 for _ in 0..30 {
@@ -318,7 +318,7 @@ const DUR: i64 = 1_000;
 
 /// The classic discs' rects, as the compile reports them (what the page places and hit-tests from).
 fn disc_rects() -> [Option<Rect>; MAX_ROW_ITEMS] {
-    geometry(&super::loaded::classic_for_test(), ControlSlot::Discs(Controls::NONE), false, false).items
+    geometry(&super::loaded::classic_for_test(), 0, ControlSlot::Discs(Controls::NONE), false, false).items
 }
 
 /// **Q5: the discs stand `CONTROL_GAP` (20) apart, not the old 22**, and the row's width is the three discs
@@ -337,11 +337,11 @@ fn the_control_row_gap_is_the_shared_control_gap() {
 #[test]
 fn the_bottom_tabs_stand_one_sm_apart_and_are_drawn_where_they_are_hit() {
     let compiled = super::loaded::classic_for_test();
-    let two = geometry(&compiled, ControlSlot::Discs(Controls::NONE), true, false).tabs;
+    let two = geometry(&compiled, 0, ControlSlot::Discs(Controls::NONE), true, false).tabs;
     let (info, chapters) = (two[0].expect("Info"), two[1].expect("Chapters"));
     assert_eq!(info.x, SB_X);
     assert_eq!(chapters.x - (info.x + info.w), theme::space::SM);
-    let one = geometry(&compiled, ControlSlot::Discs(Controls::NONE), false, false).tabs;
+    let one = geometry(&compiled, 0, ControlSlot::Discs(Controls::NONE), false, false).tabs;
     assert_eq!(one[0], Some(info), "with no chapters there is one pill, at the same place");
     assert_eq!(one[1], None, "…and no second");
 }
@@ -1334,7 +1334,7 @@ fn the_layouts_band_is_classics_in_every_slot() {
         slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
     ];
     for slot in slots {
-        assert_eq!(geometry(&compiled, slot, true, false).band(), HudBand::CLASSIC);
+        assert_eq!(geometry(&compiled, 0, slot, true, false).band(), HudBand::CLASSIC);
     }
     assert_eq!(
         HudBand::CLASSIC,
@@ -1404,7 +1404,7 @@ mod playback_navigation_tests {
     fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
         let compiled = super::super::loaded::classic_for_test();
         let pair = Controls::for_item(true, false, true, false);
-        let rects = |c: Controls| geometry(&compiled, ControlSlot::Discs(c), false, false).items;
+        let rects = |c: Controls| geometry(&compiled, 0, ControlSlot::Discs(c), false, false).items;
         let (pair_rects, none_rects) = (rects(pair), rects(Controls::NONE));
         for i in BTN_SUBTITLES..=BTN_MORE {
             assert_eq!(pair_rects[i as usize], none_rects[i as usize]);
@@ -1458,10 +1458,10 @@ fn classic_resolved_through_the_compile_is_classics_table() {
                     let slot = ControlSlot::Discs(controls);
                     for i in -1..=BTN_N + 2 {
                         let want: Option<HudCommand> = controls.command(i);
-                        assert_eq!(row_command(compiled, slot, &model, i), want, "{controls:?} item {i}");
-                        assert_eq!(row_enabled(compiled, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
+                        assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
+                        assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
                     }
-                    assert_eq!(row_primary(compiled, slot, &model), controls.primary(), "{controls:?}");
+                    assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
                 }
             }
         }
@@ -1540,4 +1540,79 @@ mod playbar_options {
         let working = bar(Knob::Tick, TransportMark::Working);
         assert_eq!(census(working, busy_only), census(working, PlaybarLook::default()), "the spinner stays");
     }
+}
+
+// --- PR8 stage 2a: what the screen reads to open, travel and close a section ---
+
+fn compiled_classic() -> std::sync::Arc<crate::hud_format::compile::Compiled> {
+    super::loaded::load_classic("0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure).compiled
+}
+
+fn compiled_reference() -> std::sync::Arc<crate::hud_format::compile::Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+    super::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure)
+        .expect("the reference loads")
+        .compiled
+}
+
+#[test]
+fn an_open_section_is_looked_up_over_the_discs_whatever_the_slot_is() {
+    use crate::hud_format::compile::OPEN_CHAPTERS;
+    let compiled = compiled_classic();
+    let skip = slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown);
+    assert!(matches!(skip, ControlSlot::Skip(_)), "the fixture is a Skip occupant");
+    let (compact, _) = frame_state(&compiled, 0, skip, true, false).expect("classic has the Skip state");
+    let (open, _) = frame_state(&compiled, OPEN_CHAPTERS, skip, true, false).expect("an open section has a state under a Skip slot");
+    assert_ne!(compact.key, open.key, "the open state is not the Skip one");
+    assert_eq!(open.key.open, OPEN_CHAPTERS);
+    assert_eq!(open.key.slot, crate::hud_format::reach::Slot::Discs, "D7: the stand-in waits behind the section");
+}
+
+#[test]
+fn the_opener_of_a_section_is_its_tab_in_classic_and_its_disc_in_the_reference() {
+    use super::command::Section;
+    let classic = compiled_classic();
+    let (state, _) = frame_state(&classic, 0, ControlSlot::Discs(Controls::NONE), true, false).unwrap();
+    assert_eq!(opener_elem(state, Section::Info), Some(ELEM_TAB_BASE));
+    assert_eq!(opener_elem(state, Section::Chapters), Some(ELEM_TAB_BASE + 1));
+    // the open state keeps the tab that opened it (classic's tabs are always there)
+    let (open, _) = frame_state(&classic, crate::hud_format::compile::OPEN_CHAPTERS, ControlSlot::Discs(Controls::NONE), true, false).unwrap();
+    assert_eq!(opener_elem(open, Section::Chapters), Some(ELEM_TAB_BASE + 1));
+
+    let reference = compiled_reference();
+    let (state, _) = frame_state(&reference, 0, ControlSlot::Discs(Controls::NONE), true, false).unwrap();
+    let chapters = opener_elem(state, Section::Chapters).expect("the reference opens Chapters with a disc in its row");
+    assert!(chapters >= super::state::ELEM_CONTROL_BASE, "a row disc, not a tab: {chapters:#x}");
+    assert_ne!(chapters, opener_elem(state, Section::Info).unwrap());
+    assert_eq!(row_command(&reference, 0, ControlSlot::Discs(Controls::NONE), &HudModel { chapters: true, ..HudModel::default() }, (chapters - super::state::ELEM_CONTROL_BASE) as i32),
+        Some(super::command::HudCommand::ToggleSection(Section::Chapters)));
+}
+
+#[test]
+fn an_open_info_section_has_two_buttons_that_run_their_commands() {
+    use super::command::Section;
+    let compiled = compiled_classic();
+    let (state, _) = frame_state(&compiled, crate::hud_format::compile::OPEN_INFO, ControlSlot::Discs(Controls::NONE), true, false).unwrap();
+    assert_eq!(section_buttons(state).count(), 2);
+    assert_eq!(section_command(state, 0), Some(super::command::HudCommand::FromBeginning));
+    assert_eq!(section_command(state, 1), Some(super::command::HudCommand::GoToDetail));
+    assert_eq!(section_command(state, 2), None);
+    assert_eq!(Section::of_tab(Section::Info.tab()), Some(Section::Info));
+    assert_eq!(Section::of_tab(Section::Chapters.tab()), Some(Section::Chapters));
+    assert_eq!(Section::of_tab(2), None);
+}
+
+fn chapter(start_ms: i64) -> plx_data::metadata::Chapter {
+    plx_data::metadata::Chapter { index: 0, start_ms, title: String::new(), thumb: String::new() }
+}
+
+#[test]
+fn chapters_seat_on_the_chapter_that_holds_the_position_the_bar_shows() {
+    let chapters = [chapter(0), chapter(60_000), chapter(120_000)];
+    let at = |model: HudModel| super::strip::chapter_at_shown(&chapters, &model);
+    let base = HudModel { scrub_ns: -1, seek_display_ns: -1, playpos_ns: 90_000 * 1_000_000, ..HudModel::default() };
+    assert_eq!(at(base), 1, "the playhead");
+    assert_eq!(at(HudModel { scrub_ns: 130_000 * 1_000_000, ..base }), 2, "a scrub preview outranks the playhead");
+    assert_eq!(at(HudModel { loading: true, seek_display_ns: 10_000 * 1_000_000, ..base }), 0, "a loading seek shows its target");
+    assert_eq!(at(HudModel { playpos_ns: -5, ..base }), 0, "before the first chapter: the first");
 }

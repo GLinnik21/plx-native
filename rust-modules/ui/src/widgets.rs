@@ -1897,13 +1897,13 @@ pub const HAIRLINE_H: f32 = 1.0;
 /// buy you. The height is 1.0 and is not a parameter: a divider that is two pixels somewhere is a
 /// different object, and both files that made it a named constant gave it the same value.
 pub fn hairline(p: Painter, x: f32, y: f32, w: f32) {
-    p.rect(
-        Rect::new(x, y, w, HAIRLINE_H),
-        0.0,
-        theme::HAIRLINE,
-        theme::HAIRLINE,
-        0.0,
-    );
+    hairline_in(p, x, y, w, theme::HAIRLINE);
+}
+
+/// [`hairline`] in another ink: a HUD package's `rule` cell names its own token. The height is still
+/// [`HAIRLINE_H`].
+pub fn hairline_in(p: Painter, x: f32, y: f32, w: f32, ink: [f32; 4]) {
+    p.rect(Rect::new(x, y, w, HAIRLINE_H), 0.0, ink, ink, 0.0);
 }
 
 /// One dotted run: fine-print parts left to right, joined by a **`·` in

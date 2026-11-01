@@ -51,7 +51,8 @@ pub(super) fn note_focused<H: Host, S: CardSource<H>>(pr: Painter, rect: Rect, i
 
 pub struct Shelf {
     entry: EntryId,
-    style: &'static RowStyle,
+    /// By value ([`RowStyle`] is `Copy`): a strip's cards may be sized at runtime, by a HUD package.
+    style: RowStyle,
     row: CardRow,
     /// What the `FocusMoved`s since the last tick said: a deliberate move (`By::Dir` /
     /// `By::Pointer`) grows its cell from rest, any other arrival is adopted at full pop, and none
@@ -123,7 +124,7 @@ struct WalkKey {
 }
 
 impl Shelf {
-    pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
+    pub const fn new(entry: EntryId, style: RowStyle) -> Self {
         Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), epoch: 0, head: 0, anchor: None,
             margin: 0.0, dormant: false, slept: false, returning: false, pool: RowPool::new(),
             warm: Warm { last: None, forward: true, walk: None }, landing: Landing::new() }
@@ -163,6 +164,12 @@ impl Shelf {
     #[cfg(any(test, feature = "test-support"))]
     pub fn ghost_alphas(&self) -> Vec<f32> {
         self.landing.ghosts().iter().map(|g| g.alpha.pos.clamp(0.0, 1.0)).collect()
+    }
+
+    /// Card `i`'s pop scale right now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pop_of(&self, i: usize) -> f32 {
+        self.row.scale(i)
     }
 
     /// Each ghost's pop scale right now, in [`ghost_keys`](Self::ghost_keys) order.
@@ -230,8 +237,13 @@ impl Shelf {
         self.dormant && !(self.returning && seated.is_some())
     }
 
-    pub fn style(&self) -> &'static RowStyle {
-        self.style
+    pub fn style(&self) -> &RowStyle {
+        &self.style
+    }
+
+    /// The entry whose focus this shelf reads.
+    pub fn entry(&self) -> EntryId {
+        self.entry
     }
 
     /// The y the screen last laid the shelf out at (kept in the motion canon).
@@ -245,7 +257,7 @@ impl Shelf {
 
     /// How far card `i`'s caption block still trails the scroll (`n` cards in the shelf).
     pub fn settle_lag(&self, n: usize, i: usize) -> f32 {
-        self.row.settle_lag(n, i, self.style)
+        self.row.settle_lag(n, i, &self.style)
     }
 
     /// The one entry: feed it every event the screen receives.
@@ -256,11 +268,38 @@ impl Shelf {
         src: &S,
         fx: &mut Effects<'_, H>,
     ) -> Option<CardEvent<H::Elem>> {
+        self.on_holding(ev, cx, src, fx, None)
+    }
+
+    /// [`on`](Self::on) with the focused card named by the caller for the tick, as
+    /// [`paint_held`](Self::paint_held) names it for the paint: a strip fading out after its owner put it away
+    /// keeps settling on the card it was on (its scroll goes on to that card, its pop stays grown) while the
+    /// engine's focus is already elsewhere, instead of freezing mid-motion or letting the card go. `held` is an
+    /// index into `src`; every caller of `on` is untouched.
+    pub fn on_held<H: Host, S: CardSource<H>>(
+        &mut self,
+        ev: &ScreenEvent<H>,
+        cx: &Cx<'_, H>,
+        src: &S,
+        fx: &mut Effects<'_, H>,
+        held: usize,
+    ) -> Option<CardEvent<H::Elem>> {
+        self.on_holding(ev, cx, src, fx, Some(held))
+    }
+
+    fn on_holding<H: Host, S: CardSource<H>>(
+        &mut self,
+        ev: &ScreenEvent<H>,
+        cx: &Cx<'_, H>,
+        src: &S,
+        fx: &mut Effects<'_, H>,
+        held: Option<usize>,
+    ) -> Option<CardEvent<H::Elem>> {
         match ev {
             ScreenEvent::Tick(t) => {
                 self.retry.tick(t.ms);
                 self.observe_landing(src);
-                self.tick(t.dt(), cx, src);
+                self.tick(t.dt(), cx, src, held);
                 if self.landing.held() {
                     // a landing waits under a held page image: a frame must follow its release
                     fx.invalidate(Provenance::Lifecycle);
@@ -288,7 +327,7 @@ impl Shelf {
                         // now, so the layout the owner reads on this very event (the page drawn this
                         // frame is the one the dip captures) already has them, not a tick after, and
                         // no glide plays on under the image.
-                        self.row.settle_seat(a, src.len(), self.style);
+                        self.row.settle_seat(a, src.len(), &self.style);
                     }
                 }
                 let left = from.filter(|k| k.entry == self.entry).and_then(|k| here(&k.elem));
@@ -331,8 +370,8 @@ impl Shelf {
         super::focused_index(&cx.focus, self.entry, src).map(|i| (i, src.elem(i)))
     }
 
-    fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S) {
-        let seated = super::focused_index(&cx.focus, self.entry, src);
+    fn tick<H: Host, S: CardSource<H>>(&mut self, dt: f32, cx: &Cx<'_, H>, src: &S, held: Option<usize>) {
+        let seated = held.filter(|&i| i < src.len()).or_else(|| super::focused_index(&cx.focus, self.entry, src));
         if !self.dormant {
             self.returning = false;
         }
@@ -357,7 +396,7 @@ impl Shelf {
                     // past its dissolve), so what was lifted is at rest now
                     self.row.snap_to_rest();
                 } else {
-                    self.row.update(src.len(), None, self.style, dt);
+                    self.row.update(src.len(), None, &self.style, dt);
                     self.row.park();
                 }
             }
@@ -384,7 +423,7 @@ impl Shelf {
             } else {
                 self.row.relocate(p, q, dx);
             }
-            self.row.clamp_scroll(src.len(), self.style);
+            self.row.clamp_scroll(src.len(), &self.style);
             self.row.refocus(q);
             self.landed = Some(Landed { from: p, to: q });
             // a deliberate move was announced by the index it had in whichever window stood then
@@ -405,7 +444,7 @@ impl Shelf {
                     } else {
                         self.row.relocate(p, i, dx);
                     }
-                    self.row.clamp_scroll(src.len(), self.style);
+                    self.row.clamp_scroll(src.len(), &self.style);
                     self.landed = Some(Landed { from: p, to: i });
                 }
                 // a restore, a reconcile, a seat: adopted whole, the old tile straight to rest
@@ -413,7 +452,7 @@ impl Shelf {
                     if let Some(p) = prev {
                         self.row.rest(p);
                     }
-                    self.row.adopt(i, self.style);
+                    self.row.adopt(i, &self.style);
                 }
                 _ => {}
             }
@@ -439,7 +478,7 @@ impl Shelf {
             self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
         }
         if focus.is_some() || !self.row.at_exact_rest() {
-            self.row.update(src.len(), focus, self.style, dt);
+            self.row.update(src.len(), focus, &self.style, dt);
             if focus.is_none() {
                 self.row.park();
             }
@@ -794,12 +833,25 @@ impl Shelf {
         self.paint_focused(f, p, src, at);
     }
 
+    /// [`paint`](Self::paint) with the focused card named by the caller instead of read from the engine: a strip
+    /// fading out after its owner put it away paints the card it was on at the dismissal, while the engine's focus
+    /// is already elsewhere. The shelf is not ticked meanwhile, so its pops and bands are the ones that card was
+    /// drawn with. `focus` is an index into `src`; every caller that reads the engine's focus is untouched.
+    pub fn paint_held<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame, focus: Option<usize>) {
+        self.paint_resting_at(f, p, src, at, focus);
+        self.paint_focused_at(f, p, src, at, focus);
+    }
+
     /// The on-axis cards but the focused one (only on-axis cards paint and resolve artwork), for a
     /// screen that draws the focused card of ALL its shelves after every shelf's others, so its
     /// glow overlaps the neighbouring shelves.
     pub fn paint_resting<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
-        let n = src.len();
         let focus = super::focused_index(&f.focus, self.entry, src);
+        self.paint_resting_at(f, p, src, at, focus);
+    }
+
+    fn paint_resting_at<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame, focus: Option<usize>) {
+        let n = src.len();
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let sx = self.row.scroll_x();
         let pr = p.translate(-sx, 0.0);
@@ -829,7 +881,7 @@ impl Shelf {
         let cell = |index: f32| {
             let rect = Rect::new(self.style.margin_x + index * pitch, y, self.style.w, self.style.h);
             if crate::on_axis(rect.x - sx, rect.w, SCR_W, self.margin) {
-                card_row::draw_tile(pr, Art::Poster(None), rect, 1.0, self.style, None);
+                card_row::draw_tile(pr, Art::Poster(None), rect, 1.0, &self.style, None);
             }
         };
         if trailing {
@@ -863,7 +915,7 @@ impl Shelf {
             let s = g.lift.pos;
             let pr = pr.alpha(a);
             let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
-            card_row::draw_tile(pr, ghosts.art(j), rect, s, self.style, ghosts.progress(j));
+            card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.style, ghosts.progress(j));
             let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused };
             ghosts.overlay(pr, j, &tile, f.measure);
         }
@@ -872,6 +924,10 @@ impl Shelf {
     /// The focused card, painted whether or not it is on-axis.
     pub fn paint_focused<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let focus = super::focused_index(&f.focus, self.entry, src);
+        self.paint_focused_at(f, p, src, at, focus);
+    }
+
+    fn paint_focused_at<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame, focus: Option<usize>) {
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let pr = p.translate(-self.row.scroll_x(), 0.0);
         if let Some(i) = focus.filter(|&i| i < src.len()) {
@@ -951,13 +1007,13 @@ impl Shelf {
             let label = self.focused_label(src, i, at);
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
-            card_row::draw_focused(pr, src.art(i), rect, s, self.style, src.progress(i), &label, f.measure);
+            card_row::draw_focused(pr, src.art(i), rect, s, &self.style, src.progress(i), &label, f.measure);
             #[cfg(feature = "devtriggers")]
             if !pr.is_recording() {
                 note_focused(pr, rect, i, src);
             }
         } else {
-            card_row::draw_tile(pr, src.art(i), rect, s, self.style, src.progress(i));
+            card_row::draw_tile(pr, src.art(i), rect, s, &self.style, src.progress(i));
         }
         let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused };
         src.overlay(pr, i, &tile, f.measure);
@@ -969,8 +1025,10 @@ impl Shelf {
     /// What [`draw_card`](Self::draw_card) paints and [`caption_lines_probe`](Self::caption_lines_probe)
     /// reads, so a test sees the ink the frame carries.
     fn focused_label<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, at: SectionFrame) -> TileLabel {
-        self.row.reveal(src.label(i), at.below_rise)
-            .settling(self.row.settle_lag(src.len(), i, self.style))
+        // a style that hangs its block at its own drop shows it whole: no band opens for it
+        let label = src.label(i);
+        let label = if self.style.label_drop.is_some() { label } else { self.row.reveal(label, at.below_rise) };
+        label.settling(self.row.settle_lag(src.len(), i, &self.style))
     }
 
     /// Test support: every caption LINE [`draw`](Self::draw) puts on screen now for the focused card,
@@ -985,7 +1043,7 @@ impl Shelf {
         };
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
-        let bottom = card_row::unscaled_bottom(self.slot(i, src.len(), at, 0.0).scaled(s), s);
+        let bottom = card_row::label_bottom(self.slot(i, src.len(), at, 0.0).scaled(s), s, &self.style);
         self.focused_label(src, i, at).lines().into_iter().flatten().filter(|l| l.alpha > 0.0)
             .map(|l| (i, bottom + l.top, bottom + l.bottom, l.alpha)).collect()
     }
@@ -1054,7 +1112,7 @@ impl Shelf {
     /// to its `n` cards, and leave it there until a key moves along it or a click lands on one of
     /// its cards ([`CardRow::glide`]).
     pub fn glide(&mut self, dx: f32, n: usize) {
-        self.row.glide(dx, n, self.style);
+        self.row.glide(dx, n, &self.style);
     }
 
     /// Release a row the pointer's glide holds: it follows its focused card again.
@@ -1064,7 +1122,7 @@ impl Shelf {
 
     /// Restore a saved viewport (`n` is the current card count).
     pub fn restore_scroll(&mut self, scroll: f32, n: usize) {
-        self.row.restore_scroll(scroll, n, self.style);
+        self.row.restore_scroll(scroll, n, &self.style);
     }
 
     /// How far the shelf's heading must rise, live, to clear the focused tile.
