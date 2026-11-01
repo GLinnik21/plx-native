@@ -1232,12 +1232,12 @@ compiler computes a cost per STATE (draw ops, glyph runs, texture bytes, and BLE
 every translucent fill the state draws, scrims and grounds included, which is the fill the Mali frame-drop work measures;
 the strip counted by the most cards its Shelf paints at rest, `card_row::most_painted_at_rest`, never by chapter
 count). The ceiling is per state class, each set from states run on the TV with the `profile-tv` tools
-(`ARM_PROFILE=release`, an `fps_floor` scene, Mali HWCNT per frame, and a kernel trace of the frame pacing), and
+(`ARM_PROFILE=release`, an `fps_floor` scene, Mali HWCNT per frame, and a kernel trace of the frame pacing, taken so far for the three strip states), and
 each term of a class from the state of the package that reaches it. **A state passes when no frame is late on the
 app's side**, read from a kernel trace (`tools/tv-sched-trace.sh`, `tools/analyze-sched-trace.py --latch`), not when
-the set shows zero late frames: every state on this set has bursts of 24-35 ms frames about every 11 s, and the
-traces class those as the compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken two ticks
-late; no CPU-late or GPU-late frame in three windows, on-time margin p99 4-6 ms, "The ceilings (PR19)" has them).
+the set shows zero late frames: every state on this set has bursts of 24-35 ms frames about every 11 s, and in the three traced strip states the kernel traces class those as the
+compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken two ticks
+late; no CPU-late or GPU-late frame in three windows, on-time margin (GPU done minus aim) p99 -4.0 to -5.9 ms, 4-6 ms before the aim, "The ceilings (PR19)" has them); the other four pairs have not been traced yet.
 What makes the compositor late is not determined, and it is not specific to a HUD state.
 - compact: the reference's compact episode sets draw ops; classic's Up Next sets glyph runs, texture bytes and
   blended px;
@@ -1261,9 +1261,8 @@ the simulator's own), but nothing that is priced does, so the same package bytes
 hinting. A ceiling priced by a per-firmware measure would refuse, on a set that hints differently, a package that sits
 exactly at it. The lint is two passes for this reason (`lint::lint_fit`, every check but the cost, on the live measure;
 `lint::lint_price`, `HUD-E1401` and the cost lines alone, on the model; `lint_report_priced` joins them), and there is no
-entry point that prices with the fit measure. **The model is not the drawn frame**: a scrim on the set is a few pixels
-off the model's height (6605 px of `blended_px`, 0.4%, on the two-section state), so a ceiling is a number of the
-model's for the states the television ran, not a measurement of a frame. The fallback faces are neither read nor priced.
+entry point that prices with the fit measure. **The model is not the drawn frame**: it prices text with the whole-pixel advances and a line height of 1.21 x size, and no drawn frame has been measured
+against it, so a ceiling is a number of the model's for the states the television ran. The fallback faces are neither read nor priced.
 
 **The ceilings.** A class's ceiling in each term is the MAXIMUM of that term, in the model, over the states of that
 class (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, `dropped=0` on the pacing boot, no frame late on
@@ -1342,8 +1341,7 @@ any term is one error at `/layout`: the class, each term over as `value > ceilin
 by the pointer of the node that drew it (`CompiledState::top_contributors`, `CompiledState::origin`). It runs in the lint
 (`plxnative-sim --hud-lint`, both passes). At PR19's head no path on the set runs the lint: the television loads
 `builtin:classic` through `load_classic`, which never lints, and a package a user installs is linted by PR10's driver,
-which calls both passes (`lint_fit` with the live measure, `lint_price` with `WholePixelMeasure`, one tick each, because
-the television's lint already takes a whole frame's budget). So the verdict never rejects a package in a frame, and the
+which calls both passes (`lint_fit` with the live measure, `lint_price` with `WholePixelMeasure`, one tick each). So the verdict never rejects a package in a frame, and the
 builtin classic is safe because it is never linted, as well as because it passes. The ceilings are not
 raised and no state is exempt; because they carry no headroom, a package that adds a draw op, a glyph run or a pixel to the
 heaviest state of its class is over until it is run on the television and its figures set the ceiling. The builtin classic

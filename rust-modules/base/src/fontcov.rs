@@ -445,8 +445,7 @@ pub fn shipped(name: &str) -> &'static Result<Coverage, String> {
 /// **What ships.** [`Face`] (with [`Face::parse`] and [`Face::width`]), [`LINE_HEIGHT`], [`CAP_HEIGHT`] and
 /// [`WholePixelMeasure`], a pure value over two faces: no IO, no global, bytes in. The HUD plugins' cost
 /// ceilings (`hud_format::lint_cost`) are numbers taken with these advances and a line height of
-/// [`LINE_HEIGHT`] x size, so the cost of a state is priced by this model on every side, the television's and
-/// the simulator's (`--hud-lint`) alike: whoever lints builds a [`WholePixelMeasure`] from the bytes of the
+/// [`LINE_HEIGHT`] x size, so the cost of a state is priced by this model wherever the lint runs: whoever lints builds a [`WholePixelMeasure`] from the bytes of the
 /// two files `plx_gfx::text::app_font_path` names and hands it to `lint_price`. The text FIT stays on the live measure
 /// (the television's SDL_ttf, the simulator's own). What stays a host-test tool is `shipped` and
 /// `ShippedMeasure` (built under `test` and `test-support` only): they read the repository's `pkg/`.

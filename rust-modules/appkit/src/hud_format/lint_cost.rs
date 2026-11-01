@@ -10,11 +10,11 @@
 //! ([`WholePixelMeasure`](plx_base::fontcov::advances::WholePixelMeasure); in the tests
 //! [`ShippedMeasure`](plx_base::fontcov::advances::ShippedMeasure), the same numbers read from `pkg/`). The
 //! text FIT keeps the live measure of the set that lints, but nothing that is priced does: the same package
-//! bytes cost the same, and get the same `HUD-E1401` verdict, on the television, in the simulator and in CI,
+//! bytes cost the same, and get the same `HUD-E1401` verdict wherever the lint runs,
 //! whatever each firmware's SDL_ttf does with hinting (`lint::lint_price`; there is no entry point that
-//! prices with the fit measure). The model is not the drawn frame: a scrim on the set is a few pixels off the
-//! model's height (6605 px of `blended_px`, 0.4%, on the two-section state), so a ceiling is a number of the
-//! model's, for the states the television ran, and not a measurement of a frame.
+//! prices with the fit measure). The model is not the drawn frame: it prices text with the whole-pixel advances and a line height of 1.21 x size,
+//! and no drawn frame has been measured against it, so a ceiling is a number of the model's, for the states the
+//! television ran.
 //!
 //! **The ceilings are fixed by the states the television ran, never chosen.** A class's ceiling in each of the
 //! four terms is the MAXIMUM of that term, in the model, over the states of that class (`ARM_PROFILE=release`,
@@ -24,10 +24,10 @@
 //!
 //! **A state passes when no frame is late on the app's side, read from a kernel trace** (`tools/tv-sched-trace.sh`,
 //! `tools/analyze-sched-trace.py --latch`), not when the set shows zero late frames, because it never does:
-//! every state on this set has bursts of 24-35 ms frames about every 11 s, and the traces class those as the
-//! compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken two ticks late). The three
-//! traces, one per strip state, found no CPU-late or GPU-late frame in any window, with an on-time margin at the
-//! 99th percentile of 4-6 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
+//! every state on this set has bursts of 24-35 ms frames about every 11 s, and in the three traced strip states the kernel traces class those as the
+//! compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken two ticks late). The other four
+//! pairs have not been traced yet. The three traces, one per strip state, found no CPU-late or GPU-late frame in
+//! any window, with an on-time margin (GPU done minus aim) at the 99th percentile of -4.0 to -5.9 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
 //! compositor late is not determined; it is not specific to a HUD state. Every constant says which state and language it came from, and
 //! `the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
 //! all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every state and

@@ -87,7 +87,7 @@ impl Geometry {
     /// **The most cards this strip's Shelf paints at once while it rests**, whatever the chapter count: what the
     /// compiler prices the strip by (`DrawOp::Strip::visible`, `docs/hud-plugins.md` "Cost"). The Shelf culls
     /// against the screen, not against [`rect`](Self::rect), and a row at rest has scrolled, so the strip
-    /// paints a card more than its width over the pitch ([`plx_ui::cards::most_painted_at_rest`]). Counted
+    /// paints more cards than its width over the pitch plus one (ten on the reference, where that gives eight) ([`plx_ui::cards::most_painted_at_rest`]). Counted
     /// from [`style`](Self::style), the very style the Shelf is built with, and [`STRIP_CULL_MARGIN`].
     pub fn most_painted_at_rest(&self) -> usize {
         plx_ui::cards::most_painted_at_rest(&self.style(), STRIP_CULL_MARGIN)

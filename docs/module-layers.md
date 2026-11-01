@@ -457,8 +457,7 @@ What the extraction taught, beyond what the recipe above predicted:
   `../src` (it would otherwise have stopped reading the application, silently, and still passed:
   every later layer must be added to its root list); `paths` and `fontcov` climb one more `..`.
 - **No orphan-rule hazard appeared**: no `impl` in the application has both its trait and its type
-  in `plx_base` (`ShippedMeasure`'s and `WholePixelMeasure`'s impls are `machine`'s trait on a `plx_base` type, which is
-  legal in the application crate and is legal in the `plx_machine` crate; Split 2 below).
+  in `plx_base` (`ShippedMeasure`'s and `WholePixelMeasure`'s impls are `machine`'s trait on a `plx_base` type, which only the trait's crate, `plx_machine`, may write, and does; Split 2 below).
 - **The tooling that knew the tree's shape**: `ci/module_graph.py` reads every sibling
   `rust-modules/<layer>/` package named `plx_*` as part of the same module tree (so the layer gate
   and `check-module-cycle` keep one graph and `base uses nothing` is still enforced; the cycle

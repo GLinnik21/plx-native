@@ -18,7 +18,7 @@
 //! **There is no entry point that prices with the fit measure.** A caller that has one measure for both
 //! questions must say so by passing it twice to [`lint_report_priced`]; the tests' `lint`, `lint_with` and
 //! `lint_report` do exactly that and exist under `cfg(test)` only. A driver that runs the passes on separate
-//! ticks (the television's lint already takes a whole frame's budget) calls [`lint_fit`] and [`lint_price`]
+//! ticks calls [`lint_fit`] and [`lint_price`]
 //! one tick each and joins them with [`Linted::join`].
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork in production code. The text measurers are the

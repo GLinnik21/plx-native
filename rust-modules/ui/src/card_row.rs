@@ -687,7 +687,7 @@ pub fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, vw: f32
 /// scroll 0: [`scroll_into_view`] moves it only when the focused card would clip, so it rests on one of four
 /// lattices, none of which depends on how many cards there are: scroll 0; the scroll that just fits the
 /// focused card's trailing edge (moving right, `lo`); the one that just fits its leading edge (moving left,
-/// `hi`); and the end (`max_sx`). The first and the last stand a whole card from an edge; the middle two
+/// `hi`); and the end (`max_sx`). The first and the last leave a whole card at their edge, with no partial one; the middle two
 /// leave a PARTIAL card at the left, and paint one more.
 ///
 /// The four scrolls are `scroll_into_view`'s own answers on a synthetic row (a screenful past the focus each
@@ -4163,14 +4163,14 @@ mod rest_tests {
     fn the_most_a_row_paints_at_rest_is_what_walking_scroll_into_view_finds() {
         for (name, sty) in [("reference", style(192.0, 16.0, 136.0)), ("classic", style(288.0, 24.0, 96.0))] {
             for lead in [0.0, 136.0] {
-                // longer rows, and a shorter one, do not move it: no lattice depends on the length
+                // longer rows do not move it: no lattice depends on the length
                 let found = most_painted_at_rest(&sty, lead);
                 for n in [60, 61, 97] {
                     assert_eq!(walked(&sty, lead, n), found, "{name}, lead {lead}, {n} cards");
                 }
             }
         }
-        // the numbers the strips are priced at: one more than the cards a width over the pitch counts
+        // the numbers the strips are priced at: ten and seven (the old width-over-pitch-plus-one gave eight and six).
         assert_eq!(most_painted_at_rest(&style(192.0, 16.0, 136.0), 0.0), 10);
         assert_eq!(most_painted_at_rest(&style(288.0, 24.0, 96.0), 0.0), 7);
     }

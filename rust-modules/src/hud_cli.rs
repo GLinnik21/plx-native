@@ -34,7 +34,7 @@
 //! is another matter. Its ceilings are numbers taken with ONE model, the whole-pixel advances of `appfont.ttf`
 //! and `appfont-bold.ttf` and a line height of 1.21 x the size, on every side: priced by the host's SDL_ttf the
 //! classic's Up Next and Info states and every two-section state of the reference would read over a ceiling
-//! the same bytes pass on the television (4 of the 12 terms). So the cost is priced by
+//! that the same bytes, which the television ran, pass (4 of the 12 terms). So the cost is priced by
 //! [`WholePixelMeasure`], a pure value over the two [`Face`]s, which this module builds from the bytes of the
 //! two files `plx_gfx::text::app_font_path` returns (`appfont.ttf` and `appfont-bold.ttf`, the files the text
 //! fit's measurer opens): the read is the only IO, here ([`read_face`]), and the simulator and every other

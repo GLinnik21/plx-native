@@ -485,7 +485,7 @@ pub struct Contributor {
 }
 
 /// A state's cost, REPORTED (the ceilings it is held to are `lint_cost`'s, taken from states run on the television and
-/// priced by the one model `lint_cost` names, so a cost is the same number on every side).
+/// priced by the one model `lint_cost` names, so a cost is the same number wherever the lint runs).
 ///
 /// - `draw_ops`: one per op, except a strip (its cards' ops: [`DrawOp::Strip::visible`], the most cards its Shelf
 ///   paints at rest, x the template, plus the focus ring; an upper bound where a card's `item.*` condition would drop
