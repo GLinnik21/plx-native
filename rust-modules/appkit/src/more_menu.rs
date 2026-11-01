@@ -46,6 +46,12 @@
 //! `On`/`Off` at the row's trailing edge. It is a STATE, not a destination: a chevron would promise
 //! a page behind the row and there is none.
 //!
+//! **Folded rows** sit between Speed and Options on a root whose HUD package places a command in no reachable
+//! state (`docs/hud-plugins.md`, R2): Previous, Next, the track menu, the two sections and the Info actions, each
+//! listed only when the item playing can use it ([`folded_rows`]). They are headerless buttons that report
+//! [`Action::Hud`], and the container closes the menu and hands the command to the app's one performer. Classic
+//! folds nothing, so its root has none.
+//!
 //! `docs/parity-gaps.md`'s standing decision is that this app has **no full-screen menu sheets** —
 //! the reference clients put playback quality in one and we do not. Quality drills in INSIDE the
 //! popover instead, on the same [`plx_ui::page_stack::PageStack`] the Subtitles tab of
