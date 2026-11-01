@@ -384,7 +384,8 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 /// boot ([`boot_hud`]). A dev package (`plxnative-hud=<path>`, read and compiled on that frame, so THAT frame pays the
 /// compile) and a controlled run compile on their first player frame. A chosen package compiles in
 /// `Bridge::huds_tick`, in each frame's prepare window, when the resolved selection names a package not yet compiled
-/// for this language, and never while a player is up. Every compile reaches the mounter through [`adopt_hud`]. A
+/// for this language: the fit, the price and the load are one tick each (so one frame never carries two compiles), and
+/// none runs while a player is up. Every compile reaches the mounter through [`adopt_hud`]. A
 /// language change does not recompile: the language is fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a
 /// changed setting is the "confirmed next-launch" one) and takes effect at the next launch. `builtin:classic` always
 /// loads, so after this `app.hud` is `Some`.
@@ -473,9 +474,9 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
 
     fr.player = matches!(app.route(), AppArg::Player);
     // The HUD package store's tick: three flag tests while nothing is in flight. A package the viewer
-    // picked, or a profile's own pick that a seat change brought in, is compiled over two ticks with no player up
-    // (never while one is mounted or a playback is starting) and taken into use here, so a mounted page below
-    // draws it from the frame it lands on.
+    // picked, or a profile's own pick that a seat change brought in, is compiled one stage per tick (fit, price,
+    // load) with no player up (never while one is mounted or a playback is starting) and taken into use here, so a
+    // mounted page below draws it from the frame it lands on.
     if let Some(hud) = app.bridge.huds_tick(fr.player) {
         adopt_hud(&mut app.bridge, &mut app.hud, hud);
     }

@@ -117,10 +117,28 @@ fn app_font(bold: bool) -> &'static CStr {
 }
 
 /// The path [`app_font`] opens, as a path: for a caller that reads the face file itself and must read the
-/// one SDL_ttf opens (the HUD cost model's two faces, `hud_cli`'s `price_measure`).
+/// one SDL_ttf opens (the HUD cost model's two faces, [`read_price_model`]).
 pub fn app_font_path(bold: bool) -> std::path::PathBuf {
     use std::os::unix::ffi::OsStrExt;
     std::path::PathBuf::from(std::ffi::OsStr::from_bytes(app_font(bold).to_bytes()))
+}
+
+/// **The HUD price model, read from its two faces**: the whole-pixel advances of the font files `regular` and
+/// `bold` name (the paths [`app_font_path`] returns, `appfont.ttf` and `appfont-bold.ttf`), as the one
+/// [`WholePixelMeasure`](plx_base::fontcov::advances::WholePixelMeasure) every side of the HUD lint prices with.
+/// Blocking file IO and two parses of faces of ~400 KB each, so a frame never calls it: `hud_cli` reads the model
+/// for the command line, and the player-HUD driver reads it once, on the storage worker. The error is the first
+/// face that failed, as `path: reason`.
+pub fn read_price_model(
+    regular: &std::path::Path,
+    bold: &std::path::Path,
+) -> Result<plx_base::fontcov::advances::WholePixelMeasure, String> {
+    use plx_base::fontcov::advances::{Face, WholePixelMeasure};
+    let face = |path: &std::path::Path| {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Face::parse(&bytes).ok_or_else(|| format!("{}: unreadable metrics tables", path.display()))
+    };
+    Ok(WholePixelMeasure::new(face(regular)?, face(bold)?))
 }
 
 const VS_TEXT: &CStr = crate::gfx::glsl!("shaders/vs_text.vert");
@@ -3791,5 +3809,35 @@ mod cache_policy_tests {
         assert!(background_prewarm_pending(), "the old owner's drop left the new queue alone");
         clear_background_prewarm_owned(new);
         assert!(!background_prewarm_pending(), "the current owner clears it");
+    }
+}
+
+#[cfg(test)]
+mod price_model_tests {
+    //! [`read_price_model`], against the shipped faces and two broken ones.
+    use super::*;
+
+    /// **The HUD price model reads from the two shipped faces, and says which face it could not read.** The
+    /// model is `Send` (the player-HUD driver builds it on the storage worker and keeps it in the driver).
+    #[test]
+    fn the_price_model_reads_the_shipped_faces_and_names_the_one_it_cannot() {
+        fn is_send<T: Send>() {}
+        is_send::<plx_base::fontcov::advances::WholePixelMeasure>();
+        let pkg = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../pkg"));
+        let (regular, bold) = (pkg.join("appfont.ttf"), pkg.join("appfont-bold.ttf"));
+        let model = read_price_model(&regular, &bold).expect("the shipped faces parse");
+        assert!(model.face(false).width("Watchlist", 20) > 0.0 && model.face(true).width("Watchlist", 20) > 0.0);
+
+        let missing = pkg.join("appfont-nonexistent.ttf");
+        let reason = read_price_model(&regular, &missing).err().expect("a missing bold face is an error");
+        assert!(reason.starts_with(&format!("{}: ", missing.display())), "{reason}");
+
+        let scratch = std::env::temp_dir().join(format!("plx-price-model-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let garbage = scratch.join("garbage.ttf");
+        std::fs::write(&garbage, b"not a font").unwrap();
+        let reason = read_price_model(&garbage, &bold).err().expect("a face without metrics tables is an error");
+        assert_eq!(reason, format!("{}: unreadable metrics tables", garbage.display()));
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }

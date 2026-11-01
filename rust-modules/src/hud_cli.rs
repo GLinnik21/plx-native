@@ -35,16 +35,15 @@
 //! and `appfont-bold.ttf` and a line height of 1.21 x the size, on every side: priced by the host's SDL_ttf the
 //! classic's Up Next and Info states and every two-section state of the reference would read over a ceiling
 //! that the same bytes, which the television ran, pass (4 of the 12 terms). So the cost is priced by
-//! [`WholePixelMeasure`], a pure value over the two [`Face`]s, which this module builds from the bytes of the
-//! two files `plx_gfx::text::app_font_path` returns (`appfont.ttf` and `appfont-bold.ttf`, the files the text
-//! fit's measurer opens): the read is the only IO, here ([`read_face`]), and the simulator and every other
-//! side print one number. The fallback faces (CJK, emoji, Arabic, Hebrew) are neither read nor priced: a
+//! [`WholePixelMeasure`](plx_base::fontcov::advances::WholePixelMeasure), a pure value over the two faces, which `plx_gfx::text::read_price_model` builds from
+//! the two files `plx_gfx::text::app_font_path` returns (`appfont.ttf` and `appfont-bold.ttf`, the files the text
+//! fit's measurer opens; the player-HUD driver reads the same model the same way): the read is the only IO,
+//! [`price_measure`]'s, and the simulator and every other side print one number. The fallback faces (CJK, emoji, Arabic, Hebrew) are neither read nor priced: a
 //! character only one of them draws is priced at the base face's `.notdef` advance. There is no unmeasured
 //! fallback: when the two files cannot be opened or read the run is a usage error, `cannot load fonts: ...`.
 
 use plx_appkit::hud_format::lint::{lint_report_priced, Linted, LintLang, LintOptions};
 use plx_appkit::hud_format::{report, schema, schema_emit, BUILTIN_CLASSIC};
-use plx_base::fontcov::advances::{Face, WholePixelMeasure};
 use plx_machine::machine::Measure;
 
 /// The three flags that make the simulator binary run a HUD tool instead of the application.
@@ -242,20 +241,14 @@ fn ttf_measure() -> Result<Box<dyn Measure>, String> {
     Ok(Box::new(plx_gfx::text::TtfMeasure))
 }
 
-/// The advances of one shipped face, with the reason as `path: reason` when it cannot be read. The path is
-/// `plx_gfx::text::app_font_path`, the file [`ttf_measure`] opens, so the text fit and the cost are of one font.
-fn read_face(bold: bool) -> Result<Face, String> {
-    let path = plx_gfx::text::app_font_path(bold);
-    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    Face::parse(&bytes).ok_or_else(|| format!("{}: unreadable metrics tables", path.display()))
-}
-
-/// **The pricing measurer**: [`WholePixelMeasure`], the cost model every side prices with, over the two files
-/// `app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf`. The reads are this function's (the
-/// simulator's IO); the model is a pure value from `plx_base`. Needs no SDL.
+/// **The pricing measurer**: `plx_base::fontcov::advances::WholePixelMeasure`, the cost model every side prices with, over the two files
+/// `app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf`, read by `plx_gfx::text::read_price_model`
+/// (the driver on the television reads it the same way). The reads are the simulator's IO; the model is a pure
+/// value from `plx_base`. Needs no SDL.
 fn price_measure() -> Result<Box<dyn Measure>, String> {
-    let faces = read_face(false).and_then(|regular| Ok(WholePixelMeasure::new(regular, read_face(true)?)));
-    faces.map(|m| Box::new(m) as Box<dyn Measure>).map_err(|reason| format!("cannot load fonts: {reason}"))
+    plx_gfx::text::read_price_model(&plx_gfx::text::app_font_path(false), &plx_gfx::text::app_font_path(true))
+        .map(|model| Box::new(model) as Box<dyn Measure>)
+        .map_err(|reason| format!("cannot load fonts: {reason}"))
 }
 
 /// A package file as UTF-8 text, with the reason as a short string when it is not one.

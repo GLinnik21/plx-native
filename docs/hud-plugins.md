@@ -406,7 +406,8 @@ ui/popover               the shared anchored placer (D9), used by the player men
 - Layers (F30): `hud_format` is in appkit because the vocabulary (`ControlSlot`, the Up Next pair, the
   commands) is defined there and a ui copy would be a second definition. `data::hudpacks` is added to
   `[data] members` with a `docs/module-layers.md` line. It never parses: it hashes the bytes itself and asks
-  for the verdict with a `HudEffect::Validate`; the runner calls `plx_appkit::hud_format::{parse, compile}`
+  for the verdict with a `HudEffect::Validate`; the runner calls `plx_appkit::hud_format::admit::admit`
+  (parse, the package-level invariants, the app's format range; it compiles nothing, so install never compiles)
   and answers `HudEvent::Validated { tag, sha, verdict }`, with the data-owned `Verdict { Loadable(Meta),
   Unloadable(Meta, Unloadable), Invalid }` (`Meta` is id, name, version, format; `Unloadable` is
   `NewerFormat`, `OlderFormat` or `AppRange`). The supported format range stays with the runner, which owns the
@@ -730,19 +731,25 @@ app sees all three at the moment it would draw, so the app is the enforcement po
 three places:
 1. `plxnative-sim --hud-lint --lang all`, locally or in a model's lint loop (LLM authoring);
 2. registry CI, through the simulator pinned to an app release, as a required check that refuses the merge;
-3. the TV, which compiles at install, at selection and when playback resolves the selection (D15), and again after a
-   language change or an app update, with its OWN `Measure` for its current language. Its result is cached per
-   (package sha256, app version, language). The TV's compile is the authority; 1 and 2 are early warnings, so an
-   unreviewed sideload is bound exactly as a registry package is. Only the FIT is the live measure: the cost
-   (`HUD-E1401`) is priced by the one model of "The ceilings (PR19)" wherever the lint runs, so its verdict is not an
-   early warning and cannot differ from one place to the next. The driver that runs this on the TV (PR10) calls both passes of the
-   lint, the fit with the TV's `Measure` and the price with `WholePixelMeasure`; at PR19's head it does not exist and
-   nothing on the set lints.
+3. the TV, which compiles when a package becomes the resolved selection and again after a language change, never at
+   install (an install only runs `admit`), with its OWN `Measure` for its current language. It keeps one entry,
+   keyed by (package sha256, language): the app version is fixed for a process, so an app update starts with none.
+   The TV's compile is the authority; 1 and 2 are early warnings, so an unreviewed sideload is bound exactly as a
+   registry package is. Only the FIT is the live measure: the cost (`HUD-E1401`) is priced by the one model of "The
+   ceilings (PR19)" wherever the lint runs, so its verdict is not an early warning and cannot differ from one place to
+   the next. The driver that runs this on the TV (`HudDriver`, `app/adapters/huds.rs`) calls the two passes of the lint on
+   three successive ticks, never two in one frame and never while a player is up: the fit (`lint_fit`, the TV's
+   `Measure`), the price (`lint_price`, `WholePixelMeasure`) and the load. The model's two faces are read and parsed on the
+   storage worker, in the job of the first pack read, and kept for the process (`plx_gfx::text::read_price_model`); a
+   package is never shown unpriced, so if they cannot be read it falls back like any other refusal (the log code is
+   `faces`).
 
 A package that fails on the TV does not load in that language: playback uses `builtin:classic`, one `hud: fallback`
-event-log line names the package, the language and the first finding's code, and Settings > Player HUD marks the
-package's row with the reason (a new key `settings.hud.unfit_language`, "Doesn't fit in {language}", in all eleven
-catalogs with a `fit_report`). The selection is kept, so a change back to a language it fits restores it.
+event-log line per package, language and cause names the package, the language and the code (the first fit error, or
+`HUD-E1401` from the price pass, or `faces`), and Settings > Player HUD marks the package's row with the reason (a new key
+`settings.hud.unfit_language`, "Doesn't fit in {language}", in all eleven catalogs with a `fit_report`; a package over a
+ceiling does not fit that language's budget, so the one reason covers it). The selection is kept, so a change back to a
+language it fits restores it.
 
 The gap: an app release can lengthen a translation or add a language, so a package that passed can fail later.
 - (a) Re-lint on every app release: YES. A job in `plxnative-huds`, triggered by a `repository_dispatch` from this
@@ -1339,10 +1346,11 @@ pacing boots and HWCNT. What makes the compositor late every 11 s is not determi
 every language, and a state whose cost (a Skip state at the larger of its two pill layouts) is above its class's ceiling in
 any term is one error at `/layout`: the class, each term over as `value > ceiling`, and the three ops that weigh most, each
 by the pointer of the node that drew it (`CompiledState::top_contributors`, `CompiledState::origin`). It runs in the lint
-(`plxnative-sim --hud-lint`, both passes). At PR19's head no path on the set runs the lint: the television loads
-`builtin:classic` through `load_classic`, which never lints, and a package a user installs is linted by PR10's driver,
-which will call both passes (`lint_fit` with the live measure, `lint_price` with `WholePixelMeasure`, one tick each). So the verdict never rejects a package in a frame, and the
-builtin classic is safe because it is never linted, as well as because it passes. The ceilings are not
+(`plxnative-sim --hud-lint`, both passes) and on the television, in PR10's driver: the television loads
+`builtin:classic` through `load_classic`, which never lints, and a package a user installs is linted by the driver, which
+calls both passes (`lint_fit` with the live measure, `lint_price` with `WholePixelMeasure`), one tick each, before the load.
+So the verdict never rejects a package in a frame, and the builtin classic is safe because it is never linted, as well as
+because it passes. The ceilings are not
 raised and no state is exempt; because they carry no headroom, a package that adds a draw op, a glyph run or a pixel to the
 heaviest state of its class is over until it is run on the television and its figures set the ceiling. The builtin classic
 and the reference pass every state in every language.
@@ -1351,10 +1359,10 @@ and the reference pass every state in every language.
 fractional advances, where the television's sums whole-pixel ones. Priced by the simulator's own measure the classic's
 Up Next and Info states and every two-section state would read over a ceiling the television accepts, in 4 of the 12 terms
 (`blended_px` by 320 to 6605 px in three classes, `texture_bytes` by 2876 in the compact class; `draw_ops` and
-`glyph_runs` are the same under both). So `--hud-lint` runs the price pass with `WholePixelMeasure`, built in
-`hud_cli` from the bytes of the two files `plx_gfx::text::app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf`
-(`plx_base::fontcov::advances::Face`), and `HUD-E1401` and the cost lines are that compile's: every side prints one
-number. Text fit (`HUD-E0601` and the geometry) keeps SDL_ttf's measure, and a width there can still be a few pixels off
+`glyph_runs` are the same under both). So `--hud-lint` and the television's driver run the price pass with
+`WholePixelMeasure`, built by `plx_gfx::text::read_price_model` from the bytes of the two files
+`plx_gfx::text::app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf` (`plx_base::fontcov::advances::Face`), and
+`HUD-E1401` and the cost lines are that compile's: every side prints one number. Text fit (`HUD-E0601` and the geometry) keeps SDL_ttf's measure, and a width there can still be a few pixels off
 the television's. `plxnative-sim --hud-lint` prints every state's cost beside its class's ceiling, as information lines
 (text) and a `costs` array (JSON), and exits 1 on `HUD-E1401` like any other error.
 
@@ -1693,9 +1701,10 @@ PR10. Store, local install, selection, drop folder.
   PR10 landed the chosen HUD as a per-profile `Row` (`HudSelectionPref`), not a `setting!`, because its value is a
   package-id `String` and `Setting::Value` is `Copy`; its accessors are `effective_hud`, `stored_effective_hud` and
   `persist_profile_hud` (a profile that has not picked reads the install-wide key). Also `SettingsPage::PlayerHud`, a FormTable keyed by package id
-  (not a `PickerKind`, a static vocabulary, F32) with a `fit_report`; a compile failure in the current language falls
-  back per language with the `hud: fallback` line and the Settings reason (`settings.hud.unfit_language`, eleven catalogs,
-  `fit_report`), Text fit.
+  (not a `PickerKind`, a static vocabulary, F32) with a `fit_report`; the driver compiles a selected package in three
+  ticks (the fit, the price, the load) and a refusal in the current language (a text that does not fit, a cost over a
+  ceiling, or a price model that cannot be read) falls back per language with the `hud: fallback` line and the Settings
+  reason (`settings.hud.unfit_language`, eleven catalogs, `fit_report`), Text fit.
 - Files: `data/src/hudpacks.rs`, `ci/module-layers.ini`, `docs/module-layers.md`, `ci/machines.ini`, `base/src/paths.rs`,
   `plex/src/plex/session/prefs.rs`, `screens/src/family.rs`, `screens/src/preferences*`, `src/app/adapters/`.
 - Verify: a dropped or fetched file with id `builtin:classic` is refused and the built-in stays selectable; machine

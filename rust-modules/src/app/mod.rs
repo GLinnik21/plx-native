@@ -244,7 +244,7 @@ pub(crate) struct App {
     /// the mount through the mounter's seed (`Bridge::seed_player_compiled`); `None` only in a controlled
     /// replay or record run, which measures nothing outside a frame and compiles on its first player frame
     /// (`run::refresh_hud`, inside the frame iteration). It is replaced by the package the seated profile chose when
-    /// that one fits the language (`Bridge::huds_tick`, in the frame's prepare window, never in the draw), and a
+    /// that one fits the language and the cost ceilings (`Bridge::huds_tick`, in the frame's prepare window, never in the draw), and a
     /// `plxnative-hud=<path>` package replaces whatever is chosen.
     hud: Option<plx_appkit::player_hud::loaded::LoadedHud>,
     /// the `plxnative-hud=<path>` package, read once on the first player frame (`run::refresh_hud`)

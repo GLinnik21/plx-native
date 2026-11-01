@@ -1277,7 +1277,7 @@
   },
   "settings.hud.unfit_language": {
     "value": "Doesn't fit in {language}",
-    "description": "Settings > Playback > Player HUD: a package whose text does not fit in the current language, so the built-in HUD is drawn. {language} is the language's own name.",
+    "description": "Settings > Playback > Player HUD: a package that does not fit in the current language (its text does not fit, or drawing it costs more than the HUD allows there), so the built-in HUD is drawn. {language} is the language's own name.",
     "args": {
       "language": "str"
     }

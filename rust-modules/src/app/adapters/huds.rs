@@ -10,26 +10,37 @@
 //!
 //! **The driver** ([`HudDriver`], owned by the Bridge) steps the store with the answers, executes the
 //! effects it returns (`Selection` persists the profile's pick, `Notice` is kept for the Settings page) and
-//! decides what the player draws: the compiled package of the store's `resolved` selection, compiled
-//! with the television's own measurer and cached as one entry keyed by (package sha256, language) (the app version
-//! is fixed for the process), or `builtin:classic`.
+//! decides what the player draws: the compiled package of the store's `resolved` selection, fitted with the
+//! television's own measurer and priced by the HUD cost model, and cached as one entry keyed by (package sha256, language)
+//! (the app version is fixed for the process), or `builtin:classic`.
 //!
-//! * **Never on the frame path.** A tick with nothing in flight and nothing changed is a flag test. A compile is two
-//!   ticks (the lint, then the load), never the draw, and until it lands the player draws what it had. Nothing here runs
-//!   on selection except through the Settings page's commands and the seat trigger.
+//! * **Never on the frame path.** A tick with nothing in flight and nothing changed is a flag test. A compile is three
+//!   ticks, one stage each (the fit, the price, the load; [`Stage`]), never the draw, and until it lands the player draws
+//!   what it had. The television's lint alone takes a whole frame's budget, so one frame never carries two compiles. The
+//!   bytes landing is not a compile: the tick that lands them runs the fit. Nothing here runs on selection except through
+//!   the Settings page's commands and the seat trigger.
 //! * **Never while a player is up.** The measurer is the main thread's, so a pack that lands while a player page is
-//!   mounted or a playback is starting waits ([`Env::player`]): no compile, no hand-over and no `hud: fallback` line, and the
-//!   player keeps what it has for that playback. The compile runs on the first tick with no player, and the next playback
-//!   draws the choice. Normal boots compile on the way to Home, before any player. The lint and the load are two ticks, so one
-//!   frame never carries both compiles.
-//! * **Fit is the TV's call.** A package that parses and passes the invariants can still not fit this
-//!   language (`lint` with the TV's measurer, errors only: the TV applies no margin). It draws as classic
-//!   in that language, one `hud: fallback` line is logged per (package, language, cause) so a failed read does not hide a
-//!   later fit failure, the selection is kept, and the page shows the reason ([`HudDriver::unfit`]).
+//!   mounted or a playback is starting waits ([`Env::player`]), at whichever stage it has reached: no compile, no
+//!   hand-over and no `hud: fallback` line, and the player keeps what it has for that playback. The compile continues on
+//!   the first tick with no player, and the next playback draws the choice. Normal boots compile on the way to Home,
+//!   before any player.
+//! * **Fit is the TV's call; the price is the model's.** A package that parses and passes the invariants can still not
+//!   fit this language (`lint_fit` with the television's measurer, errors only: the TV applies no margin), or cost more
+//!   than a ceiling allows (`lint_price`, `HUD-E1401`). The price is NEVER the television's measure: the ceilings are numbers
+//!   taken with one model, the whole-pixel advances of `appfont.ttf` and `appfont-bold.ttf` and a line height of 1.21 x size
+//!   (`WholePixelMeasure`), because this app runs on many firmwares whose SDL_ttf builds hint differently, and a ceiling
+//!   priced by each firmware's measure would refuse, on one of them, a package that sits exactly at it. Either failure draws
+//!   as classic in that language, one `hud: fallback` line is logged per (package, language, cause) so a failed read does not
+//!   hide a later failure, the selection is kept, and the page shows the reason ([`HudDriver::unfit`]).
+//! * **The model's faces are read on the storage worker.** Reading and parsing two faces of ~400 KB is IO and never
+//!   touches a frame: the job of the first pack read that reaches the bytes reads them too (`plx_gfx::text::read_price_model`,
+//!   the paths `plx_gfx::text::app_font_path` returns), and the driver keeps the model for the process. If the faces
+//!   cannot be read or parsed, the package falls back to classic with the code `faces` and never reaches the player
+//!   unpriced: the price is fail-closed.
 //! * **With no seat a pick stays for the process.** A dev-token boot seats no profile, so a pick cannot be persisted: the
 //!   driver keeps it ([`HudDriver::selected_for`]), a reopened page and a `Refresh` resolve it, and a seat arriving
 //!   replaces it with that profile's own value.
-//! * **No second compile path.** The compile is `player_hud::loaded::load`, the one the dev package and
+//! * **No second compile path.** The load is `player_hud::loaded::load`, the one the dev package and
 //!   classic use.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -37,10 +48,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use plx_appkit::hud_format::admit::{admit, Admission, Cannot};
-use plx_appkit::hud_format::lint::{lint_with, LintLang, LintOptions};
+use plx_appkit::hud_format::lint::{lint_fit, lint_price, LintLang, LintOptions};
 use plx_appkit::hud_format::parse::MAX_PACKAGE_BYTES;
-use plx_appkit::hud_format::Severity;
+use plx_appkit::hud_format::{Finding, Severity};
 use plx_appkit::player_hud::loaded::{load, LoadedHud};
+use plx_base::fontcov::advances::WholePixelMeasure;
 use plx_base::storage_worker::submit_retained;
 use plx_data::hudpacks::{
     Candidate, Entry, HudEffect, HudEvent, HudStore, Loc, Meta, Notice, ReadError, Setup, Sha, Unloadable, Verdict,
@@ -349,7 +361,9 @@ impl HudRunner {
 // The driver: the store, its runner and what the player draws
 // ---------------------------------------------------------------------------------------------
 
-/// Why a package does not fit the language: the first error the lint found (its code, `HUD-E0602`).
+/// Why a package draws as classic in the language: the first error the fit pass found (its code, `HUD-E0601`), the
+/// first the price pass found (`HUD-E1401`), `states` or `parse` from the load, or `faces` when the price model could not
+/// be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Unfit {
     pub code: &'static str,
@@ -366,16 +380,35 @@ enum Want {
 /// A pack read in flight for the compile.
 struct Reading {
     sha: Sha,
-    slot: Slot<Option<Vec<u8>>>,
+    slot: Slot<Landed>,
 }
 
-/// A pack that was read and has not been compiled yet: the lint is one tick's work and the load the next's, so
-/// one frame never carries both.
+/// What a pack read brings back to the main thread.
+struct Landed {
+    /// The pack's bytes, `None` when no candidate holds a copy that is still the pack.
+    bytes: Option<Vec<u8>>,
+    /// The price model, read in the same job when the driver had none ([`HudDriver::price`]) and the pack was read: the
+    /// two faces are IO and two parses, which no frame may carry.
+    model: Option<Result<WholePixelMeasure, String>>,
+}
+
+/// Where a landed pack is in its compile. One stage is one tick's work (`HudDriver::advance`): the television's lint
+/// alone takes a whole frame's budget, so one frame never carries two compiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stage {
+    /// `lint_fit`: every check but the cost, measured by the television's own text measure.
+    Fit,
+    /// `lint_price`: `HUD-E1401` alone, priced by the model ([`HudDriver::price`]) and never by the text measure.
+    Price,
+    /// `load`: the compile the player draws from.
+    Load,
+}
+
+/// A pack that was read and has not been compiled yet, waiting at its [`Stage`].
 struct Pending {
     sha: Sha,
     bytes: Vec<u8>,
-    /// The lint passed: the next step is the load.
-    linted: bool,
+    stage: Stage,
 }
 
 /// What a compile needs from the app: the measurer and the language. Handed in per tick, never stored.
@@ -392,6 +425,15 @@ pub(crate) struct HudDriver {
     runner: HudRunner,
     /// The directories, when a test supplies them; `None` reads `paths::hud_candidates()` each time.
     setup: Option<Setup>,
+    /// The regular and the bold face of the price model, when a test supplies them; `None` is the shipped pair
+    /// (`plx_gfx::text::app_font_path`).
+    faces: Option<[PathBuf; 2]>,
+    /// **The price model** every package is priced by (`lint_price`), whatever the television's text measure does: the
+    /// whole-pixel advances of the two faces and a line height of 1.21 x size, so a package at a ceiling is accepted on
+    /// every firmware. Read once for the process, on the storage worker, in the job of the first pack read that
+    /// reaches the bytes; `None` until it lands, and again after a read that failed (the next pack read tries
+    /// again). A package is never priced by anything else, so with no model it falls back (`faces`).
+    price: Option<WholePixelMeasure>,
     started: bool,
     /// The language the last tick saw: a different one recompiles classic and the selection.
     language: Option<&'static str>,
@@ -433,6 +475,8 @@ impl HudDriver {
             store: HudStore::new(),
             runner,
             setup: None,
+            faces: None,
+            price: None,
             started: false,
             language: None,
             classic: None,
@@ -643,35 +687,57 @@ impl HudDriver {
         self.setup.clone().unwrap_or_else(live_setup)
     }
 
-    fn begin_read(&self, sha: Sha) -> Reading {
-        let roots: Vec<PathBuf> = self.setup().candidates.into_iter().map(|c| c.dir).collect();
-        Reading { sha, slot: self.runner.exec.run(move || read_pack(&roots, sha)) }
+    fn face_paths(&self) -> [PathBuf; 2] {
+        self.faces.clone().unwrap_or_else(|| [plx_gfx::text::app_font_path(false), plx_gfx::text::app_font_path(true)])
     }
 
-    /// The pack bytes landed: lint them in the language with the television's measurer, then compile.
+    /// The worker's job for the pack `sha`: its bytes and, when the driver has no price model yet, the two faces too,
+    /// read and parsed in the same job (once the pack is read; a pack that is gone needs no model yet).
+    fn begin_read(&self, sha: Sha) -> Reading {
+        let roots: Vec<PathBuf> = self.setup().candidates.into_iter().map(|c| c.dir).collect();
+        let faces = self.price.is_none().then(|| self.face_paths());
+        let job = move || {
+            let bytes = read_pack(&roots, sha);
+            let model = faces.filter(|_| bytes.is_some()).map(|[regular, bold]| plx_gfx::text::read_price_model(&regular, &bold));
+            Landed { bytes, model }
+        };
+        Reading { sha, slot: self.runner.exec.run(job) }
+    }
+
+    /// The pack bytes landed: keep the price model that came with them, and wait for the compile's first stage.
     fn land_pack(&mut self, env: &Env<'_>) {
         let Some(reading) = self.reading.as_mut() else { return };
         let Some(answer) = reading.slot.poll() else { return };
         let sha = reading.sha;
         self.reading = None;
         self.dirty = true;
+        self.revision += 1;
         let language = env.cx.language().tag();
-        let Some(bytes) = answer.flatten() else {
+        let Landed { bytes, model } = answer.unwrap_or(Landed { bytes: None, model: None });
+        match model {
+            Some(Ok(model)) => self.price = Some(model),
+            Some(Err(reason)) => self.log.push(format!("hud: price model unavailable: {reason}")),
+            None => {}
+        }
+        let Some(bytes) = bytes else {
             self.read_failed.insert(sha);
             if self.logged.insert((sha, language, "read")) {
                 self.log.push(format!("hud: fallback package={} language={language} code=read", self.resolved_id()));
             }
-            self.revision += 1;
             return;
         };
-        self.pending = Some(Pending { sha, bytes, linted: false });
-        self.revision += 1;
+        if self.price.is_none() {
+            // Fail closed: a package is never handed to the player unpriced.
+            self.fall_back(sha, language, "faces");
+            return;
+        }
+        self.pending = Some(Pending { sha, bytes, stage: Stage::Fit });
     }
 
-    /// One compile step, off the player: the lint of the landed bytes in this language, or on the tick after it the
-    /// load. Nothing runs while a player is mounted or a playback is starting (`Env::player`): the measurer is the main
-    /// thread's, so the bytes wait and the compile runs on the first tick with no player, and the next playback
-    /// draws the choice. Waiting is not a fallback and logs nothing.
+    /// One compile stage, off the player: the fit, the price or the load of the landed bytes in this language, each on
+    /// its own tick. Nothing runs while a player is mounted or a playback is starting (`Env::player`): the text measure
+    /// is the main thread's, so the bytes wait at their stage and the compile continues on the first tick with no player,
+    /// and the next playback draws the choice. Waiting is not a fallback and logs nothing.
     fn advance(&mut self, env: &Env<'_>) {
         if env.player {
             return;
@@ -681,22 +747,34 @@ impl HudDriver {
         self.revision += 1;
         let language = env.cx.language().tag();
         let sha = pending.sha;
-        let step = if pending.linted { self.load_step(&pending.bytes, env) } else { self.lint_step(&pending.bytes, env, language) };
-        match step {
-            Ok(None) => {
-                pending.linted = true;
+        let next = match pending.stage {
+            Stage::Fit => self.fit_step(&pending.bytes, env, language).map(|()| Stage::Price),
+            Stage::Price => self.price_step(&pending.bytes, env, language).map(|()| Stage::Load),
+            Stage::Load => match self.load_step(&pending.bytes, env) {
+                Ok(hud) => {
+                    self.unfit.remove(&(sha, language));
+                    self.compiled = Some((sha, language, hud));
+                    return;
+                }
+                Err(code) => Err(code),
+            },
+        };
+        match next {
+            Ok(stage) => {
+                pending.stage = stage;
                 self.pending = Some(pending);
             }
-            Ok(Some(hud)) => {
-                self.unfit.remove(&(sha, language));
-                self.compiled = Some((sha, language, hud));
-            }
-            Err(code) => {
-                self.unfit.insert((sha, language), Unfit { code });
-                if self.logged.insert((sha, language, code)) {
-                    self.log.push(format!("hud: fallback package={} language={language} code={code}", self.resolved_id()));
-                }
-            }
+            Err(code) => self.fall_back(sha, language, code),
+        }
+    }
+
+    /// `sha` draws as classic in `language`, for the cause `code`: the page shows the reason and one line is logged
+    /// for the (package, language, cause). The selection is kept.
+    fn fall_back(&mut self, sha: Sha, language: &'static str, code: &'static str) {
+        self.unfit.insert((sha, language), Unfit { code });
+        self.dirty = true;
+        if self.logged.insert((sha, language, code)) {
+            self.log.push(format!("hud: fallback package={} language={language} code={code}", self.resolved_id()));
         }
     }
 
@@ -704,22 +782,39 @@ impl HudDriver {
         self.store.resolved().to_owned()
     }
 
-    /// The fit check in this language: `Err(code)` is the first error finding, `Ok(None)` is "fits, load it next tick".
-    fn lint_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<Option<LoadedHud>, &'static str> {
-        let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
-        let lang = LintLang { tag: language, labels: plx_appkit::hud_format::compile::AppLabels::in_language(env.cx) };
-        let findings = lint_with(text, env.measure, &[lang], &LintOptions { text_skew: 0.0 });
+    fn lint_lang(env: &Env<'_>, language: &'static str) -> LintLang {
+        LintLang { tag: language, labels: plx_appkit::hud_format::compile::AppLabels::in_language(env.cx) }
+    }
+
+    /// `Err(code)` of the first error finding, `Ok` when there is none: the fallback's cause.
+    fn first_error(findings: &[Finding]) -> Result<(), &'static str> {
         match findings.iter().find(|f| f.severity == Severity::Error) {
             Some(first) => Err(first.code),
-            None => Ok(None),
+            None => Ok(()),
         }
     }
 
-    /// The compile the player draws from.
-    fn load_step(&self, bytes: &[u8], env: &Env<'_>) -> Result<Option<LoadedHud>, &'static str> {
+    /// **Stage one, the fit** in this language, measured by the television's own text measure: every check but the cost.
+    /// Errors only; the television applies no margin.
+    fn fit_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
+        let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
+        Self::first_error(&lint_fit(text, env.measure, &[Self::lint_lang(env, language)], &LintOptions { text_skew: 0.0 }))
+    }
+
+    /// **Stage two, the price** in this language: `HUD-E1401` alone, priced by the model and never by `env.measure`. The
+    /// ceilings are numbers taken with the model, so a text measure whose line height or hinting differs (every
+    /// firmware's SDL_ttf) must not move the verdict.
+    fn price_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
+        let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
+        let Some(price) = self.price.as_ref() else { return Err("faces") };
+        Self::first_error(&lint_price(text, price, &[Self::lint_lang(env, language)]).findings)
+    }
+
+    /// **Stage three, the compile** the player draws from.
+    fn load_step(&self, bytes: &[u8], env: &Env<'_>) -> Result<LoadedHud, &'static str> {
         let hud = load(bytes, env.app_version, env.cx, env.measure).map_err(|_| "parse")?;
         // A package with no state for some frame the transport can be in draws nothing there: classic does instead.
-        if plx_appkit::player_hud::loaded::answers_every_frame(&hud.compiled) { Ok(Some(hud)) } else { Err("states") }
+        if plx_appkit::player_hud::loaded::answers_every_frame(&hud.compiled) { Ok(hud) } else { Err("states") }
     }
 
     /// Hand the player `hud` when it is not what it already draws.
@@ -771,9 +866,17 @@ mod tests {
         }
     }
 
+    /// The shipped regular and bold face as the host has them (`pkg/`): the driver's own pair is
+    /// `plx_gfx::text::app_font_path`, the installed directory's, which a unit test has no copy of.
+    fn pkg_faces() -> [PathBuf; 2] {
+        let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pkg");
+        [pkg.join("appfont.ttf"), pkg.join("appfont-bold.ttf")]
+    }
+
     fn driver(dir: &Dir) -> HudDriver {
         let mut driver = HudDriver::new(HudRunner::inline(APP));
         driver.setup = Some(dir.setup());
+        driver.faces = Some(pkg_faces());
         let classic = load_classic(APP, plx_platform::i18n::english(), &ShippedMeasure);
         driver.start(classic, APP);
         driver
@@ -785,7 +888,12 @@ mod tests {
 
     /// Tick until nothing changes; the HUDs the driver handed out, in order.
     fn settle(driver: &mut HudDriver, cx: &LocaleContext) -> Vec<LoadedHud> {
-        let env = Env { measure: &ShippedMeasure, cx, app_version: APP, player: false };
+        settle_with(driver, cx, &ShippedMeasure)
+    }
+
+    /// [`settle`] with `measure` as the television's text measure.
+    fn settle_with(driver: &mut HudDriver, cx: &LocaleContext, measure: &dyn Measure) -> Vec<LoadedHud> {
+        let env = Env { measure, cx, app_version: APP, player: false };
         let mut shown = Vec::new();
         for _ in 0..64 {
             shown.extend(driver.tick(&env));
@@ -796,6 +904,65 @@ mod tests {
 
     fn entry(driver: &HudDriver, id: &str) -> Option<Entry> {
         driver.store().entries().into_iter().find(|e| e.id == id)
+    }
+
+    /// The shipped widths, a call counted for each question asked: what the television's text measure is asked.
+    struct Counting<'a>(&'a std::cell::Cell<usize>);
+    impl Measure for Counting<'_> {
+        fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
+            self.0.set(self.0.get() + 1);
+            ShippedMeasure.width(s, sz, bold)
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            self.0.set(self.0.get() + 1);
+            ShippedMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            self.0.set(self.0.get() + 1);
+            ShippedMeasure.line_h(sz)
+        }
+    }
+
+    /// A text measure whose line height is not the price model's: the model's 1.21 x size rounded up to a whole pixel, as a
+    /// firmware whose SDL_ttf reports a whole-pixel line skip. The widths are the model's, so the fit is unmoved; the cost of
+    /// a package that sits at a ceiling is not.
+    struct WholePixelLines;
+    impl Measure for WholePixelLines {
+        fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
+            ShippedMeasure.width(s, sz, bold)
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            ShippedMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            ShippedMeasure.line_h(sz).ceil()
+        }
+    }
+
+    /// The reference with one more text line under its title: over the compact draw-ops ceiling (the reference's episode is
+    /// at it) and the one- and two-section ones, whatever measure prices it (`lint_cost::INVALID`'s case), and clean for
+    /// the fit. Under its own id, so it is a package of its own.
+    fn over_a_ceiling() -> String {
+        const TITLE_LINE: &str =
+            r#"{ "text": { "bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } }"#;
+        const KICKER: &str =
+            r#"{ "text": { "bind": "title.kicker", "size": "CAPTION", "ink": "TEXT_SECONDARY", "bold": false, "max_lines": 1, "w": "fill" } }"#;
+        assert_eq!(REFERENCE.matches(TITLE_LINE).count(), 1, "the reference's title line");
+        REFERENCE.replace(TITLE_LINE, &format!("{TITLE_LINE},\n{KICKER}")).replace(REFERENCE_ID, HEAVY_ID)
+    }
+    const HEAVY_ID: &str = "com.example.heavy";
+
+    /// Drop `text` in the folder, install it and select it: the driver is now to compile it.
+    fn install_and_select(dir: &Dir, driver: &mut HudDriver, cx: &LocaleContext, name: &str, text: &str, id: &str) -> Sha {
+        dir.drop_file(name, text);
+        driver.refresh(String::new());
+        settle(driver, cx);
+        let drop = driver.store().drops().into_iter().find(|d| d.name == name).expect("the file is listed");
+        driver.install_drop(drop.sha.expect("a hashed file"), 1_700_000_000);
+        settle(driver, cx);
+        let sha = entry(driver, id).expect("installed").sha.expect("a package");
+        driver.select(id.to_string());
+        sha
     }
 
     fn install_reference(dir: &Dir, driver: &mut HudDriver, cx: &LocaleContext) {
@@ -962,30 +1129,36 @@ mod tests {
         assert_eq!(driver.take_selections(), [BUILTIN_CLASSIC]);
     }
 
+    /// The reference with its info panel's text column no wider than English's kicker needs (a fixed-width column holds
+    /// the text, so the cost of the package is the reference's own): it fits and prices in English, and a language whose
+    /// kicker is longer does not fit it. The narrow language is the first shipped one the fit refuses.
+    fn tight_reference() -> (String, &'static str) {
+        const KICKER: &str = "/layout/block/6/cells/1/vstack/cells/0/text";
+        let lang = LintLang::for_tag("en").unwrap();
+        let found = lint_fit(REFERENCE, &ShippedMeasure, &[lang], &LintOptions { text_skew: 1e9 });
+        let needed = found
+            .iter()
+            .find(|f| f.pointer == KICKER)
+            .and_then(|f| f.ctx.text.clone())
+            .expect("the kicker above the title is measured")
+            .measured;
+        let tight = REFERENCE.replace("\"w\": 760", &format!("\"w\": {}", needed.ceil() as u32));
+        assert_ne!(tight, REFERENCE);
+        let fits = |tag: &str| {
+            let lang = LintLang::for_tag(tag).unwrap();
+            lint_fit(&tight, &ShippedMeasure, &[lang], &LintOptions { text_skew: 0.0 }).iter().all(|f| f.severity != Severity::Error)
+        };
+        assert!(fits("en"), "the column is as wide as English needs");
+        let narrow = Preference::SHIPPED.iter().map(|p| p.tag()).find(|t| !fits(t)).expect("a language needs more than English");
+        (tight, narrow)
+    }
+
     /// A package that does not fit one language falls back there only: one `hud: fallback` line, the reason on
     /// the row, the selection kept, and it draws again in a language it fits.
     #[test]
     fn a_package_that_does_not_fit_a_language_falls_back_there_only() {
         let en = english();
-        let slack = |text: &str| -> f32 {
-            let lang = LintLang::for_tag("en").unwrap();
-            let found = lint_with(text, &ShippedMeasure, &[lang], &LintOptions { text_skew: 1e9 });
-            let fact = found
-                .iter()
-                .find(|f| f.pointer == "/layout/block/4/cells/0/strip/card/below/1/text")
-                .and_then(|f| f.ctx.text.clone())
-                .expect("the strip card's fallback title is measured");
-            fact.measured
-        };
-        let exact = slack(REFERENCE);
-        let tight = REFERENCE.replace("\"card_w\": 192", &format!("\"card_w\": {exact}"));
-        assert_ne!(tight, REFERENCE);
-        let fits = |tag: &str| {
-            let lang = LintLang::for_tag(tag).unwrap();
-            lint_with(&tight, &ShippedMeasure, &[lang], &LintOptions { text_skew: 0.0 }).iter().all(|f| f.severity != Severity::Error)
-        };
-        assert!(fits("en"), "the card is exactly as wide as English needs");
-        let narrow_tag = Preference::SHIPPED.iter().map(|p| p.tag()).find(|t| !fits(t)).expect("a language needs more than English");
+        let (tight, narrow_tag) = tight_reference();
         let narrow = LocaleContext::resolve(Preference::SHIPPED.into_iter().find(|p| p.tag() == narrow_tag).unwrap(), None, None, None, None);
 
         let dir = Dir::new("unfit");
@@ -1011,7 +1184,7 @@ mod tests {
 
         let in_english = settle(&mut driver, &en);
         assert_eq!(in_english.len(), 1, "back in a language it fits, the package draws");
-        assert!(driver.unfit(sha, en.language().tag()).is_none());
+        assert!(driver.unfit(sha, en.language().tag()).is_none(), "{:?}", driver.unfit(sha, en.language().tag()));
         assert_eq!(driver.take_log().len(), 0);
     }
 
@@ -1022,17 +1195,7 @@ mod tests {
         let dir = Dir::new("log-per-code");
         let en = english();
         let mut driver = driver(&dir);
-        let slack = |text: &str| -> f32 {
-            let lang = LintLang::for_tag("en").unwrap();
-            let found = lint_with(text, &ShippedMeasure, &[lang], &LintOptions { text_skew: 1e9 });
-            found.iter().find(|f| f.pointer == "/layout/block/4/cells/0/strip/card/below/1/text").and_then(|f| f.ctx.text.clone()).expect("measured").measured
-        };
-        let tight = REFERENCE.replace("\"card_w\": 192", &format!("\"card_w\": {}", slack(REFERENCE)));
-        let fits = |tag: &str| {
-            let lang = LintLang::for_tag(tag).unwrap();
-            lint_with(&tight, &ShippedMeasure, &[lang], &LintOptions { text_skew: 0.0 }).iter().all(|f| f.severity != Severity::Error)
-        };
-        let narrow_tag = Preference::SHIPPED.iter().map(|p| p.tag()).find(|t| !fits(t)).expect("a language needs more than English");
+        let (tight, narrow_tag) = tight_reference();
         let narrow = LocaleContext::resolve(Preference::SHIPPED.into_iter().find(|p| p.tag() == narrow_tag).unwrap(), None, None, None, None);
         dir.drop_file("tight.plxhud.json", &tight);
         driver.refresh(String::new());
@@ -1057,9 +1220,9 @@ mod tests {
 
     /// **No compile while a player is up.** The bytes of the chosen package land in the same tick a playback starts: they
     /// wait (no compile, no hand-over, no fallback line, no fit verdict), and the compile runs after the player leaves,
-    /// the lint in one tick and the load in the next, so one frame never carries both.
+    /// the fit, the price and the load on three ticks, so one frame never carries two of them.
     #[test]
-    fn a_pack_that_lands_with_a_player_up_waits_and_compiles_in_two_ticks_after_it_leaves() {
+    fn a_pack_that_lands_with_a_player_up_waits_and_compiles_in_three_ticks_after_it_leaves() {
         let dir = Dir::new("player-up");
         let cx = english();
         let mut driver = driver(&dir);
@@ -1073,7 +1236,7 @@ mod tests {
         for _ in 0..64 {
             assert!(tick(&mut driver, true).is_none(), "nothing is handed to a player that is up");
         }
-        assert!(driver.pending.as_ref().is_some_and(|p| !p.linted), "the bytes landed and wait, not even linted");
+        assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Fit), "the bytes landed and wait, not even fitted");
         assert!(driver.compiled.is_none() && driver.unfit.is_empty(), "no compile ran, and waiting is not a verdict");
         assert!(driver.take_log().is_empty(), "waiting is not a fallback");
         let before = driver.worked;
@@ -1083,10 +1246,13 @@ mod tests {
         assert_eq!(driver.worked, before, "a tick with a player up and bytes waiting returns on its flag tests: it is no work per frame");
         assert!(driver.pending.is_some() && driver.compiled.is_none(), "still waiting");
 
-        // the player leaves: the lint is one tick's work, the load the next's
+        // the player leaves: the fit is one tick's work, the price the next's, the load the third's
         assert!(tick(&mut driver, false).is_none());
-        assert!(driver.compiled.is_none(), "the lint tick compiles nothing the player draws from");
-        assert!(driver.pending.as_ref().is_some_and(|p| p.linted), "linted, the load is next");
+        assert!(driver.compiled.is_none(), "the fit tick compiles nothing the player draws from");
+        assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Price), "fitted, the price is next");
+        assert!(tick(&mut driver, false).is_none());
+        assert!(driver.compiled.is_none(), "the price tick compiles nothing the player draws from");
+        assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Load), "priced, the load is next");
         let shown = tick(&mut driver, false);
         assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(REFERENCE.as_bytes())), "the load tick hands the package over");
         assert!(driver.pending.is_none() && driver.compiled.is_some());
@@ -1094,7 +1260,7 @@ mod tests {
     }
 
     /// **The playback starts in the very tick the bytes land** (a cold launch with a play link): every tick before it had no
-    /// player and put the read in flight, the one that lands it has one. The bytes wait unlinted, with no fallback line.
+    /// player and put the read in flight, the one that lands it has one. The bytes wait unfitted, with no fallback line.
     #[test]
     fn a_playback_that_starts_in_the_tick_the_bytes_land_waits_for_it_to_end() {
         let dir = Dir::new("player-same-tick");
@@ -1110,38 +1276,251 @@ mod tests {
         }
         assert!(driver.reading.is_some() && driver.pending.is_none(), "the read is in flight and has not landed");
         assert!(driver.tick(&env(true)).is_none(), "the tick the playback starts in lands the bytes");
-        assert!(driver.reading.is_none() && driver.pending.as_ref().is_some_and(|p| !p.linted), "landed in that tick, and not linted");
+        assert!(driver.reading.is_none() && driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Fit), "landed in that tick, and not fitted");
         assert!(driver.compiled.is_none() && driver.unfit.is_empty() && driver.take_log().is_empty(), "no compile, no verdict, no fallback line");
         let before = driver.worked;
         for _ in 0..50 {
             assert!(driver.tick(&env(true)).is_none());
         }
         assert_eq!(driver.worked, before, "and the playback's ticks add no work");
-        assert!(driver.tick(&env(false)).is_none(), "the first tick after it lints");
-        assert!(driver.tick(&env(false)).is_some(), "the next loads and hands the package over");
+        assert!(driver.tick(&env(false)).is_none(), "the first tick after it fits");
+        assert!(driver.tick(&env(false)).is_none(), "the next prices");
+        assert!(driver.tick(&env(false)).is_some(), "the third loads and hands the package over");
         assert!(driver.take_log().is_empty());
     }
 
-    /// A player that comes up between the lint and the load holds the load too.
+    /// **Nothing advances while a player is up, at any stage.** A player that comes up after the fit holds the price, and one
+    /// that comes up after the price holds the load: the stage stands, the text measure is not asked a thing, nothing is handed
+    /// over, nothing is logged, and the ticks are no work.
     #[test]
-    fn a_player_that_starts_between_the_lint_and_the_load_holds_the_load() {
+    fn a_player_that_starts_at_any_stage_holds_the_next_one() {
         let dir = Dir::new("player-between");
         let cx = english();
         let mut driver = driver(&dir);
         install_reference(&dir, &mut driver, &cx);
         driver.select(REFERENCE_ID.to_string());
-        let env = |player| Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player };
+        let asked = std::cell::Cell::new(0);
+        let measure = Counting(&asked);
+        let env = |player| Env { measure: &measure, cx: &cx, app_version: APP, player };
         let mut guard = 0;
-        while !driver.pending.as_ref().is_some_and(|p| p.linted) && guard < 64 {
+        while driver.pending.is_none() && guard < 64 {
             driver.tick(&env(false));
             guard += 1;
         }
-        assert!(driver.pending.as_ref().is_some_and(|p| p.linted));
-        for _ in 0..10 {
-            assert!(driver.tick(&env(true)).is_none());
+        // the landing tick fitted it, so the price is next
+        for (stage, hands_over) in [(Stage::Price, false), (Stage::Load, true)] {
+            assert!(driver.pending.as_ref().is_some_and(|p| p.stage == stage), "{stage:?} is next");
+            let (worked, asked_before) = (driver.worked, asked.get());
+            for _ in 0..10 {
+                assert!(driver.tick(&env(true)).is_none());
+            }
+            assert!(driver.pending.as_ref().is_some_and(|p| p.stage == stage), "{stage:?} waits for the player to leave");
+            assert_eq!((driver.worked, asked.get()), (worked, asked_before), "and the player's ticks are no work and no compile");
+            assert!(driver.compiled.is_none() && driver.unfit.is_empty() && driver.take_log().is_empty());
+            assert_eq!(driver.tick(&env(false)).is_some(), hands_over, "{stage:?} runs on the first tick with no player");
         }
-        assert!(driver.compiled.is_none(), "the load waits for the player to leave");
-        assert!(driver.tick(&env(false)).is_some());
+        assert!(driver.compiled.is_some(), "the load ran once the player left");
+    }
+
+    /// **Fit, price and load are three successive ticks, never two in one**, and each asks only what it should: the fit and
+    /// the load are laid out by the television's text measure, the price by the model alone, so the price tick does not ask
+    /// the text measure a thing. The bytes landing is no compile: the tick that lands them runs the fit.
+    #[test]
+    fn fit_price_and_load_land_on_three_successive_ticks_and_the_price_never_asks_the_text_measure() {
+        let dir = Dir::new("three-ticks");
+        let cx = english();
+        let mut driver = driver(&dir);
+        install_reference(&dir, &mut driver, &cx);
+        driver.select(REFERENCE_ID.to_string());
+        let asked = std::cell::Cell::new(0);
+        let measure = Counting(&asked);
+        let env = Env { measure: &measure, cx: &cx, app_version: APP, player: false };
+        let mut guard = 0;
+        while driver.pending.is_none() {
+            assert_eq!(asked.get(), 0, "nothing is compiled before the bytes land");
+            assert!(driver.tick(&env).is_none());
+            guard += 1;
+            assert!(guard < 64, "the bytes land");
+        }
+        let fit = asked.replace(0);
+        assert!(fit > 0, "the tick that lands the bytes fits them with the text measure");
+        assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Price) && driver.compiled.is_none());
+
+        assert!(driver.tick(&env).is_none());
+        assert_eq!(asked.replace(0), 0, "the price tick asks the text measure nothing: it is the model's");
+        assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Load) && driver.compiled.is_none(), "priced, the load is next");
+
+        let shown = driver.tick(&env);
+        assert!(asked.replace(0) > 0, "the load tick lays the package out with the text measure");
+        assert!(shown.is_some() && driver.pending.is_none() && driver.compiled.is_some(), "the third tick hands the package over");
+        assert!(driver.take_log().is_empty());
+        for _ in 0..20 {
+            assert!(driver.tick(&env).is_none());
+        }
+        assert_eq!(asked.get(), 0, "and nothing compiles again");
+    }
+
+    /// **A package at a ceiling is accepted on a firmware whose text measure has another line height.** The price is the
+    /// model's, never the text measure's: the reference sits exactly at several ceilings, and priced by a measure whose line
+    /// height is a whole pixel (`WholePixelLines`) it reads over one, `HUD-E1401`, though the same bytes pass everywhere else.
+    #[test]
+    fn a_package_at_a_ceiling_is_accepted_whatever_line_height_the_text_measure_has() {
+        let lang = LintLang::for_tag("en").unwrap();
+        assert!(
+            lint_price(REFERENCE, &WholePixelLines, &[lang.clone()]).findings.iter().any(|f| f.code == "HUD-E1401"),
+            "premise: priced by this measure the reference is over a ceiling"
+        );
+        assert!(lint_price(REFERENCE, &ShippedMeasure, &[lang.clone()]).findings.is_empty(), "and priced by the model it sits at them");
+        assert!(
+            lint_fit(REFERENCE, &WholePixelLines, &[lang], &LintOptions { text_skew: 0.0 }).iter().all(|f| f.severity != Severity::Error),
+            "premise: the fit is unmoved by it"
+        );
+
+        let dir = Dir::new("ceiling-line-height");
+        let cx = english();
+        let mut driver = driver(&dir);
+        install_reference(&dir, &mut driver, &cx);
+        driver.select(REFERENCE_ID.to_string());
+        let shown = settle_with(&mut driver, &cx, &WholePixelLines);
+        assert_eq!(shown.len(), 1, "the package is accepted and handed over");
+        assert!(driver.unfit(entry(&driver, REFERENCE_ID).unwrap().sha.unwrap(), "en").is_none());
+        assert!(driver.take_log().is_empty(), "with no fallback line");
+    }
+
+    /// **A package over a ceiling is refused at the price stage**: the fit passed, so the refusal is the price's, one
+    /// `hud: fallback` line with `HUD-E1401`, classic is what the player keeps drawing, the load never ran and the selection
+    /// is kept.
+    #[test]
+    fn a_package_over_a_ceiling_is_refused_at_the_price_stage_and_classic_draws() {
+        let dir = Dir::new("over-ceiling");
+        let cx = english();
+        let mut driver = driver(&dir);
+        let sha = install_and_select(&dir, &mut driver, &cx, "heavy.plxhud.json", &over_a_ceiling(), HEAVY_ID);
+        let asked = std::cell::Cell::new(0);
+        let measure = Counting(&asked);
+        let env = Env { measure: &measure, cx: &cx, app_version: APP, player: false };
+        let mut guard = 0;
+        while driver.pending.is_none() {
+            assert!(driver.tick(&env).is_none());
+            guard += 1;
+            assert!(guard < 64, "the bytes land");
+        }
+        assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Price), "the fit passed");
+        assert!(driver.unfit.is_empty() && driver.take_log().is_empty(), "and said nothing");
+        asked.set(0);
+        assert!(driver.tick(&env).is_none(), "the price tick hands the player nothing");
+        assert!(driver.pending.is_none() && driver.compiled.is_none(), "refused at the price stage: the load never ran");
+        assert_eq!(driver.unfit(sha, "en"), Some(&Unfit { code: "HUD-E1401" }));
+        let lines = driver.take_log();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].starts_with("hud: fallback ") && lines[0].contains(HEAVY_ID) && lines[0].contains("language=en") && lines[0].contains("code=HUD-E1401"),
+            "{lines:?}"
+        );
+        assert_eq!(driver.store().selected(), HEAVY_ID, "the selection is kept");
+        for _ in 0..20 {
+            assert!(driver.tick(&env).is_none(), "classic keeps drawing");
+        }
+        assert_eq!(asked.get(), 0, "and nothing compiles again");
+        assert!(driver.take_log().is_empty(), "once per package, language and cause");
+        assert_eq!(driver.unfit_shas("en"), [sha], "and the page marks the row");
+    }
+
+    /// **The price is fail-closed.** With the model's faces missing or unreadable the package falls back to classic with its
+    /// own code, `faces`, and is never fitted, loaded or handed to the player: it must not reach it unpriced.
+    #[test]
+    fn a_package_is_never_handed_to_the_player_unpriced_when_the_faces_cannot_be_read() {
+        for damage in ["missing", "corrupt"] {
+            let dir = Dir::new(damage);
+            let cx = english();
+            let mut driver = driver(&dir);
+            let faces = [dir.0.join("regular.ttf"), dir.0.join("bold.ttf")];
+            if damage == "corrupt" {
+                for face in &faces {
+                    std::fs::write(face, b"not a font").unwrap();
+                }
+            }
+            driver.faces = Some(faces);
+            dir.drop_file("reference.plxhud.json", REFERENCE);
+            driver.refresh(String::new());
+            settle(&mut driver, &cx);
+            driver.install_drop(driver.store().drops()[0].sha.unwrap(), 1_700_000_000);
+            settle(&mut driver, &cx);
+            let sha = entry(&driver, REFERENCE_ID).unwrap().sha.unwrap();
+            driver.select(REFERENCE_ID.to_string());
+            let asked = std::cell::Cell::new(0);
+            let measure = Counting(&asked);
+            assert!(settle_with(&mut driver, &cx, &measure).is_empty(), "{damage}: classic keeps drawing");
+            assert_eq!(asked.get(), 0, "{damage}: the package was neither fitted nor loaded");
+            assert!(driver.compiled.is_none() && driver.price.is_none() && driver.pending.is_none(), "{damage}");
+            assert_eq!(driver.unfit(sha, "en"), Some(&Unfit { code: "faces" }), "{damage}: the row carries a reason");
+            assert_eq!(driver.store().selected(), REFERENCE_ID, "{damage}: the selection is kept");
+            let lines = driver.take_log();
+            assert!(lines.iter().any(|l| l.starts_with("hud: price model unavailable: ") && l.contains("regular.ttf")), "{damage}: {lines:?}");
+            assert_eq!(lines.iter().filter(|l| l.starts_with("hud: fallback ")).count(), 1, "{damage}: {lines:?}");
+            assert!(lines.iter().any(|l| l.contains("code=faces") && l.contains(REFERENCE_ID) && l.contains("language=en")), "{damage}: {lines:?}");
+            assert!(settle(&mut driver, &cx).is_empty() && driver.take_log().is_empty(), "{damage}: once, not on every tick");
+        }
+    }
+
+    /// **The faces are read once**, on the worker, in the job of the first pack read that reaches the bytes: that job carries
+    /// the model, no later one does, and a package read after the files are gone is still priced.
+    #[test]
+    fn the_price_model_is_read_once_for_the_process_and_in_the_pack_reads_job() {
+        fn is_send<T: Send>() {}
+        is_send::<WholePixelMeasure>();
+        is_send::<Landed>();
+
+        let dir = Dir::new("faces-once");
+        let cx = english();
+        let mut driver = driver(&dir);
+        let faces = [dir.0.join("regular.ttf"), dir.0.join("bold.ttf")];
+        for (copy, shipped) in faces.iter().zip(pkg_faces()) {
+            std::fs::copy(shipped, copy).unwrap();
+        }
+        driver.faces = Some(faces.clone());
+        let reference = install_and_select(&dir, &mut driver, &cx, "reference.plxhud.json", REFERENCE, REFERENCE_ID);
+        let minimal = install_and_select(&dir, &mut driver, &cx, "minimal.plxhud.json", MINIMAL, "com.plxnative.examples.minimal");
+        driver.select(REFERENCE_ID.to_string());
+        assert!(driver.price.is_none(), "nothing has been read yet");
+        // the first pack read carries the faces, in its own job; the listing and the install read none
+        let mut job = driver.begin_read(reference);
+        let landed = job.slot.poll().flatten().expect("the inline job ran");
+        assert!(landed.bytes.is_some() && landed.model.as_ref().is_some_and(|m| m.is_ok()), "the first pack read reads the faces too");
+        assert!(settle(&mut driver, &cx).len() == 1 && driver.price.is_some(), "and the driver keeps the model");
+        // once it is kept, no pack read carries it again
+        let mut job = driver.begin_read(reference);
+        assert!(job.slot.poll().flatten().expect("the inline job ran").model.is_none());
+
+        // the files are gone: a second package is still priced, from the model the process has
+        for face in &faces {
+            std::fs::remove_file(face).unwrap();
+        }
+        driver.select("com.plxnative.examples.minimal".to_string());
+        let shown = settle(&mut driver, &cx);
+        assert!(shown.len() == 1 && shown[0].key.sha256 == plx_base::sha256::sha256(MINIMAL.as_bytes()), "priced without a second read");
+        assert!(driver.unfit(minimal, "en").is_none() && driver.take_log().is_empty());
+    }
+
+    /// **`builtin:classic` never reaches the lint**, and never asks for the faces: it is compiled at boot by `load_classic` and
+    /// is handed back by a selection with no stage at all, with the model's faces missing.
+    #[test]
+    fn builtin_classic_never_reaches_the_lint_or_the_faces() {
+        let dir = Dir::new("classic-never-lints");
+        let cx = english();
+        let mut driver = driver(&dir);
+        driver.faces = Some([dir.0.join("nowhere-regular.ttf"), dir.0.join("nowhere-bold.ttf")]);
+        install_reference(&dir, &mut driver, &cx);
+        let asked = std::cell::Cell::new(0);
+        let measure = Counting(&asked);
+        // the built-in is the selection, and a refresh reads it again
+        driver.select(BUILTIN_CLASSIC.to_string());
+        assert!(settle_with(&mut driver, &cx, &measure).is_empty(), "classic is already what draws");
+        driver.refresh(String::new());
+        assert!(settle_with(&mut driver, &cx, &measure).is_empty());
+        assert_eq!(asked.get(), 0, "no lint, no load: the text measure was not asked a thing");
+        assert!(driver.price.is_none() && driver.reading.is_none() && driver.pending.is_none() && driver.compiled.is_none(), "no stage, no faces");
+        assert!(driver.unfit.is_empty() && driver.take_log().is_empty());
     }
 
     /// **With no seat the pick stays for the process.** A dev-token boot never seats, so a pick cannot be persisted; it is
@@ -1279,4 +1658,5 @@ mod tests {
         assert!(matches!(verdict(newer.as_bytes(), APP), Verdict::Unloadable(_, Unloadable::NewerFormat)));
         let _ = Facts { id: String::new(), name: String::new(), version: String::new(), format: String::new() };
     }
+
 }
