@@ -27,6 +27,10 @@
     "value": "Home",
     "description": "browse chrome home"
   },
+  "browse.chrome.live_tv": {
+    "value": "TV",
+    "description": "Label of the top strip pill that opens the Live TV page (the server's channels); short so the strip keeps its glass width"
+  },
   "browse.chrome.search": {
     "value": "Search",
     "description": "browse chrome search"
@@ -782,6 +786,10 @@
   "browse.home.continue_watching": {
     "value": "Continue Watching",
     "description": "browse home continue_watching"
+  },
+  "browse.home.live_tv": {
+    "value": "Live TV",
+    "description": "Title of the Home row of the server's live TV channels (Plex DVR), one tile per channel"
   },
   "browse.diagnostics.title": {
     "value": "Diagnostics",
