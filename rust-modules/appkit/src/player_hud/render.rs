@@ -793,13 +793,14 @@ mod tests {
         assert!(drawn.0.is_empty(), "{:?}", drawn.0);
     }
 
+    mod panel_goldens;
+
     /// **The Chapters strip through the renderer** (`draw_state` over classic's `OPEN_CHAPTERS` state, the
-    /// strip a `cards::Shelf`) against the hand-written strip (`ChaptersState::draw`) on the same playing item,
-    /// both at rest on the same chapter. The screen does not switch to it yet, so this is the one place the two
-    /// meet. Every difference between them is D11's (`docs/hud-plugins.md`) or listed in the PR's handoff.
+    /// strip a `cards::Shelf`) against what the hand-written strip drew on the same playing item (frozen in
+    /// `panel_goldens`, read off `ChaptersState::draw` before it was deleted), both at rest on the same chapter.
+    /// Every difference between them is D11's (`docs/hud-plugins.md`) or listed in the PR's handoff.
     mod chapters_section {
         use super::*;
-        use crate::chapters_panel::ChaptersState;
         use crate::hud_format::compile::OPEN_CHAPTERS;
         use crate::hud_format::Slot;
         use crate::player_hud::strip::{Cards, Geometry};
@@ -831,24 +832,43 @@ mod tests {
             Side { runs, rings }
         }
 
-        /// (the renderer's side, the hand-written strip's side) with focus on chapter `sel`, scroll at rest.
-        fn both(items: Vec<Chapter>, sel: u32) -> (Side, Side) {
-            both_at(items, sel, 1.0)
+        /// The item sets the tests draw, by the name `panel_goldens::chapters` freezes them under.
+        fn items(set: &str) -> Vec<Chapter> {
+            let long = "The Very Long Chapter Name That Does Not Fit A Card";
+            match set {
+                "unnamed" => chapters(&["Opening", "", "The Chase"]),
+                "long" => chapters(&[long, "Dinner", long]),
+                "five" => chapters(&["Opening", "Dinner", "The Chase", "Aftermath", "Credits"]),
+                "three" => chapters(&["Opening", "Dinner", "The Chase"]),
+                _ => panic!("no item set `{set}`"),
+            }
         }
 
-        /// [`both`] with the section at appear `appear` on both sides: the renderer's spring and the strip's argument.
-        fn both_at(items: Vec<Chapter>, sel: u32, appear: f32) -> (Side, Side) {
-            scene(items, sel, appear, false)
+        /// What the hand-written strip drew for `set` with focus on `sel` at `appear` (`panel_goldens`).
+        fn panel(set: &str, sel: u32, appear: f32) -> Side {
+            let (runs, rings) = super::panel_goldens::chapters(set, sel, (appear * 100.0).round() as u32);
+            Side { runs, rings }
         }
 
-        /// [`both_at`] over the frame the section is DISMISSED: the page has put it away (`open` is 0, the engine's
-        /// focus is off the strip) and it fades from `appear` down, against the hand-written strip still on
+        /// (the renderer's side, the hand-written strip's frozen side) with focus on chapter `sel` of `set`,
+        /// scroll at rest.
+        fn both(set: &str, sel: u32) -> (Side, Side) {
+            both_at(set, sel, 1.0)
+        }
+
+        /// [`both`] with the section at appear `appear`: the renderer's spring and the strip's frozen argument.
+        fn both_at(set: &str, sel: u32, appear: f32) -> (Side, Side) {
+            (scene(items(set), sel, appear, false), panel(set, sel, appear))
+        }
+
+        /// [`both_at`] over the frame the section is DISMISSED: the page has put it away (`open` is 0, the
+        /// engine's focus is off the strip) and it fades from `appear` down, against the strip's frozen draw on
         /// its own selection at that appear.
-        fn closing_at(items: Vec<Chapter>, sel: u32, appear: f32) -> (Side, Side) {
-            scene(items, sel, appear, true)
+        fn closing_at(set: &str, sel: u32, appear: f32) -> (Side, Side) {
+            (scene(items(set), sel, appear, true), panel(set, sel, appear))
         }
 
-        fn scene(items: Vec<Chapter>, sel: u32, appear: f32, closing: bool) -> (Side, Side) {
+        fn scene(items: Vec<Chapter>, sel: u32, appear: f32, closing: bool) -> Side {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
@@ -889,15 +909,7 @@ mod tests {
             };
             let mut new = None;
             let rings = capture_rings(|| new = Some(census(|| with_df_focus(focus, |df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))))));
-            let new = side(new.unwrap(), rings);
-            let mut panel = ChaptersState::new(store.view());
-            panel.set_sel(sel as std::os::raw::c_int);
-            for _ in 0..240 {
-                panel.update(0.016_667, store.view());
-            }
-            let mut old = None;
-            let rings = capture_rings(|| old = Some(census(|| panel.draw(&ps, appear, &FM, store.view()))));
-            (new, side(old.unwrap(), rings))
+            side(new.unwrap(), rings)
         }
 
         fn close(a: f32, b: f32) -> bool {
@@ -907,7 +919,7 @@ mod tests {
         /// A chapter the server named nothing draws "Chapter N" on both sides, in the same place.
         #[test]
         fn an_unnamed_chapter_is_named_by_its_number_as_the_strip_names_it() {
-            let (new, old) = both(chapters(&["Opening", "", "The Chase"]), 0);
+            let (new, old) = both("unnamed", 0);
             let named = |s: &Side| s.runs.iter().find(|r| r.text == "Chapter 2").map(|r| (r.size, r.ink, r.bold, r.at.x, r.at.y));
             assert!(named(&old).is_some(), "the strip draws `Chapter 2`: {:?}", old.runs);
             assert_eq!(named(&new), named(&old));
@@ -920,7 +932,7 @@ mod tests {
         #[test]
         fn a_long_focused_name_shows_whole_where_the_strip_elides_it() {
             let long = "The Very Long Chapter Name That Does Not Fit A Card";
-            let (new, old) = both(chapters(&[long, "Dinner", long]), 0);
+            let (new, old) = both("long", 0);
             let name = |s: &Side, at: f32| s.runs.iter().find(|r| r.size == theme::size::LABEL && (r.at.x - at).abs() < 1.0).map(|r| (r.text.clone(), r.at.w));
             let (focused_new, focused_old) = (name(&new, 96.0).expect("the focused name"), name(&old, 96.0).expect("the strip's"));
             assert!(focused_old.1 <= 288.0 && focused_old.0.ends_with('\u{2026}'), "the strip elides it to the card: {focused_old:?}");
@@ -938,7 +950,7 @@ mod tests {
         #[test]
         fn a_strip_at_rest_draws_what_the_hand_written_strip_draws() {
             for sel in [0, 1] {
-                let (new, old) = both(chapters(&["Opening", "Dinner", "The Chase", "Aftermath", "Credits"]), sel);
+                let (new, old) = both("five", sel);
                 assert_eq!(old.runs.len(), 10, "sel {sel}: a name and a time on each of five cards: {:?}", old.runs);
                 assert_eq!(new.runs.len(), old.runs.len(), "sel {sel}: the same runs:\nrenderer {:#?}\nstrip    {:#?}", new.runs, old.runs);
                 for (n, o) in new.runs.iter().zip(&old.runs) {
@@ -963,7 +975,7 @@ mod tests {
         #[test]
         fn the_strip_at_every_appear_is_what_the_hand_written_strip_drew() {
             for appear in [0.0, 0.25, 0.5, 0.75, 1.0] {
-                let (new, old) = both_at(chapters(&["Opening", "Dinner", "The Chase"]), 0, appear);
+                let (new, old) = both_at("three", 0, appear);
                 assert_eq!(new.runs.len(), old.runs.len(), "appear {appear}: the same runs:\nrenderer {:#?}\nstrip    {:#?}", new.runs, old.runs);
                 for (n, o) in new.runs.iter().zip(&old.runs) {
                     assert_eq!((&n.text, n.size, n.bold, n.align), (&o.text, o.size, o.bold, o.align), "appear {appear}: the run `{}`", o.text);
@@ -993,7 +1005,7 @@ mod tests {
             // the first and second chapter: the two seats both scroll rules leave at 0 (D11 differs past them)
             for sel in [0, 1] {
                 for appear in [0.25, 0.5, 0.75] {
-                    let (new, old) = closing_at(chapters(&["Opening", "Dinner", "The Chase"]), sel, appear);
+                    let (new, old) = closing_at("three", sel, appear);
                     assert_eq!(old.rings.len(), 1, "sel {sel} appear {appear}: the panel's selected card wears its ring");
                     assert_eq!(new.rings.len(), old.rings.len(), "sel {sel} appear {appear}: the ring of the card it was on: {:?}", new.rings);
                     for (n, o) in new.rings.iter().zip(&old.rings) {
@@ -1016,14 +1028,14 @@ mod tests {
         }
     }
 
-    /// **The Info section through the renderer** (`draw_state` over classic's `OPEN_INFO` state), against the
-    /// hand-written card (`InfoPanelState::draw`) on the same playing item. The screen does not switch to it
-    /// yet, so this is the one place the two meet.
+    /// **The Info section through the renderer** (`draw_state` over classic's `OPEN_INFO` state), against what the
+    /// hand-written card drew on the same playing item (frozen in `panel_goldens`, read off `InfoPanelState::draw`
+    /// before it was deleted).
     mod info_section {
         use super::*;
         use crate::hud_format::compile::{OPEN_CHAPTERS, OPEN_INFO};
         use crate::hud_format::Slot;
-        use crate::info_panel::{button_rect, card_geometry, InfoPanelState};
+        use crate::info_panel::{button_rect, card_geometry};
         use plx_data::metadata::Detail;
 
         fn playing() -> Detail {
@@ -1039,24 +1051,40 @@ mod tests {
             }
         }
 
-        /// (the renderer's census, the hand-written card's census) over one playing item
-        fn both(detail: Detail) -> (Census, Census) {
-            both_at(detail, 1.0)
+        /// The variants of the playing item the tests draw, by the name `panel_goldens::info` freezes them under.
+        fn detail(variant: &str) -> Detail {
+            let bare = Detail { genres: vec![], year: 0, dur_ms: 0, rating: String::new(), ..playing() };
+            match variant {
+                "playing" => playing(),
+                "short" => Detail { summary: "A short one.".into(), ..playing() },
+                "nosummary" => Detail { summary: String::new(), ..playing() },
+                "bare" => bare,
+                "barenosummary" => Detail { summary: String::new(), ..bare },
+                "nogenres" => Detail { genres: vec![], ..playing() },
+                _ => panic!("no variant `{variant}`"),
+            }
         }
 
-        /// [`both`] with the section at appear `appear` on both sides: the renderer's spring and the card's argument.
-        fn both_at(detail: Detail, appear: f32) -> (Census, Census) {
-            scene(detail, appear, false)
+        /// (the renderer's census, the hand-written card's frozen census) over one variant of the playing item
+        fn both(variant: &str) -> (Census, Census) {
+            both_at(variant, 1.0)
+        }
+
+        /// [`both`] with the section at appear `appear`: the renderer's spring and the card's frozen argument.
+        fn both_at(variant: &str, appear: f32) -> (Census, Census) {
+            let pct = (appear * 100.0).round() as u32;
+            (scene(detail(variant), appear, false), super::panel_goldens::info(variant, pct, false))
         }
 
         /// [`both_at`] over the frame the section is DISMISSED: the page has put it away (`open` is 0 and the
         /// focus is off its buttons), the first button had the focus and its pop, and the card fades from `appear`
-        /// down on its own focus.
-        fn closing_at(detail: Detail, appear: f32) -> (Census, Census) {
-            scene(detail, appear, true)
+        /// down on its own focus (frozen).
+        fn closing_at(variant: &str, appear: f32) -> (Census, Census) {
+            let pct = (appear * 100.0).round() as u32;
+            (scene(detail(variant), appear, true), super::panel_goldens::info(variant, pct, true))
         }
 
-        fn scene(detail: Detail, appear: f32, closing: bool) -> (Census, Census) {
+        fn scene(detail: Detail, appear: f32, closing: bool) -> Census {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
@@ -1073,18 +1101,14 @@ mod tests {
                 focus: GROUP_SCRUB, btn: 0, tab: 0, open: if closing { 0 } else { OPEN_INFO },
                 now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
-            let mut card = InfoPanelState::new();
             if closing {
                 for _ in 0..30 {
-                    card.update(0.016_667);
                     row.section_pop.step(Some(0), 0.016_667);
                 }
                 row.hold_focus(Section::Info, GROUP_SECTION, 0);
                 row.follow(0);
             }
-            let new = census(|| with_df(|df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))));
-            let old = census(|| card.draw(&ps, appear, &FM, store.view()));
-            (new, old)
+            census(|| with_df(|df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))))
         }
 
         /// **The card's appear is the card's**: at every point of the spring the section path draws what the
@@ -1109,10 +1133,10 @@ mod tests {
                 }
                 rest
             }
-            let (settled_new, settled_old) = both_at(playing(), 1.0);
+            let (settled_new, settled_old) = both_at("playing", 1.0);
             let still = tabs(&settled_new, &settled_old);
             for appear in [0.0, 0.25, 0.5, 0.75, 1.0] {
-                let (new, old) = both_at(playing(), appear);
+                let (new, old) = both_at("playing", appear);
                 assert_eq!(tabs(&new, &old), still, "appear {appear}: the tab row neither fades nor rises with the card");
                 fn words(c: &Census) -> Vec<&Run> {
                     let mut runs: Vec<&Run> = c.1.iter().filter(|r| r.text != "Info" && r.text != "Chapters").collect();
@@ -1141,7 +1165,7 @@ mod tests {
         #[test]
         fn a_card_fading_out_keeps_the_focused_buttons_glow_ink_and_pop() {
             for appear in [0.25, 0.5, 0.75] {
-                let (new, old) = closing_at(playing(), appear);
+                let (new, old) = closing_at("playing", appear);
                 let glow = |c: &Census| c.3.iter().filter(|(tag, ..)| *tag == 5).map(|(_, r, a)| (*r, *a)).collect::<Vec<_>>();
                 let (n, o) = (glow(&new), glow(&old));
                 assert!(!o.is_empty(), "appear {appear}: the card's focused button wears a glow: {:?}", old.3);
@@ -1171,6 +1195,7 @@ mod tests {
             }
         }
 
+
         fn run<'a>(c: &'a Census, text: &str) -> &'a Run {
             c.1.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("no run `{text}` in {:?}", c.1))
         }
@@ -1180,7 +1205,7 @@ mod tests {
         /// card was only the panel), so it has one run more: the Info tab's label.
         #[test]
         fn the_ground_the_buttons_the_glyphs_and_the_columns_are_the_cards() {
-            let (new, old) = both(playing());
+            let (new, old) = both("playing");
             let (card, _) = card_geometry();
             let rect_of = |c: &Census, r: Rect| c.0.iter().filter(|(_, at)| *at == r).count();
             assert!(rect_of(&new, card) > 0 && rect_of(&new, card) == rect_of(&old, card), "the ground is painted as the card paints it");
@@ -1247,8 +1272,8 @@ mod tests {
         /// compiled `vstack` at draw time the same way (`sections::group`), so every run of the block, its y
         /// included, is the card's. `want` names the runs the case must contain (a case whose census lacks them
         /// would be comparing nothing).
-        fn same_block(detail: Detail, want: &[&str], absent: &[&str]) {
-            let (new, old) = both(detail);
+        fn same_block(variant: &str, want: &[&str], absent: &[&str]) {
+            let (new, old) = both(variant);
             let (a, b) = (runs(&new), runs(&old));
             for w in want {
                 assert!(b.iter().any(|r| r.0.starts_with(w)), "the card draws a `{w}` run: {b:?}");
@@ -1269,31 +1294,30 @@ mod tests {
 
         #[test]
         fn a_two_line_synopsis_and_a_full_facts_row_sit_where_the_card_puts_them() {
-            same_block(playing(), &["The Long Title", "A summary of the film", "Drama"], &[]);
+            same_block("playing", &["The Long Title", "A summary of the film", "Drama"], &[]);
         }
 
         #[test]
         fn a_one_line_synopsis_sits_where_the_card_puts_it() {
-            same_block(Detail { summary: "A short one.".into(), ..playing() }, &["The Long Title", "A short one.", "Drama"], &[]);
+            same_block("short", &["The Long Title", "A short one.", "Drama"], &[]);
         }
 
         #[test]
         fn an_item_with_no_synopsis_drops_the_synopsis_and_its_gap() {
-            same_block(Detail { summary: String::new(), ..playing() }, &["The Long Title", "Drama"], &["A summary"]);
+            same_block("nosummary", &["The Long Title", "Drama"], &["A summary"]);
         }
 
         /// `n == 0` drops the tag row, which is not the same as having no genres: an item with a year and a
         /// duration but no genres still has its row, and an item with none of the facts has none.
         #[test]
         fn an_item_with_no_facts_drops_the_tag_row() {
-            let bare = Detail { genres: vec![], year: 0, dur_ms: 0, rating: String::new(), ..playing() };
-            same_block(bare.clone(), &["The Long Title", "A summary of the film"], &["Drama", "2001", "PG-13"]);
-            same_block(Detail { summary: String::new(), ..bare }, &["The Long Title"], &["A summary", "Drama", "2001"]);
+            same_block("bare", &["The Long Title", "A summary of the film"], &["Drama", "2001", "PG-13"]);
+            same_block("barenosummary", &["The Long Title"], &["A summary", "Drama", "2001"]);
         }
 
         #[test]
         fn an_item_with_facts_but_no_genres_still_has_its_tag_row() {
-            same_block(Detail { genres: vec![], ..playing() }, &["The Long Title", "A summary of the film", "2001"], &["Drama"]);
+            same_block("nogenres", &["The Long Title", "A summary of the film", "2001"], &["Drama"]);
         }
 
         /// **A group never leaves the rect the compiler promised** (lint, Cost and the census read the worst
@@ -1314,7 +1338,7 @@ mod tests {
                 bare.clone(),
                 Detail { summary: String::new(), ..bare },
             ] {
-                let (new, _) = both(detail);
+                let new = scene(detail, 1.0, false);
                 let mut seen = 0;
                 for r in new.1.iter().filter(|r| r.text == "The Long Title" || r.text.starts_with("A s")) {
                     let cap = r.at.y + plx_gfx::text::text_cap_band(r.size, i32::from(r.text == "The Long Title")).0;
