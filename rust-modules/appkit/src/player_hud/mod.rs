@@ -11,6 +11,7 @@
 //! |---|---|
 //! | [`state`] | the HUD's LOGIC, no pixels: the control slot (which disc / pill / pair occupies the row), the busy and transport marks, the failure read-out's rows and actions, the scrub tuning. Re-exported here, so `player_hud::slot`, `player_hud::Action`, `player_hud::scrub_speed` keep their paths |
 //! | [`model`] | [`model::HudModel`]: the per-frame, read-only snapshot of every player global the presentation reads. The draws take what they paint and the values they read as arguments; the scrub preview and the renderer's `Frame` carry the snapshot |
+//! | [`caption_rise`] | how far the captions have risen to clear an open section: the rise per Position, its rise-only target and its spring, a field of [`motion::HudMotion`] |
 //! | [`motion`] | the clock prewarm ([`motion::ClockWarm`]), the pop-in of a row ([`motion::RowPop`]) and the HUD's per-frame animation state ([`motion::HudMotion`], formerly `TransportRow`) |
 //! | [`geometry`] | the focus GROUPS ([`geometry::GROUP_SCRUB`] ..), [`geometry::HudGeometry`] and [`geometry::RowAnchor`]: what a layout reports back to focus, the pointer, the overscan audit and the stand-ins |
 //! | [`command`] | [`command::HudCommand`], the closed vocabulary of things a control asks the app to do, with its app-owned enabled predicates, and classic's five discs as controls |
@@ -22,6 +23,7 @@
 //! What stays here is the caption drawing (`draw_subtitle_message`, `draw_subtitle_bitmap`), which
 //! composites over the video plane and belongs to no layout, and `overscan_rects`.
 #![allow(dead_code)]
+pub mod caption_rise;
 pub mod classic;
 pub mod command;
 pub mod geometry;
@@ -57,32 +59,57 @@ use std::os::raw::{c_int, c_uint};
 /// taller than the area is drawn whole at the smallest step. `band` is the HUD's, as its layout
 /// reports it ([`geometry::HudGeometry::band`]): the ceiling the block lifts to while `hud_up`.
 pub fn draw_subtitle_message(text: &str, hud_up: bool, band: HudBand, model: &HudModel, measure: &dyn Measure) {
-    let (scale, baseline, floor) = caption_geometry(model, hud_up, band);
+    let scale = size_scale(model.sub_size);
     let lines = caption_wrap(text, scale, measure);
     if lines.is_empty() {
         return;
     }
+    let (scale, baseline, floor) = caption_geometry_for_block(
+        model.sub_size,
+        model.sub_position,
+        hud_up,
+        band,
+        anchored_height(lines.len(), scale),
+    );
     let lay = caption_layout(lines.len(), scale, baseline, floor);
     draw_caption_block(&lines, &lay, model);
+}
+
+/// The height of the part of a caption block the baseline anchors: [`CAPTION_ANCHOR_LINES`] lines at most,
+/// the rest grows down ([`caption_layout`]).
+fn anchored_height(lines: usize, scale: f32) -> f32 {
+    lines.min(CAPTION_ANCHOR_LINES) as f32 * CAPTION_LINE_PITCH * scale
 }
 
 /// The viewer's size and the y a caption block is placed from: sit near the bottom normally; lift
 /// above the scrubber/tabs while the HUD is up; the viewer's Position pick lifts it further still,
 /// same direction, on top of that. The third value is the lowest y the block may reach — with the
 /// HUD up that is the band's ceiling, so a block that grows down cannot run into the scrubber.
-fn caption_geometry(model: &HudModel, hud_up: bool, band: HudBand) -> (f32, f32, f32) {
-    caption_geometry_for(model.sub_size, model.sub_position, hud_up, band)
-}
-
-/// [`caption_geometry`] for explicit picks (the tie test pins it against `text_style::today_baseline`).
+/// While a section is open the block also rises by the band's `rise` for the Position (clear of the
+/// section; [`HudBand`]).
 fn caption_geometry_for(
     size: plx_plex::plex::session::SubtitleSize,
     position: plx_plex::plex::session::SubtitlePosition,
     hud_up: bool,
     band: HudBand,
 ) -> (f32, f32, f32) {
+    caption_geometry_for_block(size, position, hud_up, band, 0.0)
+}
+
+/// [`caption_geometry_for`] for a block `block_h` px tall above its baseline: the rise a section asks
+/// of it stops where the block's top would cross [`SAFE`]'s top ([`HudBand::clear_rise`]), the block then
+/// overlapping the section (captions draw above sections) at its own size. `0.0` is the rise's own value
+/// ahead of that clamp. With no section open the rise is zero and every number is what it always was.
+fn caption_geometry_for_block(
+    size: plx_plex::plex::session::SubtitleSize,
+    position: plx_plex::plex::session::SubtitlePosition,
+    hud_up: bool,
+    band: HudBand,
+    block_h: f32,
+) -> (f32, f32, f32) {
     let scale = size_scale(size);
-    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position);
+    let rise = if hud_up { HudBand::clear_rise(band.rise_for(position), band.rest_limit(position), block_h) } else { 0.0 };
+    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise;
     let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     (scale, baseline, floor)
 }
@@ -235,6 +262,9 @@ fn sub_screen_rect(r: (i32, i32, i32, i32), cw: i32, ch: i32) -> Rect {
 /// Nothing moves while the HUD is down, and the shift never exceeds the overhanging group's own
 /// top, so a set too tall to lift is clamped rather than pushed off the top of the screen.
 ///
+/// While a section is open the limit the rects must clear is the ceiling less the band's rise ([`image_rise`]),
+/// held off the safe area by [`HudBand::clear_rise`] for the overhanging group's own height.
+///
 /// The lift is measured over the OVERHANGING rects only, and (per [`overhangs`]) applies only to
 /// them. Measuring the whole set breaks the case multi-rect adds: a set carrying a sign at
 /// y≈100 and dialogue at y≈950 would clamp the lift to 100 — sliding the sign for no reason
@@ -253,12 +283,22 @@ fn hud_lift<I: Iterator<Item = Rect>>(rects: I, hud_up: bool, band: HudBand) -> 
     if top > bottom {
         return 0.0; // nothing overhangs
     }
-    (bottom - band.ceil_y).max(0.0).min(top.max(0.0))
+    // an image caption has no Position: its limit is the band's ceiling, raised by the section's rise (Low's
+    // is that one) unless the group's own top would then cross the safe area
+    let rise = HudBand::clear_rise(image_rise(band), band.ceil_y, bottom - top);
+    (bottom - (band.ceil_y - rise)).max(0.0).min(top.max(0.0))
 }
 
-/// Does this rect reach below the band's ceiling? Only such rects take the lift.
+/// The rise of the limit an image caption stands under: the band's ceiling is the Low Position's, so it is
+/// Low's rise.
+fn image_rise(band: HudBand) -> f32 {
+    band.rise_for(plx_plex::plex::session::SubtitlePosition::Low)
+}
+
+/// Does this rect reach below the band's limit (its ceiling, less the section's rise)? Only such rects
+/// take the lift.
 fn overhangs(r: Rect, band: HudBand) -> bool {
-    r.y + r.h > band.ceil_y
+    r.y + r.h > band.ceil_y - image_rise(band)
 }
 
 /// Client-rendered IMAGE subtitles (PGS/VobSub): composite the active decoded display set over

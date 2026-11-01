@@ -96,6 +96,11 @@ pub struct HudGeometry {
     /// ([`HudBand::from_controls_top`] of `row_anchor.top`, which is [`HudBand::CLASSIC`]); a compiled
     /// package's is the top of its highest drawn extent (`hud_format::compile`).
     pub band: HudBand,
+    /// **The open block's height** (`SCR_H` less the top of everything this state draws), for a state with a
+    /// section open, `0` for a compact one: the compile's own number, the same for `builtin:classic` (Info 412,
+    /// Chapters 396) and a package (its block includes whatever the section lifted). The captions rise
+    /// to stand clear of the block's top ([`HudGeometry::open_top`]); see [`HudBand::rise`].
+    pub open_height: f32,
 }
 
 impl HudGeometry {
@@ -113,7 +118,13 @@ impl HudGeometry {
             title: Rect::default(),
             tabs: [None; HUD_TABS],
             band,
+            open_height: 0.0,
         }
+    }
+
+    /// **The resting top edge of everything the HUD has open**: `SCR_H - open_height`, `None` with no section.
+    pub fn open_top(&self) -> Option<f32> {
+        (self.open_height > 0.0).then(|| plx_ui::consts::SCR_H - self.open_height)
     }
 
     /// **The caption band this layout occupies**: the [`HudGeometry::band`] field, whichever slot

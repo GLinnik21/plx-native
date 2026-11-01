@@ -1616,3 +1616,308 @@ fn chapters_seat_on_the_chapter_that_holds_the_position_the_bar_shows() {
     assert_eq!(at(HudModel { loading: true, seek_display_ns: 10_000 * 1_000_000, ..base }), 0, "a loading seek shows its target");
     assert_eq!(at(HudModel { playpos_ns: -5, ..base }), 0, "before the first chapter: the first");
 }
+
+/// **The captions rise clear of an open section** (`docs/hud-plugins.md`, "Captions: the band a HUD occupies"):
+/// the limit is `min(P, S - 12)`, kept as a rise per Position, moved on the sections' own spring, and only
+/// ever raised while a section stays open.
+mod caption_rise_pins {
+    use super::*;
+    use crate::hud_format::compile::{Compiled, OPEN_CHAPTERS, OPEN_INFO};
+    use plx_machine::machine::{PresentHandle, Tick};
+    use plx_machine::present::Present;
+    use plx_plex::plex::session::{SubtitlePosition as Pos, SubtitleSize};
+    use std::sync::Arc;
+    use super::command::Section;
+
+    const LOW: usize = 0;
+
+    fn top_of(c: &Compiled, open: u8) -> Option<f32> {
+        geometry(c, open, ControlSlot::Discs(Controls::NONE), true, false).open_top()
+    }
+
+    /// The screen's own sequence, over the real motion: a key calls `follow` (and `dismissed_on` for a close), and
+    /// each frame's tick aims the captions at the block the open set lays out and steps the appear springs.
+    struct Rig {
+        c: Arc<Compiled>,
+        m: HudMotion,
+        bits: u8,
+        ms: u32,
+        present: Present,
+    }
+
+    impl Rig {
+        fn new(c: Arc<Compiled>) -> Self {
+            Self { c, m: HudMotion::new(), bits: 0, ms: 1_000, present: Present::new() }
+        }
+        fn open(&mut self, bits: u8) {
+            self.m.follow(bits);
+            self.bits = bits;
+        }
+        fn close(&mut self, bits: u8, section: Section) {
+            self.m.follow(bits);
+            self.m.dismissed_on(section, self.ms);
+            self.bits = bits;
+        }
+        fn frame(&mut self) {
+            self.m.follow_captions(self.bits, self.c.band(), top_of(&self.c, self.bits));
+            let mut ph = PresentHandle::of(&mut self.present);
+            self.m.step_appear(Tick { ms: self.ms, dt_us: 16_667 }, &mut ph);
+            self.ms += 16;
+        }
+        fn settle(&mut self) {
+            for _ in 0..300 {
+                self.frame();
+            }
+        }
+        fn band(&self) -> HudBand {
+            self.c.band().with_rise(self.m.caption_rise())
+        }
+        /// The bottom limit the bespoke caption reader places a block at, for `p`.
+        fn limit(&self, p: Pos) -> f32 {
+            caption_geometry_for(SubtitleSize::Medium, p, true, self.band()).1
+        }
+        fn limits(&self) -> [f32; 3] {
+            [Pos::Low, Pos::Middle, Pos::High].map(|p| self.limit(p))
+        }
+    }
+
+    fn classic() -> Rig {
+        Rig::new(super::loaded::classic_for_test())
+    }
+
+    fn reference() -> Rig {
+        Rig::new(super::loaded::reference_for_test())
+    }
+
+    fn same(got: [f32; 3], want: [f32; 3], what: &str) {
+        assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 0.01), "{what}: {got:?} vs {want:?}");
+    }
+
+    /// The HUD reports the open block's height from its compiled layout, not from a constant in the caption code.
+    #[test]
+    fn the_hud_reports_the_open_blocks_height_from_the_compile() {
+        let classic = super::loaded::classic_for_test();
+        let g = |open| geometry(&classic, open, ControlSlot::Discs(Controls::NONE), true, false);
+        assert_eq!((g(0).open_height, g(0).open_top()), (0.0, None), "a compact state has no block");
+        assert_eq!((g(OPEN_INFO).open_height, g(OPEN_INFO).open_top()), (412.0, Some(668.0)));
+        assert_eq!((g(OPEN_CHAPTERS).open_height, g(OPEN_CHAPTERS).open_top()), (396.0, Some(684.0)));
+        // the reference's block includes the transport its section lifted: the compile's own tops
+        let reference = super::loaded::reference_for_test();
+        let tops = [OPEN_CHAPTERS, OPEN_INFO, OPEN_CHAPTERS | OPEN_INFO].map(|open| top_of(&reference, open).unwrap());
+        same(tops, [542.8, 572.2, 377.8], "the reference's block tops");
+        assert_eq!(top_of(&reference, 0), None);
+    }
+
+    /// The table, classic's rows, exact at the settled limit through the real reader, for each Position.
+    #[test]
+    fn classic_rows_of_the_table_settle_exactly() {
+        let mut rig = classic();
+        same(rig.limits(), [780.0, 620.0, 460.0], "HUD up, nothing open");
+        rig.open(OPEN_INFO);
+        rig.settle();
+        same(rig.limits(), [656.0, 620.0, 460.0], "built-in Info (668)");
+        rig.close(0, Section::Info);
+        rig.settle();
+        same(rig.limits(), [780.0, 620.0, 460.0], "the last close returns to P");
+        rig.open(OPEN_CHAPTERS);
+        rig.settle();
+        same(rig.limits(), [672.0, 620.0, 460.0], "built-in Chapters (684)");
+    }
+
+    /// The image reader (Low's ceiling, no Position) and the bespoke reader land on the same limit, and the HUD
+    /// down ignores the rise.
+    #[test]
+    fn the_image_reader_stands_on_the_same_limit() {
+        let mut rig = classic();
+        rig.open(OPEN_INFO);
+        rig.settle();
+        let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0);
+        let lift = hud_lift([dialogue].into_iter(), true, rig.band());
+        assert!(close(1035.0 - lift, 656.0), "the lifted bottom stands on Info's limit: {lift}");
+        assert_eq!(hud_lift([dialogue].into_iter(), false, rig.band()), 0.0, "the HUD down moves nothing");
+        assert_eq!(
+            caption_geometry_for(SubtitleSize::Medium, Pos::Low, false, rig.band()),
+            caption_geometry_for(SubtitleSize::Medium, Pos::Low, false, HudBand::CLASSIC)
+        );
+    }
+
+    /// The reference's rows from its compiled heights, with both sections at Low and High.
+    #[test]
+    fn the_references_rows_come_from_its_compiled_block() {
+        let mut rig = reference();
+        let band = rig.c.band();
+        let p = [Pos::Low, Pos::Middle, Pos::High].map(|p| band.rest_limit(p));
+        same(rig.limits(), p, "HUD up, nothing open");
+        for (open, top) in [(OPEN_CHAPTERS, 542.8), (OPEN_INFO, 572.2), (OPEN_CHAPTERS | OPEN_INFO, 377.8)] {
+            let mut rig = reference();
+            rig.open(open);
+            rig.settle();
+            same(rig.limits(), p.map(|p| p.min(top - 12.0)), &format!("reference open {open}"));
+        }
+        // with both open at Low and High: Low stands on the block, High (already above) is the lower of the two
+        rig.open(OPEN_CHAPTERS | OPEN_INFO);
+        rig.settle();
+        let [low, _, high] = rig.limits();
+        assert!(close(low, 377.8 - 12.0) && close(high, 377.8 - 12.0), "{low} {high}: both sit on the block, {p:?}");
+    }
+
+    /// Rise only: Info -> Chapters holds, Chapters -> Info rises 16, two open then one closed holds, the last close
+    /// returns to P.
+    #[test]
+    fn while_a_section_stays_open_the_limit_only_rises() {
+        let mut rig = classic();
+        rig.open(OPEN_INFO);
+        rig.settle();
+        rig.open(OPEN_CHAPTERS);
+        rig.settle();
+        same(rig.limits(), [656.0, 620.0, 460.0], "Info -> Chapters holds");
+
+        let mut rig = classic();
+        rig.open(OPEN_CHAPTERS);
+        rig.settle();
+        same(rig.limits(), [672.0, 620.0, 460.0], "Chapters");
+        rig.open(OPEN_INFO);
+        rig.settle();
+        same(rig.limits(), [656.0, 620.0, 460.0], "Chapters -> Info rises 16 px");
+
+        let mut rig = reference();
+        let p = [Pos::Low, Pos::Middle, Pos::High].map(|p| rig.c.band().rest_limit(p));
+        rig.open(OPEN_INFO);
+        rig.settle();
+        let info = rig.limits();
+        rig.open(OPEN_INFO | OPEN_CHAPTERS);
+        rig.settle();
+        let both = rig.limits();
+        assert!(both[LOW] < info[LOW], "a second section lifts it: {info:?} -> {both:?}");
+        rig.close(OPEN_INFO, Section::Chapters);
+        rig.settle();
+        same(rig.limits(), both, "closing one of two holds it");
+        rig.close(0, Section::Info);
+        rig.settle();
+        same(rig.limits(), p, "the last close returns to P");
+        assert_eq!(rig.m.caption_rise(), [0.0; 3], "and exactly at rest");
+    }
+
+    /// Opening with a taller section first, then a shorter one: the shorter does not lower it.
+    #[test]
+    fn a_shorter_section_does_not_lower_a_held_limit() {
+        let mut rig = reference();
+        rig.open(OPEN_CHAPTERS | OPEN_INFO);
+        rig.settle();
+        let tall = rig.m.caption_rise_target();
+        rig.open(OPEN_CHAPTERS);
+        rig.frame();
+        assert_eq!(rig.m.caption_rise_target(), tall);
+    }
+
+    /// The compact HUD keeps its limit with no section, whatever frames pass.
+    #[test]
+    fn with_no_section_the_limit_never_moves() {
+        let mut rig = classic();
+        for _ in 0..120 {
+            rig.frame();
+            assert_eq!(rig.m.caption_rise(), [0.0; 3]);
+            assert_eq!(rig.limits(), [780.0, 620.0, 460.0]);
+        }
+    }
+
+    /// Where the caption's top would cross the safe area the limit stops at 54 + the caption height: the caption
+    /// overlaps the section at its own size.
+    #[test]
+    fn a_caption_that_would_cross_the_safe_area_stops_at_it_and_keeps_its_size() {
+        let size = SubtitleSize::Huge;
+        let scale = size_scale(size);
+        let block_h = CAPTION_ANCHOR_LINES as f32 * CAPTION_LINE_PITCH * scale;
+        // a section 880 px tall: its limit would leave the block 700 px above the top of the screen
+        let band = HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(200.0));
+        let (_, baseline, floor) = caption_geometry_for_block(size, Pos::Low, true, band, block_h);
+        assert!(close(baseline, SAFE.y + block_h), "the block stops under the safe top: {baseline}");
+        let lay = caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor);
+        assert!(close(lay.top, SAFE.y), "top {}", lay.top);
+        assert!(baseline > 200.0, "it overlaps the section instead (captions draw above it)");
+        let rest = caption_layout(CAPTION_ANCHOR_LINES, scale, caption_geometry_for(size, Pos::Low, true, HudBand::CLASSIC).1, floor);
+        assert_eq!((lay.face, lay.pitch), (rest.face, rest.pitch), "size never gives way");
+        // a block that fits is not clamped
+        let (_, free, _) = caption_geometry_for_block(SubtitleSize::Medium, Pos::Low, true, HudBand::CLASSIC.with_rise(HudBand::CLASSIC.rise_to_clear(668.0)), 144.0);
+        assert!(close(free, 656.0), "{free}");
+    }
+
+    /// One delta for every part below the limit; a part above it stays, and nothing is rescaled.
+    #[test]
+    fn every_part_below_the_limit_moves_by_one_delta_and_the_rest_stay() {
+        let mut rig = classic();
+        rig.open(OPEN_INFO);
+        rig.settle();
+        let band = rig.band();
+        let (l1, l2) = (Rect::new(300.0, 900.0, 1320.0, 60.0), Rect::new(300.0, 960.0, 1320.0, 75.0));
+        let above = Rect::new(300.0, 590.0, 1320.0, 60.0); // bottom 650: above Info's limit 656
+        let sign = Rect::new(300.0, 100.0, 600.0, 50.0);
+        let set = [l1, l2, above, sign];
+        let moves: Vec<bool> = set.iter().map(|r| overhangs(*r, band)).collect();
+        assert_eq!(moves, [true, true, false, false]);
+        let lift = hud_lift(set.iter().copied(), true, band);
+        assert!(close(lift, 1035.0 - 656.0), "{lift}");
+        // the pair keeps its gap; the rest do not move
+        let moved = |r: Rect| if overhangs(r, band) { Rect::new(r.x, r.y - lift, r.w, r.h) } else { r };
+        assert!(close(moved(l2).y - moved(l1).y, l2.y - l1.y));
+        assert_eq!((moved(above), moved(sign)), (above, sign));
+        assert!(set.iter().all(|r| (moved(*r).w, moved(*r).h) == (r.w, r.h)), "nothing is rescaled");
+    }
+
+    /// A cue changing mid-travel is laid out at the limit's current y.
+    #[test]
+    fn a_cue_that_changes_mid_travel_stands_on_the_current_limit() {
+        let mut rig = classic();
+        rig.open(OPEN_INFO);
+        for _ in 0..6 {
+            rig.frame();
+        }
+        let rise = rig.m.caption_rise()[LOW];
+        assert!(rise > 0.0 && rise < 124.0, "mid-travel: {rise}");
+        let now = rig.limit(Pos::Low);
+        assert!(close(now, 780.0 - rise));
+        for lines in 1..=CAPTION_ANCHOR_LINES {
+            let (scale, baseline, floor) = caption_geometry_for_block(SubtitleSize::Medium, Pos::Low, true, rig.band(), anchored_height(lines, 1.0));
+            let lay = caption_layout(lines, scale, baseline, floor);
+            assert!(close(lay.top + lines as f32 * lay.pitch, now), "{lines} lines end at the limit's current y");
+        }
+    }
+
+    /// The limit's first moving frame is the section's first appear frame, on open and on close, and it passes
+    /// neither end (critically damped).
+    #[test]
+    fn the_limit_starts_with_the_section_and_never_overshoots() {
+        for section in [Section::Info, Section::Chapters] {
+            let bit = section.open_bit();
+            let mut rig = classic();
+            rig.open(bit);
+            let target = rig.c.band().rise_to_clear(top_of(&rig.c, bit).unwrap())[LOW];
+            let (mut first_appear, mut first_rise) = (None, None);
+            let mut last = 0.0;
+            for i in 0..300 {
+                rig.frame();
+                let (appear, rise) = (rig.m.section_appear(section), rig.m.caption_rise()[LOW]);
+                if appear > 0.0 && first_appear.is_none() { first_appear = Some(i) }
+                if rise > 0.0 && first_rise.is_none() { first_rise = Some(i) }
+                assert!(rise >= last && rise <= target + 1e-3, "{section:?} frame {i}: {rise} after {last}, target {target}");
+                last = rise;
+            }
+            assert!(first_appear.is_some() && first_appear == first_rise, "{section:?} open: appear {first_appear:?}, limit {first_rise:?}");
+            assert_eq!(last, target, "settles exactly on the block");
+
+            rig.close(0, section);
+            let (mut first_appear, mut first_rise) = (None, None);
+            let mut last = target;
+            for i in 0..300 {
+                rig.frame();
+                let (appear, rise) = (rig.m.section_appear(section), rig.m.caption_rise()[LOW]);
+                if appear < 1.0 && first_appear.is_none() { first_appear = Some(i) }
+                if rise < target && first_rise.is_none() { first_rise = Some(i) }
+                assert!(rise <= last && rise >= 0.0, "{section:?} close frame {i}: {rise} after {last}");
+                last = rise;
+            }
+            assert!(first_appear.is_some() && first_appear == first_rise, "{section:?} close: appear {first_appear:?}, limit {first_rise:?}");
+            assert_eq!(last, 0.0);
+        }
+    }
+}

@@ -2224,6 +2224,47 @@ mod sections {
         assert_eq!(run.presented(), vec![Section::Info]);
     }
 
+    /// **The captions' limit rides the section's own frames** (`docs/hud-plugins.md`, "Captions"): through the
+    /// screen's real tick the limit takes its first step on the frame the section's appear takes its first, on open
+    /// and on close, rises to Info's limit (656 at Low) without passing it and comes home to 780 on BACK.
+    #[test]
+    fn the_captions_rise_starts_with_the_section_and_comes_home_with_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let mut run = classic_run(Occupant::Plain);
+        let limit = |run: &mut Run| {
+            let band = run.screen().caption_band();
+            band.ceil_y - band.rise_for(plx_plex::plex::session::SubtitlePosition::Low)
+        };
+        assert_eq!(limit(&mut run), 780.0, "nothing open: today's ceiling");
+        run.toggle(Section::Info);
+        let (mut appear_at, mut limit_at) = (None, None);
+        for i in 0..90 {
+            run.frames(1);
+            let (a, l) = (run.appear(Section::Info), limit(&mut run));
+            assert!(l <= 780.0 && l >= 656.0, "frame {i}: {l} stays between the two ends");
+            if a > 0.0 && appear_at.is_none() { appear_at = Some(i) }
+            if l < 780.0 && limit_at.is_none() { limit_at = Some(i) }
+        }
+        assert!(appear_at.is_some() && appear_at == limit_at, "open: appear {appear_at:?}, limit {limit_at:?}");
+        assert_eq!(limit(&mut run), 656.0, "settled on Info's limit");
+        run.tap(Key::Back);
+        // `tap` leaves the spring a few frames into the fade: the limit has started home with the section,
+        // neither a frame sooner nor later
+        let (a, l) = (run.appear(Section::Info), limit(&mut run));
+        assert!(a < 1.0 && l > 656.0, "the section and the limit are both on their way: appear {a}, limit {l}");
+        let (mut appear_at, mut limit_at) = (None, None);
+        for i in 0..90 {
+            run.frames(1);
+            let (a, l) = (run.appear(Section::Info), limit(&mut run));
+            assert!(l >= 656.0 && l <= 780.0, "frame {i}: {l}");
+            if a < 1.0 && appear_at.is_none() { appear_at = Some(i) }
+            if l > 656.0 && limit_at.is_none() { limit_at = Some(i) }
+        }
+        assert!(appear_at == limit_at, "close: appear {appear_at:?}, limit {limit_at:?}");
+        assert_eq!(limit(&mut run), 780.0, "home");
+    }
+
     /// **BACK fades a section out and gives the transport back at the dismissal frame.** The logical set drops the
     /// section the moment BACK lands (stops, groups and keys read it), the spring carries the picture down, and
     /// the stand-in the section had pushed aside is back at once, as `player_overlay_kind` had it the frame the

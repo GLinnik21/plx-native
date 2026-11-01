@@ -185,8 +185,9 @@ Captions
   `text_style.rs:68`, `:192-195`; `screens/src/player/ass_subtitles.rs:271` (test `:398`);
   `media/src/player/ass/tests/synth.rs:443-447`; `plex/src/plex/session.rs:1076` (doc). Media cannot name
   appkit (`ci/module-layers.ini` `[media] uses = base machine platform gfx net plex telemetry data`).
-  Captions draw first and the HUD over them (`screens/src/player/mod.rs:1513-1525`, `:1539-1541`), so
-  today an open Info card (top 668) or strip (684) covers a caption lifted to 780.
+  Captions drew first and the HUD over them (`screens/src/player/mod.rs:1513-1525`, `:1539-1541`), so
+  an open Info card (top 668) or strip (684) covered a caption lifted to 780 until PR17, which lifts the
+  caption clear of it and draws it above the section (section "Captions").
 - F29. `SAFE` = x 96..1824, y 54..1026 (`ui/src/consts.rs:32`, `:41`, `:94-99`); its doc exempts grounds:
   "a full-bleed hero backdrop ... a scrim, the page ground ... are supposed to reach the panel edge ...
   What must be inside is what the viewer has to read or press" (`:88-93`).
@@ -335,9 +336,9 @@ Other subsystems the plan touches
   ceiling is the fixed 780 whenever the HUD is up, and an open card or strip covers a lifted caption (F28).
   A band that moved per section would move classic's captions in its info and chapters states and break
   pixel identity there. So the band is the union over the compact state's slot states (Discs, Up Next,
-  Skip), measured on DRAWN extents, and sections may cover captions exactly as classic's do today. Lifting
-  captions clear of an open section is a separate, owner-gated PR (PR17), because it changes classic's
-  frames. Section "Captions" has the arithmetic.
+  Skip), measured on DRAWN extents, and the base band does not move with a section. Lifting captions
+  clear of an open section is a separate, owner-gated PR (PR17), because it changes classic's frames: it
+  is a RISE on top of the band while a section is open, not a different band (section "Captions").
 - D9. **Menu placement is derived from the opener's compiled rect by ONE shared placer in
   `ui/src/popover.rs`, extended in place for every caller.** No player-local placer. A package cannot hint
   the side: in 1.0 the only anchor is `bottom` (D13), so a hint carries no information the room test does
@@ -774,14 +775,63 @@ rounding, by an amount UNVERIFIED until PR12 measures it; either way the TV's co
   block is about 3 x 48 x 1.8 = 259 px, so the ceiling must sit at or below about 54 + 259 + 320 = 633 and
   `controls_top_y` at about 645. Classic's compact top 792 passes. Classic's card (668) and strip (684)
   would pass too, being BELOW 645; only the reference's expanded block (top near y 480 in its chapters plus
-  info state, an estimate) would fail, and under D8 the expanded states do not define the band, so no lift
-  clamp is needed in 1.0.
-- Plumbing: `text_style::HudBand { ceil_y, controls_top_y, lift }` with `HudBand::CLASSIC` equal to today's
+  info state, an estimate; the compile computes 377.8) would fail, and under D8 the expanded states do not
+  define the band, so no band clamp is needed. The rise PR17 adds has its own safe-area clamp (below).
+- Plumbing: `text_style::HudBand { ceil_y, controls_top_y, lift, rise }` (`rise` is PR17's, zero with no section) with `HudBand::CLASSIC` equal to today's
   constants; every F28 reader takes the band as an argument (`caption_geometry_for`, `hud_lift`/`overhangs`,
   `today_baseline`, the libass lift, the synth test); the player screen passes `HudGeometry::band()` down, so
   media still names nothing above it. The tie test runs for `CLASSIC` and for a non-classic band.
 - Decor may overlap captions, as classic's title does today; registry CI renders captions at the largest
   size so a reviewer sees it.
+
+### Captions clear of an open section (PR17)
+
+While any player section is open, a caption's bottom limit is `min(P, S - 12)`. P is the HUD-up limit the code
+gives the viewer's Position (`band.ceil_y - position_lift`: Low 780, Middle 620, High 460 on classic; an image
+caption has no Position, so its P is the ceiling, Low's) and S is the resting top of everything the HUD has open,
+which the compile reports as the open block's height (`HudGeometry::open_height`, `S = 1080 - height`: the top
+of the highest band of the state, the same rule the scrim's `block_top` uses). The two never add: a Position that
+already clears the section does not move. 12 is `CAPTION_INK_CLEARANCE`, the gap the band itself keeps.
+
+| state | Low | Middle | High |
+|---|---|---|---|
+| HUD up, nothing open | 780 | 620 | 460 |
+| built-in Info (S 668) | 656 | 620 | 460 |
+| built-in Chapters (S 684) | 672 | 620 | 460 |
+
+The reference package's block is its whole inline block (its transport is lifted over the section), laid out by
+its own compile, and its band is its own too (ceiling 757.2, so P is 757.2 / 597.2 / 437.2): Chapters S 542.8
+gives 530.8 / 530.8 / 437.2, Info S 572.2 gives 560.2 / 560.2 / 437.2, both S 377.8 give 365.8 at every Position.
+(The designer's estimates, 640 / 600 / 480, were for a band at 780 and a block without the lifted title.)
+
+- **The rise.** `HudBand` carries `rise: [f32; 3]`, `P - limit` per Position (Low, Middle, High), so every reader
+  takes the limit as `P - rise` and a band whose rise is zero leaves its arithmetic exactly as it was
+  (`caption_geometry_for`, `hud_lift`, `today_baseline`, the libass `lift_dys`). `rise_to_clear(S)` is
+  `max(0, P - (S - 12))` per Position. A Position that already clears the block takes no rise: Position gives way
+  first.
+- **Rise only.** `player_hud::caption_rise::CaptionRise`, a field of `HudMotion`, holds the lowest S of every state
+  visited since the first section opened, so a second section or a taller one lifts the limit, a shorter one or the
+  close of one of two holds it, and the last close returns it to P. It is aimed from the screen's tick
+  (`HudMotion::follow_captions`) with `follow`, and the presented rise reaches the readers inside the band
+  (`PlayerScreen::caption_band`): no writer into the media layer.
+- **Motion.** One critically damped spring per Position on `popover::K_APPEAR` (300), in the rise's own domain, so
+  a Middle or High caption moves from the first appear frame instead of waiting for a single spring to reach it. It
+  steps in `HudMotion::step_appear`, beside the sections' appear springs, and waits wherever they do (a section
+  held at appear 0, the frame a section was dismissed on): the first moving frame is the section's first appear
+  frame, on open and on close.
+- **Safe area.** `HudBand::clear_rise`: where `limit - caption height < 54` the limit becomes `54 + caption height`
+  and the caption overlaps the section at its own size. Bespoke text measures its anchored block, the image path the
+  overhanging group, libass the group that moves (libass's block sits `INK_TRIM` below the bespoke one, so it stops
+  3 px lower).
+- **Parts.** One delta for every part whose bottom is below the limit (dialogue, an image rectangle, a libass
+  region), parts above stay, nothing is rescaled. A libass frame is rasterised when its cue changes, never per
+  frame: the travel moves the cached textures (`AssSubtitles::draw`), and a PGS or VobSub set moves its cached
+  rectangles, so a travel frame costs the quads it already drew. An authored ASS script keeps its placement.
+- **Draw order.** With a section on screen (open or fading: `HudMotion::presented`) every caption path draws after
+  the HUD, so the section's ground and the scrim cannot cover it; with none it draws before the transport, under
+  the scrim, as it always did. A caption therefore stops being dimmed by the scrim from the frame a section is
+  presented and is dimmed again when the section has faded.
+- The Compact HUD, the HUD down and a frame with no section keep every number they had.
 
 ## Menus and other HUD popovers
 
@@ -993,7 +1043,7 @@ time hug (app text, D10); the chapter name is server text and may elide on unfoc
 focused one (D11). Estimated compact block height about 210 px, so its top lands near y 790, below the
 caption bound's estimate (645); the chapters plus info block is about 520 px with its top near 480 (all
 estimates at ladder line heights, UNVERIFIED; the golden `reference_passes_every_invariant` replaces them
-with computed values). The end-aligned `spacer` of 150 reproduces the image's gap after the facts (the run ends near
+with computed values; PR17's compile reports the chapters plus info block's top as 377.8). The end-aligned `spacer` of 150 reproduces the image's gap after the facts (the run ends near
 1422 / 0.871 = 1633 against the content edge 1784; an estimate).
 
 ### Image element -> format feature
@@ -1516,8 +1566,10 @@ later a static web editor on the site.
 
 PR16. A `cargo fuzz` package over `parse + compile` and the SVG checker, with its `make build-bench` table.
 
-PR17. Owner-gated: a per-state caption band with a lift clamp, so an open section lifts captions clear of itself;
-it changes classic's info and chapters frames, which is why it waits for the owner.
+PR17. Owner-gated: captions rise clear of an open section (section "Captions", "Captions clear of an open section"):
+a rise per Position on `HudBand`, aimed from the open block's height the HUD reports and moved by a spring in
+`HudMotion`, with the safe-area clamp and captions drawn above the sections. It changes the frames of classic's info
+and chapters states that carry a caption, which is why it waited for the owner.
 
 No PR adds a dependency before PR14 (the schema is written from the descriptor table, F41). PR11 and PR14 may touch
 the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-auditor` after behaviour changes and
@@ -1540,8 +1592,7 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 - Replacing any app-owned surface (I1). Commands that write the Plex record, change a setting, start a network
   request of their own, exit the app or delete. Direct quality and speed buttons (reached through `open_more`).
 - Press-and-hold commands (FF/REW-style held controls) and a hold behaviour per control: hold stays app-owned.
-- Top-anchored interactive layouts (1.1). A designable Skip pill (a later minor). Lifting captions clear of open
-  sections until the owner approves PR17.
+- Top-anchored interactive layouts (1.1). A designable Skip pill (a later minor).
 - A relay or backend that stores uploads, a LAN listener on the TV, USB until verified. Ratings, comments or payments
   in the registry; telemetry of the HUD id.
 

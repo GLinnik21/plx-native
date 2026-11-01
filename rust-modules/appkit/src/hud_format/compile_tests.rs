@@ -111,7 +111,8 @@ fn frozen_base() -> HudGeometry {
         tab_row: Rect::new(96.0, 949.0, 0.0, 64.0),
         title: Rect::new(96.0, 768.0, 0.0, 0.0),
         tabs: [None; 2],
-        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0 },
+        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0, rise: [0.0; 3] },
+        open_height: 0.0,
     }
 }
 
