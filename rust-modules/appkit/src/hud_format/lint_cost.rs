@@ -18,9 +18,17 @@
 //!
 //! **The ceilings are fixed by the states the television ran, never chosen.** A class's ceiling in each of the
 //! four terms is the MAXIMUM of that term, in the model, over the states of that class (`ARM_PROFILE=release`,
-//! 500 or more frames of Mali HWCNT each, every one holding 59-61 fps with `dropped=0`; PR8's "TV cost
-//! calibration", #1164, and PR19's seven pairs below), not rounded and with no headroom: no ceiling admits a
-//! cost no such state reached. Every constant says which state and language it came from, and
+//! 500 or more frames of Mali HWCNT each, `dropped=0` on the pacing boot; PR8's "TV cost calibration", #1164,
+//! and PR19's seven pairs below), not rounded and with no headroom: no ceiling admits a cost no such state
+//! reached.
+//!
+//! **A state passes when no frame is late on the app's side, read from a kernel trace** (`tools/tv-sched-trace.sh`,
+//! `tools/analyze-sched-trace.py --latch`), not when the set shows zero late frames, because it never does:
+//! every state on this set has bursts of 24-35 ms frames about every 11 s, and the traces class those as the
+//! compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken two ticks late). The three
+//! traces, one per strip state, found no CPU-late or GPU-late frame in any window, with an on-time margin at the
+//! 99th percentile of 4-6 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
+//! compositor late is not determined; it is not specific to a HUD state. Every constant says which state and language it came from, and
 //! `the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
 //! all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every state and
 //! slot (330 rows), and asserts each is attained by the pair the constant names, so a layout change that moves
@@ -30,10 +38,12 @@
 //! `card_row::most_painted_at_rest` (`emit_strip`): the most cards the row paints at any resting scroll (scroll
 //! 0, the two lattices `scroll_into_view` walks to, and the end), which no chapter count changes: ten on the
 //! reference and seven on classic (a scrolled row paints a partial card on the left as well, which the strip's
-//! width over its card pitch plus one, 8 and 6, did not count). The television ran the strips with ten chapters, each with its
-//! own thumbnail, at scroll 0, where the Shelf paints nine and six. Pairs 4, 5 and 7 are therefore the model's
-//! numbers for the states the television ran at a card count it did not run: their GPU_ACTIVE is not carried
-//! over from nine and six cards to ten and seven, and is left out of the table until it is measured.
+//! width over its card pitch plus one, 8 and 6, did not count). The television ran the strips twice. First at scroll 0
+//! with ten chapters, each with its own thumbnail, where the Shelf paints nine and six (GPU_ACTIVE 5.09, 5.10 and
+//! 4.87 for pairs 4, 5 and 7). Then walked into a rest past the first screen, with 30 chapters each with its own
+//! thumbnail, where the Shelf paints the priced ten and seven, on the Reference with the gear (#1199): 5.15, 5.18
+//! and 5.17. The table carries the scrolled runs, the ones at the priced card count; the scroll-0 figures are
+//! only "at scroll 0".
 //!
 //! **A measured state is (package, state, language).** The tab and button plates follow their labels' widths, so
 //! `blended_px` moves with the language, and Up Next's still is as wide as the Next pill, so `texture_bytes` does
@@ -43,18 +53,17 @@
 //! compiler's: draw ops, glyph runs, texture bytes, blended px; GPU_ACTIVE is the mean in M cycles a frame
 //! over the HWCNT boot (a pacing boot is separate, HWCNT serializes the GPU). No chapter strip of PR8's runs
 //! had thumbnails (they drew blank cards), which is why their figures, 5.23, 4.72 and 4.92, are replaced by
-//! pairs 5, 4 and 7. A GPU cell is empty where the pair's strip is priced at a card count the television did
-//! not run (see above):
+//! pairs 5, 4 and 7. A strip pair's GPU figure is the scrolled run's (see above), at the priced card count:
 //!
 //! | pair | class | package, state, slot, language | GPU_ACTIVE | cost |
 //! | --- | --- | --- | --- | --- |
 //! | 1 | compact | reference, an episode, Discs, en | 3.72 | 13, 4, 102912, 838253 |
 //! | 2 | compact | classic, an episode, Up Next, nl | 5.44 | 10, 9, 256120, 978752 |
 //! | 3 | compact | classic, an episode, Up Next, pl | 5.50 | 10, 9, 215064, 985088 |
-//! | 4 | one section | reference Chapters, an episode, Discs, en (ten strip cards; ran with nine) | | 55, 25, 963712, 1274323 |
-//! | 5 | one section | classic Chapters, an episode, Discs, en (seven strip cards; ran with six) | | 25, 16, 1306368, 919296 |
+//! | 4 | one section | reference Chapters, an episode, Discs, en (ten strip cards, scrolled) | 5.15 | 55, 25, 963712, 1274323 |
+//! | 5 | one section | classic Chapters, an episode, Discs, en (seven strip cards, scrolled) | 5.18 | 25, 16, 1306368, 919296 |
 //! | 6 | one section | classic Info, an episode, Discs, be | 7.02 | 10, 14, 230400, 1395492 |
-//! | 7 | two sections | reference Chapters and Info, an episode, Discs, en (ten strip cards; ran with nine) | | 62, 32, 970944, 1592851 |
+//! | 7 | two sections | reference Chapters and Info, an episode, Discs, en (ten strip cards, scrolled) | 5.17 | 62, 32, 970944, 1592851 |
 //!
 //! PR8's other runs stand and are under every ceiling (English; `earlier_runs_stand_and_are_within_their_class`
 //! asserts their cost): classic's film with chapters (4.33; 9, 6, 49152, 945408), classic's episode with no
@@ -394,7 +403,7 @@ mod tests {
     use plx_base::fontcov::advances::ShippedMeasure;
 
     use super::*;
-    use crate::hud_format::compile::{compile, CompileCtx, Compiled, OPEN_CHAPTERS, OPEN_INFO};
+    use crate::hud_format::compile::{compile, CompileCtx, Compiled, DrawOp, OPEN_CHAPTERS, OPEN_INFO};
     use crate::hud_format::lint::LintLang;
     use crate::hud_format::{parse, Finding};
     use crate::hud_format::reach::Slot;
@@ -427,32 +436,33 @@ mod tests {
 
     /// **One pair the television ran**: a package, one of its states under one slot, and the language, with the
     /// cost the compiler reports for it (the doc table's last column) and the GPU_ACTIVE it read (M cycles a
-    /// frame, `ARM_PROFILE=release`, 500 or more frames of Mali HWCNT, 59-61 fps and `dropped=0` on the pacing
-    /// boot), `None` where the pair's strip is priced at a card count the television did not run. `state` is the
-    /// state in the lint's own spelling (`lint::state_name`): no `,movie` is an episode, no `,no-chapters` has
-    /// chapters. Every pair ran an episode with chapters.
+    /// frame, `ARM_PROFILE=release`, 500 or more frames of Mali HWCNT, `dropped=0` on the pacing boot). `state` is
+    /// the state in the lint's own spelling (`lint::state_name`): no `,movie` is an episode, no `,no-chapters` has
+    /// chapters. Every pair ran an episode with chapters. `cards` is the number of strip cards the GPU figure was
+    /// measured at (`None`: the state draws no strip); it must be the number the cost is priced at.
     struct Pair {
         n: u8,
         package: &'static str,
         state: &'static str,
         slot: &'static str,
         lang: &'static str,
-        gpu: Option<f32>,
+        gpu: f32,
+        cards: Option<usize>,
         cost: [u64; 4],
     }
 
     /// The seven pairs of the television's calibration (`docs/hud-plugins.md`, "The ceilings"): the smallest set of
-    /// (package, state, language) that attains the twelve maxima. Pairs 4, 5 and 7 ran their strips with nine
-    /// (reference) and six (classic) cards at scroll 0 and are priced at ten and seven: no GPU figure is carried
-    /// across.
+    /// (package, state, language) that attains the twelve maxima. Pairs 4, 5 and 7 are the runs walked to a
+    /// scrolled rest, where the Shelf paints the priced ten (reference) and seven (classic) cards; their runs at
+    /// scroll 0 (nine and six cards: 5.09, 5.10, 4.87) are not the priced count and are not here.
     const PAIRS: [Pair; 7] = [
-        Pair { n: 1, package: "reference", state: "compact", slot: "discs", lang: "en", gpu: Some(3.72), cost: [13, 4, 102_912, 838_253] },
-        Pair { n: 2, package: "classic", state: "compact", slot: "up_next", lang: "nl", gpu: Some(5.44), cost: [10, 9, 256_120, 978_752] },
-        Pair { n: 3, package: "classic", state: "compact", slot: "up_next", lang: "pl", gpu: Some(5.50), cost: [10, 9, 215_064, 985_088] },
-        Pair { n: 4, package: "reference", state: "chapters", slot: "discs", lang: "en", gpu: None, cost: [55, 25, 963_712, 1_274_323] },
-        Pair { n: 5, package: "classic", state: "chapters", slot: "discs", lang: "en", gpu: None, cost: [25, 16, 1_306_368, 919_296] },
-        Pair { n: 6, package: "classic", state: "info", slot: "discs", lang: "be", gpu: Some(7.02), cost: [10, 14, 230_400, 1_395_492] },
-        Pair { n: 7, package: "reference", state: "chapters+info", slot: "discs", lang: "en", gpu: None, cost: [62, 32, 970_944, 1_592_851] },
+        Pair { n: 1, package: "reference", state: "compact", slot: "discs", lang: "en", gpu: 3.72, cards: None, cost: [13, 4, 102_912, 838_253] },
+        Pair { n: 2, package: "classic", state: "compact", slot: "up_next", lang: "nl", gpu: 5.44, cards: None, cost: [10, 9, 256_120, 978_752] },
+        Pair { n: 3, package: "classic", state: "compact", slot: "up_next", lang: "pl", gpu: 5.50, cards: None, cost: [10, 9, 215_064, 985_088] },
+        Pair { n: 4, package: "reference", state: "chapters", slot: "discs", lang: "en", gpu: 5.15, cards: Some(10), cost: [55, 25, 963_712, 1_274_323] },
+        Pair { n: 5, package: "classic", state: "chapters", slot: "discs", lang: "en", gpu: 5.18, cards: Some(7), cost: [25, 16, 1_306_368, 919_296] },
+        Pair { n: 6, package: "classic", state: "info", slot: "discs", lang: "be", gpu: 7.02, cards: None, cost: [10, 14, 230_400, 1_395_492] },
+        Pair { n: 7, package: "reference", state: "chapters+info", slot: "discs", lang: "en", gpu: 5.17, cards: Some(10), cost: [62, 32, 970_944, 1_592_851] },
     ];
 
     /// The pair each constant's doc names as its source, per class and term (draw ops, glyph runs, texture bytes,
@@ -467,6 +477,8 @@ mod tests {
         slot: &'static str,
         class: Class,
         cost: Cost,
+        /// the cards its chapters strip is priced at (0: no strip)
+        strip: usize,
     }
 
     /// **Every state and slot of `classic` and the reference in each of the eleven shipped languages** (330 rows),
@@ -476,7 +488,8 @@ mod tests {
         for (package, text) in PACKAGES {
             for lang in LintLang::shipped() {
                 for s in compile_in(text, &lang).states() {
-                    rows.push(Row { package, lang: lang.tag, state: state_name(s.key), slot: slot_name(s.key), class: Class::of(s.key.open), cost: state_cost(s) });
+                    let strip = s.ops.iter().filter_map(|op| if let DrawOp::Strip { visible, .. } = op { Some(*visible) } else { None }).max().unwrap_or(0);
+                    rows.push(Row { package, lang: lang.tag, state: state_name(s.key), slot: slot_name(s.key), class: Class::of(s.key.open), cost: state_cost(s), strip });
                 }
             }
         }
@@ -527,10 +540,11 @@ mod tests {
     }
 
     #[test]
-    fn each_pair_costs_what_the_doc_table_says_and_only_a_strip_less_pair_carries_a_gpu_figure() {
+    fn each_pair_costs_what_the_doc_table_says_and_its_gpu_figure_was_run_at_the_priced_card_count() {
         // The recomputation test above finds each pair by name and checks the terms it is the source of; this
         // one holds the table's whole cost column to the compiler (all four terms of all seven pairs), and the
-        // GPU column to the one thing it must never be: a number measured at another card count.
+        // GPU column to the one thing it must never be: a number measured at another card count than the one
+        // the cost is priced at (the strip is priced at what its Shelf paints at a scrolled rest, ten and seven).
         let rows = every_row();
         for pair in &PAIRS {
             let row = rows
@@ -538,13 +552,8 @@ mod tests {
                 .find(|r| (r.package, r.state.as_str(), r.slot, r.lang) == (pair.package, pair.state, pair.slot, pair.lang))
                 .unwrap_or_else(|| panic!("pair {}: no such state", pair.n));
             assert_eq!(terms(&row.cost).map(|t| t.1), pair.cost, "pair {}: the cost the table prints", pair.n);
-            // a pair whose state draws the chapters strip was priced at a card count the television did not run
-            // (it ran nine and six cards at scroll 0; the price is ten and seven), so it has no GPU figure
-            let strip = pair.state.starts_with("chapters");
-            assert_eq!(pair.gpu.is_none(), strip, "pair {}: a GPU figure only where the card count is the one that ran", pair.n);
-            if let Some(gpu) = pair.gpu {
-                assert!(gpu > 0.0 && gpu < 7.1, "pair {}: GPU_ACTIVE {gpu} M cycles a frame", pair.n);
-            }
+            assert_eq!(pair.cards.unwrap_or(0), row.strip, "pair {}: the GPU figure was run at the card count the cost is priced at", pair.n);
+            assert!(pair.gpu > 0.0 && pair.gpu < 7.1, "pair {}: GPU_ACTIVE {} M cycles a frame", pair.n, pair.gpu);
         }
     }
 

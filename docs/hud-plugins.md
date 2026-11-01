@@ -1232,8 +1232,13 @@ compiler computes a cost per STATE (draw ops, glyph runs, texture bytes, and BLE
 every translucent fill the state draws, scrims and grounds included, which is the fill the Mali frame-drop work measures;
 the strip counted by the most cards its Shelf paints at rest, `card_row::most_painted_at_rest`, never by chapter
 count). The ceiling is per state class, each set from states run on the TV with the `profile-tv` tools
-(`ARM_PROFILE=release`, an `fps_floor` scene, zero late frames, Mali HWCNT per frame), and each term of a class from
-the state of the package that reaches it:
+(`ARM_PROFILE=release`, an `fps_floor` scene, Mali HWCNT per frame, and a kernel trace of the frame pacing), and
+each term of a class from the state of the package that reaches it. **A state passes when no frame is late on the
+app's side**, read from a kernel trace (`tools/tv-sched-trace.sh`, `tools/analyze-sched-trace.py --latch`), not when
+the set shows zero late frames: every state on this set has bursts of 24-35 ms frames about every 11 s, and the
+traces class those as the compositor's (the app's GPU job done 3-8 ms before the aim, the buffer taken two ticks
+late; no CPU-late or GPU-late frame in three windows, on-time margin p99 4-6 ms, "The ceilings (PR19)" has them).
+What makes the compositor late is not determined, and it is not specific to a HUD state.
 - compact: the reference's compact episode sets draw ops; classic's Up Next sets glyph runs, texture bytes and
   blended px;
 - one section open: the reference's Chapters sets draw ops and glyph runs, classic's Chapters sets texture bytes and
@@ -1261,8 +1266,8 @@ off the model's height (6605 px of `blended_px`, 0.4%, on the two-section state)
 model's for the states the television ran, not a measurement of a frame. The fallback faces are neither read nor priced.
 
 **The ceilings.** A class's ceiling in each term is the MAXIMUM of that term, in the model, over the states of that
-class (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, every one holding 59-61 fps with `dropped=0`,
-for the states the television ran), not rounded and with no headroom. Each class stands alone: two sections is not capped
+class (`ARM_PROFILE=release`, 500 or more frames of Mali HWCNT each, `dropped=0` on the pacing boot, no frame late on
+the app's side in the traces below, for the states the television ran), not rounded and with no headroom. Each class stands alone: two sections is not capped
 by one section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming
 the state and language it came from, and
 `lint_cost::the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
@@ -1276,28 +1281,32 @@ paints at any resting scroll (scroll 0, the two positions `scroll_into_view` res
 the end), which no chapter count changes. That is **ten** cards on the reference and **seven** on classic; the row paints
 a partial card on the left as well once it has scrolled, which the strip's width over its card pitch plus one (8 and 6) did
 not count. `DrawOp::Strip.visible` feeds the cost and nothing else (drawing reads the strip's geometry), and the HUD's
-Shelf has no glide, so a pointer glide is outside "at rest". The television ran the strips with ten chapters, each with a
-thumbnail, at scroll 0, where the Shelf paints nine (reference) and six (classic).
+Shelf has no glide, so a pointer glide is outside "at rest". The television ran the strips twice. First with ten
+chapters, each with a thumbnail, at scroll 0, where the Shelf paints nine (reference) and six (classic): GPU_ACTIVE
+5.09, 5.10 and 4.87 (pairs 4, 5 and 7), which stand only as "at scroll 0". Then with 30 chapters, each with its own
+thumbnail, walked into a rest past the first screen, where the Shelf paints the priced ten and seven, on the Reference
+with the gear (#1199), the same set and release profile: 5.15, 5.18 and 5.17. The table carries the second runs, the ones
+at the priced card count (`lint_cost::each_pair_costs_what_the_doc_table_says_and_its_gpu_figure_was_run_at_the_priced_card_count`
+holds each GPU figure to the card count its cost is priced at).
 
 **A measured state is (package, state, language).** The tab and button plates follow their labels' widths, so
 `blended_px` moves with the language; Up Next's still is as wide as the Next pill, so `texture_bytes` does too. Seven
 pairs attain the twelve maxima, and no six rows do (`lint_cost::seven_pairs_attain_the_twelve_maxima_and_no_six_rows_do`
 searches all 330). The dev TV ran each state on 2026-11-01 (`ARM_PROFILE=release`, debug flavour, `--guest --mock`, one
 boot for pacing and one for HWCNT, because HWCNT serializes the GPU) on an item that is an episode with chapters:
-every pair held 59-61 fps with `dropped=0`. PR8's strip runs had no chapter thumbnails and drew blank cards, so their GPU
-figures (5.23, 4.72, 4.92) are replaced by pairs 5, 4 and 7. **Pairs 4, 5 and 7 are priced at a card count the television
-did not run** (ten and seven, against the nine and six it ran), so their GPU_ACTIVE is left out of the table until it is
-measured at the priced count: it is not carried over from nine and six cards.
+every pair held `dropped=0` on the pacing boot (60-61 fps; the strip states of pairs 4 and 7 read one second in about 11
+at 57-59, the bursts below). PR8's strip runs had no chapter thumbnails and drew blank cards, so their GPU figures (5.23,
+4.72, 4.92) are replaced by pairs 5, 4 and 7, at the scrolled rest that paints the priced card count.
 
 | pair | class | package, state, slot, language | GPU_ACTIVE (M cycles a frame) | draw ops | glyph runs | texture bytes | blended px |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | compact | reference, an episode, Discs, en | 3.72 | **13** | 4 | 102912 | 838253 |
 | 2 | compact | classic, an episode, Up Next, nl | 5.44 | 10 | **9** | **256120** | 978752 |
 | 3 | compact | classic, an episode, Up Next, pl | 5.50 | 10 | 9 | 215064 | **985088** |
-| 4 | one section | reference Chapters, an episode, Discs, en (ten strip cards; ran with nine) | | **55** | **25** | 963712 | 1274323 |
-| 5 | one section | classic Chapters, an episode, Discs, en (seven strip cards; ran with six) | | 25 | 16 | **1306368** | 919296 |
+| 4 | one section | reference Chapters, an episode, Discs, en (ten strip cards, walked to a scrolled rest) | 5.15 | **55** | **25** | 963712 | 1274323 |
+| 5 | one section | classic Chapters, an episode, Discs, en (seven strip cards, walked to a scrolled rest) | 5.18 | 25 | 16 | **1306368** | 919296 |
 | 6 | one section | classic Info, an episode, Discs, be | 7.02 | 10 | 14 | 230400 | **1395492** |
-| 7 | two sections | reference Chapters and Info, an episode, Discs, en (ten strip cards; ran with nine) | | **62** | **32** | **970944** | **1592851** |
+| 7 | two sections | reference Chapters and Info, an episode, Discs, en (ten strip cards, walked to a scrolled rest) | 5.17 | **62** | **32** | **970944** | **1592851** |
 
 The bold figure is a class's ceiling in that term and the pair it came from (the count of draw ops and glyph runs
 does not move with the language: every language ties). Classic's Chapters has no discs while a section is open (its
@@ -1309,6 +1318,23 @@ the number of open sections; the slot (Discs, Up Next, Skip) never changes it. N
 row is admitted because it costs no more in each term than the states that were. The terms are the compiler's
 accounting, not the GPU's, so a package under every term can still read more GPU_ACTIVE than a measured state; PR12
 measures that.
+
+**The late frames, attributed.** Every state on this set has bursts of frames at 24-35 ms about every 11 s (`worstframe`,
+`FRAMEDROP total=`), with `dropped=0` and one second at 57-59 fps, so "zero late frames" is not a criterion the set can
+meet. The pass criterion is that no frame is late on the app's side, and it is read from a kernel trace. Three traces
+(`tools/tv-sched-trace.sh`, `tools/analyze-sched-trace.py --latch --wait-min 8`), each 7-8 s of the set with HWCNT off, one
+per strip state (pairs 5, 4 and 7), on 2026-11-01:
+
+| state | frame pairs | compositor, on time | compositor, late | CPU-late or GPU-late | on-time margin p99, ms | a burst in the window |
+| --- | --- | --- | --- | --- | --- | --- |
+| classic, seven cards | 461 | 456 | +1 x1, +2 x3 | none (one `edge` frame, +1 tick, draw run queue 7.81 ms) | -5.91 | yes: 24.4-28.6 ms waits |
+| reference, ten cards, one section | 269 | 265 | +1 x1, +2 x3 | none | -4.06 | yes: seq 7230-7237 |
+| reference, ten cards, two sections | 309 | 307 | +1 x2 | none | -4.01 | no |
+
+Both bursts caught are compositor class: the app's GPU job finished 3-8 ms before the aim and the buffer was taken two
+ticks late. No late frame in any window was CPU-late or GPU-late; the one `edge` frame missed a tick with 7.81 ms on the run
+queue, on a set the trace itself loads. The traces cover the three strip states; the other four pairs stand on their
+pacing boots and HWCNT. What makes the compositor late every 11 s is not determined. It is not specific to a HUD state.
 
 **The verdict is `HUD-E1401` (`cost-ceiling`).** The lint walks every state of the state graph, under every slot and in
 every language, and a state whose cost (a Skip state at the larger of its two pill layouts) is above its class's ceiling in
