@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T00:49:48Z",
+ "generated": "2026-11-01T00:52:10Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -85,14 +85,14 @@
    "change7_pct": 37.5,
    "d30": null,
    "delta30": null,
-   "delta7": 54.0,
+   "delta7": 54,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 87,
-   "now": 198.0,
+   "now": 198,
    "prev7": 144,
    "shown": true,
    "state": "worse",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.3,
-   "change7_pct": 16.8,
+   "change30_pct": -63.4,
+   "change7_pct": 16.6,
    "d30": 1054.5,
-   "delta30": -668.0,
-   "delta7": 55.5,
+   "delta30": -668.5,
+   "delta7": 55,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 101,
-   "now": 386.5,
+   "now": 386,
    "prev7": 331,
    "shown": true,
    "state": "flat",
@@ -391,14 +391,14 @@
    "change7_pct": 4.5,
    "d30": 213.0,
    "delta30": 63.0,
-   "delta7": 12.0,
+   "delta7": 12,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 87,
-   "now": 276.0,
+   "now": 276,
    "prev7": 264,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -78.6,
-   "change7_pct": 8.3,
+   "change30_pct": -78.5,
+   "change7_pct": 8.8,
    "d30": 1004.0,
-   "delta30": -789.0,
-   "delta7": 16.5,
+   "delta30": -788.0,
+   "delta7": 17.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 86,
-   "now": 215.0,
+   "now": 216,
    "prev7": 198.5,
    "shown": true,
    "state": "flat",
@@ -561,14 +561,14 @@
    "change7_pct": -5.3,
    "d30": 17.0,
    "delta30": 1.0,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 87,
-   "now": 18.0,
+   "now": 18,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.5,
    "commits": [
     {
-     "pr": 1176,
-     "sha": "fef93ffab",
-     "title": "The Seasons and Episodes views show the sort value under their cards"
-    },
-    {
      "pr": 1177,
      "sha": "12cbaebb8",
      "title": "A-Z rail for a TV library's Seasons and Episodes views"
@@ -715,6 +710,11 @@
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
+    },
+    {
+     "pr": 1190,
+     "sha": "a860ac894",
+     "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
     }
    ],
    "from": 189.0,
@@ -728,11 +728,6 @@
    "change_pct": 37.5,
    "commits": [
     {
-     "pr": 1176,
-     "sha": "fef93ffab",
-     "title": "The Seasons and Episodes views show the sort value under their cards"
-    },
-    {
      "pr": 1177,
      "sha": "12cbaebb8",
      "title": "A-Z rail for a TV library's Seasons and Episodes views"
@@ -776,6 +771,11 @@
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
+    },
+    {
+     "pr": 1190,
+     "sha": "a860ac894",
+     "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
     }
    ],
    "from": 144,
@@ -783,16 +783,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-10-31",
    "threshold_pct": 20.0,
-   "to": 198.0
+   "to": 198
   },
   {
    "change_pct": 21.5,
    "commits": [
-    {
-     "pr": 1176,
-     "sha": "fef93ffab",
-     "title": "The Seasons and Episodes views show the sort value under their cards"
-    },
     {
      "pr": 1177,
      "sha": "12cbaebb8",
@@ -837,6 +832,11 @@
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
+    },
+    {
+     "pr": 1190,
+     "sha": "a860ac894",
+     "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
     }
    ],
    "from": 270,
@@ -850,11 +850,6 @@
    "change_pct": 18.6,
    "commits": [
     {
-     "pr": 1176,
-     "sha": "fef93ffab",
-     "title": "The Seasons and Episodes views show the sort value under their cards"
-    },
-    {
      "pr": 1177,
      "sha": "12cbaebb8",
      "title": "A-Z rail for a TV library's Seasons and Episodes views"
@@ -898,6 +893,11 @@
      "pr": 1189,
      "sha": "acd247a76",
      "title": "Host-suite flakes fixed at their roots (test code only)"
+    },
+    {
+     "pr": 1190,
+     "sha": "a860ac894",
+     "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
     }
    ],
    "from": 2089.5,
