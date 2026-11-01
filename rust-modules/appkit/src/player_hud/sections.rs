@@ -315,5 +315,11 @@ where
     let Some(src) = cards_for::<H::Elem>(geo, f.meta, f.ps) else { return };
     // a Shelf stands at the SCREEN y it is given whatever its painter translates by (`SectionFrame`), so the rise
     // and the lift the walk put on `q` (`moved`) are added to where the strip stands
-    row.strip(f.entry, &geo).paint(df, q, &src, SectionFrame::new(geo.card.y + moved, geo.rect));
+    let at = SectionFrame::new(geo.card.y + moved, geo.rect);
+    let held = row.held_card();
+    let shelf = row.strip(f.entry, &geo);
+    match held {
+        Some(card) => shelf.paint_held(df, q, &src, at, Some(card)),
+        None => shelf.paint(df, q, &src, at),
+    }
 }

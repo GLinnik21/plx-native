@@ -9,7 +9,7 @@
 //! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
 //! because the app's snapshot is a frame old by then.
 use super::classic::fmt_time;
-use super::geometry::{GROUP_ROW, GROUP_SECTION, MAX_ROW_ITEMS};
+use super::geometry::{GROUP_ROW, GROUP_SECTION, GROUP_STRIP, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
 use crate::knob_spring::KnobSpring;
@@ -158,6 +158,12 @@ pub struct HudMotion {
     appear: [PopoverMotion; 2],
     /// The sections the springs were last told are open (`StateKey::open` bits).
     wants: u8,
+    /// **The focus a section had when it was put away**, per section (Chapters' card, Info's button): a section
+    /// fading out paints it, as the panels drew from their own cursor, though the page's focus has already moved
+    /// to the control that opened it. Set by [`hold_focus`](Self::hold_focus) at the dismissal, `None` while the
+    /// section is open or had no focus, and cleared when it opens again or has gone. It is paint only: a closing
+    /// section registers no stop and answers no key.
+    held: [Option<usize>; 2],
 }
 
 /// Which spring is `section`'s.
@@ -190,6 +196,7 @@ impl HudMotion {
             strip: None,
             appear: [PopoverMotion::at(0.0); 2],
             wants: 0,
+            held: [None; 2],
         }
     }
 
@@ -206,6 +213,7 @@ impl HudMotion {
             }
             let spring = &mut self.appear[section_index(section)];
             if open & section.open_bit() != 0 {
+                self.held[section_index(section)] = None;
                 let fresh = spring.gone();
                 spring.to(1.0);
                 if fresh {
@@ -223,7 +231,30 @@ impl HudMotion {
     pub fn cut_sections(&mut self) {
         self.appear = [PopoverMotion::at(0.0); 2];
         self.wants = 0;
+        self.held = [None; 2];
         self.strip = None;
+    }
+
+    /// **Remember where `section`'s focus was as the page puts it away**: `focus` and `btn` are the page's cursor
+    /// BEFORE it is handed back to the opener (the strip's card, or Info's button, when the cursor is in that
+    /// section's own group; any other group means the section was not what the focus was on, and it fades with
+    /// none). Called before [`follow`](Self::follow) drops the section, by every path that closes one.
+    pub fn hold_focus(&mut self, section: Section, focus: GroupId, btn: i32) {
+        let own = match section {
+            Section::Chapters => GROUP_STRIP,
+            Section::Info => GROUP_SECTION,
+        };
+        self.held[section_index(section)] = (focus == own).then(|| usize::try_from(btn).ok()).flatten();
+    }
+
+    /// The chapter card the closing strip paints as focused, if it fades with one.
+    pub fn held_card(&self) -> Option<usize> {
+        self.held[section_index(Section::Chapters)]
+    }
+
+    /// The button the closing Info card paints as focused, if it fades with one.
+    pub fn held_button(&self) -> Option<usize> {
+        self.held[section_index(Section::Info)]
     }
 
     /// Step the sections' appear springs, once per frame from the screen's tick and never from a draw. A frame is
@@ -233,6 +264,11 @@ impl HudMotion {
     pub fn step_appear(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
         for spring in &mut self.appear {
             spring.tick(t, present);
+        }
+        for section in SECTIONS {
+            if self.appear[section_index(section)].gone() && self.wants & section.open_bit() == 0 {
+                self.held[section_index(section)] = None;
+            }
         }
         if self.appear[section_index(Section::Chapters)].gone() && self.wants & Section::Chapters.open_bit() == 0 {
             self.strip = None;
@@ -321,8 +357,13 @@ impl HudMotion {
             .flatten()
             .filter(|&i| i < row_pops(slot));
         self.pop.step(f, dt);
-        // an open section's buttons pop on `GROUP_SECTION`; the index is bounded by what a segment can hold
-        let section = (focus == GROUP_SECTION).then(|| usize::try_from(btn).ok()).flatten().filter(|&i| i < MAX_ROW_ITEMS);
+        // an open section's buttons pop on `GROUP_SECTION`; the index is bounded by what a segment can hold. A card
+        // fading out keeps the pop of the button it was on (the page's focus has already left it).
+        let section = match focus == GROUP_SECTION {
+            true => usize::try_from(btn).ok(),
+            false => self.held_button(),
+        }
+        .filter(|&i| i < MAX_ROW_ITEMS);
         self.section_pop.step(section, dt);
     }
 

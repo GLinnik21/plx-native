@@ -566,7 +566,7 @@ fn draw_control(
             else {
                 return;
             };
-            let focused = f.focus == GROUP_SECTION && usize::try_from(f.btn).is_ok_and(|b| b == i);
+            let focused = (f.focus == GROUP_SECTION && usize::try_from(f.btn).is_ok_and(|b| b == i)) || row.held_button() == Some(i);
             sections::button(f, q, e, c, focused, row.section_scale(i));
         }
     }
@@ -575,7 +575,7 @@ fn draw_control(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::player_hud::geometry::{GROUP_SCRUB, GROUP_TABS};
+    use crate::player_hud::geometry::{GROUP_SCRUB, GROUP_STRIP, GROUP_TABS};
     use crate::player_hud::state::Controls;
     use crate::skip_pill::prompt_for;
     use plx_data::metadata::{Marker, MarkerKind};
@@ -838,6 +838,17 @@ mod tests {
 
         /// [`both`] with the section at appear `appear` on both sides: the renderer's spring and the strip's argument.
         fn both_at(items: Vec<Chapter>, sel: u32, appear: f32) -> (Side, Side) {
+            scene(items, sel, appear, false)
+        }
+
+        /// [`both_at`] over the frame the section is DISMISSED: the page has put it away (`open` is 0, the engine's
+        /// focus is off the strip) and it fades from `appear` down, against the hand-written strip still on
+        /// its own selection at that appear.
+        fn closing_at(items: Vec<Chapter>, sel: u32, appear: f32) -> (Side, Side) {
+            scene(items, sel, appear, true)
+        }
+
+        fn scene(items: Vec<Chapter>, sel: u32, appear: f32, closing: bool) -> (Side, Side) {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
@@ -852,7 +863,7 @@ mod tests {
             row.set_section_appear_for_test(Section::Chapters, appear);
             let frame = Frame {
                 entry: ENTRY, ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
-                focus: GROUP_SCRUB, btn: 0, tab: 0, open: OPEN_CHAPTERS, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+                focus: GROUP_SCRUB, btn: 0, tab: 0, open: if closing { 0 } else { OPEN_CHAPTERS }, now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
             let key = FocusKey { entry: ENTRY, elem: crate::player_hud::state::ELEM_CHAPTER_BASE + sel };
             let focus = FocusRead { current: Some(key), ..FocusRead::default() };
@@ -868,6 +879,14 @@ mod tests {
                     shelf.on(&ScreenEvent::Tick(Tick { ms: k * 17, dt_us: 16_667 }), df, &src, &mut fx);
                 }
             });
+            // the dismissal: the page drops the section and the engine's focus leaves the strip
+            let focus = if closing {
+                row.hold_focus(Section::Chapters, GROUP_STRIP, sel as i32);
+                row.follow(0);
+                FocusRead::default()
+            } else {
+                focus
+            };
             let mut new = None;
             let rings = capture_rings(|| new = Some(census(|| with_df_focus(focus, |df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))))));
             let new = side(new.unwrap(), rings);
@@ -963,6 +982,38 @@ mod tests {
                 }
             }
         }
+
+        /// **A strip fading out paints the focus it had at the dismissal.** The hand-written panel drew from its own
+        /// selection, so the card it was on kept its ring and its label ink while the whole strip faded; the section
+        /// state has no focus of its own once the page has put it away, and the card dropped to a resting one on
+        /// the first frame of the fade. At every point of the fade, on a card both scroll rules seat alike: the same words
+        /// in the same ink and place as the panel, and the same ring.
+        #[test]
+        fn a_strip_fading_out_keeps_the_ring_and_the_label_ink_of_the_card_it_was_on() {
+            // the first and second chapter: the two seats both scroll rules leave at 0 (D11 differs past them)
+            for sel in [0, 1] {
+                for appear in [0.25, 0.5, 0.75] {
+                    let (new, old) = closing_at(chapters(&["Opening", "Dinner", "The Chase"]), sel, appear);
+                    assert_eq!(old.rings.len(), 1, "sel {sel} appear {appear}: the panel's selected card wears its ring");
+                    assert_eq!(new.rings.len(), old.rings.len(), "sel {sel} appear {appear}: the ring of the card it was on: {:?}", new.rings);
+                    for (n, o) in new.rings.iter().zip(&old.rings) {
+                        assert!(close(n.0.x, o.0.x) && close(n.0.y, o.0.y) && close(n.0.w, o.0.w) && close(n.0.h, o.0.h), "sel {sel} appear {appear}: the ring {:?} against {:?}", n.0, o.0);
+                    }
+                    assert_eq!(new.runs.len(), old.runs.len(), "sel {sel} appear {appear}: the same runs:\nrenderer {:#?}\nstrip    {:#?}", new.runs, old.runs);
+                    for (n, o) in new.runs.iter().zip(&old.runs) {
+                        assert_eq!((&n.text, n.size, n.bold, n.align), (&o.text, o.size, o.bold, o.align), "sel {sel} appear {appear}: the run `{}`", o.text);
+                        assert!(
+                            n.ink.iter().zip(&o.ink).all(|(a, b)| (a - b).abs() < 0.001),
+                            "sel {sel} appear {appear}: `{}` is inked {:?} where the strip inks it {:?}", o.text, n.ink, o.ink
+                        );
+                        assert!(
+                            close(n.at.x, o.at.x) && close(n.at.y, o.at.y) && close(n.at.w, o.at.w),
+                            "sel {sel} appear {appear}: `{}` stands at {:?} where the strip draws it at {:?}", o.text, n.at, o.at
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// **The Info section through the renderer** (`draw_state` over classic's `OPEN_INFO` state), against the
@@ -995,6 +1046,17 @@ mod tests {
 
         /// [`both`] with the section at appear `appear` on both sides: the renderer's spring and the card's argument.
         fn both_at(detail: Detail, appear: f32) -> (Census, Census) {
+            scene(detail, appear, false)
+        }
+
+        /// [`both_at`] over the frame the section is DISMISSED: the page has put it away (`open` is 0 and the
+        /// focus is off its buttons), the first button had the focus and its pop, and the card fades from `appear`
+        /// down on its own focus.
+        fn closing_at(detail: Detail, appear: f32) -> (Census, Census) {
+            scene(detail, appear, true)
+        }
+
+        fn scene(detail: Detail, appear: f32, closing: bool) -> (Census, Census) {
             let _serial = plx_base::testlock::serial();
             let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
             let mut store = plx_data::stores::metadata::MetadataStore::default();
@@ -1008,10 +1070,20 @@ mod tests {
             row.set_section_appear_for_test(Section::Info, appear);
             let frame = Frame {
                 entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
-                focus: GROUP_SCRUB, btn: 0, tab: 0, open: OPEN_INFO, now: 1_000, transport: false, measure: &FM, meta: store.view(),
+                focus: GROUP_SCRUB, btn: 0, tab: 0, open: if closing { 0 } else { OPEN_INFO },
+                now: 1_000, transport: false, measure: &FM, meta: store.view(),
             };
+            let mut card = InfoPanelState::new();
+            if closing {
+                for _ in 0..30 {
+                    card.update(0.016_667);
+                    row.section_pop.step(Some(0), 0.016_667);
+                }
+                row.hold_focus(Section::Info, GROUP_SECTION, 0);
+                row.follow(0);
+            }
             let new = census(|| with_df(|df| assert!(draw(&hud.compiled, &frame, df, &mut row, Painter::root()))));
-            let old = census(|| InfoPanelState::new().draw(&ps, appear, &FM, store.view()));
+            let old = census(|| card.draw(&ps, appear, &FM, store.view()));
             (new, old)
         }
 
@@ -1058,6 +1130,44 @@ mod tests {
                     );
                     assert!(near(&n.at, &o.at), "appear {appear}: `{}` stands at {:?} where the card draws it at {:?}", o.text, n.at, o.at);
                 }
+            }
+        }
+
+        /// **A card fading out keeps its focused button.** The hand-written card drew from its own focus, so From
+        /// Beginning kept its glow, its label ink and its pop while the card faded; the section state read the
+        /// page's focus, which had already gone to the tab that opened it, and the button cut from white to dark on
+        /// the first frame of the fade. At every point of the fade: the card's words in the card's own ink
+        /// (colour as well as alpha), its glow, and its glyphs where the card draws them.
+        #[test]
+        fn a_card_fading_out_keeps_the_focused_buttons_glow_ink_and_pop() {
+            for appear in [0.25, 0.5, 0.75] {
+                let (new, old) = closing_at(playing(), appear);
+                let glow = |c: &Census| c.3.iter().filter(|(tag, ..)| *tag == 5).map(|(_, r, a)| (*r, *a)).collect::<Vec<_>>();
+                let (n, o) = (glow(&new), glow(&old));
+                assert!(!o.is_empty(), "appear {appear}: the card's focused button wears a glow: {:?}", old.3);
+                assert_eq!(n.len(), o.len(), "appear {appear}: the section keeps the focused button's glow: {:?}", new.3);
+                for (n, o) in n.iter().zip(&o) {
+                    assert!(
+                        (n.1 - o.1).abs() < 0.001
+                            && (n.0.x - o.0.x).abs() < 0.01
+                            && (n.0.y - o.0.y).abs() < 0.01
+                            && (n.0.w - o.0.w).abs() < 0.01
+                            && (n.0.h - o.0.h).abs() < 0.01,
+                        "appear {appear}: the glow {n:?} against the card's {o:?}"
+                    );
+                }
+                for label in ["From Beginning", "Go to Movie"] {
+                    let (n, o) = (run(&new, label), run(&old, label));
+                    assert!(
+                        n.ink.iter().zip(&o.ink).all(|(a, b)| (a - b).abs() < 0.001),
+                        "appear {appear}: `{label}` is inked {:?} where the card inks it {:?}", n.ink, o.ink
+                    );
+                    assert!(
+                        (n.at.x - o.at.x).abs() < 0.01 && (n.at.y - o.at.y).abs() < 0.01 && (n.at.w - o.at.w).abs() < 0.01,
+                        "appear {appear}: `{label}` stands at {:?} where the card draws it at {:?}", n.at, o.at
+                    );
+                }
+                assert_eq!(new.2.len(), old.2.len(), "appear {appear}: the glyphs: {:?} against {:?}", new.2, old.2);
             }
         }
 

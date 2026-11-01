@@ -692,6 +692,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         // the open section's button the engine holds: the pop the motion lifts
                         self.hud.nav.btn = (to.elem - player_hud::ELEM_SECTION_BASE) as i32;
                     }
+                    if group == GROUP_STRIP {
+                        // …and the strip's card: what the strip fades out on when it is put away
+                        self.hud.nav.btn = (to.elem - player_hud::ELEM_CHAPTER_BASE) as i32;
+                    }
                 }
                 if *by == By::Dir && from.and_then(|f| Self::hud_group_of(f.elem)) != Some(group) {
                     if group != GROUP_SCRUB {
@@ -1754,7 +1758,12 @@ impl PlayerScreen {
         cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>,
     ) -> Option<CardEvent<u32>> {
-        // …and keeps stepping while the strip fades out after the section was put away, so it fades as it was, not frozen
+        // …and keeps stepping while the strip fades out after the section was put away, so it fades as it was, not
+        // frozen: except that a strip fading out on the card it was on stands still, its pops and bands as they
+        // were at the dismissal (the engine's focus has left it, so a tick would let the card go)
+        if !self.hud.sections.contains(Section::Chapters) && self.row.held_card().is_some() {
+            return None;
+        }
         let open = match self.hud.sections.contains(Section::Chapters) {
             true => self.hud.sections.bits(),
             false => self.row.presented() & Section::Chapters.open_bit(),
@@ -1775,6 +1784,9 @@ impl PlayerScreen {
             }
             if group == GROUP_SECTION {
                 self.hud.nav.btn = (elem - player_hud::ELEM_SECTION_BASE) as i32;
+            }
+            if group == GROUP_STRIP {
+                self.hud.nav.btn = (elem - player_hud::ELEM_CHAPTER_BASE) as i32;
             }
         }
         self.seat_elem(fx, elem);
@@ -1799,7 +1811,12 @@ impl PlayerScreen {
         if (section == Section::Chapters && !chapters) || player_hud::readout_owns_frame(self.busy) {
             return;
         }
-        self.hud.sections = self.hud.sections.toggled(section, self.modal());
+        let before = self.hud.sections;
+        self.hud.sections = before.toggled(section, self.modal());
+        // a modal page the new one replaces fades out on the focus it had
+        for gone in before.iter().filter(|s| !self.hud.sections.contains(*s)) {
+            self.row.hold_focus(gone, self.hud.nav.focus, self.hud.nav.btn);
+        }
         // the springs start now: the presented frame draws the section at appear 0
         self.row.follow(self.hud.sections.bits());
         // The page takes the transport: a pending scrub target ends with it, never committed.
@@ -1828,6 +1845,8 @@ impl PlayerScreen {
     /// **Close `section`** and hand focus back: to the control that opened it (its tab or its disc, whichever the
     /// package drew), else to the latest page still open, else to the scrubber. The transport lingers from here.
     fn close_section<H: AppLike>(&mut self, section: Section, chapters: bool, now: u32, fx: &mut Effects<'_, H>) {
+        // the section fades out on the focus it has now, before the cursor goes back to what opened it
+        self.row.hold_focus(section, self.hud.nav.focus, self.hud.nav.btn);
         self.hud.sections = self.hud.sections.closed(section);
         // the section stays on screen, fading, until its spring is out (its Shelf with it): only the logical set changed
         self.row.follow(self.hud.sections.bits());

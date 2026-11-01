@@ -800,12 +800,25 @@ impl Shelf {
         self.paint_focused(f, p, src, at);
     }
 
+    /// [`paint`](Self::paint) with the focused card named by the caller instead of read from the engine: a strip
+    /// fading out after its owner put it away paints the card it was on at the dismissal, while the engine's focus
+    /// is already elsewhere. The shelf is not ticked meanwhile, so its pops and bands are the ones that card was
+    /// drawn with. `focus` is an index into `src`; every caller that reads the engine's focus is untouched.
+    pub fn paint_held<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame, focus: Option<usize>) {
+        self.paint_resting_at(f, p, src, at, focus);
+        self.paint_focused_at(f, p, src, at, focus);
+    }
+
     /// The on-axis cards but the focused one (only on-axis cards paint and resolve artwork), for a
     /// screen that draws the focused card of ALL its shelves after every shelf's others, so its
     /// glow overlaps the neighbouring shelves.
     pub fn paint_resting<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
-        let n = src.len();
         let focus = super::focused_index(&f.focus, self.entry, src);
+        self.paint_resting_at(f, p, src, at, focus);
+    }
+
+    fn paint_resting_at<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame, focus: Option<usize>) {
+        let n = src.len();
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let sx = self.row.scroll_x();
         let pr = p.translate(-sx, 0.0);
@@ -878,6 +891,10 @@ impl Shelf {
     /// The focused card, painted whether or not it is on-axis.
     pub fn paint_focused<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let focus = super::focused_index(&f.focus, self.entry, src);
+        self.paint_focused_at(f, p, src, at, focus);
+    }
+
+    fn paint_focused_at<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame, focus: Option<usize>) {
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let pr = p.translate(-self.row.scroll_x(), 0.0);
         if let Some(i) = focus.filter(|&i| i < src.len()) {

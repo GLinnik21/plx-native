@@ -2209,6 +2209,80 @@ mod sections {
         assert!(run.screen().row.strip_shelf().is_none(), "…and goes with the last of the fade");
     }
 
+    /// **A section fades out on the focus it had at the dismissal** (the panels drew from their own cursor): the
+    /// strip on the card the engine held, Info's card on the button it held, whichever way the page was put away
+    /// (BACK, a direction off the edge, a press on the page itself, the other section replacing it). The page's
+    /// own cursor has gone back to the opener by then, and the held focus is paint only: no stop, no key.
+    #[test]
+    fn a_section_put_away_fades_on_the_focus_it_had() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        // the strip, on its second card, put away by a direction and by BACK
+        for key in [Key::Down, Key::Back] {
+            let mut run = classic_run(Occupant::Plain);
+            run.open_from_tab(1);
+            run.step('R');
+            run.frames(80);
+            assert_eq!(run.screen().row.held_card(), None, "{key:?}: nothing is held while the strip is up");
+            run.tap(key);
+            assert_eq!(run.open_sections(), Vec::<Section>::new());
+            assert_eq!(run.group(), GROUP_TABS.0, "{key:?}: the page's cursor is back on the tab");
+            assert_eq!(run.screen().row.held_card(), Some(1), "{key:?}: the strip fades on the card it was on");
+            run.frames(80);
+            assert_eq!(run.screen().row.held_card(), None, "{key:?}: nothing is held once it has gone");
+        }
+        // Info, on its first button
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Info);
+        run.frames(80);
+        assert_eq!(run.screen().row.held_button(), None);
+        run.tap(Key::Back);
+        assert_eq!(run.screen().row.held_button(), Some(0), "the card fades on the button it was on");
+        run.frames(80);
+        assert_eq!(run.screen().row.held_button(), None);
+        // …and on its second, put away by pressing it
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Info);
+        run.frames(80);
+        run.step('D');
+        run.frames(1);
+        run.step('K');
+        assert_eq!(run.open_sections(), Vec::<Section>::new());
+        assert_eq!(run.screen().row.held_button(), Some(1), "a press puts the card away on the button pressed");
+        // the swap: Info fades on its button while Chapters rises
+        let mut run = classic_run(Occupant::Plain);
+        run.toggle(Section::Info);
+        run.frames(80);
+        run.toggle(Section::Chapters);
+        assert_eq!(run.screen().row.held_button(), Some(0), "the page the new one replaces fades on its focus");
+        assert_eq!(run.screen().row.held_card(), None);
+        // a section that had no focus on it fades with none: the reference's Info places no button
+        let mut run = reference_run();
+        run.toggle(Section::Info);
+        run.frames(80);
+        run.toggle(Section::Info);
+        assert_eq!((run.screen().row.held_button(), run.screen().row.held_card()), (None, None));
+    }
+
+    /// The hold stands through the whole fade, and opening the section again takes it away (the strip is live
+    /// and reads the engine's focus again).
+    #[test]
+    fn the_hold_stands_through_the_fade_and_reopening_clears_it() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let mut run = classic_run(Occupant::Plain);
+        run.open_from_tab(1);
+        run.frames(80);
+        run.tap(Key::Down);
+        assert_eq!(run.screen().row.held_card(), Some(0));
+        run.frames(2);
+        assert_eq!(run.screen().row.held_card(), Some(0), "the hold stands through the fade");
+        run.toggle(Section::Chapters);
+        assert_eq!(run.screen().row.held_card(), None, "opening it again takes the hold away");
+    }
+
     /// **Info for Chapters is a swap, not a cut**: the new section opens at appear 0 while the old one is still
     /// being drawn on its way out (the two panels' surfaces overlapped the same way).
     #[test]
