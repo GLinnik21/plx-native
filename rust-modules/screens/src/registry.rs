@@ -1446,16 +1446,16 @@ pub enum LoopReq {
     AccountChangeProfile,
     AccountSignIn,
     AccountSignOut,
-    /// PRESENTS the Settings surface over the same page, so the host route does not move.
+    /// PRESENTS the Settings surface, rooted at the page, over the same page, so the host route
+    /// does not move: `Root` for the account menu's Settings row, `Favourites` for the Library's
+    /// Sort & Filter menu's Favorite libraries row.
     /// Reachable signed OUT as well: a person who cannot sign in has still received a copy of this
     /// software, and LG requires the privacy notice to be readable in the app rather than only on
     /// the store listing.
-    AccountSettings,
+    OpenSettings(SettingsPage),
     /// Lab builds only, and it changes no route: the tester stays where they were and the toast
     /// says what happened.
     AccountSendDiagnostics,
-    /// Open Settings directly on Favorite libraries from the Library's Sort & Filter menu.
-    LibraryFavourites,
 }
 
 /// Any host that carries this bundle. The screens under `screens/` are written against it, so the
@@ -1895,7 +1895,7 @@ pub enum AppArg {
     /// identity rides on the argument instead of being a variant of a page alphabet.
     Content(ContentArg),
     /// The Settings family, rooted at this page (`SettingsPage::Root` for every opening but the
-    /// Library's Favorite libraries row, `LoopReq::LibraryFavourites`).
+    /// Library's Favorite libraries row, `LoopReq::OpenSettings(SettingsPage::Favourites)`).
     Settings(SettingsPage),
     /// The first-run consent question, rooted at this stage byte (0 for every real opening;
     /// `screens::consent`'s `STAGE_PRODUCT` for `/tmp/plxnative-consent=product`).

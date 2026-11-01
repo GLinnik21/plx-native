@@ -1,8 +1,8 @@
 //! A registered Library menu surface. Navigation owns its lifetime, phase, and input scope.
-use plx_data::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SourceState, SrcGroup, SrcRow};
+use plx_data::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SrcGroup, SrcRow};
 use crate::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
 use plx_data::stores::browse::{BrowseCmd, DirectoryView, LibraryWork, QueryEdit, SectionAddress};
-use plx_data::stores::{StoreCmd, StoreId};
+use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
@@ -159,21 +159,43 @@ fn source_draft(
             && u32::try_from(section.row.section).is_ok_and(|index| folded.contains(&index)))
         .map(|section| section.row.clone())
         .collect();
-    let source_form =
-        source_list::form(Level::Browse, groups, &source_rows, Tail::Recheck);
     let mut stamp = Stamp::default();
     stamp.tag(1);
     stamp.u32(epoch);
     stamp.u32(current as u32);
     stamp_kind(&mut stamp, kind);
+    let (form, selected) =
+        library_form(epoch, groups, sections, &source_rows, Tail::Recheck, &mut stamp);
+    MenuDraft {
+        stamp: stamp.finish(),
+        form,
+        selected,
+    }
+}
+
+/// **The Sources list as menu rows** — `source_list::form` (the one list of libraries grouped by
+/// server, with each group's state said and dimmed) with every library row pressing a `Select` on
+/// the `section:{sid}:{key}` identity and the roster-refresh row a `Recheck`. Both menus that list
+/// libraries (the "+N" Sources picker and the Sort & Filter switcher) build it here, so a press
+/// and a rebuild mean the same in both. `stamp` takes everything that decides what is drawn or
+/// what a press does; the identity returned is the library on view, when the list holds it.
+fn library_form(
+    epoch: u32,
+    groups: &[SrcGroup],
+    sections: &[plx_data::browse::view::SectionView],
+    rows: &[SrcRow],
+    tail: Tail,
+    stamp: &mut Stamp,
+) -> (MenuForm, Option<String>) {
+    let source_form = source_list::form(Level::Browse, groups, rows, tail);
     for group in groups {
         stamp.tag(2);
         stamp.str(&group.name);
         stamp.str(&group.handle);
-        stamp_state(&mut stamp, group.state);
-        stamp_tier(&mut stamp, group.tier);
+        stamp_state(stamp, group.state);
+        stamp_tier(stamp, group.tier);
     }
-    for row in &source_rows {
+    for row in rows {
         stamp.tag(3);
         stamp.u32(row.src as u32);
         stamp.u32(row.section as u32);
@@ -199,7 +221,7 @@ fn source_draft(
                 };
                 let Some((identity, target)) = section_target(epoch, candidate) else { continue };
                 stamp.tag(4);
-                stamp_target(&mut stamp, &target);
+                stamp_target(stamp, &target);
                 if candidate.row.current {
                     selected = Some(identity.clone());
                 }
@@ -225,11 +247,7 @@ fn source_draft(
             disabled: b.disabled,
         }),
     });
-    MenuDraft {
-        stamp: stamp.finish(),
-        form,
-        selected,
-    }
+    (form, selected)
 }
 
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
@@ -384,47 +402,32 @@ fn sort_filter_draft(
     }
     form = form.section(sort_section(plx_platform::i18n::msg::browse_library_sort(), sorts, sort_index,
         sort_desc, &mut stamp, &mut selected));
-    let filter = filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp).separator();
-    let filter = library_choices(filter, directory, section_kind, &mut stamp);
+    form = form.section(filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp));
+    // The library switcher is the Sources list, whole: every library of the kind that is a
+    // favourite or sits on a server that can be opened (`source_list::usable`, so a server nobody
+    // has dialled yet is offered and one that refused us is not), grouped by server with a group's
+    // fault said and dimmed, and the roster-refresh row at its foot. Nothing to choose between,
+    // nothing drawn.
+    let groups: Vec<SrcGroup> = directory.sources().iter().map(|(_, group)| group.clone()).collect();
+    let offered: Vec<SrcRow> = directory.sections().iter()
+        .filter(|library| library.kind == section_kind && (library.row.pinned
+            || groups.get(library.row.src).is_some_and(source_list::usable)))
+        .map(|library| library.row.clone())
+        .collect();
+    if offered.len() > 1 {
+        stamp.tag(15);
+        let (libraries, _) = library_form(directory.epoch().unwrap_or(0), &groups, directory.sections(),
+            &offered, Tail::Recheck, &mut stamp);
+        form = form.then(libraries);
+    }
     stamp.tag(16);
-    let filter = choice(
-        filter,
+    let favourites = choice(
+        MenuSection::new(""),
         "favourites".into(),
         Action::Favourites,
         Row::new(plx_platform::i18n::msg::settings_libraries_title()).chevron(true),
     );
-    MenuDraft { stamp: stamp.finish(), form: form.section(filter), selected }
-}
-
-/// The Sort & Filter menu's library switcher, appended to `section`: one `Select` row for every
-/// library of `kind` the reader can reach (a favourite, or any library on a reachable server), the
-/// one on view ticked. Nothing is appended unless there is a choice to make (two or more).
-fn library_choices(mut section: MenuSection, directory: DirectoryView<'_>, kind: SecKind, stamp: &mut Stamp)
-    -> MenuSection
-{
-    let epoch = directory.epoch().unwrap_or(0);
-    let group = |library: &plx_data::browse::view::SectionView| {
-        directory.sources().get(library.row.src).map(|(_, group)| group)
-    };
-    let libraries: Vec<_> = directory.sections().iter()
-        .filter(|library| library.kind == kind
-            && (library.row.pinned || group(library).is_some_and(|group| group.state == SourceState::Reachable)))
-        .filter_map(|library| Some((library, section_target(epoch, library)?)))
-        .collect();
-    if libraries.len() < 2 {
-        return section;
-    }
-    for (library, (identity, target)) in libraries {
-        let handle = group(library).map_or("", |group| group.handle.as_str());
-        stamp.tag(15);
-        stamp_target(stamp, &target);
-        stamp.str(&library.row.title);
-        stamp.str(handle);
-        stamp.bool(library.row.current);
-        let row = source_list::library_row(&library.row.title, handle).checked(library.row.current);
-        section = choice(section, identity, Action::Select(target), row);
-    }
-    section
+    MenuDraft { stamp: stamp.finish(), form: form.section(favourites), selected }
 }
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
@@ -680,7 +683,7 @@ impl LibraryMenu {
             ))),
             Action::Favourites => {
                 fx.push(Fx::App(AppFx::Loop(
-                    crate::registry::LoopReq::LibraryFavourites,
+                    crate::registry::LoopReq::OpenSettings(crate::registry::SettingsPage::Favourites),
                 )));
                 fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
             }
@@ -719,6 +722,12 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
             ScreenEvent::Tick(tick) => {
                 self.popover.update(tick.dt());
                 self.refresh(cx);
+                // The menus that list libraries follow the household's shares the way Home,
+                // Search and the Favorite libraries page do: a library shared while one is open
+                // appears in it, and a server's fault is said as soon as it is known.
+                if matches!(self.kind, LibraryMenuKind::SortFilter | LibraryMenuKind::Sources) {
+                    fx.push(Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
+                }
                 if self.kind == LibraryMenuKind::Genre {
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Browse,
@@ -1536,7 +1545,8 @@ mod tests {
 
     /// **The one Sort & Filter popover's sections** (redesign spec, "Header"): Show appears only when
     /// the library offers more than one type besides Collections (TV: Shows / Seasons / Episodes),
-    /// and never lists Collections itself; Sort and Filter always follow.
+    /// and never lists Collections itself; Sort and Filter always follow, then the Favorite
+    /// libraries row in a block of its own (no heading).
     #[test]
     fn sort_and_filter_menu_sections_follow_the_library_kind() {
         let sorts = vec![SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false }];
@@ -1544,9 +1554,9 @@ mod tests {
         let dir = DirectoryView::empty_for_test();
         let show = titles(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         let movie = titles(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false, dir));
-        assert_eq!(show.len(), 3, "TV libraries open Show, Sort and Filter");
+        assert_eq!(show.len(), 4, "TV libraries open Show, Sort and Filter, then the Favorite libraries block");
         assert_eq!(show[0], plx_platform::i18n::msg::library_header_show());
-        assert_eq!(movie.len(), 2, "a Movies library has one type to show, so no Show section");
+        assert_eq!(movie.len(), 3, "a Movies library has one type to show, so no Show section");
         assert_eq!(movie[0], plx_platform::i18n::msg::browse_library_sort());
         let laid = lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         assert!(!laid.rows.iter().any(|(id, ..)| id == &format!("type:{}", LibraryType::Collections.code())), "Collections has its own control");
@@ -1554,6 +1564,40 @@ mod tests {
             sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, true, dir).stamp);
     }
 
+    /// The two-server fixture of the Sources tests plus a third library, the friend's "Anime
+    /// Movies", which is not a favourite; the friend's server is in `friend`'s state.
+    fn switcher_directory(friend: SourceState) -> plx_data::stores::browse::DirectorySnapshot {
+        let (mut groups, mut sections) = source_sections();
+        groups[1].state = friend;
+        let mut anime = sections[1].clone();
+        anime.key = 8;
+        anime.row.section = 2;
+        anime.row.title = "Anime Movies".into();
+        anime.row.pinned = false;
+        sections.push(anime);
+        plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
+            11,
+            0,
+            [1, 2].map(ServerId::from_raw).into_iter().zip(groups).collect(),
+            sections,
+        )
+    }
+
+    /// The Movies Sort & Filter menu over `directory`, laid out.
+    fn switcher_menu(directory: &plx_data::stores::browse::DirectorySnapshot) -> Laid {
+        let sorts = vec![SortEntry {
+            key: "titleSort".into(),
+            desc_key: String::new(),
+            title: "Title".into(),
+            default_desc: false,
+        }];
+        lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false, directory.view()))
+    }
+
+    /// **The Sort & Filter menu's library switcher is the Sources list** (`source_list::form`): every
+    /// library of the kind the reader can reach, grouped by server like the "+N" picker, the one on
+    /// view ticked, a library on a shared server carrying its owner's handle, the roster-refresh row
+    /// at its foot and the Favorite libraries row in a block of its own after it.
     #[test]
     fn sort_and_filter_menu_offers_library_switching_and_favorite_libraries() {
         let _guard = plx_base::testlock::serial();
@@ -1564,35 +1608,35 @@ mod tests {
             title: "Title".into(),
             default_desc: false,
         }];
-        // The two-server fixture of the Sources tests, with the friend's library unpinned: it is
-        // reachable and of the same kind, so the switcher still offers it.
-        let (groups, mut sections) = source_sections();
-        sections[1].key = 8;
-        sections[1].row.title = "Anime Movies".into();
-        sections[1].row.pinned = false;
-        let directory = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
-            11,
-            0,
-            [1, 2].map(ServerId::from_raw).into_iter().zip(groups).collect(),
-            sections,
+        let directory = switcher_directory(SourceState::Reachable);
+        let laid = switcher_menu(&directory);
+        let headers: Vec<&str> = laid.sections.iter().map(|section| section.header.as_str()).collect();
+        assert_eq!(headers, ["Sort", "Filter", "Own NAS", "Shared with you", ""]);
+        let listed: Vec<(&str, bool)> = laid.sections[2..4].iter().flat_map(|section| &section.rows)
+            .filter(|row| !row.sep).map(|row| (row.label.as_str(), row.checked)).collect();
+        assert_eq!(
+            listed,
+            [("Movies", true), ("Shared Movies", false), ("Anime Movies", false), ("Check for shared libraries", false)],
+            "the library on view is ticked; the friend's non-favourite is offered with the rest"
         );
+        assert_eq!(laid.sections[3].rows[0].value.as_deref(), Some("friend"), "its owner stands on the row, dimmed");
+        let action = |id: &str| laid.rows.iter().find(|(row, ..)| row == id).map(|(_, action, _)| action.clone());
+        assert!(
+            matches!(action("section:2:8"),
+                Some(Action::Select(addr)) if addr.sid == ServerId::from_raw(2) && addr.section == 8),
+            "a reachable library that is not a favourite is listed in Sort & Filter"
+        );
+        assert!(matches!(action("recheck"), Some(Action::Recheck)));
+        assert!(
+            matches!(action("favourites"), Some(Action::Favourites)),
+            "Favorite libraries entry is offered at the bottom of Sort & Filter"
+        );
+        assert_eq!(laid.rows.last().map(|(id, ..)| id.as_str()), Some("favourites"), "the Favorite libraries row is last");
+
         let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::SortFilter, [0; 4]));
         menu.apply_draft(sort_filter_draft(
             SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false, directory.view(),
         ));
-        let action_of = |id: &str| {
-            let at = menu.form.index_of(&id.to_string())?;
-            menu.form.binding_at(at).map(|binding| binding.action.clone())
-        };
-        assert!(
-            matches!(action_of("section:2:8"),
-                Some(Action::Select(addr)) if addr.sid == ServerId::from_raw(2) && addr.section == 8),
-            "reachable unpinned library of the same kind is listed in Sort & Filter"
-        );
-        assert!(
-            matches!(action_of("favourites"), Some(Action::Favourites)),
-            "Favorite libraries entry is offered at the bottom of Sort & Filter"
-        );
         let fav_idx = menu.form.index_of(&"favourites".to_string()).expect("favourites row");
         let fav_key = menu.form.key_at(fav_idx).expect("favourites key").0;
         let mut output = Vec::new();
@@ -1605,8 +1649,75 @@ mod tests {
         with_cx(|cx| menu.activate(fav_key, cx, &mut fx));
         assert!(output.iter().any(|effect| matches!(
             &effect.fx,
-            Fx::App(AppFx::Loop(crate::registry::LoopReq::LibraryFavourites))
+            Fx::App(AppFx::Loop(crate::registry::LoopReq::OpenSettings(crate::registry::SettingsPage::Favourites)))
         )));
+    }
+
+    /// **Which libraries the switcher offers is the Sources list's own answer to "can it be
+    /// opened"** (`source_list::usable`): a favourite is always offered, drawn dimmed with its
+    /// group's fault said when the server cannot be opened; a library that is not a favourite is
+    /// offered only on a server that can, which includes one nobody has dialled yet.
+    #[test]
+    fn the_switcher_offers_a_non_favourite_only_on_a_server_that_can_be_opened() {
+        let _guard = plx_base::testlock::serial();
+        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let offered = |state| {
+            let laid = switcher_menu(&switcher_directory(state));
+            let ids: Vec<String> = laid.rows.iter().map(|(id, ..)| id.clone())
+                .filter(|id| id.starts_with("section:")).collect();
+            let shared = laid.sections.iter().find(|s| s.header == "Shared with you")
+                .map(|s| (s.dim, s.accessory.clone()));
+            (ids, shared)
+        };
+        let (ids, shared) = offered(SourceState::NotProbed);
+        assert_eq!(ids, ["section:1:7", "section:2:7", "section:2:8"], "a server nobody has dialled is offered");
+        assert_eq!(shared, Some((false, String::new())));
+        for (state, word) in [
+            (SourceState::Unauthorized, "Not authorized"),
+            (SourceState::Unreachable, "Not reachable"),
+            (SourceState::InsecureOnly, "Not secure"),
+        ] {
+            let (ids, shared) = offered(state);
+            assert_eq!(ids, ["section:1:7", "section:2:7"], "{state:?}: the favourite stays, the non-favourite goes");
+            assert_eq!(shared, Some((true, word.to_string())), "{state:?}: the group dims and says why");
+        }
+    }
+
+    /// **One library of the kind is not a choice**: no list and no roster-refresh row, only the
+    /// Favorite libraries row.
+    #[test]
+    fn the_switcher_is_absent_with_one_library_of_the_kind() {
+        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let sorts = vec![SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false }];
+        let laid = lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false,
+            DirectoryView::empty_for_test()));
+        assert!(!laid.rows.iter().any(|(id, ..)| id.starts_with("section:") || id == "recheck"));
+        assert!(laid.rows.iter().any(|(id, ..)| id == "favourites"));
+    }
+
+    /// **The menus that list libraries pump discovery, as Home, Search and the Favorite libraries
+    /// page do**, so a library shared while one is open appears in it; the others have no use for it.
+    #[test]
+    fn the_menus_that_list_libraries_pump_discovery() {
+        for (kind, pumps) in [
+            (LibraryMenuKind::SortFilter, true),
+            (LibraryMenuKind::Sources, true),
+            (LibraryMenuKind::Sort, false),
+            (LibraryMenuKind::Filter, false),
+            (LibraryMenuKind::Type, false),
+        ] {
+            let mut menu = LibraryMenu::new(EntryId(7), menu_arg(kind, [0; 4]));
+            let mut out = Vec::new();
+            with_cx(|cx| {
+                let mut present = plx_machine::present::Present::new();
+                let mut fx = Effects::new(&mut out, MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
+                Machine::<HostFixture>::step(&mut menu, &ScreenEvent::Mount, cx, &mut fx);
+                Machine::<HostFixture>::step(&mut menu, &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), cx, &mut fx);
+            });
+            let pumped = out.iter().any(|effect| matches!(
+                &effect.fx, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery))));
+            assert_eq!(pumped, pumps, "{kind:?}");
+        }
     }
 
     /// **The Sort, Filter and Genre popovers' app text fits the popover, in every shipped language**
@@ -1636,6 +1747,10 @@ mod tests {
                 ("genre one", lay(genre_draft(&genres, Some(&genres[0])))),
                 ("sort & filter show", lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 1, false, Some(&genres[0]), true, DirectoryView::empty_for_test()))),
                 ("sort & filter movie", lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, true, None, false, DirectoryView::empty_for_test()))),
+                ("sort & filter libraries", switcher_menu(&switcher_directory(SourceState::Reachable))),
+                ("sort & filter unauthorized", switcher_menu(&switcher_directory(SourceState::Unauthorized))),
+                ("sort & filter unreachable", switcher_menu(&switcher_directory(SourceState::Unreachable))),
+                ("sort & filter insecure", switcher_menu(&switcher_directory(SourceState::InsecureOnly))),
             ];
             for (name, draft) in drafts {
                 let mut table = TableView::new();

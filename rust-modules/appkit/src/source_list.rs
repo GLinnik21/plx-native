@@ -158,7 +158,10 @@ fn tier_word(t: Location) -> Option<&'static str> {
 ///
 /// Written as an exhaustive match rather than `reachable() && state != Unauthorized`, so that a
 /// fifth state has to be given an answer here instead of quietly inheriting one.
-fn usable(g: &SrcGroup) -> bool {
+///
+/// Public because it is also the answer to "is a library that is NOT a favourite worth offering?"
+/// (the Library's Sort & Filter menu lists every library of the kind that passes it).
+pub fn usable(g: &SrcGroup) -> bool {
     match g.state {
         SourceState::NotProbed | SourceState::Reachable | SourceState::Unreachable => g.reachable(),
         SourceState::Unauthorized => false,
@@ -218,9 +221,8 @@ fn header_accessory(sec: Section, g: &SrcGroup) -> Section {
 }
 
 /// A library as a picker row: its title is the server's, and a library on a shared server carries
-/// the owner's handle beside it, dimmed (an own server has none). The Library's Sort & Filter
-/// switcher draws its rows with this too, so the two pickers cannot drift.
-pub fn library_row(title: &str, handle: &str) -> Row {
+/// the owner's handle beside it, dimmed (an own server has none).
+fn library_row(title: &str, handle: &str) -> Row {
     let row = Row::new(title).server_label();
     if handle.is_empty() { row } else { row.value(handle).server_value().value_dim(true) }
 }
@@ -268,13 +270,14 @@ pub fn form(
         let mut sec = FormSection::from_head(head);
         for r in mine {
             let mut row = if level == Level::Browse {
-                library_row(&r.title, &g.handle)
+                // The tick is the library on view: the Sources popover's +N list never holds it
+                // (the fold hid only the others), the Sort & Filter menu's list does.
+                library_row(&r.title, &g.handle).checked(r.current)
             } else {
                 Row::new(r.title.clone()).server_label()
             };
             let kind = match level {
-                // One line a row: the +N list holds only libraries the fold hid, so no tick
-                // (the library on view is never in it) and no count line.
+                // One line a row: a tick on the library on view and no count line.
                 Level::Browse => RowKind::Choice,
                 Level::OnHome => {
                     row = row
