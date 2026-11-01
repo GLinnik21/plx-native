@@ -2378,6 +2378,25 @@ mod sections {
         assert_eq!(run.screen().hud.nav.tab, 1);
     }
 
+    /// **No control opens the section**: a section reachable only through More's fold has no disc, so Up from it lands
+    /// where the row usually seats.
+    #[test]
+    fn up_from_a_section_no_control_opens_lands_where_the_row_usually_seats() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let package = plx_appkit::player_hud::loaded::reference_without_openers_for_test("inline");
+        let mut run = Run::boot_in(Occupant::Plain, package, true);
+        run.screen().model.chapters = true;
+        run.toggle(Section::Chapters);
+        assert_eq!(run.open_sections(), vec![Section::Chapters]);
+        assert_eq!(run.group(), GROUP_STRIP.0);
+        run.step('U');
+        assert_eq!(run.group(), GROUP_ROW.0, "Up from the strip is the row above it");
+        let primary = run.screen().row_primary();
+        assert_eq!(run.screen().hud.nav.btn, primary, "no opener to land on: the row's usual landing");
+    }
+
     /// With Chapters closed, Info is the only section: Up from its first button is the row, landing on Info's own disc.
     #[test]
     fn up_from_the_info_buttons_lands_on_the_info_disc() {
