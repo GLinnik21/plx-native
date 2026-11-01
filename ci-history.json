@@ -1,4 +1,4 @@
-{"updated":"2026-11-01T18:55:05Z",
+{"updated":"2026-11-01T19:14:50Z",
 "ci":[
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4575,7 +4575,7 @@
 {"id":40902463041,"at":"2026-10-29T15:31:39Z","sha":"865aebe63","title":"Docs: Face::measure runs the same layout pass as render, so it does rasterize","pr":1007,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{}},
 {"id":40960596573,"at":"2026-10-29T21:46:36Z","sha":"e073b0d0d","title":"CI: Bump the actions group across 2 directories with 1 update","pr":1146,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":16,"ARM build + gates / build + verify":1011,"publish nightly prerelease":37}}
 ],
-"cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":9,"pull_request":3},"2026-10-25":{"push":10,"pull_request":0},"2026-10-26":{"push":8,"pull_request":17},"2026-10-27":{"push":1,"pull_request":0},"2026-10-28":{"push":0,"pull_request":1},"2026-10-29":{"push":7,"pull_request":5},"2026-10-30":{"push":3,"pull_request":5},"2026-10-31":{"push":10,"pull_request":0},"2026-11-01":{"push":3,"pull_request":8}},
+"cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":9,"pull_request":3},"2026-10-25":{"push":10,"pull_request":0},"2026-10-26":{"push":8,"pull_request":17},"2026-10-27":{"push":1,"pull_request":0},"2026-10-28":{"push":0,"pull_request":1},"2026-10-29":{"push":7,"pull_request":5},"2026-10-30":{"push":3,"pull_request":5},"2026-10-31":{"push":10,"pull_request":0},"2026-11-01":{"push":3,"pull_request":10}},
 "daily":[
 {"day":"2026-08-02","wf":"ci","event":"push","runs":1,"failed":1,"jobs":{"host checks (NOT a device gate)":119},"longest":119}
 ],
