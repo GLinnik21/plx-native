@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T01:33:49Z",
+ "generated": "2026-11-01T01:39:07Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -69,9 +69,9 @@
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 100,
-   "now": 325,
+   "now": 325.0,
    "prev7": 189.0,
    "shown": true,
    "state": "worse",
@@ -106,14 +106,14 @@
    "change7_pct": 21.0,
    "d30": 242.5,
    "delta30": 85.5,
-   "delta7": 57,
+   "delta7": 57.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 99,
-   "now": 328,
+   "now": 328.0,
    "prev7": 271,
    "shown": true,
    "state": "worse",
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -62.4,
+   "change30_pct": -62.3,
    "change7_pct": 14.3,
-   "d30": 1032.0,
-   "delta30": -643.5,
+   "d30": 1031,
+   "delta30": -642.5,
    "delta7": 48.5,
    "group": "ci",
    "id": "pr_wait",
@@ -166,17 +166,17 @@
   },
   {
    "change30_pct": -63.3,
-   "change7_pct": 16.8,
+   "change7_pct": 16.6,
    "d30": 1053.0,
-   "delta30": -666.5,
-   "delta7": 55.5,
+   "delta30": -667.0,
+   "delta7": 55,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 99,
-   "now": 386.5,
+   "now": 386,
    "prev7": 331,
    "shown": true,
    "state": "flat",
@@ -324,10 +324,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 31.4,
+   "change30_pct": 31.3,
    "change7_pct": 5.1,
-   "d30": 757,
-   "delta30": 238,
+   "d30": 758.0,
+   "delta30": 237.0,
    "delta7": 48.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -345,18 +345,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 21.6,
-   "change7_pct": 17.1,
+   "change30_pct": 21.1,
+   "change7_pct": 16.7,
    "d30": 315.0,
-   "delta30": 68.0,
-   "delta7": 56.0,
+   "delta30": 66.5,
+   "delta7": 54.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 100,
-   "now": 383,
+   "now": 381.5,
    "prev7": 327.0,
    "shown": true,
    "state": "flat",
@@ -367,17 +367,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 5.5,
+   "change7_pct": 5.7,
    "d30": null,
    "delta30": null,
-   "delta7": 17.5,
+   "delta7": 18.0,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 100,
-   "now": 333,
+   "now": 333.5,
    "prev7": 315.5,
    "shown": true,
    "state": "flat",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -9.9,
-   "change7_pct": 13.2,
+   "change30_pct": -9.8,
+   "change7_pct": 13.4,
    "d30": 266.5,
-   "delta30": -26.5,
-   "delta7": 28.0,
+   "delta30": -26.0,
+   "delta7": 28.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 100,
-   "now": 240,
+   "now": 240.5,
    "prev7": 212.0,
    "shown": true,
    "state": "flat",
@@ -459,9 +459,9 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 100,
-   "now": 176,
+   "now": 176.0,
    "prev7": 162.0,
    "shown": true,
    "state": "flat",
@@ -515,10 +515,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 117.6,
+   "change30_pct": 124.2,
    "change7_pct": 100.0,
-   "d30": 17,
-   "delta30": 20,
+   "d30": 16.5,
+   "delta30": 20.5,
    "delta7": 18.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -538,8 +538,8 @@
   {
    "change30_pct": 66.7,
    "change7_pct": 14.3,
-   "d30": 12,
-   "delta30": 8,
+   "d30": 12.0,
+   "delta30": 8.0,
    "delta7": 2.5,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -587,9 +587,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 100,
-   "now": 5,
+   "now": 5.0,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -602,15 +602,15 @@
    "change30_pct": -99.0,
    "change7_pct": 0.0,
    "d30": 286,
-   "delta30": -283,
-   "delta7": 0,
+   "delta30": -283.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 99,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -623,15 +623,15 @@
    "change30_pct": -99.7,
    "change7_pct": 0.0,
    "d30": 936,
-   "delta30": -933,
-   "delta7": 0,
+   "delta30": -933.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 99,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 72.0,
    "commits": [
     {
-     "pr": 1161,
-     "sha": "d55bf672f",
-     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
-    },
-    {
      "pr": 1186,
      "sha": "62d869d6b",
      "title": "The Watchlist's sort button is the Library's sort control"
@@ -715,23 +710,23 @@
      "pr": 1191,
      "sha": "e463ccb19",
      "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
+    },
+    {
+     "pr": 1192,
+     "sha": "b24e0a317",
+     "title": "Belarusian: a space between a number and its hour/minute unit"
     }
    ],
    "from": 189.0,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "since": "2026-10-31",
+   "since": "2026-11-01",
    "threshold_pct": 20.0,
-   "to": 325
+   "to": 325.0
   },
   {
    "change_pct": 35.6,
    "commits": [
-    {
-     "pr": 1161,
-     "sha": "d55bf672f",
-     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
-    },
     {
      "pr": 1186,
      "sha": "62d869d6b",
@@ -776,6 +771,11 @@
      "pr": 1191,
      "sha": "e463ccb19",
      "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
+    },
+    {
+     "pr": 1192,
+     "sha": "b24e0a317",
+     "title": "Belarusian: a space between a number and its hour/minute unit"
     }
    ],
    "from": 146,
@@ -789,11 +789,6 @@
    "change_pct": 21.0,
    "commits": [
     {
-     "pr": 1161,
-     "sha": "d55bf672f",
-     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
-    },
-    {
      "pr": 1186,
      "sha": "62d869d6b",
      "title": "The Watchlist's sort button is the Library's sort control"
@@ -837,6 +832,11 @@
      "pr": 1191,
      "sha": "e463ccb19",
      "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
+    },
+    {
+     "pr": 1192,
+     "sha": "b24e0a317",
+     "title": "Belarusian: a space between a number and its hour/minute unit"
     }
    ],
    "from": 271,
@@ -844,16 +844,11 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-01",
    "threshold_pct": 20.0,
-   "to": 328
+   "to": 328.0
   },
   {
    "change_pct": 18.6,
    "commits": [
-    {
-     "pr": 1161,
-     "sha": "d55bf672f",
-     "title": "HUD: BACK dismisses a Skip or Up Next offer and restores the discs"
-    },
     {
      "pr": 1186,
      "sha": "62d869d6b",
@@ -898,6 +893,11 @@
      "pr": 1191,
      "sha": "e463ccb19",
      "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
+    },
+    {
+     "pr": 1192,
+     "sha": "b24e0a317",
+     "title": "Belarusian: a space between a number and its hour/minute unit"
     }
    ],
    "from": 2094.0,
@@ -920,25 +920,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 383
+   "now": 381.5
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 333
+   "now": 333.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 328
+   "now": 328.0
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 325
+   "now": 325.0
   }
  ],
  "slowest_local": [
