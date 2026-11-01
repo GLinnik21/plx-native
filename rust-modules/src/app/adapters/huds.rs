@@ -34,7 +34,7 @@ use plx_appkit::hud_format::lint::{lint_with, LintLang, LintOptions};
 use plx_appkit::hud_format::parse::MAX_PACKAGE_BYTES;
 use plx_appkit::hud_format::Severity;
 use plx_appkit::player_hud::loaded::{load, LoadedHud};
-use plx_base::storage_worker::{submit_retained, TypedTicket};
+use plx_base::storage_worker::submit_retained;
 use plx_data::hudpacks::{
     Candidate, Entry, HudEffect, HudEvent, HudStore, Loc, Meta, Notice, ReadError, Setup, Sha, Unloadable, Verdict,
     WriteOutcome, BUILTIN_CLASSIC,
@@ -98,13 +98,20 @@ fn verdict(bytes: &[u8], app_version: &str) -> Verdict {
 /// symlink and owned by this uid. The store trusts the `source` an `installed.json` claims, so it may
 /// not read one a stranger could have written. Every other root keeps the mode it has.
 fn root_is_trusted(root: &Path) -> bool {
+    root_trusted_as(root, plx_base::paths::hud_dir_is_private(root))
+}
+
+/// [`root_is_trusted`] for a root known to be `private` or not. A private root that does not exist yet is
+/// trusted (there is nothing of a stranger's to read, and creating it checks it again afterwards); one that
+/// exists must be a real directory of ours that no one else can write.
+fn root_trusted_as(root: &Path, private: bool) -> bool {
     use std::os::unix::fs::MetadataExt;
-    if !plx_base::paths::hud_dir_is_private(root) {
+    if !private {
         return true;
     }
     match std::fs::symlink_metadata(root) {
-        Ok(meta) => meta.is_dir() && meta.uid() == unsafe { libc::geteuid() },
-        Err(_) => false,
+        Ok(meta) => meta.is_dir() && meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o022 == 0,
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
     }
 }
 
@@ -147,6 +154,7 @@ fn scan_dir(at: &Loc) -> Result<Vec<String>, ReadError> {
 
 fn read_file(at: &Loc, max_bytes: usize) -> Result<Vec<u8>, ReadError> {
     use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
     if !root_is_trusted(&at.root) {
         return Err(ReadError::Failed);
     }
@@ -159,7 +167,15 @@ fn read_file(at: &Loc, max_bytes: usize) -> Result<Vec<u8>, ReadError> {
         return Err(ReadError::TooLarge);
     }
     let mut bytes = Vec::new();
-    let file = std::fs::File::open(&path).map_err(|e| classify(&e))?;
+    // Never follow a link swapped in after the check, and never block on a FIFO swapped in for the file.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .map_err(|e| classify(&e))?;
+    if !file.metadata().map_err(|e| classify(&e))?.is_file() {
+        return Err(ReadError::Failed);
+    }
     // One byte over the bound proves a file that grew after the check.
     file.take(max_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|e| classify(&e))?;
     if bytes.len() > max_bytes {
@@ -192,8 +208,9 @@ fn write_file(at: &Loc, bytes: &[u8]) -> WriteOutcome {
         return WriteOutcome::Refused;
     }
     let path = at.path();
+    // One name per target, so a write that died leaves a file the next write overwrites.
     let mut temp = path.clone().into_os_string();
-    temp.push(format!(".{}.tmp", std::process::id()));
+    temp.push(".tmp");
     let temp = PathBuf::from(temp);
     let written = (|| {
         let mut file = std::fs::File::create(&temp)?;
@@ -235,7 +252,7 @@ enum Executor {
 }
 
 enum Slot<T> {
-    Waiting(TypedTicket<T>),
+    Waiting(std::sync::mpsc::Receiver<T>),
     #[cfg(test)]
     Done(Option<T>),
 }
@@ -244,7 +261,7 @@ impl<T> Slot<T> {
     /// The answer, `Some(None)` for a worker that died without one, `None` while it is still running.
     fn poll(&mut self) -> Option<Option<T>> {
         match self {
-            Slot::Waiting(ticket) => match ticket.try_recv() {
+            Slot::Waiting(answer) => match answer.try_recv() {
                 Ok(answer) => Some(Some(answer)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => None,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
@@ -258,11 +275,16 @@ impl<T> Slot<T> {
 impl Executor {
     fn run<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> Slot<T> {
         match self {
-            Executor::Worker => Slot::Waiting(submit_retained(move || {
-                let answer = job();
-                plx_machine::idle::invalidate();
-                answer
-            })),
+            Executor::Worker => {
+                // The answer is sent BEFORE the loop is woken: a wake that came first could find nothing
+                // yet, let the loop go idle again and never see the answer.
+                let (reply, answer) = std::sync::mpsc::channel();
+                let _ = submit_retained(move || {
+                    let _ = reply.send(job());
+                    plx_machine::idle::invalidate();
+                });
+                Slot::Waiting(answer)
+            }
             #[cfg(test)]
             Executor::Inline => Slot::Done(Some(job())),
         }
@@ -362,6 +384,9 @@ pub(crate) struct HudDriver {
     unfit: BTreeMap<(Sha, &'static str), Unfit>,
     logged: BTreeSet<(Sha, &'static str)>,
     reading: Option<Reading>,
+    /// Packs whose bytes could not be read for the compile: classic draws until the next listing or command
+    /// gives them another try (a read that failed once is not a verdict on the package).
+    read_failed: BTreeSet<Sha>,
     shown: Option<Arc<plx_appkit::hud_format::compile::Compiled>>,
     selection: Vec<String>,
     notices: Vec<Notice>,
@@ -386,6 +411,7 @@ impl HudDriver {
             unfit: BTreeMap::new(),
             logged: BTreeSet::new(),
             reading: None,
+            read_failed: BTreeSet::new(),
             shown: None,
             selection: Vec::new(),
             notices: Vec::new(),
@@ -480,6 +506,7 @@ impl HudDriver {
     }
 
     fn step(&mut self, event: HudEvent) {
+        self.read_failed.clear();
         let mut fx = Vec::new();
         self.store.step(event, &mut fx);
         self.apply(fx);
@@ -538,7 +565,7 @@ impl HudDriver {
                     let hud = self.compiled.as_ref().map(|(_, _, h)| h.clone());
                     return self.show(hud);
                 }
-                if self.unfit.contains_key(&(sha, language)) {
+                if self.unfit.contains_key(&(sha, language)) || self.read_failed.contains(&sha) {
                     return self.show(self.classic.clone());
                 }
                 if self.reading.as_ref().is_none_or(|r| r.sha != sha) {
@@ -578,11 +605,15 @@ impl HudDriver {
         self.reading = None;
         self.dirty = true;
         let language = env.cx.language().tag();
-        let bytes = answer.flatten();
-        let outcome = match &bytes {
-            None => Err("read"),
-            Some(bytes) => self.compile(bytes, env, language),
+        let Some(bytes) = answer.flatten() else {
+            self.read_failed.insert(sha);
+            if self.logged.insert((sha, language)) {
+                self.log.push(format!("hud: fallback package={} language={language} code=read", self.resolved_id()));
+            }
+            self.revision += 1;
+            return;
         };
+        let outcome = self.compile(&bytes, env, language);
         match outcome {
             Ok(hud) => {
                 self.unfit.remove(&(sha, language));
@@ -910,6 +941,48 @@ mod tests {
         assert!(!dir.0.join("packs/a.json").exists());
         let blocked = Loc { root: dir.0.join("drop/real.plxhud.json"), rel: "packs/b.json".into() };
         assert_eq!(write_file(&blocked, b"x"), WriteOutcome::Refused, "a root that is a file takes no write");
+    }
+
+    /// A private root (one in a directory anyone can write) is trusted when it does not exist yet, and when it is a
+    /// directory of ours that others cannot write; never when it is a link, or open to others.
+    #[test]
+    fn a_private_root_is_trusted_only_when_it_is_ours_and_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Dir::new("private-root");
+        let missing = dir.0.join("not-yet");
+        assert!(root_trusted_as(&missing, true), "a root that does not exist yet can be made");
+        assert!(read_file(&Loc { root: missing.clone(), rel: "installed.json".into() }, 10) == Err(ReadError::Missing));
+        let ours = dir.0.join("ours");
+        std::fs::create_dir(&ours).unwrap();
+        std::fs::set_permissions(&ours, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(root_trusted_as(&ours, true));
+        std::fs::set_permissions(&ours, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!root_trusted_as(&ours, true), "a root anyone can write is not believed");
+        assert!(root_trusted_as(&ours, false), "an ordinary root keeps the mode it has");
+        let link = dir.0.join("link");
+        std::os::unix::fs::symlink(&ours, &link).unwrap();
+        assert!(!root_trusted_as(&link, true), "a link is not a root");
+    }
+
+    /// A read that failed once is not a verdict: classic draws, no fit reason is recorded, and the next
+    /// command gives the package another try.
+    #[test]
+    fn a_pack_that_cannot_be_read_is_retried_after_the_next_command_and_is_not_unfit() {
+        let dir = Dir::new("read-retry");
+        let cx = english();
+        let mut driver = driver(&dir);
+        install_reference(&dir, &mut driver, &cx);
+        let sha = entry(&driver, REFERENCE_ID).unwrap().sha.unwrap();
+        let pack = dir.0.join("packs").join(format!("{}.plxhud.json", sha.hex()));
+        let kept = std::fs::read(&pack).unwrap();
+        driver.select(REFERENCE_ID.to_string());
+        std::fs::remove_file(&pack).unwrap();
+        assert!(settle(&mut driver, &cx).is_empty(), "classic draws while the bytes cannot be read");
+        assert!(driver.unfit(sha, "en").is_none(), "a read failure is not a fit verdict");
+        assert!(driver.take_log().iter().any(|l| l.contains("code=read")));
+        std::fs::write(&pack, kept).unwrap();
+        driver.select(REFERENCE_ID.to_string());
+        assert_eq!(settle(&mut driver, &cx).len(), 1, "the next command tries again, and the package draws");
     }
 
     #[test]

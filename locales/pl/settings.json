@@ -325,6 +325,6 @@
   "settings.hud.folder": "W folderze HUD",
   "settings.hud.install": "Zainstaluj",
   "settings.hud.install_question": "Zainstalować ten HUD?",
-  "settings.hud.install_body": "Ten plik skopiowano na telewizor i nie został zweryfikowany. Zmienia tylko wygląd elementów sterowania odtwarzaniem.",
+  "settings.hud.install_body": "Ten plik skopiowano na telewizor i nie został zweryfikowany. Zmienia wygląd elementów sterowania odtwarzaniem.",
   "settings.hud.remove": "Usuń"
 }

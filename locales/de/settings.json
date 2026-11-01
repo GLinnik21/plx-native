@@ -319,6 +319,6 @@
   "settings.hud.folder": "Im HUD-Ordner",
   "settings.hud.install": "Installieren",
   "settings.hud.install_question": "Dieses HUD installieren?",
-  "settings.hud.install_body": "Diese Datei wurde auf den Fernseher kopiert und nicht geprüft. Sie ändert nur das Aussehen der Wiedergabesteuerung.",
+  "settings.hud.install_body": "Diese Datei wurde auf den Fernseher kopiert und nicht geprüft. Sie ändert das Aussehen der Wiedergabesteuerung.",
   "settings.hud.remove": "Entfernen"
 }

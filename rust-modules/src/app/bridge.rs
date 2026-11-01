@@ -993,8 +993,12 @@ impl Bridge {
                 self.huds_refresh();
             }
             HudCmd::Select(id) => self.huds.select(id),
-            HudCmd::Remove(id) => self.huds.remove(id),
+            HudCmd::Remove(id) => {
+                self.huds_notice = None;
+                self.huds.remove(id);
+            }
             HudCmd::InstallDrop(sha) => {
+                self.huds_notice = None;
                 self.huds.install_drop(sha, plx_telemetry::telemetry::crashreport::now_secs());
             }
         }
@@ -1008,7 +1012,9 @@ impl Bridge {
             match plx_plex::plex::session::ProfileWrite::capture() {
                 Some(write) => {
                     let _ = plx_base::storage_worker::submit_retained(move || {
-                        plx_plex::plex::session::persist_profile_hud(&write, &id)
+                        if !plx_plex::plex::session::persist_profile_hud(&write, &id) {
+                            plx_base::eventlog::log("hud: selection not saved: the write was refused");
+                        }
                     });
                 }
                 None => plx_base::eventlog::log("hud: selection not saved: no profile is seated"),

@@ -322,6 +322,6 @@
   "settings.hud.folder": "Dans le dossier HUD",
   "settings.hud.install": "Installer",
   "settings.hud.install_question": "Installer ce HUD ?",
-  "settings.hud.install_body": "Ce fichier a été copié sur le téléviseur et n'a pas été vérifié. Il ne change que l'apparence des commandes de lecture.",
+  "settings.hud.install_body": "Ce fichier a été copié sur le téléviseur et n'a pas été vérifié. Il change l'apparence des commandes de lecture.",
   "settings.hud.remove": "Retirer"
 }

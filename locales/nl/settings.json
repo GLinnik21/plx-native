@@ -319,6 +319,6 @@
   "settings.hud.folder": "In de HUD-map",
   "settings.hud.install": "Installeren",
   "settings.hud.install_question": "Deze HUD installeren?",
-  "settings.hud.install_body": "Dit bestand is naar de tv gekopieerd en niet beoordeeld. Het verandert alleen hoe de afspeelknoppen eruitzien.",
+  "settings.hud.install_body": "Dit bestand is naar de tv gekopieerd en niet beoordeeld. Het verandert hoe de afspeelknoppen eruitzien.",
   "settings.hud.remove": "Verwijderen"
 }

@@ -1319,7 +1319,7 @@
     "description": "Settings > Playback > Player HUD: the question before an unreviewed file is installed."
   },
   "settings.hud.install_body": {
-    "value": "This file was copied to the TV and has not been reviewed. It only changes how the playback controls look.",
+    "value": "This file was copied to the TV and has not been reviewed. It changes how the playback controls look.",
     "description": "Settings > Playback > Player HUD: the body of the install question."
   },
   "settings.hud.remove": {

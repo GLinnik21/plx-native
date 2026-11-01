@@ -322,6 +322,6 @@
   "settings.hud.folder": "Nella cartella HUD",
   "settings.hud.install": "Installa",
   "settings.hud.install_question": "Installare questo HUD?",
-  "settings.hud.install_body": "Questo file è stato copiato sulla TV e non è stato verificato. Cambia solo l'aspetto dei controlli di riproduzione.",
+  "settings.hud.install_body": "Questo file è stato copiato sulla TV e non è stato verificato. Cambia l'aspetto dei controlli di riproduzione.",
   "settings.hud.remove": "Rimuovi"
 }

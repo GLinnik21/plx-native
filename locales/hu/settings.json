@@ -319,6 +319,6 @@
   "settings.hud.folder": "A HUD mappában",
   "settings.hud.install": "Telepítés",
   "settings.hud.install_question": "Telepíted ezt a HUD-ot?",
-  "settings.hud.install_body": "Ezt a fájlt a tévére másolták, és nem ellenőrizték. Csak a lejátszásvezérlők megjelenését változtatja meg.",
+  "settings.hud.install_body": "Ezt a fájlt a tévére másolták, és nem ellenőrizték. A lejátszásvezérlők megjelenését változtatja meg.",
   "settings.hud.remove": "Eltávolítás"
 }

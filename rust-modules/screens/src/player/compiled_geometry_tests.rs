@@ -323,8 +323,8 @@ fn a_failed_playback_seeds_no_folded_rows_into_more() {
     assert_eq!(page.more_folds(meta.view()), Vec::new(), "the failure read-out owns the frame: no route to a section or a seek");
 }
 
-/// **A package handed over while the page is live** (the app swaps `PlayerScreen::compiled` the frame a selection
-/// compiles, `run::prepare_window`): the held control index and the focus group of the OLD package may point past the
+/// **A package handed over while the page is live** (`run::prepare_window` copies the app's current compile into
+/// a mounted page's `PlayerScreen::compiled`): the held control index and the focus group of the OLD package may point past the
 /// new one's row. Every query the page answers from the compile (the press, the primary control, the row's length,
 /// the scrubber's place) must not panic, and a press on a control that is not there performs nothing. The DRAW
 /// needs a GL context and is the simulator's and the television's to prove.

@@ -325,6 +325,6 @@
   "settings.hud.folder": "У тэчцы HUD",
   "settings.hud.install": "Усталяваць",
   "settings.hud.install_question": "Усталяваць гэты HUD?",
-  "settings.hud.install_body": "Гэты файл скапіраваны на тэлевізар і не правяраўся. Ён змяняе толькі выгляд элементаў кіравання прайграваннем.",
+  "settings.hud.install_body": "Гэты файл скапіраваны на тэлевізар і не правяраўся. Ён змяняе выгляд элементаў кіравання прайграваннем.",
   "settings.hud.remove": "Выдаліць"
 }
