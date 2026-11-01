@@ -1883,9 +1883,9 @@ mod caption_rise_pins {
         }
     }
 
-    /// The spring stops asking for frames once it is within the motion module's relative rest distance
-    /// (about 0.125 px at a 124 px rise), so it must land exactly on its target there: a limit left 0.1 px
-    /// short would draw captions off today's 780 with the section gone.
+    /// The spring stops asking for frames when `plx_machine::motion::moving` says it has stopped (about 0.125 px at
+    /// a 124 px rise), so it must land exactly on its target there: a limit left 0.1 px short would draw captions
+    /// off today's 780 with the section gone. The test reads the shared rest test, so loosening it cannot slip past.
     #[test]
     fn the_rise_lands_exactly_where_the_spring_stops_asking_for_frames() {
         for open in [true, false] {
@@ -1898,9 +1898,11 @@ mod caption_rise_pins {
             for i in 0..300 {
                 rig.frame();
                 let (rise, target) = (rig.m.caption_rise()[LOW], rig.m.caption_rise_target()[LOW]);
-                let d = (rise - target).abs();
-                let rest = (1e-3 * (1.0 + rise.abs().max(target.abs()))).min(0.25);
-                assert!(d == 0.0 || d > rest, "open={open} frame {i}: {rise} is {d} px short of {target} (rest distance {rest})");
+                assert!(
+                    rise == target || plx_machine::motion::moving(rise, target, 0.0, 0.016_667),
+                    "open={open} frame {i}: {rise} is {} px short of {target} and nothing asks for another frame",
+                    (rise - target).abs()
+                );
             }
         }
     }
