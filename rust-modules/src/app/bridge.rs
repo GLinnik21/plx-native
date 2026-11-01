@@ -3172,11 +3172,19 @@ pub(crate) fn player_hud_policy(d: &Dispatcher<AppHost>) -> HudPolicy {
     }
 }
 
+/// Is a HUD section of the player page up, one still fading out included? Chapters and Info are the page's own
+/// state, not surfaces, so [`player_overlay_up`] cannot see them; the presented set is the logical one plus what
+/// has not finished fading ([`HudMotion::presented`](plx_appkit::player_hud::motion::HudMotion::presented)), the
+/// way a closing panel still counted as up.
+pub(crate) fn player_section_up(d: &Dispatcher<AppHost>) -> bool {
+    player(d).is_some_and(|p| p.hud.sections.any() || p.row.presented() != 0)
+}
+
 /// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
 ///
-/// No, while any of the player's own overlay panels (`OverlayKind::Tracks`/`Info`/
-/// `Chapters`/`More`/`Timing`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
-/// the screen, but during playback that content routinely spans ~90% of the screen's width from
+/// No, while any of the player's own panels is up: an overlay (`OverlayKind::Tracks`/`More`/`Timing`) or an open
+/// HUD section (Info, Chapters; fading ones count). `app/diagnostics.rs`'s panel is sized to its content rather than
+/// to the screen, but during playback that content routinely spans ~90% of the screen's width from
 /// the left safe margin — wide enough to reach every one of those panels' bottom-right-anchored
 /// rects — and on the player route it has always painted genuinely last, i.e. on TOP of them.
 /// `More` is the sharpest case: it carries the very "Stats for nerds" toggle this panel answers
@@ -3184,9 +3192,10 @@ pub(crate) fn player_hud_policy(d: &Dispatcher<AppHost>) -> HudPolicy {
 /// routes never had this problem because `app/run.rs`'s other `diagnostics.draw()` call already
 /// sits UNDER that route's own popovers (the account/item menu carries the same toggle there) —
 /// this is the player route catching up to a rule the rest of the app already keeps, now that one
-/// of its own panels carries a control too.
+/// of its own panels carries a control too. Info and Chapters were surfaces when this rule was made and
+/// are sections now; the rule did not change, only where it reads them.
 pub(crate) fn player_diagnostics_visible(d: &Dispatcher<AppHost>) -> bool {
-    !player_overlay_up(d)
+    !player_overlay_up(d) && !player_section_up(d)
 }
 
 /// Dismiss every player panel — the exit ritual's half of `close_player_overlays`.

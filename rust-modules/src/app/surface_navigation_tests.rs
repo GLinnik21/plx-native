@@ -429,6 +429,43 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
     }
 }
 
+/// **The Stats panel stays behind an open HUD section too.** On `main` the Info card and the Chapters strip were
+/// `PlayerOverlay` surfaces, so `player_diagnostics_visible` held the panel back while either was up (and while one
+/// faded out); a section is the page's own state, not a surface, so the gate reads the page's sections as well. The
+/// rows are the ones `player_diagnostics_hide_behind_any_open_player_overlay` had before the switch: open, and
+/// closed once the fade has settled.
+#[test]
+fn player_diagnostics_hide_behind_an_open_hud_section() {
+    use plx_appkit::player_hud::command::Section;
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    let mut t = 0u32;
+    let mut next = |d: &mut Dispatcher<AppHost>| {
+        t += 1;
+        frame(d, &mut rig, AppArg::Player, tick(t * 16), vec![])
+    };
+    next(&mut d);
+    assert!(player_diagnostics_visible(&d), "nothing is open yet");
+    toggle_player_section(&mut d, Section::Info);
+    for _ in 0..4 {
+        next(&mut d);
+    }
+    assert!(player(&d).is_some_and(|p| p.hud.sections.contains(Section::Info)), "premise: the section opened");
+    assert!(!player_diagnostics_visible(&d), "Info is open: the panel stays clear of it");
+    toggle_player_section(&mut d, Section::Info);
+    next(&mut d);
+    assert!(player(&d).is_some_and(|p| !p.hud.sections.any()), "premise: the section is closed");
+    assert!(!player_diagnostics_visible(&d), "a section fading out still counts, as a fading panel did");
+    for _ in 0..200 {
+        next(&mut d);
+        if player_diagnostics_visible(&d) {
+            break;
+        }
+    }
+    assert!(player_diagnostics_visible(&d), "closed: the panel draws again once the fade has settled");
+}
+
 /// Phase 5b: the Settings surface is PRESENTED on the tree, owns input from its first frame,
 /// names the heartbeat word of its top page, walks its own stack on BACK (root → Legal →
 /// back → root) and only then lets the container dismiss it — with the app's page untouched.
