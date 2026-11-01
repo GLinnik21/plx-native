@@ -8,29 +8,43 @@
 //! ```
 //!
 //! **Exit codes.** `--hud-lint`: 0 when the package has no finding, 1 when it has any (a warning is a
-//! finding: the registry's CI treats `HUD-W0602` as an error), 2 for a usage error. A usage error is
+//! finding: the registry's CI treats `HUD-W0602` as an error; a state over its class's cost ceiling,
+//! `HUD-E1401`, is an error), 2 for a usage error. **Cost lines** (one per state, against its class's
+//! ceiling: `docs/hud-plugins.md` "Cost") follow the findings in text and are the report's `costs` array in
+//! JSON; they are information, so a clean package prints them and exits 0. A usage error is
 //! a bad command line, a file that cannot be read as UTF-8 text, or fonts that cannot be loaded; each
 //! is ONE line on stderr and nothing on stdout. A package that does not parse is not a usage error: its
 //! parse findings are the report, so the exit code is 1. `--hud-schema` and `--hud-export` exit 0, or 2
 //! for a usage error (an unknown export id included).
 //!
-//! **Everything that decides is [`run`]**, a pure function: the file read and the text measurer are
-//! INJECTED (`read_file`, `measure`) and the output goes into two strings, so the exit codes and the
-//! bytes are unit-tested without a file, a font or a process. The measurer is a FACTORY and is called
+//! **Everything that decides is [`run`]**, a pure function: the file read and the two text measurers are
+//! INJECTED (`read_file`, `measure`, `price`) and the output goes into two strings, so the exit codes and
+//! the bytes are unit-tested without a file, a font or a process. A measurer is a FACTORY and is called
 //! only by `--hud-lint` and only once the command line and the file have been accepted: `--hud-schema`
 //! and `--hud-export` never touch a font. [`main_from`] is the thin process shell and the ONLY IO here:
-//! it wires `std::fs`, the real measurer and the two standard streams.
+//! it wires `std::fs`, the real measurers and the two standard streams.
 //!
-//! **The real measurer** is [`plx_gfx::text::TtfMeasure`] over the shipped `appfont*.ttf` faces from
-//! `PLXNATIVE_APP_DIR` (the simulator's `plx_base::paths::app_dir`), opened by
-//! [`plx_gfx::text::init_fonts_headless`] with no window and no GL context. There is no unmeasured
-//! fallback: when the faces cannot be opened the run is a usage error, `cannot load fonts: ...`.
-//! The simulator measures with the host's SDL_ttf, which sums fractional advances, where the
-//! television's 2.0.x sums whole-pixel ones (`plx_base::fontcov::advances`), so a width here can be
-//! a few pixels off the television's: the TV's own compile decides (`docs/hud-plugins.md`, "Text fit").
+//! **Two measurers, one per question; the lint is two passes** (`plx_appkit::hud_format::lint`). Text FIT
+//! (`HUD-E0601` and the geometry: the fit pass, `lint_fit`) is measured by [`plx_gfx::text::TtfMeasure`] over
+//! the shipped `appfont*.ttf` faces from `PLXNATIVE_APP_DIR` (the simulator's `plx_base::paths::app_dir`),
+//! opened by [`plx_gfx::text::init_fonts_headless`] with no window and no GL context. The host's SDL_ttf sums
+//! fractional advances, where the television's 2.0.x sums whole-pixel ones (`plx_base::fontcov::advances`), so
+//! a width here can be a few pixels off the television's: for text fit the TV's own compile decides
+//! (`docs/hud-plugins.md`, "Text fit"). The COST (`HUD-E1401` and the cost lines: the price pass, `lint_price`)
+//! is another matter. Its ceilings are numbers taken with ONE model, the whole-pixel advances of `appfont.ttf`
+//! and `appfont-bold.ttf` and a line height of 1.21 x the size, on every side: priced by the host's SDL_ttf the
+//! classic's Up Next and Info states and every two-section state of the reference would read over a ceiling
+//! that the same bytes, which the television ran, pass (4 of the 12 terms). So the cost is priced by
+//! [`WholePixelMeasure`], a pure value over the two [`Face`]s, which this module builds from the bytes of the
+//! two files `plx_gfx::text::app_font_path` returns (`appfont.ttf` and `appfont-bold.ttf`, the files the text
+//! fit's measurer opens): the read is the only IO, here ([`read_face`]), and the simulator and every other
+//! side print one number. The fallback faces (CJK, emoji, Arabic, Hebrew) are neither read nor priced: a
+//! character only one of them draws is priced at the base face's `.notdef` advance. There is no unmeasured
+//! fallback: when the two files cannot be opened or read the run is a usage error, `cannot load fonts: ...`.
 
-use plx_appkit::hud_format::lint::{lint, LintLang};
+use plx_appkit::hud_format::lint::{lint_report_priced, Linted, LintLang, LintOptions};
 use plx_appkit::hud_format::{report, schema, schema_emit, BUILTIN_CLASSIC};
+use plx_base::fontcov::advances::{Face, WholePixelMeasure};
 use plx_machine::machine::Measure;
 
 /// The three flags that make the simulator binary run a HUD tool instead of the application.
@@ -41,7 +55,7 @@ const EXPORT: &str = "--hud-export";
 /// The packages `--hud-export` can print: id and bytes. One entry today; PR6's examples add theirs.
 const EXPORTS: &[(&str, &str)] = &[("builtin:classic", BUILTIN_CLASSIC)];
 
-/// Every finding of the linted package is reported on stdout; 0 means there was none.
+/// Every finding of the linted package is reported on stdout, then its cost lines; 0 means there was no finding.
 const EXIT_CLEAN: i32 = 0;
 /// The package has at least one finding.
 const EXIT_FINDINGS: i32 = 1;
@@ -149,13 +163,15 @@ fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 /// Run one HUD tool. `args` is the command line after the program name. `read_file` reads a package
-/// as UTF-8 text (the error is the reason, without the path), `measure` builds the text measurer and is
-/// called at most once, by `--hud-lint` only. The report goes to `out`, the one-line reason of a usage
-/// error to `err`. Returns the process exit code (see the module doc).
+/// as UTF-8 text (the error is the reason, without the path), `measure` builds the text measurer and
+/// `price` the one that prices the cost (see the module doc); each is called at most once, by `--hud-lint`
+/// only. The report goes to `out`, the one-line reason of a usage error to `err`. Returns the process exit
+/// code (see the module doc).
 pub fn run(
     args: &[String],
     read_file: &dyn Fn(&str) -> Result<String, String>,
     measure: &dyn Fn() -> Result<Box<dyn Measure>, String>,
+    price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     out: &mut String,
     err: &mut String,
 ) -> i32 {
@@ -198,11 +214,17 @@ pub fn run(
                 Ok(measure) => measure,
                 Err(reason) => return usage(&reason, false),
             };
-            let findings = lint(&text, measure.as_ref(), &langs);
+            let price = match price() {
+                Ok(price) => price,
+                Err(reason) => return usage(&reason, false),
+            };
+            let Linted { findings, costs } =
+                lint_report_priced(&text, measure.as_ref(), price.as_ref(), &langs, &LintOptions::default());
             out.push_str(&match format {
-                Format::Text => report::text(&file, &findings),
-                Format::Json => report::json_text(&file, &findings),
+                Format::Text => report::text_with_costs(&file, &findings, &costs),
+                Format::Json => report::json_text_with_costs(&file, &findings, &costs),
             });
+            // the exit code is the findings' alone: a cost line is information, `HUD-E1401` is the verdict
             if findings.is_empty() {
                 EXIT_CLEAN
             } else {
@@ -220,6 +242,22 @@ fn ttf_measure() -> Result<Box<dyn Measure>, String> {
     Ok(Box::new(plx_gfx::text::TtfMeasure))
 }
 
+/// The advances of one shipped face, with the reason as `path: reason` when it cannot be read. The path is
+/// `plx_gfx::text::app_font_path`, the file [`ttf_measure`] opens, so the text fit and the cost are of one font.
+fn read_face(bold: bool) -> Result<Face, String> {
+    let path = plx_gfx::text::app_font_path(bold);
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Face::parse(&bytes).ok_or_else(|| format!("{}: unreadable metrics tables", path.display()))
+}
+
+/// **The pricing measurer**: [`WholePixelMeasure`], the cost model every side prices with, over the two files
+/// `app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf`. The reads are this function's (the
+/// simulator's IO); the model is a pure value from `plx_base`. Needs no SDL.
+fn price_measure() -> Result<Box<dyn Measure>, String> {
+    let faces = read_face(false).and_then(|regular| Ok(WholePixelMeasure::new(regular, read_face(true)?)));
+    faces.map(|m| Box::new(m) as Box<dyn Measure>).map_err(|reason| format!("cannot load fonts: {reason}"))
+}
+
 /// A package file as UTF-8 text, with the reason as a short string when it is not one.
 fn read_package(path: &str) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -232,7 +270,7 @@ fn read_package(path: &str) -> Result<String, String> {
 pub fn main_from(args: &[String]) -> i32 {
     use std::io::Write;
     let (mut out, mut err) = (String::new(), String::new());
-    let code = run(args, &read_package, &ttf_measure, &mut out, &mut err);
+    let code = run(args, &read_package, &ttf_measure, &price_measure, &mut out, &mut err);
     // Written whole and flushed here, not by `exit_now` alone: a closed pipe (`| head`) is the
     // reader's choice and must not turn the exit code into a panic.
     let _ = std::io::stdout().lock().write_all(out.as_bytes());
@@ -244,6 +282,8 @@ pub fn main_from(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_appkit::hud_format::lint::{lint_report_priced, Linted};
+    use plx_appkit::hud_format::Finding;
     use plx_base::fontcov::advances::ShippedMeasure;
     use std::cell::Cell;
     use std::ffi::CStr;
@@ -255,6 +295,16 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|a| (*a).to_owned()).collect()
+    }
+
+    /// The whole lint with the tests' one measure, `ShippedMeasure`, for both passes.
+    fn lint_report(text: &str, langs: &[LintLang], opts: &LintOptions) -> Linted {
+        lint_report_priced(text, &ShippedMeasure, &ShippedMeasure, langs, opts)
+    }
+
+    /// The findings of [`lint_report`] in every language, with the default options.
+    fn lint(text: &str, langs: &[LintLang]) -> Vec<Finding> {
+        lint_report(text, langs, &LintOptions::default()).findings
     }
 
     /// The shipped faces' real advances, the measurer the lint goldens use.
@@ -287,14 +337,25 @@ mod tests {
         move |_| Ok(text.to_owned())
     }
 
-    /// Run with a result of `(exit code, stdout, stderr)`.
+    /// Run with a result of `(exit code, stdout, stderr)`; the cost is priced by [`shipped`], the same
+    /// advances as `measure`'s in every test that passes `shipped`.
     fn go(
         list: &[&str],
         read: &dyn Fn(&str) -> Result<String, String>,
         measure: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     ) -> (i32, String, String) {
+        go_priced(list, read, measure, &shipped)
+    }
+
+    /// [`go`] with the pricing measurer given.
+    fn go_priced(
+        list: &[&str],
+        read: &dyn Fn(&str) -> Result<String, String>,
+        measure: &dyn Fn() -> Result<Box<dyn Measure>, String>,
+        price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
+    ) -> (i32, String, String) {
         let (mut out, mut err) = (String::new(), String::new());
-        let code = run(&args(list), read, measure, &mut out, &mut err);
+        let code = run(&args(list), read, measure, price, &mut out, &mut err);
         (code, out, err)
     }
 
@@ -312,18 +373,41 @@ mod tests {
         calls.get()
     }
 
+    /// The cost lines of a report: every line that is not a finding (`<file>: cost ...`).
+    fn cost_lines(out: &str) -> Vec<&str> {
+        out.lines().filter(|l| l.contains(": cost ")).collect()
+    }
+
     #[test]
-    fn hud_lint_exits_0_and_prints_nothing_for_the_builtin_classic() {
+    fn hud_lint_exits_0_for_the_builtin_classic_and_prints_its_cost_lines_and_nothing_else() {
         let (code, out, err) = go(&["--hud-lint", "classic.plxhud.json"], &serve(BUILTIN_CLASSIC), &shipped);
-        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+        assert_eq!((code, err.as_str()), (0, ""));
+        let lines = cost_lines(&out);
+        assert!(!lines.is_empty(), "{out}");
+        assert_eq!(lines.len(), out.lines().count(), "a clean package prints cost lines and no finding: {out}");
+        assert!(lines.iter().all(|l| l.starts_with("classic.plxhud.json: cost ")), "{out}");
         let (code, out, err) = go(
             &["--hud-lint", "classic.plxhud.json", "--format", "json", "--lang", "all"],
             &serve(BUILTIN_CLASSIC),
             &shipped,
         );
         assert_eq!((code, err.as_str()), (0, ""));
-        assert_eq!(out, report::json_text("classic.plxhud.json", &[]));
+        let costs = lint_report(BUILTIN_CLASSIC, &LintLang::shipped(), &LintOptions::default()).costs;
+        assert_eq!(out, report::json_text_with_costs("classic.plxhud.json", &[], &costs));
         assert!(out.contains("\"findings\": []"), "{out}");
+        assert!(out.contains("\"costs\": ["), "{out}");
+    }
+
+    #[test]
+    fn a_cost_line_names_the_state_its_class_and_each_term_against_its_ceiling() {
+        let (code, out, _) = go(&["--hud-lint", "c.json", "--lang", "en"], &serve(BUILTIN_CLASSIC), &shipped);
+        assert_eq!(code, 0);
+        let film = cost_lines(&out)
+            .into_iter()
+            .find(|l| l.contains(": cost compact,movie discs (compact):"))
+            .unwrap_or_else(|| panic!("the film's line: {out}"));
+        assert!(film.contains("draw_ops 9/13, glyph_runs 6/9, texture_bytes 49152/256120, blended_px 945408/985088"), "{film}");
+        assert!(film.ends_with("[en]"), "one language keeps its tag: {film}");
     }
 
     #[test]
@@ -365,9 +449,11 @@ mod tests {
             &reads(REFERENCE_FIXTURE.to_owned()),
             &shipped,
         );
-        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert_eq!(cost_lines(&out).len(), out.lines().count(), "no finding, only cost lines: {out}");
 
-        let expected = lint(&edited, &ShippedMeasure, &en);
+        let linted = lint_report(&edited, &en, &LintOptions::default());
+        let expected = linted.findings.clone();
         assert_eq!(expected.len(), 1, "{}", report::text("small-disc.plxhud.json", &expected));
         assert_eq!(expected[0].code, "HUD-E0603");
         let (code, out, err) = go(
@@ -376,7 +462,7 @@ mod tests {
             &shipped,
         );
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(out, report::json_text("small-disc.plxhud.json", &expected));
+        assert_eq!(out, report::json_text_with_costs("small-disc.plxhud.json", &expected, &linted.costs));
         assert!(out.contains("\"context\""), "a geometric finding carries its context: {out}");
         assert!(out.contains("\"code\": \"HUD-E0603\""), "{out}");
         assert!(out.contains("\"lint\": 1"), "{out}");
@@ -384,7 +470,7 @@ mod tests {
         let (code, text, err) =
             go(&["--hud-lint", "small-disc.plxhud.json", "--lang", "en"], &reads(edited), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(text, report::text("small-disc.plxhud.json", &expected));
+        assert_eq!(text, report::text_with_costs("small-disc.plxhud.json", &expected, &linted.costs));
         assert!(text.contains(" error HUD-E0603"), "{text}");
     }
 
@@ -437,6 +523,40 @@ mod tests {
         let (code, out, err) = go(&["--hud-lint", "p.json"], &serve(BUILTIN_CLASSIC), &no_fonts);
         assert_eq!((code, out.as_str()), (2, ""));
         assert_eq!(err, "plxnative-sim: cannot load fonts: no appfont.ttf\n");
+        // the pricing measurer too: no cost is read off a measure that is not the television's
+        let (code, out, err) = go_priced(&["--hud-lint", "p.json"], &serve(BUILTIN_CLASSIC), &shipped, &no_fonts);
+        assert_eq!((code, out.as_str()), (2, ""));
+        assert_eq!(err, "plxnative-sim: cannot load fonts: no appfont.ttf\n");
+    }
+
+    /// A measurer a fraction wider than the television's, standing for the simulator's fractional sums.
+    struct Wider;
+
+    impl Measure for Wider {
+        fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+            ShippedMeasure.width(s, sz, bold) * 1.07
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            ShippedMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            ShippedMeasure.line_h(sz)
+        }
+    }
+
+    #[test]
+    fn the_cost_is_priced_by_the_price_measurer_and_the_text_is_fitted_by_the_other() {
+        let wider = || -> Result<Box<dyn Measure>, String> { Ok(Box::new(Wider)) };
+        let list = ["--hud-lint", "classic.plxhud.json", "--lang", "all"];
+        // the television's own prices, from a run that measures everything with its advances
+        let (code, tv, _) = go_priced(&list, &serve(BUILTIN_CLASSIC), &shipped, &shipped);
+        assert_eq!(code, 0, "{tv}");
+        // the text fitted by a wider measurer, the cost priced by the television's: the same cost lines
+        let (_, priced, _) = go_priced(&list, &serve(BUILTIN_CLASSIC), &wider, &shipped);
+        assert_eq!(cost_lines(&priced), cost_lines(&tv));
+        // and the converse, so the assertion above can fail: the wider measurer alone prices differently
+        let (_, wide, _) = go_priced(&list, &serve(BUILTIN_CLASSIC), &wider, &wider);
+        assert_ne!(cost_lines(&wide), cost_lines(&tv), "a wider measurer moves a cost");
     }
 
     #[test]
@@ -448,15 +568,19 @@ mod tests {
             read.set(seen);
             Ok(BUILTIN_CLASSIC.to_owned())
         };
-        let built = Cell::new(0);
+        let (built, priced) = (Cell::new(0), Cell::new(0));
         let factory = || -> Result<Box<dyn Measure>, String> {
             built.set(built.get() + 1);
             Ok(Box::new(ShippedMeasure))
         };
-        let (code, _, _) = go(&["--hud-lint", "dir/my hud.json", "--lang", "all"], &reader, &factory);
+        let price = || -> Result<Box<dyn Measure>, String> {
+            priced.set(priced.get() + 1);
+            Ok(Box::new(ShippedMeasure))
+        };
+        let (code, _, _) = go_priced(&["--hud-lint", "dir/my hud.json", "--lang", "all"], &reader, &factory, &price);
         assert_eq!(code, 0);
         assert_eq!(read.take(), ["dir/my hud.json"]);
-        assert_eq!(built.get(), 1);
+        assert_eq!((built.get(), priced.get()), (1, 1), "each measurer is built once, for all eleven languages");
     }
 
     #[test]
@@ -475,18 +599,20 @@ mod tests {
     #[test]
     fn json_output_is_report_json_text_of_the_findings_lint_returns() {
         let bytes = "{\n  \"format\": \"1.0\" ,}";
-        let expected = lint(bytes, &ShippedMeasure, &LintLang::shipped());
+        let expected = lint(bytes, &LintLang::shipped());
         assert!(!expected.is_empty());
         let (code, out, err) = go(&["--hud-lint", "bad.plxhud.json", "--format", "json"], &serve(bytes), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(out, report::json_text("bad.plxhud.json", &expected));
+        // a package that does not parse has no states: an empty `costs`
+        assert_eq!(out, report::json_text_with_costs("bad.plxhud.json", &expected, &[]));
+        assert!(out.contains("\"costs\": []"), "{out}");
         assert!(out.starts_with("{\n"), "{out}");
         assert!(out.contains("\"file\": \"bad.plxhud.json\""), "{out}");
         assert!(out.contains("\"lint\": 1"), "{out}");
         assert!(out.ends_with("}\n"), "{out}");
         let (code, text, _) = go(&["--hud-lint", "bad.plxhud.json", "--format", "text"], &serve(bytes), &shipped);
         assert_eq!(code, 1);
-        assert_eq!(text, report::text("bad.plxhud.json", &expected));
+        assert_eq!(text, report::text("bad.plxhud.json", &expected), "no cost line without a package");
         let (_, default, _) = go(&["--hud-lint", "bad.plxhud.json"], &serve(bytes), &shipped);
         assert_eq!(default, text, "text is the default format");
     }
@@ -519,7 +645,7 @@ mod tests {
             Err("unreachable".to_owned())
         };
         for list in [&["--hud-schema"][..], &["--hud-export", "builtin:classic"]] {
-            let (code, _, _) = go(list, &reader, &factory);
+            let (code, _, _) = go_priced(list, &reader, &factory, &factory);
             assert_eq!(code, 0, "{list:?}");
         }
         assert_eq!((built.get(), read.get()), (0, 0));
@@ -561,8 +687,37 @@ mod tests {
         // and the whole tool over it: one language of the classic, from the file, exit 0, nothing printed
         let classic = concat!(env!("CARGO_MANIFEST_DIR"), "/appkit/src/hud_format/fixtures/classic.plxhud.json");
         let (mut out, mut err) = (String::new(), String::new());
-        let code = run(&args(&["--hud-lint", classic, "--lang", "de"]), &read_package, &ttf_measure, &mut out, &mut err);
-        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+        let code = run(
+            &args(&["--hud-lint", classic, "--lang", "de"]),
+            &read_package,
+            &ttf_measure,
+            &price_measure,
+            &mut out,
+            &mut err,
+        );
+        assert_eq!((code, err.as_str()), (0, ""));
+        assert_eq!(cost_lines(&out).len(), out.lines().count(), "no finding, only cost lines: {out}");
+
+        // The pricing measurer: no SDL, the same files, and the host tests' whole-pixel advances (the child's
+        // application directory is `pkg/`, which `ShippedMeasure` reads), so the simulator prices what the
+        // ceilings were taken with.
+        let price = price_measure().expect("the shipped faces' metrics read");
+        for (text, size, bold) in [("Resume playback", 28, false), ("Resume playback", 28, true), ("Пачаць прагляд спачатку", 20, false), ("Następny odcinek", 40, true)] {
+            let c = std::ffi::CString::new(text).expect("no NUL");
+            assert_eq!(price.width(&c, size, bold), ShippedMeasure.width(&c, size, bold), "{text:?} at {size} bold={bold}");
+        }
+        assert_eq!((price.line_h(28), price.cap_h(28)), (ShippedMeasure.line_h(28), ShippedMeasure.cap_h(28)));
+        // and the whole tool over both real measurers: the classic and the reference in all eleven languages
+        // are not rejected, and the cost lines are the television's (`ShippedMeasure`'s), not SDL_ttf's
+        for (name, text) in [("classic", CLASSIC_FIXTURE), ("reference", REFERENCE_FIXTURE)] {
+            let file = format!("{name}.plxhud.json");
+            let read = move |_: &str| -> Result<String, String> { Ok(text.to_owned()) };
+            let (mut out, mut err) = (String::new(), String::new());
+            let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &read, &ttf_measure, &price_measure, &mut out, &mut err);
+            assert_eq!((code, err.as_str()), (0, ""), "{name}: {out}");
+            let tv = lint_report(text, &LintLang::shipped(), &LintOptions::default()).costs;
+            assert_eq!(out, report::text_with_costs(&file, &[], &tv), "{name}: the cost lines are the television's");
+        }
     }
 
     #[test]

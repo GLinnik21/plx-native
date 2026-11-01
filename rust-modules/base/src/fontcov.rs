@@ -431,20 +431,33 @@ pub fn shipped(name: &str) -> &'static Result<Coverage, String> {
     })
 }
 
-/// **The shipped faces' horizontal advances, as a host-test text measure.** Unit tests have no
-/// SDL_ttf, so every other test `Measure` is a per-character guess — and a guess cannot say whether
-/// a translated line fits its row. This one reads `cmap`, `head`, `hhea` and `hmtx` out of
-/// `pkg/appfont*.ttf` and sums one advance per character, each rounded to a WHOLE pixel at the
+/// **The shipped faces' horizontal advances: one text model, the price of a HUD state everywhere.** Unit
+/// tests have no SDL_ttf, so every other test `Measure` is a per-character guess, and a guess cannot say
+/// whether a translated line fits its row. This module reads `cmap`, `head`, `hhea` and `hmtx` out of
+/// `appfont*.ttf` ([`Face::parse`]) and sums one advance per character, each rounded to a WHOLE pixel at the
 /// requested size: the faces are opened with hinting on (`TTF_HINTING_LIGHT`), so FreeType hands
 /// SDL2_ttf 2.0.x (the only versions any television ships) pixel-rounded advances, which it caches
 /// per glyph (`FT_CEIL(horiAdvance)`), and `TTF_SizeUTF8` is a plain left-to-right sum of them. The
 /// simulator's newer SDL_ttf sums fractional advances instead, which is why a sub-line the
 /// simulator fits can still come out ellipsised on the television (2026-09-28, the Belarusian
 /// Settings root).
-#[cfg(any(test, feature = "test-support"))]
+///
+/// **What ships.** [`Face`] (with [`Face::parse`] and [`Face::width`]), [`LINE_HEIGHT`], [`CAP_HEIGHT`] and
+/// [`WholePixelMeasure`], a pure value over two faces: no IO, no global, bytes in. The HUD plugins' cost
+/// ceilings (`hud_format::lint_cost`) are numbers taken with these advances and a line height of
+/// [`LINE_HEIGHT`] x size, so the cost of a state is priced by this model wherever the lint runs: whoever lints builds a [`WholePixelMeasure`] from the bytes of the
+/// two files `plx_gfx::text::app_font_path` names and hands it to `lint_price`. The text FIT stays on the live measure
+/// (the television's SDL_ttf, the simulator's own). What stays a host-test tool is `shipped` and
+/// `ShippedMeasure` (built under `test` and `test-support` only): they read the repository's `pkg/`.
 pub mod advances {
     use super::{be16, be32};
     use std::collections::HashMap;
+
+    /// A line's height as a share of its font size, and a capital's: the ratios [`WholePixelMeasure`] and the
+    /// host-test `ShippedMeasure` both answer, so one number serves both.
+    pub const LINE_HEIGHT: f32 = 1.21;
+    /// See [`LINE_HEIGHT`].
+    pub const CAP_HEIGHT: f32 = 0.73;
 
     pub struct Face {
         upem: f32,
@@ -509,7 +522,9 @@ pub mod advances {
     }
 
     impl Face {
-        fn parse(font: &[u8]) -> Option<Face> {
+        /// The advances of the font file `font` (its bytes), or `None` when one of the `head`, `hhea`,
+        /// `hmtx` or `cmap` tables is missing or short.
+        pub fn parse(font: &[u8]) -> Option<Face> {
             let upem = be16(table(font, b"head")?, 18)? as f32;
             let metrics = be16(table(font, b"hhea")?, 34)? as usize;
             let hmtx = table(font, b"hmtx")?;
@@ -532,7 +547,33 @@ pub mod advances {
         }
     }
 
+    /// **The price model: the regular and the bold face, whole-pixel advances, a line `LINE_HEIGHT` x size.**
+    /// Pure: two parsed [`Face`]s and nothing else (no file, no global), so it is built wherever the two
+    /// files' bytes are at hand. `plx_machine::machine::Measure` is implemented for it beside the trait, in
+    /// `machine/src/machine.rs`, as it is for the host-test `ShippedMeasure`.
+    pub struct WholePixelMeasure {
+        regular: Face,
+        bold: Face,
+    }
+
+    impl WholePixelMeasure {
+        /// The model over `regular` (`appfont.ttf`) and `bold` (`appfont-bold.ttf`).
+        pub fn new(regular: Face, bold: Face) -> WholePixelMeasure {
+            WholePixelMeasure { regular, bold }
+        }
+
+        /// The face a text of weight `bold` is measured with.
+        pub fn face(&self, bold: bool) -> &Face {
+            if bold {
+                &self.bold
+            } else {
+                &self.regular
+            }
+        }
+    }
+
     /// One of the two shipped text faces, parsed once for the test binary.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn shipped(bold: bool) -> &'static Face {
         use std::sync::OnceLock;
         static REG: OnceLock<Face> = OnceLock::new();
@@ -549,6 +590,7 @@ pub mod advances {
     /// implemented for it beside the trait, in `machine/src/machine.rs` (the lowest layer that names both
     /// the trait and this type), and the share of a column a line may fill under it is
     /// `ui::fit::HEADROOM`, which the callers name.
+    #[cfg(any(test, feature = "test-support"))]
     pub struct ShippedMeasure;
 }
 

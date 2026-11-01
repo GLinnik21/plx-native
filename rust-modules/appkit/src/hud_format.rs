@@ -33,6 +33,7 @@ pub mod clocks; // the playbar's two clocks as app text: their widest strings an
 pub mod compile; // `compile`: a parsed package laid out in every reachable state: the rects the player reads and the draw list (docs/hud-plugins.md, "Architecture")
 pub mod lint; // `lint`: the whole pipeline over a package's text, per language: parse, reach, compile, then the geometric checks below
 mod lint_band; // I6: the caption band respects the player's minimum controls top
+pub mod lint_cost; // I12: the cost ceilings, measured on the television, and the comparison a state's cost is held to
 mod lint_menus; // I7: the two player menus place through the shared placer (M1-M4)
 mod lint_safe; // I5: SAFE
 mod lint_size; // MIN_CONTROL_SIZE, and the compile's item-keyed finding
@@ -285,7 +286,7 @@ fn edit_distance(a: &[char], b: &[char]) -> usize {
 
 /// Every finding code, frozen. Each const is a [`Code`]; [`ALL`] lists them in id order (string order,
 /// so every `E` before every `W`). The doc line says when the code is emitted. The `06xx` and `10xx` to
-/// `13xx` families are the lint's (`super::lint`): they need a compiled package, and a language, a state
+/// `14xx` families are the lint's (`super::lint`): they need a compiled package, and a language, a state
 /// and a slot for context. `M5` of the menus rule (the overscan audit reads the placer) has no code here:
 /// it is the renderer's, in PR7.
 pub mod codes {
@@ -458,6 +459,11 @@ pub mod codes {
         /// menu`; the finding is on the later opener). Pointer: the opener's item. Context: `state`, `slot`,
         /// and the rects named above.
         E1303 = (Error, "HUD-E1303", "menu-side");
+        /// I12: a state's cost is above its class's ceiling in at least one term (`lint_cost`: the maximum of
+        /// that term over the states of the class that were run on the television). Pointer: `/layout`.
+        /// Context: `lang`, `state`, `slot`. The message names the class, each term over as `value > ceiling`
+        /// and the three ops that weigh most (their pointers, blended px, texture bytes and glyph runs).
+        E1401 = (Error, "HUD-E1401", "cost-ceiling");
         /// I10: app text fits but within `CI_TEXT_SKEW` of its room (a warning locally, an error in registry
         /// CI; 0 until PR12 measures it). Pointer: as `E0601`. Context: as `E0601`.
         W0602 = (Warning, "HUD-W0602", "text-fit-margin");
@@ -519,7 +525,7 @@ mod freeze_tests {
 
     #[test]
     fn the_code_table_is_unique_and_well_formed() {
-        assert_eq!(codes::ALL.len(), 52, "38 parse and check codes, 14 lint codes");
+        assert_eq!(codes::ALL.len(), 53, "38 parse and check codes, 15 lint codes");
         let ids: HashSet<_> = codes::ALL.iter().map(|c| c.id).collect();
         let rules: HashSet<_> = codes::ALL.iter().map(|c| c.rule).collect();
         assert_eq!(ids.len(), codes::ALL.len(), "a code id is never reused");
@@ -540,7 +546,7 @@ mod freeze_tests {
         }
     }
 
-    /// The lint's codes (`lint`'s families: `06xx`, `10xx` to `13xx`): the ones a check needs a compiled
+    /// The lint's codes (`lint`'s families: `06xx`, `10xx` to `14xx`): the ones a check needs a compiled
     /// package for. Their rows are in `lint_tests` (an invalid case each), not in the parser's corpus.
     #[test]
     fn the_lint_codes_are_registered_with_their_rules_and_severities() {
@@ -559,8 +565,9 @@ mod freeze_tests {
             (codes::E1301, "HUD-E1301", "menu-opener", Severity::Error),
             (codes::E1302, "HUD-E1302", "menu-safe", Severity::Error),
             (codes::E1303, "HUD-E1303", "menu-side", Severity::Error),
+            (codes::E1401, "HUD-E1401", "cost-ceiling", Severity::Error),
         ];
-        assert_eq!(lint.len(), 14);
+        assert_eq!(lint.len(), 15);
         for (code, id, rule, severity) in lint {
             assert_eq!((code.id, code.rule, code.severity), (id, rule, severity));
             assert!(codes::ALL.contains(&code), "{id} is in ALL");
