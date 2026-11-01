@@ -56,11 +56,16 @@ fn pack(id: &str, name: &str, byte: u8, selected: bool) -> Entry {
     }
 }
 
+/// A drop file as the store lists it (`hudpacks::drops`): a parsed file has its hash and meta, whatever its status; a file
+/// over the size bound was never parsed, so it has neither, and the refusal alone.
 fn drop_file(name: &str, byte: u8, status: Result<(), Refusal>) -> DropFile {
+    if status == Err(Refusal::TooLarge) {
+        return too_large_drop(name);
+    }
     DropFile { name: name.into(), sha: Some(Sha::of(&[byte])), meta: Some(meta("com.example.dropped", "Dropped")), status }
 }
 
-/// What the store lists for a file over the size bound: no hash, no meta, and the refusal (`hudpacks::drops`).
+/// What the store lists for a file over the size bound: no hash, no meta, and the refusal.
 fn too_large_drop(name: &str) -> DropFile {
     DropFile { name: name.into(), sha: None, meta: None, status: Err(Refusal::TooLarge) }
 }
@@ -273,7 +278,6 @@ fn every_row_fits_its_column_in_every_language() {
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
         every.drops = all_refusals.iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud.json"), 20 + i as u8, Err(*r))).collect();
         every.drops.push(drop_file("ok.plxhud.json", 40, Ok(())));
-        every.drops.push(too_large_drop("huge.plxhud.json"));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
         form.set(hud_form(&every), None);
