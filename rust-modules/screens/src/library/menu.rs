@@ -2,7 +2,7 @@
 use plx_data::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SrcGroup, SrcRow};
 use crate::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
 use plx_data::stores::browse::{BrowseCmd, DirectoryView, LibraryWork, QueryEdit, SectionAddress};
-use plx_data::stores::{StoreCmd, StoreId, StoreWork};
+use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
@@ -379,7 +379,8 @@ fn filter_section(unwatched: bool, genre: Option<&GenreEntry>, genres_supported:
 /// Show lists the types the library offers besides Collections (which has its own control) and is
 /// absent when only one remains; Sort is the server's declared list; Filter is the genre and the
 /// Unwatched toggle and nothing else. When two or more libraries of the kind are offered (a
-/// favourite, or any library on a server `source_list::usable` accepts) the Sources list follows in
+/// favourite, the one on view, or any library on a server `source_list::usable` accepts) the
+/// Sources list follows in
 /// sections of its own: a group per server, a faulty group dimmed with its fault said, the
 /// library on view ticked, the roster-refresh row last. The Favorite libraries row, which opens
 /// Settings on that page, is a headerless block of its own at the very bottom.
@@ -407,13 +408,14 @@ fn sort_filter_draft(
         sort_desc, &mut stamp, &mut selected));
     form = form.section(filter_section(unwatched, genre, current == LibraryType::Primary, &mut stamp));
     // The library switcher is the Sources list, whole: every library of the kind that is a
-    // favourite or sits on a server that can be opened (`source_list::usable`, so a server nobody
-    // has dialled yet is offered and one that refused us is not), grouped by server with a group's
+    // favourite, is on view (the header names it, so the list does) or sits on a server that can be
+    // opened (`source_list::usable`, so a server nobody has dialled yet is offered and one that
+    // refused us is not), grouped by server with a group's
     // fault said and dimmed, and the roster-refresh row at its foot. Nothing to choose between,
     // nothing drawn.
     let groups: Vec<SrcGroup> = directory.sources().iter().map(|(_, group)| group.clone()).collect();
     let offered: Vec<SrcRow> = directory.sections().iter()
-        .filter(|library| library.kind == section_kind && (library.row.pinned
+        .filter(|library| library.kind == section_kind && (library.row.pinned || library.row.current
             || groups.get(library.row.src).is_some_and(source_list::usable)))
         .map(|library| library.row.clone())
         .collect();
@@ -725,12 +727,6 @@ impl<H: LibraryLike> Machine<H> for LibraryMenu {
             ScreenEvent::Tick(tick) => {
                 self.popover.update(tick.dt());
                 self.refresh(cx);
-                // The menus that list libraries follow the household's shares the way Home,
-                // Search and the Favorite libraries page do: a library shared while one is open
-                // appears in it, and a server's fault is said as soon as it is known.
-                if matches!(self.kind, LibraryMenuKind::SortFilter | LibraryMenuKind::Sources) {
-                    fx.push(Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
-                }
                 if self.kind == LibraryMenuKind::Genre {
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Browse,
@@ -1687,40 +1683,84 @@ mod tests {
     }
 
     /// **One library of the kind is not a choice**: no list and no roster-refresh row, only the
-    /// Favorite libraries row.
+    /// Favorite libraries row. The directory has two libraries, but only one is a Movies library.
     #[test]
     fn the_switcher_is_absent_with_one_library_of_the_kind() {
+        let _guard = plx_base::testlock::serial();
         let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-        let sorts = vec![SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false }];
-        let laid = lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false,
-            DirectoryView::empty_for_test()));
+        let (groups, mut sections) = source_sections();
+        sections[1].kind = SecKind::Show;
+        let directory = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
+            11,
+            0,
+            [1, 2].map(ServerId::from_raw).into_iter().zip(groups).collect(),
+            sections,
+        );
+        let laid = switcher_menu(&directory);
         assert!(!laid.rows.iter().any(|(id, ..)| id.starts_with("section:") || id == "recheck"));
         assert!(laid.rows.iter().any(|(id, ..)| id == "favourites"));
     }
 
-    /// **The menus that list libraries pump discovery, as Home, Search and the Favorite libraries
-    /// page do**, so a library shared while one is open appears in it; the others have no use for it.
+    /// **The library on view stays in the switcher** when its server turns faulty: the header still
+    /// names it, so the list does too, dimmed under its group's fault like a dead favourite.
     #[test]
-    fn the_menus_that_list_libraries_pump_discovery() {
-        for (kind, pumps) in [
-            (LibraryMenuKind::SortFilter, true),
-            (LibraryMenuKind::Sources, true),
-            (LibraryMenuKind::Sort, false),
-            (LibraryMenuKind::Filter, false),
-            (LibraryMenuKind::Type, false),
-        ] {
-            let mut menu = LibraryMenu::new(EntryId(7), menu_arg(kind, [0; 4]));
-            let mut out = Vec::new();
-            with_cx(|cx| {
-                let mut present = plx_machine::present::Present::new();
-                let mut fx = Effects::new(&mut out, MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
-                Machine::<HostFixture>::step(&mut menu, &ScreenEvent::Mount, cx, &mut fx);
-                Machine::<HostFixture>::step(&mut menu, &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), cx, &mut fx);
-            });
-            let pumped = out.iter().any(|effect| matches!(
-                &effect.fx, Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery))));
-            assert_eq!(pumped, pumps, "{kind:?}");
-        }
+    fn the_library_on_view_stays_listed_when_its_server_cannot_be_opened() {
+        let _guard = plx_base::testlock::serial();
+        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let (mut groups, mut sections) = source_sections();
+        groups[1].state = SourceState::Unreachable;
+        sections[1].row.pinned = false;
+        sections[1].row.current = true;
+        sections[0].row.current = false;
+        let directory = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
+            11,
+            1,
+            [1, 2].map(ServerId::from_raw).into_iter().zip(groups).collect(),
+            sections,
+        );
+        let laid = switcher_menu(&directory);
+        let ticked: Vec<&str> = laid.sections.iter()
+            .filter(|section| matches!(section.header.as_str(), "Own NAS" | "Shared with you"))
+            .flat_map(|section| &section.rows)
+            .filter(|row| row.checked).map(|row| row.label.as_str()).collect();
+        assert_eq!(ticked, ["Shared Movies"], "a visit to a library on a server that went dark is still ticked");
+        assert!(laid.sections.iter().any(|s| s.header == "Shared with you" && s.dim));
+    }
+
+    /// **A library shared while the menu is open appears in it** (and a server's fault is said as
+    /// soon as the directory knows it): the menu rebuilds from each directory the page beneath
+    /// publishes, whose pump (`StoreWork::Browse`) is what lands discovery. The Library page keeps
+    /// ticking under a compact menu, so the menu pumps nothing of its own.
+    #[test]
+    fn a_share_arriving_while_the_menu_is_open_rebuilds_the_switcher() {
+        let _guard = plx_base::testlock::serial();
+        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let sorts = vec![SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false }];
+        let (groups, mut sections) = source_sections();
+        let shared = sections.pop().expect("the friend's library");
+        let before = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
+            11,
+            0,
+            [1].map(ServerId::from_raw).into_iter().zip(groups.clone().into_iter().take(1)).collect(),
+            sections.clone(),
+        );
+        sections.push(shared);
+        let after = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
+            11,
+            0,
+            [1, 2].map(ServerId::from_raw).into_iter().zip(groups).collect(),
+            sections,
+        );
+        let draft = |directory: &plx_data::stores::browse::DirectorySnapshot| sort_filter_draft(
+            SecKind::Movie, LibraryType::Primary, &sorts, 0, false, None, false, directory.view());
+        let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::SortFilter, [0; 4]));
+        menu.apply_draft(draft(&before));
+        assert!(menu.form.index_of(&"section:2:7".to_string()).is_none(), "one library: nothing to switch to yet");
+        let rebuilds = menu.draft_rebuilds;
+        menu.apply_draft(draft(&after));
+        assert!(menu.form.index_of(&"section:2:7".to_string()).is_some(), "the shared library appears");
+        assert!(menu.form.index_of(&"recheck".to_string()).is_some());
+        assert_eq!(menu.draft_rebuilds, rebuilds + 1);
     }
 
     /// **The Sort, Filter and Genre popovers' app text fits the popover, in every shipped language**
