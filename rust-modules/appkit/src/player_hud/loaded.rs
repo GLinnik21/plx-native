@@ -2,8 +2,9 @@
 //! and handed to the screen as a value ([`LoadedHud`]).
 //!
 //! The owner (the application) builds one at boot (a label's width sets a pill's width, so the language is
-//! part of the plan's cache key, [`CompileKey`]; the process's language is fixed, so that is the only
-//! compile, but for a controlled run's and a dev package's, which come on the first player frame), and
+//! part of the plan's cache key, [`CompileKey`]; the process's language is fixed, so a compile is per
+//! package: at boot, whenever the profile's chosen package changes (the application's `HudDriver`), and on
+//! the first player frame for a controlled run's and a dev package's), and
 //! pushes the [`Arc<Compiled>`] into the player page the way it pushes the frame's
 //! [`HudModel`](super::model::HudModel).
 //! Nothing here reads a registry on its own account: the language arrives as a [`LocaleContext`] (the
@@ -13,7 +14,7 @@
 //!
 //! `builtin:classic` is the only package that ships in this release, and it always loads (it is embedded
 //! and a test parses and compiles it clean in every shipped language): [`load_classic`] cannot fail. A
-//! dev package that does not parse is refused ([`DevStep::Report`]) and the owner keeps drawing classic.
+//! dev package that does not parse is refused ([`DevStep::Report`]) and the owner keeps drawing what it drew: the chosen package, or classic.
 
 use std::sync::Arc;
 
@@ -113,7 +114,7 @@ pub fn reference_without_openers_for_test(policy: &str) -> Arc<Compiled> {
         .compiled
 }
 
-/// **The dev trigger's value**: the path of the package to draw instead of classic, the first line of the
+/// **The dev trigger's value**: the path of the package to draw instead of what is chosen (classic unless the profile picked a package), the first line of the
 /// trigger file, trimmed. `None` for an empty file (nothing armed).
 pub fn dev_package_path(value: &str) -> Option<&str> {
     let line = value.lines().next()?.trim();

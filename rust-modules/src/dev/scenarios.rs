@@ -1413,7 +1413,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     true
 }
 
-/// `/tmp/plxnative-hud=<path>` — draw the package at that path instead of classic. Read ONCE, on the first
+/// `/tmp/plxnative-hud=<path>` — draw the package at that path instead of the chosen HUD (classic unless a package was picked). Read ONCE, on the first
 /// player frame (`run::refresh_hud`); the file is read here, the bytes are compiled by the owner, and a
 /// file that does not read or compile is remembered ([`DevPackage`]), so it is neither re-read nor
 /// recompiled every frame. Without the `devtriggers` feature the trigger reads as absent.

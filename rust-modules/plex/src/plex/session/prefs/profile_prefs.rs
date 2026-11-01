@@ -29,7 +29,7 @@
 //!   the signed-in account (`grant::account_key` of the account token). The owner's `""` record of
 //!   two accounts therefore never mixes, a re-login that replaced the token without a sign-out
 //!   leaves the previous records unreachable, and the next write prunes them ([`put_own`]).
-//! * **Written only through [`persist_profile_pref`]**, which refuses without a seat, across a
+//! * **Written only through [`persist_profile_pref`] and [`persist_profile_hud`]** (one read-modify-write, `persist_profile_with`), which refuse without a seat, across a
 //!   tenure or credential change, and with an empty stamp.
 //! * **No `extensions`**: a field a later build adds is not carried by this one.
 use super::{
@@ -124,7 +124,7 @@ impl ProfileKeyed for ProfilePrefsRecord {
 
 /// The `profile_prefs` row: every profile's own values, kept across a profile switch, cleared with
 /// the credentials at sign-out. A [`Row`] and not a [`Setting`]: its value is a list of records,
-/// written only through [`persist_profile_pref`].
+/// written only through [`persist_profile_pref`] and [`persist_profile_hud`].
 pub struct ProfilePrefsPref;
 impl Row for ProfilePrefsPref {
     const KEY: &'static str = "profile_prefs";

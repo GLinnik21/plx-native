@@ -240,11 +240,12 @@ pub(crate) struct App {
     fps_shown: i32,
     play_prev: Option<(i64, u32)>,
     /// The compiled HUD the player page draws from (`player_hud::loaded`), in the language the process
-    /// started in (a label's width sets a pill's width; the language cannot change while it runs, so there is
-    /// ONE compile per process). Compiled at boot (`boot::enter_application`), outside any frame, and handed to
+    /// started in (a label's width sets a pill's width; the language cannot change while it runs). Compiled at boot (`boot::enter_application`), outside any frame, and handed to
     /// the mount through the mounter's seed (`Bridge::seed_player_compiled`); `None` only in a controlled
     /// replay or record run, which measures nothing outside a frame and compiles on its first player frame
-    /// (`run::refresh_hud`, inside the frame iteration). A `plxnative-hud=<path>` package replaces it there too.
+    /// (`run::refresh_hud`, inside the frame iteration). It is replaced by the package the seated profile chose when
+    /// that one fits the language (`Bridge::huds_tick`, in the frame's prepare window, never in the draw), and a
+    /// `plxnative-hud=<path>` package replaces whatever is chosen.
     hud: Option<plx_appkit::player_hud::loaded::LoadedHud>,
     /// the `plxnative-hud=<path>` package, read once on the first player frame (`run::refresh_hud`)
     dev_hud: plx_appkit::player_hud::loaded::DevHud,

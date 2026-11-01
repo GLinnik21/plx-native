@@ -512,8 +512,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   in `profile_prefs` (`[{user, account, prefs}]`, `account` the `grant::account_key` stamp, the owner
   `user: ""`), and what a profile reads is `stored_effective` = its own value, else the frozen
   top-level key (`Setting::get`, a garbage own value included), else the default. The top-level keys
-  are never copied and never written by a pick (`persist_profile_pref` is the only writer; it
-  refuses without a seat, across a tenure or credential change and with an empty stamp, and prunes
+  are never copied and never written by a pick (`persist_profile_pref`, for a `Copy` `Setting`, and `persist_profile_hud`, for the HUD package id string,
+  are the only writers and share `persist_profile_with`; they
+  refuse without a seat, across a tenure or credential change and with an empty stamp, and prunes
   records of other accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
   sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
   (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.

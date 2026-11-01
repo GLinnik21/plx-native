@@ -178,7 +178,7 @@ pub struct PlayerScreen {
     /// sampling what they always did.
     pub model: HudModel,
     /// **The compiled HUD this page draws and places from**, handed in by the application the way
-    /// [`Self::model`] is: parsed and compiled once per process, never in the draw (`player_hud::loaded`;
+    /// [`Self::model`] is: parsed and compiled outside the draw, once per (package, language) (`player_hud::loaded`;
     /// the process's language is fixed, so a language change waits for the next launch). A page always has one (it is a constructor argument): the mount
     /// never compiles, and there is no state in which the page draws or places from anything else.
     pub compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>,
@@ -276,8 +276,8 @@ impl PlayerScreen {
     /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
     /// pointer can hit is registered by [`Self::record_stops`], from this screen's `Focusable`.
     ///
-    /// It draws the compiled package ([`Self::compiled`]: `builtin:classic` unless a dev package was
-    /// asked for) through `player_hud::render`. A package with no state for this frame draws nothing (a
+    /// It draws the compiled package ([`Self::compiled`]: `builtin:classic` unless the seated profile chose an
+    /// installed package that fits the language, or a dev package was asked for) through `player_hud::render`. A package with no state for this frame draws nothing (a
     /// frame `builtin:classic` is never in, `classic_answers_every_frame_the_player_can_be_in`), and says so
     /// ONCE in the event log rather than every frame; its geometry is the same empty report
     /// (`player_hud::geometry::geometry`), so what is drawn and what is hit stay one statement.
