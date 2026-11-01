@@ -33,6 +33,7 @@ pub mod clocks; // the playbar's two clocks as app text: their widest strings an
 pub mod compile; // `compile`: a parsed package laid out in every reachable state: the rects the player reads and the draw list (docs/hud-plugins.md, "Architecture")
 pub mod lint; // `lint`: the whole pipeline over a package's text, per language: parse, reach, compile, then the geometric checks below
 mod lint_band; // I6: the caption band respects the player's minimum controls top
+pub mod lint_cost; // I12: the cost ceilings, measured on the television, and the comparison a state's cost is held to
 mod lint_menus; // I7: the two player menus place through the shared placer (M1-M4)
 mod lint_safe; // I5: SAFE
 mod lint_size; // MIN_CONTROL_SIZE, and the compile's item-keyed finding
