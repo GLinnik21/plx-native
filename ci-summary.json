@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-01T11:30:03Z",
+ "generated": "2026-11-01T11:34:13Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -99,6 +99,27 @@
    "state30": "new",
    "threshold_abs": 30.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 25.5,
+   "d30": null,
+   "delta30": null,
+   "delta7": 33.3,
+   "group": "local",
+   "id": "bench.tests",
+   "kind": "local",
+   "label": "Unit suite",
+   "n_now": 7,
+   "n_prev": 6,
+   "now": 163.8,
+   "prev7": 130.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -187,17 +208,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.4,
+   "change7_pct": 13.3,
    "d30": null,
    "delta30": null,
-   "delta7": 3.9,
+   "delta7": 3.3,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 7,
-   "now": 29.0,
+   "now": 28.5,
    "prev7": 25.1,
    "shown": true,
    "state": "flat",
@@ -208,17 +229,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.2,
+   "change7_pct": 6.7,
    "d30": null,
    "delta30": null,
-   "delta7": 3.7,
+   "delta7": 3.4,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 7,
-   "now": 54.8,
+   "now": 54.6,
    "prev7": 51.2,
    "shown": true,
    "state": "flat",
@@ -229,17 +250,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 20.3,
+   "change7_pct": 19.7,
    "d30": null,
    "delta30": null,
-   "delta7": 12.7,
+   "delta7": 12.3,
    "group": "local",
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 7,
-   "now": 75.2,
+   "now": 74.8,
    "prev7": 62.5,
    "shown": true,
    "state": "flat",
@@ -250,39 +271,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 16.8,
+   "change7_pct": 15.9,
    "d30": null,
    "delta30": null,
-   "delta7": 24.6,
+   "delta7": 23.2,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 7,
-   "now": 170.3,
+   "now": 168.9,
    "prev7": 145.8,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 22.9,
-   "d30": null,
-   "delta30": null,
-   "delta7": 29.9,
-   "group": "local",
-   "id": "bench.tests",
-   "kind": "local",
-   "label": "Unit suite",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 160.4,
-   "prev7": 130.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -642,7 +642,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -8.7,
+   "change7_pct": -12.7,
    "d30": null,
    "delta30": null,
    "delta7": -0.1,
@@ -650,7 +650,7 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 7,
    "now": 0.6,
    "prev7": 0.6,
@@ -784,6 +784,67 @@
    "since": "2026-10-31",
    "threshold_pct": 20.0,
    "to": 198.0
+  },
+  {
+   "change_pct": 25.5,
+   "commits": [
+    {
+     "pr": 1186,
+     "sha": "62d869d6b",
+     "title": "The Watchlist's sort button is the Library's sort control"
+    },
+    {
+     "pr": 1155,
+     "sha": "387d98435",
+     "title": "Detail: a Go to Show disc for an episode's hero"
+    },
+    {
+     "pr": 1138,
+     "sha": "048374834",
+     "title": "Posters: a set with four cores and 2 GiB of RAM decodes with three workers, not two"
+    },
+    {
+     "pr": 1188,
+     "sha": "5a6e155c8",
+     "title": "The Under posters preview is rendered once: smooth Details push and pop"
+    },
+    {
+     "pr": 1187,
+     "sha": "42077a1e0",
+     "title": "HUD: dismiss an offer through the metadata store's skipped set"
+    },
+    {
+     "pr": 1157,
+     "sha": "4974279b3",
+     "title": "Library: the Sort & Filter menu lists every reachable library of the kind and opens Favorite libraries"
+    },
+    {
+     "pr": 1189,
+     "sha": "acd247a76",
+     "title": "Host-suite flakes fixed at their roots (test code only)"
+    },
+    {
+     "pr": 1190,
+     "sha": "a860ac894",
+     "title": "Playback: an MPEG-TS stream under a .mp4 name direct-plays, with its framing, audio and clock (#1084)"
+    },
+    {
+     "pr": 1191,
+     "sha": "e463ccb19",
+     "title": "Library switcher: a visited library stays on view; the switcher is the Sources list; settings are one request"
+    },
+    {
+     "pr": 1192,
+     "sha": "b24e0a317",
+     "title": "Belarusian: a space between a number and its hour/minute unit"
+    }
+   ],
+   "from": 130.5,
+   "id": "bench.tests",
+   "label": "Unit suite",
+   "since": "2026-11-01",
+   "threshold_pct": 25.0,
+   "to": 163.8
   },
   {
    "change_pct": 21.0,
@@ -952,25 +1013,25 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 170.3
+   "now": 168.9
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 160.4
+   "now": 163.8
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 75.2
+   "now": 74.8
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 54.8
+   "now": 54.6
   }
  ],
  "thresholds": {
