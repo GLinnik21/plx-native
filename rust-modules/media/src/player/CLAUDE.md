@@ -599,7 +599,14 @@ something.
   player screen with `draw_subtitle_message` (and `notice_shown()` is a term of its `clock_fingerprint`, so
   the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
-  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. Which sidecar
+  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
+  the Part's FILE time while a remux starts on the Part keyframe at or before the requested offset
+  and is labelled with the requested offset, so under the same local-link and bitrate gate the side
+  reader also runs CLOCK-ONLY for it (`subside::CLOCK_ONLY`: no track, no store, no
+  `side_subs_owner`, never the burn) to find that keyframe by the byte-exact anchor match;
+  `player::sidecar_clock_ns` adds the published delta (`subside::exact_delta_ns`) to the sidecar's
+  playhead, for a sidecar over a remux only (embedded cues were shifted by the reader already) and
+  never from the assumed mapping (2.002 s wrong at 917 s on one file). Which sidecar
   starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the
   track memory chose for this episode (`Plan::memory_sidecar`, its key and codec read from the
   playing item).

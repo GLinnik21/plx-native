@@ -27,8 +27,17 @@
 //! burned and a sidecar is drawn from here. The fact is PASSED IN rather than read: the playback session is
 //! the frame's publication, and the draw that calls this already holds it.
 //!
-//! The renderer is asked on the SUBTITLE clock (`player::subtitle_clock_ns`, the playhead less the
-//! viewer's timing offset). Because the whole file is here, a sidecar is the one kind of track
+//! Over a REMUX the playhead is not file time: PMS starts the remux on the Part keyframe at or
+//! before the requested offset, and the engine labels that frame with the requested offset
+//! (`disp_base`), so the playhead leads the content by the snap (0.6 s to 2.2 s measured). The side
+//! reader finds that keyframe clock-only (`subside::CLOCK_ONLY`: no cue read, byte-exact anchor
+//! match only) and `player::sidecar_clock_ns` adds its delta to the position the sidecar is drawn
+//! at, for a sidecar over a live remux only. Without an exact match, or off the reader's
+//! local-link and bitrate gate, nothing is added and the sidecar keeps the remux's clock.
+//!
+//! The screen asks `player::subtitle_draw` for the source and that position, and subtracts the
+//! viewer's timing offset from the clock it samples there, so the offset composes with the
+//! correction. Because the whole file is here, a sidecar is the one kind of track
 //! that can be ADVANCED as well as delayed — [`selected`] is what `player::subtitle_offset_range_ms`
 //! reads to offer it the sidecar offset range (see `subtitle_offset_range_ms`), where an embedded track
 //! gets a delay only.
