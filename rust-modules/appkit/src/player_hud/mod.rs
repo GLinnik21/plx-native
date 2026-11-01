@@ -17,6 +17,7 @@
 //! | [`classic`] | the transport's primitives and `builtin:classic`'s constants: the draws the renderer calls (scrim, title, playbar, clocks, scrub preview), the three the trailer calls (scrim, title, playbar), the failure read-out, `ROW_ANCHOR`; the tab pills are the renderer's. The arrangement is the compiled package's |
 //! | [`loaded`] | a package parsed and compiled once, never in the draw ([`loaded::LoadedHud`]), and the production [`AppLabels`](crate::hud_format::compile::AppLabels) constructor over a passed-in locale |
 //! | [`render`] | the renderer: it draws a [`Compiled`](crate::hud_format::compile::Compiled) package's state through the shared widgets; `builtin:classic` is the embedded package it draws |
+//! | [`travel`] | [`travel::order`]: the order vertical focus travel follows, the order the layout draws |
 //! | [`seek_jump`] | the long-seek jump chord |
 //!
 //! What stays here is the caption drawing (`draw_subtitle_message`, `draw_subtitle_bitmap`), which
@@ -33,6 +34,7 @@ pub mod seek_jump;
 mod sections;
 pub mod state;
 pub mod strip;
+pub mod travel;
 use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
 // The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,
