@@ -116,6 +116,13 @@ fn app_font(bold: bool) -> &'static CStr {
     })
 }
 
+/// The path [`app_font`] opens, as a path: for a caller that reads the face file itself and must read the
+/// one SDL_ttf opens (the HUD lint's pricing measure in `hud_cli`).
+pub fn app_font_path(bold: bool) -> std::path::PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    std::path::PathBuf::from(std::ffi::OsStr::from_bytes(app_font(bold).to_bytes()))
+}
+
 const VS_TEXT: &CStr = crate::gfx::glsl!("shaders/vs_text.vert");
 const FS_TEXT: &CStr = crate::gfx::glsl!("shaders/fs_text.frag");
 const FS_TEXT_FADE: &CStr = crate::gfx::glsl!("shaders/fs_text_fade.frag");
@@ -1678,9 +1685,7 @@ pub fn init_fonts_headless() -> Result<(), String> {
     if unsafe { *addr_of!(TEXT_OK) } != 0 {
         return Ok(());
     }
-    use std::os::unix::ffi::OsStrExt;
-    let faces = [app_font(false), app_font(true)]
-        .map(|face| std::path::PathBuf::from(std::ffi::OsStr::from_bytes(face.to_bytes())));
+    let faces = [app_font_path(false), app_font_path(true)];
     unreadable_face(&faces).map_err(|reason| {
         format!(
             "{reason} (the faces are read from {}; set PLXNATIVE_APP_DIR to the directory holding \

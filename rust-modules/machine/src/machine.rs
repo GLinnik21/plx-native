@@ -1122,9 +1122,9 @@ impl Measure for plx_base::fontcov::advances::ShippedMeasure {
         plx_base::fontcov::advances::shipped(bold).width(&s.to_string_lossy(), sz)
     }
     fn cap_h(&self, sz: i32) -> f32 {
-        sz as f32 * 0.73
+        sz as f32 * plx_base::fontcov::advances::CAP_HEIGHT
     }
     fn line_h(&self, sz: i32) -> f32 {
-        sz as f32 * 1.21
+        sz as f32 * plx_base::fontcov::advances::LINE_HEIGHT
     }
 }

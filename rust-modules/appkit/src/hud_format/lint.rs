@@ -124,6 +124,34 @@ pub fn lint_report(
     langs: &[LintLang],
     opts: &LintOptions,
 ) -> Linted {
+    lint_pipeline(text, measure, None, langs, opts)
+}
+
+/// [`lint_report`] with the COST priced by `price` and everything else (text fit, the geometry) measured by
+/// `measure`. The cost ceilings are the television's numbers (`lint_cost`), taken with the television's
+/// whole-pixel advances; a lint whose text measurer sums fractional ones (the simulator's SDL_ttf) prices a
+/// package a few pixels away from the television and could refuse a state the television accepts. So the
+/// package is compiled a second time, per language, with `price`, and `HUD-E1401` and the cost lines are
+/// that compile's; every other finding is `measure`'s.
+pub fn lint_report_priced(
+    text: &str,
+    measure: &dyn Measure,
+    price: &dyn Measure,
+    langs: &[LintLang],
+    opts: &LintOptions,
+) -> Linted {
+    lint_pipeline(text, measure, Some(price), langs, opts)
+}
+
+/// The one pipeline behind [`lint_report`] and [`lint_report_priced`]: `price` is `None` when `measure`
+/// prices the cost too, which compiles once per language.
+fn lint_pipeline(
+    text: &str,
+    measure: &dyn Measure,
+    price: Option<&dyn Measure>,
+    langs: &[LintLang],
+    opts: &LintOptions,
+) -> Linted {
     let parse::Parsed { package, mut findings } = parse::parse(text.as_bytes());
     let Some(package) = package else {
         return Linted { findings: sorted_owned(&findings), costs: Vec::new() };
@@ -143,10 +171,22 @@ pub fn lint_report(
         lint_menus::check(&cx, &mut out);
         lint_text::check(&cx, &mut out);
         lint_size::check(&cx, &mut out);
-        lint_cost::check(&cx, &mut out);
+        // the cost is read from the compile `price` made, when there is one, else from this one
+        let priced = price.map(|price| {
+            (compile(&package, price, CompileCtx { labels: lang.labels.clone() }), price)
+        });
+        let priced_cx = priced.as_ref().map(|(compiled, price)| LangCtx {
+            package: &package,
+            compiled,
+            measure: *price,
+            lang,
+            opts,
+        });
+        let cost_cx = priced_cx.as_ref().unwrap_or(&cx);
+        lint_cost::check(cost_cx, &mut out);
         tag_language(&mut out, lang.tag);
         per_lang.push(out);
-        per_lang_costs.push(lint_cost::lines(&cx));
+        per_lang_costs.push(lint_cost::lines(cost_cx));
     }
     findings.extend(collapse(per_lang));
     Linted { findings: sorted_owned(&findings), costs: lint_cost::collapse_lines(per_lang_costs) }

@@ -1269,10 +1269,20 @@ still read more GPU_ACTIVE than a measured state; PR12 measures that.
 every language, and a state whose cost (a Skip state at the larger of its two pill layouts) is above its class's ceiling in
 any term is one error at `/layout`: the class, each term over as `value > ceiling`, and the three ops that weigh most, each
 by the pointer of the node that drew it (`CompiledState::top_contributors`, `CompiledState::origin`). It runs in the lint
-(`plxnative-sim --hud-lint`); nothing at runtime runs it, so it never rejects a package in a frame. The ceilings are not raised and no state is exempt; because they carry no
-headroom, a package that adds a draw op, a glyph run or a pixel to the heaviest state of its class is over until it is run
-on the television and its figures set the ceiling. The builtin classic and the reference pass every state in every
-language, so the builtin is never rejected by its own lint. `plxnative-sim --hud-lint` prints every state's cost beside its
+(`plxnative-sim --hud-lint`); nothing at runtime runs it, so it never rejects a package in a frame. The ceilings are not
+raised and no state is exempt; because they carry no headroom, a package that adds a draw op, a glyph run or a pixel to the
+heaviest state of its class is over until it is run on the television and its figures set the ceiling. The builtin classic
+and the reference pass every state in every language, so the builtin is never rejected by its own lint.
+
+**The simulator prices the cost with the television's advances.** `plxnative-sim` measures text with the host's SDL_ttf,
+which sums fractional advances, where the television's sums whole-pixel ones. Under the simulator's own
+measure the classic's Up Next and Info states and every two-section state would read over a ceiling the television
+accepts, in 4 of the 12 terms (`blended_px` by 320 to 6605 px in three classes, `texture_bytes` by 2876 in the compact
+class; `draw_ops` and `glyph_runs` are the same under both). So `--hud-lint` compiles each language a second time with
+`hud_cli::WholePixelMeasure`, the same advances read from the application directory's own `appfont.ttf` and
+`appfont-bold.ttf` (`plx_base::fontcov::advances::Face`), and `HUD-E1401` and the cost lines are that compile's: the
+simulator and the television print one number. Text fit (`HUD-E0601` and the geometry) keeps SDL_ttf's measure, and a
+width there can still be a few pixels off the television's. `plxnative-sim --hud-lint` prints every state's cost beside its
 class's ceiling, as information lines (text) and a `costs` array (JSON), and exits 1 on `HUD-E1401` like any other error.
 
 ## Storage per install mode
@@ -1416,7 +1426,7 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
   discarded, so draw the mark in one colour"); `HUD-E0702` an SVG attribute outside it (`fill`, `stroke`, `opacity`,
   `style`: "colour comes from the face's ink").
 - Information lines, not findings: every state's cost against its class's ceiling (`--hud-lint` prints them, a
-  `costs` array in JSON), the commands the app will fold into More, and the menu side each opener gets in each
+  `costs` array in JSON; a state over is the finding `HUD-E1401`), the commands the app will fold into More, and the menu side each opener gets in each
   state.
 - What JSON Schema cannot express, lint reports with numbers: the z-order census (both rects, their groups and
   z, the state and slot); the caption band (computed top, `MIN_CONTROLS_TOP_Y`, the element too high, by how

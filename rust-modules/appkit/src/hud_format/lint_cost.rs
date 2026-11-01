@@ -52,6 +52,11 @@
 //! be rejected by its own lint. `--hud-lint` prints every state's comparison ([`StateCostLine`]) whatever the
 //! verdict.
 //!
+//! **Priced with the television's advances.** The ceilings are numbers taken with whole-pixel advances, so a
+//! lint whose text measure sums fractional ones (the simulator's SDL_ttf: over in 4 of the 12 terms) prices the
+//! cost with the television's: `lint::lint_report_priced` compiles each language again with a price measure and
+//! this module reads that compile, while text fit keeps the other measure.
+//!
 //! Pure: no IO, no global. [`over`] and [`state_cost`] take plain values, so the television can ask the same
 //! question of a compiled state at selection (never in a frame) and the lint asks it of every state.
 
@@ -613,6 +618,50 @@ mod tests {
         let de = LintLang::for_tag("de").expect("de");
         let both = crate::hud_format::lint::lint_report(CLASSIC, &ShippedMeasure, &[en(), de], &Default::default());
         assert!(both.costs.len() > once.costs.len() && both.costs.iter().any(|l| l.lang.as_deref() == Some("de")));
+    }
+
+    /// A text measurer half again as wide as the television's, so that text which fits the television does
+    /// not fit it (a host whose SDL_ttf sums fractional advances is a few percent off, which the classic
+    /// survives; this one makes the difference between the two measures visible in the fit findings too).
+    struct Wider;
+
+    impl plx_machine::machine::Measure for Wider {
+        fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
+            ShippedMeasure.width(s, sz, bold) * 1.5
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            ShippedMeasure.cap_h(sz)
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            ShippedMeasure.line_h(sz)
+        }
+    }
+
+    #[test]
+    fn the_cost_is_priced_by_the_price_measure_and_everything_else_is_the_text_measures() {
+        use crate::hud_format::lint::{lint_report, lint_report_priced, testing::apply, Linted};
+        // the reference with a chapter card too narrow for its name: a text-fit finding the measure decides
+        let narrow = crate::hud_format::lint_text::INVALID
+            .iter()
+            .find(|c| c.code == "HUD-E0601" && c.base == Base::Reference)
+            .expect("lint_text's chapter-card case");
+        let text = apply(narrow.base, narrow.edits);
+        let langs = || vec![LintLang::for_tag("pl").expect("pl"), LintLang::for_tag("en").expect("en")];
+        let opts = Default::default();
+        let tv = lint_report(&text, &ShippedMeasure, &langs(), &opts);
+        let wide = lint_report(&text, &Wider, &langs(), &opts);
+        let priced = lint_report_priced(&text, &Wider, &ShippedMeasure, &langs(), &opts);
+        // the cost lines, and the cost verdict, are the price measure's
+        assert_eq!(priced.costs, tv.costs);
+        assert_ne!(wide.costs, tv.costs, "a wider text measure prices the same states differently");
+        let verdict = |l: &Linted| l.findings.iter().filter(|f| f.code == "HUD-E1401").cloned().collect::<Vec<_>>();
+        let rest = |l: &Linted| l.findings.iter().filter(|f| f.code != "HUD-E1401").cloned().collect::<Vec<_>>();
+        assert_eq!(verdict(&priced), verdict(&tv));
+        // every other finding is the text measure's
+        assert_eq!(rest(&priced), rest(&wide));
+        assert_ne!(rest(&wide), rest(&tv), "and the text measure does move the fit findings");
+        // one measure for both is the plain report
+        assert_eq!(lint_report_priced(&text, &Wider, &Wider, &langs(), &opts).costs, wide.costs);
     }
 
     /// every `HUD-E1401` of `text` linted in `langs` (all eleven when empty) with the television's advances

@@ -441,10 +441,23 @@ pub fn shipped(name: &str) -> &'static Result<Coverage, String> {
 /// simulator's newer SDL_ttf sums fractional advances instead, which is why a sub-line the
 /// simulator fits can still come out ellipsised on the television (2026-09-28, the Belarusian
 /// Settings root).
-#[cfg(any(test, feature = "test-support"))]
+///
+/// **The simulator's HUD lint prices with it too** (`hud_cli`, `plxnative-sim --hud-lint`): the HUD cost
+/// ceilings are the television's numbers, measured with these advances, so the lint reads a [`Face`] from
+/// the application directory's own `appfont*.ttf` ([`Face::parse`]) and prices every state with that, while
+/// text fit keeps the simulator's SDL_ttf. That is why the module (the face and its parse, not
+/// `shipped` or `ShippedMeasure`, which read the repository's `pkg/` and stay host-test tools) is also
+/// built under `hostsim`.
+#[cfg(any(test, feature = "test-support", feature = "hostsim"))]
 pub mod advances {
     use super::{be16, be32};
     use std::collections::HashMap;
+
+    /// A line's height as a share of its font size, and a capital's: the ratios the host-test
+    /// `ShippedMeasure` and the simulator's pricing measure both answer, so one number serves both.
+    pub const LINE_HEIGHT: f32 = 1.21;
+    /// See [`LINE_HEIGHT`].
+    pub const CAP_HEIGHT: f32 = 0.73;
 
     pub struct Face {
         upem: f32,
@@ -509,7 +522,9 @@ pub mod advances {
     }
 
     impl Face {
-        fn parse(font: &[u8]) -> Option<Face> {
+        /// The advances of the font file `font` (its bytes), or `None` when one of the `head`, `hhea`,
+        /// `hmtx` or `cmap` tables is missing or short.
+        pub fn parse(font: &[u8]) -> Option<Face> {
             let upem = be16(table(font, b"head")?, 18)? as f32;
             let metrics = be16(table(font, b"hhea")?, 34)? as usize;
             let hmtx = table(font, b"hmtx")?;
@@ -533,6 +548,7 @@ pub mod advances {
     }
 
     /// One of the two shipped text faces, parsed once for the test binary.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn shipped(bold: bool) -> &'static Face {
         use std::sync::OnceLock;
         static REG: OnceLock<Face> = OnceLock::new();
@@ -549,6 +565,7 @@ pub mod advances {
     /// implemented for it beside the trait, in `machine/src/machine.rs` (the lowest layer that names both
     /// the trait and this type), and the share of a column a line may fill under it is
     /// `ui::fit::HEADROOM`, which the callers name.
+    #[cfg(any(test, feature = "test-support"))]
     pub struct ShippedMeasure;
 }
 
