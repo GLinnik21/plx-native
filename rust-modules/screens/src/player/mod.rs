@@ -1677,7 +1677,8 @@ impl PlayerScreen {
 
 impl PlayerScreen {
     /// **The package's section policy** (D6): modal sections replace one another and take the middle of the
-    /// transport; inline sections open beside the row.
+    /// transport; inline sections open in the layout's own bands and sit in the focus order with everything else
+    /// (`player_hud::travel`).
     fn modal(&self) -> bool {
         self.compiled.sections_modal()
     }
@@ -2283,8 +2284,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             GROUP_ROW => self
                 .opener_to_land_on(g, cx)
                 .unwrap_or_else(|| player_hud::control_elem(self.row_primary())),
-            // the tab the user last stood on (Down from the scrubber returns to it), held to the
-            // tabs this item has
+            // the control that opened the section focus is leaving, when it is a tab; else the tab the user last
+            // stood on (a move down from the scrubber returns to it), held to the tabs this item has
             GROUP_TABS => self.opener_to_land_on(g, cx).unwrap_or_else(|| {
                 let last = if plx_appkit::chapters_panel::has_chapters(H::metadata(cx)) { 1 } else { 0 };
                 player_hud::ELEM_TAB_BASE + self.hud.nav.tab.clamp(0, last) as u32

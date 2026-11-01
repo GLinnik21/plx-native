@@ -2295,6 +2295,31 @@ mod sections {
         assert_eq!(run.open_sections(), vec![Section::Info, Section::Chapters]);
     }
 
+    /// **A pill opens its section too**: the `tabs` fixture is an inline package whose tab pills sit in the row's band,
+    /// so the order is bar, row, tabs, strip, and Up from the open strip lands on the Chapters pill that opened it.
+    #[test]
+    fn up_from_the_strip_lands_on_the_chapters_pill_of_an_inline_package_with_tabs() {
+        let _g = plx_base::testlock::serial();
+        assert_idle_playhead();
+        let _chapters = Chaptered::install();
+        let text = include_str!("../../../appkit/src/hud_format/fixtures/tabs.plxhud.json");
+        let tabs = plx_appkit::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+            .expect("the tabs fixture loads")
+            .compiled;
+        let mut run = Run::boot_in(Occupant::Plain, tabs, true);
+        run.screen().model.chapters = true;
+        run.walk("UDD");
+        assert_eq!((run.group(), run.held()), (GROUP_TABS.0, Some(ELEM_TAB_BASE)), "bar, row, then the tab pills");
+        run.step('R');
+        run.step('K');
+        assert_eq!(run.open_sections(), vec![Section::Chapters]);
+        assert_eq!(run.group(), GROUP_STRIP.0);
+        run.screen().hud.nav.tab = 0; // the tab last stood on is Info's: the seat's other answer
+        run.step('U');
+        assert_eq!((run.group(), run.held()), (GROUP_TABS.0, Some(ELEM_TAB_BASE + 1)), "the Chapters pill, not the tab last stood on");
+        assert_eq!(run.screen().hud.nav.tab, 1);
+    }
+
     /// With Chapters closed, Info is the only section: Up from its first button is the row, landing on Info's own disc.
     #[test]
     fn up_from_the_info_buttons_lands_on_the_info_disc() {
