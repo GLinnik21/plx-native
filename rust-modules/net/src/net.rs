@@ -2226,8 +2226,9 @@ fn request_tls_sink(
                     }
                 }
             }
-            // No curl call in this module may escape HTTP(S). The public QR fetch is the only one that
-            // follows redirects; it is capped, and an HTTPS start may never downgrade to plaintext.
+            // No curl call in this module may escape HTTP(S). The public fetches (the QR image and the HUD-package
+            // install-from-address) are the only ones that follow redirects; they are capped, and an HTTPS start
+            // may never downgrade to plaintext.
             require_setopt!(
                 curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS),
                 "CURLOPT_PROTOCOLS"
@@ -3051,7 +3052,8 @@ pub mod resolve {
 /// doomed strict handshake, and a refusal by the bundle ([`roots_failed`]) ends it.
 ///
 /// **Redirects.** No mode crosses a redirect. The control plane never enters either mode for a request
-/// that follows one (the public QR fetch is the only such request), and the media plane follows
+/// that follows one (the public fetches, [`https_get_public`] and its bounded twin, are the only such
+/// requests), and the media plane follows
 /// redirects itself, one easy handle per hop, so each hop enters this module under its own `host:port`
 /// and begins where `begin` puts that host. Nothing a hop's handshake says is recorded against the
 /// host that redirected to it.
