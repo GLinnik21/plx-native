@@ -75,6 +75,23 @@ pub enum AppFx {
     Player(PlayerReq),
     /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
     ItemMenu(ItemMenuReq),
+    /// The player-HUD page's commands on the package store, executed by the Bridge (PR10).
+    Huds(HudCmd),
+}
+
+/// What the Player HUD settings page asks of the package store (`plx_data::hudpacks::HudStore`). The
+/// answers come back as the page's own data, the list the Bridge sends down the channel `Open` carries.
+#[derive(Clone)]
+pub enum HudCmd {
+    /// The page opened: read every candidate directory again, and publish the list (now and whenever it
+    /// changes) down this channel until the page drops its end.
+    Open(std::sync::mpsc::Sender<crate::hud_settings::HudList>),
+    /// Pick a package id (or `builtin:classic`) for the seated profile.
+    Select(String),
+    /// Delete an installed package.
+    Remove(String),
+    /// Install the drop file listed under this hash; the viewer has confirmed it.
+    InstallDrop(plx_data::hudpacks::Sha),
 }
 
 /// A private live receipt. Requests contain account credentials and are intentionally unsupported
@@ -1374,6 +1391,8 @@ pub enum DetailRefreshPhase {
 pub enum AppMsg {
     Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),
+    /// A command of the player-HUD package store, delivered to [`MachineId::Huds`].
+    Huds(HudCmd),
     RestartReply { correlation: u32, accepted: bool },
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },
@@ -1507,6 +1526,8 @@ pub mod word {
     pub const PLAYBACK: &str = "playback";
     pub const AUDIO: &str = "audio";
     pub const PICKER: &str = "picker";
+    /// The Player HUD page (`screens::hud_settings`), a page of the Settings family's inner stack.
+    pub const PLAYER_HUD: &str = "player-hud";
     pub const CONSENT: &str = "consent";
     pub const ONBOARD: &str = "onboard";
     /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::words::route_word`'s
@@ -2131,9 +2152,9 @@ pub struct AppMounter {
     /// the same mount and for the same reason. Empty for classic, for a menu opened without a player HUD under it
     /// (the failure read-out's recovery) and for every other overlay.
     pub player_more_folds: Vec<plx_appkit::more_menu::FoldedRow>,
-    /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument):
-    /// compiled by the app once per process (at boot, outside any frame; a controlled run or a dev package
-    /// compiles on its first player frame instead), and handed to the mount the way the seeds above are.
+    /// **The compiled HUD the NEXT player instance is constructed with** (`PlayerScreen::new`'s argument): the last
+    /// compile `adopt_hud` took into use (the classic at boot, a dev package, or a chosen package the driver handed
+    /// over), and handed to the mount the way the seeds above are.
     /// Cloned, not consumed: every player instance draws from the app's current compile. The mount never compiles, reads no registry and holds no fallback of its own; a
     /// mounter nothing seeded (a controlled run, which compiles nothing outside a frame and never reaches the
     /// player) hands the page `Compiled::default()`, which has no state for any frame.

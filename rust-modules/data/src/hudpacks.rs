@@ -12,7 +12,11 @@
 //!
 //! **Validation is the caller's.** The format lives in `appkit::hud_format`, above this layer, so the
 //! store never parses a package. It hashes the bytes it holds (computation) and asks for the verdict
-//! with a [`HudEffect::Validate`]; the runner parses and compiles and answers [`HudEvent::Validated`].
+//! with a [`HudEffect::Validate`]; the runner answers [`HudEvent::Validated`]. It answers `Validate` with `admit`: the
+//! package parses, passes the reachability and package invariants, and runs on this app's version and range. It is not
+//! laid out there. Fit in a language is the driver's: `lint_fit` with the television's measurer, `lint_price` with the
+//! model and never the television's measurer, then the load. So `Loadable` means "parses and runs on this app", not
+//! "fits every language" and not "under its cost ceiling".
 //! Nothing is decided before that answer, and the sha the store trusts is always its own.
 //!
 //! **Layout** per candidate directory: `packs/<sha256>.plxhud.json` (content-addressed, so an update is
@@ -69,7 +73,7 @@ use serde_json::{Map, Value};
 /// The same literal as `appkit::hud_format::schema::BUILTIN_CLASSIC_ID` (the format accepts it so the
 /// built-in's own file parses). appkit is above this layer, so nothing here can compare the two: the
 /// test that pins them equal belongs where both are visible, with the runner that wires this store
-/// (PR10b).
+/// (`app/adapters/huds.rs::tests`).
 pub const BUILTIN_CLASSIC: &str = "builtin:classic";
 
 const PACKS_DIR: &str = "packs";
@@ -214,11 +218,11 @@ pub enum Unloadable {
     AppRange,
 }
 
-/// The runner's answer to a [`HudEffect::Validate`]: the strict parse and the compile, reduced to what
+/// The runner's answer to a [`HudEffect::Validate`]: `admit`'s strict parse, invariants and app-range check, reduced to what
 /// the store decides on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// Parses, compiles, and runs on this app.
+    /// Parses, passes the invariants, and runs on this app. Not laid out: it may still not fit a language.
     Loadable(Meta),
     /// Parses, but this app cannot run it.
     Unloadable(Meta, Unloadable),
@@ -283,7 +287,7 @@ pub struct Setup {
     /// The most bytes of one file the store asks to read (`appkit::hud_format`'s package bound, which
     /// the validator enforces too; also bounds an `installed.json`) and the most an install may carry.
     /// `Setup::default()` leaves it 0, so an `Install` before the first `Refresh` is refused as
-    /// [`Refusal::TooLarge`]: the runner that wires the store (PR10b) sets it from `appkit`'s
+    /// [`Refusal::TooLarge`]: the runner that wires the store (`app/adapters/huds.rs`) sets it from `appkit`'s
     /// `MAX_PACKAGE_BYTES` in the `Setup` it sends.
     pub max_pack_bytes: usize,
 }
@@ -363,7 +367,8 @@ pub enum HudEffect {
     /// Delete a file; one already gone is not an error. Nothing returns: a pack left behind costs
     /// bytes, never correctness.
     Delete { at: Loc },
-    /// Parse and compile these bytes (the format lives above this layer): [`HudEvent::Validated`].
+    /// Admit these bytes (the format lives above this layer): parse them and check the invariants and the app range,
+    /// with no layout: [`HudEvent::Validated`].
     Validate { tag: Tag, sha: Sha, bytes: Arc<[u8]> },
     /// The selection the profile setting must now hold (the store changed it, or the user picked it).
     Selection { id: String },

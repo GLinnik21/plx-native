@@ -516,8 +516,9 @@ is new. What it taught beyond the recipe:
   is itself behind that feature (it reads the repository's `pkg/`). `WholePixelMeasure`'s is not behind
   anything: it is the HUD cost model (two `Face`s parsed from the bytes of `appfont.ttf` and `appfont-bold.ttf`,
   no IO, no global), the one price every side puts on a HUD state, so the whole `fontcov::advances` module
-  except `shipped` and `ShippedMeasure` is built in every configuration and `hud_cli` (the only code that
-  reads the two files) builds the model from it. No other orphan-rule hazard appeared (the compiler is the checker:
+  except `shipped` and `ShippedMeasure` is built in every configuration and `plx_gfx::text::read_price_model` (the
+  one code that reads the two files; `hud_cli` and the player-HUD driver's storage-worker job both call it) builds the
+  model from it. No other orphan-rule hazard appeared (the compiler is the checker:
   an `impl` of a `plx_machine` trait for a `plx_base` type in the application would be the next
   one, and there is none).
 - **Moving a trait to another crate changes dead-code analysis.** `app/recorder.rs`'s

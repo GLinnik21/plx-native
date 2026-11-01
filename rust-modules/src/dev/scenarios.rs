@@ -1245,7 +1245,7 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "language" => plx_screens::family::SettingsPage::Language,
                 "contribute" => plx_screens::family::SettingsPage::Contribute,
                 "playback" => plx_screens::family::SettingsPage::Playback,
-                // root → Playback → the Quality picker (`SettingsPage::boot_trail`), so BACK works.
+                // root → Playback → the Quality picker (`SettingsPage::boot_trail`; BACK dismisses the surface, see there).
                 "picker-quality" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::Quality),
                 "picker-next-episode" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::NextEpisode),
                 "picker-deck-press" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DeckPress),
@@ -1255,6 +1255,8 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
                 "picker-dolby-vision" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DolbyVision),
                 "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
+                // root → Playback → the Player HUD page (`SettingsPage::boot_trail`; BACK dismisses the surface, see there)
+                "player-hud" => plx_screens::family::SettingsPage::PlayerHud,
                 "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
                 _other => {
                     #[cfg(feature = "devtriggers")]
@@ -1411,7 +1413,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     true
 }
 
-/// `/tmp/plxnative-hud=<path>` — draw the package at that path instead of classic. Read ONCE, on the first
+/// `/tmp/plxnative-hud=<path>` — draw the package at that path instead of the chosen HUD (classic unless a package was picked). Read ONCE, on the first
 /// player frame (`run::refresh_hud`); the file is read here, the bytes are compiled by the owner, and a
 /// file that does not read or compile is remembered ([`DevPackage`]), so it is neither re-read nor
 /// recompiled every frame. Without the `devtriggers` feature the trigger reads as absent.

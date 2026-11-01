@@ -380,14 +380,15 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 
 /// **Make sure the player has a compiled HUD**, on each player frame in `prepare_window` (inside the frame
 /// iteration, before the draw): the app's layer is where the current locale is read
-/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The compile runs once per
-/// process: [`boot_hud`] does it at boot, and this does it on the first player frame when boot did not (a
-/// controlled replay or record run) and for the `plxnative-hud=<path>` package, which is read and compiled
-/// on that frame too, so THAT frame pays the compile. A language change does not recompile: the language is
-/// fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a changed setting is the "confirmed next-launch"
-/// one) and takes effect at the next launch. Every compile is handed to the mounter ([`adopt_hud`]), so the next
-/// player instance is constructed with the current one. `builtin:classic` always loads, so after this
-/// `app.hud` is `Some`.
+/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The classic HUD compiles once, at
+/// boot ([`boot_hud`]). A dev package (`plxnative-hud=<path>`, read and compiled on that frame, so THAT frame pays the
+/// compile) and a controlled run compile on their first player frame. A chosen package compiles in
+/// `Bridge::huds_tick`, in each frame's prepare window, when the resolved selection names a package not yet compiled
+/// for this language: the fit, the price and the load are one tick each (so one frame never carries two compiles), and
+/// none runs while a player is up. Every compile reaches the mounter through [`adopt_hud`]. A
+/// language change does not recompile: the language is fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a
+/// changed setting is the "confirmed next-launch" one) and takes effect at the next launch. `builtin:classic` always
+/// loads, so after this `app.hud` is `Some`.
 fn refresh_hud(app: &mut App) {
     use plx_appkit::player_hud::loaded::{DevHud, DevStep};
     let cx = plx_platform::i18n::current();
@@ -433,6 +434,7 @@ pub(super) fn boot_hud(bridge: &mut super::bridge::Bridge, controlled: bool) -> 
         return None;
     }
     let loaded = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), plx_platform::i18n::current(), bridge.measure());
+    bridge.huds_start(loaded.clone());
     let mut hud = None;
     adopt_hud(bridge, &mut hud, loaded);
     hud
@@ -471,6 +473,13 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     super::adapters::poster::drain_decoded();
 
     fr.player = matches!(app.route(), AppArg::Player);
+    // The HUD package store's tick: three flag tests while nothing is in flight. A package the viewer
+    // picked, or a profile's own pick that a seat change brought in, is compiled one stage per tick (fit, price,
+    // load) with no player up (never while one is mounted or a playback is starting) and taken into use here, so a
+    // mounted page below draws it from the frame it lands on.
+    if let Some(hud) = app.bridge.huds_tick(fr.player) {
+        adopt_hud(&mut app.bridge, &mut app.hud, hud);
+    }
     // ---- the player page's per-frame HUD SNAPSHOT (`HudModel`) ----
     //
     // Sampled ONCE here and pushed into the screen as a value, so nothing the page prepares or

@@ -12,8 +12,8 @@
 //! **A package with no state for the frame** (`frame_state` answers `None`: a user package whose
 //! valuation the compile did not reach; `builtin:classic` has all of them, which a test pins) is decided
 //! HERE, once, for the draw and the geometry together: the report is empty (every rect zero, no stop in the
-//! row, the package's own caption band), and `render::draw` draws nothing and says so. The user-package
-//! fallback to classic is PR10b's.
+//! row, the package's own caption band), and `render::draw` draws nothing and says so. The owner takes a package that
+//! has no state for some frame as unfit and draws classic instead (`loaded::answers_every_frame`).
 //!
 //! This module also names the HUD's focus GROUPS. They are the shared `FocusEngine` groups the
 //! player's `Focusable` declares, and the one set of numbers the HUD's motion and drawing compare a

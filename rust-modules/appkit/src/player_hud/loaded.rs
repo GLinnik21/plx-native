@@ -2,8 +2,9 @@
 //! and handed to the screen as a value ([`LoadedHud`]).
 //!
 //! The owner (the application) builds one at boot (a label's width sets a pill's width, so the language is
-//! part of the plan's cache key, [`CompileKey`]; the process's language is fixed, so that is the only
-//! compile, but for a controlled run's and a dev package's, which come on the first player frame), and
+//! part of the plan's cache key, [`CompileKey`]; the process's language is fixed, so a compile is per
+//! package: at boot, whenever the profile's chosen package changes (the application's `HudDriver`), and on
+//! the first player frame for a controlled run's and a dev package's), and
 //! pushes the [`Arc<Compiled>`] into the player page the way it pushes the frame's
 //! [`HudModel`](super::model::HudModel).
 //! Nothing here reads a registry on its own account: the language arrives as a [`LocaleContext`] (the
@@ -13,7 +14,7 @@
 //!
 //! `builtin:classic` is the only package that ships in this release, and it always loads (it is embedded
 //! and a test parses and compiles it clean in every shipped language): [`load_classic`] cannot fail. A
-//! dev package that does not parse is refused ([`DevStep::Report`]) and the owner keeps drawing classic.
+//! dev package that does not parse is refused ([`DevStep::Report`]) and the owner keeps drawing what it drew: the chosen package, or classic.
 
 use std::sync::Arc;
 
@@ -50,6 +51,22 @@ pub fn load(bytes: &[u8], app_version: &str, cx: &LocaleContext, measure: &dyn M
     };
     let key = CompileKey { sha256: plx_base::sha256::sha256(bytes), app_version: app_version.to_owned(), lang: language.tag().to_owned() };
     Ok(LoadedHud { key, language, compiled: Arc::new(compile(&package, measure, CompileCtx { labels: AppLabels::in_language(cx) })) })
+}
+
+/// **Does the package answer every frame the transport can be in?** For each slot the control row can hold
+/// (discs, Up Next, Skip), with and without chapters, as an episode or not, paused or playing, the compact
+/// state (`open == 0`) must exist: where `geometry::frame_state` answers `None` the renderer draws nothing and the
+/// frame has no controls, so the owner takes a package that fails this as unfit and draws classic instead. Classic
+/// passes (`classic_answers_every_frame_the_player_can_be_in`).
+pub fn answers_every_frame(compiled: &Compiled) -> bool {
+    use crate::hud_format::reach::Slot;
+    [Slot::Discs, Slot::UpNext, Slot::Skip].into_iter().all(|slot| {
+        [false, true].into_iter().all(|chapters| {
+            [false, true].into_iter().all(|episode| {
+                [false, true].into_iter().all(|paused| compiled.lookup(0, slot, chapters, episode, paused).is_some())
+            })
+        })
+    })
 }
 
 /// `builtin:classic`, the embedded package ([`crate::hud_format::CLASSIC_PACKAGE`]), compiled. It does not
@@ -113,7 +130,7 @@ pub fn reference_without_openers_for_test(policy: &str) -> Arc<Compiled> {
         .compiled
 }
 
-/// **The dev trigger's value**: the path of the package to draw instead of classic, the first line of the
+/// **The dev trigger's value**: the path of the package to draw instead of what is chosen (classic unless the profile picked a package), the first line of the
 /// trigger file, trimmed. `None` for an empty file (nothing armed).
 pub fn dev_package_path(value: &str) -> Option<&str> {
     let line = value.lines().next()?.trim();
@@ -252,6 +269,16 @@ mod tests {
             }
         }
         assert_eq!(asked, SHIPPED.len() * 3 * 2 * 2 * 2, "the eleven languages x every combination");
+    }
+
+    #[test]
+    fn classic_and_every_fixture_answer_every_frame() {
+        let en = plx_platform::i18n::english();
+        assert!(answers_every_frame(&load_classic("1.0", en, &ShippedMeasure).compiled));
+        let reference = include_str!("../hud_format/fixtures/reference.plxhud.json");
+        assert!(answers_every_frame(&load(reference.as_bytes(), "1.0", en, &ShippedMeasure).unwrap().compiled));
+        let minimal = include_str!("../hud_format/fixtures/minimal.plxhud.json");
+        assert!(answers_every_frame(&load(minimal.as_bytes(), "1.0", en, &ShippedMeasure).unwrap().compiled), "the compile gives even the smallest package its Up Next and Skip states");
     }
 
     /// The key is the bytes' digest: the same bytes in the same language are the same key, other bytes

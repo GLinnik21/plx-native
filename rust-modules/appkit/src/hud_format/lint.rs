@@ -18,8 +18,8 @@
 //! **There is no entry point that prices with the fit measure.** A caller that has one measure for both
 //! questions must say so by passing it twice to [`lint_report_priced`]; the tests' `lint`, `lint_with` and
 //! `lint_report` do exactly that and exist under `cfg(test)` only. A driver that runs the passes on separate
-//! ticks calls [`lint_fit`] and [`lint_price`]
-//! one tick each and joins them with [`Linted::join`].
+//! ticks calls [`lint_fit`] and [`lint_price`] one tick each and takes the first error of each (`HudDriver`,
+//! `app/adapters/huds.rs`). [`Linted::join`] is for a caller that needs the one report, which is what `--hud-lint` prints.
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork in production code. The text measurers are the
 //! existing [`Measure`] capability (the one [`compile`] takes, so every side

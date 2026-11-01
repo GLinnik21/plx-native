@@ -1,5 +1,5 @@
 //! `HudStore` tests: events in, effects out. `Rig` is a runner over an in-memory disk: it executes the
-//! store's effects the way PR10b's runners will and feeds each answer back as the event it is, so a
+//! store's effects the way `app/adapters/huds.rs`'s runners do and feeds each answer back as the event it is, so a
 //! test reads the effects in the order the store pushed them. A pack here is the text
 //! `id@version[#flag]`; the rig's validator reads it the way the appkit validator reads the real
 //! format (`#newer` is a file for a newer PlxNative, `#bad` does not validate).
