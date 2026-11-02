@@ -142,7 +142,7 @@ def fixture(spec, hud):
             source["title"] = title
             source["summary"] = title + ". " + title + ". " + title
             for chapter in source.get("Chapter", []):
-                chapter["title"] = title
+                chapter["tag"] = title
         if spec.get("captions"):
             sub = {"id": 99001, "streamType": 3, "codec": "srt", "format": "srt", "language": "English",
                    "languageCode": "eng", "index": 2, "key": "/library/streams/99001", "selected": True, "displayTitle": "English"}

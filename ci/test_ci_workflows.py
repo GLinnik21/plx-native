@@ -230,6 +230,14 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertEqual(len(hero), 1, hero)
 
 
+class HudAuthoringPublication(unittest.TestCase):
+    def test_the_public_schema_and_examples_are_staged_by_pages(self):
+        # The files can pass every golden test while Pages silently omits the whole directory.
+        # Editors then receive 404 at the $schema URL embedded in every starter package.
+        self.assertIn("cp -R site/hud _site/", code("pages.yml"))
+        self.assertIn("site/hud/**", code("ci.yml"))
+
+
 class HostToolTests(unittest.TestCase):
     def test_ffmpeg_and_ass_tests_run_in_their_own_job_not_behind_the_replay(self):
         sim = code("simulators.yml")
