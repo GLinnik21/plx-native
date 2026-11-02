@@ -512,7 +512,9 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   the Shelf's default, or `leading`, D11), `card`: {`art`, `overlay`, `below`, `below_gap`}}: the chapters
   `cards::Shelf` (D11); scroll and seat app-owned. Its cards may run past `SAFE`'s side edges, culled at the screen edge
   as today (`chapters_panel.rs:140-147`; SAFE's own doc lets "a shelf peeking off" reach the edge, `ui/src/consts.rs:88-93`),
-  and the focused card is always revealed inside `SAFE` (I5);
+  and the focused card is always revealed inside `SAFE` (I5). `overlay` and `below` accept decorative cells,
+  including nested `rect`/`vstack`, images, icons, rules, text and facts. They cannot contain `segment`, `actions`,
+  `playbar` or another `strip`: the Shelf owns each card's single focus stop and chapter seek action;
 - `actions` {`axis` (`row`, the default, or `column`), `gap`, `item_h`, `min_w`, `items`}: controls inside a section,
   items shaped as a segment's. Every `button` in it takes one width: the widest label over EVERY variant its slot can
   show, shown or not, floored at `min_w`, so the column never changes width with the item (classic: floor 352, 70 tall,
@@ -1572,6 +1574,7 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
 - Example: `{"code": "HUD-E0301", "path": "/layout/block/2/cells/0/segment/items/1/command", "rule":
   "command-known", "message": "unknown command skip_back", "hint": "a relative jump is the command seek with a
   signed by in seconds: by -10", "nearest": ["seek"]}`.
+- `HUD-E0905` rejects an interactive descendant of a card template; move it into a band outside the card.
 - `HUD-E0904` rejects a playbar band whose `chrome` is omitted or `fades`: the bar and its preview must stay
   visible through a scrub. Declare `chrome: steady` on that band, keeping fading controls in separate bands.
 - Codes are grouped by hundreds per rule family. Beyond the example: `HUD-E0601` app text does not fit (context `lang`,

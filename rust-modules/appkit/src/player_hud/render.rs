@@ -61,8 +61,10 @@
 //! because it defines no ink keys that could describe it. The scrub preview receives the compiled track,
 //! including its width and thickness, and rides the painter translation of the bar's band.
 //!
-//! **Remaining limitations under conformance review.** Chapter-card text faces are consumed; non-text template
-//! cells and in-art overlays still need declaration consumption. Keyed geometry and `when: title.is_episode` still use
+//! Chapter-card text and decorative template cells use the shared Shelf and section widgets, including
+//! item predicates and data-stack layout.
+//!
+//! **Remaining limitations under conformance review.** Keyed geometry and `when: title.is_episode` still use
 //! the queue-pair axis and need an independent real-episode valuation before full conformance. `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
 //! declared clock rung. `Compiled::glyph` re-hashes the source on each lookup.
 //!
@@ -633,7 +635,7 @@ fn walk<H: Host>(
                     sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, *size, bold, ink)
                 }
                 // not drawn by this renderer yet: see the module doc
-                DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved),
+                DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved, compiled),
             }
         }
         if let Some(kicker) = kicker_rect.take() { draw_title(f, row, q, Some(kicker), None); }

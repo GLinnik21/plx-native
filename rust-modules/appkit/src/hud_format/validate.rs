@@ -30,6 +30,7 @@ pub fn check(package: &Package) -> Vec<Finding> {
     builtin_has_no_palette(package, &mut out);
     face_ladders(&package.layout, &mut out);
     playbar_chrome(&package.layout, &mut out);
+    card_content(&package.layout, false, &mut out);
     out
 }
 
@@ -149,4 +150,23 @@ fn playbar_chrome(layout: &Object, out: &mut Vec<Finding>) {
                 "set this band's chrome to steady; put fading title text and controls in separate bands"));
         }
     });
+}
+
+/// A card is the Shelf's one focus stop; a descendant cannot own another focus group or scrub gesture.
+fn card_content(object: &Object, inside_card: bool, out: &mut Vec<Finding>) {
+    if inside_card && matches!(object.node, "segment" | "actions" | "playbar" | "strip") {
+        out.push(Finding::new(&codes::E0905, object.pointer.clone(),
+            format!("a chapter card cannot contain `{}`: the Shelf owns the card's focus and seeking action", object.node),
+            "place controls, playbars and strips in bands outside the card; card overlay and below cells are decorative"));
+        return;
+    }
+    let inside_card = inside_card || object.node == "card";
+    fn visit(value: &Val, inside_card: bool, out: &mut Vec<Finding>) {
+        match value {
+            Val::Object(object) => card_content(object, inside_card, out),
+            Val::List(items) => items.iter().for_each(|v| visit(v, inside_card, out)),
+            _ => {}
+        }
+    }
+    for (_, value) in &object.fields { visit(value, inside_card, out); }
 }

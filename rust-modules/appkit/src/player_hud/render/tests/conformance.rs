@@ -305,11 +305,21 @@ fn chapter_frame(compiled: &Compiled, focused: bool) -> Census {
 }
 
 fn chapter_frame_named(compiled: &Compiled, focused: bool, name: &str) -> Census {
+    chapter_frame_content(compiled, focused, name, false)
+}
+
+fn chapter_frame_content(compiled: &Compiled, focused: bool, name: &str, episode: bool) -> Census {
     use crate::hud_format::compile::OPEN_CHAPTERS;
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     plx_data::metadata::set_playing_chapters_for_test(store.state_mut(), vec![
         plx_data::metadata::Chapter { index: 1, start_ms: 125_000, title: name.into(), thumb: String::new() }
     ]);
+    if episode {
+        store.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
+            is_episode: true, is_real_episode: true, title: "Show".into(), ep_title: "Episode".into(), season: 1, index: 2,
+            summary: String::new(), year: 2001, dur_ms: 600_000, rating: String::new(), thumb: String::new(), detail_rk: "1".into(),
+        })));
+    }
     let ps = plx_media::route::PlaybackSession::IDLE;
     let model = HudModel::default();
     let up = Countdown::default();
@@ -372,4 +382,84 @@ fn a_focused_chapter_marquee_does_not_clip_glyphs_to_the_line_pitch() {
     let drew = chapter_frame_named(&load(&text), true, name);
     let title = drew.1.iter().find(|r| r.text == name).expect("shared focused marquee");
     assert!(title.clip.is_some_and(|clip| clip.h >= FM.line_h(theme::size::BODY)), "font ink must survive a small line pitch: {title:?}");
+}
+
+#[test]
+fn a_decorative_cell_below_a_chapter_is_compiled_and_painted() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#""below": ["#,
+        r#""below": [{ "rule": { "axis": "h", "length": 80, "ink": "gold" } },"#);
+    let compiled = load(&text);
+    let state = compiled.lookup(crate::hud_format::compile::OPEN_CHAPTERS, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let rect = state.ops.iter().find_map(|op| match op {
+        DrawOp::Strip { template, .. } => template.iter().find_map(|c| match c.op {
+            DrawOp::Rule { rect, .. } => Some(rect), _ => None,
+        }), _ => None,
+    }).expect("a declared below rule must survive compilation");
+    assert!(chapter_frame(&compiled, false).0.iter().any(|(_, r)| *r == rect), "the declared rule must reach the painter");
+}
+
+#[test]
+fn interactive_card_descendants_are_rejected_with_a_focus_explanation() {
+    for kind in ["segment", "actions", "playbar", "strip"] {
+        let node = match kind {
+            "segment" => r#"{ "segment": { "id": "hidden_controls", "items": [{ "id": "dead", "command": "open_more", "widget": "disc", "size": 32, "rest": "bare" }] } }"#,
+            "actions" => r#"{ "actions": { "item_h": 32, "min_w": 80, "items": [{ "id": "dead", "command": "open_more", "widget": "button", "size": 32, "rest": "bare" }] } }"#,
+            "playbar" => r#"{ "playbar": { "w": 80, "thickness": 4, "fill": "gold", "track": "HAIRLINE", "clock_size": "MICRO" } }"#,
+            _ => r#"{ "strip": { "bind": "chapters", "w": 80, "card_w": 40, "card_h": 20, "card": { "art": { "bind": "item.thumb", "crop": "cover" } } } }"#,
+        };
+        let text = REFERENCE.replace(r#""below": ["#, &format!(r#""below": [{node},"#));
+        let parsed = crate::hud_format::parse::parse(text.as_bytes());
+        let package = parsed.package.unwrap_or_else(|| panic!("{kind}: {:?}", parsed.findings));
+        let findings = crate::hud_format::reach::check(&package).findings;
+        assert!(findings.iter().any(|f| f.code == "HUD-E0905"), "{kind}: no card-child focus diagnostic: {findings:?}");
+    }
+}
+
+#[test]
+fn a_current_chapter_overlay_draws_its_declared_asset() {
+    let _serial = plx_base::testlock::serial();
+    let compiled = load(REFERENCE);
+    let state = compiled.lookup(crate::hud_format::compile::OPEN_CHAPTERS, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let rect = state.ops.iter().find_map(|op| match op {
+        DrawOp::Strip { template, .. } => template.iter().find_map(|c| match &c.op {
+            DrawOp::Icon { rect, asset, .. } if asset == "eq" => Some(*rect), _ => None,
+        }), _ => None,
+    }).unwrap();
+    let masks = plx_ui::draw_census::capture_svgs(|| { chapter_frame(&compiled, false); });
+    assert!(masks.iter().any(|(_, painted)| *painted == rect), "current chapter's declared eq marker is visible: {masks:?}");
+}
+
+#[test]
+fn a_nested_card_data_stack_uses_the_shared_collapsing_layout() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#""below": ["#,
+        r#""below": [{ "vstack": { "w": "fill", "gap": 0, "cells": [
+            { "text": { "bind": "info.summary", "size": "MICRO", "ink": "TEXT_PRIMARY", "max_lines": 2 } },
+            { "rule": { "axis": "h", "length": 80, "ink": "gold" } }
+        ] } },"#);
+    let compiled = load(&text);
+    let state = compiled.lookup(crate::hud_format::compile::OPEN_CHAPTERS, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let (top, rect) = state.ops.iter().find_map(|op| match op {
+        DrawOp::Strip { template, groups, .. } => groups.first().map(|g| {
+            let rect = template.iter().find_map(|c| match c.op { DrawOp::Rule { rect, .. } => Some(rect), _ => None }).unwrap();
+            (g.rect.y, rect)
+        }), _ => None,
+    }).expect("nested data group survives compilation");
+    let drew = chapter_frame(&compiled, false);
+    let expected = Rect::new(rect.x, top, rect.w, rect.h);
+    assert!(drew.0.iter().any(|(_, r)| *r == expected), "absent summary collapses before its rule: {expected:?}");
+}
+
+#[test]
+fn card_facts_inherit_real_episode_paint_from_the_parent_frame() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#""below": ["#, r#""below": [{ "facts": { "bind": "info.facts",
+        "order": ["year"], "badges": [], "size": "BODY", "ink": "gold",
+        "bold": { "value": false, "if": { "title.is_episode": true } }
+    } },"#);
+    let drew = chapter_frame_content(&load(&text), false, "Chapter", true);
+    let year = drew.1.iter().find(|r| r.text == "2001").expect("declared card facts");
+    assert_eq!((year.size, year.bold), (theme::size::BODY, true));
+    assert!((year.ink[0] - 242.0 / 255.0).abs() < 0.001);
 }

@@ -350,6 +350,12 @@ fn rows() -> Vec<Row> {
             &codes::E0904,
             "/layout/block/1/chrome",
         ),
+        row(
+            "card_descendants_are_decorative",
+            edit(REFERENCE, r#""below": ["#, r#""below": [{ "segment": { "id": "hidden", "items": [{ "id": "hidden_more", "command": "open_more", "widget": "disc", "size": 32, "rest": "bare" }] } },"#),
+            &codes::E0905,
+            "/layout/block/4/cells/0/strip/card/below/0/segment",
+        ),
         // I11: a by_interval map lists every rung of the viewer's Skip ladder.
         row(
             "i11_ladder_missing_rungs",

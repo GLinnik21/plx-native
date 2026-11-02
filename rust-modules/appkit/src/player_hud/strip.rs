@@ -74,7 +74,7 @@ impl Geometry {
     /// op back through [`Geometry::of`].
     pub fn new(rect: Rect, card: Rect, pitch: f32, radius: f32, template: &[CardOp]) -> Geometry {
         let drop_of = |bind: &str| {
-            template.iter().find_map(|c| match &c.op {
+            template.iter().filter(|c| c.below).find_map(|c| match &c.op {
                 DrawOp::Text { bind: b, rect: r, .. } if b == bind => Some(r.y - (card.y + card.h)),
                 _ => None,
             })
@@ -161,6 +161,8 @@ pub struct Cards<'a, E> {
     geo: Geometry,
     elem: PhantomData<fn() -> E>,
     template: Option<&'a [CardOp]>,
+    groups: &'a [crate::hud_format::compile::OpGroup],
+    context: Option<(&'a crate::hud_format::compile::Compiled, &'a super::render::Frame<'a>)>,
     current: usize,
     paused: bool,
     episode: bool,
@@ -168,16 +170,27 @@ pub struct Cards<'a, E> {
 
 impl<'a, E> Cards<'a, E> {
     pub fn new(chapters: &'a [Chapter], sid: u16, geo: Geometry) -> Self {
-        Cards { chapters, sid, geo, elem: PhantomData, template: None, current: 0, paused: false, episode: false }
+        Cards { chapters, sid, geo, elem: PhantomData, template: None, groups: &[], context: None, current: 0, paused: false, episode: false }
     }
 
     /// Bind the compiled card declaration and the same parent predicates as the surrounding HUD.
-    pub(super) fn declared(mut self, op: &'a DrawOp, model: &HudModel, episode: bool) -> Self {
-        if let DrawOp::Strip { template, .. } = op { self.template = Some(template); }
-        self.current = self.seat_at(model);
-        self.paused = model.paused;
-        self.episode = episode;
+    pub(super) fn declared(mut self, op: &'a DrawOp, compiled: &'a crate::hud_format::compile::Compiled, frame: &'a super::render::Frame<'a>) -> Self {
+        if let DrawOp::Strip { template, groups, .. } = op { self.template = Some(template); self.groups = groups; }
+        self.context = Some((compiled, frame));
+        self.current = self.seat_at(frame.model);
+        self.paused = frame.model.paused;
+        self.episode = frame.meta.now_playing().is_some_and(|n| n.is_real_episode);
         self
+    }
+
+    fn paint_decor(&self, paint: Painter, i: usize, op: &DrawOp, holds: impl Fn(&str) -> bool + Copy) {
+        let Some((compiled, frame)) = self.context else { return };
+        match op {
+            DrawOp::Image { bind, rect, radius } if bind == "item.thumb" => {
+                super::sections::still(paint, *rect, *radius, self.sid, &self.chapters[i].thumb, plx_ui::placeholder::Reason::CardGround);
+            }
+            _ => super::sections::decor(compiled, frame, paint, op, holds),
+        }
     }
 
     fn holds(&self, i: usize, focused: bool, name: &str) -> bool {
@@ -233,9 +246,9 @@ where
         if let Some(template) = self.template {
             let holds = |name: &str| self.holds(i, true, name);
             if let Some(DrawOp::Text { rect, size, bold, ink, alpha, .. }) = template.iter()
-                .filter(|c| c.present.at(holds))
+                .filter(|c| c.below && c.present.at(holds))
                 .map(|c| &c.op)
-                .find(|op| matches!(op, DrawOp::Text { bind, max_lines: 1, rect, .. } if bind == "item.title" && rect.y >= self.geo.card.y + self.geo.card.h)) {
+                .find(|op| matches!(op, DrawOp::Text { bind, max_lines: 1, .. } if bind == "item.title")) {
                 let mut ink = ink.at(holds);
                 ink[3] *= alpha;
                 return TileLabel { title: CString::new(self.name(i)).ok(), title_face: Some(plx_ui::cards::LabelFace {
@@ -257,9 +270,23 @@ where
         if let Some(template) = self.template {
             let holds = |name: &str| self.holds(i, tile.focused, name);
             let mut title_drawn_by_shelf = false;
-            for c in template.iter().filter(|c| c.present.at(holds)) {
+            let base = p.translate(card.x - self.geo.card.x, card.y - self.geo.card.y);
+            let layer = |below: bool| if below { base } else { base.zoomed(plx_ui::Zoom::about(self.geo.card, (0.5, 0.5), tile.scale)) };
+            for (template_index, c) in template.iter().enumerate().filter(|(_, c)| c.present.at(holds)) {
+                if let Some(group) = self.groups.iter().find(|g| g.ops.start == template_index) {
+                    if let Some((_, frame)) = self.context {
+                        super::sections::group_for(frame, layer(template[group.ops.start].below), template, group, holds,
+                            |index| template[index].present.at(holds),
+                            if !template[group.ops.start].below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center },
+                            |paint, op| self.paint_decor(paint, i, op, holds));
+                    }
+                }
+                if self.groups.iter().any(|g| g.ops.contains(&template_index)) { continue; }
+                let below = c.below;
+                let paint = layer(below);
+                // Mandatory art is painted by the Shelf, once.
+                if template_index != 0 { self.paint_decor(paint, i, &c.op, holds); }
                 if let DrawOp::Text { rect, bind, size, bold, ink, alpha, max_lines, leading } = &c.op {
-                    let below = rect.y >= self.geo.card.y + self.geo.card.h;
                     if tile.focused && below && bind == "item.title" && *max_lines == 1 && !title_drawn_by_shelf {
                         title_drawn_by_shelf = true;
                         continue;
@@ -267,13 +294,12 @@ where
                     let content = match bind.as_str() {
                         "item.title" => self.name(i),
                         "item.start" => plx_ui::fmt::clock(self.chapters[i].start_ms),
-                        _ => continue,
+                        _ => match self.context.and_then(|(_, f)| super::sections::text_of(f, bind)) { Some(text) => text, None => continue },
                     };
                     let bold = bold.at(holds);
-                    let placed = Rect::new(card.x + rect.x - self.geo.card.x, card.y + rect.y - self.geo.card.y, rect.w, rect.h);
                     let view = super::sections::text_view(&content, *size, bold, ink.at(holds), *max_lines, *leading)
-                        .h(if self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center });
-                    view.with_measure(measure).draw(p.alpha(*alpha), super::sections::line_frame(placed, *size, bold));
+                        .h(if !below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center });
+                    view.with_measure(measure).draw(paint.alpha(*alpha), super::sections::line_frame(*rect, *size, bold));
                 }
             }
             return;

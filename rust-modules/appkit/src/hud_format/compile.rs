@@ -442,6 +442,7 @@ pub enum DrawOp {
         radius: f32,
         template: Vec<CardOp>,
         leading_labels: bool,
+        groups: Vec<OpGroup>,
     },
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
@@ -454,11 +455,20 @@ pub enum DrawOp {
 /// are the frame's, so presence is a [`Live`] over them, evaluated per card per frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardOp {
+    /// Under-art cells stay fixed while in-art overlays share the card pop.
+    pub below: bool,
     pub op: DrawOp,
     pub present: Live<bool>,
     /// the RFC 6901 pointer into the package of the node that produced `op` (the strip's `card.art`, an
     /// overlay or below cell's content): the same provenance [`CompiledState::origin`] gives a state's ops
     pub origin: String,
+}
+
+impl AsRef<DrawOp> for DrawOp {
+    fn as_ref(&self) -> &DrawOp { self }
+}
+impl AsRef<DrawOp> for CardOp {
+    fn as_ref(&self) -> &DrawOp { &self.op }
 }
 
 /// **A `vstack` whose content is decided by DATA, left for the draw to place** (`docs/hud-plugins.md`, D6 and
@@ -1629,7 +1639,7 @@ impl<'e, 'p> Env<'e, 'p> {
                     if cells.is_empty() {
                         0.0
                     } else {
-                        self.gap(card, "below_gap").unwrap_or(0.0) + cells.iter().map(|(_, t)| self.text_h(t)).sum::<f32>()
+                        self.gap(card, "below_gap").unwrap_or(0.0) + cells.iter().map(|(cell, kind, o)| self.size_of(kind, o).h + self.gap(cell, "gap_before").unwrap_or(0.0) + self.gap(cell, "gap_after").unwrap_or(0.0)).sum::<f32>()
                     }
                 });
                 Size::new(self.dim(o, "w").unwrap_or(Dim::Fill), card_h + below)
@@ -1660,12 +1670,12 @@ impl<'e, 'p> Env<'e, 'p> {
             .fold(0.0, f32::max)
     }
 
-    /// The text cells under a strip card's art.
-    fn below_cells(&self, card: &'p Object) -> Vec<(&'p Object, &'p Object)> {
+    /// The decorative cells under a strip card's art.
+    fn below_cells(&self, card: &'p Object) -> Vec<(&'p Object, &'static str, &'p Object)> {
         self.objects(card, "below")
             .into_iter()
             .filter(|cell| self.when(cell))
-            .filter_map(|cell| cell.get("text").and_then(Val::as_object).map(|t| (cell, t)))
+            .filter_map(|cell| content(cell).map(|(kind, o)| (cell, kind, o)))
             .collect()
     }
 
@@ -2048,31 +2058,37 @@ impl<'e, 'p> Env<'e, 'p> {
         );
         let overlay = self.objects(card, "overlay");
         self.place_row(&overlay, 0.0, art, &Mode { replaces: &[], hide: false, standin_left: None, host: "" }, &mut tmp);
+        let below_start = tmp.ops.len();
         let mut y = art.y + card_h + self.gap(card, "below_gap").unwrap_or(0.0);
-        for (cell, text) in self.below_cells(card) {
-            let h = self.text_h(text);
-            let w = match self.dim(text, "w") {
-                Some(Dim::Px(w)) => w,
-                _ => card_w,
-            };
-            // the cell keeps its room on every card; a card draws it when its `item.*` terms hold
+        for (cell, kind, node) in self.below_cells(card) {
+            let size = self.size_of(kind, node);
+            let w = match size.w { Dim::Px(w) => w, Dim::Fill => card_w };
+            y += self.gap(cell, "gap_before").unwrap_or(0.0);
+            // A template cell keeps its room; item predicates decide which cards paint it.
             tmp.gate = item_terms(cell);
-            self.emit("text", text, Rect::new(art.x, y, w, h), VAlign::Top, mode, &mut tmp);
+            let x = match cell.get("align").and_then(Val::as_str) {
+                Some("center") => art.x + (card_w - w) * 0.5,
+                Some("end") => art.x + card_w - w,
+                _ => art.x,
+            };
+            self.emit(kind, node, Rect::new(x, y, w, size.h), VAlign::Top, mode, &mut tmp);
             tmp.gate.clear();
-            y += h;
+            y += size.h + self.gap(cell, "gap_after").unwrap_or(0.0);
         }
+        let groups = tmp.groups.clone();
         let template: Vec<CardOp> = tmp
             .ops
             .into_iter()
             .zip(tmp.present)
             .zip(tmp.origins)
-            .map(|((op, present), origin)| CardOp { op, present, origin })
+            .enumerate()
+            .map(|(i, ((op, present), origin))| CardOp { below: i >= below_start, op, present, origin })
             .collect();
         let radius = self.num(o, "radius").unwrap_or(0.0);
         // A strip is priced by the cards its Shelf paints, not by its width over the pitch: the Shelf culls against the
         // screen and a row at rest has scrolled (`Geometry::most_painted_at_rest`), read from the same style it is built with.
         let visible = Geometry::new(r, art, pitch, radius, &template).most_painted_at_rest();
-        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template, leading_labels: o.get("label_align").and_then(Val::as_str) == Some("leading") });
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template, leading_labels: o.get("label_align").and_then(Val::as_str) == Some("leading"), groups });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
