@@ -1,10 +1,13 @@
-//! **`plxnative-sim --hud-lint | --hud-schema | --hud-export`**: the HUD plugin tools that run without
+//! **`plxnative-sim` HUD tools**: the HUD plugin tools that run without
 //! opening a window (`docs/hud-plugins.md`, "LLM authoring" item 2 and "Schema").
 //!
 //! ```text
-//! plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>]
+//! plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>] [--text-skew <profile>]
 //! plxnative-sim --hud-schema
 //! plxnative-sim --hud-export builtin:classic
+//! plxnative-sim --hud-info
+//! plxnative-sim --hud-text-metrics [--lang all|<tag>]
+//! plxnative-sim --hud-inspect <file> [--lang all|<tag>]
 //! ```
 //!
 //! **Exit codes.** `--hud-lint`: 0 when the package has no finding, 1 when it has any (a warning is a
@@ -17,10 +20,10 @@
 //! parse findings are the report, so the exit code is 1. `--hud-schema` and `--hud-export` exit 0, or 2
 //! for a usage error (an unknown export id included).
 //!
-//! **Everything that decides is [`run`]**, a pure function: the file read and the two text measurers are
-//! INJECTED (`read_file`, `measure`, `price`) and the output goes into two strings, so the exit codes and
+//! **Everything that decides is [`run`]**, a pure function: the file read, font identities and the two text measurers are
+//! INJECTED (`read_file`, `measure`, `price`, `fonts`) and the output goes into two strings, so the exit codes and
 //! the bytes are unit-tested without a file, a font or a process. A measurer is a FACTORY and is called
-//! only by `--hud-lint` and only once the command line and the file have been accepted: `--hud-schema`
+//! only by lint, metrics or inspection and only once the command line and the file have been accepted: `--hud-schema`
 //! and `--hud-export` never touch a font. [`main_from`] is the thin process shell and the ONLY IO here:
 //! it wires `std::fs`, the real measurers and the two standard streams.
 //!
@@ -46,10 +49,13 @@ use plx_appkit::hud_format::lint::{lint_report_priced, Linted, LintLang, LintOpt
 use plx_appkit::hud_format::{report, schema, schema_emit, BUILTIN_CLASSIC};
 use plx_machine::machine::Measure;
 
-/// The three flags that make the simulator binary run a HUD tool instead of the application.
+/// The mode flags that make the simulator binary run a HUD tool instead of the application.
 const LINT: &str = "--hud-lint";
 const SCHEMA: &str = "--hud-schema";
 const EXPORT: &str = "--hud-export";
+const INFO: &str = "--hud-info";
+const METRICS: &str = "--hud-text-metrics";
+const INSPECT: &str = "--hud-inspect";
 
 /// The packages `--hud-export` can print: id and bytes. One entry today; PR6's examples add theirs.
 const EXPORTS: &[(&str, &str)] = &[("builtin:classic", BUILTIN_CLASSIC)];
@@ -62,13 +68,14 @@ const EXIT_FINDINGS: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 
 /// The shape of a usage error, one line: the reason, then (for an argument error) the usage.
-const USAGE: &str = "usage: plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>] \
-                     | --hud-schema | --hud-export <id>";
+const USAGE: &str = "usage: plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>] [--text-skew <profile>] \
+                     | --hud-schema | --hud-export <id> | --hud-info | --hud-text-metrics [--lang all|<tag>] \
+                     | --hud-inspect <file> [--lang all|<tag>]";
 
-/// Does the command line ask for a HUD tool? True when any of the three flags is an argument, so the
+/// Does the command line ask for a HUD tool? True when any mode flag is an argument, so the
 /// binary hands the whole line to [`main_from`] before it reads a PMS host from it.
 pub fn wants(args: &[String]) -> bool {
-    args.iter().any(|a| matches!(a.as_str(), LINT | SCHEMA | EXPORT))
+    args.iter().any(|a| matches!(a.as_str(), LINT | SCHEMA | EXPORT | INFO | METRICS | INSPECT))
 }
 
 /// How a lint report is printed.
@@ -80,7 +87,10 @@ enum Format {
 
 /// What the command line asked for.
 enum Command {
-    Lint { file: String, format: Format, langs: Vec<LintLang> },
+    Lint { file: String, format: Format, langs: Vec<LintLang>, skew: Option<String> },
+    Info,
+    Metrics { langs: Vec<LintLang> },
+    Inspect { file: String, langs: Vec<LintLang> },
     Schema,
     Export(String),
 }
@@ -100,15 +110,28 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Lint(String),
         Schema,
         Export(String),
+        Info,
+        Metrics,
+        Inspect(String),
     }
     let mut mode: Option<Mode> = None;
     let mut format: Option<Format> = None;
     let mut lang: Option<String> = None;
+    let mut skew: Option<String> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let next_mode = match arg.as_str() {
             LINT => Some(Mode::Lint(value(&mut it, LINT, "a file")?.to_owned())),
             SCHEMA => Some(Mode::Schema),
+            INFO => Some(Mode::Info),
+            METRICS => Some(Mode::Metrics),
+            INSPECT => Some(Mode::Inspect(value(&mut it, INSPECT, "a file")?.to_owned())),
+            "--text-skew" => {
+                if skew.replace(value(&mut it, "--text-skew", "a measured profile")?.to_owned()).is_some() {
+                    return Err("--text-skew given twice".into());
+                }
+                None
+            },
             EXPORT => Some(Mode::Export(value(&mut it, EXPORT, "a package id")?.to_owned())),
             "--format" => {
                 let v = value(&mut it, "--format", "text or json")?;
@@ -133,44 +156,55 @@ fn parse(args: &[String]) -> Result<Command, String> {
         };
         if let Some(next_mode) = next_mode {
             if mode.replace(next_mode).is_some() {
-                return Err(format!("only one of {LINT}, {SCHEMA} and {EXPORT} may be given"));
+                return Err("only one of the HUD tool modes may be given".into());
             }
         }
     }
     let command = match mode {
-        None => return Err(format!("nothing to do: give {LINT}, {SCHEMA} or {EXPORT}")),
+        None => return Err("nothing to do: give a HUD tool mode".into()),
         Some(Mode::Schema) => Command::Schema,
+        Some(Mode::Info) => Command::Info,
+        Some(Mode::Inspect(file)) => {
+            if format.is_some() || skew.is_some() { return Err("inspect accepts only --lang".into()); }
+            return Ok(Command::Inspect { file, langs: languages(lang.as_deref())? });
+        },
+        Some(Mode::Metrics) => {
+            if format.is_some() || skew.is_some() { return Err("metrics accepts only --lang".into()); }
+            return Ok(Command::Metrics { langs: languages(lang.as_deref())? });
+        },
         Some(Mode::Export(id)) => Command::Export(id),
         Some(Mode::Lint(file)) => {
-            let langs = match lang.as_deref() {
-                None | Some("all") => LintLang::shipped(),
-                Some(tag) => match LintLang::for_tag(tag) {
-                    Some(one) => vec![one],
-                    None => {
-                        let tags: Vec<&str> = LintLang::shipped().iter().map(|l| l.tag).collect();
-                        return Err(format!("--lang is all or one of {}, not {tag:?}", tags.join(" ")));
-                    }
-                },
-            };
-            return Ok(Command::Lint { file, format: format.unwrap_or(Format::Text), langs });
+            let langs = languages(lang.as_deref())?;
+            return Ok(Command::Lint { file, format: format.unwrap_or(Format::Text), langs, skew });
         }
     };
-    if format.is_some() || lang.is_some() {
-        return Err(format!("--format and --lang belong to {LINT}"));
+    if format.is_some() || lang.is_some() || skew.is_some() {
+        return Err("options are not accepted by this HUD tool mode".into());
     }
     Ok(command)
 }
 
+fn languages(tag: Option<&str>) -> Result<Vec<LintLang>, String> {
+    match tag {
+        None | Some("all") => Ok(LintLang::shipped()),
+        Some(tag) => LintLang::for_tag(tag).map(|one| vec![one]).ok_or_else(|| {
+            let tags: Vec<&str> = LintLang::shipped().iter().map(|l| l.tag).collect();
+            format!("--lang is all or one of {}, not {tag:?}", tags.join(" "))
+        }),
+    }
+}
+
 /// Run one HUD tool. `args` is the command line after the program name. `read_file` reads a package
 /// as UTF-8 text (the error is the reason, without the path), `measure` builds the text measurer and
-/// `price` the one that prices the cost (see the module doc); each is called at most once, by `--hud-lint`
-/// only. The report goes to `out`, the one-line reason of a usage error to `err`. Returns the process exit
+/// `price` the one that prices the cost (see the module doc); the price factory is used only by lint. `fonts` reads font identities only for metrics.
+/// `read_file` is also used for an optional lint margin profile. The report goes to `out`, the one-line reason of a usage error to `err`. Returns the process exit
 /// code (see the module doc).
 pub fn run(
     args: &[String],
     read_file: &dyn Fn(&str) -> Result<String, String>,
     measure: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
+    fonts: &dyn Fn() -> Result<std::collections::BTreeMap<String, String>, String>,
     out: &mut String,
     err: &mut String,
 ) -> i32 {
@@ -190,6 +224,22 @@ pub fn run(
         Err(reason) => return usage(&reason, true),
     };
     match command {
+        Command::Inspect { file, langs } => {
+            let text = match read_file(&file) { Ok(t) => t, Err(reason) => return usage(&reason, false) };
+            let measure = match measure() { Ok(m) => m, Err(reason) => return usage(&reason, false) };
+            let result = match crate::hud_tools::inspect(&text, measure.as_ref(), &langs) {
+                Ok(v) => v, Err(reason) => return usage(&reason, false),
+            };
+            out.push_str(&result.to_string()); out.push('\n'); EXIT_CLEAN
+        },
+        Command::Info => {
+            out.push_str(&crate::hud_tools::info().to_string()); out.push('\n'); EXIT_CLEAN
+        },
+        Command::Metrics { langs } => {
+            let measure = match measure() { Ok(m) => m, Err(reason) => return usage(&reason, false) };
+            let fonts = match fonts() { Ok(f) => f, Err(reason) => return usage(&reason, false) };
+            out.push_str(&crate::hud_tools::metrics(measure.as_ref(), &langs, &fonts).to_string()); out.push('\n'); EXIT_CLEAN
+        },
         Command::Schema => {
             out.push_str(&schema_emit::emit_text(schema::CURRENT));
             EXIT_CLEAN
@@ -204,7 +254,7 @@ pub fn run(
                 usage(&format!("unknown package {id:?} to export; known: {}", ids.join(" ")), false)
             }
         },
-        Command::Lint { file, format, langs } => {
+        Command::Lint { file, format, langs, skew } => {
             let text = match read_file(&file) {
                 Ok(text) => text,
                 Err(reason) => return usage(&format!("cannot read {file}: {reason}"), false),
@@ -217,8 +267,15 @@ pub fn run(
                 Ok(price) => price,
                 Err(reason) => return usage(&reason, false),
             };
+            let mut opts = LintOptions::default();
+            if let Some(file) = skew {
+                let profile = match read_file(&file) { Ok(p) => p, Err(reason) => return usage(&reason, false) };
+                opts.text_skew_by_size = match crate::hud_tools::skew_profile(&profile) {
+                    Ok(profile) => profile, Err(reason) => return usage(&reason, false),
+                };
+            }
             let Linted { findings, costs } =
-                lint_report_priced(&text, measure.as_ref(), price.as_ref(), &langs, &LintOptions::default());
+                lint_report_priced(&text, measure.as_ref(), price.as_ref(), &langs, &opts);
             out.push_str(&match format {
                 Format::Text => report::text_with_costs(&file, &findings, &costs),
                 Format::Json => report::json_text_with_costs(&file, &findings, &costs),
@@ -257,13 +314,13 @@ fn read_package(path: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "not valid UTF-8 (a package is a UTF-8 JSON file)".to_owned())
 }
 
-/// The process shell of the three flags: [`run`] over the real file system, the real measurer and the
+/// The process shell of the HUD tools: [`run`] over the real file system, the real measurer and the
 /// two standard streams. Returns the exit code for the binary to end the process with. The only IO of
 /// this module.
 pub fn main_from(args: &[String]) -> i32 {
     use std::io::Write;
     let (mut out, mut err) = (String::new(), String::new());
-    let code = run(args, &read_package, &ttf_measure, &price_measure, &mut out, &mut err);
+    let code = run(args, &read_package, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
     // Written whole and flushed here, not by `exit_now` alone: a closed pipe (`| head`) is the
     // reader's choice and must not turn the exit code into a panic.
     let _ = std::io::stdout().lock().write_all(out.as_bytes());
@@ -348,8 +405,37 @@ mod tests {
         price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     ) -> (i32, String, String) {
         let (mut out, mut err) = (String::new(), String::new());
-        let code = run(&args(list), read, measure, price, &mut out, &mut err);
+        let code = run(&args(list), read, measure, price, &|| panic!("font identities requested outside metrics"), &mut out, &mut err);
         (code, out, err)
+    }
+
+    #[test]
+    fn registry_info_and_inspection_use_only_their_injected_inputs() {
+        let (code,out,err) = go(&["--hud-info"], &|_| panic!("info read a file"), &never);
+        assert_eq!((code,err.as_str()),(0,""));
+        let info: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(info["languages"].as_array().unwrap().len(),11);
+        let (code,out,err) = go(&["--hud-inspect","ref.json","--lang","de"], &serve(REFERENCE_FIXTURE), &shipped);
+        assert_eq!((code,err.as_str()),(0,""));
+        let info: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(info["languages"][0]["lang"],"de");
+        assert!(info["languages"][0]["states"].as_array().unwrap().iter().any(|s|
+            s["controls"].as_array().unwrap().iter().any(|c| c["command"] == "open_tracks")));
+        for flags in [vec!["--hud-info","--text-skew","p.json"],vec!["--hud-inspect","p.json","--format","json"]] {
+            assert_eq!(go(&flags,&|_| panic!("bad arguments read a file"),&never).0,2);
+        }
+    }
+
+    #[test]
+    fn registry_metrics_inject_font_identity_and_never_load_the_price_model() {
+        let (mut out,mut err) = (String::new(),String::new());
+        let fonts = std::collections::BTreeMap::from([("appfont.ttf".into(),"identity".into())]);
+        let code = run(&args(&["--hud-text-metrics","--lang","en"]),
+            &|_| panic!("metrics read a package"),&shipped,&never,&|| Ok(fonts.clone()),&mut out,&mut err);
+        assert_eq!((code,err.as_str()),(0,""));
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["font_hashes"]["appfont.ttf"],"identity");
+        assert!(value["metrics"].as_array().unwrap().iter().all(|row| row["lang"] == "en"));
     }
 
     /// How many widths a lint of the classic package in `lang_args` asks the measurer for.
@@ -488,8 +574,8 @@ mod tests {
             (&["--hud-schema", "--hud-export", "builtin:classic"], "only one of"),
             (&["--hud-lint", "p.json", "--hud-schema"], "only one of"),
             (&["--hud-schema", "extra"], "unknown argument \"extra\""),
-            (&["--hud-schema", "--format", "json"], "--format and --lang belong to --hud-lint"),
-            (&["--hud-export", "builtin:classic", "--lang", "de"], "--format and --lang belong to --hud-lint"),
+            (&["--hud-schema", "--format", "json"], "options are not accepted by this HUD tool mode"),
+            (&["--hud-export", "builtin:classic", "--lang", "de"], "options are not accepted by this HUD tool mode"),
         ];
         for (list, reason) in cases {
             let (code, out, err) = go(list, &unreadable, &never);
@@ -685,6 +771,7 @@ mod tests {
             &read_package,
             &ttf_measure,
             &price_measure,
+            &crate::hud_tools::font_hashes,
             &mut out,
             &mut err,
         );
@@ -706,7 +793,7 @@ mod tests {
             let file = format!("{name}.plxhud.json");
             let read = move |_: &str| -> Result<String, String> { Ok(text.to_owned()) };
             let (mut out, mut err) = (String::new(), String::new());
-            let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &read, &ttf_measure, &price_measure, &mut out, &mut err);
+            let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &read, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
             assert_eq!((code, err.as_str()), (0, ""), "{name}: {out}");
             let tv = lint_report(text, &LintLang::shipped(), &LintOptions::default()).costs;
             assert_eq!(out, report::text_with_costs(&file, &[], &tv), "{name}: the cost lines are the television's");

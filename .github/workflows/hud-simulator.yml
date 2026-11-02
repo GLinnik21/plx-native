@@ -1,0 +1,135 @@
+name: HUD authoring simulator
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hud-simulator.yml'
+      - 'tools/hud_*.py'
+      - 'tools/screenshots.py'
+      - 'rust-modules/src/hud_*.rs'
+      - 'rust-modules/src/dev/framedump.rs'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing app release tag to attach to; empty builds a private Actions artifact'
+        type: string
+        default: ''
+      publish_development:
+        description: 'Publish a source-tagged development utility for registry testing'
+        type: boolean
+        default: false
+      dispatch_probe:
+        description: 'Test registry dispatch credentials without publishing an app release'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name != 'workflow_dispatch' || !inputs.dispatch_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # PR artifacts identify the tested head, not a temporary GitHub merge commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: ./.github/actions/apt-install
+        with:
+          packages: libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev libgl1-mesa-dri libcurl4-openssl-dev xvfb xauth cmake pkg-config nasm ffmpeg python3-pil patchelf
+          recommends: 'true'
+      - name: Cache pinned source downloads
+        uses: ./.github/actions/deps-cache
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: rust-modules -> target-sim-video
+          key: hud-authoring-linux
+      - name: Build the actual player simulator and bundled FFmpeg
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          HOST=1 ./ci/build-ffmpeg.sh
+          if [ -n "$RELEASE_TAG" ]; then
+            make FLAVOR=stable RELEASE=1 site-video-sim SITE_VIDEO_TDIR=rust-modules/target-sim-video
+          else
+            make site-video-sim SITE_VIDEO_TDIR=rust-modules/target-sim-video
+          fi
+      - name: Check capture and bundle tools
+        run: python3 -m unittest discover -s tests -p 'test_hud_*.py' -v
+      - name: Assemble the relocatable, source-bound artifact
+        run: |
+          python3 tools/hud_bundle.py --bin rust-modules/target-sim-video/release/plxnative-sim --out out/plxnative-hud-simulator-linux-x86_64.tar.gz
+          mkdir -p "$RUNNER_TEMP/relocated simulator"
+          tar -xzf out/plxnative-hud-simulator-linux-x86_64.tar.gz -C "$RUNNER_TEMP/relocated simulator"
+          "$RUNNER_TEMP/relocated simulator/bin/plxnative-sim" --hud-info
+          "$RUNNER_TEMP/relocated simulator/bin/plxnative-sim" --hud-lint "$RUNNER_TEMP/relocated simulator/corpus/reference.plxhud.json" --lang all --format json > out/reference-lint.json
+      - name: Save simulator and measurement evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hud-simulator-linux
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+  attach:
+    timeout-minutes: 15
+    needs: build
+    if: github.event_name != 'pull_request' && (inputs.release_tag != '' || inputs.publish_development)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: hud-simulator-linux
+          path: out
+      - name: Attach immutable bytes, resuming safely after a partial upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+          PUBLISH_DEV: ${{ inputs.publish_development }}
+        run: |
+          if [ "$PUBLISH_DEV" = true ]; then
+            test -z "$RELEASE_TAG" || { echo "choose an app release or development publication"; exit 1; }
+            python3 tools/hud_release.py --artifacts out --source "$SOURCE_SHA" --development
+          else
+            python3 tools/hud_release.py --artifacts out --source "$SOURCE_SHA" --tag "$RELEASE_TAG"
+          fi
+      - name: Ask the registry to re-lint with the published simulator
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.HUD_REGISTRY_DISPATCH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          test -n "$GH_TOKEN" || { echo "::error::HUD_REGISTRY_DISPATCH_TOKEN is required for the registry release check"; exit 1; }
+          python3 tools/hud_registry_dispatch.py --pin out/plxnative-hud-simulator-linux-x86_64.tar.pin.json --release-tag "$RELEASE_TAG"
+  dispatch-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.dispatch_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Invoke the registry backstop through the configured dispatch credential
+        env:
+          GH_TOKEN: ${{ secrets.HUD_REGISTRY_DISPATCH_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PUBLISH_DEV: ${{ inputs.publish_development }}
+        run: |
+          test -z "$RELEASE_TAG" && test "$PUBLISH_DEV" != true || { echo "choose a probe or publication"; exit 1; }
+          test -n "$GH_TOKEN" || { echo "::error::HUD_REGISTRY_DISPATCH_TOKEN is required"; exit 1; }
+          python3 tools/hud_registry_dispatch.py --probe "$SOURCE_SHA"

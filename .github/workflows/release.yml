@@ -649,3 +649,31 @@ jobs:
             || { echo "::notice::$TAG is not a stable release tag: the site's film is not refreshed"; exit 0; }
           gh workflow run site-video.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f publish=true
           echo "dispatched site-video.yml for $TAG: it renders on its own and never blocks this release" >> "$GITHUB_STEP_SUMMARY"
+
+  hud-simulator:
+    name: Build the HUD authoring artifact for this app release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: [guard, publish]
+    if: always() && needs.publish.result == 'success'
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch on the released tag so source and reported version agree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          repo, tag = os.environ['GITHUB_REPOSITORY'], os.environ['TAG']
+          probe = subprocess.run(['gh','api',f'repos/{repo}/contents/.github/workflows/hud-simulator.yml',
+                                  '--method','GET','-f',f'ref={tag}','--silent'],capture_output=True,text=True)
+          if probe.returncode:
+              if 'HTTP 404' in probe.stderr:
+                  print(f'::notice::{tag} predates HUD authoring simulators; no artifact is required')
+                  raise SystemExit(0)
+              raise SystemExit(probe.stderr)
+          subprocess.run(['gh','workflow','run','hud-simulator.yml','--repo',repo,'--ref',tag,'-f',f'release_tag={tag}'],check=True)
+          PY

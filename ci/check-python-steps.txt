@@ -381,3 +381,10 @@ python3 ci/check-ledger-ratchet.py
 # a query term) and its verdict arithmetic. Offline: no server, no token file, no port, nothing written. The measuring run needs a real
 # PMS and is never part of a gate; tests/mock_pms.py --band-fixture is the server it can be pointed at.
 python3 tools/pms-band-probe.py --selftest
+
+# Player HUD registry tooling: pure capture/matrix/bundle/release contracts.
+python3 tests/test_hud_capture.py
+python3 tests/test_hud_dispatch.py
+python3 tests/test_hud_preview.py
+python3 tests/test_hud_bundle.py
+python3 tests/test_hud_release.py

@@ -957,7 +957,7 @@ impl HudDriver {
     /// Errors only; the television applies no margin.
     fn fit_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
         let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
-        Self::first_error(&lint_fit(text, env.measure, &[Self::lint_lang(env, language)], &LintOptions { text_skew: 0.0 }))
+        Self::first_error(&lint_fit(text, env.measure, &[Self::lint_lang(env, language)], &LintOptions { text_skew: 0.0, ..LintOptions::default() }))
     }
 
     /// **Stage two, the price** in this language: `HUD-E1401` alone, priced by the model and never by `env.measure`. The
@@ -1426,7 +1426,7 @@ mod tests {
     fn tight_reference() -> (String, &'static str) {
         const KICKER: &str = "/layout/block/6/cells/1/vstack/cells/0/text";
         let lang = LintLang::for_tag("en").unwrap();
-        let found = lint_fit(REFERENCE, &ShippedMeasure, &[lang], &LintOptions { text_skew: 1e9 });
+        let found = lint_fit(REFERENCE, &ShippedMeasure, &[lang], &LintOptions { text_skew: 1e9, ..LintOptions::default() });
         let needed = found
             .iter()
             .find(|f| f.pointer == KICKER)
@@ -1437,7 +1437,7 @@ mod tests {
         assert_ne!(tight, REFERENCE);
         let fits = |tag: &str| {
             let lang = LintLang::for_tag(tag).unwrap();
-            lint_fit(&tight, &ShippedMeasure, &[lang], &LintOptions { text_skew: 0.0 }).iter().all(|f| f.severity != Severity::Error)
+            lint_fit(&tight, &ShippedMeasure, &[lang], &LintOptions { text_skew: 0.0, ..LintOptions::default() }).iter().all(|f| f.severity != Severity::Error)
         };
         assert!(fits("en"), "the column is as wide as English needs");
         let narrow = Preference::SHIPPED.iter().map(|p| p.tag()).find(|t| !fits(t)).expect("a language needs more than English");
@@ -1663,7 +1663,7 @@ mod tests {
         );
         assert!(lint_price(REFERENCE, &ShippedMeasure, &[lang.clone()]).findings.is_empty(), "and priced by the model it sits at them");
         assert!(
-            lint_fit(REFERENCE, &WholePixelLines, &[lang], &LintOptions { text_skew: 0.0 }).iter().all(|f| f.severity != Severity::Error),
+            lint_fit(REFERENCE, &WholePixelLines, &[lang], &LintOptions { text_skew: 0.0, ..LintOptions::default() }).iter().all(|f| f.severity != Severity::Error),
             "premise: the fit is unmoved by it"
         );
 

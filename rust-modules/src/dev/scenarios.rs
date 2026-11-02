@@ -3070,3 +3070,14 @@ pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>
 // layer — `auth`, `telemetry`, the login screen — and only read trigger files, so their reads
 // moved down beside them (`auth::scripted`, `telemetry::consent::state_override`,
 // `screens::login::harness_driven`) instead of being reached up into from here.
+
+/// Registry calibration uses the initialized television measurer once, before the frame loop.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn arm_hud_text_metrics() {
+    if !plx_base::devtrig::flag("hud-text-metrics") { return; }
+    let path = plx_base::devtrig::path("hud-text-metrics.json");
+    match crate::hud_tools::dump_metrics(&path) {
+        Ok(count) => plx_base::eventlog::log(&format!("hud-text-metrics: wrote {count} samples")),
+        Err(reason) => plx_base::eventlog::log(&format!("hud-text-metrics: FAILED {reason}")),
+    }
+}

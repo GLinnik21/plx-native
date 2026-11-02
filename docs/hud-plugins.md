@@ -810,7 +810,11 @@ TV links the firmware's `libSDL2_ttf` (`-lSDL2_ttf` in `LIBS_REAL`, `Makefile:40
 the host's, found through pkg-config (`rust-modules/build_support/host_link.rs:45`, `:151-159`). `ci/dependencies.json`
 pins FreeType 2.15.0 only in the `libass` group (`:38-44`; static inside libass, `Makefile:916-917`), and has no SDL_ttf
 entry (`grep -n -i '"id": "sdl' ci/dependencies.json` finds nothing). So widths may differ by hinting and advance
-rounding, by an amount UNVERIFIED until PR12 measures it; either way the TV's compile is the authority.
+rounding. PR12 measured 12,276 app-text samples across all eleven languages, nine rungs and both
+weights. The ceiling of the worst positive difference is 4–9 px per rung; the source-bound reports,
+font identities and exact table live in the registry's `calibration/`. New translation corpora carry
+that empirical margin only with matching font, renderer-library and type-scale identities; their
+profile retains the original measurement provenance. The TV's compile remains the authority.
 
 ## Captions: the band a HUD occupies
 
@@ -1534,7 +1538,8 @@ this session, no network).
 Decision: the format is written for models by four supports: a published schema generated from the parser's
 own table, a lint whose every finding names its fix, published examples and a guide, and a vocabulary with one
 spelling per concept and no expressions. Goal: a model given the guide, the schema and one example passes
-`--hud-lint` on the first or second try. External claims here are UNVERIFIED in this session (no network).
+`--hud-lint` on the first or second try. PR12 verifies the stock schema path and a two-iteration
+authoring exercise; the other external comparisons below remain design notes.
 
 1. Schema.
 - Where: `https://plxnative.com/hud/schema/1.N.json`, served from this repo's `site/` (static Pages, F40), so the
@@ -1548,7 +1553,7 @@ spelling per concept and no expressions. Goal: a model given the guide, the sche
   that a test regenerates and diffs. The commands are a `oneOf` keyed by `const` on `command`, each branch
   listing its parameters with `additionalProperties: false`, so a validator reports a wrong parameter at the
   item.
-- Agreement: the registry CI runs a stock validator (Python `jsonschema`, which implements 2020-12, UNVERIFIED)
+- Agreement: the registry CI runs a stock validator (Python `jsonschema` 4.26.0, exercised with Draft 2020-12 in PR12)
   over the whole fixture corpus and asserts that everything the parser accepts, the schema accepts, and that
   every key, type or value error the schema reports, the parser reports at a JSON pointer that equals or extends the schema's (a stock validator reports a bad parameter
 at the ITEM, through the `oneOf`, where the parser names the key). The schema is
@@ -1845,7 +1850,7 @@ the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-au
 - OpenSSL EVP reachability through the TV's libcrypto.
 - External format facts (JSON Schema 2020-12 support in Python `jsonschema`, DTCG, Adaptive Cards, DivKit, Lottie,
   `llms.txt`).
-- How far the simulator's and the TV's text widths differ, and the firmware's SDL_ttf and FreeType versions (Text fit).
-- Which step of the release workflow hosts the registry dispatch (Text fit).
+- The firmware's SDL_ttf and FreeType version names. PR12 records the native SDL_ttf library hash and measured width differences (Text fit).
+- The first stable release's live dispatch: the hook is in the simulator workflow's post-upload step; the bootstrap artifact is explicitly a development prerelease (Text fit).
 - Which attributes and elements a later `art` kind's subset should admit beyond the gradients (SVG assets).
 - What a held OK does on a HUD disc today: not read in this session; it stays app-owned whatever it is.
