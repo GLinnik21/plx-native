@@ -24,6 +24,8 @@ class Attachment(unittest.TestCase):
         self.uploads=[]
 
     def gh(self,args,**kwargs):
+        if args[1]=="api":
+            return subprocess.CompletedProcess(args,0,self.sha+"\n","")
         if args[2]=="view":
             return subprocess.CompletedProcess(args,0,json.dumps({"assets":[{"name":name} for name in self.assets]}))
         if args[2]=="download":
@@ -42,6 +44,15 @@ class Attachment(unittest.TestCase):
     def test_different_existing_bytes_are_never_overwritten(self):
         self.assets[self.archive.name]=b"different"
         with patch.object(hud_release.subprocess,"run",side_effect=self.gh),self.assertRaisesRegex(ValueError,"immutable"):
+            hud_release.attach(self.root,self.sha,"v0.10.0")
+        self.assertEqual(self.uploads,[])
+
+    def test_stable_release_tag_must_resolve_to_the_exact_pinned_source(self):
+        def gh(args,**kwargs):
+            if args[1] == "api":
+                return subprocess.CompletedProcess(args,0,"b"*40+"\n","")
+            return self.gh(args,**kwargs)
+        with patch.object(hud_release.subprocess,"run",side_effect=gh),self.assertRaisesRegex(ValueError,"tag.*source"):
             hud_release.attach(self.root,self.sha,"v0.10.0")
         self.assertEqual(self.uploads,[])
 

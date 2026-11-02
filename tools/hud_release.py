@@ -19,6 +19,13 @@ def attach(directory, source, tag="", development=False):
         tag = "hud-simulator-" + source
     elif tag != "v" + pin["app_version"] or pin["development"]:
         raise ValueError("app release tag and simulator version must agree")
+    if not development:
+        # A manual run on main can still report the last release version under RELEASE=1.
+        # The release tag must identify these exact compiler bytes, not just the same version.
+        tagged = subprocess.run(["gh","api",f"repos/{{owner}}/{{repo}}/commits/{tag}","--jq",".sha"],
+                                capture_output=True,text=True,check=True).stdout.strip()
+        if tagged != source:
+            raise ValueError("app release tag does not resolve to the pinned source commit")
     existing = subprocess.run(["gh","release","view",tag,"--json","assets"],capture_output=True,text=True)
     if existing.returncode:
         if not development or "release not found" not in existing.stderr.lower():
