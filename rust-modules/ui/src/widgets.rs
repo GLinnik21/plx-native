@@ -1582,9 +1582,12 @@ pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&st
     let natural = run.width(measure, parts);
     let text_w = if natural > budget {
         let joined = parts.iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
-        crate::text_view::TextView::new(&joined, theme::size::BODY, theme::TEXT_SECONDARY)
-            .with_measure(measure).max_lines(1).draw(p, Rect::new(r.x, y, budget, 0.0));
-        budget
+        let elided = plx_gfx::text::elide_by(&joined, budget, false,
+            |text| measure.width_str(text, theme::size::BODY, false));
+        if let Ok(text) = CString::new(elided.as_str()) {
+            p.text(text.as_ptr(), r.x, y, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
+        }
+        measure.width_str(&elided, theme::size::BODY, false)
     } else { run.draw(p, parts, r.x, y) };
     let mut flow = Flow::new(r.x, theme::space::XS);
     flow.push(if text_w > 0.0 { Item::new(text_w).after(theme::space::SM) } else { Item::absent() });
