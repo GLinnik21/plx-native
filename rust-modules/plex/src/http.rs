@@ -60,7 +60,7 @@
 //! verified. The plex.tv account wrappers also keep redirects off because their custom headers
 //! carry a token, and `net::request_tls_evidence` enforces the pairing rather than trusting it: a
 //! request that follows redirects and carries ANY caller header is refused before it is dialled.
-//! Only the public, headerless QR-image fetch may follow one: at most five hops, HTTP(S) only, and
+//! The public, headerless QR-image and HUD-package fetches may follow them: at most five hops, HTTP(S) only, and
 //! never from HTTPS down to HTTP.
 //!
 //! **Headers.** A caller's header lines are checked once, for both transports, by

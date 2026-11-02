@@ -32,14 +32,15 @@
 //!   does not follow the token; the older build's token-stamped records are adopted into the owner
 //!   stamp), while a re-login that replaced the credentials of a DIFFERENT owner without a sign-out
 //!   leaves the previous records unreachable, and the next write prunes them ([`put_own`]).
-//! * **Written only through [`persist_profile_pref`]**, which refuses without a seat, across a
+//! * **Written only through [`persist_profile_pref`] and [`persist_profile_hud`]** (one
+//!   read-modify-write, `persist_profile_with`), which refuse without a seat, across a
 //!   tenure or client change, when the file's account stamp is no longer the seat's (another
 //!   owner's login; a new token under the SAME owner does not refuse), and with an empty stamp.
 //! * **No `extensions`**: a field a later build adds is not carried by this one.
 use super::{
     Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite, StampedRecord,
     DolbyVisionModePref, InstantDpadSeekingPref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UnderPostersPref,
+    HudSelectionPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UnderPostersPref,
 };
 use crate::plex::session::{
     DolbyVisionMode, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
@@ -82,6 +83,9 @@ pub struct ProfilePrefs {
     /// absent.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub trailer_autoplay: Option<bool>,
+    /// The chosen player HUD's package id ([`HudSelectionPref`]); `None` reads the legacy install-wide key.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
+    pub hud_selection: Option<String>,
 }
 
 impl ProfilePrefs {
@@ -110,6 +114,7 @@ impl ProfilePrefs {
             audio_enhancements,
             trailer_autoplay,
             dolby_vision_mode,
+            hud_selection,
         } = older;
         macro_rules! fill {
             ($($field:ident),* $(,)?) => {$(
@@ -133,6 +138,7 @@ impl ProfilePrefs {
             audio_enhancements,
             trailer_autoplay,
             dolby_vision_mode,
+            hud_selection,
         );
     }
 }
@@ -180,7 +186,7 @@ impl StampedRecord for ProfilePrefsRecord {
 
 /// The `profile_prefs` row: every profile's own values, kept across a profile switch, cleared with
 /// the credentials at sign-out. A [`Row`] and not a [`Setting`]: its value is a list of records,
-/// written only through [`persist_profile_pref`].
+/// written only through [`persist_profile_pref`] and [`persist_profile_hud`].
 pub struct ProfilePrefsPref;
 impl Row for ProfilePrefsPref {
     const KEY: &'static str = "profile_prefs";
@@ -224,6 +230,39 @@ profile_setting!(
     AudioEnhancementsPref = audio_enhancements,
     TrailerAutoplayPref = trailer_autoplay,
 );
+
+const _: () = assert!(matches!(<HudSelectionPref as Row>::FALLBACK, Fallback::LegacyInstallKey));
+
+/// What a profile reads for [`HudSelectionPref`]: its own pick, else the legacy install-wide key; empty is the
+/// built-in. [`effective`]'s counterpart for a `String` value, which no [`Setting`] can carry.
+pub fn effective_hud(legacy: &Preferences, own: Option<&ProfilePrefs>) -> String {
+    own.and_then(|p| p.hud_selection.clone()).unwrap_or_else(|| legacy.hud_selection.clone())
+}
+
+/// [`effective_hud`] over a stored record, for the profile `seat` names ([`stored_effective`]'s rule).
+pub fn stored_effective_hud(session: &Session, seat: &Seat) -> String {
+    let own = match seat {
+        Seat::Seated { user, stamp } => own_prefs(&session.prefs.profile_prefs, user, stamp),
+        Seat::Unseated => None,
+    };
+    effective_hud(&session.prefs, own)
+}
+
+/// [`put_own`] for [`HudSelectionPref`]: the same refusals (an empty stamp, a pick the profile already holds) and
+/// the same pruning.
+pub fn put_own_hud(records: &mut Vec<ProfilePrefsRecord>, user: &str, stamp: &str, id: &str) -> bool {
+    if stamp.is_empty() || own_prefs(records, user, stamp).and_then(|p| p.hud_selection.as_deref()) == Some(id) {
+        return false;
+    }
+    records.prune_foreign(stamp);
+    let at = records.position_of(user, stamp).unwrap_or_else(|| {
+        records.push(ProfilePrefsRecord { user: user.to_string(), account: stamp.to_string(), ..Default::default() });
+        records.len() - 1
+    });
+    records[at].prefs.hud_selection = Some(id.to_string());
+    records.prune_empty();
+    true
+}
 
 /// The values `user` picked under the stamp `stamp`, if the stamp is one that can be read at all
 /// (an empty stamp matches nothing) and a record carries it.
@@ -324,6 +363,17 @@ impl ProfileWrite {
 /// client moved or whose account stamp is no longer the file's, and the revocation guard of
 /// [`update_guarded_with_outcome`](super::super::update_guarded_with_outcome).
 pub fn persist_profile_pref<S: ProfileSetting>(w: &ProfileWrite, v: S::Value) -> bool {
+    persist_profile_with(w, |records| put_own::<S>(records, &w.user, &w.stamp, v))
+}
+
+/// [`persist_profile_pref`] for [`HudSelectionPref`]: the one durable write of the chosen HUD, under the same
+/// guards (seat, tenure, client, the file's account stamp, an empty stamp).
+pub fn persist_profile_hud(w: &ProfileWrite, id: &str) -> bool {
+    persist_profile_with(w, |records| put_own_hud(records, &w.user, &w.stamp, id))
+}
+
+/// The read-modify-write both doors share: `put` edits the record list and says whether it changed.
+fn persist_profile_with(w: &ProfileWrite, put: impl FnOnce(&mut Vec<ProfilePrefsRecord>) -> bool) -> bool {
     let (mut read, mut unchanged) = (false, false);
     let write = crate::plex::session::update_guarded_with_outcome(
         |cur| {
@@ -332,7 +382,7 @@ pub fn persist_profile_pref<S: ProfileSetting>(w: &ProfileWrite, v: S::Value) ->
             }
             read = true;
             let mut next = cur.clone();
-            if put_own::<S>(&mut next.prefs.profile_prefs, &w.user, &w.stamp, v) {
+            if put(&mut next.prefs.profile_prefs) {
                 Some(next)
             } else {
                 unchanged = true;

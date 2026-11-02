@@ -18,8 +18,8 @@
 //! word (§2.1).
 
 use plx_appkit::held_key::HeldKey;
-use plx_appkit::player_hud::geometry::{GROUP_ROW, GROUP_SCRUB, GROUP_TABS};
-use plx_appkit::player_hud::{ControlSlot, Controls};
+use plx_appkit::player_hud::command::Section;
+use plx_appkit::player_hud::geometry::{GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP, GROUP_TABS};
 use plx_machine::machine::GroupId;
 use std::os::raw::c_int;
 
@@ -155,6 +155,67 @@ impl Scrub {
         plx_appkit::player_hud::scrub_clamp_target(ns, duration_ns)
     }
 }
+/// **Which sections are open**, most recent first: at most the package's two ([`Section`]), a `Copy` value the
+/// screen's state machine edits and the draw reads as the `open` bits of the compiled state.
+///
+/// The policy is the PACKAGE's ([`plx_appkit::hud_format::compile::Compiled::sections_modal`], D6): a **modal**
+/// section replaces whichever is open, an **inline** one opens beside it. BACK closes the latest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sections {
+    open: [Option<Section>; 2],
+}
+
+impl Sections {
+    pub const NONE: Sections = Sections { open: [None, None] };
+
+    pub fn any(self) -> bool {
+        self.open[0].is_some()
+    }
+
+    pub fn contains(self, section: Section) -> bool {
+        self.open.contains(&Some(section))
+    }
+
+    /// The section opened last: the one BACK closes and the one the keys travel into.
+    pub fn latest(self) -> Option<Section> {
+        self.open[0]
+    }
+
+    /// The open sections, latest first.
+    pub fn iter(self) -> impl Iterator<Item = Section> {
+        self.open.into_iter().flatten()
+    }
+
+    /// The `open` key of the compiled state these sections select.
+    pub fn bits(self) -> u8 {
+        self.iter().fold(0, |bits, s| bits | s.open_bit())
+    }
+
+    /// `section` toggled under the package's policy: an open one closes; a closed one opens as the latest,
+    /// replacing the others when the policy is modal.
+    pub fn toggled(self, section: Section, modal: bool) -> Sections {
+        if self.contains(section) {
+            return self.closed(section);
+        }
+        let older = if modal { None } else { self.open[0] };
+        Sections { open: [Some(section), older] }
+    }
+
+    /// `section` closed, the others kept in order.
+    pub fn closed(self, section: Section) -> Sections {
+        let mut it = self.iter().filter(|s| *s != section);
+        Sections { open: [it.next(), it.next()] }
+    }
+
+    /// The group that holds the keys of `section`'s page.
+    pub fn group_of(section: Section) -> GroupId {
+        match section {
+            Section::Chapters => GROUP_STRIP,
+            Section::Info => GROUP_SECTION,
+        }
+    }
+}
+
 /// The player HUD's focus cursor: WHICH row owns focus, plus the index WITHIN each of the
 /// two indexed rows. One cursor, not three settings — the three are drawn together every
 /// frame (`draw_hud`), moved together by UP/DOWN, and, the reason they are bundled here,
@@ -168,8 +229,9 @@ impl Scrub {
 #[derive(Clone, Copy)]
 pub struct HudNav {
     /// Which of the HUD's FocusEngine groups holds focus: [`GROUP_SCRUB`] (the scrubber),
-    /// [`GROUP_ROW`] (the control row: Subtitles/Audio/More, the Skip pill or the Up Next pair) or
-    /// [`GROUP_TABS`] (the bottom tabs). It MIRRORS the engine's focus, which is the authority:
+    /// [`GROUP_ROW`] (the control row: Subtitles/Audio/More, the Skip pill or the Up Next pair),
+    /// [`GROUP_TABS`] (the bottom tabs) or, while a section is open, [`GROUP_SECTION`] (the Info buttons) or
+    /// [`GROUP_STRIP`] (the Chapters cards). It MIRRORS the engine's focus, which is the authority:
     /// `PlayerScreen::step` writes it on `FocusMoved` and every other write is paired with a
     /// re-seat. The canon hash writes its `.0`, where the integer used to be.
     pub focus: GroupId,
@@ -244,16 +306,14 @@ pub struct HudState {
     /// so each segment raises the HUD exactly once per playback however often the row
     /// flickers.
     pub last_offer: Option<(plx_data::metadata::MarkerKind, i64)>,
-    /// The SEGMENT whose offer the viewer dismissed with BACK. `None` until they do, and keyed
-    /// on the segment rather than the row so it covers an intro and its later credits as two
-    /// independent decisions: dismissing Skip Intro must not silently hide Up Next at the end
-    /// of the same episode. The row falls back to the discs while the playhead is still inside
-    /// this segment, and a different segment offers normally.
-    pub dismissed_offer: Option<(plx_data::metadata::MarkerKind, i64)>,
     /// Did a stand-in own the control row last frame? The reset below is the EDGE of a
     /// stand-in vanishing under the focus ring — see `player_hud::standin_left_the_ring`,
     /// which is where that rule is written down and tested.
     pub was_standin: bool,
+    /// **The sections open on the transport** (Chapters, Info): the package's own pages, drawn from the compiled
+    /// state their bits select and opened, travelled, pressed and closed by this screen (PR8). The screen is
+    /// their one owner; the app asks for a toggle with `AppMsg::HudSection`.
+    pub sections: Sections,
 }
 impl HudState {
     /// Focus at rest, no timer, nothing dismissed, no segment seen yet, discs in the control row.
@@ -265,33 +325,15 @@ impl HudState {
         exit_armed: false,
         back_leaves_at_press: false,
         last_offer: None,
-        dismissed_offer: None,
         was_standin: false,
+        sections: Sections::NONE,
     };
-
-    /// **The row to DRAW once BACK has dismissed its offer.** The slot is recomputed every frame
-    /// from the playhead, so a dismissal has to be applied at the one place the frame's slot is
-    /// resolved, not by remembering a replacement `Discs` value: the next frame's `slot()` would
-    /// put the offer straight back. Keyed on the SEGMENT (`ControlSlot::offer`) so it lapses by
-    /// itself when the marker does, and reusing [`Controls::now`] gives the returning discs the
-    /// same live Previous/Next pair they have outside a segment.
-    pub fn slot_after_dismissal(
-        &self,
-        slot: ControlSlot,
-        ps: &plx_media::route::PlaybackSession,
-    ) -> ControlSlot {
-        match slot.offer() {
-            Some(offer) if self.dismissed_offer == Some(offer) => {
-                ControlSlot::Discs(Controls::now(ps))
-            }
-            _ => slot,
-        }
-    }
 
     /// Is the transport on screen right now, by this HUD's own state?
     #[inline]
     pub fn visible(&self, ps: &plx_media::route::PlaybackSession, now: u32, is_paused: bool) -> bool {
-        hud_visible(ps, now, self.until, is_paused, self.dismissed)
+        // an open section is the transport's own page: it stays up for as long as it is open
+        self.sections.any() || hud_visible(ps, now, self.until, is_paused, self.dismissed)
     }
 
     /// Raise the HUD to at least `now + ms`, never PULLING IN a deadline already further out.
@@ -427,8 +469,11 @@ pub fn scrub_press(hud_vis: bool, focus: GroupId, seekable: bool) -> ScrubPress 
         return ScrubPress::Reveal;
     }
     match focus {
-        GROUP_ROW => ScrubPress::Row,
+        // the chapters strip is walked sideways by the engine like the row
+        GROUP_ROW | GROUP_STRIP => ScrubPress::Row,
         GROUP_TABS => ScrubPress::Tabs,
+        // an open section's buttons are a column: a sideways key has nowhere to go and must not scrub
+        GROUP_SECTION => ScrubPress::Nothing,
         _ if seekable => ScrubPress::Jump,
         _ => ScrubPress::Nothing,
     }
@@ -468,6 +513,44 @@ pub fn failed_key_action(key: FailedKey, sel: usize, n: usize) -> FailedKeyActio
         FailedKey::Left if sel > 0 => FailedKeyAction::Focus(sel - 1),
         FailedKey::Right if sel < last => FailedKeyAction::Focus(sel + 1),
         _ => FailedKeyAction::Ignore,
+    }
+}
+
+/// **The sections-open value** (PR8): what a toggle does under each policy, and what BACK sees.
+#[cfg(test)]
+mod sections_tests {
+    use super::*;
+
+    #[test]
+    fn a_modal_section_replaces_the_one_open_and_an_inline_one_opens_beside_it() {
+        let chapters = Sections::NONE.toggled(Section::Chapters, true);
+        assert_eq!((chapters.latest(), chapters.bits()), (Some(Section::Chapters), Section::Chapters.open_bit()));
+        let modal = chapters.toggled(Section::Info, true);
+        assert_eq!(modal.iter().collect::<Vec<_>>(), vec![Section::Info], "modal: Info replaced Chapters");
+        let inline = chapters.toggled(Section::Info, false);
+        assert_eq!(
+            inline.iter().collect::<Vec<_>>(),
+            vec![Section::Info, Section::Chapters],
+            "inline: Info opened beside Chapters, as the latest"
+        );
+        assert_eq!(inline.bits(), Section::Chapters.open_bit() | Section::Info.open_bit());
+    }
+
+    #[test]
+    fn toggling_an_open_section_closes_it_and_keeps_the_others_in_order() {
+        let both = Sections::NONE.toggled(Section::Chapters, false).toggled(Section::Info, false);
+        assert_eq!(both.latest(), Some(Section::Info), "BACK closes the one opened last");
+        let rest = both.toggled(Section::Info, false);
+        assert_eq!(rest.iter().collect::<Vec<_>>(), vec![Section::Chapters]);
+        assert_eq!(both.closed(Section::Chapters).iter().collect::<Vec<_>>(), vec![Section::Info]);
+        assert!(!rest.closed(Section::Chapters).any());
+        assert_eq!(Sections::NONE.bits(), 0);
+    }
+
+    #[test]
+    fn a_section_is_a_group_of_its_own_page() {
+        assert_eq!(Sections::group_of(Section::Chapters), GROUP_STRIP);
+        assert_eq!(Sections::group_of(Section::Info), GROUP_SECTION);
     }
 }
 
@@ -584,46 +667,6 @@ mod hud_visibility_tests {
             assert!(!hud.visible_at_press, "the press found a hand-hidden HUD");
             assert!(!hud.dismissed, "the same bound press wakes it for the next decision");
         });
-    }
-
-    /// BACK's dismissal is keyed on the SEGMENT. It hides the offer that was up and shows the
-    /// discs, and it must not carry over to the next marker: an intro dismissed at 0:30 says
-    /// nothing about whether the viewer wants Up Next at the end of the episode.
-    #[test]
-    fn a_dismissed_offer_shows_the_discs_and_another_segment_still_offers() {
-        use plx_data::metadata::{Marker, MarkerKind};
-        let ps = plx_media::route::PlaybackSession::IDLE;
-        let intro = Marker {
-            kind: MarkerKind::Intro,
-            start_ms: 0,
-            end_ms: 60_000,
-            final_seg: false,
-        };
-        let credits = Marker {
-            kind: MarkerKind::Credits,
-            start_ms: 60_000,
-            end_ms: 120_000,
-            final_seg: true,
-        };
-        let skip = plx_appkit::player_hud::slot_for(
-            Some(intro),
-            false,
-            plx_media::route::NextEpisodeMode::Countdown,
-        );
-        let up_next = plx_appkit::player_hud::slot_for(
-            Some(credits),
-            true,
-            plx_media::route::NextEpisodeMode::Countdown,
-        );
-        let mut hud = HudState::IDLE;
-        assert!(hud.slot_after_dismissal(skip, &ps) == skip, "nothing dismissed yet");
-
-        hud.dismissed_offer = Some((MarkerKind::Intro, intro.start_ms));
-        assert!(matches!(hud.slot_after_dismissal(skip, &ps), ControlSlot::Discs(_)));
-        assert!(
-            hud.slot_after_dismissal(up_next, &ps) == up_next,
-            "a different segment gets its own chance"
-        );
     }
 
     /// The exit arming is sampled BEFORE the press un-dismisses, and the press spends it: only the

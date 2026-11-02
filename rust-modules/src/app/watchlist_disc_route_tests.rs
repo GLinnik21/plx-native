@@ -11,7 +11,8 @@
 //! plex.tv is scripted in every test (`watchlist_press_tests::Script`): nothing here has a live path.
 
 use super::*;
-use super::test_support::{detail_arg, World};
+use super::test_support::{detail_arg, detail_arg_for, tick, World};
+use plx_plex::plex::ServerId;
 use plx_data::catalog::Membership;
 use plx_data::watchlist::ledger::Intent;
 use plx_plex::plex::watchlist::WatchKind;
@@ -278,4 +279,64 @@ fn the_watchlists_sort_and_filter_lifts_its_pill_while_the_menu_is_up() {
     assert!(!menu_up(&w), "BACK closes the menu");
     assert_eq!(w.d.lifted_opener(), None, "and the lift stands down");
     assert_eq!(w.elem(), Some(PILL_ELEM), "with focus back on the pill");
+}
+
+/// **An episode page's Go to Show disc, by keys**: Right from Play reaches the disc (the row is
+/// Play, Go to Show, the watch disc; no bookmark without a catalog guid), its verb unfurls inside the capsule and
+/// nothing is drawn in the band under the row (a focused icon-only control draws no caption), OK
+/// opens the SHOW's page seeded on the episode's season, and BACK returns to the episode page with
+/// the disc focused. The seed is read the frame the request is performed, before the mount spends it.
+#[test]
+fn an_episode_pages_go_to_show_disc_opens_the_show_on_the_episodes_season_and_back_returns_to_it() {
+    use plx_platform::i18n::msg::browse_menu_go_show;
+    // `detail::hero::ELEM_GO_TO_SHOW`: the hero is private to the screens crate, and a hero control's
+    // elem is its own engine key.
+    const GO_SHOW: u32 = 8;
+    let sid = ServerId::from_raw(1);
+    let episode = detail_arg_for(sid, "ep-5");
+    let mut w = World::detail_episode("go-to-show-route", sid, "ep-5", "show-7", 3);
+    w.frames(40);
+    let at_play = w.drawn();
+    let play = at_play.words.iter().find(|(text, _)| text == plx_appkit::hero_layout::play_text(false))
+        .unwrap_or_else(|| panic!("premise: the Play pill draws its label; drew {:?}", at_play.words)).1;
+    let play_key = w.elem();
+    assert!(play_key.is_some(), "premise: focus is on the hero");
+
+    w.press(Key::Right);
+    assert_eq!(w.elem(), Some(GO_SHOW), "one Right from Play reaches the Go to Show disc");
+    w.frames(90);
+    let drawn = w.drawn();
+    let verb = browse_menu_go_show().to_string();
+    assert_eq!(drawn.words.iter().filter(|(text, _)| *text == verb).count(), 1,
+        "the unfurled capsule draws the verb once: {:?}", drawn.words);
+    let row_bottom = play.y + play.h * 0.5 + plx_appkit::hero_layout::CD * 0.5;
+    let band = play.y + play.h..row_bottom + plx_ui::theme::space::XS + 2.0 * plx_ui::theme::size::CAPTION as f32;
+    let in_band: Vec<_> = drawn.words.iter().filter(|(_, at)| band.contains(&at.y)).collect();
+    assert!(in_band.is_empty(), "nothing stands under the control row: {in_band:?}");
+
+    // OK: the request is performed in the frame that raises it; the mount that follows spends the seed.
+    let mut seed = None;
+    w.step(script_key(Key::Ok, tick(w.frame + 1)));
+    for _ in 0..40 {
+        seed = seed.or_else(|| w.bridge.mounter.seed.clone());
+        if seed.is_some() { break; }
+        w.step(vec![]);
+    }
+    let seed = seed.expect("OK on the disc seeds a Detail page");
+    assert_eq!((seed.sid, seed.rk.as_str(), seed.spot.season), (sid, "show-7", Some(3)),
+        "the show's page, on the episode's season, on the episode's server");
+    w.frames(60);
+    assert!(w.on(&detail_arg_for(sid, "show-7")), "the show's page is on top");
+
+    // The store holds one current item: the show's page took it, and the episode page that BACK
+    // reveals asks its server again, so for a moment the page has no item (its hero is Play and the
+    // watch disc) and then the episode lands. The disc must be focused again once it has.
+    let show = plx_data::metadata::Detail { sid, rk: "show-7".into(), is_show: true, kind: "show".into(), ..Default::default() };
+    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(show));
+    w.tap(Key::Back, 2);
+    assert!(w.on(&episode), "BACK returns to the episode page");
+    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(),
+        Some(World::episode_detail(sid, "ep-5", "show-7", 3)));
+    w.frames(60);
+    assert_eq!(w.elem(), Some(GO_SHOW), "BACK returns with the disc focused");
 }

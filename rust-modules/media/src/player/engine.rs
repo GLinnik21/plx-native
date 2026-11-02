@@ -2167,7 +2167,8 @@ fn start_bufferfeed_inner(
             let auto_original = crate::route::auto_original_watch(ps);
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
-            SHARED.side_subs_owner.store(side_target.is_some(), Ordering::Release);
+            // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
+            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only()), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
             });
@@ -2498,15 +2499,23 @@ fn reload_start_outcome(
 }
 
 /// Start the side subtitle reader for the live remux this engine run plays, drawing the track
-/// the route's target names.
+/// the route's target names (or, for a sidecar, measuring the clock only).
 fn start_side_reader(target: &crate::route::SideReaderTarget) {
+    let clock_only = target.clock_only();
     let started = super::subside::spec_for(target).is_some_and(super::subside::start);
     if !started {
-        log("subside: could not start the reader thread");
+        // One place decides the label and the burn, so the two roles can never drift: a
+        // clock-only reader that cannot start — no client for the running server, or a refused
+        // thread — never raises the failure that rebuilds the stream.
+        super::subside::failed_reading(clock_only, "subside: could not start the reader thread");
+        if clock_only {
+            // The app fetches that subtitle itself and no reader owns it: the sidecar is drawn on
+            // the remux's clock, as it was before the reader measured it.
+            return;
+        }
         // Nothing reads beside the stream: the demuxer must not leave the subtitle to a reader
         // that is not there.
         SHARED.side_subs_owner.store(false, Ordering::Release);
-        super::subside::raise_failure(); // the route falls back to the server's burn
     }
 }
 

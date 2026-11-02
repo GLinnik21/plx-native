@@ -11,11 +11,25 @@
 //! only inputs are the [`Spec`], `SHARED`'s playhead and clock atomics, and the main demuxer's
 //! published keyframe anchor.
 //!
-//! Logs: `subside: open|anchor|reopen|failed|stop …` — labels and numbers, never the URL, host,
-//! token or session identifier.
+//! **A SIDECAR gets the same reader CLOCK-ONLY** ([`CLOCK_ONLY`]): the app fetches that subtitle
+//! itself, so the reader reads no cue, owns no subtitle selection (`side_subs_owner` stays false,
+//! `desired_sub_idx` is untouched), fills no store, and never ends in the server's burn: neither
+//! its give-up path nor a mid-play start failure raises `FAILED` ([`failed_reading`]), and
+//! `route::side_subtitles_failed` ignores the flag for a sidecar anyway.
+//! It runs the keyframe scan only, to learn where in the Part the remux's first keyframe is: a
+//! sidecar is in file time, the remux is labelled with the REQUESTED offset, and PMS starts it on
+//! a keyframe earlier than or at that offset (not always the last one before it). A byte-exact
+//! match is published to [`exact_delta_ns`], which
+//! `player::sidecar_clock_ns` adds to the sidecar's render clock; without one nothing is shifted
+//! (the assumed mapping is not trusted for this: it was measured 2.002 s wrong). The run is bound
+//! by the same gate as an embedded one (`route::side_reader_target`): off it there is no reader
+//! and a sidecar is drawn on the remux's clock, as before.
+//!
+//! Logs: `subside: open|anchor|reopen|failed|clock-only failed|stop …` — labels and numbers, never
+//! the URL, host, token or session identifier.
 
 use crate::ff::subside::{read_once, Anchor, ReadCfg, RunEnd, SideStop};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -27,6 +41,11 @@ const BACKOFF: Duration = Duration::from_millis(500);
 /// How far before the playhead a reopen starts reading, so a cue already on screen comes back.
 const REOPEN_LEAD_NS: i64 = 15_000_000_000;
 
+/// [`Spec::ordinal`] of a CLOCK-ONLY run: no track is read (a sidecar is drawn), only the clock is
+/// measured. Negative, so it is never a track position and two runs of different roles never
+/// compare equal in `apply`.
+pub const CLOCK_ONLY: i32 = -1;
+
 /// Everything one run of the reader is started with. `url` carries the token: held, never logged.
 #[derive(Clone)]
 pub struct Spec {
@@ -36,7 +55,8 @@ pub struct Spec {
     pub offset_ns: i64,
     /// The Part's whole-file bitrate, for the log line only.
     pub part_kbps: u32,
-    /// The 0-based position of the drawn track among the Part's subtitle streams.
+    /// The 0-based position of the drawn track among the Part's subtitle streams, or
+    /// [`CLOCK_ONLY`].
     pub ordinal: i32,
     /// Start reading at the playhead instead of the run's start offset: the reader begins mid-play
     /// (a pick on a live remux), not with the engine run.
@@ -64,6 +84,13 @@ static LIFECYCLE: Mutex<()> = Mutex::new(());
 static EPOCH: AtomicU64 = AtomicU64::new(0);
 /// The clock delta the last reader measured (or was given), read by the reader that replaces it.
 static LAST_DELTA: Mutex<Option<i64>> = Mutex::new(None);
+/// What [`EXACT_DELTA_NS`] holds while no byte-exact match has been measured for this engine run.
+const NO_EXACT: i64 = i64::MIN;
+/// The Part-to-playhead clock delta (`delta`, nanoseconds) of THIS engine run, published only when
+/// the keyframe scan matched the run's first keyframe byte for byte ([`publish_exact`]); read lock-free
+/// every frame by the sidecar draw ([`exact_delta_ns`]). Cleared by `start` and `stop`, so a run the
+/// reader is not admitted for (or one not measured yet) never inherits another run's delta.
+static EXACT_DELTA_NS: AtomicI64 = AtomicI64::new(NO_EXACT);
 /// The newest change `sync` was asked for, with the epoch it was asked in. Latest wins.
 static WANT: Mutex<Option<(u64, Option<Spec>)>> = Mutex::new(None);
 static SYNC_WORKER: AtomicBool = AtomicBool::new(false);
@@ -74,6 +101,18 @@ fn lifecycle() -> std::sync::MutexGuard<'static, ()> {
 
 fn running() -> std::sync::MutexGuard<'static, Option<Running>> {
     RUNNING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Publish the exact clock delta the reader measured for this engine run: `part_time − playhead`
+/// at the run's first keyframe, matched byte for byte. Never called with an ASSUMED delta.
+pub(crate) fn publish_exact(delta_ns: i64) {
+    EXACT_DELTA_NS.store(delta_ns, Ordering::Release);
+}
+
+/// The run's exact clock delta, or `None` when none has been measured (the scan has not finished,
+/// did not match, or no reader is admitted for this run). Lock-free: the sidecar draw reads it per frame.
+pub fn exact_delta_ns() -> Option<i64> {
+    Some(EXACT_DELTA_NS.load(Ordering::Acquire)).filter(|d| *d != NO_EXACT)
 }
 
 /// Is a reader running? The draw gate (`route::subtitles_burned`) reads this only for the dev
@@ -118,13 +157,16 @@ pub fn spec_for(target: &crate::route::SideReaderTarget) -> Option<Spec> {
 }
 
 /// Start the reader for this engine run. Replaces a reader still running (it is stopped first).
-/// Selects `spec.ordinal` as the drawn track and marks the main demuxer's subtitle handling off.
-/// Returns `false` when the thread could not be spawned.
+/// Selects `spec.ordinal` as the drawn track and marks the main demuxer's subtitle handling off —
+/// unless it is [`CLOCK_ONLY`], which takes neither. Returns `false` when the thread could not be
+/// spawned.
 pub fn start(spec: Spec) -> bool {
     let _l = lifecycle();
     EPOCH.fetch_add(1, Ordering::AcqRel);
-    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = spec.delta;
     stop_locked("restart", false);
+    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = spec.delta;
+    // A new engine run: the last run's measurement describes a stream that is gone.
+    EXACT_DELTA_NS.store(NO_EXACT, Ordering::Release);
     start_locked(spec)
 }
 
@@ -132,14 +174,19 @@ fn start_locked(spec: Spec) -> bool {
     FAILED.store(false, Ordering::Release);
     let stop_handle = SideStop::new();
     let prev_selection = super::desired_sub_idx();
-    crate::player::SHARED.side_subs_owner.store(true, Ordering::Release);
-    super::request_subtitle(spec.ordinal);
+    let clock_only = spec.ordinal == CLOCK_ONLY;
+    if !clock_only {
+        crate::player::SHARED.side_subs_owner.store(true, Ordering::Release);
+        super::request_subtitle(spec.ordinal);
+    }
     let ordinal = spec.ordinal;
     let thread_stop = Arc::clone(&stop_handle);
     // `plx_base::task::spawn` hands back std's handle, whose `thread()` is what `stop` unparks.
     let Some(handle) = plx_base::task::spawn("subside", move || run(spec, thread_stop)) else {
-        crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
-        super::request_subtitle(prev_selection);
+        if !clock_only {
+            crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
+            super::request_subtitle(prev_selection);
+        }
         return false;
     };
     ACTIVE.store(true, Ordering::Release);
@@ -161,6 +208,10 @@ pub fn stop(reason: &str) {
     // The engine run is over: its anchor names a stream that no reader will match again, whether
     // or not a reader was running (the sync worker may have stopped it already, keeping the anchor).
     *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // The same reason: whether or not a reader ran, a run that gets none (off the gate) must not
+    // inherit the clock of the run before it, which would shift its sidecar by a stranger's snap.
+    *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    EXACT_DELTA_NS.store(NO_EXACT, Ordering::Release);
 }
 
 /// `stop`'s body, under the lifecycle lock. `keep_anchor`: leave the main demuxer's published
@@ -176,14 +227,18 @@ fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
     // A failure the stopped reader raised and nobody has polled yet belongs to it, not to the
     // reader (or the sidecar) that replaces it.
     FAILED.store(false, Ordering::Release);
-    crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
     if !keep_anchor {
         *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
-    if super::desired_sub_idx() == r.ordinal {
-        super::request_subtitle(r.prev_selection);
+    // A clock-only run took no subtitle selection, owned no ownership flag and filled no store:
+    // there is nothing of it to give back.
+    if r.ordinal != CLOCK_ONLY {
+        crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
+        if super::desired_sub_idx() == r.ordinal {
+            super::request_subtitle(r.prev_selection);
+        }
+        crate::player::SHARED.sub_bitmaps.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
-    crate::player::SHARED.sub_bitmaps.lock().unwrap_or_else(|e| e.into_inner()).clear();
     plx_base::eventlog::log(&format!(
         "subside: stop reason={reason} join_ms={}",
         started.elapsed().as_millis()
@@ -192,7 +247,8 @@ fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
 }
 
 /// **Make the running reader match `desired`** while the stream plays on: start one for a track
-/// picked on a live remux, stop it when the pick is Off or a sidecar, or switch it to another
+/// picked on a live remux, run it clock-only for a sidecar ([`CLOCK_ONLY`]), stop it when the pick
+/// is Off, or switch it to another
 /// track (the old track's cues and bitmaps are cleared with it). Never blocks the caller: stopping
 /// a reader joins its thread, which a stalled server can hold up, so the change runs on a worker.
 /// The newest request wins; a request older than an engine `start`/`stop` is dropped.
@@ -260,12 +316,15 @@ fn apply(epoch: u64, desired: Option<Spec>) {
         (_, desired) => {
             let delta = stop_locked("pick", true);
             if let Some(mut spec) = desired {
+                // A sidecar's clock-only run must not raise the burn, even when its thread is
+                // refused: the flag would be read as an EMBEDDED pick's if the viewer switched
+                // before the pump polled it.
+                let clock_only = spec.ordinal == CLOCK_ONLY;
                 spec.from_playhead = true;
                 spec.delta = delta;
                 *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = delta;
                 if !start_locked(spec) {
-                    plx_base::eventlog::log("subside: could not start the reader thread");
-                    FAILED.store(true, Ordering::Release);
+                    failed_reading(clock_only, "subside: could not start the reader thread");
                 }
             }
         }
@@ -296,10 +355,38 @@ fn playpos() -> i64 {
     crate::player::SHARED.playpos_ns.load(Ordering::Relaxed)
 }
 
+/// The reader cannot go on, or could not start: one log line, and the failure the route answers
+/// with the server's burn. `embedded_label` is the line a TRACK reader leaves.
+///
+/// A clock-only run has no track to lose: its failure is delta 0 (the sidecar keeps the remux's
+/// clock, as before the reader existed), it gets its own label, and it never raises the burn,
+/// which would re-encode the picture for a subtitle the app fetches itself.
+pub(crate) fn failed_reading(clock_only: bool, embedded_label: &'static str) {
+    if clock_only {
+        plx_base::eventlog::log("subside: clock-only failed");
+    } else {
+        plx_base::eventlog::log(embedded_label);
+        FAILED.store(true, Ordering::Release);
+    }
+}
+
 fn run(spec: Spec, stop: Arc<SideStop>) {
+    let clock_only = spec.ordinal == CLOCK_ONLY;
+    // A clock-only run that is handed a delta (a track switch within this engine run) has nothing
+    // left to find: the mapping is the run's, whether it was matched exactly (then `exact_delta_ns`
+    // already holds it) or not (the same anchor, Part and window would miss again).
+    if clock_only && spec.delta.is_some() {
+        return;
+    }
     // The anchor first: the heavy reads (the Part's own bytes) wait for the remux to have started.
     let Some(anchor) = wait_for_anchor(&stop) else { return };
-    let cfg = ReadCfg { url: &spec.url, offset_ns: spec.offset_ns, ordinal: spec.ordinal.max(0) as usize, kbps: spec.part_kbps };
+    let cfg = ReadCfg {
+        url: &spec.url,
+        offset_ns: spec.offset_ns,
+        ordinal: spec.ordinal.max(0) as usize,
+        kbps: spec.part_kbps,
+        clock_only,
+    };
     let mut delta: Option<i64> = spec.delta;
     let from_playhead = spec.from_playhead;
     let save = |d: Option<i64>| *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = d;
@@ -322,17 +409,15 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
         let end = read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock);
         save(delta);
         match end {
-            RunEnd::Stopped => return,
+            RunEnd::Stopped | RunEnd::Measured => return,
             RunEnd::Unusable => {
-                plx_base::eventlog::log("subside: failed");
-                FAILED.store(true, Ordering::Release);
+                failed_reading(clock_only, "subside: failed");
                 return;
             }
             RunEnd::Failed => {
                 reopens += 1;
                 if reopens > MAX_REOPENS {
-                    plx_base::eventlog::log("subside: failed");
-                    FAILED.store(true, Ordering::Release);
+                    failed_reading(clock_only, "subside: failed");
                     return;
                 }
                 plx_base::eventlog::log(&format!("subside: reopen n={reopens}"));
@@ -356,6 +441,127 @@ mod tests {
 
     fn spec(port: u16) -> Spec {
         Spec { url: format!("http://127.0.0.1:{port}/library/parts/1/file.mkv"), offset_ns: 0, part_kbps: 0, ordinal: 0, from_playhead: false, delta: None }
+    }
+
+    fn clock_only_spec(port: u16, delta: Option<i64>) -> Spec {
+        Spec { ordinal: CLOCK_ONLY, delta, ..spec(port) }
+    }
+
+    /// Wait until the reader thread has returned on its own (not been stopped).
+    fn wait_until_the_reader_ends() {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !running().as_ref().is_some_and(|r| r.handle.is_finished()) {
+            assert!(Instant::now() < deadline, "the reader did not end");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A clock-only run is a sidecar's: it takes no subtitle selection and no ownership of the
+    /// demuxer's subtitles, and what it measured does not outlive the engine run (`stop`) or leak
+    /// into the next one (`start`).
+    #[test]
+    fn a_clock_only_run_takes_nothing_and_its_measurement_does_not_outlive_the_run() {
+        let _g = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let (_srv, port) = stalled_server();
+            *crate::player::SHARED.side_anchor.lock().unwrap() = None;
+            let selected = super::super::desired_sub_idx();
+            assert!(start(clock_only_spec(port, None)));
+            assert!(active(), "`sync`'s early return reads this: a clock-only run must stop through it");
+            assert!(!crate::player::SHARED.side_subs_owner.load(Ordering::Acquire), "the demuxer keeps its subtitles");
+            assert_eq!(super::super::desired_sub_idx(), selected, "the viewer's selection is not the reader's to change");
+            publish_exact(-2_169_000_000);
+            assert_eq!(exact_delta_ns(), Some(-2_169_000_000));
+            stop("test-clock-only");
+            assert_eq!(exact_delta_ns(), None, "the engine run is over: so is its measurement");
+            assert_eq!(super::super::desired_sub_idx(), selected);
+            assert!(!take_failure());
+            // a measurement left by another run is gone when the next one starts
+            publish_exact(1);
+            assert!(start(clock_only_spec(port, None)));
+            assert_eq!(exact_delta_ns(), None);
+            stop("test-clock-only");
+        });
+    }
+
+    /// A clock-only run that cannot go on measures nothing and says so once; unlike a track reader
+    /// it never raises the failure the route answers with the server's burn, and its line is its own
+    /// (the harness grades `subside: failed` / `subside: could not start` as the TRACK reader
+    /// failing).
+    #[test]
+    fn a_clock_only_run_that_gives_up_is_never_the_server_burn() {
+        let _g = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let _ = take_failure();
+            failed_reading(true, "subside: failed");
+            assert!(!take_failure(), "a sidecar's clock reader must never end in the server burn");
+            assert_eq!(exact_delta_ns(), None, "delta stays 0: the sidecar keeps the remux's clock");
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("subside: clock-only failed"), "{log}");
+            assert!(!log.contains("subside: failed"), "a clock-only failure must not read as the track reader's: {log}");
+            failed_reading(false, "subside: failed");
+            assert!(take_failure(), "fixture: a track reader that gives up IS the burn");
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert_eq!(log.matches("subside: failed").count(), 1, "one line per give-up: {log}");
+        });
+    }
+
+    /// The policy both start-failure call sites use (`apply` for a mid-play pick, `engine` for the
+    /// run's own start): a clock-only run never raises the burn (the flag could otherwise be read
+    /// against an embedded pick the viewer switched to), and a track reader still does. The call
+    /// site's only input is `spec.ordinal == CLOCK_ONLY`, computed before `spec` moves.
+    #[test]
+    fn a_clock_only_start_failure_is_never_the_server_burn() {
+        let _g = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let _ = take_failure();
+            failed_reading(true, "subside: could not start the reader thread");
+            assert!(!take_failure(), "a sidecar's clock reader must never end in the server burn");
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("subside: clock-only failed"), "{log}");
+            assert!(!log.contains("subside: could not start"), "a clock-only failure must not read as the track reader's: {log}");
+            failed_reading(false, "subside: could not start the reader thread");
+            assert!(take_failure(), "fixture: a track reader's refused thread IS the burn");
+        });
+    }
+
+    /// A track switch within one engine run hands the clock-only run the delta already measured: it
+    /// has nothing to scan and ends at once, whether or not that delta was exact.
+    #[test]
+    fn a_clock_only_run_handed_a_delta_ends_without_a_scan() {
+        let _g = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let (_srv, port) = stalled_server();
+            *crate::player::SHARED.side_anchor.lock().unwrap() = None; // no anchor: a scan could not even start
+            assert!(start(clock_only_spec(port, Some(-1_500_000_000))));
+            wait_until_the_reader_ends();
+            assert!(!take_failure());
+            assert_eq!(exact_delta_ns(), None, "an assumed delta is never published");
+            stop("test-handed");
+        });
+    }
+
+    /// The production path for a carried delta is `apply` (a track switch mid-play), not `start`:
+    /// an exact delta a TRACK run measured is the same engine run's mapping, so a pick that moves
+    /// the reader to the clock-only role keeps it — and the clock-only run has nothing left to scan.
+    #[test]
+    fn a_delta_measured_by_a_track_run_survives_the_switch_to_the_sidecar() {
+        let _g = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let (_srv, port) = stalled_server();
+            *crate::player::SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
+            assert!(start(spec(port)));
+            // what `read_once` publishes on a byte-exact match, and what the run hands on
+            publish_exact(-2_169_000_000);
+            *LAST_DELTA.lock().unwrap() = Some(-2_169_000_000);
+            let epoch = EPOCH.load(Ordering::Acquire);
+            apply(epoch, Some(clock_only_spec(port, None)));
+            assert_eq!(running().as_ref().map(|r| r.ordinal), Some(CLOCK_ONLY), "the reader measures the clock only now");
+            assert_eq!(exact_delta_ns(), Some(-2_169_000_000), "the run's measurement is the sidecar's too");
+            wait_until_the_reader_ends();
+            stop("test-carried");
+            assert_eq!(exact_delta_ns(), None, "the engine run is over: so is its measurement");
+        });
     }
 
     /// `stop` returns and the reader is gone even when the server never answers a single byte,

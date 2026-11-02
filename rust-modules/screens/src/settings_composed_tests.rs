@@ -92,6 +92,8 @@ pub struct SurfaceRig {
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
     pub(super) preference_commands: Vec<registry::PreferenceCmd>,
+    /// The television keyboard raises (`true`) and lowers (`false`) that reached the platform, in order.
+    keyboard: Vec<bool>,
 }
 
 impl SurfaceRig {
@@ -103,11 +105,15 @@ impl SurfaceRig {
             directory: Default::default(),
             roots: 0,
             preference_commands: Vec::new(),
+            keyboard: Vec::new(),
         }
     }
 }
 
 impl Rig<InnerHost> for SurfaceRig {
+    fn system_keyboard(&mut self, up: bool) {
+        self.keyboard.push(up);
+    }
     fn split(&mut self) -> Split<'_, InnerHost> {
         self.stores.capture_browse(&mut self.directory);
         Split {
@@ -435,6 +441,28 @@ fn left_at_the_surfaces_own_root_dismisses_it() {
         rig.roots, 0,
         "a surface dismissal is not the platform's BACK"
     );
+}
+
+/// **The Player HUD page's address field reaches the television's keyboard through the family's surface**: OK on the row
+/// raises it for the SURFACE's instance (the inner page's delivery is re-addressed), BACK lowers it and leaves the page
+/// where it was rather than popping it.
+#[test]
+fn the_hud_pages_address_field_raises_and_lowers_the_television_keyboard() {
+    let _g = plx_base::testlock::serial();
+    let _sess = scratch_session("composed-hud-address-keyboard");
+    let (mut d, mut rig, id) = consent_opened(SettingsPage::PlayerHud);
+    let before = path(&d, id);
+    assert!(before.starts_with("settings/"), "{before}");
+    let rows = d.focus().map(|k| k.elem);
+    assert!(rows.is_some(), "the page seats a row");
+    // With no store behind the rig the page lists only its address row.
+    frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
+    assert_eq!(rig.keyboard, [true], "OK on the address row raises the keyboard");
+    assert!(path(&d, id).contains("editing=true"), "{}", path(&d, id));
+    frame(&mut d, &mut rig, 48, vec![key(Key::Back, tick(48))]);
+    assert_eq!(rig.keyboard, [true, false], "BACK lowers it");
+    assert!(path(&d, id).contains("editing=false"), "the page is still there: {}", path(&d, id));
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)), "BACK closed the field, not the surface");
 }
 
 /// **Regression, end to end: OK on Settings' second row must not reopen Legal already seated on

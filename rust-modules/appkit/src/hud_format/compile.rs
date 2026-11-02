@@ -1,6 +1,8 @@
 //! **The HUD layout compiler** (`docs/hud-plugins.md`, "Architecture", "Package format 1.0", "Cost"):
 //! a parsed [`Package`] laid out ONCE in every state [`reach`](super::reach) enumerates, into the rects
-//! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards.
+//! the player reads and a flat draw list a renderer walks. Nothing is computed per frame afterwards, with one
+//! exception: a `vstack` whose content is data ([`OpGroup`]) is emitted at its worst case for the lint, the cost
+//! and the census, and the renderer stacks it again per frame from the real heights.
 //!
 //! **Pure.** No IO, no global, no clock, no `cfg(test)` fork. The two things a layout needs from
 //! outside arrive as values: text measurement as the existing [`Measure`] capability (the one the
@@ -11,10 +13,9 @@
 //! **States.** The compiler walks `reach`'s own enumeration (`Layout::valuations`, `Layout::explore`)
 //! and evaluates every `when` with its own `Layout::holds`: there is no second state walk and no second
 //! condition evaluator, so the state count is `reach`'s by construction. A state is
-//! (open sections, slot) under a valuation of `chapters.present` and `title.is_episode`; a condition
-//! the package does not name has the one value it holds. A package that places `previous` or `next`
-//! names `title.is_episode` whether it writes the term or not (the command table makes the pair absent
-//! for a non-episode), so it is compiled as a movie as well as an episode.
+//! (open sections, slot) under independent valuations of chapters, actual episode identity and navigation-pair
+//! availability. Paint-only episode terms stay live; only a `when` or keyed geometry adds its compile axis.
+//! Placing Previous/Next adds the pair axis, preserving the native Classic state count.
 //!
 //! **`transport.paused`** is an axis of the compile ONLY when the package names it in a `when` or in a
 //! number or gap (a key that moves geometry): then every state is compiled twice, paused and playing
@@ -48,8 +49,9 @@
 //! never jumps when a segment begins. Skip has TWO labels and so two widths: the state carries both
 //! rects ([`SkipKind`]).
 //!
-//! **Cost** ([`Cost`]) is REPORTED per state, never enforced: the ceilings are calibrated on the
-//! television (PR7, PR8). Its terms: draw ops, glyph runs, texture bytes and blended pixel area.
+//! **Cost** ([`Cost`]) is REPORTED per state; the compile enforces nothing. The ceilings are the television's
+//! measured maxima per state class (`lint_cost`, I12), and the lint holds each state to them. Its terms: draw
+//! ops, glyph runs, texture bytes and blended pixel area.
 
 use std::ffi::CString;
 
@@ -59,16 +61,17 @@ use plx_platform::i18n::{msg, LocaleContext};
 use plx_ui::consts::{SAFE, SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::vstack::{Anchor, VStack};
-use plx_ui::widgets::{Button, TabPill, CTRL_FOCUS_SCALE, HAIRLINE_H};
+use plx_ui::widgets::{Button, TabPill, BADGE_H, CTRL_FOCUS_SCALE, HAIRLINE_H};
 use plx_ui::{theme, Rect};
 
 use super::clocks::{self, ClockRects};
 use super::parse::{Cond, CondTerm, Object, Package, Val};
-use super::reach::{Layout, Slot, State, Valuation};
+use super::reach::{Fold, Layout, Slot, State, Valuation};
 use super::schema;
 use super::{pointer_push, validate::each_object};
 use crate::player_hud::classic::{self, stand_in_w, CLOCK_TOP, KNOB_GLOW_R};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor, MAX_ROW_ITEMS};
+use crate::player_hud::strip::Geometry;
 use crate::up_next;
 
 /// `StateKey::open` bit for the chapters section.
@@ -93,6 +96,8 @@ pub struct AppLabels {
     pub tab_chapters: String,
     /// the Up Next primary (`widgets_next_episode`)
     pub next_episode: String,
+    /// Every numeric countdown label, zero through the app-owned ten-second duration, measured before layout.
+    pub next_seconds: Vec<String>,
     /// the Up Next secondary (`widgets_next_credits`)
     pub watch_credits: String,
     /// the Skip pill over an intro
@@ -105,6 +110,8 @@ pub struct AppLabels {
     pub go_to_show: String,
     /// the Info card's Go to Movie button
     pub go_to_movie: String,
+    /// Other command labels used by declared pills/buttons, all measured in this compile's language.
+    pub commands: Vec<(&'static str, String)>,
 }
 
 impl AppLabels {
@@ -117,12 +124,27 @@ impl AppLabels {
             tab_info: msg::widgets_player_info_in(cx).to_owned(),
             tab_chapters: msg::widgets_player_chapters_in(cx).to_owned(),
             next_episode: msg::widgets_next_episode_in(cx).to_owned(),
+            next_seconds: (0..=crate::up_next::COUNTDOWN_MS / 1000).map(|s| msg::player_up_next_seconds_left_in(cx, i64::from(s))).collect(),
             watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
             skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
             skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
             from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
             go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
             go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
+            commands: vec![
+                ("toggle_play", msg::player_hud_play_pause_in(cx).to_owned()),
+                ("seek_back", msg::player_hud_skip_back_in(cx).to_owned()),
+                ("seek_forward", msg::player_hud_skip_forward_in(cx).to_owned()),
+                ("previous", msg::widgets_menu_previous_episode_in(cx).to_owned()),
+                ("next", msg::widgets_next_episode_in(cx).to_owned()),
+                ("open_tracks", msg::settings_audio_title_in(cx).to_owned()),
+                ("tracks_audio", msg::widgets_tracks_audio_in(cx).to_owned()),
+                ("tracks_subtitles", msg::widgets_tracks_subtitles_in(cx).to_owned()),
+                ("open_more", msg::widgets_menu_options_in(cx).to_owned()),
+                ("more_quality", msg::widgets_menu_quality_in(cx).to_owned()),
+                ("more_speed", msg::widgets_menu_speed_in(cx).to_owned()),
+                ("toggle_stats", msg::widgets_menu_stats_in(cx).to_owned()),
+            ],
         }
     }
 
@@ -135,7 +157,7 @@ impl AppLabels {
             ("from_beginning", _) => &self.from_beginning,
             ("go_to_detail", _) if episode => &self.go_to_show,
             ("go_to_detail", _) => &self.go_to_movie,
-            _ => "",
+            _ => self.commands.iter().find(|(key, _)| *key == command).map_or("", |(_, label)| label),
         }
     }
 
@@ -177,8 +199,10 @@ pub struct StateKey {
     pub slot: Slot,
     /// `chapters.present`; `true` for a package that does not name it
     pub chapters: bool,
-    /// `title.is_episode`; `true` for a package that does not name it
+    /// Navigation-pair availability; `true` when no Previous/Next control names this axis.
     pub episode: bool,
+    /// Actual episode identity, independent of the navigation pair; `None` when layout does not depend on it.
+    pub real_episode: Option<bool>,
     /// `transport.paused`: an axis of the compile only when a `when` or a number or gap of the package
     /// names it (see the module doc); `false` for a package that does not
     pub paused: bool,
@@ -321,11 +345,15 @@ impl Face {
 pub struct ControlRect {
     pub id: String,
     pub command: String,
+    /// The app-owned label used to measure this control in the compile's language.
+    pub label: String,
     /// the command with its parameters, ready for the app's one performer; `None` where the package named
     /// something outside the vocabulary
     pub act: Option<crate::player_hud::command::HudCommand>,
     pub face: Face,
     pub widget: Widget,
+    /// Focus belongs to the section actions container, independently of the widget face.
+    pub is_action: bool,
     pub rest: Rest,
     pub focus: Focus,
     pub rect: Rect,
@@ -406,7 +434,9 @@ pub enum DrawOp {
         clock_rects: ClockRects,
         mark: MarkMode,
     },
-    /// The chapters strip: `visible` cards at `pitch`, each laid out as `template` is at card 0.
+    /// The chapters strip: cards at `pitch`, each laid out as `template` is at card 0. `visible` is the most cards its
+    /// Shelf paints at rest (`strip::Geometry::most_painted_at_rest`, a function of the row's style alone, never of the
+    /// chapter count), and only the COST reads it: drawing reads `rect`, `card`, `pitch` and `radius`.
     Strip {
         rect: Rect,
         card: Rect,
@@ -414,10 +444,12 @@ pub enum DrawOp {
         visible: usize,
         radius: f32,
         template: Vec<CardOp>,
+        leading_labels: bool,
+        groups: Vec<OpGroup>,
     },
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
-    UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest },
+    UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest, credits_focus: Focus, next_focus: Focus, countdown: crate::up_next::CountdownFace },
     /// The Skip pill (slot Skip only), at both widths.
     SkipPill { rects: [Rect; 2] },
 }
@@ -426,11 +458,54 @@ pub enum DrawOp {
 /// are the frame's, so presence is a [`Live`] over them, evaluated per card per frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardOp {
+    /// Under-art cells stay fixed while in-art overlays share the card pop.
+    pub below: bool,
     pub op: DrawOp,
     pub present: Live<bool>,
     /// the RFC 6901 pointer into the package of the node that produced `op` (the strip's `card.art`, an
     /// overlay or below cell's content): the same provenance [`CompiledState::origin`] gives a state's ops
     pub origin: String,
+}
+
+impl AsRef<DrawOp> for DrawOp {
+    fn as_ref(&self) -> &DrawOp { self }
+}
+impl AsRef<DrawOp> for CardOp {
+    fn as_ref(&self) -> &DrawOp { &self.op }
+}
+
+/// **A `vstack` whose content is decided by DATA, left for the draw to place** (`docs/hud-plugins.md`, D6 and
+/// PR8): a section's text group (`info.*` text, a `facts` row, and fixed `image` / `icon` / `rule` cells). The
+/// compile places every child at its WORST case (a text at its `max_lines`, a facts row present) and emits
+/// the ops there, which is what the lint, the cost and the census read; the renderer stacks the children
+/// again from the REAL heights ([`OpGroup::children`] says which ops are whose), through the same
+/// `plx_ui::vstack::VStack`, in cap-top coordinates, collapsing what the item has nothing to say for. The
+/// result is never taller than `rect`, so it never leaves it. A `vstack` that holds the title pair, a
+/// control or a nested cell is not a group: the compile's place for it is final.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OpGroup {
+    /// every op of the group, as a range of [`CompiledState::ops`]
+    pub ops: std::ops::Range<usize>,
+    /// the `vstack`'s box at its worst case
+    pub rect: Rect,
+    /// the stack's gap
+    pub gap: f32,
+    /// where the real run stands in `rect`: its top, its middle or its bottom, by the cell's `valign`
+    pub anchor: Anchor,
+    pub children: Vec<GroupChild>,
+}
+
+/// One child of an [`OpGroup`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupChild {
+    /// the child's ops, a range of [`CompiledState::ops`] (empty for a `spacer`)
+    pub ops: std::ops::Range<usize>,
+    /// the top the compile put the child at, and its height there
+    pub y: f32,
+    pub h: f32,
+    /// the cell's `gap_before` / `gap_after`
+    pub before: Option<f32>,
+    pub after: Option<f32>,
 }
 
 /// One op's share of the cost terms.
@@ -444,14 +519,15 @@ pub struct Contributor {
     pub blended_px: u64,
 }
 
-/// A state's cost, REPORTED (the ceilings are calibrated on the television in PR7 and PR8).
+/// A state's cost, REPORTED (the ceilings it is held to are `lint_cost`'s, taken from states run on the television and
+/// priced by the one model `lint_cost` names, so a cost is the same number wherever the lint runs).
 ///
-/// - `draw_ops`: one per op, except a strip (its cards' ops: `visible` x the template, plus the focus
-///   ring; an upper bound where a card's `item.*` condition would drop an op) and the Up Next offer (two
-///   pills, plus the still and the caption it draws).
+/// - `draw_ops`: one per op, except a strip (its cards' ops: [`DrawOp::Strip::visible`], the most cards its Shelf
+///   paints at rest, x the template, plus the focus ring; an upper bound where a card's `item.*` condition would drop
+///   an op) and the Up Next offer (two pills, plus the still and the caption it draws).
 /// - `glyph_runs`: one per text; the playbar's two clocks; a facts row's chips; a pill's or button's
 ///   label; the Up Next offer's two labels and caption; the Skip pill's label.
-/// - `texture_bytes`: 4 bytes per pixel of every image (a strip's per visible card, Up Next's still) and
+/// - `texture_bytes`: 4 bytes per pixel of every image (a strip's per card the Shelf paints, Up Next's still) and
 ///   every glyph a disc or an icon cell draws (`size` squared).
 /// - `blended_px`: the area, rounded per rect, of every translucent fill: the scrim, a ground or rule
 ///   whose ink is translucent, the playbar's track, a control's plate unless its rest face is `solid` or
@@ -472,6 +548,10 @@ pub struct Cost {
 pub struct Span {
     /// the band's id; empty for the scrim
     pub band: String,
+    /// The section the band belongs to (`StateKey::open`'s bit: [`OPEN_CHAPTERS`], [`OPEN_INFO`]) when its `when`
+    /// names `panel.chapters` / `panel.info`, `0` for a band of the transport. The renderer paints a section's
+    /// spans as one layer, faded and raised by that section's own appear (`HudMotion::section_appear`).
+    pub section: u8,
     pub chrome: Chrome,
     pub ops: std::ops::Range<usize>,
 }
@@ -512,6 +592,9 @@ pub struct CompiledState {
     /// `control_origins[i]` is the pointer of the item that produced `controls[i]`
     /// ([`CompiledState::control_pointer`])
     control_origins: Vec<String>,
+    /// The `vstack`s the renderer stacks again from the real heights ([`OpGroup`]): additive to `ops`, no
+    /// op index moves.
+    pub groups: Vec<OpGroup>,
     /// `(pointer, rect)` of each `vstack` this state places ([`CompiledState::vstack_rect`])
     vstacks: Vec<(String, Rect)>,
     /// `(pointer, align)` of each `segment` this state packs in a row ([`CompiledState::segment_align`])
@@ -626,6 +709,7 @@ impl CompiledState {
             title: shown.title,
             tabs: [self.tab("info"), self.tab("chapters")],
             band: self.band,
+            open_height: self.open_height(),
         };
         if let Some(bar) = self.playbar {
             g.grab = bar.grab;
@@ -651,9 +735,25 @@ impl CompiledState {
         g
     }
 
-    /// The pill of the `toggle_section` control that opens `section`.
+    /// **The height of the block a section has open** (`docs/hud-plugins.md`, "Captions"): `SCR_H` less the top
+    /// of the highest band this state lays out (the scrim's own `block_top`), `0` for a compact state. A modal
+    /// package's state holds the section's band and the tabs, so this is the section's card; an inline one's
+    /// holds the transport lifted over it, so it is the whole block, as the package laid it out.
+    pub fn open_height(&self) -> f32 {
+        if self.key.open == 0 {
+            return 0.0;
+        }
+        self.bands.iter().map(|(_, r)| r.y).reduce(f32::min).map_or(0.0, |top| (SCR_H - top).max(0.0))
+    }
+
+    /// **The tab of `section`: the PILL of the `toggle_section` control that opens it.** A section a DISC opens (the
+    /// reference's) has no tab: that disc is a stop of the row group and is pressed as one, so reporting it here too
+    /// would register a second stop at the same rect for the hit map to prefer.
     fn tab(&self, section: &str) -> Option<Rect> {
-        self.controls.iter().find(|c| c.command == "toggle_section" && c.section.as_deref() == Some(section)).map(|c| c.rect)
+        self.controls
+            .iter()
+            .find(|c| !c.is_action && c.widget == Widget::Pill && c.command == "toggle_section" && c.section.as_deref() == Some(section))
+            .map(|c| c.rect)
     }
 
     /// **The extents the caption band counts** in this state, each with the node that drew it: interactive
@@ -758,6 +858,13 @@ pub struct Compiled {
     /// interactive ones alone? Read once, here, by [`Compiled::compact_band_extents`] for the compiler and
     /// the lint alike
     block: bool,
+    /// the package's section policy (`layout.sections`, D6): `modal` (the default) opens one section at a time,
+    /// `inline` lets any set be open. Read once here for the player's `HudState::sections`, as `reach` reads it
+    /// for the state graph, so the two cannot disagree
+    modal: bool,
+    /// the commands the package places in no reachable state (R2), in the command table's order: the rows More's
+    /// root lists after Quality and Speed ([`Compiled::folds`])
+    folds: Vec<Fold>,
     findings: Vec<CompileFinding>,
     /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
     assets: Vec<(String, String)>,
@@ -768,6 +875,7 @@ pub struct Compiled {
 struct Named {
     chapters: bool,
     episode: bool,
+    real_episode: bool,
     paused: bool,
 }
 
@@ -779,9 +887,11 @@ impl Default for Compiled {
     fn default() -> Self {
         Self {
             states: Vec::new(),
-            named: Named { chapters: false, episode: false, paused: false },
+            named: Named { chapters: false, episode: false, real_episode: false, paused: false },
             band: HudBand::CLASSIC,
             block: false,
+            modal: true,
+            folds: Vec::new(),
             findings: Vec::new(),
             assets: Vec::new(),
         }
@@ -807,7 +917,8 @@ impl Compiled {
     }
 
     /// The state compiled under exactly `key`.
-    pub fn state(&self, key: StateKey) -> Option<&CompiledState> {
+    pub fn state(&self, mut key: StateKey) -> Option<&CompiledState> {
+        if !self.named.real_episode { key.real_episode = None; }
         self.states.iter().find(|s| s.key == key)
     }
 
@@ -815,13 +926,34 @@ impl Compiled {
     /// not name is ignored, so a query about `episode` finds the one valuation there is (a package that places
     /// `previous` or `next` names `episode`, so for it the query picks the movie or the episode form).
     pub fn lookup(&self, open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> Option<&CompiledState> {
+        self.lookup_content(open, slot, chapters, episode, episode, paused)
+    }
+
+    /// The frame's independent content identity and navigation availability.
+    pub fn lookup_content(&self, open: u8, slot: Slot, chapters: bool, pair: bool, real_episode: bool, paused: bool) -> Option<&CompiledState> {
         self.state(StateKey {
-            open,
-            slot,
-            chapters: chapters || !self.named.chapters,
-            episode: episode || !self.named.episode,
+            open, slot, chapters: chapters || !self.named.chapters,
+            episode: pair || !self.named.episode,
+            real_episode: self.named.real_episode.then_some(real_episode),
             paused: paused && self.named.paused,
         })
+    }
+
+    /// **Are the package's sections modal?** (`layout.sections`, D6): one section at a time, the row hidden
+    /// while it is open, and focus leaving the section's groups by a direction closes it. `false` is `inline`:
+    /// any set may be open and focus travels freely. The player's `HudState::sections` obeys it.
+    pub fn sections_modal(&self) -> bool {
+        self.modal
+    }
+
+    /// **The commands More's root lists as rows** (R2, `docs/hud-plugins.md`, "Reachability over the HUD's state
+    /// graph"): each command the package places in no state reachable from the root, in the command table's order,
+    /// which is More's order after Quality and Speed. The compiler computes them once, with the same
+    /// walk [`super::check`] reports as [`super::Checked::folds`]; classic's list is empty. Whether a row is
+    /// offered for the content playing is the app's predicate ([`crate::player_hud::command::HudCommand::enabled`]),
+    /// asked when the menu opens.
+    pub fn folds(&self) -> &[Fold] {
+        &self.folds
     }
 
     /// What the compiler could not carry as written (see [`CompileFinding`]); empty for a package that
@@ -878,7 +1010,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
     let pauses: &[bool] = if frame.paused { &[false, true] } else { &[false] };
     for &paused in pauses {
         for v in layout.valuations() {
-            for state in layout.explore(v) {
+            for state in layout.explore_with_folds(v) {
                 let env = Env { package, layout: &layout, measure, labels: &ctx.labels, state, v, paused };
                 states.push(env.compile_state());
             }
@@ -894,9 +1026,11 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
     }
     let mut compiled = Compiled {
         states,
-        named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
+        named: Named { chapters: layout.named_chapters, episode: layout.named_pair, real_episode: layout.named_episode, paused: frame.paused },
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
+        modal: package.layout.get("sections").and_then(Val::as_str) != Some("inline"),
+        folds: layout.folds(),
         findings,
         assets: package.assets.clone(),
     };
@@ -1079,6 +1213,8 @@ struct Out {
     spans: Vec<Span>,
     /// `controls[i]`'s provenance: the pointer of the item
     control_origins: Vec<String>,
+    /// each [`OpGroup`] placed, with its ops as ranges of `ops`
+    groups: Vec<OpGroup>,
     /// `(pointer, rect)` of each `vstack` placed
     vstacks: Vec<(String, Rect)>,
     /// `(pointer, align)` of each `segment` a row packs
@@ -1099,8 +1235,19 @@ impl Out {
     }
 }
 
+/// The section a band belongs to: the bit of the `panel.*` term its `when` names without a negation, else `0`.
+fn section_of(band: &Object) -> u8 {
+    let Some(Val::Cond(cond)) = band.get("when") else { return 0 };
+    cond.terms.iter().filter(|t| !t.negated).fold(0, |bits, t| match t.name.as_str() {
+        "panel.chapters" => bits | OPEN_CHAPTERS,
+        "panel.info" => bits | OPEN_INFO,
+        _ => bits,
+    })
+}
+
 struct Band<'p> {
     id: &'p str,
+    section: u8,
     chrome: Chrome,
     before: Option<f32>,
     gap: f32,
@@ -1243,7 +1390,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let mut cases = Vec::new();
         for (cond, v) in &k.cases {
             match cond.terms.first() {
-                Some(term) if is_live(&term.name) => cases.push((term.clone(), leaf(v))),
+                Some(term) if is_live(&term.name) || term.name == "title.is_episode" => cases.push((term.clone(), leaf(v))),
                 _ if self.holds(cond) => return Live { base: leaf(v), cases },
                 _ => {}
             }
@@ -1335,24 +1482,43 @@ impl<'e, 'p> Env<'e, 'p> {
     fn label(&self, item: &Object) -> &str {
         let command = item.get("command").and_then(Val::as_str).unwrap_or("");
         let section = item.get("section").and_then(Val::as_str);
-        self.labels.of(command, section, self.v.episode)
+        let key = match Self::act(item, command) {
+            Some(crate::player_hud::command::HudCommand::Seek(by)) => match by {
+                crate::player_hud::command::SeekBy::Secs(n) if n.get() < 0 => "seek_back",
+                crate::player_hud::command::SeekBy::Setting(crate::player_hud::command::SeekDir::Back) => "seek_back",
+                _ => "seek_forward",
+            },
+            Some(crate::player_hud::command::HudCommand::OpenTracks(crate::player_hud::command::TrackTab::Audio)) => "tracks_audio",
+            Some(crate::player_hud::command::HudCommand::OpenTracks(crate::player_hud::command::TrackTab::Subtitles)) => "tracks_subtitles",
+            Some(crate::player_hud::command::HudCommand::OpenMore(crate::player_hud::command::MorePage::Quality)) => "more_quality",
+            Some(crate::player_hud::command::HudCommand::OpenMore(crate::player_hud::command::MorePage::Speed)) => "more_speed",
+            _ => command,
+        };
+        self.labels.of(key, section, self.v.episode)
     }
 
     /// The width a control draws at: a disc is its size, a pill and a button are as wide as their label.
-    fn control_w(&self, item: &Object, widget: Widget, size: f32) -> f32 {
-        let label = self.label(item);
-        match widget {
+    fn control_w(&self, item: &Object, widget: Widget, size: f32, actions: bool) -> f32 {
+        let labels = if item.get("command").and_then(Val::as_str) == Some("go_to_detail") {
+            self.labels.variants("go_to_detail", None)
+        } else {
+            vec![self.label(item)]
+        };
+        let native_icon = actions && widget == Widget::Button && Self::rest(item) == Rest::Film && Self::focus(item) == Focus::Accent
+            && matches!(item.get("command").and_then(Val::as_str), Some("from_beginning" | "go_to_detail"));
+        labels.into_iter().map(|label| match widget {
             Widget::Disc => size,
-            Widget::Pill => TabPill::width_measured(label, theme::size::BODY, self.measure),
-            Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY, true, None, self.measure),
-        }
+            Widget::Pill if item.get("face").is_none() => TabPill::width_measured(label, theme::size::BODY, self.measure),
+            Widget::Pill | Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY,
+                item.get("face").is_some() || native_icon, None, self.measure),
+        }).fold(0.0, f32::max)
     }
 
     /// Is this control gone in this valuation? Its own `when`, or Previous / Next, which come and go
-    /// together with an episode (F6: the pair is the app's, not the package's, to collapse).
+    /// with navigation-pair availability (F6: the pair is the app's, not the package's, to collapse).
     fn absent(&self, item: &Object) -> bool {
         let pair = matches!(item.get("command").and_then(Val::as_str), Some("previous" | "next"));
-        !self.when(item) || (pair && !self.v.episode)
+        !self.when(item) || (pair && !self.v.pair)
     }
 
     /// The controls of a segment's (or `actions`') `items`; with `floor` the ones that CAN be absent
@@ -1370,7 +1536,7 @@ impl<'e, 'p> Env<'e, 'p> {
             }
             let widget = Self::widget(item);
             let size = item.get("size").and_then(Val::as_f64).unwrap_or(0.0) as f32;
-            let mut it = Item::new(self.control_w(item, widget, size));
+            let mut it = Item::new(self.control_w(item, widget, size, false));
             if let Some(g) = self.gap(item, "gap_after") {
                 it = it.after(g);
             }
@@ -1398,16 +1564,8 @@ impl<'e, 'p> Env<'e, 'p> {
 
     /// An `actions` cell's one button width: the widest label over every variant, floored at `min_w`.
     fn action_w(&self, o: &Object) -> f32 {
-        let widest = self
-            .objects(o, "items")
-            .into_iter()
-            .filter(|item| self.when(item))
-            .flat_map(|item| {
-                let command = item.get("command").and_then(Val::as_str).unwrap_or("");
-                let section = item.get("section").and_then(Val::as_str);
-                self.labels.variants(command, section)
-            })
-            .map(|label| Button::pill_w_measured(&cstring(label), theme::size::BODY, true, None, self.measure))
+        let widest = self.objects(o, "items").into_iter().filter(|item| self.when(item))
+            .map(|item| self.control_w(item, Self::widget(item), item.get("size").and_then(Val::as_f64).unwrap_or(0.0) as f32, true))
             .fold(0.0, f32::max);
         widest.max(self.num(o, "min_w").unwrap_or(0.0))
     }
@@ -1462,7 +1620,8 @@ impl<'e, 'p> Env<'e, 'p> {
                 let h = self.num(o, "h").unwrap_or_else(|| self.row_h(&self.objects(o, "cells")) + 2.0 * pad);
                 Size::new(Dim::Fill, h)
             }
-            "facts" => Size::new(Dim::Fill, self.measure.line_h(self.size_px(o, "size"))),
+            // as tall as its tallest chip: a badge is `BADGE_H` whatever the type rung
+            "facts" => Size::new(Dim::Fill, self.measure.line_h(self.size_px(o, "size")).max(BADGE_H)),
             "vstack" => {
                 let (heights, widest) = self.vstack_items(o);
                 let h = VStack::new(&heights.0, heights.1, Anchor::Top(0.0)).height();
@@ -1489,7 +1648,7 @@ impl<'e, 'p> Env<'e, 'p> {
                     if cells.is_empty() {
                         0.0
                     } else {
-                        self.gap(card, "below_gap").unwrap_or(0.0) + cells.iter().map(|(_, t)| self.text_h(t)).sum::<f32>()
+                        self.gap(card, "below_gap").unwrap_or(0.0) + cells.iter().map(|(cell, kind, o)| self.size_of(kind, o).h + self.gap(cell, "gap_before").unwrap_or(0.0) + self.gap(cell, "gap_after").unwrap_or(0.0)).sum::<f32>()
                     }
                 });
                 Size::new(self.dim(o, "w").unwrap_or(Dim::Fill), card_h + below)
@@ -1520,12 +1679,12 @@ impl<'e, 'p> Env<'e, 'p> {
             .fold(0.0, f32::max)
     }
 
-    /// The text cells under a strip card's art.
-    fn below_cells(&self, card: &'p Object) -> Vec<(&'p Object, &'p Object)> {
+    /// The decorative cells under a strip card's art.
+    fn below_cells(&self, card: &'p Object) -> Vec<(&'p Object, &'static str, &'p Object)> {
         self.objects(card, "below")
             .into_iter()
             .filter(|cell| self.when(cell))
-            .filter_map(|cell| cell.get("text").and_then(Val::as_object).map(|t| (cell, t)))
+            .filter_map(|cell| content(cell).map(|(kind, o)| (cell, kind, o)))
             .collect()
     }
 
@@ -1612,16 +1771,17 @@ impl<'e, 'p> Env<'e, 'p> {
         out
     }
 
-    /// The left edges the fill of an earlier group must stop short of: each control scaled by the focus
-    /// pop it may reach, any other cell as it stands.
-    fn left_edges(&self, cell: &CellIn<'p>, x: f32, w: f32) -> Vec<f32> {
+    /// The left edges the fill of an earlier group must stop short of: each segment control scaled by the
+    /// focus pop it may reach, any other cell as it stands. An `actions` column stands as placed: the Info
+    /// card's text ran to the buttons' REST edge less the gap (`info_panel::button_rect`), and a pop of a few
+    /// pixels lands inside that gap.
+    fn left_edges(&self, cell: &CellIn<'p>, x: f32) -> Vec<f32> {
         let scaled = |x: f32, w: f32| Rect::new(x, 0.0, w, 1.0).scaled(CTRL_FOCUS_SCALE).x;
         match cell.kind {
             "segment" => {
                 let c = self.controls(cell.o, self.gap(cell.o, "gap").unwrap_or(0.0), false);
                 HStack::new(&c.items, c.gap, Align::Leading(x)).placed().map(|s| scaled(s.x, s.w)).collect()
             }
-            "actions" => vec![scaled(x, w)],
             _ => vec![x],
         }
     }
@@ -1673,7 +1833,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 .fold(x, f32::max);
             let later = (0..row.len())
                 .filter(|&i| row[i].grp != SegmentAlign::Start && !(mode.hide && row[i].replaced))
-                .flat_map(|i| self.left_edges(&row[i], at[i].0, at[i].1))
+                .flat_map(|i| self.left_edges(&row[i], at[i].0))
                 .chain(mode.standin_left)
                 .reduce(f32::min);
             let limit = later.map_or(boxr.x + boxr.w, |l| l - gap);
@@ -1701,14 +1861,14 @@ impl<'e, 'p> Env<'e, 'p> {
             }
             let mark = out.gate.len();
             out.gate.extend(cell.gate.iter().cloned());
-            self.emit(cell.kind, cell.o, r, mode, out);
+            self.emit(cell.kind, cell.o, r, cell.valign, mode, out);
             out.gate.truncate(mark);
         }
     }
 
     // ---- emission ----
 
-    fn emit(&self, kind: &str, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
+    fn emit(&self, kind: &str, o: &'p Object, r: Rect, valign: VAlign, mode: &Mode<'_>, out: &mut Out) {
         match kind {
             "text" => {
                 let bind = o.get("bind").and_then(Val::as_str).unwrap_or("").to_owned();
@@ -1749,7 +1909,7 @@ impl<'e, 'p> Env<'e, 'p> {
             }),
             "spacer" => {}
             "rect" => self.emit_rect(o, r, mode, out),
-            "vstack" => self.emit_vstack(o, r, mode, out),
+            "vstack" => self.emit_vstack(o, r, valign, mode, out),
             "playbar" => {
                 // the cell holds the track at its top and the clocks' line under it (`size_of`)
                 let track = Rect::new(r.x, r.y, r.w, self.num(o, "thickness").unwrap_or(0.0));
@@ -1776,7 +1936,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 for span in HStack::new(&c.items, c.gap, Align::Leading(r.x)).placed() {
                     if let Some(ctl) = &c.ctl[span.i] {
                         let y = r.y + (r.h - ctl.size) * 0.5;
-                        self.push_control(ctl, Rect::new(span.x, y, span.w, ctl.size), out);
+                        self.push_control(ctl, Rect::new(span.x, y, span.w, ctl.size), false, out);
                     }
                 }
             }
@@ -1794,13 +1954,15 @@ impl<'e, 'p> Env<'e, 'p> {
             .unwrap_or_else(|| default_num(sub, key))
     }
 
-    fn push_control(&self, ctl: &Ctl<'_>, rect: Rect, out: &mut Out) {
+    fn push_control(&self, ctl: &Ctl<'_>, rect: Rect, is_action: bool, out: &mut Out) {
         let c = ControlRect {
             id: ctl.id.to_owned(),
             command: ctl.command.to_owned(),
+            label: self.label(ctl.o).to_owned(),
             act: Self::act(ctl.o, ctl.command),
             face: Self::face(ctl.o),
             widget: ctl.widget,
+            is_action,
             rest: ctl.rest,
             focus: ctl.focus,
             rect,
@@ -1823,7 +1985,7 @@ impl<'e, 'p> Env<'e, 'p> {
         self.place_row(&cells, self.gap(o, "gap").unwrap_or(0.0), inner, mode, out);
     }
 
-    fn emit_vstack(&self, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
+    fn emit_vstack(&self, o: &'p Object, r: Rect, valign: VAlign, mode: &Mode<'_>, out: &mut Out) {
         if o.get("cells").and_then(Val::as_list).is_some_and(|c| {
             c.iter().filter_map(Val::as_object).any(|cell| {
                 cell.get("text").and_then(Val::as_object).and_then(|t| t.get("bind")).and_then(Val::as_str).is_some_and(|b| b.starts_with("title."))
@@ -1836,6 +1998,8 @@ impl<'e, 'p> Env<'e, 'p> {
         let ((items, gap), _) = self.vstack_items(o);
         let stack = VStack::new(&items, gap, Anchor::Top(r.y));
         let cells: Vec<&Object> = self.objects(o, "cells").into_iter().filter(|c| self.when(c)).filter(|c| content(c).is_some()).collect();
+        let group = self.data_stack(&cells);
+        let (first, mut children) = (out.ops.len(), Vec::new());
         for span in stack.placed() {
             let cell = cells[span.i];
             let Some((kind, c)) = content(cell) else { continue };
@@ -1845,16 +2009,51 @@ impl<'e, 'p> Env<'e, 'p> {
             };
             let mark = out.gate.len();
             out.gate.extend(item_terms(cell));
-            self.emit(kind, c, Rect::new(r.x, span.y, w, span.h), mode, out);
+            let start = out.ops.len();
+            self.emit(kind, c, Rect::new(r.x, span.y, w, span.h), VAlign::Top, mode, out);
+            if group {
+                children.push(GroupChild {
+                    ops: start..out.ops.len(),
+                    y: span.y,
+                    h: span.h,
+                    before: self.gap(cell, "gap_before"),
+                    after: self.gap(cell, "gap_after"),
+                });
+            }
             out.gate.truncate(mark);
         }
+        if group {
+            let anchor = match valign {
+                VAlign::Top => Anchor::Top(r.y),
+                VAlign::Center => Anchor::Centre(r.y + r.h * 0.5),
+                VAlign::Bottom => Anchor::Bottom(r.y + r.h),
+            };
+            out.groups.push(OpGroup { ops: first..out.ops.len(), rect: r, gap, anchor, children });
+        }
+    }
+
+    /// **Is this `vstack` a group** ([`OpGroup`])? Its present cells are all data the item decides the height
+    /// of (`info.*` text, a `facts` row) or a fixed leaf (`image`, `icon`, `rule`, `spacer`), and at least
+    /// one is data. A cell of any other kind (a control, a nested `rect` or `vstack`) or a text of another
+    /// bind (the title pair, drawn by its own marquee) keeps the compile's place.
+    fn data_stack(&self, cells: &[&Object]) -> bool {
+        let mut data = false;
+        for cell in cells {
+            let Some((kind, c)) = content(cell) else { continue };
+            match kind {
+                "text" if c.get("bind").and_then(Val::as_str).is_some_and(|b| b.starts_with("info.") || b.starts_with("item.")) => data = true,
+                "facts" => data = true,
+                "image" | "icon" | "rule" | "spacer" => {}
+                _ => return false,
+            }
+        }
+        data
     }
 
     fn emit_strip(&self, o: &'p Object, r: Rect, mode: &Mode<'_>, out: &mut Out) {
         let Some(card) = o.get("card").and_then(Val::as_object) else { return };
         let (card_w, card_h) = (self.num(o, "card_w").unwrap_or(0.0), self.num(o, "card_h").unwrap_or(0.0));
         let pitch = card_w + self.gap(o, "gap").unwrap_or(0.0);
-        let visible = if pitch > 0.0 { (r.w / pitch).floor() as usize + 1 } else { 0 };
         let art = Rect::new(r.x, r.y, card_w, card_h);
         let mut tmp = Out::default();
         let art_node = card.get("art").and_then(Val::as_object);
@@ -1869,27 +2068,37 @@ impl<'e, 'p> Env<'e, 'p> {
         );
         let overlay = self.objects(card, "overlay");
         self.place_row(&overlay, 0.0, art, &Mode { replaces: &[], hide: false, standin_left: None, host: "" }, &mut tmp);
+        let below_start = tmp.ops.len();
         let mut y = art.y + card_h + self.gap(card, "below_gap").unwrap_or(0.0);
-        for (cell, text) in self.below_cells(card) {
-            let h = self.text_h(text);
-            let w = match self.dim(text, "w") {
-                Some(Dim::Px(w)) => w,
-                _ => card_w,
-            };
-            // the cell keeps its room on every card; a card draws it when its `item.*` terms hold
+        for (cell, kind, node) in self.below_cells(card) {
+            let size = self.size_of(kind, node);
+            let w = match size.w { Dim::Px(w) => w, Dim::Fill => card_w };
+            y += self.gap(cell, "gap_before").unwrap_or(0.0);
+            // A template cell keeps its room; item predicates decide which cards paint it.
             tmp.gate = item_terms(cell);
-            self.emit("text", text, Rect::new(art.x, y, w, h), mode, &mut tmp);
+            let x = match cell.get("align").and_then(Val::as_str) {
+                Some("center") => art.x + (card_w - w) * 0.5,
+                Some("end") => art.x + card_w - w,
+                _ => art.x,
+            };
+            self.emit(kind, node, Rect::new(x, y, w, size.h), VAlign::Top, mode, &mut tmp);
             tmp.gate.clear();
-            y += h;
+            y += size.h + self.gap(cell, "gap_after").unwrap_or(0.0);
         }
-        let template = tmp
+        let groups = tmp.groups.clone();
+        let template: Vec<CardOp> = tmp
             .ops
             .into_iter()
             .zip(tmp.present)
             .zip(tmp.origins)
-            .map(|((op, present), origin)| CardOp { op, present, origin })
+            .enumerate()
+            .map(|(i, ((op, present), origin))| CardOp { below: i >= below_start, op, present, origin })
             .collect();
-        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius: self.num(o, "radius").unwrap_or(0.0), template });
+        let radius = self.num(o, "radius").unwrap_or(0.0);
+        // A strip is priced by the cards its Shelf paints, not by its width over the pitch: the Shelf culls against the
+        // screen and a row at rest has scrolled (`Geometry::most_painted_at_rest`), read from the same style it is built with.
+        let visible = Geometry::new(r, art, pitch, radius, &template).most_painted_at_rest();
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template, leading_labels: o.get("label_align").and_then(Val::as_str) == Some("leading"), groups });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
@@ -1905,8 +2114,12 @@ impl<'e, 'p> Env<'e, 'p> {
             HStack::new(&widths, c.gap, Align::Leading(r.x)).placed().map(|s| (s.x, s.w)).collect()
         };
         for (ctl, (at, len)) in live.into_iter().zip(spans) {
-            let rect = if column { Rect::new(r.x, at, bw, len) } else { Rect::new(at, r.y, len, ih) };
-            self.push_control(ctl, rect, out);
+            let cell = if column { Rect::new(r.x, at, bw, len) } else { Rect::new(at, r.y, len, ih) };
+            // The common action cell measures the row/column; a disc keeps its declared square face.
+            let rect = if ctl.widget == Widget::Disc {
+                Rect::new(cell.cx() - ctl.size * 0.5, cell.cy() - ctl.size * 0.5, ctl.size, ctl.size)
+            } else { cell };
+            self.push_control(ctl, rect, true, out);
         }
     }
 
@@ -1919,6 +2132,7 @@ impl<'e, 'p> Env<'e, 'p> {
             .filter(|b| self.when(b))
             .map(|b| Band {
                 id: b.get("id").and_then(Val::as_str).unwrap_or(""),
+                section: section_of(b),
                 chrome: if b.get("chrome").and_then(Val::as_str) == Some("steady") { Chrome::Steady } else { Chrome::Fades },
                 before: self.gap(b, "gap_before"),
                 gap: self.gap(b, "gap").unwrap_or(0.0),
@@ -1941,7 +2155,7 @@ impl<'e, 'p> Env<'e, 'p> {
             };
             let start = out.ops.len();
             self.place_row(&bands[i].cells, bands[i].gap, boxes[i], &band_mode, &mut out);
-            let span = Span { band: bands[i].id.to_owned(), chrome: bands[i].chrome, ops: start..out.ops.len() };
+            let span = Span { band: bands[i].id.to_owned(), section: bands[i].section, chrome: bands[i].chrome, ops: start..out.ops.len() };
             out.spans.push(span);
         }
         out
@@ -2017,9 +2231,11 @@ impl<'e, 'p> Env<'e, 'p> {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
                     let rest = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Rest::Film, Self::rest);
+                    let focus = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Focus::Accent, Self::focus);
+                    let countdown = crate::up_next::CountdownFace::named(up.and_then(|u| u.get("countdown")).and_then(Val::as_str).unwrap_or("fill_sweep"));
                     out.push(
                         up.map_or("", |u| u.pointer.as_str()),
-                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") },
+                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next"), credits_focus: focus("watch_credits"), next_focus: focus("play_next"), countdown },
                     );
                 }
             }
@@ -2045,12 +2261,13 @@ impl<'e, 'p> Env<'e, 'p> {
         let shift = ops.len();
         let mut spans: Vec<Span> = Vec::new();
         if shift > 0 {
-            spans.push(Span { band: String::new(), chrome: Chrome::Steady, ops: 0..shift });
+            spans.push(Span { band: String::new(), section: 0, chrome: Chrome::Steady, ops: 0..shift });
         }
         spans.extend(out.spans.iter().map(|s| Span { ops: s.ops.start + shift..s.ops.end + shift, ..s.clone() }));
         if out.ops.len() > band_ops {
             let chrome = bands.iter().find(|b| b.id == host).map_or(Chrome::Fades, |b| b.chrome);
-            spans.push(Span { band: host.to_owned(), chrome, ops: band_ops + shift..out.ops.len() + shift });
+            let section = bands.iter().find(|b| b.id == host).map_or(0, |b| b.section);
+            spans.push(Span { band: host.to_owned(), section, chrome, ops: band_ops + shift..out.ops.len() + shift });
         }
         ops.append(&mut out.ops);
         // the scrim op is the node `layout.scrim` (its owner is the layout when there is none to name)
@@ -2064,7 +2281,7 @@ impl<'e, 'p> Env<'e, 'p> {
         // and the title here is a RECT, not text
         let title = out.title.unwrap_or_default();
         CompiledState {
-            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.episode, paused: self.paused },
+            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.pair, real_episode: self.layout.named_episode.then_some(self.v.episode), paused: self.paused },
             controls: out.controls,
             ops,
             scrim,
@@ -2080,6 +2297,19 @@ impl<'e, 'p> Env<'e, 'p> {
             skip_alt: None,
             origins,
             control_origins: out.control_origins,
+            groups: out
+                .groups
+                .into_iter()
+                .map(|g| OpGroup {
+                    ops: g.ops.start + shift..g.ops.end + shift,
+                    children: g
+                        .children
+                        .into_iter()
+                        .map(|c| GroupChild { ops: c.ops.start + shift..c.ops.end + shift, ..c })
+                        .collect(),
+                    ..g
+                })
+                .collect(),
             vstacks: out.vstacks,
             segment_aligns: out.segment_aligns,
             standin_origin: up.map_or_else(String::new, |u| u.pointer.clone()),
@@ -2124,7 +2354,11 @@ impl<'e, 'p> Env<'e, 'p> {
         let align = self.name(up, "align").unwrap_or("end");
         // the floor: one start- or end-aligned replaced segment, every item that can be absent collapsed
         let floor = self.floor(up, replaces);
-        let w_next = stand_in_w(self.measure.width_str(&self.labels.next_episode, theme::size::BODY, true), floor.unwrap_or(0.0));
+        let countdown = crate::up_next::CountdownFace::named(up.get("countdown").and_then(Val::as_str).unwrap_or("fill_sweep"));
+        let label_w = std::iter::once(&self.labels.next_episode)
+            .chain(self.labels.next_seconds.iter().filter(|_| countdown == crate::up_next::CountdownFace::Numeric))
+            .map(|label| self.measure.width_str(label, theme::size::BODY, true)).fold(0.0, f32::max);
+        let w_next = stand_in_w(label_w, floor.unwrap_or(0.0));
         let w_credits = Button::pill_w_measured(&cstring(&self.labels.watch_credits), theme::size::BODY, false, None, self.measure);
         // the pills are one run, right-anchored at `edge`; its width comes from the offer's own layout
         let probe = up_next::layout_at(RowAnchor { right: 0.0, top: union.y, h: union.h }, w_next, w_credits);
@@ -2263,14 +2497,26 @@ fn weigh(op: &DrawOp) -> Contributor {
             c.blended_px = plate(ctl);
             match ctl.widget {
                 Widget::Disc => c.texture_bytes = 4 * (ctl.rect.h * ctl.rect.h).round() as u64,
-                Widget::Pill | Widget::Button => c.glyph_runs = 1,
+                Widget::Pill | Widget::Button => {
+                    c.glyph_runs = 1;
+                    if ctl.face != Face::default() {
+                        c.draw_ops += 1;
+                        c.texture_bytes = 4 * (ctl.rect.h * ctl.rect.h).round() as u64;
+                    }
+                }
             }
         }
-        DrawOp::UpNext { rects, credits_rest, next_rest } => {
-            c.draw_ops = 2 + usize::from(rects.still.is_some()) + usize::from(rects.caption.is_some());
+        DrawOp::UpNext { rects, credits_rest, next_rest, countdown, .. } => {
+            let extra = match countdown {
+                crate::up_next::CountdownFace::Ring => plx_ui::widgets::ButtonProgress::Ring.extra_draw_ops(),
+                crate::up_next::CountdownFace::Bar => plx_ui::widgets::ButtonProgress::Bar.extra_draw_ops(),
+                _ => 0,
+            };
+            c.draw_ops = 2 + usize::from(rects.still.is_some()) + usize::from(rects.caption.is_some()) + extra;
             c.glyph_runs = 2 + usize::from(rects.caption.is_some());
             c.texture_bytes = rects.still.map_or(0, |r| 4 * area(r));
-            c.blended_px = plate_rest(*credits_rest, rects.credits) + plate_rest(*next_rest, rects.next);
+            c.blended_px = plate_rest(*credits_rest, rects.credits) + plate_rest(*next_rest, rects.next)
+                + if extra > 0 { area(rects.next) } else { 0 };
         }
         DrawOp::SkipPill { rects } => {
             c.glyph_runs = 1;
@@ -2287,4 +2533,21 @@ fn cost_of(ops: &[DrawOp]) -> Cost {
         texture_bytes: cost.texture_bytes + part.texture_bytes,
         blended_px: cost.blended_px + part.blended_px,
     })
+}
+
+#[cfg(test)]
+mod content_axis_tests {
+    use super::*;
+
+    #[test]
+    fn loader_totality_rejects_a_missing_off_diagonal_state() {
+        let text = include_str!("fixtures/reference.plxhud.json").replace(r#"{ "id": "title", "cells": ["#,
+            r#"{ "id": "title", "when": "title.is_episode", "cells": ["#);
+        let package = super::super::parse::parse(text.as_bytes()).package.unwrap();
+        let mut compiled = compile(&package, &plx_ui::fixture::FixtureMeasure,
+            CompileCtx { labels: AppLabels::in_language(plx_platform::i18n::english()) });
+        assert!(crate::player_hud::loaded::answers_every_frame(&compiled));
+        compiled.states.retain(|state| !(state.key.open == 0 && state.key.slot == Slot::Discs && state.key.episode && state.key.real_episode == Some(false)));
+        assert!(!crate::player_hud::loaded::answers_every_frame(&compiled));
+    }
 }

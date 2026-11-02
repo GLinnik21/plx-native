@@ -375,7 +375,8 @@ pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char
 
 /// Where the player title's two lines stand: `x` the left edge both start at, and the y each line is
 /// drawn from. `Default` is classic's (`SB_X`, `SCR_H - 312`, `SCR_H - 278`); the renderer builds one from the
-/// compiled title cell and takes classic's values for a line the package does not place.
+/// compiled title cell. A package that omits the kicker sets `kicker_visible` false; native callers keep
+/// the default episode/context paint, while a package supplies its declared paint overrides.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TitleLook {
     pub x: f32,
@@ -385,6 +386,12 @@ pub struct TitleLook {
     pub kicker_size: i32,
     /// the title's size (`text.size` of `title.main`); classic's is [`HUD_TITLE_SZ`]
     pub title_size: i32,
+    /// Package paint; absent kicker overrides retain the native episode/context distinction.
+    pub title_ink: [f32; 4],
+    pub title_bold: bool,
+    pub kicker_ink: Option<[f32; 4]>,
+    pub kicker_bold: Option<bool>,
+    pub kicker_visible: bool,
 }
 
 impl Default for TitleLook {
@@ -395,6 +402,11 @@ impl Default for TitleLook {
             title_y: SCR_H - 278.0,
             kicker_size: theme::size::CAPTION,
             title_size: HUD_TITLE_SZ,
+            title_ink: theme::TEXT_PRIMARY,
+            title_bold: true,
+            kicker_ink: None,
+            kicker_bold: None,
+            kicker_visible: true,
         }
     }
 }
@@ -412,14 +424,15 @@ pub(super) fn draw_player_title_at(
     paused: bool,
     clock: &plx_ui::marquee::Clock,
 ) {
-    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size } = look;
+    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size, title_ink, title_bold, .. } = look;
     let width = (right - left).max(0.0);
     let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(left, 0.0, width, SCR_H));
     let (text, ink, bold) = match kicker {
         Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, true),
         Kicker::Context(text) => (text, theme::TEXT_SECONDARY, false),
     };
-    if !text.is_null() {
+    if look.kicker_visible && !text.is_null() {
+        let (ink, bold) = (look.kicker_ink.unwrap_or(ink), look.kicker_bold.unwrap_or(bold));
         let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
         let fitted = measure.fit_line(&label, width, kicker_size, bold);
         p.text(fitted.as_ptr(), left, kicker_y, kicker_size, ink, 0, i32::from(bold));
@@ -430,7 +443,7 @@ pub(super) fn draw_player_title_at(
     }
     let full = unsafe { std::ffi::CStr::from_ptr(title) };
     let label = full.to_string_lossy();
-    let full_width = measure.width(full, title_size, true);
+    let full_width = measure.width(full, title_size, title_bold);
     if paused && full_width > width {
         // A show's display title can stay the same across episodes; the kicker is
         // part of the visible identity and must restart the reveal when it changes.
@@ -449,14 +462,14 @@ pub(super) fn draw_player_title_at(
             // an Arabic or Hebrew title's end is on its left: it moves right instead
             let rtl = plx_gfx::text::is_rtl_paragraph(&label);
             let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
-            p.text(title, left + x, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
+            p.text(title, left + x, title_y, title_size, title_ink, 0, i32::from(title_bold));
             return;
         }
     } else {
         clock.release();
     }
-    let fitted = measure.fit_line(&label, width, title_size, true);
-    p.text(fitted.as_ptr(), left, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
+    let fitted = measure.fit_line(&label, width, title_size, title_bold);
+    p.text(fitted.as_ptr(), left, title_y, title_size, title_ink, 0, i32::from(title_bold));
 }
 
 /// How the playhead is drawn — see [`draw_playbar`].
@@ -740,15 +753,15 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
 }
 
 /// The bar's x for a position `pos_ns` of `dur_ns`, clamped to the bar's ends.
-fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
-    SB_X + (sb_w() as f64 * (pos_ns as f64 / dur_ns.max(1) as f64).clamp(0.0, 1.0)) as f32
+pub(super) fn bar_x(track: Rect, pos_ns: i64, dur_ns: i64) -> f32 {
+    track.x + (track.w as f64 * (pos_ns as f64 / dur_ns.max(1) as f64).clamp(0.0, 1.0)) as f32
 }
 
 /// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
 /// at the knob's position, floated above the knob; after it, the same still fading out. Draws
 /// nothing for a part with no BIF index, and nothing until the first still lands.
-pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
-    use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, PosterStills, Stills};
+pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar, track: Rect) {
+    use crate::scrub_preview::{card_size, draw, still_ms, PosterStills, Stills};
     let mut stills = PosterStills {
         sid: plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
         part: plx_media::route::cur_part_id(ps),
@@ -762,7 +775,7 @@ pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSess
         let target = still_ms(bar.pos_ns);
         let shown = row.preview.step((stills.part, &generation), target, bar.now, |ms| stills.look(ms));
         let absent = row.preview.absent();
-        row.preview.motion.observe(shown, target, absent, bar_x(bar.pos_ns, bar.dur_ns), bar.now)
+        row.preview.motion.observe(shown, target, absent, bar_x(track, bar.pos_ns, bar.dur_ns), bar.now)
     };
     let Some(sh) = show else { return };
     let Some((tex, tw, th)) = stills.tex(sh.ms) else { return };
@@ -773,7 +786,12 @@ pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSess
         ((ow / oh - tw / th).abs() < 0.01).then_some((otex, t))
     });
     let (w, _) = card_size(tw, th);
-    let rest = card_rect(sh.knob_x, SB_X, sb_w(), SB_Y, w);
-    let r = scaled_about(rest, sh.knob_x, SB_Y + SB_H * 0.5, sh.scale);
+    let r = scrub_preview_rect(track, sh.knob_x, w, sh.scale);
     draw(p.alpha(sh.alpha), r, tex, tw, th, prev);
+}
+
+/// The shared preview card placement, over the playbar's compiled track.
+pub(super) fn scrub_preview_rect(track: Rect, knob_x: f32, card_w: f32, scale: f32) -> Rect {
+    let rest = crate::scrub_preview::card_rect(knob_x, track.x, track.w, track.y, card_w);
+    crate::scrub_preview::scaled_about(rest, knob_x, track.cy(), scale)
 }

@@ -245,6 +245,117 @@ fn a_runt_packet_is_rejected_before_any_indexing() {
     assert!(out.is_empty(), "size < nls + 1 must bail before the walk");
 }
 
+// -- Annex-B input: an MPEG-TS or raw elementary stream (issue #1084) -------------------
+//
+// `packet_to_annexb` walks a packet by NAL LENGTH. A packet that already carries start codes has
+// `00 00 00 01` where it expects a length, so it reads "a NAL of one byte" (the access unit
+// delimiter), then takes the next four bytes as a length far past the end and stops: every access
+// unit left as `00 00 00 01 09` and `key=false`, parameter sets and slices gone. The framing is
+// therefore decided once per stream, from its extradata, never from a packet's first bytes.
+
+/// FFmpeg's own rule (`ff_h264_decode_extradata`: a record starting with 1 is avcC): extradata that
+/// is no config record is how a stream with its parameter sets in-band shows up.
+#[test]
+fn extradata_that_is_no_config_record_means_start_codes() {
+    assert_eq!(NalInput::of_extradata(&[]), NalInput::StartCodes, "MPEG-TS gives none");
+    assert_eq!(
+        NalInput::of_extradata(&[0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1f]),
+        NalInput::StartCodes,
+        "the SPS/PPS FFmpeg lifts out of the stream keep their start codes"
+    );
+    assert_eq!(NalInput::of_extradata(&[0, 0, 1, 0x67, 0x42]), NalInput::StartCodes, "a 3-byte code too");
+}
+
+#[test]
+fn a_config_record_means_length_prefixed() {
+    // avcC: version 1, profile, compat, level, 0xFF (4-byte lengths), 0xE1 (one SPS), ...
+    let avcc_record = [1, 0x64, 0x00, 0x1f, 0xff, 0xe1, 0x00, 0x02, 0x67, 0x64, 0x01, 0x00, 0x01, 0x68];
+    assert_eq!(NalInput::of_extradata(&avcc_record), NalInput::LengthPrefixed);
+    // hvcC: version 1, then profile/tier/level and the arrays.
+    let hvcc_record = [1, 0x01, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 0x5d, 0xf0, 0, 0xfc, 0xfd, 0xf8, 0xf8, 0, 0, 0x0f, 0x03];
+    assert_eq!(NalInput::of_extradata(&hvcc_record), NalInput::LengthPrefixed);
+    // Anything else keeps today's walk: only a stream with NO config record changes behaviour.
+    assert_eq!(NalInput::of_extradata(&[0xde, 0xad, 0xbe, 0xef, 0x01]), NalInput::LengthPrefixed);
+}
+
+/// Why the decision cannot be made on a packet: a length-prefixed NAL of 256..=511 bytes begins
+/// `00 00 01 xx`, which is a valid 3-byte start code, and a small P-slice is exactly that. Under an
+/// avcC record the packet is still walked by length.
+#[test]
+fn a_length_prefixed_packet_that_looks_like_a_start_code_is_still_walked_by_length() {
+    let mut nal = vec![0x41u8]; // a non-IDR slice header byte, then 320 bytes of slice data
+    nal.extend((0..320).map(|i| (i % 251) as u8 | 0x80));
+    assert_eq!(nal.len(), 321);
+    let buf = avcc(&[&nal]);
+    assert_eq!(&buf[..4], &[0, 0, 1, 0x41], "the length field reads as a start code");
+    let (key, out) = to_annexb(&buf, false, &[]);
+    assert!(!key);
+    assert_eq!(&out[..5], &[0, 0, 0, 1, 0x41], "one NAL, behind a 4-byte start code");
+    assert_eq!(&out[4..], &nal[..], "and all of it");
+}
+
+/// An access unit as MPEG-TS carries it: a delimiter, the parameter sets and an I-slice that is no
+/// IDR (broadcast encoders open their GOPs with recovery-point I-frames). Under `IdrOnly` (the HLS
+/// segment's rule) it is not a keyframe; under `IdrOrIntra` the in-band SPS makes it one.
+fn annexb_i_slice_au() -> Vec<u8> {
+    let mut au = vec![0, 0, 0, 1, 0x09, 0xf0];
+    au.extend_from_slice(&[0, 0, 0, 1, 0x67, 0x4d, 0x40, 0x29]); // SPS
+    au.extend_from_slice(&[0, 0, 0, 1, 0x68, 0xee, 0x3c]); // PPS
+    au.extend_from_slice(&[0, 0, 1, 0x21, 0x88, 0xaa, 0xbb]); // non-IDR I-slice, 3-byte start code
+    au
+}
+
+#[test]
+fn an_annexb_i_slice_behind_an_in_band_sps_is_a_keyframe_when_i_slices_may_be_random_access() {
+    let au = annexb_i_slice_au();
+    let (mut sets, mut out) = (H264ParamSets::default(), Vec::new());
+    assert_eq!(
+        annexb_h264_access_unit(&au, Rap::IdrOrIntra { container_key: false }, &mut sets, &mut out),
+        Ok(true)
+    );
+    assert_eq!(out, au, "every NAL stays, delimiter first; nothing is prepended ahead of it");
+    assert_eq!(
+        annexb_h264_access_unit(&au, Rap::IdrOnly, &mut sets, &mut out),
+        Ok(false),
+        "the HLS segment rule is unchanged: an IDR or nothing"
+    );
+}
+
+/// A container-flagged I-slice with no SPS of its own takes the sets cached from an earlier unit.
+#[test]
+fn a_flagged_annexb_i_slice_without_parameter_sets_takes_the_cached_ones() {
+    let (mut sets, mut out) = (H264ParamSets::default(), Vec::new());
+    annexb_h264_access_unit(&annexb_i_slice_au(), Rap::IdrOrIntra { container_key: false }, &mut sets, &mut out)
+        .unwrap();
+    let bare = [0, 0, 1, 0x21, 0x88, 0xcc];
+    assert_eq!(
+        annexb_h264_access_unit(&bare, Rap::IdrOrIntra { container_key: true }, &mut sets, &mut out),
+        Ok(true)
+    );
+    assert!(out.starts_with(&[0, 0, 0, 1, 0x67, 0x4d, 0x40, 0x29, 0, 0, 0, 1, 0x68, 0xee, 0x3c]));
+    assert!(out.ends_with(&bare));
+}
+
+/// The container's flag alone does not make a P-slice a keyframe, nor an unflagged I-slice with no
+/// SPS beside it: the same two refusals `packet_to_annexb` makes.
+#[test]
+fn an_annexb_p_slice_is_never_a_keyframe_and_an_unflagged_bare_i_slice_is_not_either() {
+    let (mut sets, mut out) = (H264ParamSets::default(), Vec::new());
+    annexb_h264_access_unit(&annexb_i_slice_au(), Rap::IdrOrIntra { container_key: false }, &mut sets, &mut out)
+        .unwrap();
+    let p_slice = [0, 0, 0, 1, 0x21, 0xc0, 0x00]; // slice_type ue(0) = P
+    assert_eq!(
+        annexb_h264_access_unit(&p_slice, Rap::IdrOrIntra { container_key: true }, &mut sets, &mut out),
+        Ok(false)
+    );
+    assert_eq!(out, p_slice, "no parameter set on a non-keyframe");
+    let bare_i = [0, 0, 0, 1, 0x21, 0x88, 0xaa];
+    assert_eq!(
+        annexb_h264_access_unit(&bare_i, Rap::IdrOrIntra { container_key: false }, &mut sets, &mut out),
+        Ok(false)
+    );
+}
+
 // -- Dolby Vision Profile 7 -> 8.1 on the feed path -------------------------------------
 //
 // HEVC NAL header: F(1) type(6) layer_hi(1) | layer_lo(5) tid(3). A base-layer TRAIL_R slice is

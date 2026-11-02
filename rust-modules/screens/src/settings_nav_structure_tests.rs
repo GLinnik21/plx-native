@@ -124,8 +124,37 @@ fn every_playback_field_pushes_its_picker() {
         [SettingsPage::Picker(PickerKind::Quality), SettingsPage::Picker(PickerKind::DirectPlay),
          SettingsPage::Picker(PickerKind::SubtitleSize), SettingsPage::Picker(PickerKind::SubtitlePosition),
          SettingsPage::Picker(PickerKind::HdrOverlay), SettingsPage::Picker(PickerKind::NextEpisode), SettingsPage::Picker(PickerKind::DeckPress),
-         SettingsPage::Picker(PickerKind::SkipInterval), SettingsPage::Picker(PickerKind::InstantDpadSeeking), SettingsPage::Picker(PickerKind::DolbyVision)]);
+         SettingsPage::Picker(PickerKind::SkipInterval), SettingsPage::Picker(PickerKind::InstantDpadSeeking), SettingsPage::Picker(PickerKind::DolbyVision), SettingsPage::PlayerHud]);
     assert_every_nav_item_pushes_exactly_its_dest("playback", &items, &|| consent_opened(SettingsPage::Playback));
+}
+
+/// **Settings > Video & playback > Player HUD, walked with the remote** (the row is not a picker, so the
+/// checked-line walk below leaves it out): OK on the row pushes the Player HUD page, one page on top of Playback,
+/// and BACK pops it, leaves the surface up and re-seats the row that opened it. (`every_playback_field_pushes_its_picker`
+/// above also drives this row by OK, RIGHT and a click; this one names the page that stands and what BACK does.)
+#[test]
+fn the_player_hud_row_pushes_its_page_and_back_pops_to_the_row() {
+    let _g = plx_base::testlock::serial();
+    let _sess = seated_scratch_session("nav-walk-player-hud");
+    let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
+    let &(row, dest) = items.iter().find(|(_, d)| *d == SettingsPage::PlayerHud).expect("the Playback page has a Player HUD row");
+    let (d, rig, id) = consent_opened(SettingsPage::Playback);
+    let mut w = Walk { d, rig, id, ms: 0 };
+    w.ms = settle_frames(&mut w.d, &mut w.rig, 16);
+    w.ms = walk_to(&mut w.d, &mut w.rig, w.ms, row);
+    let before = path(&w.d, w.id);
+    assert!(w.on("playback:"), "premise: standing on Playback: {before}");
+    w.press(Key::Ok);
+    let pushed = path(&w.d, w.id);
+    assert_eq!(pushed.matches(&segment(dest)).count(), 1, "OK on key {row} pushed the Player HUD page: {pushed}");
+    assert_eq!(pushed.matches('/').count(), before.matches('/').count() + 1, "exactly one page on top: {pushed}");
+    w.press(Key::Back);
+    let popped = path(&w.d, w.id);
+    assert_eq!(popped.matches(&segment(dest)).count(), 0, "BACK popped the Player HUD page: {popped}");
+    assert!(w.on("playback:"), "and stands on Playback again: {popped}");
+    assert!(matches!(w.d.nav.modals.top().map(|s| s.phase), Some(plx_ui::containers::modal::Phase::Opening | plx_ui::containers::modal::Phase::Open)),
+        "BACK popped one page and left the surface up, not closing: {:?}", w.d.nav.modals.top().map(|s| s.phase));
+    assert_eq!(w.elem(), Some(row), "BACK re-seats the row that opened the page");
 }
 
 #[test]
@@ -329,8 +358,9 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         other => panic!("{other:?} is not a Playback picker"),
     };
     let playback = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
-    assert_eq!(playback.len(), 10, "every Playback picker is in the table: {playback:?}");
-    for &(row, dest) in &playback {
+    assert_eq!(playback.len(), 11, "every Playback picker and the Player HUD page are in the table: {playback:?}");
+    assert_eq!(playback.last().map(|(_, d)| *d), Some(SettingsPage::PlayerHud), "the Player HUD row is the last, and not a picker");
+    for &(row, dest) in playback.iter().filter(|(_, d)| *d != SettingsPage::PlayerHud) {
         let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
         assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
             &format!("playback {kind:?}"), &|| consent_opened(SettingsPage::Playback), row, dest, lines(kind));
