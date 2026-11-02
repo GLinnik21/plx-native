@@ -5,7 +5,8 @@ Why we pivoted here: URI-mode (`com.webos.media/load type:"media"`) runs the pip
 → ERROR_06 unconditionally — payload content, playerType, display-window all ruled out on
 this webOS 4.5). The Kodi/Moonlight approach runs the pipeline **in-process** via
 `StarfishMediaAPIs` (libplayerAPIs), so ACB binds the app-owned sink. Audio already works
-via ACB today; only the video-plane half fails in URI mode.
+via ACB today; only the video-plane half fails in URI mode. Whether URI mode is reachable on a
+newer firmware — and what each firmware has actually answered — is `docs/uri-mode.md`.
 
 ## Components to build
 
