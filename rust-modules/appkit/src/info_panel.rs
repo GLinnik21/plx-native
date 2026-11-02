@@ -153,6 +153,8 @@ pub(crate) struct FactsShape<'a> {
     pub playback_fact: bool,
     pub ink: [f32; 4],
     pub bold: i32,
+    /// The declared plain-facts rung; badges retain their shared badge treatment.
+    pub size: i32,
 }
 
 /// **The metadata line and the capability badges, built and measured** but not yet fit or drawn: the
@@ -189,19 +191,20 @@ pub(crate) fn info_chips(
         match *part {
             "genres" => meta.extend(c.genres.iter().take(shape.genres_max).cloned()),
             "year" if c.year > 0 => meta.push(c.year.to_string()),
+            "content_rating" if !c.rating.is_empty() => meta.push(c.rating.clone()),
             "duration" if c.dur_ms > 0 => meta.push(plx_ui::fmt::duration(c.dur_ms)),
             _ => {}
         }
     }
     let has_meta = !meta.is_empty();
     if has_meta {
-        chips.push(Chip::run(&meta, false, shape.bold, shape.ink, measure));
+        chips.push(Chip::run_at(&meta, false, shape.size, shape.bold, shape.ink, measure));
     }
     // It continues the meta run, so it leads with a dot when there is one. Whether it is needed depends
     // only on whether the meta line EXISTS, not on whether it ends up FITTING: a chip only draws once
     // every higher-priority chip already fit.
     if let Some(fact) = now_fact.as_ref() {
-        chips.push(Chip::run(std::slice::from_ref(fact), has_meta, 0, theme::TEXT_TERTIARY, measure));
+        chips.push(Chip::run_at(std::slice::from_ref(fact), has_meta, shape.size, 0, theme::TEXT_TERTIARY, measure));
     }
     for badge in shape.badges {
         match *badge {

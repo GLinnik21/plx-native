@@ -42,10 +42,14 @@ use crate::info_panel::{actions, info_chips, info_content, FactsShape};
 
 type Rgba = [f32; 4];
 
-/// The frame's answer to a `Live` term's NAME. Only `transport.paused` is a name the sections' own ops can
-/// key on; every other name (`item.*` is the strip card's, drawn by its own walk) is false here.
-pub(super) fn holds<'a>(f: &'a Frame<'_>) -> impl Fn(&str) -> bool + 'a {
-    move |name| name == "transport.paused" && f.model.paused
+/// The shared frame predicate for live paint: pause and the actual real-episode identity. A strip card
+/// adds its own `item.*` predicates to these parent values.
+pub(super) fn holds<'a>(f: &'a Frame<'_>) -> impl Fn(&str) -> bool + Copy + 'a {
+    move |name| match name {
+        "transport.paused" => f.model.paused,
+        "title.is_episode" => f.meta.now_playing().is_some_and(|n| n.is_real_episode),
+        _ => false,
+    }
 }
 
 /// A `Ground`: the section's panel, one rounded fill.
@@ -118,7 +122,7 @@ pub(super) fn line_frame(rect: Rect, size: i32, bold: bool) -> Rect {
 }
 
 /// The shared [`TextView`] a section `text` draws through: wrapped at the compiled `max_lines` and `leading`.
-fn text_view<'a>(content: &'a str, size: i32, bold: bool, ink: Rgba, max_lines: u8, leading: f32) -> TextView<'a> {
+pub(super) fn text_view<'a>(content: &'a str, size: i32, bold: bool, ink: Rgba, max_lines: u8, leading: f32) -> TextView<'a> {
     let view = TextView::new(content, size, ink).leading(leading).max_lines(usize::from(max_lines));
     if bold {
         view.bold()
@@ -164,6 +168,7 @@ pub(super) fn facts_run(
     badges: &[String],
     genres_max: u32,
     playback_fact: bool,
+    size: i32,
     bold: &Live<bool>,
     ink: &Live<Rgba>,
 ) -> Option<FactsRun> {
@@ -176,6 +181,7 @@ pub(super) fn facts_run(
         playback_fact,
         ink: ink.at(holds(f)),
         bold: i32::from(bold.at(holds(f))),
+        size,
     };
     let chips = info_chips(&c, &shape, f.ps, f.measure);
     let row = chips.row(rect.x);
@@ -201,10 +207,11 @@ pub(super) fn facts(
     badges: &[String],
     genres_max: u32,
     playback_fact: bool,
+    size: i32,
     bold: &Live<bool>,
     ink: &Live<Rgba>,
 ) {
-    if let Some(run) = facts_run(f, rect, order, badges, genres_max, playback_fact, bold, ink) {
+    if let Some(run) = facts_run(f, rect, order, badges, genres_max, playback_fact, size, bold, ink) {
         run.draw(q, rect.x, rect.y + rect.h * 0.5, f);
     }
 }
@@ -246,8 +253,8 @@ pub(super) fn group(compiled: &Compiled, f: &Frame<'_>, q: Painter, state: &Comp
                 let h = (!text.is_empty() || (*max_lines == 1 && content.is_some())).then(|| view.measure_h(rect.w));
                 (Body::Text { view, rect: *rect, alpha: *alpha }, h)
             }
-            [DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. }] => {
-                let run = facts_run(f, *rect, order, badges, *genres_max, *playback_fact, bold, ink);
+            [DrawOp::Facts { rect, order, badges, genres_max, playback_fact, size, bold, ink }] => {
+                let run = facts_run(f, *rect, order, badges, *genres_max, *playback_fact, *size, bold, ink);
                 let h = run.as_ref().is_some_and(|r| r.n > 0).then_some(rect.h);
                 (Body::Facts { run, rect: *rect }, h)
             }

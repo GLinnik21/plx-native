@@ -375,7 +375,8 @@ pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char
 
 /// Where the player title's two lines stand: `x` the left edge both start at, and the y each line is
 /// drawn from. `Default` is classic's (`SB_X`, `SCR_H - 312`, `SCR_H - 278`); the renderer builds one from the
-/// compiled title cell and takes classic's values for a line the package does not place.
+/// compiled title cell. A package that omits the kicker sets `kicker_visible` false; native callers keep
+/// the default episode/context paint, while a package supplies its declared paint overrides.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TitleLook {
     pub x: f32,

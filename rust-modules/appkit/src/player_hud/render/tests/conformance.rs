@@ -135,7 +135,7 @@ fn labelled_control_width_counts_only_the_glyphs_it_draws() {
 fn info_frame(compiled: &Compiled, focus: GroupId, btn: i32) -> Census {
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     plx_data::metadata::set_current_for_test(store.state_mut(), Some(plx_data::metadata::Detail {
-        title: "A film".into(), year: 2001, ..plx_data::metadata::Detail::default()
+        title: "A film".into(), year: 2001, rating: "PG-13".into(), ..plx_data::metadata::Detail::default()
     }));
     let ps = plx_media::route::PlaybackSession::IDLE;
     let model = HudModel::default();
@@ -186,4 +186,72 @@ fn actions_measure_the_same_parameterised_label_they_paint() {
         assert_eq!(state.control("action").unwrap().rect.w, want, "{command}: app label and actual glyph count decide width");
         assert!(info_frame(&compiled, GROUP_SECTION, 0).1.iter().any(|r| r.text == expected));
     }
+}
+
+fn episode_frame(compiled: &Compiled, open: u8) -> Census {
+    let mut store = plx_data::stores::metadata::MetadataStore::default();
+    store.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
+        is_episode: true, is_real_episode: true, title: "A long show title that must wrap onto more than one line".into(),
+        ep_title: "An episode with a long name".into(), season: 1, index: 2, summary: String::new(), year: 2001,
+        dur_ms: 600_000, rating: String::new(), thumb: String::new(), detail_rk: "1".into(),
+    })));
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let model = HudModel { duration_ns: 600_000_000_000, playpos_ns: 90_000_000_000, ..HudModel::default() };
+    let up = Countdown::default();
+    let mut row = HudMotion::new();
+    if open != 0 { row.set_section_appear_for_test(Section::Info, 1.0); }
+    let frame = Frame { entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+        focus: GROUP_SCRUB, btn: 0, tab: 0, open, now: 1_000, transport: true, measure: &FM, meta: store.view() };
+    census(|| with_df(|df| assert!(draw(compiled, &frame, df, &mut row, Painter::root()))))
+}
+
+#[test]
+fn a_facts_text_run_uses_its_declared_type_rung() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#""badges": [], "size": "CAPTION""#, r#""badges": [], "size": "BODY""#);
+    assert_ne!(text, REFERENCE);
+    let drew = info_frame(&load(&text), GROUP_SCRUB, 0);
+    let year = drew.1.iter().find(|r| r.text == "2001").expect("year fact draws");
+    assert_eq!(year.size, theme::size::BODY, "facts.size must affect measurement and paint");
+    let rating = drew.1.iter().find(|r| r.text == "PG-13").expect("content_rating in facts.order is drawn as a plain fact");
+    assert_eq!(rating.size, theme::size::BODY);
+}
+
+#[test]
+fn real_episode_live_paint_applies_to_facts_and_the_playbar_too() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#""genres_max": 1, "bold": false"#,
+        r#""genres_max": 1, "bold": { "value": false, "if": { "title.is_episode": true } }"#)
+        .replace(r#""fill": "gold""#, r#""fill": { "value": "TEXT_PRIMARY", "if": { "title.is_episode": "gold" } }"#);
+    let drew = episode_frame(&load(&text), crate::hud_format::compile::OPEN_INFO);
+    let year = drew.1.iter().find(|r| r.text == "2001").expect("episode's year fact draws");
+    assert!(year.bold, "a real episode has its declared live weight even without queue neighbours");
+    let clock = drew.1.iter().find(|r| r.text == "1:30").expect("elapsed clock");
+    assert!((clock.ink[0] - 242.0 / 255.0).abs() < 0.001 && (clock.ink[1] - 181.0 / 255.0).abs() < 0.001,
+        "the same live predicate resolves playbar paint: {:?}", clock.ink);
+}
+
+#[test]
+fn a_declared_multiline_title_wraps_at_its_width_and_leading() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#""size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill""#,
+        r#""size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 2, "w": 260, "leading": 50"#);
+    assert_ne!(text, REFERENCE);
+    let drew = episode_frame(&load(&text), 0);
+    let title: Vec<_> = drew.1.iter().filter(|r| r.size == theme::size::TITLE).collect();
+    assert_eq!(title.len(), 2, "the title uses its declared two-line box: {:?}", drew.1);
+    assert!((title[1].at.y - title[0].at.y - 50.0).abs() < 0.001, "declared leading");
+}
+
+#[test]
+fn a_standalone_kicker_is_not_discarded_without_a_main_title() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#"          { "text": { "bind": "title.main", "size": "TITLE", "ink": "TEXT_PRIMARY", "bold": true, "max_lines": 1, "w": "fill" } }
+"#, "");
+    assert_ne!(text, REFERENCE);
+    let text = text.replacen("\"w\": \"fill\" } },\n        ]", "\"w\": \"fill\" } }\n        ]", 1);
+    let drew = episode_frame(&load(&text), 0);
+    let label = plx_ui::fmt::episode_kicker(1, 2, "An episode with a long name");
+    assert!(drew.1.iter().any(|r| r.text == label), "a declared kicker draws independently of title.main: {:?}", drew.1);
+    assert!(!drew.1.iter().any(|r| r.size == theme::size::TITLE), "no undeclared main title");
 }

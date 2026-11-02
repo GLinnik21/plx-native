@@ -61,9 +61,9 @@
 //! because it defines no ink keys that could describe it. The scrub preview receives the compiled track,
 //! including its width and thickness, and rides the painter translation of the bar's band.
 //!
-//! **Remaining limitations under conformance review.** Title wrapping (`max_lines`/`leading`), the Facts
-//! rung, the Up Next presentation and chapter-card templates must be checked before calling the format
-//! fully conformant. `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
+//! **Remaining limitations under conformance review.** The Up Next presentation and chapter-card
+//! templates still need declaration consumption. Keyed geometry and `when: title.is_episode` still use
+//! the queue-pair axis and need an independent real-episode valuation before full conformance. `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
 //! declared clock rung. `Compiled::glyph` re-hashes the source on each lookup.
 //!
 //! **A real episode is independent of queue neighbours.** Title ink/weight cases keyed on
@@ -536,7 +536,6 @@ fn walk<H: Host>(
 
     // the kicker's rect, remembered until the title's op arrives: the pair draws as one (one clip, one
     // marquee key, the paused reveal restarting when either line changes)
-    let mut kicker_rect: Option<TitleLine> = None;
     let mut bar: Option<(Playbar, Rect)> = None;
     let mut run = |span: &Span| {
         if !pick.takes(span) {
@@ -561,6 +560,7 @@ fn walk<H: Host>(
         let moved = q.dy() - walked.dy();
         // the end of the group being drawn: its children are drawn together, from their real heights
         let mut grouped_to = 0;
+        let mut kicker_rect: Option<TitleLine> = None;
         for (at, op) in state.ops[span.ops.clone()].iter().enumerate().map(|(k, op)| (span.ops.start + k, op)) {
             if at < grouped_to {
                 continue;
@@ -575,8 +575,11 @@ fn walk<H: Host>(
                 DrawOp::Scrim { rect } => draw_scrim_at(q, Rect { y: rect.y + m.dy, h: rect.h - m.dy, ..*rect }),
                 _ if hides_transport && !is_section_tab(op) => {}
                 DrawOp::Text { bind, rect, size, bold, ink, alpha, max_lines, leading } => match text_of(bind) {
-                    Some(Text::Kicker) => kicker_rect = Some(TitleLine::of(f, *rect, *size, bold, ink, *alpha)),
-                    Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), TitleLine::of(f, *rect, *size, bold, ink, *alpha)),
+                    Some(Text::Kicker) => {
+                        if let Some(previous) = kicker_rect.take() { draw_title(f, row, q, Some(previous), None); }
+                        kicker_rect = Some(TitleLine::of(f, *rect, *size, bold, ink, *alpha, *max_lines, *leading));
+                    }
+                    Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), Some(TitleLine::of(f, *rect, *size, bold, ink, *alpha, *max_lines, *leading))),
                     None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading),
                 },
                 DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
@@ -603,7 +606,7 @@ fn walk<H: Host>(
                     live.clock_grow = row.preview.motion.clock_grow(f.now);
                     // a cancelled scrub's knob returns to the playhead rather than jumping to it
                     live.pos_ns = row.spring.apply(live.pos_ns, f.now);
-                    let holds = |name: &str| name == "transport.paused" && f.model.paused;
+                    let holds = sections::holds(f);
                     let look = PlaybarLook {
                         track: *track,
                         fill: fill.at(holds),
@@ -620,13 +623,14 @@ fn walk<H: Host>(
                 DrawOp::Rule { rect, ink } => sections::rule(q, *rect, ink, f),
                 DrawOp::Icon { rect, asset, ink } => sections::icon(compiled, q, *rect, asset, ink, f),
                 DrawOp::Image { rect, bind, radius } => sections::image(f, q, *rect, bind, *radius),
-                DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. } => {
-                    sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, bold, ink)
+                DrawOp::Facts { rect, order, badges, genres_max, playback_fact, size, bold, ink } => {
+                    sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, *size, bold, ink)
                 }
                 // not drawn by this renderer yet: see the module doc
                 DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved),
             }
         }
+        if let Some(kicker) = kicker_rect.take() { draw_title(f, row, q, Some(kicker), None); }
         // right after the bar's band, so the still floats over the title block and the row above it
         // and under the tabs below, as classic orders them
         if let Some((live, track)) = bar.take() {
@@ -678,25 +682,43 @@ struct TitleLine {
     size: i32,
     bold: bool,
     ink: [f32; 4],
+    max_lines: u8,
+    leading: f32,
 }
 
 impl TitleLine {
-    fn of(f: &Frame<'_>, rect: Rect, size: i32, bold: &crate::hud_format::compile::Live<bool>, ink: &crate::hud_format::compile::Live<[f32; 4]>, alpha: f32) -> Self {
-        let holds = |name: &str| match name {
-            "title.is_episode" => f.meta.now_playing().is_some_and(|n| n.is_real_episode),
-            "transport.paused" => f.model.paused,
-            _ => false,
-        };
+    #[allow(clippy::too_many_arguments)]
+    fn of(f: &Frame<'_>, rect: Rect, size: i32, bold: &crate::hud_format::compile::Live<bool>, ink: &crate::hud_format::compile::Live<[f32; 4]>, alpha: f32, max_lines: u8, leading: f32) -> Self {
+        let holds = sections::holds(f);
         let mut ink = ink.at(holds);
         ink[3] *= alpha;
-        Self { rect, size, bold: bold.at(holds), ink }
+        Self { rect, size, bold: bold.at(holds), ink, max_lines, leading }
+    }
+
+    fn draw(self, q: Painter, text: &str, measure: &dyn plx_machine::machine::Measure) {
+        sections::text_view(text, self.size, self.bold, self.ink, self.max_lines, self.leading)
+            .with_measure(measure).draw(q, sections::line_frame(self.rect, self.size, self.bold));
     }
 }
 
 /// The title pair, in the cell the compile placed it: the kicker's rect and size, and the main line's. The
 /// main line's right edge is the bound both lines fit before (the `w: fill` cell's, golden-pinned for classic in
 /// `classic-title-right.golden.tsv`).
-fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<TitleLine>, main: TitleLine) {
+fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<TitleLine>, main: Option<TitleLine>) {
+    let separate = main.is_none_or(|main| main.max_lines > 1 || kicker.is_some_and(|k| k.max_lines > 1 || k.rect.x != main.rect.x || k.rect.w != main.rect.w));
+    if separate {
+        let words = |ptr: *const std::os::raw::c_char| if ptr.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned() };
+        let (context, title) = if let Some(n) = f.meta.now_playing().filter(|n| n.is_real_episode) {
+            (plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title), n.title.clone())
+        } else {
+            (words(plx_media::route::ctxline_cptr(f.ps)), words(plx_media::route::title_cptr(f.ps)))
+        };
+        if let Some(line) = kicker { line.draw(q, &context, f.measure); }
+        if let Some(line) = main { line.draw(q, &title, f.measure); }
+        row.reset_title();
+        return;
+    }
+    let Some(main) = main else { return };
     let classic = TitleLook::default();
     let look = TitleLook {
         x: main.rect.x,

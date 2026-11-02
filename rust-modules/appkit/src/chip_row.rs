@@ -55,7 +55,7 @@ pub enum ChipKind {
     /// between them and the air around them belong to `widgets::DottedRun` at draw time;
     /// `lead_dot` continues the run before it, and the two runs on this row are inked differently
     /// (see the call site).
-    Run { parts: Vec<String>, lead_dot: bool, bold: c_int, col: [f32; 4] },
+    Run { parts: Vec<String>, lead_dot: bool, size: c_int, bold: c_int, col: [f32; 4] },
     /// An outlined capability badge ([`meta_badge`]) saying this.
     Badge(String),
 }
@@ -71,14 +71,23 @@ impl Chip {
         col: [f32; 4],
         measure: &dyn plx_machine::machine::Measure,
     ) -> Self {
-        let w = Self::dotted(bold, lead_dot, col).width(measure, parts);
+        Self::run_at(parts, lead_dot, theme::size::CAPTION, bold, col, measure)
+    }
+
+    /// A facts run at its declared type rung, measured and drawn by the same DottedRun.
+    pub fn run_at(parts: &[String], lead_dot: bool, size: c_int, bold: c_int, col: [f32; 4], measure: &dyn plx_machine::machine::Measure) -> Self {
+        let w = Self::dotted_at(size, bold, lead_dot, col).width(measure, parts);
         let parts = parts.to_vec();
-        Self { kind: ChipKind::Run { parts, lead_dot, bold, col }, w }
+        Self { kind: ChipKind::Run { parts, lead_dot, size, bold, col }, w }
     }
 
     /// The one dotted run a text chip is measured and drawn by.
     pub fn dotted(bold: c_int, lead_dot: bool, col: [f32; 4]) -> DottedRun<'static> {
-        let run = DottedRun::new(theme::size::CAPTION, col, theme::space::SM).bold(bold);
+        Self::dotted_at(theme::size::CAPTION, bold, lead_dot, col)
+    }
+
+    fn dotted_at(size: c_int, bold: c_int, lead_dot: bool, col: [f32; 4]) -> DottedRun<'static> {
+        let run = DottedRun::new(size, col, theme::space::SM).bold(bold);
         if lead_dot {
             run.lead_dot()
         } else {
@@ -169,9 +178,9 @@ pub fn draw_chip_row(
     for placed in row.placed() {
         let Some(chip) = chips.chips[placed.i].as_ref() else { continue };
         match &chip.kind {
-            ChipKind::Run { parts, lead_dot, bold, col } => {
-                let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, *bold, my);
-                Chip::dotted(*bold, *lead_dot, *col).measured(measure).draw(p, parts, placed.x, y);
+            ChipKind::Run { parts, lead_dot, size, bold, col } => {
+                let y = plx_gfx::text::text_vcenter_y(*size, *bold, my);
+                Chip::dotted_at(*size, *bold, *lead_dot, *col).measured(measure).draw(p, parts, placed.x, y);
             }
             ChipKind::Badge(label) => {
                 meta_badge(p, placed.x, my, label, measure);
@@ -188,7 +197,7 @@ mod tests {
 
     /// A text chip / badge chip of a given width, to grade the row's spacing and cut without a font.
     fn text(w: f32) -> Chip {
-        Chip { kind: ChipKind::Run { parts: vec![], lead_dot: false, bold: 0, col: plx_ui::theme::TEXT_PRIMARY }, w }
+        Chip { kind: ChipKind::Run { parts: vec![], lead_dot: false, size: plx_ui::theme::size::CAPTION, bold: 0, col: plx_ui::theme::TEXT_PRIMARY }, w }
     }
     fn badge(w: f32) -> Chip {
         Chip { kind: ChipKind::Badge(String::new()), w }
