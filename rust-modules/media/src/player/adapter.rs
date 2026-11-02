@@ -292,6 +292,11 @@ impl PlayerAdapter {
         self.uri.as_ref().is_some_and(|session| session.closing())
     }
 
+    #[cfg(feature = "devtriggers")]
+    pub(super) fn uri_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
+        self.uri.as_ref().map(|session| session.route_start_attempt())
+    }
+
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
     #[cfg(feature = "devtriggers")]

@@ -616,13 +616,14 @@ fn run_release_tail(mt: &MainThread, p: PendingRelease) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeExit {
     Clean,
-    /// A native worker (the `sf-unload` worker, or a timed-out Load's media thread) is still
-    /// inside firmware: `SDL_Quit` / the Wayland window destroy must not run under it.
+    /// Native ownership is unresolved: a worker may still be inside firmware, or a URI
+    /// registration may remain quarantined after its worker ended. Skip `SDL_Quit` and the
+    /// Wayland window destroy until the OS reclaims that ownership.
     WorkerInFirmware,
 }
 
-/// The native half of `app::run::shutdown`, after the final stop. Waits for the `Unload` up to
-/// the release deadline (the process is ending anyway; the old wait was unbounded).
+/// The native half of `app::run::shutdown`, after the final stop. Waits for the native Unload or
+/// URI registration release up to the release deadline, then preserves unresolved display ownership.
 pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
     exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
 }
@@ -1697,7 +1698,15 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     #[cfg(feature = "devtriggers")]
     if pa.uri_live() {
         log("start_bufferfeed: a URI-mode registration still owns its resources");
-        return if pa.uri_closing() { BufferfeedStartOutcome::Failed } else { BufferfeedStartOutcome::AlreadyRunning };
+        if pa.uri_closing() {
+            if let Some(existing) = pa.uri_attempt() {
+                if let crate::route::LiveEngineStartRelation::Conflict(transaction) = crate::route::classify_live_engine_start(existing) {
+                    let _ = crate::route::abort_route_start(transaction, crate::route::RouteStartResult::StartFailed);
+                }
+            }
+            return BufferfeedStartOutcome::Failed;
+        }
+        return BufferfeedStartOutcome::AlreadyRunning;
     }
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {

@@ -734,4 +734,40 @@ mod tests {
             "historical same-target commands make attribution ambiguous"
         );
     }
+    #[test]
+    fn uri_review_regression_wrong_media_refusal_cannot_affect_owner() {
+        let mut m = open();
+        let load = call_request(&mut m, UriCall::Load { window_id: None });
+        reply(
+            &mut m,
+            load,
+            "load",
+            r#"{"returnValue":true,"mediaId":"owner"}"#,
+        );
+        let play = call_request(
+            &mut m,
+            UriCall::Play {
+                media_id: "owner".into(),
+            },
+        );
+        let wrong = reply(
+            &mut m,
+            play,
+            "play",
+            r#"{"returnValue":false,"mediaId":"other"}"#,
+        );
+        assert!(
+            wrong.is_empty(),
+            "another media's refusal reached the owner: {wrong:?}"
+        );
+        let own = reply(
+            &mut m,
+            play,
+            "play",
+            r#"{"returnValue":false,"mediaId":"owner"}"#,
+        );
+        assert!(
+            matches!(&own[..], [Effect::Deliver { method: Method::Play, message, .. }] if message.accepted() == Some(false))
+        );
+    }
 }

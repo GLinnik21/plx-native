@@ -655,12 +655,13 @@ fn acb_playstate_ready(stage: shared::Stage) -> bool {
 /// `Stage::Streaming` is the FIRST stage at which the ordered ACB bind transaction has finished:
 /// `setMediaId` → LOADED → `setMediaVideoData` → `setDisplayWindow` → PLAYING. It is the same
 /// predicate [`acb_mirror_playstate`] uses to decide whether the sink can take a PLAYSTATE at all,
-/// deliberately — one definition of "the plane is really ours", not two. No engine means no sink,
-/// so the bit clears on teardown without teardown having to remember to say so.
+/// deliberately — one definition of "the plane is really ours", not two. Buffer-feed ownership
+/// clears when its Engine is removed.
 ///
 /// A URI-mode probe session (`uriprobe_drive`, dev trigger `plxnative-uriprobe`) has no Engine and
-/// so no ACB stage: its bound is the service's own `playing`, which `drive` has already stepped this
-/// frame (it runs immediately before this call).
+/// so no ACB stage: its bound starts with the service's own `playing` and remains latched through
+/// logical stop until registration release is acknowledged. `drive` steps that ownership before
+/// this call, including frames after the player screen has gone.
 ///
 /// This is an OBSERVATION of the adapter, not a second owner: it hands the answer to
 /// [`machine::Player::set_video_plane_bound`], which is the only writer and the only publisher.

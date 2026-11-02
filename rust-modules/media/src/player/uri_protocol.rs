@@ -444,7 +444,11 @@ pub fn parse_event(payload: &str) -> Message {
     if message.identity_conflict || message.return_value == Some(false) {
         message.normalized.clear();
         message.current_time = None;
-        message.media_id = None;
+        message.selected_track = None;
+        // Refusals still belong to an opaque identity and must pass the owner's check.
+        if message.identity_conflict {
+            message.media_id = None;
+        }
     }
     message
 }

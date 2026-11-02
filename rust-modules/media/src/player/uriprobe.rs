@@ -285,7 +285,7 @@ enum End {
 enum CallResult {
     #[default]
     NotSent,
-    /// The service said ok and the matching event followed.
+    /// The diagnostic has its required evidence: an attributed event, or the ACK-only subtitle switch.
     Ok,
     /// The service said ok, but the event that proves it did not follow.
     Unconfirmed,
@@ -462,8 +462,9 @@ impl UriProbe {
         fx.push(UriEffect::Open(self.shape));
     }
 
-    /// What a transport call that has just been answered came to. An ok reply is provisional: the
-    /// event that proves it (paused, seekDone, trackSelected) upgrades it to [`CallResult::Ok`].
+    /// An accepted call starts provisional. An explicit paused observation can confirm pause;
+    /// track confirmation requires identified correlation. Generic seekDone and trackSelected
+    /// notifications remain observations, not proof of a particular command.
     fn outcome(ok: bool, denied: bool) -> CallResult {
         if ok && !denied { CallResult::Unconfirmed } else { CallResult::Refused }
     }

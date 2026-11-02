@@ -118,6 +118,10 @@ impl UriSession {
         self.lifecycle.plane_open()
     }
 
+    pub(super) fn route_start_attempt(&self) -> RouteStartAttempt {
+        self.attempt
+    }
+
     pub fn closing(&self) -> bool {
         matches!(self.lifecycle.phase(), super::uri_lifecycle::Phase::Closing | super::uri_lifecycle::Phase::Quarantined)
     }
@@ -896,6 +900,36 @@ mod tests {
                 assert_eq!(exit,crate::player::engine::NativeExit::WorkerInFirmware);
                 assert_eq!(rig.transport.closed(),1);
                 assert!(!rig.pa.uri_live(),"unresolved resource owner is deliberately leaked for process exit");
+            });
+        }
+
+        #[test]
+        fn uri_review_regression_prepared_start_is_settled_when_uri_is_closing() {
+            let _serial = plx_base::testlock::serial();
+            let _host = ExportedHost::arm();
+            let _ = logged(|| {
+                let mut rig = Rig::new(Variant::AtLoad);
+                rig.load_answered();
+                rig.transport.hold_close.store(true, Ordering::SeqCst);
+                let session = rig.session.take().unwrap();
+                rig.pa.install_uri(session);
+                stop(&mut rig.ps, &mut rig.pa);
+                let transaction = crate::route::begin_route_start().expect("new route owner");
+                assert!(crate::route::prepare_route_start(transaction));
+                assert_eq!(crate::route::pending_route_start(), Some(transaction));
+                let calls = rig.transport.sent();
+                let old_status = rig.status();
+                assert_eq!(crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut rig.pa), crate::player::BufferfeedStartOutcome::Failed);
+                assert!(crate::route::pending_route_start().is_none(), "refused candidate stayed Prepared");
+                assert!(crate::route::control_phase_label().starts_with("Failed("));
+                assert_eq!(rig.status(), old_status, "refusing the new transaction cannot settle the old URI attempt again");
+                assert!(!rig.pa.is_live(), "no native Engine was constructed");
+                assert!(rig.pa.uri_live() && rig.pa.uri_closing());
+                assert_eq!(rig.transport.sent(), calls);
+                assert_eq!(rig.transport.closed(), 1);
+                *rig.transport.close_status.lock().unwrap() = Some(CloseStatus::Released);
+                drive(&mut rig.ps, &mut rig.pa);
+                assert!(!rig.pa.uri_live());
             });
         }
 
