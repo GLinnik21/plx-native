@@ -301,10 +301,14 @@ fn declared_countdown_primitives_and_labelled_glyphs_are_priced() {
 }
 
 fn chapter_frame(compiled: &Compiled, focused: bool) -> Census {
+    chapter_frame_named(compiled, focused, "Chapter")
+}
+
+fn chapter_frame_named(compiled: &Compiled, focused: bool, name: &str) -> Census {
     use crate::hud_format::compile::OPEN_CHAPTERS;
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     plx_data::metadata::set_playing_chapters_for_test(store.state_mut(), vec![
-        plx_data::metadata::Chapter { index: 1, start_ms: 125_000, title: "Chapter".into(), thumb: String::new() }
+        plx_data::metadata::Chapter { index: 1, start_ms: 125_000, title: name.into(), thumb: String::new() }
     ]);
     let ps = plx_media::route::PlaybackSession::IDLE;
     let model = HudModel::default();
@@ -357,4 +361,15 @@ fn chapter_template_omission_alignment_and_paint_are_declared() {
     for focused in [false, true] {
         assert!(!chapter_frame(&absent, focused).1.iter().any(|r| r.text == "Chapter"), "absent title stays absent");
     }
+}
+
+#[test]
+fn a_focused_chapter_marquee_does_not_clip_glyphs_to_the_line_pitch() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#""bind": "item.title", "size": "CAPTION", "bold": false"#,
+        r#""bind": "item.title", "size": "BODY", "bold": false, "leading": 1"#);
+    let name = "A very long chapter title overflowing its declared card width";
+    let drew = chapter_frame_named(&load(&text), true, name);
+    let title = drew.1.iter().find(|r| r.text == name).expect("shared focused marquee");
+    assert!(title.clip.is_some_and(|clip| clip.h >= FM.line_h(theme::size::BODY)), "font ink must survive a small line pitch: {title:?}");
 }

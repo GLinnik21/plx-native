@@ -431,12 +431,7 @@ impl HudMotion {
     /// rebuilt when the strip it drew is not this one (another entry or another card geometry).
     pub fn strip(&mut self, entry: EntryId, geo: &super::strip::Geometry) -> &mut Shelf {
         let style = geo.style();
-        let same = |s: &Shelf| {
-            let old = s.style();
-            s.entry() == entry
-                && (old.w, old.h, old.gap, old.margin_x, old.radius) == (style.w, style.h, style.gap, style.margin_x, style.radius)
-                && old.label_drop == style.label_drop
-        };
+        let same = |s: &Shelf| s.entry() == entry && *s.style() == style;
         if !self.strip.as_ref().is_some_and(same) {
             self.strip = Some(Shelf::new(entry, style).cull_margin(super::strip::STRIP_CULL_MARGIN));
         }

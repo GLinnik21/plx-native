@@ -232,14 +232,14 @@ where
     fn label(&self, i: usize) -> TileLabel {
         if let Some(template) = self.template {
             let holds = |name: &str| self.holds(i, true, name);
-            if let Some(DrawOp::Text { rect, size, bold, ink, alpha, leading, .. }) = template.iter()
+            if let Some(DrawOp::Text { rect, size, bold, ink, alpha, .. }) = template.iter()
                 .filter(|c| c.present.at(holds))
                 .map(|c| &c.op)
                 .find(|op| matches!(op, DrawOp::Text { bind, max_lines: 1, rect, .. } if bind == "item.title" && rect.y >= self.geo.card.y + self.geo.card.h)) {
                 let mut ink = ink.at(holds);
                 ink[3] *= alpha;
                 return TileLabel { title: CString::new(self.name(i)).ok(), title_face: Some(plx_ui::cards::LabelFace {
-                    size: *size, bold: bold.at(holds), ink, width: rect.w, offset_x: rect.x - self.geo.card.x, offset_y: rect.y - (self.geo.card.y + self.geo.card.h + self.geo.name_drop), leading: *leading,
+                    size: *size, bold: bold.at(holds), ink, width: rect.w, offset_x: rect.x - self.geo.card.x, offset_y: rect.y - (self.geo.card.y + self.geo.card.h + self.geo.name_drop),
                 }), ..TileLabel::default() }.within_tile();
             }
             return TileLabel::default();
@@ -296,6 +296,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_same_size_strip_refreshes_its_shared_label_alignment() {
+        let card = Rect::new(96.0, 684.0, 288.0, 162.0);
+        let mut geo = Geometry::new(card, card, 312.0, 10.0, &[]);
+        let mut motion = super::super::motion::HudMotion::new();
+        let entry = plx_machine::machine::EntryId(0);
+        let original = motion.strip(entry, &geo).style().label_start;
+        geo.leading_labels = false;
+        let changed = motion.strip(entry, &geo).style().label_start;
+        assert_ne!(original, changed, "the retained Shelf must consume the new declaration");
+    }
 
     /// **The strip keeps the springs its own panel ran**: the pop stiffened at 300 and the scroll at 220
     /// (its `update` stepped them so), not the Shelf's defaults (320 and 170). Found in the simulator: opening the

@@ -23,7 +23,7 @@ pub const MAX_ROW_ITEMS: usize = 24; // == home MAX_ITEMS
 
 /// A card row's motion + geometry. [`RowStyle::HOME`] is the single value both the home grid and the
 /// detail Related row pass, so the two rows are indistinguishable in look and animation.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct RowStyle {
     pub w: f32,
     pub h: f32,
@@ -1069,7 +1069,6 @@ pub struct LabelFace {
     pub width: f32,
     pub offset_x: f32,
     pub offset_y: f32,
-    pub leading: f32,
 }
 
 /// The metadata block under a FOCUSED tile: a centred title, optionally a second caption line
@@ -2003,8 +2002,9 @@ fn title_marquee(
     shadowed: bool,
     fade: bool,
     face: Option<LabelFace>,
+    height: f32,
 ) {
-    let (sz, bold, ink, height) = face.map_or((theme::size::LABEL, 1, theme::TEXT_PRIMARY, UNDER_LINE_H), |f| (f.size, i32::from(f.bold), f.ink, f.leading));
+    let (sz, bold, ink) = face.map_or((theme::size::LABEL, 1, theme::TEXT_PRIMARY), |f| (f.size, i32::from(f.bold), f.ink));
     let lead = glyph_lead(sz, glyph);
     let budget = (at.w - lead).max(0.0);
     if w <= budget {
@@ -2157,7 +2157,8 @@ fn draw_label_block(
     let [title_line, caption_line] = lines.map(|line| line.filter(|l| l.alpha > 0.0));
     if let (Some(t), Some(line)) = (&label.title, title_line) {
         title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top + label.title_face.map_or(0.0, |f| f.offset_y), title_mark, title_w_val.unwrap_or(0.0),
-            block.as_ref(), label.shadowed, within_tile, label.title_face);
+            block.as_ref(), label.shadowed, within_tile, label.title_face,
+            label.title_face.filter(|f| f.size != theme::size::LABEL).map_or(UNDER_LINE_H, |f| measure.line_h(f.size)));
     }
     if let (Some(tc), Some(line)) = (&label.caption, caption_line) {
         let (p, y) = (p.alpha(line.alpha), bottom + line.top);
