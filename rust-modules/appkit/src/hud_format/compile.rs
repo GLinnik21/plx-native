@@ -13,10 +13,9 @@
 //! **States.** The compiler walks `reach`'s own enumeration (`Layout::valuations`, `Layout::explore`)
 //! and evaluates every `when` with its own `Layout::holds`: there is no second state walk and no second
 //! condition evaluator, so the state count is `reach`'s by construction. A state is
-//! (open sections, slot) under a valuation of `chapters.present` and `title.is_episode`; a condition
-//! the package does not name has the one value it holds. A package that places `previous` or `next`
-//! names `title.is_episode` whether it writes the term or not (the command table makes the pair absent
-//! for a non-episode), so it is compiled as a movie as well as an episode.
+//! (open sections, slot) under independent valuations of chapters, actual episode identity and navigation-pair
+//! availability. Paint-only episode terms stay live; only a `when` or keyed geometry adds its compile axis.
+//! Placing Previous/Next adds the pair axis, preserving the native Classic state count.
 //!
 //! **`transport.paused`** is an axis of the compile ONLY when the package names it in a `when` or in a
 //! number or gap (a key that moves geometry): then every state is compiled twice, paused and playing
@@ -200,8 +199,10 @@ pub struct StateKey {
     pub slot: Slot,
     /// `chapters.present`; `true` for a package that does not name it
     pub chapters: bool,
-    /// `title.is_episode`; `true` for a package that does not name it
+    /// Navigation-pair availability; `true` when no Previous/Next control names this axis.
     pub episode: bool,
+    /// Actual episode identity, independent of the navigation pair; `None` when layout does not depend on it.
+    pub real_episode: Option<bool>,
     /// `transport.paused`: an axis of the compile only when a `when` or a number or gap of the package
     /// names it (see the module doc); `false` for a package that does not
     pub paused: bool,
@@ -872,6 +873,7 @@ pub struct Compiled {
 struct Named {
     chapters: bool,
     episode: bool,
+    real_episode: bool,
     paused: bool,
 }
 
@@ -883,7 +885,7 @@ impl Default for Compiled {
     fn default() -> Self {
         Self {
             states: Vec::new(),
-            named: Named { chapters: false, episode: false, paused: false },
+            named: Named { chapters: false, episode: false, real_episode: false, paused: false },
             band: HudBand::CLASSIC,
             block: false,
             modal: true,
@@ -913,7 +915,8 @@ impl Compiled {
     }
 
     /// The state compiled under exactly `key`.
-    pub fn state(&self, key: StateKey) -> Option<&CompiledState> {
+    pub fn state(&self, mut key: StateKey) -> Option<&CompiledState> {
+        if !self.named.real_episode { key.real_episode = None; }
         self.states.iter().find(|s| s.key == key)
     }
 
@@ -921,11 +924,15 @@ impl Compiled {
     /// not name is ignored, so a query about `episode` finds the one valuation there is (a package that places
     /// `previous` or `next` names `episode`, so for it the query picks the movie or the episode form).
     pub fn lookup(&self, open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> Option<&CompiledState> {
+        self.lookup_content(open, slot, chapters, episode, episode, paused)
+    }
+
+    /// The frame's independent content identity and navigation availability.
+    pub fn lookup_content(&self, open: u8, slot: Slot, chapters: bool, pair: bool, real_episode: bool, paused: bool) -> Option<&CompiledState> {
         self.state(StateKey {
-            open,
-            slot,
-            chapters: chapters || !self.named.chapters,
-            episode: episode || !self.named.episode,
+            open, slot, chapters: chapters || !self.named.chapters,
+            episode: pair || !self.named.episode,
+            real_episode: self.named.real_episode.then_some(real_episode),
             paused: paused && self.named.paused,
         })
     }
@@ -1017,7 +1024,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
     }
     let mut compiled = Compiled {
         states,
-        named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
+        named: Named { chapters: layout.named_chapters, episode: layout.named_pair, real_episode: layout.named_episode, paused: frame.paused },
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
         modal: package.layout.get("sections").and_then(Val::as_str) != Some("inline"),
@@ -1506,10 +1513,10 @@ impl<'e, 'p> Env<'e, 'p> {
     }
 
     /// Is this control gone in this valuation? Its own `when`, or Previous / Next, which come and go
-    /// together with an episode (F6: the pair is the app's, not the package's, to collapse).
+    /// with navigation-pair availability (F6: the pair is the app's, not the package's, to collapse).
     fn absent(&self, item: &Object) -> bool {
         let pair = matches!(item.get("command").and_then(Val::as_str), Some("previous" | "next"));
-        !self.when(item) || (pair && !self.v.episode)
+        !self.when(item) || (pair && !self.v.pair)
     }
 
     /// The controls of a segment's (or `actions`') `items`; with `floor` the ones that CAN be absent
@@ -2267,7 +2274,7 @@ impl<'e, 'p> Env<'e, 'p> {
         // and the title here is a RECT, not text
         let title = out.title.unwrap_or_default();
         CompiledState {
-            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.episode, paused: self.paused },
+            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.pair, real_episode: self.layout.named_episode.then_some(self.v.episode), paused: self.paused },
             controls: out.controls,
             ops,
             scrim,
@@ -2519,4 +2526,21 @@ fn cost_of(ops: &[DrawOp]) -> Cost {
         texture_bytes: cost.texture_bytes + part.texture_bytes,
         blended_px: cost.blended_px + part.blended_px,
     })
+}
+
+#[cfg(test)]
+mod content_axis_tests {
+    use super::*;
+
+    #[test]
+    fn loader_totality_rejects_a_missing_off_diagonal_state() {
+        let text = include_str!("fixtures/reference.plxhud.json").replace(r#"{ "id": "title", "cells": ["#,
+            r#"{ "id": "title", "when": "title.is_episode", "cells": ["#);
+        let package = super::super::parse::parse(text.as_bytes()).package.unwrap();
+        let mut compiled = compile(&package, &plx_ui::fixture::FixtureMeasure,
+            CompileCtx { labels: AppLabels::in_language(plx_platform::i18n::english()) });
+        assert!(crate::player_hud::loaded::answers_every_frame(&compiled));
+        compiled.states.retain(|state| !(state.key.open == 0 && state.key.slot == Slot::Discs && state.key.episode && state.key.real_episode == Some(false)));
+        assert!(!crate::player_hud::loaded::answers_every_frame(&compiled));
+    }
 }

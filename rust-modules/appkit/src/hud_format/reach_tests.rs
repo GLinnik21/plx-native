@@ -153,35 +153,35 @@ fn the_state_enumeration_is_bounded_and_deterministic() {
 }
 
 /// Both values of `title.is_episode` that the walk takes for a package, `chapters.present` held.
-fn episode_forms(text: &str) -> Vec<bool> {
+fn pair_forms(text: &str) -> Vec<bool> {
     let package = package(text);
     Layout::read(&package.layout)
         .valuations()
         .into_iter()
         .filter(|v| v.chapters)
-        .map(|v| v.episode)
+        .map(|v| v.pair)
         .collect()
 }
 
 #[test]
-fn a_placed_previous_or_next_names_title_is_episode() {
+fn a_placed_previous_or_next_names_pair_availability() {
     // The spec's command table: the previous / next pair is absent for a non-episode or with neither
     // neighbour, whatever the package says. A package that places either therefore has two forms, the
     // episode and the movie, although it never writes `title.is_episode` (the reference).
     assert!(!REFERENCE.contains("title.is_episode"), "the reference does not name the condition itself");
-    assert_eq!(episode_forms(REFERENCE), [false, true], "the reference has the movie form and the episode form");
-    assert_eq!(episode_forms(CLASSIC), [false, true], "classic names it in a `when` as well");
+    assert_eq!(pair_forms(REFERENCE), [false, true], "the reference has the movie form and the episode form");
+    assert_eq!(pair_forms(CLASSIC), [false, true], "classic names it in a `when` as well");
     // One placed command of the pair is enough: drop `next`, keep `previous`.
     let only_previous = edit(REFERENCE, REF_NEXT, "");
-    assert_eq!(episode_forms(&only_previous), [false, true], "previous alone");
+    assert_eq!(pair_forms(&only_previous), [false, true], "previous alone");
     // And the other way round.
     let only_next = edit(REFERENCE, REF_PREVIOUS, "");
-    assert_eq!(episode_forms(&only_next), [false, true], "next alone");
+    assert_eq!(pair_forms(&only_next), [false, true], "next alone");
     // A package that places neither has the one form it always had.
     let neither = edit(&edit(REFERENCE, REF_PREVIOUS, ""), REF_NEXT, "");
-    assert_eq!(episode_forms(&neither), [true], "no previous or next, no movie form");
+    assert_eq!(pair_forms(&neither), [true], "no previous or next, no movie form");
     assert_eq!(check(&package(&neither)).states, 6, "1 x 6: one valuation of the reference's six states");
-    assert_eq!(episode_forms(MINIMAL), [true], "the minimal package places neither");
+    assert_eq!(pair_forms(MINIMAL), [true], "the minimal package places neither");
 }
 
 #[test]
@@ -535,14 +535,14 @@ fn previous_and_next_placed_only_under_chapters_present_fold_too() {
 }
 
 #[test]
-fn previous_and_next_placed_for_episodes_do_not_fold() {
-    // A movie asks for no Previous: the control being absent there is the app's own rule.
+fn previous_and_next_gated_on_content_fold_for_a_pair_without_episode_metadata() {
+    // A navigation pair can precede metadata; an explicit episode gate hides it in that off-diagonal frame.
     let text = edit(
         &edit(CLASSIC, PREV, &with_when(PREV, "title.is_episode")),
         NEXT,
         &with_when(NEXT, "title.is_episode"),
     );
-    assert_eq!(folds_of(&text), []);
+    assert_eq!(folds_of(&text), [fold("previous", None), fold("next", None)]);
 }
 
 #[test]

@@ -3,12 +3,11 @@
 //! [`Package`]. [`check`] is the one entry point; it then runs [`super::validate`]'s invariants.
 //!
 //! **The graph.** A state is (the open sections, the slot). The content conditions the package names
-//! (`chapters.present`, `title.is_episode`, anywhere in a `when` or a keyed value) each take both values,
-//! so at most four valuations; one that the package does not name holds (an unnamed predicate asks
-//! nothing). A package that PLACES `previous` or `next` names `title.is_episode` too, whether or not it
-//! writes the term: the command table makes the pair absent for a non-episode, so the movie form is a
-//! valuation of every such package (the reference has two, not one). `transport.paused` is not a dimension: `toggle_play`'s keys flip it, so a control whose
-//! placement depends on it counts as placed when either value places it. The root is (no section, Discs).
+//! (`chapters.present`, actual `title.is_episode` in presence or keyed geometry) and navigation-pair
+//! availability each take both values when named, so at most eight valuations. Paint-only episode terms
+//! stay live and add no graph dimension. Previous/Next controls name the pair axis, independently of metadata.
+//! `transport.paused` is not a graph dimension: toggle-play can flip it, so placement under either value counts.
+//! The root is (no section, Discs).
 //! Sections: those the package lays out, a band whose `when` holds `panel.s`; `modal` opens one at a time,
 //! `inline` any subset. Slots: Discs, Up Next and Skip. The edges are the app-owned ones the plan lists:
 //! OK on a placed, enabled `toggle_section` control (Chapters is enabled by `chapters.present`); BACK, which
@@ -146,6 +145,7 @@ impl State {
 pub(super) struct Valuation {
     pub(super) chapters: bool,
     pub(super) episode: bool,
+    pub(super) pair: bool,
 }
 
 /// A `when` on the way to a control, with the pointer of the `when` key.
@@ -184,8 +184,9 @@ pub(super) struct Layout<'a> {
     modal: bool,
     replaces: BTreeSet<&'a str>,
     pub(super) named_chapters: bool,
-    /// `title.is_episode` appears in a condition, or the package places `previous` or `next`
+    /// `title.is_episode` appears in layout presence or a keyed geometry value.
     pub(super) named_episode: bool,
+    pub(super) named_pair: bool,
 }
 
 impl<'a> Layout<'a> {
@@ -199,6 +200,7 @@ impl<'a> Layout<'a> {
             replaces: BTreeSet::new(),
             named_chapters: false,
             named_episode: false,
+            named_pair: false,
         };
         if let Some(Val::List(bands)) = layout.get("block") {
             for band in bands.iter().filter_map(Val::as_object) {
@@ -225,10 +227,9 @@ impl<'a> Layout<'a> {
         let mut named = (false, false);
         scan_named(layout, &mut named);
         (this.named_chapters, this.named_episode) = named;
-        // The command table makes the previous / next pair absent for a non-episode (or with neither
-        // neighbour) whatever the package says, so a package that places either has the movie form
-        // although it never writes `title.is_episode`: it names the condition by placing the pair.
-        this.named_episode |= this
+        // Pair availability is independent of the content predicate: an isolated real episode has none,
+        // and the queue may already supply a pair before new metadata arrives.
+        this.named_pair = this
             .controls
             .iter()
             .any(|c| matches!(c.command, "previous" | "next"));
@@ -289,7 +290,9 @@ impl<'a> Layout<'a> {
         let mut out = Vec::new();
         for chapters in dim(self.named_chapters) {
             for episode in dim(self.named_episode) {
-                out.push(Valuation { chapters, episode });
+                for pair in dim(self.named_pair) {
+                    out.push(Valuation { chapters, episode, pair });
+                }
             }
         }
         out
@@ -369,7 +372,7 @@ impl<'a> Layout<'a> {
     fn enabled(&self, fold: &Fold, v: Valuation) -> bool {
         let laid = |name| SECTIONS.iter().any(|&(bit, n)| n == name && self.laid & bit != 0);
         match (fold.command, fold.section) {
-            ("previous" | "next", _) => v.episode,
+            ("previous" | "next", _) => v.pair,
             ("toggle_section", Some(name)) => laid(name) && (name != "chapters" || v.chapters),
             _ => true,
         }
@@ -589,11 +592,11 @@ impl<'a> Layout<'a> {
 /// condition of a state-keyed value. (A placed `previous` / `next` names the second as well, which
 /// [`Layout::read`] adds: it is a fact of the controls, not a term of a condition.)
 fn scan_named(root: &Object, named: &mut (bool, bool)) {
-    fn note(cond: &Cond, named: &mut (bool, bool)) {
+    fn note(cond: &Cond, named: &mut (bool, bool), geometry: bool) {
         for term in &cond.terms {
             match term.name.as_str() {
                 "chapters.present" => named.0 = true,
-                "title.is_episode" => named.1 = true,
+                "title.is_episode" if geometry => named.1 = true,
                 _ => {}
             }
         }
@@ -601,8 +604,8 @@ fn scan_named(root: &Object, named: &mut (bool, bool)) {
     each_object(root, &mut |object| {
         for (_, value) in &object.fields {
             match value {
-                Val::Cond(cond) => note(cond, named),
-                Val::Keyed(keyed) => keyed.cases.iter().for_each(|(cond, _)| note(cond, named)),
+                Val::Cond(cond) => note(cond, named, true),
+                Val::Keyed(keyed) => keyed.cases.iter().for_each(|(cond, _)| note(cond, named, !matches!(&*keyed.base, Val::Token(_) | Val::Ref(_) | Val::Bool(_)))),
                 _ => {}
             }
         }

@@ -63,7 +63,9 @@ pub fn answers_every_frame(compiled: &Compiled) -> bool {
     [Slot::Discs, Slot::UpNext, Slot::Skip].into_iter().all(|slot| {
         [false, true].into_iter().all(|chapters| {
             [false, true].into_iter().all(|episode| {
-                [false, true].into_iter().all(|paused| compiled.lookup(0, slot, chapters, episode, paused).is_some())
+                [false, true].into_iter().all(|real_episode| {
+                    [false, true].into_iter().all(|paused| compiled.lookup_content(0, slot, chapters, episode, real_episode, paused).is_some())
+                })
             })
         })
     })

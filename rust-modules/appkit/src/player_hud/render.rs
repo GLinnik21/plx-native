@@ -64,8 +64,7 @@
 //! Chapter-card text and decorative template cells use the shared Shelf and section widgets, including
 //! item predicates and data-stack layout.
 //!
-//! **Remaining limitations under conformance review.** Keyed geometry and `when: title.is_episode` still use
-//! the queue-pair axis and need an independent real-episode valuation before full conformance. `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
+//! **Remaining limitations under conformance review.** `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
 //! declared clock rung. `Compiled::glyph` re-hashes the source on each lookup.
 //!
 //! **A real episode is independent of queue neighbours.** Title ink/weight cases keyed on
@@ -83,7 +82,7 @@ use super::classic::{
     draw_player_title_at, draw_playbar_look, draw_scrim_at, draw_scrub_preview, hud_env, hud_tab_state, tab_labels,
     tab_of_section, Kicker, Playbar, PlaybarLook, TitleLook,
 };
-use super::geometry::{frame_state, GROUP_ROW, GROUP_SECTION};
+use super::geometry::{GROUP_ROW, GROUP_SECTION};
 use super::sections;
 use super::model::HudModel;
 use super::motion::HudMotion;
@@ -123,7 +122,7 @@ pub struct Frame<'a> {
 /// ([`frame_state`], the lookup every geometry consumer takes too).
 fn state_for<'c>(compiled: &'c Compiled, open: u8, f: &Frame<'_>) -> Option<&'c CompiledState> {
     let chapters = crate::chapters_panel::has_chapters(f.meta);
-    frame_state(compiled, open, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
+    super::geometry::frame_state_content(compiled, open, f.slot, chapters, f.model.is_episode, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
 }
 
 /// **How a transport band moves this frame**: `dy` lower than the state it is walked from, seen at `alpha`.

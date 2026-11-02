@@ -604,7 +604,7 @@ impl Scan<'_, '_> {
         let shown = self.texts.labels.of(
             &control.command,
             control.section.as_deref(),
-            layout.key.episode,
+            layout.key.real_episode.unwrap_or(true),
         );
         // a control with no app label (a `min_w` button of `open_more`) is named by its id
         let string = if shown.is_empty() { &control.id } else { shown };
@@ -671,7 +671,7 @@ impl Scan<'_, '_> {
             return;
         };
         // a non-episode's kicker is the item's context line, which is server text
-        if kind == AppText::KickerPrefix && !layout.key.episode {
+        if kind == AppText::KickerPrefix && layout.key.real_episode == Some(false) {
             return;
         }
         let Some((string, measured)) = self.texts.widest(kind, op.bind, op.size, bolds) else {
@@ -1237,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn the_kicker_prefix_is_checked_only_where_the_item_is_an_episode() {
+    fn the_kicker_prefix_is_checked_for_an_episode_without_a_navigation_pair() {
         let text = apply(Base::Reference, &[("\"w\": 760", "\"w\": 100")]);
         let package = parse(text.as_bytes()).package.unwrap();
         let lang = LintLang::for_tag("en").unwrap();
@@ -1250,14 +1250,14 @@ mod tests {
         );
         assert!(
             compiled.states().iter().any(|s| !s.key.episode),
-            "the reference compiles movie states too"
+            "the reference compiles states without a navigation pair too"
         );
         let found = check_in(&text, &lang, &ShippedMeasure, 0.0);
         assert!(found.iter().any(|f| f.pointer == INFO_KICKER));
         assert!(
             found
                 .iter()
-                .all(|f| !f.ctx.state.as_deref().unwrap().contains("movie")),
+                .any(|f| f.ctx.state.as_deref().unwrap().contains("movie")),
             "{found:?}"
         );
     }

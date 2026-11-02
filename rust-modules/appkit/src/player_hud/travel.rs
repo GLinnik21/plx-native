@@ -22,8 +22,10 @@ use plx_machine::machine::GroupId;
 use plx_ui::screen::{Dir, Link};
 use plx_ui::Rect;
 
+#[cfg(test)]
+use super::geometry::{frame_state, geometry};
 use super::geometry::{
-    frame_state, geometry, row_len, section_buttons, HudGeometry, GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP,
+    section_buttons, HudGeometry, GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP,
     GROUP_TABS,
 };
 use super::command::Section;
@@ -102,17 +104,21 @@ impl Order {
 /// section group while an open section places buttons. Position is the top of each group's rect, the bar's own track
 /// and not the taller grab band; a tie keeps the order above.
 pub fn order(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> Order {
-    let Some((state, skip)) = frame_state(compiled, open, slot, chapters, paused) else {
+    order_content(compiled, open, slot, chapters, matches!(slot, ControlSlot::Discs(c) if c.pair()), paused)
+}
+
+pub fn order_content(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, real_episode: bool, paused: bool) -> Order {
+    let Some((state, skip)) = super::geometry::frame_state_content(compiled, open, slot, chapters, real_episode, paused) else {
         return Order::EMPTY;
     };
-    let geo = geometry(compiled, open, slot, chapters, paused);
+    let geo = super::geometry::geometry_content(compiled, open, slot, chapters, real_episode, paused);
     let state = state.skip_variant(skip);
     let middle = !(open != 0 && compiled.sections_modal());
     let mut stops: [Option<(GroupId, f32)>; ORDER_SLOTS] = [None; ORDER_SLOTS];
     if middle && geo.playbar.w > 0.0 && geo.playbar.h > 0.0 {
         stops[0] = Some((GROUP_SCRUB, geo.playbar.y));
     }
-    if middle && row_len(compiled, open, slot, chapters, paused) > 0 {
+    if middle && super::geometry::row_len_content(compiled, open, slot, chapters, real_episode, paused) > 0 {
         stops[1] = Some((GROUP_ROW, geo.row.y));
     }
     // the tab pills (`HudGeometry::tabs` reports pills only: a section a disc opens is a stop of the row)

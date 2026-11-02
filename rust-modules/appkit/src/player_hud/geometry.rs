@@ -155,10 +155,14 @@ impl HudGeometry {
 /// the slot is. The screen hands every consumer the discs' slot in that case ([`ControlSlot::Discs`] over the
 /// model's `Controls`), so a draw, a stop and a press read the same row.
 ///
-/// `episode` is the ROW's pair boolean (`Controls::pair`), not the kicker's predicate: PR5c's golden
-/// equates `Discs(PAIR)` with `episode = true`. The renderer and every geometry consumer take their state
-/// from here, so what is drawn and what is hit cannot be two states.
+/// Production callers provide actual episode identity separately from the slot's navigation pair.
+/// The legacy wrapper below retains the diagonal mapping used by frozen native fixtures.
+/// Historical diagonal selector, retained for fixed native fixtures.
 pub fn frame_state(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> Option<(&CompiledState, SkipKind)> {
+    frame_state_content(compiled, open, slot, chapters, matches!(slot, ControlSlot::Discs(c) if c.pair()), paused)
+}
+
+pub fn frame_state_content(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, real_episode: bool, paused: bool) -> Option<(&CompiledState, SkipKind)> {
     let (kind, skip) = match slot {
         _ if open != 0 => (Slot::Discs, SkipKind::Intro),
         ControlSlot::Discs(_) => (Slot::Discs, SkipKind::Intro),
@@ -169,7 +173,7 @@ pub fn frame_state(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: b
         ),
     };
     let episode = matches!(slot, ControlSlot::Discs(c) if c.pair());
-    compiled.lookup(open, kind, chapters, episode, paused).map(|s| (s, skip))
+    compiled.lookup_content(open, kind, chapters, episode, real_episode, paused).map(|s| (s, skip))
 }
 
 /// **The whole geometry report for one frame**: the grab band, the bar, the row at its floor width and its
@@ -178,7 +182,11 @@ pub fn frame_state(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: b
 /// outside the draw), so it needs no measurer and is safe anywhere: a pointer event, the caption draw, the
 /// stand-ins. [`HudGeometry::empty`] where the package has no state for the frame.
 pub fn geometry(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> HudGeometry {
-    match frame_state(compiled, open, slot, chapters, paused) {
+    geometry_content(compiled, open, slot, chapters, matches!(slot, ControlSlot::Discs(c) if c.pair()), paused)
+}
+
+pub fn geometry_content(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, real_episode: bool, paused: bool) -> HudGeometry {
+    match frame_state_content(compiled, open, slot, chapters, real_episode, paused) {
         Some((state, skip)) => state.geometry(skip),
         None => HudGeometry::empty(compiled.band()),
     }
@@ -189,7 +197,11 @@ pub fn geometry(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool
 /// `[pill]` for Skip, and none where the package has no state for the frame (a stop with no rect cannot be
 /// placed).
 pub fn row_len(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, paused: bool) -> usize {
-    match (slot, frame_state(compiled, open, slot, chapters, paused)) {
+    row_len_content(compiled, open, slot, chapters, matches!(slot, ControlSlot::Discs(c) if c.pair()), paused)
+}
+
+pub fn row_len_content(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool, real_episode: bool, paused: bool) -> usize {
+    match (slot, frame_state_content(compiled, open, slot, chapters, real_episode, paused)) {
         (_, None) => 0,
         (ControlSlot::Discs(_), Some((state, _))) => state.row_ids.len(),
         _ => slot.items().max(0) as usize,
@@ -200,7 +212,7 @@ pub fn row_len(compiled: &Compiled, open: u8, slot: ControlSlot, chapters: bool,
 /// the discs and the package has a state for the frame.
 fn package_row<'c>(compiled: &'c Compiled, open: u8, slot: ControlSlot, model: &HudModel) -> Option<(&'c CompiledState, Controls)> {
     let ControlSlot::Discs(controls) = slot else { return None };
-    let (state, _) = frame_state(compiled, open, slot, model.chapters, model.paused)?;
+    let (state, _) = frame_state_content(compiled, open, slot, model.chapters, model.is_episode, model.paused)?;
     Some((state, controls))
 }
 
@@ -214,7 +226,7 @@ fn package_row<'c>(compiled: &'c Compiled, open: u8, slot: ControlSlot, model: &
 pub fn row_command(compiled: &Compiled, open: u8, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
     match slot {
         ControlSlot::Discs(controls) => {
-            let (state, _) = frame_state(compiled, open, slot, model.chapters, model.paused)?;
+            let (state, _) = frame_state_content(compiled, open, slot, model.chapters, model.is_episode, model.paused)?;
             let id = state.row_ids.get(usize::try_from(i).ok()?)?.as_deref()?;
             let act = state.control(id)?.act?;
             act.enabled(&HudModel { controls, ..*model }).then_some(act)

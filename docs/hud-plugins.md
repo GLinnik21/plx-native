@@ -695,10 +695,10 @@ then hides the HUD; over a Skip or Up Next offer it first retires that segment i
 to Discs when its marker ends, when Watch Credits dismisses the offer, or when BACK dismisses it.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
-  of the content conditions the package names (`chapters.present`, `title.is_episode`; a placed `previous` or `next`
-  names `title.is_episode`, because the app drops that pair for a non-episode); `transport.paused` counts as
+  of the content conditions the package names (`chapters.present`, actual `title.is_episode`) and independent
+  navigation-pair availability (named by a placed `previous` or `next`); `transport.paused` counts as
   holding either way, because `toggle_play`'s keys flip it (F13). The compiler enumerates the valuations (two per
-  content condition, so at most four today). The only hard requirement: a More cell with `when: "title.is_episode"`
+  content/navigation condition, so at most eight). Paint-only episode terms remain live and add no geometry axis. The only hard requirement: a More cell with `when: "title.is_episode"`
   fails, since every movie would lose More and with it Stats for nerds, the bug-report path (F16).
 - R2. For every other key-less command (D5), the compiler computes whether some state reachable from the
   root by the edges above places an enabled-capable control carrying it, under EVERY valuation in which the command is

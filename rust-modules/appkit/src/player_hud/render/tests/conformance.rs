@@ -196,7 +196,7 @@ fn episode_frame(compiled: &Compiled, open: u8) -> Census {
         dur_ms: 600_000, rating: String::new(), thumb: String::new(), detail_rk: "1".into(),
     })));
     let ps = plx_media::route::PlaybackSession::IDLE;
-    let model = HudModel { duration_ns: 600_000_000_000, playpos_ns: 90_000_000_000, ..HudModel::default() };
+    let model = HudModel { is_episode: true, duration_ns: 600_000_000_000, playpos_ns: 90_000_000_000, ..HudModel::default() };
     let up = Countdown::default();
     let mut row = HudMotion::new();
     if open != 0 { row.set_section_appear_for_test(Section::Info, 1.0); }
@@ -321,7 +321,7 @@ fn chapter_frame_content(compiled: &Compiled, focused: bool, name: &str, episode
         })));
     }
     let ps = plx_media::route::PlaybackSession::IDLE;
-    let model = HudModel::default();
+    let model = HudModel { is_episode: episode, ..HudModel::default() };
     let up = Countdown::default();
     let mut row = HudMotion::new();
     row.set_section_appear_for_test(Section::Chapters, 1.0);
@@ -462,4 +462,39 @@ fn card_facts_inherit_real_episode_paint_from_the_parent_frame() {
     let year = drew.1.iter().find(|r| r.text == "2001").expect("declared card facts");
     assert_eq!((year.size, year.bold), (theme::size::BODY, true));
     assert!((year.ink[0] - 242.0 / 255.0).abs() < 0.001);
+}
+
+#[test]
+fn an_isolated_real_episode_keeps_its_episode_conditioned_band() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#"{ "id": "title", "cells": ["#,
+        r#"{ "id": "title", "when": "title.is_episode", "cells": ["#);
+    let drew = episode_frame(&load(&text), 0);
+    assert!(drew.1.iter().any(|r| r.size == theme::size::TITLE), "real metadata is an episode even when the queue has no neighbours");
+}
+
+#[test]
+fn content_geometry_focus_and_pair_availability_are_independent() {
+    let _serial = plx_base::testlock::serial();
+    let text = REFERENCE.replace(r#"{ "id": "bar", "gap_before""#, r#"{ "id": "bar", "when": "title.is_episode", "gap_before""#);
+    let compiled = load(&text);
+    let numeric = load(&REFERENCE.replace(r#""thickness": 6"#,
+        r#""thickness": { "value": 6, "if": { "title.is_episode": 12 } }"#));
+    for pair in [false, true] {
+        for episode in [false, true] {
+            let slot = ControlSlot::Discs(if pair { Controls { previous: true, next: true, restart: false } } else { Controls::NONE });
+            let state = compiled.lookup_content(0, crate::hud_format::Slot::Discs, false, pair, episode, false).unwrap();
+            assert_eq!(state.control("prev").is_some(), pair, "pair={pair} episode={episode}");
+            let sized = crate::player_hud::geometry::geometry_content(&numeric, 0, slot, false, episode, false);
+            assert_eq!(sized.playbar.h, if episode { 12.0 } else { 6.0 });
+            let geo = crate::player_hud::geometry::geometry_content(&compiled, 0, slot, false, episode, false);
+            assert_eq!(geo.playbar.w > 0.0, episode);
+            let index = state.row_ids.iter().position(|id| id.as_deref() == Some("more")).unwrap();
+            assert_eq!(geo.items[index], Some(state.control("more").unwrap().rect));
+            let order = crate::player_hud::travel::order_content(&compiled, 0, slot, false, episode, false);
+            assert_eq!(order.groups().contains(&GROUP_SCRUB), episode, "focus and drawing select the same content state");
+        }
+    }
+    assert!(crate::player_hud::loaded::answers_every_frame(&compiled));
+
 }

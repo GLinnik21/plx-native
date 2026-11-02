@@ -1770,11 +1770,12 @@ impl PlayerScreen {
             return None;
         }
         let meta = H::metadata(cx);
-        let (state, skip) = player_hud::geometry::frame_state(
+        let (state, skip) = player_hud::geometry::frame_state_content(
             &self.compiled,
             open,
             self.eff_slot(),
             plx_appkit::chapters_panel::has_chapters(meta),
+            self.model.is_episode,
             self.model.paused,
         )?;
         let geo = player_hud::strip::strip_of(state.skip_variant(skip))?;
@@ -1785,7 +1786,7 @@ impl PlayerScreen {
     /// **The order vertical travel follows this frame**: the transport's groups that have a stop, top to bottom as
     /// the layout draws them ([`player_hud::travel::order`]). `chapters` is whether the item has any.
     fn travel_order(&self, chapters: bool) -> player_hud::travel::Order {
-        player_hud::travel::order(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)
+        player_hud::travel::order_content(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.is_episode, self.model.paused)
     }
 
     /// **The control that opened the open section focus is leaving**, when it is in group `into`: where the key
@@ -1801,11 +1802,12 @@ impl PlayerScreen {
         if !self.hud.sections.contains(section) {
             return None;
         }
-        let (state, skip) = player_hud::geometry::frame_state(
+        let (state, skip) = player_hud::geometry::frame_state_content(
             &self.compiled,
             self.hud.sections.bits(),
             self.eff_slot(),
             plx_appkit::chapters_panel::has_chapters(H::metadata(cx)),
+            self.model.is_episode,
             self.model.paused,
         )?;
         let elem = player_hud::geometry::opener_elem(state.skip_variant(skip), section)?;
@@ -1817,11 +1819,12 @@ impl PlayerScreen {
         if !self.hud.sections.contains(Section::Info) {
             return Vec::new();
         }
-        let Some((state, skip)) = player_hud::geometry::frame_state(
+        let Some((state, skip)) = player_hud::geometry::frame_state_content(
             &self.compiled,
             self.hud.sections.bits(),
             self.eff_slot(),
             chapters,
+            self.model.is_episode,
             self.model.paused,
         ) else {
             return Vec::new();
@@ -1941,11 +1944,12 @@ impl PlayerScreen {
         self.row.follow(self.hud.sections.bits());
         self.row.dismissed_on(section, now);
         self.hud.extend(now, input::HUD_LINGER_MS);
-        let opener = player_hud::geometry::frame_state(
+        let opener = player_hud::geometry::frame_state_content(
             &self.compiled,
             self.hud.sections.bits(),
             self.eff_slot(),
             chapters,
+            self.model.is_episode,
             self.model.paused,
         )
         .and_then(|(state, skip)| player_hud::geometry::opener_elem(state.skip_variant(skip), section));
@@ -1988,11 +1992,12 @@ impl PlayerScreen {
     ) {
         let Some(i) = focused.and_then(|e| e.checked_sub(player_hud::ELEM_SECTION_BASE)) else { return };
         let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
-        let command = player_hud::geometry::frame_state(
+        let command = player_hud::geometry::frame_state_content(
             &self.compiled,
             self.hud.sections.bits(),
             self.eff_slot(),
             chapters,
+            self.model.is_episode,
             self.model.paused,
         )
         .and_then(|(state, skip)| player_hud::geometry::section_command(state.skip_variant(skip), i as usize));
@@ -2013,7 +2018,7 @@ impl PlayerScreen {
     /// ([`Self::record_stops`]) ask once and read it through [`Self::groups_in`] and [`Self::place_in`];
     /// a pointer event and the caption draw ask for their own.
     fn geometry_for(&self, chapters: bool) -> HudGeometry {
-        player_hud::geometry::geometry(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)
+        player_hud::geometry::geometry_content(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.is_episode, self.model.paused)
     }
 
     /// [`Self::geometry_for`] for the content the `Cx` holds.
@@ -2033,7 +2038,7 @@ impl PlayerScreen {
             overlay::OverlayKind::More { .. } => "open_more",
             _ => return None,
         };
-        let (state, skip) = player_hud::geometry::frame_state(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)?;
+        let (state, skip) = player_hud::geometry::frame_state_content(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.is_episode, self.model.paused)?;
         let state = state.skip_variant(skip);
         let index_of = |id: &str| state.controls.iter().position(|c| c.id == id);
         let held = (self.hud.nav.focus == GROUP_ROW)
@@ -2081,7 +2086,7 @@ impl PlayerScreen {
     /// How many stops the row group holds this frame (`player_hud::geometry::row_len`): the package's
     /// declared row for the discs, the stand-ins' own counts otherwise.
     fn row_len(&self, chapters: bool) -> usize {
-        player_hud::geometry::row_len(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)
+        player_hud::geometry::row_len_content(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.is_episode, self.model.paused)
     }
 
     /// **The caption band the layout occupies**: ONE value of the package (`Compiled::band`), the same one
