@@ -327,7 +327,7 @@ something.
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.
 - **ACB bind order matters** (mirrors Kodi/ss4s): `setSinkType(MAIN)` → `setMediaId` →
   `setState(LOADED)` → *wait for decoded frames* → `setMediaVideoData(<sourceInfo envelope
-  as captured; a PQ VP9 gets its HDR keys written in first, see below>)` → `setDisplayWindow` → `setState(PLAYING)`. The payload passed to
+  as captured; a PQ VP9 gets its HDR keys written in first, see below>)` → `setDisplayWindow` → `setState(PLAYING)`. In normal buffer-feed playback, the payload passed to
   `setMediaVideoData` is the **whole `sourceInfo` envelope** captured verbatim from the pipeline's
   callback (`sourceInfoRaw`), not a reconstructed one — with ONE exception: a VP9 stream whose container says PQ gets `hdrType` / `mediaVui` / `mediaSei` written in first (`player/vp9_hdr.rs`), because a VP9 bitstream cannot carry the transfer function, so the pipeline's own envelope says `"hdrType":"none"` and the panel stays SDR (device-measured on the dev set, whose ACB path is the only one that sends the envelope: the TV's `picture.dynamicRange` flips to HDR with the rewrite and stays SDR with `/tmp/plxnative-novp9hdr`; webOS 5+ has no ACB, so nothing is sent there and its VP9 HDR behaviour is unknown). The envelope is otherwise untouched, and an envelope that already names an HDR type is never overridden. Audio is owned by the pipeline — **never feed
   ACB an audio SINK or elementary stream**. That half is real and unchanged. Its long-stated
@@ -340,7 +340,9 @@ something.
   "Dolby Vision / Dolby Atmos" read-out captured on screen. Details and addresses:
   `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
-  (2-arg calls corrupt memory / segfault).
+  (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
+  experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;
+  that exception does not apply to normal buffer-feed playback.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode

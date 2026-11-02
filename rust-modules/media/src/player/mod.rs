@@ -659,9 +659,11 @@ fn acb_playstate_ready(stage: shared::Stage) -> bool {
 /// clears when its Engine is removed.
 ///
 /// A URI-mode probe session (`uriprobe_drive`, dev trigger `plxnative-uriprobe`) has no Engine and
-/// so no ACB stage: its bound starts with the service's own `playing` and remains latched through
-/// logical stop until registration release is acknowledged. `drive` steps that ownership before
-/// this call, including frames after the player screen has gone.
+/// so no Engine ACB stage: its observation starts with service `playing`, or with the controlled
+/// ACB experiment's first bind call. It remains latched through logical stop until release is
+/// acknowledged. The ACB experiment retains plane ownership through bus release until app exit,
+/// because asynchronous ACB completion is unproven. `drive` steps ownership before this call,
+/// including frames after the player screen has gone.
 ///
 /// This is an OBSERVATION of the adapter, not a second owner: it hands the answer to
 /// [`machine::Player::set_video_plane_bound`], which is the only writer and the only publisher.

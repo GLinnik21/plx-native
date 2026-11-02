@@ -117,7 +117,7 @@ impl UriSession {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// Preserve a playing observation until actual registration release, including unresolved stop.
+    /// Retain observed plane ownership through stop; ACB quarantine lasts until process exit.
     pub fn plane_open(&self) -> bool {
         self.lifecycle.plane_open()
     }

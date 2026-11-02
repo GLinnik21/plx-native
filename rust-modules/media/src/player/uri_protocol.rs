@@ -245,7 +245,8 @@ pub(crate) struct Seen {
 }
 
 /// Opaque identity, normalized facts and a separate diagnostic projection. Debug excludes all
-/// service text and identity contents; no raw payload is retained.
+/// service text and identity contents. The private ACB source envelope retains service text for
+/// the driver to forward; neither it nor the original message is diagnostic output.
 #[derive(Clone, Default, PartialEq)]
 pub struct Message {
     pub(crate) return_value: Option<bool>,
@@ -370,8 +371,8 @@ pub fn parse_event(payload: &str) -> Message {
             if message.video_info.is_none() { message.video_info = Some(video); }
         }
     }
-    // Known event envelopes can carry the same opaque identity. Diagnostic sourceInfo/streamingInfo
-    // schemas are deliberately not interpreted.
+    // Known event envelopes can carry the same opaque identity. The ACB experiment reads only
+    // sourceInfo context and numeric video facts above; streamingInfo remains diagnostic-only.
     if object.get("mediaId").is_some_and(|id| !id.is_string()) {
         message.identity_conflict = true;
     }
