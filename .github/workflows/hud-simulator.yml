@@ -14,6 +14,10 @@ on:
         description: 'Existing app release tag to attach to; empty builds a private Actions artifact'
         type: string
         default: ''
+      publish_development:
+        description: 'Publish a source-tagged development utility for registry testing'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release_tag:
@@ -70,45 +74,36 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   attach:
+    timeout-minutes: 15
     needs: build
-    if: github.event_name != 'pull_request' && inputs.release_tag != ''
+    if: github.event_name != 'pull_request' && (inputs.release_tag != '' || inputs.publish_development)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: hud-simulator-linux
           path: out
-      - name: Attach once to the matching immutable app release
+      - name: Attach immutable bytes, resuming safely after a partial upload
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           SOURCE_SHA: ${{ github.sha }}
+          PUBLISH_DEV: ${{ inputs.publish_development }}
         run: |
-          python3 - <<'PY'
-          import hashlib, json, os, subprocess, tempfile
-          from pathlib import Path
-          pin = json.loads(Path('out/plxnative-hud-simulator-linux-x86_64.tar.pin.json').read_text())
-          tag = os.environ['RELEASE_TAG']
-          if tag != 'v' + pin['app_version'] or pin['development'] or pin['source_sha'] != os.environ['SOURCE_SHA']:
-              raise SystemExit('release tag, source and simulator version must agree')
-          subprocess.run(['gh','release','view',tag],check=True)
-          assets = json.loads(subprocess.check_output(['gh','release','view',tag,'--json','assets'],text=True))['assets']
-          names = {asset['name'] for asset in assets}
-          for path in sorted(Path('out').glob('plxnative-*')):
-              if path.name in names:
-                  with tempfile.TemporaryDirectory() as directory:
-                      subprocess.run(['gh','release','download',tag,'--pattern',path.name,'--dir',directory],check=True)
-                      if hashlib.sha256((Path(directory)/path.name).read_bytes()).digest() != hashlib.sha256(path.read_bytes()).digest():
-                          raise SystemExit('immutable simulator asset differs: ' + path.name)
-              else:
-                  # A retry fills missing assets and resumes the dispatch. Existing bytes are
-                  # compared, never overwritten, including after a partially completed upload.
-                  subprocess.run(['gh','release','upload',tag,str(path)],check=True)
-          PY
+          if [ "$PUBLISH_DEV" = true ]; then
+            test -z "$RELEASE_TAG" || { echo "choose an app release or development publication"; exit 1; }
+            python3 tools/hud_release.py --artifacts out --source "$SOURCE_SHA" --development
+          else
+            python3 tools/hud_release.py --artifacts out --source "$SOURCE_SHA" --tag "$RELEASE_TAG"
+          fi
       - name: Ask the registry to re-lint with the published simulator
+        if: inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ secrets.HUD_REGISTRY_DISPATCH_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}

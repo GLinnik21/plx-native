@@ -13,10 +13,13 @@ def inspection():
     states = []
     for opened in (0, 1, 2):  # modal: chapters+info is deliberately unreachable
         for paused in (False, True):
-            for episode in (False, True):
-                states.append({"slot": "discs", "open": opened, "paused": paused, "navigation_pair": episode,
-                               "episode": episode, "chapters": True, "scrub": [90, 700, 1700, 60],
-                               "controls": [{"id": "subs", "menu": "tracks", "rect": [100, 800-opened*100, 52, 52]}]})
+            for episode,pair in ((False,False),(True,True),(True,False)):
+                for chapters in (False,True):
+                    if not chapters and opened & 1:
+                        continue
+                    states.append({"slot": "discs", "open": opened, "paused": paused, "navigation_pair": pair,
+                                   "episode": episode, "chapters": chapters, "scrub": [90, 700, 1700, 60],
+                                   "controls": [{"id": "subs", "label":"Subtitles", "menu": "tracks", "rect": [100, 800-opened*100, 52, 52]}]})
     return {"languages": [{"lang": lang, "states": states} for lang in preview.LONG_TITLES]}
 
 
@@ -24,10 +27,13 @@ class Matrix(unittest.TestCase):
     def test_every_reachable_section_transport_pair_and_opener_position_is_covered(self):
         scenes = preview.plan(inspection())
         sections = [scene for scene in scenes if scene["name"].startswith("sections-")]
-        self.assertEqual(len(sections), 12)
+        self.assertEqual(len(sections), 30)
+        self.assertTrue(any(s["real_episode"] and not s["navigation_pair"] for s in sections))
+        self.assertTrue(any(not s["chapters"] for s in sections))
+        self.assertFalse(any(not s["chapters"] and s["open"] & 1 for s in sections))
         self.assertEqual({s["open"] for s in sections}, {0, 1, 2})
         menus = [scene for scene in scenes if scene.get("opener")]
-        self.assertEqual(len(menus), 6)
+        self.assertEqual(len(menus), 3)
         self.assertEqual({tuple(s["opener"]["point"]) for s in menus}, {(126,826),(126,726),(126,626)})
         self.assertEqual({s["lang"] for s in scenes if s.get("long_title")}, set(preview.LONG_TITLES))
         self.assertEqual({s["open"] for s in scenes if s.get("captions")}, {0,1,2})

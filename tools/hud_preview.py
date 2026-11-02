@@ -43,25 +43,28 @@ def plan(inspection):
     scenes = []
     def add(name, **changes):
         scenes.append({"name": name, "lang": "en", "open": 0, "paused": True, "navigation_pair": False,
-                       "chapters": True, "background": "dark", **changes})
+                       "chapters": True, "real_episode": False, "background": "dark", **changes})
     seen, openers = set(), set()
     for state in english["states"]:
-        if state["slot"] != "discs" or not state["chapters"]:
+        if state["slot"] != "discs" or not state["chapters"] and state["open"] & 1:
             continue
-        # Compiler states sometimes split real-episode predicates; synthetic movie/series fixtures
-        # exercise both meaningful content classes, including Previous/Next on the episode middle.
-        if state["episode"] is not None and state["episode"] != state["navigation_pair"]:
+        # Navigation belongs to episodes. A lone episode is a different meaningful valuation:
+        # it retains its episode identity and kicker while having no Previous/Next pair.
+        if not state["episode"] and state["navigation_pair"]:
             continue
-        signature = state["open"], state["paused"], state["navigation_pair"]
+        signature = state["open"], state["paused"], state["navigation_pair"], state["episode"], state["chapters"]
         props = {k: state[k] for k in ("open", "paused", "navigation_pair", "chapters")}
+        props["real_episode"] = bool(state["episode"])
         if signature not in seen:
             seen.add(signature)
-            add(f'sections-{state["open"]}-{"episode" if state["navigation_pair"] else "movie"}-{"paused" if state["paused"] else "playing"}', **props)
+            kind = "episode" if state["navigation_pair"] else "isolated-episode" if state["episode"] else "movie"
+            absent = "-no-chapters" if not state["chapters"] else ""
+            add(f'sections-{state["open"]}-{kind}-{"paused" if state["paused"] else "playing"}{absent}', **props)
         for control in state["controls"]:
             if control.get("menu") not in {"tracks", "more"}:
                 continue
             # An opener that moves between section states needs a preview at each authored position.
-            key = control["id"], control["menu"], tuple(control["rect"]), state["open"], state["navigation_pair"]
+            key = control["id"], control["menu"], tuple(control["rect"]), state["open"], control["label"]
             if key in openers:
                 continue
             openers.add(key)
@@ -74,7 +77,7 @@ def plan(inspection):
         raise ValueError("compiler returned no scrub hit area")
     x,y,width,height = compact["scrub"]
     add("seeking", seeking=True, scrub_point=[x+width/2,y+height/2])
-    add("up-next", paused=False, navigation_pair=True, slot="up_next")
+    add("up-next", paused=False, navigation_pair=True, real_episode=True, slot="up_next")
     for kind in ("intro", "credits"):
         add("skip-" + kind, paused=False, slot="skip", marker=kind)
     add("failure", failure=True)
@@ -106,6 +109,9 @@ def fixture(spec, hud):
                 if spec.get("slot") == "up_next":
                     item["Marker"] = [{"id": rk, "type": "credits", "startTimeOffset": 173000, "endTimeOffset": duration}]
             source = pms.lib.items[2011002]
+        if spec.get("real_episode") and not spec["navigation_pair"]:
+            source.update(type="episode", grandparentRatingKey="99100", parentRatingKey="99101",
+                          grandparentTitle="Design Review", parentTitle="Season 1", parentIndex=1,index=1)
         start_at = 445000
         if spec["background"] == "bright":
             start_at = 30000
@@ -154,6 +160,8 @@ def capture_scene(spec):
         expect.append("autopause: Pause accepted")
     else:
         virtual["keys"] = "550:up"
+        if not spec.get("slot"):
+            expect.append(f"clockstop: clock held at {position} ms")
     if spec["open"] & 1:
         triggers["chapters"] = ""
     if spec["open"] & 2:
@@ -176,11 +184,15 @@ def capture_scene(spec):
         # Deterministic markers around the frozen playhead, including a separate credits case.
         triggers["clockstop"] = "175750" if spec["marker"] == "credits" else "27020"
         expect += ["slot=skip", "clockstop: clock held at " + triggers["clockstop"] + " ms"]
+    if spec.get("captions"):
+        expect.append("server-selected sidecar subtitle: sid=99001")
     if spec.get("failure"):
         triggers["failtest"] = ""
     focus = {"slot": "upnext" if spec.get("slot") == "up_next" else spec.get("slot", "discs"),
              "chap": str(int(bool(spec["open"] & 1))), "info": str(int(bool(spec["open"] & 2))),
              "ov": "none"}
+    if not spec.get("slot"):
+        focus.update(pair=str(int(spec["navigation_pair"])), haschap=str(int(spec["chapters"])))
     if spec.get("opener"):
         focus["ov"] = "menu" if spec["opener"]["menu"] == "tracks" else "more"
     if spec.get("failure"):

@@ -8,7 +8,9 @@ the registry's `IMPLEMENTATION.md`; this document describes the app-side interfa
 target and the repository's host FFmpeg. `tools/hud_bundle.py` packages explicit tracked fonts,
 licenses, native dependencies, schema, fixture corpus, synthetic mock and capture tools. The
 archive and its manifest have SHA-256 pins, the full source commit and the reported app version.
-An unreleased build reports `-dev` and is explicitly marked development. A normal app release
+An unreleased build reports `-dev` and is explicitly marked development. A manual CI run with
+`publish_development=true` publishes a prerelease utility under `hud-simulator-<full source SHA>`
+for registry testing; it does not create a `v*` app release tag. A normal app release
 attaches its own simulator once; uploads do not overwrite existing assets. The Linux bundle
 needs Ubuntu 24.04-compatible glibc, the system Mesa driver, Xvfb and ffmpeg/Pillow for previews.
 It relocates independently of the source/build checkout. No real Plex configuration is included.
