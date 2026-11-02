@@ -684,12 +684,11 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 /// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
 /// ~0.29: it needs 0.655 total, so the wedge must carry ~0.51 there and rather more at the title.
 ///
-/// The same weight the tab bar's own track capsule already uses for the same job over the same
-/// artwork ([`TAB_TRACK_A_TOP`]) — one value per role, arrived at independently twice. An alpha
+/// The proposal's lighter atmosphere needs .75 at the corner to keep the far-right end of a
+/// long Detail title above 2.5:1 on pure white artwork (the .72 wedge yielded 2.44:1). An alpha
 /// rather than a colour, like [`CARD_SHADOW_REST_A`]: the ink is [`SCRIM_INK`], only the weight is
-/// the decision. **This is the one knob** if the treatment reads heavy — 0.60 still clears 3:1
-/// everywhere.
-pub const SCRIM_TEXT_A: f32 = 0.72;
+/// the decision. Retuning it must preserve the bright-art and pure-white anchor tests.
+pub const SCRIM_TEXT_A: f32 = 0.75;
 
 /// **White overlay at alpha `a`** — the ramp every overlay on this palette rides.
 ///
@@ -1105,7 +1104,7 @@ pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
 /// | .56 | 1.73 | | **.72** | **3.23** |
 ///
 /// The bar is **3:1** — the same one `widgets`' ground test holds an ambient wash to, and the same
-/// arithmetic that put [`SCRIM_TEXT_A`] and [`TAB_TRACK_A_TOP`] at .72 in the first place. Read as a
+/// arithmetic used to derive [`SCRIM_TEXT_A`] and [`TAB_TRACK_A_TOP`]. Read as a
 /// CONSTANT that table says the first legal density is the flat track's own, because **a blur
 /// removes DETAIL, not brightness**: a quarter-res Kawase of a white poster is still white. That was
 /// the verdict for a day, and it is the right verdict for a constant.

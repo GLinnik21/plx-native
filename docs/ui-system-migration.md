@@ -638,7 +638,9 @@ Home and Detail share `theme::hero` treatment tokens: a 224 px minimum Play/Resu
 (expanding for translated labels), and an atmospheric scrim with opacity 0 at 34% of the frame,
 0.55 at 62% of the remaining height, and 0.86 at the foot. `landing_hero::base_scrim_ramp` supplies
 the same stops to fused and layered rendering on both screens. The local corner wedges remain
-the shared `widgets::hero_scrim`; Detail enables the right wedge for its people column.
+the shared `widgets::hero_scrim`; Detail enables the right wedge for its people column. The left
+wedge peaks at .75 rather than the proposal's .72: the existing contrast test measured 2.44:1 at
+the end of a long Detail title over pure-white art at .72, below its 2.5:1 floor.
 
 Detail's metadata and rating coordinates describe the tops of their complete 34 px and 30 px
 bands. Text and marks are centred within those bands, so the shared vertical stack's 16 px gaps
