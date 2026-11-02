@@ -19,6 +19,8 @@ mod focusprobe; // dev: one diffable line naming everything app.rs's key ladder 
 // from the television build, which has no use for a linter and no argv to read it from.
 #[cfg(any(test, feature = "hostsim"))]
 pub mod hud_cli;
+#[cfg(any(test, feature = "hostsim", feature = "devtriggers"))]
+mod hud_tools;
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 // Pure RELEASE_LINE-parsing helpers, `include!`d verbatim by build.rs so `cargo test --lib`
 // actually runs their unit tests (see the module for why). Nothing in the app itself calls

@@ -59,6 +59,8 @@
 //! adds nothing, so the name is the same string whichever package it came from. **A slot's name**
 //! ([`slot_name`]) is `discs`, `up_next` or `skip`.
 
+pub use super::lint_text::{metrics as text_metrics, Metric as TextMetric};
+
 use plx_machine::machine::Measure;
 use plx_platform::i18n::{LocaleContext, Preference};
 use plx_ui::Rect;
@@ -102,16 +104,25 @@ impl LintLang {
 
 /// What a lint run is told besides the text, the measurers and the languages (the FIT pass's; the price pass
 /// takes none).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LintOptions {
     /// `CI_TEXT_SKEW` in px: `HUD-W0602` is reported for app text that fits with less than this to spare
     /// (`lint_text`). `0.0` until PR12 measures it, so locally no text is within the margin.
     pub text_skew: f32,
+    /// Registry-only measured margins, by type size. The television leaves this empty.
+    pub text_skew_by_size: std::collections::BTreeMap<i32, f32>,
+}
+
+impl LintOptions {
+    /// The measured margin for this rung, or the caller's uniform margin.
+    pub fn skew_at(&self, size: i32) -> f32 {
+        self.text_skew_by_size.get(&size).copied().unwrap_or(self.text_skew)
+    }
 }
 
 impl Default for LintOptions {
     fn default() -> Self {
-        LintOptions { text_skew: lint_text::CI_TEXT_SKEW }
+        LintOptions { text_skew: lint_text::CI_TEXT_SKEW, text_skew_by_size: Default::default() }
     }
 }
 
@@ -501,7 +512,7 @@ pub(super) mod testing {
                 })
                 .collect()
         };
-        let found = lint_with(&text, &ShippedMeasure, &langs, &LintOptions { text_skew: case.skew });
+        let found = lint_with(&text, &ShippedMeasure, &langs, &LintOptions { text_skew: case.skew, ..LintOptions::default() });
         let found = if case.code == codes::E1401.id { found } else { without_cost(found) };
         let got: BTreeSet<(String, String)> =
             found.iter().map(|f| (f.code.to_owned(), f.pointer.clone())).collect();
