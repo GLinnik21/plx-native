@@ -1,4 +1,4 @@
-{"updated":"2026-11-02T19:59:20Z",
+{"updated":"2026-11-02T20:05:07Z",
 "ci":[
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30922414156,"at":"2026-08-04T15:06:18Z","sha":"84f813d70","title":"docs: the README says why this exists, in the first person","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":97},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4447,7 +4447,8 @@
 {"id":41494129805,"at":"2026-11-02T17:45:22Z","sha":"60b35acea","title":"Add opt-in firmware playback diagnostics","pr":1210,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":20,"Linux simulator build + launch":334}},
 {"id":41501427342,"at":"2026-11-02T18:31:44Z","sha":"7c870e59c","title":"screens: update SCREEN_SHAPES_PIN after merging diagnostics and Live TV","pr":993,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":28,"Linux simulator build + launch":324,"macOS tests against bundled FFmpeg and ASS":198},"failed":["macOS simulator build + launch"]},
 {"id":41502731463,"at":"2026-11-02T18:40:01Z","sha":"957a7d734","title":"player: use Fx naming for URI lifecycle effects","pr":1211,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":366,"macOS simulator build + launch":299,"Windows launcher syntax":23,"macOS tests against bundled FFmpeg and ASS":308}},
-{"id":41513737764,"at":"2026-11-02T19:50:58Z","sha":"c63ecab29","title":"docs: close resolved HUD title truncation gap","pr":1212,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":301,"macOS simulator build + launch":178,"Linux simulator build + launch":325,"Windows launcher syntax":30}}
+{"id":41513737764,"at":"2026-11-02T19:50:58Z","sha":"c63ecab29","title":"docs: close resolved HUD title truncation gap","pr":1212,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":301,"macOS simulator build + launch":178,"Linux simulator build + launch":325,"Windows launcher syntax":30}},
+{"id":41515097018,"at":"2026-11-02T19:59:59Z","sha":"3bc30f4ed","title":"Preserve UTF-8 in fixed text buffers","pr":1212,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":35,"macOS simulator build + launch":216,"macOS tests against bundled FFmpeg and ASS":232,"Linux simulator build + launch":294}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
