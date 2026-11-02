@@ -9642,7 +9642,8 @@ const SIDE_MAX_PART_KBPS: i64 = 30_000;
 /// original Part (`player::subside`) — so the server need not burn it? Only on a LOCAL link (a
 /// relay or remote link would carry two reads of the film), with a real server Part to read (not
 /// a fixture or a pinned URL), and a known, moderate Part bitrate: `0` means nobody measured it
-/// and burns by design. A sidecar needs none of this (the app fetches it on its own).
+/// and burns by design. A sidecar needs none of this to be DRAWN (the app fetches it on its own);
+/// this gate decides only whether the reader also runs clock-only to place it on the remux's clock.
 fn side_reader_admitted(ps: &PlaybackSession) -> bool {
     side_reader_inputs_admit(
         cur_client(ps).is_some_and(|c| c.link() == Some(plx_plex::plex::probe::Location::Local)),
@@ -10358,8 +10359,9 @@ impl SideReaderTarget {
 /// A SIDECAR the app draws over the remux gets a CLOCK-ONLY target, but only where an embedded
 /// track would be admitted too (a local link and a moderate Part bitrate, [`side_reader_admitted`]):
 /// the reader reads no cue, it finds the keyframe the remux started on so the sidecar, which is in
-/// file time, is drawn where the picture is (`player::sidecar_clock_ns`). Off that gate there is no
-/// reader and the sidecar is drawn on the remux's own clock, as it always was.
+/// file time, is drawn where the picture is (`player::sidecar_clock_ns`) once that scan matches —
+/// a moment after each remux start, and not at all off this gate, where the sidecar is drawn on
+/// the remux's own clock as it always was.
 pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
     if ps.preview || live_family(ps) != RouteFamily::Remux {
         return None;

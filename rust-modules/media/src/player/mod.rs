@@ -2126,9 +2126,11 @@ pub(crate) fn subtitle_offset_ns() -> i64 {
 }
 
 /// **The content time whose cue is on screen at playhead `now_ns`**: the playhead minus the
-/// offset, so a +2 s offset shows at 12 s the cue authored for 10 s. Every lookup — embedded text,
-/// image sets, the sidecar — goes through this one subtraction; saturating, so no offset can wrap
-/// a timestamp at either end of `i64`.
+/// offset, so a +2 s offset shows at 12 s the cue authored for 10 s. Embedded text and image-set
+/// lookups go through this one subtraction; saturating, so no offset can wrap a timestamp at
+/// either end of `i64`. A sidecar is asked at [`sidecar_clock_ns`] (the playhead plus the side
+/// reader's measured remux delta, [`subtitle_draw`]), and the screen subtracts the offset from
+/// that position itself.
 ///
 /// The sidecar holds its whole file, so any offset in its range is exact there. An EMBEDDED track
 /// only has the cues the demuxer has read, which is why [`subtitle_offset_range_ms`] gives it no
@@ -2164,12 +2166,14 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
 /// **The file-time position a SIDECAR is asked for at playhead `playhead_ns`.**
 ///
 /// A sidecar's timestamps are the Part's. On a direct play the playhead is file time. Over a remux
-/// it is not: PMS starts the remux on the Part keyframe at or before the requested offset, but the
-/// engine labels that first frame with the REQUESTED offset (`disp_base`), so the playhead runs
-/// ahead of the content by the snap (measured: 0.6 s to 2.2 s on one file) and the sidecar drew
-/// early. The side reader measures that constant (`ff::subside`, `delta = part_time − playhead`)
-/// and this adds it, so the renderer is asked for the content time actually on screen. The viewer's
-/// timing offset is subtracted after this, by the caller, and composes with it.
+/// it is not: PMS starts the remux on a Part keyframe EARLIER than or at the requested offset — not
+/// always the last one (a 917 s request started on 914.914 s while 916.916 s existed; see
+/// `ff_subside`'s `sidecar_clock_at_917…` test) — but the engine labels that first frame with the
+/// REQUESTED offset (`disp_base`), so the playhead runs ahead of the content by the snap (measured:
+/// 0.6 s to 2.2 s on one file) and the sidecar drew early. The side reader measures that constant
+/// (`ff::subside`, `delta = part_time − playhead`) and this adds it, so the renderer is asked for
+/// the content time actually on screen. The viewer's timing offset is subtracted after this, by the
+/// caller, and composes with it.
 ///
 /// Moved only when ALL hold: the selection is a sidecar, the app draws it over a live remux
 /// ([`crate::route::SubtitlePresenter::ClientOverRemux`]) and the reader matched this run's first
@@ -2178,7 +2182,11 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
 /// never from an ASSUMED delta, which was measured 2.002 s wrong (see `ff_subside`'s
 /// `sidecar_clock_at_917…` test). **Off the reader's gate** (a remote link, a Part above the
 /// bitrate bound) nothing is measured, nothing is shifted, and a sidecar is drawn exactly as
-/// before; so is a run whose scan found no byte-exact match.
+/// before; so is a run whose scan found no byte-exact match. **Before the measurement lands**
+/// (right after every remux start: the mirror is cleared and stays clear until this run's scan
+/// reads the Part up to the anchor) nothing is shifted either: the sidecar sits at the old early
+/// position for that moment, then the position drops by the snap, which `ass_source::Clock::sample`
+/// treats as a break and rewinds, so a cue already shown early can appear a second time once.
 pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) -> i64 {
     if !crate::route::sidecar_over_remux(ps) {
         return playhead_ns;

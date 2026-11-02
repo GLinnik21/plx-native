@@ -600,13 +600,19 @@ something.
   the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
   track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
-  the Part's FILE time while a remux starts on the Part keyframe at or before the requested offset
-  and is labelled with the requested offset, so under the same local-link and bitrate gate the side
+  the Part's FILE time while a remux starts on a Part keyframe EARLIER than or at the requested
+  offset — not always the last one (a 917 s request started on 914.914 s while 916.916 s existed;
+  see `ff_subside`'s `sidecar_clock_at_917…` test) — and the app labels that frame with the
+  requested offset, so under the same local-link and bitrate gate the side
   reader also runs CLOCK-ONLY for it (`subside::CLOCK_ONLY`: no track, no store, no
   `side_subs_owner`, never the burn) to find that keyframe by the byte-exact anchor match;
   `player::sidecar_clock_ns` adds the published delta (`subside::exact_delta_ns`) to the sidecar's
   playhead, for a sidecar over a remux only (embedded cues were shifted by the reader already) and
-  never from the assumed mapping (2.002 s wrong at 917 s on one file). Which sidecar
+  never from the assumed mapping (2.002 s wrong at 917 s on one file). That delta is known a moment
+  after each remux start (the scan reads the Part up to the anchor); until then — and off the gate,
+  or with no exact match — the sidecar is drawn exactly as before, 0.6–2.2 s early on the remux's
+  clock, and when the delta lands the position drops once, which `ass_source::Clock::sample` treats
+  as a break and rewinds, so a cue already shown early can appear a second time. Which sidecar
   starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the
   track memory chose for this episode (`Plan::memory_sidecar`, its key and codec read from the
   playing item).

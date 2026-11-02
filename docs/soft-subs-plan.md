@@ -433,11 +433,14 @@ it drifts for both together. No client-side correction is possible or needed *fo
 
 That argument covers only the old server WebVTT stream, which shares the video session's 0-point.
 A whole-file **sidecar** (`sidecar.rs`) does not: its cues are in the Part's file time, and a
-remux starts on the Part keyframe at or before the requested offset while the app labels that
-frame with the requested offset, so the sidecar drew early by the snap (measured 0.6 s to 2.2 s
-on one file). The side reader measures that constant clock-only (`ff_subside.rs`, a byte-exact
-keyframe match) and `player::sidecar_clock_ns` adds it to the sidecar's render clock; with no exact
-match, or off the reader's local-link and bitrate gate, nothing is corrected.
+remux starts on a Part keyframe EARLIER than or at the requested offset — not always the last one
+(a 917 s request started on 914.914 s while 916.916 s existed; see `ff_subside`'s
+`sidecar_clock_at_917…` test) — while the app labels that frame with the requested offset, so the
+sidecar drew early by the snap (measured 0.6 s to 2.2 s on one file). The side reader measures
+that constant clock-only (`ff_subside.rs`, a byte-exact keyframe match) and
+`player::sidecar_clock_ns` adds it to the sidecar's render clock; with no exact match, or off the
+reader's local-link and bitrate gate, nothing is corrected. The measurement lands a moment after
+each remux start, so until then the sidecar is drawn exactly as before.
 
 **Do not fetch an independent whole-file (offset-0) VTT.** The endpoint streams alongside the
 throttled video session; requesting offset-0 subtitles while the video session sits at offset T
