@@ -2114,7 +2114,11 @@ impl<'e, 'p> Env<'e, 'p> {
             HStack::new(&widths, c.gap, Align::Leading(r.x)).placed().map(|s| (s.x, s.w)).collect()
         };
         for (ctl, (at, len)) in live.into_iter().zip(spans) {
-            let rect = if column { Rect::new(r.x, at, bw, len) } else { Rect::new(at, r.y, len, ih) };
+            let cell = if column { Rect::new(r.x, at, bw, len) } else { Rect::new(at, r.y, len, ih) };
+            // The common action cell measures the row/column; a disc keeps its declared square face.
+            let rect = if ctl.widget == Widget::Disc {
+                Rect::new(cell.cx() - ctl.size * 0.5, cell.cy() - ctl.size * 0.5, ctl.size, ctl.size)
+            } else { cell };
             self.push_control(ctl, rect, true, out);
         }
     }

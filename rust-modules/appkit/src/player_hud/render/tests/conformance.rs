@@ -586,3 +586,18 @@ fn closing_a_section_returns_to_its_row_button_opener() {
     assert_eq!(super::super::super::geometry::opener_elem(state, Section::Chapters),
         Some(super::super::super::state::control_elem(ordinal as i32)));
 }
+
+#[test]
+fn mixed_section_actions_keep_discs_square_inside_wide_cells() {
+    let text = REFERENCE.replace(r#"{ "align": "end", "spacer": { "w": 150 } }"#,
+        r#"{ "align": "end", "actions": { "axis": "column", "gap": 16, "item_h": 70, "min_w": 352,
+        "items": [{ "id": "disc", "command": "open_more", "widget": "disc", "size": 52 },
+        { "id": "button", "command": "open_more", "widget": "button", "size": 70 }] } }"#);
+    let compiled = load(&text);
+    let state = compiled.lookup(crate::hud_format::compile::OPEN_INFO, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let disc = state.control("disc").unwrap().rect;
+    let button = state.control("button").unwrap().rect;
+    assert_eq!((disc.w, disc.h), (52.0, 52.0), "the glyph and hit target use the declared disc size");
+    assert_eq!(disc.cx(), button.cx(), "disc is centered within the shared 352px action cell");
+    assert_eq!(disc.cy() + 86.0, button.cy(), "item_h and gap still place the next row");
+}
