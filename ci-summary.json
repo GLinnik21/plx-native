@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-02T17:55:07Z",
+ "generated": "2026-11-02T18:00:52Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -62.7,
-   "change7_pct": 19.9,
+   "change30_pct": -62.8,
+   "change7_pct": 19.8,
    "d30": 1091.0,
-   "delta30": -684.5,
-   "delta7": 67.5,
+   "delta30": -685.0,
+   "delta7": 67.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 84,
+   "n_now": 83,
    "n_prev": 98,
-   "now": 406.5,
+   "now": 406,
    "prev7": 339.0,
    "shown": true,
    "state": "worse",
@@ -168,16 +168,16 @@
    "change30_pct": -64.5,
    "change7_pct": 14.0,
    "d30": 1145,
-   "delta30": -739.0,
-   "delta7": 50.0,
+   "delta30": -739,
+   "delta7": 50,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 212,
-   "n_prev": 218,
-   "now": 406.0,
-   "prev7": 356.0,
+   "n_now": 211,
+   "n_prev": 219,
+   "now": 406,
+   "prev7": 356,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -847,7 +847,7 @@
    "to": 284
   },
   {
-   "change_pct": 19.9,
+   "change_pct": 19.8,
    "commits": [
     {
      "pr": 1196,
@@ -905,7 +905,7 @@
    "label": "Wait after merge",
    "since": "2026-11-01",
    "threshold_pct": 15.0,
-   "to": 406.5
+   "to": 406
   },
   {
    "change_pct": 16.5,
