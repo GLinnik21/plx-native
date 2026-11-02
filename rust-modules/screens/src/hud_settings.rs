@@ -228,7 +228,7 @@ fn facts_of(entry: &Entry, list: &HudList) -> Vec<String> {
 
 /// The page's rows from the list alone: the packages (the built-in first), a removal row for each installed
 /// one, and the drop files under their own header when there are any.
-fn hud_form(list: &HudList, draft: Option<&str>) -> Form<HudId, HudAction, SettingsPage> {
+fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> Form<HudId, HudAction, SettingsPage> {
     let mut packs = FormSection::new("");
     let mut removals = FormSection::new("");
     for (i, entry) in list.entries.iter().enumerate() {
@@ -246,7 +246,7 @@ fn hud_form(list: &HudList, draft: Option<&str>) -> Form<HudId, HudAction, Setti
     }
     // The address row: the keyboard's text while it is up, "Downloading…" while a fetch runs, else what to type.
     let detail = match draft {
-        Some(text) => format!("{text}|"),
+        Some(text) => text.with_insertion_marker("|"),
         None if list.fetching => plx_platform::i18n::msg::settings_hud_fetching().to_owned(),
         None => plx_platform::i18n::msg::settings_hud_address_hint().to_owned(),
     };
@@ -338,7 +338,7 @@ impl HudPage {
         self.form.table.compact = false;
         self.form.table.header_ink = theme::TEXT_READING;
         self.form.table.list_focused = true;
-        self.form.set(hud_form(&self.list, self.state.editing.then(|| self.draft.text())), keep.as_ref());
+        self.form.set(hud_form(&self.list, self.state.editing.then_some(&self.draft)), keep.as_ref());
         self.state.fetching = self.list.fetching;
         self.state.rows = self.form.table.n_rows() as u32;
         self.state.notice = match &self.list.notice {

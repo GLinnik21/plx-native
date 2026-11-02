@@ -9,7 +9,8 @@
 //! because that is what the certificate is issued for — so the whole PMS control plane comes
 //! through here too whenever the origin is TLS. `crate::http` is the door that decides which of
 //! the two transports a request takes; this module is only ever the https half of it. Direct
-//! callers are `plex::account`, auth's public headerless QR-image fetch, and — since the telemetry
+//! callers include `plex::account`, auth's public headerless QR-image fetch, the HUD-package adapter's
+//! bounded public fetch, and — since the telemetry
 //! work — `plx_telemetry::telemetry::sender`, which is the first traffic in this app's history to a host
 //! that is neither Plex nor the user's own server. It goes through [`post_ca`]: CA-verified,
 //! unpinned, bounded sink. **This list has stood here while becoming untrue before**, which is why
@@ -589,6 +590,41 @@ struct BodySink {
     overflowed: bool,
     /// The `ETag` of the response being read (see [`header_cb`]); the last hop's, never a redirect's.
     etag: Option<String>,
+    /// A public transfer's protocol floor survives response/status resets across redirect hops.
+    redirect: Option<RedirectFloor>,
+}
+
+/// libcurl's redirect mask is fixed at the request's start. A plaintext entry may upgrade, so its
+/// mask allows both protocols; this per-transfer latch then rejects any downgrade after that upgrade.
+/// Relative and protocol-relative locations inherit the current scheme and do not change the floor.
+struct RedirectFloor {
+    tls: bool,
+    response_redirects: bool,
+}
+
+impl RedirectFloor {
+    fn new(url: &[u8]) -> Self {
+        Self { tls: allowed_redirect_protocols(url) == CURLPROTO_HTTPS, response_redirects: false }
+    }
+
+    fn accepts(&mut self, line: &[u8]) -> bool {
+        if line.starts_with(b"HTTP/") {
+            self.response_redirects = line.split(|b| b.is_ascii_whitespace()).nth(1)
+                .is_some_and(|code| code.len() == 3 && code[0] == b'3');
+        } else if self.response_redirects {
+            if let Some(colon) = line.iter().position(|&b| b == b':') {
+                if line[..colon].eq_ignore_ascii_case(b"location") {
+                    let target = line[colon + 1..].trim_ascii();
+                    if target.get(..6).is_some_and(|s| s.eq_ignore_ascii_case(b"https:")) {
+                        self.tls = true;
+                    } else if self.tls && target.get(..5).is_some_and(|s| s.eq_ignore_ascii_case(b"http:")) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
 }
 
 impl BodySink {
@@ -598,6 +634,7 @@ impl BodySink {
             max,
             overflowed: false,
             etag: None,
+            redirect: None,
         }
     }
 
@@ -642,10 +679,10 @@ extern "C" fn write_cb(
     }
 }
 
-/// libcurl `CURLOPT_HEADERFUNCTION`: keep the one response header this client reads, `ETag`.
+/// libcurl `CURLOPT_HEADERFUNCTION`: keep the final `ETag` and enforce the public redirect floor.
 /// libcurl hands over each header line whole (CRLF included) and each hop's status line, so a
-/// status line forgets the previous hop's validator and the final response's wins. Always takes the
-/// line (returning anything else aborts the transfer); a line that is not UTF-8 text is ignored.
+/// status line forgets the previous hop's validator and the final response's wins. A forbidden
+/// downgrade returns zero to abort before libcurl follows it; non-UTF-8 validators are ignored.
 /// Infallible code, so nothing can unwind across the C frame. The line is not capped here: libcurl
 /// bounds a header line itself, and a validator is kept verbatim (weak `W/` prefix and quotes too).
 extern "C" fn header_cb(
@@ -660,20 +697,22 @@ extern "C" fn header_cb(
     }
     let sink = unsafe { &mut *(userdata as *mut BodySink) };
     let line = unsafe { std::slice::from_raw_parts(ptr as *const u8, n) };
-    sink.note_header(line);
-    n
+    if sink.note_header(line) { n } else { 0 }
 }
 
 impl BodySink {
-    /// One raw header line: a status line clears the validator, an `ETag:` line sets it.
-    fn note_header(&mut self, line: &[u8]) {
+    /// One raw header line: enforce the redirect floor, then retain the final validator.
+    fn note_header(&mut self, line: &[u8]) -> bool {
+        if self.redirect.as_mut().is_some_and(|floor| !floor.accepts(line)) {
+            return false;
+        }
         if line.starts_with(b"HTTP/") {
             self.etag = None;
-            return;
+            return true;
         }
-        let Some(colon) = line.iter().position(|&b| b == b':') else { return };
+        let Some(colon) = line.iter().position(|&b| b == b':') else { return true };
         if !line[..colon].eq_ignore_ascii_case(b"etag") {
-            return;
+            return true;
         }
         if let Ok(value) = std::str::from_utf8(&line[colon + 1..]) {
             let value = value.trim();
@@ -681,6 +720,7 @@ impl BodySink {
                 self.etag = Some(value.to_owned());
             }
         }
+        true
     }
 }
 
@@ -868,8 +908,8 @@ pub const BULK: Timeouts = Timeouts {
     low_speed_s: 30,
 };
 
-/// Protocol floor for a public redirect. A TLS request may remain TLS only; a plaintext request
-/// may stay plaintext or upgrade. Pure so the no-downgrade rule is host-testable.
+/// Initial protocol mask for a public redirect. A TLS start may remain TLS only; a plaintext
+/// start may upgrade. [`RedirectFloor`] retains that upgrade for the remainder of the transfer.
 fn allowed_redirect_protocols(url: &[u8]) -> c_long {
     if url
         .get(..8)
@@ -2189,6 +2229,7 @@ fn request_tls_sink(
             curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
             // In stream mode `sink` stays empty: the body goes through `stream`'s callbacks instead.
             let mut sink = BodySink::new(max_body);
+            sink.redirect = follow_redirects.then(|| RedirectFloor::new(url.as_bytes()));
             match stream {
                 None => {
                     curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
@@ -2199,7 +2240,11 @@ fn request_tls_sink(
                     );
                     // HEADERDATA without a HEADERFUNCTION would send header bytes to the write
                     // callback (into the body), so the data is set only once the function took.
-                    if curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERFUNCTION, header_cb as *const c_void) == 0 {
+                    let header_rc = curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERFUNCTION, header_cb as *const c_void);
+                    if follow_redirects {
+                        require_setopt!(header_rc, "CURLOPT_HEADERFUNCTION");
+                        require_setopt!(curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERDATA, (&mut sink as *mut BodySink).cast()), "CURLOPT_HEADERDATA");
+                    } else if header_rc == 0 {
                         curl_easy_setopt_ptr(
                             easy.0,
                             CURLOPT_HEADERDATA,
@@ -2227,8 +2272,8 @@ fn request_tls_sink(
                 }
             }
             // No curl call in this module may escape HTTP(S). The public fetches (the QR image and the HUD-package
-            // install-from-address) are the only ones that follow redirects; they are capped, and an HTTPS start
-            // may never downgrade to plaintext.
+            // install-from-address) are the only ones that follow redirects; they are capped. The mask
+            // forbids a downgrade from an HTTPS start, and the header callback latches any later upgrade.
             require_setopt!(
                 curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS),
                 "CURLOPT_PROTOCOLS"
@@ -2859,8 +2904,8 @@ pub fn https_get_public(url: &str) -> Option<Resp> {
 /// answer, a certificate this television's trust store cannot verify
 /// ([`RequestFailure::untrusted_chain`]) or a body past `max_body`, and each is told apart on the
 /// page. The same headerless, redirect-following request as [`https_get_public`] through the same
-/// entry, so the redirect and no-downgrade rules are [`allowed_redirect_protocols`]'s and no curl
-/// option is added.
+/// entry: [`allowed_redirect_protocols`] restricts the initial scheme and [`RedirectFloor`] retains
+/// any later HTTPS upgrade. No curl option is added.
 ///
 /// A body over `max_body` is never returned truncated: the transfer is aborted and the failure
 /// carries `body_limit` ([`RequestFailure::too_large`]). A reply that completed within the bound is

@@ -337,7 +337,8 @@ fn every_row_fits_its_column_in_every_language() {
             busy.fetching = fetching;
             let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
             form.table.compact = false;
-            form.set(hud_form(&busy, draft), None);
+            let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
+            form.set(hud_form(&busy, draft.as_ref()), None);
             out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));
         }
     }
@@ -539,4 +540,20 @@ fn the_offer_prompt_says_what_it_is_about() {
     assert_eq!(text[0], "Fetched 1.0.0");
     assert_eq!(text[1], join(&[plx_platform::i18n::msg::settings_hud_offer_from("192.168.1.20"), plx_platform::i18n::msg::settings_hud_offer_dev().to_owned(), plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()]));
     assert_eq!(text[2], plx_platform::i18n::msg::settings_hud_offer_body());
+}
+
+#[test]
+fn the_address_caret_follows_an_interior_correction() {
+    let (mut page, _tx) = page_with(list());
+    let key = key_of(&page, &HudId::Address);
+    drive(&mut page, ScreenEvent::Activate(key), key);
+    drive(&mut page, typed("gh:owner/repo"), key);
+    drive(&mut page, press(Key::Left), key);
+    assert_eq!(address_row(&page).1, "gh:owner/rep|o");
+    drive(&mut page, input(InputKind::Text(TextEdit::Backspace)), key);
+    assert_eq!(address_row(&page).1, "gh:owner/re|o");
+    drive(&mut page, typed("p"), key);
+    assert_eq!(address_row(&page).1, "gh:owner/rep|o");
+    let emitted = drive(&mut page, press(Key::Ok), key);
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(address)] if address.url() == "https://github.com/owner/repo/releases/latest/download/hud.plxhud.json"));
 }
