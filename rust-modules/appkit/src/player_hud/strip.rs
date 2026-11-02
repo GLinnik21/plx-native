@@ -4,6 +4,10 @@
 //! paints it, so the pop, the cull, the minimal scroll and the focused name's marquee are the Shelf's and
 //! not the strip's own.
 //!
+//! **Text declarations.** Card text resolves its declared face and parent/item predicates. A focused
+//! single-line title uses the Shelf's shared marquee; other text uses the shared TextView at the
+//! compiled width, leading and line limit. The strip's label alignment is shared with the Shelf.
+//!
 //! **What the Shelf draws, and what the source adds.** The Shelf draws every card, the focused one popped
 //! and ringed ([`RowStyle::rim`]), and the focused card's NAME as its label block, hung where the strip's
 //! names stand ([`RowStyle::label_drop`]) from the card's leading edge ([`RowStyle::label_start`]), so a name
@@ -53,13 +57,14 @@ pub struct Geometry {
     pub radius: f32,
     pub name_drop: f32,
     pub time_drop: f32,
+    pub leading_labels: bool,
 }
 
 impl Geometry {
     /// The strip an op describes (see [`Geometry::new`]).
     pub fn of(op: &DrawOp) -> Option<Geometry> {
-        let DrawOp::Strip { rect, card, pitch, radius, template, .. } = op else { return None };
-        Some(Geometry::new(*rect, *card, *pitch, *radius, template))
+        let DrawOp::Strip { rect, card, pitch, radius, template, leading_labels, .. } = op else { return None };
+        Some(Geometry { leading_labels: *leading_labels, ..Geometry::new(*rect, *card, *pitch, *radius, template) })
     }
 
     /// The strip whose viewport is `rect`, with its first card `card`, `pitch` apart and rounded by `radius`; its
@@ -81,6 +86,7 @@ impl Geometry {
             radius,
             name_drop: drop_of("item.title").unwrap_or(0.0),
             time_drop: drop_of("item.start").unwrap_or(0.0),
+            leading_labels: true,
         }
     }
 
@@ -97,7 +103,7 @@ impl Geometry {
     /// the strip has always had, the rim over the video plane, labels from the card's leading edge and the name hung where
     /// the op stands it.
     pub fn style(&self) -> RowStyle {
-        RowStyle {
+        let style = RowStyle {
             w: self.card.w,
             h: self.card.h,
             gap: self.pitch - self.card.w,
@@ -109,9 +115,9 @@ impl Geometry {
             ..RowStyle::HOME
         }
         .with_rim(Rim { width: CH_FOCUS_RING_W, ink: theme::CONTROL_RIM_FOCUS_UNKEYED })
-        .with_leading_labels()
         .with_label_drop(self.name_drop)
-        .with_growing_seat()
+        .with_growing_seat();
+        if self.leading_labels { style.with_leading_labels() } else { style }
     }
 }
 
@@ -154,11 +160,34 @@ pub struct Cards<'a, E> {
     sid: u16,
     geo: Geometry,
     elem: PhantomData<fn() -> E>,
+    template: Option<&'a [CardOp]>,
+    current: usize,
+    paused: bool,
+    episode: bool,
 }
 
 impl<'a, E> Cards<'a, E> {
     pub fn new(chapters: &'a [Chapter], sid: u16, geo: Geometry) -> Self {
-        Cards { chapters, sid, geo, elem: PhantomData }
+        Cards { chapters, sid, geo, elem: PhantomData, template: None, current: 0, paused: false, episode: false }
+    }
+
+    /// Bind the compiled card declaration and the same parent predicates as the surrounding HUD.
+    pub(super) fn declared(mut self, op: &'a DrawOp, model: &HudModel, episode: bool) -> Self {
+        if let DrawOp::Strip { template, .. } = op { self.template = Some(template); }
+        self.current = self.seat_at(model);
+        self.paused = model.paused;
+        self.episode = episode;
+        self
+    }
+
+    fn holds(&self, i: usize, focused: bool, name: &str) -> bool {
+        match name {
+            "item.focused" => focused,
+            "item.is_current" => i == self.current,
+            "transport.paused" => self.paused,
+            "title.is_episode" => self.episode,
+            _ => false,
+        }
     }
 
     /// The position chapter `i` starts at, in ns (what a press on its card seeks to).
@@ -201,6 +230,20 @@ where
     }
     /// The focused card's name: the Shelf hangs it under the card and glides it when it does not fit.
     fn label(&self, i: usize) -> TileLabel {
+        if let Some(template) = self.template {
+            let holds = |name: &str| self.holds(i, true, name);
+            if let Some(DrawOp::Text { rect, size, bold, ink, alpha, leading, .. }) = template.iter()
+                .filter(|c| c.present.at(holds))
+                .map(|c| &c.op)
+                .find(|op| matches!(op, DrawOp::Text { bind, max_lines: 1, rect, .. } if bind == "item.title" && rect.y >= self.geo.card.y + self.geo.card.h)) {
+                let mut ink = ink.at(holds);
+                ink[3] *= alpha;
+                return TileLabel { title: CString::new(self.name(i)).ok(), title_face: Some(plx_ui::cards::LabelFace {
+                    size: *size, bold: bold.at(holds), ink, width: rect.w, offset_x: rect.x - self.geo.card.x, offset_y: rect.y - (self.geo.card.y + self.geo.card.h + self.geo.name_drop), leading: *leading,
+                }), ..TileLabel::default() }.within_tile();
+            }
+            return TileLabel::default();
+        }
         TileLabel { title: CString::new(self.name(i)).ok(), ..TileLabel::default() }.within_tile()
     }
     fn holdable(&self, _i: usize) -> bool {
@@ -211,6 +254,31 @@ where
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         let card = tile.rect.scaled(1.0 / tile.scale);
         let (x, bottom) = (card.x, card.y + card.h);
+        if let Some(template) = self.template {
+            let holds = |name: &str| self.holds(i, tile.focused, name);
+            let mut title_drawn_by_shelf = false;
+            for c in template.iter().filter(|c| c.present.at(holds)) {
+                if let DrawOp::Text { rect, bind, size, bold, ink, alpha, max_lines, leading } = &c.op {
+                    let below = rect.y >= self.geo.card.y + self.geo.card.h;
+                    if tile.focused && below && bind == "item.title" && *max_lines == 1 && !title_drawn_by_shelf {
+                        title_drawn_by_shelf = true;
+                        continue;
+                    }
+                    let content = match bind.as_str() {
+                        "item.title" => self.name(i),
+                        "item.start" => plx_ui::fmt::clock(self.chapters[i].start_ms),
+                        _ => continue,
+                    };
+                    let bold = bold.at(holds);
+                    let placed = Rect::new(card.x + rect.x - self.geo.card.x, card.y + rect.y - self.geo.card.y, rect.w, rect.h);
+                    let view = super::sections::text_view(&content, *size, bold, ink.at(holds), *max_lines, *leading)
+                        .h(if self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center });
+                    view.with_measure(measure).draw(p.alpha(*alpha), super::sections::line_frame(placed, *size, bold));
+                }
+            }
+            return;
+        }
+
         if !tile.focused {
             let shown = plx_gfx::text::elide_by(&self.name(i), self.geo.card.w, false, |t| {
                 measure.width_str(t, theme::size::LABEL, true)
@@ -241,6 +309,7 @@ mod tests {
             radius: 10.0,
             name_drop: 26.0,
             time_drop: 60.0,
+            leading_labels: true,
         };
         let style = geo.style();
         assert_eq!((style.k_scale, style.k_scroll), (300.0, 220.0));

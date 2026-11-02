@@ -61,8 +61,8 @@
 //! because it defines no ink keys that could describe it. The scrub preview receives the compiled track,
 //! including its width and thickness, and rides the painter translation of the bar's band.
 //!
-//! **Remaining limitations under conformance review.** Chapter-card templates still need declaration
-//! consumption. Keyed geometry and `when: title.is_episode` still use
+//! **Remaining limitations under conformance review.** Chapter-card text faces are consumed; non-text template
+//! cells and in-art overlays still need declaration consumption. Keyed geometry and `when: title.is_episode` still use
 //! the queue-pair axis and need an independent real-episode valuation before full conformance. `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
 //! declared clock rung. `Compiled::glyph` re-hashes the source on each lookup.
 //!

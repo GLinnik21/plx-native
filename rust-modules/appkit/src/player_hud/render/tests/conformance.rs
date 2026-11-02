@@ -299,3 +299,62 @@ fn declared_countdown_primitives_and_labelled_glyphs_are_priced() {
     assert!(cost(&button).texture_bytes > cost(&plain).texture_bytes, "the declared SVG beside a label costs a mask too");
     assert_eq!(cost(&button).draw_ops, cost(&plain).draw_ops + 1);
 }
+
+fn chapter_frame(compiled: &Compiled, focused: bool) -> Census {
+    use crate::hud_format::compile::OPEN_CHAPTERS;
+    let mut store = plx_data::stores::metadata::MetadataStore::default();
+    plx_data::metadata::set_playing_chapters_for_test(store.state_mut(), vec![
+        plx_data::metadata::Chapter { index: 1, start_ms: 125_000, title: "Chapter".into(), thumb: String::new() }
+    ]);
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let model = HudModel::default();
+    let up = Countdown::default();
+    let mut row = HudMotion::new();
+    row.set_section_appear_for_test(Section::Chapters, 1.0);
+    let frame = Frame { entry: EntryId(0), ps: &ps, model: &model, up: &up,
+        slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None, focus: GROUP_STRIP,
+        btn: 0, tab: 0, open: OPEN_CHAPTERS, now: 1_000, transport: true, measure: &FM, meta: store.view() };
+    let focus = FocusRead { current: focused.then_some(plx_machine::machine::FocusKey {
+        entry: EntryId(0), elem: crate::player_hud::state::ELEM_CHAPTER_BASE }), ..FocusRead::default() };
+    census(|| with_df_focus(focus, |df| assert!(draw(compiled, &frame, df, &mut row, Painter::root()))))
+}
+
+#[test]
+fn chapter_template_text_faces_reach_focused_and_unfocused_cards() {
+    let _serial = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let text = REFERENCE.replace(r#""bind": "item.title", "size": "CAPTION", "bold": false"#,
+        r#""bind": "item.title", "size": "BODY", "bold": false"#);
+    let compiled = load(&text);
+    for focused in [false, true] {
+        let drew = chapter_frame(&compiled, focused);
+        let title = drew.1.iter().find(|r| r.text == "Chapter").unwrap_or_else(|| panic!("declared title: {:?}", drew.1));
+        assert_eq!((title.size, title.bold), (theme::size::BODY, false), "focused={focused}");
+        let time = drew.1.iter().find(|r| r.text == "2:05").expect("declared start time");
+        assert_eq!((time.size, time.bold), (theme::size::MICRO, false));
+    }
+}
+
+#[test]
+fn chapter_template_omission_alignment_and_paint_are_declared() {
+    let _serial = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let text = REFERENCE.replace(r#""bind": "item.title", "size": "CAPTION", "bold": false"#,
+        r#""bind": "item.title", "size": "CAPTION", "bold": false, "alpha": 0.5"#)
+        .replace(r#""if": { "item.focused": "TEXT_PRIMARY" }"#, r#""if": { "item.focused": "gold" }"#);
+    let compiled = load(&text);
+    let focused = chapter_frame(&compiled, true);
+    let title = focused.1.iter().find(|r| r.text == "Chapter").unwrap();
+    assert!((title.ink[0] - 242.0 / 255.0).abs() < 0.001);
+    assert!((title.ink[3] - 0.5).abs() < 0.001);
+    let leading = load(&text.replace(r#""focus": "ring",
+          "card""#, r#""focus": "ring", "label_align": "leading",
+          "card""#));
+    let start = chapter_frame(&leading, true);
+    let left = start.1.iter().find(|r| r.text == "Chapter").unwrap();
+    assert!(title.at.x > left.at.x, "default centre and explicit leading differ");
+    let absent = load(&REFERENCE.replace(r#"{ "text": { "bind": "item.title""#, r#"{ "when": "transport.paused", "text": { "bind": "item.title""#));
+    for focused in [false, true] {
+        assert!(!chapter_frame(&absent, focused).1.iter().any(|r| r.text == "Chapter"), "absent title stays absent");
+    }
+}

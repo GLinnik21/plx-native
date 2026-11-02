@@ -441,6 +441,7 @@ pub enum DrawOp {
         visible: usize,
         radius: f32,
         template: Vec<CardOp>,
+        leading_labels: bool,
     },
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
@@ -2071,7 +2072,7 @@ impl<'e, 'p> Env<'e, 'p> {
         // A strip is priced by the cards its Shelf paints, not by its width over the pitch: the Shelf culls against the
         // screen and a row at rest has scrolled (`Geometry::most_painted_at_rest`), read from the same style it is built with.
         let visible = Geometry::new(r, art, pitch, radius, &template).most_painted_at_rest();
-        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template });
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template, leading_labels: o.get("label_align").and_then(Val::as_str) == Some("leading") });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {

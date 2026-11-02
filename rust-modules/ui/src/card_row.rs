@@ -1060,6 +1060,18 @@ pub fn draw_tile_led(
     }
 }
 
+/// Optional title metrics for a shared card label and its marquee. Absent keeps the native shelf face.
+#[derive(Clone, Copy, Debug)]
+pub struct LabelFace {
+    pub size: i32,
+    pub bold: bool,
+    pub ink: [f32; 4],
+    pub width: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
+    pub leading: f32,
+}
+
 /// The metadata block under a FOCUSED tile: a centred title, optionally a second caption line
 /// ("S1 · E8", a year, a character name), optionally led by the Continue-Watching play glyph. Only
 /// the focused tile carries it, so a row builds exactly one of these per frame.
@@ -1070,6 +1082,7 @@ pub fn draw_tile_led(
 /// from constants they could not see — [`TileLabel::height`] is the answer they were restating.
 #[derive(Default, Clone)]
 pub struct TileLabel {
+    pub title_face: Option<LabelFace>,
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
     /// The sort value line of a library grid sorted by something other than Title or Random: the
@@ -1989,8 +2002,9 @@ fn title_marquee(
     block: Option<&marquee::Block>,
     shadowed: bool,
     fade: bool,
+    face: Option<LabelFace>,
 ) {
-    let (sz, bold) = (theme::size::LABEL, 1);
+    let (sz, bold, ink, height) = face.map_or((theme::size::LABEL, 1, theme::TEXT_PRIMARY, UNDER_LINE_H), |f| (f.size, i32::from(f.bold), f.ink, f.leading));
     let lead = glyph_lead(sz, glyph);
     let budget = (at.w - lead).max(0.0);
     if w <= budget {
@@ -2003,7 +2017,7 @@ fn title_marquee(
         if shadowed {
             p.text(text, tx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz, crate::caption_policy::CAPTION_SHADOW, 0, bold);
         }
-        p.text(text, tx, y, sz, theme::TEXT_PRIMARY, 0, bold);
+        p.text(text, tx, y, sz, ink, 0, bold);
         return;
     }
     let Some(block) = block else { return };
@@ -2024,7 +2038,7 @@ fn title_marquee(
             &block.key,
             w,
             block.cycle_w,
-            Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
+            Rect::new(text_x0, y - MARQUEE_AIR, budget, height + 2.0 * MARQUEE_AIR),
             rtl,
             |dx| {
                 let window = fade.then_some((text_x0, text_x0 + budget));
@@ -2032,7 +2046,7 @@ fn title_marquee(
                     block_text(p, text, text_x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz,
                         crate::caption_policy::CAPTION_SHADOW, bold, w, window, rtl);
                 }
-                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, window, rtl);
+                block_text(p, text, text_x0 + dx, y, sz, ink, bold, w, window, rtl);
             },
         )
     });
@@ -2094,14 +2108,15 @@ fn draw_label_block(
     let within_tile = label.within_tile;
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
+    let (title_size, title_bold) = label.title_face.map_or((theme::size::LABEL, true), |f| (f.size, f.bold));
     // Measured once and threaded through: the title's drawn width feeds both how wide the block
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
     let title_w_val = label.title.as_ref().map(|t| measure.fit_line_measured(
-        &t.to_string_lossy(), f32::INFINITY, theme::size::LABEL, true).1);
+        &t.to_string_lossy(), f32::INFINITY, title_size, title_bold).1);
     // The play mark leads the FIRST line drawn: the title, or the details line of a block with none.
     let title_mark = label.glyph && label.title.is_some();
     let caption_mark = label.glyph && label.title.is_none() && label.caption.is_some();
-    let lead = glyph_lead(theme::size::LABEL, title_mark);
+    let lead = glyph_lead(title_size, title_mark);
     let caption_lead = glyph_lead(csz, caption_mark);
     // The mark HANGS left of a line that is centred as if it were not there, so the window keeps its
     // room on both sides of the text (`2 * lead`): the line stays on the block's centre.
@@ -2113,7 +2128,7 @@ fn draw_label_block(
     // ([`anchor_label`]).
     let want = title_w_val.map_or(0.0, |w| w + 2.0 * lead).max(caption_run);
     let at = if within_tile {
-        tile_window_from(sty.label_start, rect.cx() - sty.w * 0.5, sty.w, want)
+        tile_window_from(sty.label_start, rect.cx() - sty.w * 0.5 + label.title_face.map_or(0.0, |f| f.offset_x), label.title_face.map_or(sty.w, |f| f.width), want)
     } else {
         place_label_wide(p, rect, sty, title_run.max(caption_run.min(full)), want, label.settle_lag)
     };
@@ -2141,8 +2156,8 @@ fn draw_label_block(
     // not made room for yet is not drawn at all.
     let [title_line, caption_line] = lines.map(|line| line.filter(|l| l.alpha > 0.0));
     if let (Some(t), Some(line)) = (&label.title, title_line) {
-        title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top, title_mark, title_w_val.unwrap_or(0.0),
-            block.as_ref(), label.shadowed, within_tile);
+        title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top + label.title_face.map_or(0.0, |f| f.offset_y), title_mark, title_w_val.unwrap_or(0.0),
+            block.as_ref(), label.shadowed, within_tile, label.title_face);
     }
     if let (Some(tc), Some(line)) = (&label.caption, caption_line) {
         let (p, y) = (p.alpha(line.alpha), bottom + line.top);

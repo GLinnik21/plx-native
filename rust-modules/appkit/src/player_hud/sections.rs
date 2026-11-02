@@ -321,6 +321,7 @@ where
 {
     let Some(geo) = Geometry::of(op) else { return };
     let Some(src) = cards_for::<H::Elem>(geo, f.meta, f.ps) else { return };
+    let src = src.declared(op, f.model, f.meta.now_playing().is_some_and(|n| n.is_real_episode));
     // a Shelf stands at the SCREEN y it is given whatever its painter translates by (`SectionFrame`), so the rise
     // and the lift the walk put on `q` (`moved`) are added to where the strip stands
     let at = SectionFrame::new(geo.card.y + moved, geo.rect);
