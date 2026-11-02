@@ -634,17 +634,29 @@ table: a count in prose is a measurement nothing re-takes.
 
 ### Hero proposal alignment (2026-11-02)
 
-Home and Detail share `theme::hero` treatment tokens: a 224 px minimum Play/Resume capsule
-(expanding for translated labels), and an atmospheric scrim with opacity 0 at 34% of the frame,
-0.55 at 62% of the remaining height, and 0.86 at the foot. `landing_hero::base_scrim_ramp` supplies
-the same stops to fused and layered rendering on both screens. The local corner wedges remain
-the shared `widgets::hero_scrim`; Detail enables the right wedge for its people column. The left
-wedge peaks at .75 rather than the proposal's .72: the existing contrast test measured 2.44:1 at
-the end of a long Detail title over pure-white art at .72, below its 2.5:1 floor. The right
-feather retains its geometry and peaks at .78 rather than .50 to protect a four-line credits
-block; that wrapped-credit case measured 2.34:1 over pure white with the proposal's .50 peak.
+The supplied five-page PDF defines a shared 943 px reading column for Home and Detail. Both use
+`landing_hero::hero_rows`: title → SM → identity → optional XS + ratings → MD → synopsis → LG →
+facts → MD → actions. Home pins actions at y=716; Detail pins the title foot at y=566. Identity
+and ratings reserve their full 34 px and 30 px bands. Facts reserve a CAPTION line box. People
+stack upward from the facts bottom, above the action row. Home's poster tops rest at y=817.
 
-Detail's metadata and rating coordinates describe the tops of their complete 34 px and 30 px
-bands. Text and marks are centred within those bands, so the shared vertical stack's 16 px gaps
-are measured between the objects it actually paints. The proposal retains the shared logo area
-rule, provider-grouped ratings, LABEL/36 synopsis capped at three lines, and bottom-aligned credits.
+`widgets::hero_identity` draws edition, kind, genres and rating with outlined resolution and
+accessibility chips. `widgets::hero_facts` draws the year (movies) or aired date (episodes), then
+runtime or remaining time; source attribution follows within the width bound. Direct Play and
+Direct Stream are implicit; conversion and subscription warnings remain visible. Provider scores
+and captions use regular weight. `HeroLogo` retains the shared constant-area logo rule and falls
+back to at most two bold DISPLAY/48 lines; Compact remains one TITLE/40 line. Synopsis stays
+LABEL/26 with 36 px leading and a three-line cap.
+
+Play/Resume has a 224 px minimum and grows for translations. Home places PageDots beside its
+controls. A show's started on-deck hero names and marks that episode, using its rating key and
+Leaf scope. More opens that episode's existing item menu; its play request uses the addressed
+fetch path, independent of the season loaded below. Unstarted or finished shows retain whole-show
+watched actions.
+
+Both heroes share the atmospheric stops: zero at 34% of the frame, .55 at 62% of the remaining
+height, and .86 at the foot. The corner treatment adapts the proposal to the contrast floors:
+the left wedge spans the frame, peaks at .84, and reaches full strength at 32% height; the right
+peaks at .78 and feathers from 28% height. The earlier, narrower treatment failed at the wider
+Home title's upper-right edge (2.34:1 against a 3:1 bright-art floor) and at the raised four-line
+People block (2.18:1 against 3:1). Contrast tests include the shortest synopsis and longest credits.

@@ -1569,6 +1569,53 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
     w
 }
 
+/// The identity band shared by both full-bleed heroes. The text run yields room to the
+/// outlined resolution/accessibility chips, and overlong metadata elides within its column.
+pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    use crate::hstack::{Flow, Item};
+    let labels: Vec<&str> = resolution.into_iter().chain(chips.iter().copied()).collect();
+    let widths: Vec<Item> = labels.iter().map(|s| Item::new(keyline_chip_w(s, measure))).collect();
+    let chip_w = HStack::new(&widths, theme::space::XS, StackAlign::Leading(0.0)).width();
+    let budget = (r.w - chip_w - if labels.is_empty() { 0.0 } else { theme::space::SM }).max(0.0);
+    let cy = r.y + r.h * 0.5;
+    let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 0, cy);
+    let run = DottedRun::new(theme::size::BODY, theme::TEXT_SECONDARY, theme::space::SM).measured(measure);
+    let natural = run.width(measure, parts);
+    let text_w = if natural > budget {
+        let joined = parts.iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
+        crate::text_view::TextView::new(&joined, theme::size::BODY, theme::TEXT_SECONDARY)
+            .with_measure(measure).max_lines(1).draw(p, Rect::new(r.x, y, budget, 0.0));
+        budget
+    } else { run.draw(p, parts, r.x, y) };
+    let mut flow = Flow::new(r.x, theme::space::XS);
+    flow.push(if text_w > 0.0 { Item::new(text_w).after(theme::space::SM) } else { Item::absent() });
+    for label in labels {
+        flow.place(|x| Item::new(keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)));
+    }
+    flow.end() - r.x
+}
+
+/// The year/episode date and length/remaining-time band, with source attribution last.
+/// Resuming time is primary ink; the surrounding facts remain secondary. Every run is bounded.
+pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) {
+    use crate::hstack::{Flow, Item};
+    let cy = r.y + r.h * 0.5;
+    let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 0, cy);
+    let mut flow = Flow::new(r.x, 0.0);
+    let mut any = false;
+    for (text, ink) in [(date, theme::TEXT_SECONDARY), (length, if resumes { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY }), (source, theme::TEXT_SECONDARY)] {
+        if text.is_empty() { continue; }
+        let prefix = if any { measure.width(c"\u{b7}", theme::size::CAPTION, false) + 2.0 * theme::space::SM } else { 0.0 };
+        let budget = (r.x + r.w - flow.next_x() - prefix).max(0.0);
+        if budget <= 0.0 { break; }
+        let text = plx_gfx::text::elide_by(text, budget, false, |s| measure.width_str(s, theme::size::CAPTION, false));
+        let run = DottedRun::new(theme::size::CAPTION, ink, theme::space::SM).measured(measure);
+        let run = if any { run.lead_dot() } else { run };
+        flow.place(|x| Item::new(run.draw(p, &[text.as_str()], x, y)));
+        any = true;
+    }
+}
+
 // ---- Key cap + key hint: a REMOTE BUTTON named in running prose --------------------------------
 //
 // "Press [BACK] to return" — the line every read-only alert panel closes with (`Alert Views.dc.html`
@@ -2377,24 +2424,15 @@ pub fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
 /// (`MARGIN_X` + its `HERO_TEXT_W`) and its facts line to ~1270. A tighter falloff strands exactly
 /// the ends of the lines a long title or blurb produces. The last fifth of the frame is left
 /// completely alone: that is the side of the picture the composition is usually about.
-const HERO_SCRIM_W: f32 = 0.80 * crate::consts::SCR_W; // 1536
+const HERO_SCRIM_W: f32 = crate::consts::SCR_W; // covers the shared 943 px title column
 
 /// Where the wedge starts feathering in. Clears the tab track's own band ([`TOP_BAR_Y`] 62 +
 /// [`TAB_PILL_H`] 60 + [`TAB_TRACK_PAD`] 8 = 130) by 32px: the top chrome owns its legibility with
 /// its own dark capsule (`draw_tab_row`) and must not get a second treatment stacked under it.
 const HERO_SCRIM_TOP: f32 = 0.15 * crate::consts::SCR_H; // 162
-/// Where the wedge reaches full strength — and the seam between its two quads, named once so the
-/// pair is watertight by construction. It sits above every hero TEXT anchor, which is what lets
-/// [`hero_scrim_a`] be a function of x alone: both heroes baseline their title on the bottom of a
-/// `hero_logo::band_h` band (home's stack bottoms out at y≈528, detail's on `TITLE_BOTTOM` 566), so
-/// the highest cap top on either screen is ~479, and every line below it is lower still.
-///
-/// What DOES cross this line is a clearLogo, which is art: the band is a layout floor and a squarer
-/// mark spills upward out of it as paint, to y=298 on detail and y=260 on home. Up there the wedge
-/// is still feathering in (~0.27 of its peak at y=260) rather than absent, which is the reason nit
-/// 2's taller logos were sequenced AFTER this component; the clearance that binds them is the top
-/// chrome's ([`TOP_BAR_BOTTOM`]), asserted in `home.rs`, not this knee.
-const HERO_SCRIM_KNEE: f32 = 0.39 * crate::consts::SCR_H; // 421.2
+/// Full strength begins above the highest two-line fallback in Home's three-line synopsis case.
+/// A clearLogo can paint higher as art; the feather stays clear of the top navigation.
+const HERO_SCRIM_KNEE: f32 = 0.32 * crate::consts::SCR_H;
 
 /// The mirrored RIGHT wedge — for a hero with a right-aligned column, which today means detail's
 /// "Starring" block at x 1270..1830, the one piece of hero copy the left wedge by definition cannot
@@ -2403,7 +2441,7 @@ const HERO_SCRIM_KNEE: f32 = 0.39 * crate::consts::SCR_H; // 421.2
 /// risk (`GL_DITHER` is deliberately off) — ~1 8-bit code per 4–5px near its origin. If it bands,
 /// make these SMALLER (steeper = fewer codes per pixel); never re-enable dithering.
 const HERO_SCRIM_R_W: f32 = 700.0;
-const HERO_SCRIM_R_TOP: f32 = 0.65 * crate::consts::SCR_H; // 702
+const HERO_SCRIM_R_TOP: f32 = 0.28 * crate::consts::SCR_H; // four-line credits above actions
 const HERO_SCRIM_R_A: f32 = theme::hero::SCRIM_RIGHT_A;
 
 /// Where the frame-wide ATMOSPHERIC ramp starts — the treatment's other half, which both heroes
@@ -3392,6 +3430,9 @@ impl PageDots {
         self.x = x;
         self.y = y;
         self
+    }
+    pub fn centered_y(self, x: f32, cy: f32) -> Self {
+        self.at(x, cy - Self::DOT * 0.5)
     }
     /// Place the row so it is CENTRED on `cx` — the billboard pager idiom, where the dots belong to
     /// the screen rather than to the control they sit under. Resolves to a left origin through
@@ -9034,7 +9075,7 @@ fn rating_walk<'a>(
     use crate::hstack::{Flow, Item};
     let mut flow = Flow::new(x, 0.0);
     let item = |w: f32, after: f32| Item::new(w).after(after);
-    if let Some(span) = flow.push(item(measure.width_str(caption, theme::size::MICRO, true), RATING_CAPTION_GAP)) {
+    if let Some(span) = flow.push(item(measure.width_str(caption, theme::size::MICRO, false), RATING_CAPTION_GAP)) {
         each(RatingPart::Caption, span);
     }
     for (i, cell) in cells.iter().enumerate() {
@@ -9044,10 +9085,10 @@ fn rating_walk<'a>(
                 each(RatingPart::Mark(cell.mark), span);
             }
         }
-        if let Some(span) = flow.push(item(measure.width_str(cell.value, theme::size::LABEL, true), 0.0)) {
+        if let Some(span) = flow.push(item(measure.width_str(cell.value, theme::size::LABEL, false), 0.0)) {
             each(RatingPart::Value(cell.value), span);
         }
-        if let Some(span) = flow.push(item(measure.width_str(cell.suffix, theme::size::MICRO, true), next)) {
+        if let Some(span) = flow.push(item(measure.width_str(cell.suffix, theme::size::MICRO, false), next)) {
             each(RatingPart::Suffix(cell.suffix), span);
         }
     }
@@ -9084,10 +9125,10 @@ pub fn rating_group(
     // the number's baseline or it floats. `text::baseline_y` is that rule, shared.
     let base = plx_gfx::text::baseline_y(
         theme::size::MICRO,
-        1,
+        0,
         theme::size::LABEL,
-        1,
-        plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy),
+        0,
+        plx_gfx::text::text_vcenter_y(theme::size::LABEL, 0, cy),
     );
     let text = |s: &str, x: f32, y: f32, sz, ink, bold| {
         if let Ok(c) = std::ffi::CString::new(s) {
@@ -9098,7 +9139,7 @@ pub fn rating_group(
     // returns is the drawn width, not a second measurement (the host test compares it with
     // rating_group_w).
     rating_walk(x, caption, cells, measure, |part, span| match part {
-        RatingPart::Caption => text(caption, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 1),
+        RatingPart::Caption => text(caption, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0),
         RatingPart::Mark(layers) => {
             // every layer rides the SAME rect, so all of them rasterize at one size from one
             // viewBox and register exactly — see `ui/icons.rs`'s note on the layered marks
@@ -9108,10 +9149,10 @@ pub fn rating_group(
             }
         }
         RatingPart::Value(v) => {
-            let ty = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy);
-            text(v, span.x, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 1);
+            let ty = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 0, cy);
+            text(v, span.x, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 0);
         }
-        RatingPart::Suffix(s) => text(s, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 1),
+        RatingPart::Suffix(s) => text(s, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0),
     })
 }
 

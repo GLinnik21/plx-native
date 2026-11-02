@@ -113,12 +113,8 @@ pub fn inside_safe(r: crate::Rect) -> bool {
 }
 
 // hero <-> grid continuum
-/// Shelf top in hero view. Re-derived once the peek row stopped magnifying its focused cell: the
-/// peek used to be judged off that popped tile, whose 1.09 scale about its centre lifted its top
-/// edge `CARD_H * 0.09 / 2 ≈ 17px` above every other card in the row. Un-popping the row dropped
-/// the whole shelf by that much, so the peek is 17px shallower here to keep the composition the
-/// hero view was tuned to (828 → 811; card top = `PEEK_Y + CARD_DY` = 837, as the popped one was).
-pub const PEEK_Y: f32 = 811.0;
+/// Shelf origin in hero view: the card's 26 px inset places its top at the proposal's 817 px.
+pub const PEEK_Y: f32 = 791.0;
 // shelf top in grid view, and the rest of the FOCUSED shelf on every scroll (`ui_cards::grid_rest_scroll`
 // pins it here whatever the Under posters band): leaves the hub title (row_y − TITLE_DY, lifted up to
 // ~17 more when its leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 126).

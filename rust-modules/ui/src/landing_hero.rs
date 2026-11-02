@@ -6,7 +6,7 @@ use super::vstack::{Anchor, VSpan, VStack};
 use super::{consts::SCR_H, theme, widgets::HERO_BASE_SCRIM_Y0};
 
 pub const TEXT_BOTTOM: f32 = 692.0;
-pub const COL_W: f32 = 660.0;
+pub const COL_W: f32 = theme::hero::TEXT_W;
 pub const KNEE_Y: f32 = theme::hero::SCRIM_MID_Y;
 pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A;
 /// How much a bound preview multiplies the hero scrim curve. The shape stays the wedge, the
@@ -17,30 +17,49 @@ pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A
 /// and `screens::detail`'s `preview_plane_tests` pin them equal.
 pub const PREVIEW_FIELD: f32 = 1.35;
 
-/// Where a landing hero's text stands: title, meta line and (when there is one) synopsis, stacked UP
-/// from [`TEXT_BOTTOM`]. The screen draws from these spans and nothing re-sums the ladder.
+/// The shared ladder. Home pins its actions; Detail pins the foot of its title.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HeroAnchor {
+    Actions(f32),
+    TitleBottom(f32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeroStack {
     pub title: VSpan,
     pub meta: VSpan,
-    /// `None` when the hero has no synopsis (it then takes no room and no gap).
+    pub ratings: Option<VSpan>,
     pub synopsis: Option<VSpan>,
+    pub facts: VSpan,
+    pub actions: VSpan,
 }
 
-/// The hero text ladder: title, [`theme::space::MD`], meta, [`theme::space::SM`], synopsis, its
-/// bottom edge on [`TEXT_BOTTOM`]. `synopsis_h` is the synopsis TEXT's height, `None` for no synopsis.
-pub fn hero_stack(title_h: f32, meta_h: f32, synopsis_h: Option<f32>) -> HeroStack {
+/// One measured ladder for both screens. Identity and ratings form a tight group; prose and
+/// facts get block air, and facts stand close to their action. Absent rows leave no phantom gap.
+pub fn hero_rows(title_h: f32, meta_h: f32, ratings_h: Option<f32>, synopsis_h: Option<f32>, anchor: HeroAnchor) -> HeroStack {
     let items = [
         Item::new(title_h),
-        Item::new(meta_h),
-        synopsis_h.map_or(Item::absent(), |h| Item::new(h).before(theme::space::SM)),
+        Item::new(meta_h).before(theme::space::SM),
+        ratings_h.map_or(Item::absent(), |h| Item::new(h).before(theme::space::XS)),
+        synopsis_h.map_or(Item::absent(), |h| Item::new(h).before(theme::space::MD)),
+        Item::new(theme::hero::FACTS_H).before(theme::space::LG),
+        Item::new(0.0).before(theme::space::MD),
     ];
-    let stack = VStack::new(&items, theme::space::MD, Anchor::Bottom(TEXT_BOTTOM));
-    let mut spans = stack.placed();
-    let (Some(title), Some(meta)) = (spans.next(), spans.next()) else {
-        unreachable!("the title and the meta line are always present")
+    let anchor = match anchor {
+        HeroAnchor::Actions(y) => Anchor::Bottom(y),
+        HeroAnchor::TitleBottom(y) => Anchor::Top(y - title_h),
     };
-    HeroStack { title, meta, synopsis: spans.next() }
+    let stack = VStack::new(&items, 0.0, anchor);
+    let span = |i| stack.span(i).map(|(y, h)| VSpan { i, y, h, box_y: y });
+    HeroStack {
+        title: span(0).unwrap(), meta: span(1).unwrap(), ratings: span(2),
+        synopsis: span(3), facts: span(4).unwrap(), actions: span(5).unwrap(),
+    }
+}
+
+/// Home's shared ladder grows up from the same action anchor, independently of its synopsis.
+pub fn hero_stack(title_h: f32, meta_h: f32, synopsis_h: Option<f32>) -> HeroStack {
+    hero_rows(title_h, meta_h, None, synopsis_h, HeroAnchor::Actions(TEXT_BOTTOM + theme::space::MD))
 }
 
 pub fn base_scrim_bottom_a(hero_a: f32) -> f32 { theme::hero::SCRIM_FOOT_A * hero_a.clamp(0.0, 1.0) }
@@ -62,18 +81,27 @@ pub fn base_scrim_a(y: f32, hero_a: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// The hero text stands MD under the title, SM under the meta, and its last line on
-    /// `TEXT_BOTTOM`; without a synopsis the meta line takes that place and no gap is left behind.
     #[test]
     fn the_hero_text_is_one_ladder_with_an_absent_synopsis() {
-        let with = hero_stack(100.0, 24.0, Some(66.0));
-        assert!((with.meta.y - (with.title.y + 100.0 + theme::space::MD)).abs() < 0.01);
-        let syn = with.synopsis.expect("present");
-        assert!((syn.y - (with.meta.y + 24.0 + theme::space::SM)).abs() < 0.01);
-        assert!((syn.y + syn.h - TEXT_BOTTOM).abs() < 0.01);
-        let bare = hero_stack(100.0, 24.0, None);
+        let with = hero_stack(120.0, 34.0, Some(72.0));
+        assert_eq!(with.actions.y, 716.0);
+        assert_eq!(with.meta.y, 498.0);
+        assert_eq!(with.synopsis.unwrap().y, 556.0);
+        assert_eq!(with.facts.y, 668.0);
+        let bare = hero_stack(120.0, 34.0, None);
         assert!(bare.synopsis.is_none());
-        assert!((bare.meta.y + bare.meta.h - TEXT_BOTTOM).abs() < 0.01);
+        assert_eq!(bare.facts.y, with.facts.y);
+        assert_eq!(bare.facts.y - (bare.meta.y + bare.meta.h), theme::space::LG);
+    }
+
+    #[test]
+    fn home_and_detail_share_rows_and_differ_only_in_the_anchor() {
+        let home = hero_rows(120.0, 34.0, Some(30.0), Some(72.0), HeroAnchor::Actions(716.0));
+        let detail = hero_rows(120.0, 34.0, Some(30.0), Some(72.0), HeroAnchor::TitleBottom(566.0));
+        let shift = detail.title.y - home.title.y;
+        for (a,b) in [(home.meta,detail.meta),(home.ratings.unwrap(),detail.ratings.unwrap()),(home.synopsis.unwrap(),detail.synopsis.unwrap()),(home.facts,detail.facts),(home.actions,detail.actions)] {
+            assert_eq!(b.y-a.y,shift);
+        }
     }
 }
 
@@ -90,4 +118,10 @@ fn proposal_atmosphere_has_identical_stops_on_both_heroes() {
     }
     assert_eq!(base_scrim_a(0.0, 1.0), 0.0);
     assert_eq!(base_scrim_a(SCR_H + 100.0, 1.0), theme::hero::SCRIM_FOOT_A);
+}
+
+#[cfg(test)]
+#[test]
+fn pdf_proposal_home_and_detail_use_the_same_column() {
+    assert_eq!(COL_W, crate::detail_layout::HERO_TEXT_W);
 }

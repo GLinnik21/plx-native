@@ -48,6 +48,7 @@ pub const ELEM_TRAILER: u32 = 5;
 pub const ELEM_WATCHLIST: u32 = 6;
 /// The Play Version disc.
 pub const ELEM_VERSION: u32 = 7;
+pub const ELEM_MORE: u32 = 8;
 
 /// The hero's one focus group. Local to this screen — nothing outside `screens::detail` ever names
 /// it — so, like `screens::profiles`'s `ROSTER_GROUP`/`FOOTER_GROUP`, any small integer would do;
@@ -77,8 +78,8 @@ pub fn alt_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_als
 
 fn mark_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_watched_c() }
 fn mark_unwatched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_unwatched_c() }
-fn mark_show_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_show_watched_c() }
-fn mark_show_unwatched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_show_unwatched_c() }
+fn mark_episode_watched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_episode_watched_c() }
+fn mark_episode_unwatched_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_mark_episode_unwatched_c() }
 fn play_from_start_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_play_start_c() }
 fn trailer_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_trailer_c() }
 fn play_version_label() -> &'static CStr { plx_platform::i18n::msg::browse_detail_play_version_c() }
@@ -111,6 +112,8 @@ pub enum HeroCtl {
     /// the Play Version disc, present only while the loaded movie or episode has two or more
     /// versions; it opens the list of them (`screens::versions_panel`)
     Version,
+    /// The remaining item actions, through the shared item menu.
+    More,
 }
 
 impl HeroCtl {
@@ -125,9 +128,10 @@ impl HeroCtl {
             HeroCtl::MarkUnwatched => ELEM_MARK_UNWATCHED,
             HeroCtl::Watchlist => ELEM_WATCHLIST,
             HeroCtl::Version => ELEM_VERSION,
+            HeroCtl::More => ELEM_MORE,
         }
     }
-    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the eight identities
+    /// The inverse of [`elem`](Self::elem) — `None` for any `u32` outside the nine identities
     /// above, which is every elem a NON-hero group can mint (the completed sections use
     /// their own disjoint range, per the module doc).
     pub fn of_elem(e: u32) -> Option<Self> {
@@ -140,6 +144,7 @@ impl HeroCtl {
             ELEM_MARK_UNWATCHED => Some(HeroCtl::MarkUnwatched),
             ELEM_WATCHLIST => Some(HeroCtl::Watchlist),
             ELEM_VERSION => Some(HeroCtl::Version),
+            ELEM_MORE => Some(HeroCtl::More),
             _ => None,
         }
     }
@@ -162,12 +167,13 @@ pub struct HeroSet {
     pub trailer: bool,
     pub alt: bool,
     pub mark: PosterMark,
+    pub more: bool,
 }
 
 /// The row's controls, in drawn order, for a given set. A fixed [`MAX_CTLS`]-slot array plus a
 /// live count, so no per-frame allocation. The bookmark disc (only when `set.watchlist`) is SECOND, after Play/Resume;
 /// whether it wears the outline or the filled face is membership ([`face`]), not presence. The Play
-/// Version disc is LAST, after the watched toggle.
+/// Version disc follows the watched toggle; More follows it for an on-deck hero.
 pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     let mut v = [HeroCtl::Play; MAX_CTLS];
     let mut n = 1;
@@ -197,6 +203,7 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
         v[n] = HeroCtl::Version;
         n += 1;
     }
+    if set.more { v[n] = HeroCtl::More; n += 1; }
     (v, n)
 }
 
@@ -318,27 +325,27 @@ pub fn hero_watch_state(
 
 /// [`hero_watch_state`] for `d`. Ported verbatim from `ui/detail.rs::hero_mark`.
 pub fn hero_mark(d: &Detail) -> PosterMark {
-    hero_watch_state(d.is_show, show_started(d), d.watched, hero_resume_ns(d))
+    if let Some(ep) = hero_episode(d) {
+        hero_watch_state(false, false, ep.watched, plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
+    } else { hero_watch_state(d.is_show, show_started(d), d.watched, hero_resume_ns(d)) }
 }
 
-/// Does the toggle's subject differ from the one the rest of the hero is about — true exactly
-/// while the hero is showing an on-deck EPISODE. Ported verbatim from
-/// `ui/detail.rs::watch_names_show`.
-pub fn watch_names_show(d: &Detail) -> bool {
-    hero_episode(d).is_some()
+/// Name the episode explicitly when the hero presents a leaf, including a show's on-deck item.
+pub fn watch_names_episode(d: &Detail) -> bool {
+    d.kind == "episode" || hero_episode(d).is_some()
 }
 
 /// A disc's slot (`[restart, trailer, watch, version]`) and the verb it unfurls to — `None` for the two PILLS
 /// and for the bookmark disc, which has no verb to unfurl and wears no name: it is its glyph and its
 /// focus fill.
-pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)> {
-    match (ctl, name_show) {
+pub fn disc_verb(ctl: HeroCtl, name_episode: bool) -> Option<(usize, &'static CStr)> {
+    match (ctl, name_episode) {
         (HeroCtl::Restart, _) => Some((0, play_from_start_label())),
         (HeroCtl::Trailer, _) => Some((1, trailer_label())),
         (HeroCtl::MarkWatched, false) => Some((2, mark_watched_label())),
-        (HeroCtl::MarkWatched, true) => Some((2, mark_show_watched_label())),
+        (HeroCtl::MarkWatched, true) => Some((2, mark_episode_watched_label())),
         (HeroCtl::MarkUnwatched, false) => Some((2, mark_unwatched_label())),
-        (HeroCtl::MarkUnwatched, true) => Some((2, mark_show_unwatched_label())),
+        (HeroCtl::MarkUnwatched, true) => Some((2, mark_episode_unwatched_label())),
         (HeroCtl::Version, _) => Some((3, play_version_label())),
         _ => None,
     }
@@ -403,7 +410,7 @@ pub fn hero_btn_rect_at(set: HeroSet, i: usize, y: f32, cw: HeroWidths) -> Rect 
             HeroCtl::Alt => cw.alt,
             HeroCtl::Restart => cw.disc[0],
             // no verb to unfurl: a circle at every instant
-            HeroCtl::Watchlist => CD,
+            HeroCtl::Watchlist | HeroCtl::More => CD,
             HeroCtl::Trailer => cw.disc[1],
             HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
             HeroCtl::Version => cw.disc[3],
@@ -424,12 +431,12 @@ pub fn disc_caps(
     measure: &dyn Measure,
     set: HeroSet,
     unfurl: [f32; DISCS],
-    named_show: bool,
+    named_episode: bool,
 ) -> [f32; DISCS] {
     let (v, n) = hero_ctls(set);
     let mut label_w = [0.0f32; DISCS];
     for &c in &v[..n] {
-        if let Some((slot, label)) = disc_verb(c, named_show) {
+        if let Some((slot, label)) = disc_verb(c, named_episode) {
             label_w[slot] = measure.width(label, theme::size::BODY, true);
         }
     }
@@ -464,12 +471,12 @@ pub fn hero_widths(
     set: HeroSet,
     has_restart: bool,
     unfurl: [f32; DISCS],
-    named_show: bool,
+    named_episode: bool,
 ) -> HeroWidths {
     HeroWidths {
         pill: hero_pill_w(measure, has_restart),
         alt: alt_pill_w(measure),
-        disc: disc_caps(measure, set, unfurl, named_show),
+        disc: disc_caps(measure, set, unfurl, named_episode),
     }
 }
 
@@ -501,8 +508,7 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
         .map(|credit| credit.tag.as_str())
         .collect();
     let credit = hero_credit(d);
-    // The credit line stands above the cast line, flush against it, the pair's bottom on the button
-    // row's: one bottom-anchored stack, an absent line taking no room.
+    // Credits stack upward from the facts bottom, above the action row. An absent line takes no room.
     let cast_text = people_text(&cast_names);
     let credit_text = credit.as_ref().map(|(_, names)| people_text(names));
     let cast = (!cast_names.is_empty()).then(|| {
@@ -514,7 +520,7 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
         cast.as_ref().map(|v| v.measure_h(PEOPLE_W)),
     ];
     let items = heights.map(|h| h.map_or(Item::absent(), Item::new));
-    let stack = VStack::new(&items, 0.0, Anchor::Bottom(button_y + CD));
+    let stack = VStack::new(&items, 0.0, Anchor::Bottom(button_y - theme::space::MD));
     for span in stack.placed() {
         let view = if span.i == 0 { credit_view.as_ref() } else { cast.as_ref() };
         if let Some(view) = view {
@@ -589,6 +595,7 @@ const FACTS_BITS: usize = 8;
 
 fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     match plx_media::route::playback_preview(d) {
+        Some(plx_media::route::Preview::DirectPlay | plx_media::route::Preview::Remux) => ([Bit::Air(0.0); FACTS_BITS], 0),
         Some(preview) => play_mode_bits_for(preview, d.hdr, item_subscription(d), after),
         None => ([Bit::Air(0.0); FACTS_BITS], 0),
     }
@@ -791,6 +798,12 @@ pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::mac
     let (date, extent) = hero_facts(d);
     let extent = extent.as_deref().unwrap_or("");
     let credit = plx_ui::fmt::shared_by(&d.source()).unwrap_or_default();
+    if play_mode_w(d, false, measure) == 0.0 {
+        plx_ui::widgets::hero_facts(p, Rect::new(plx_ui::consts::MARGIN_X, y,
+            FACTS_R - plx_ui::consts::MARGIN_X, theme::hero::FACTS_H),
+            &date, extent, hero_resume_ns(d) > 0, &credit, measure);
+        return;
+    }
     let width = |fit: FactsFit| {
         facts_flow(
             &[date.as_str(), if fit.extent { extent } else { "" }],
@@ -860,6 +873,7 @@ mod tests {
 
     fn set_full(restart: bool, alt: bool, mark: PosterMark, trailer: bool) -> HeroSet {
         HeroSet {
+            more: false,
             watchlist: true,
             version: false,
             restart,
@@ -951,7 +965,7 @@ mod tests {
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkWatched, true),
-            Some((2, mark_show_watched_label()))
+            Some((2, mark_episode_watched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkUnwatched, false),
@@ -959,7 +973,7 @@ mod tests {
         );
         assert_eq!(
             disc_verb(HeroCtl::MarkUnwatched, true),
-            Some((2, mark_show_unwatched_label()))
+            Some((2, mark_episode_unwatched_label()))
         );
         assert_eq!(
             disc_verb(HeroCtl::Trailer, false),
@@ -1092,7 +1106,7 @@ mod tests {
                                     HeroCtl::Alt => cw.alt,
                                     HeroCtl::Restart => cw.disc[0],
                                     HeroCtl::Trailer => cw.disc[1],
-                                    HeroCtl::Watchlist => CD,
+                                    HeroCtl::Watchlist | HeroCtl::More => CD,
                                     HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
                                     HeroCtl::Version => cw.disc[3],
                                 };
@@ -1317,7 +1331,7 @@ mod tests {
 
     #[test]
     fn the_trailing_credit_is_the_first_member_the_row_gives_up() {
-        let width = |fit: FactsFit| {
+    let width = |fit: FactsFit| {
             100.0 + if fit.extent { 100.0 } else { 0.0 } + if fit.credit { 150.0 } else { 0.0 }
         };
         assert_eq!(
@@ -1371,7 +1385,7 @@ mod tests {
 
     #[test]
     fn restart_and_the_watch_tail_are_independent() {
-        let set = HeroSet {
+        let set = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: true,
@@ -1388,7 +1402,7 @@ mod tests {
 
     #[test]
     fn the_actions_row_grows_an_also_available_control_only_for_a_second_source() {
-        let without = HeroSet {
+        let without = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: false,
@@ -1410,7 +1424,7 @@ mod tests {
     fn the_hero_row_carries_no_track_information_disc() {
         for alt in [false, true] {
             for trailer in [false, true] {
-                let set = HeroSet {
+                let set = HeroSet { more: false,
                     watchlist: true,
                     version: false,
                     restart: true,
@@ -1539,7 +1553,7 @@ mod tests {
 
     #[test]
     fn hero_indices_mean_different_actions_in_the_two_control_sets() {
-        let compact = HeroSet {
+        let compact = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: false,
@@ -1547,7 +1561,7 @@ mod tests {
             alt: false,
             mark: PosterMark::None,
         };
-        let wide = HeroSet {
+        let wide = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: true,
@@ -1564,7 +1578,7 @@ mod tests {
 
     #[test]
     fn the_actions_row_accumulates_around_a_variable_width_control() {
-        let set = HeroSet {
+        let set = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: true,
@@ -1644,7 +1658,7 @@ mod tests {
     fn four_discs_never_cross_the_people_column_in_any_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
-        let wide = HeroSet {
+        let wide = HeroSet { more: true,
             watchlist: true,
             version: true,
             restart: true,
@@ -1654,11 +1668,11 @@ mod tests {
         };
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
-            for named_show in [false, true] {
+            for named_episode in [false, true] {
                 for focus in 0..DISCS {
                     let mut unfurl = [0.0; DISCS];
                     unfurl[focus] = 1.0;
-                    let caps = disc_caps(&measure, wide, unfurl, named_show);
+                    let caps = disc_caps(&measure, wide, unfurl, named_episode);
                     let (_, n) = hero_ctls(wide);
                     let last = hero_btn_rect_at(
                         wide,
@@ -1675,7 +1689,7 @@ mod tests {
     #[test]
     fn the_real_verbs_all_fit_the_widest_row() {
         let measure = plx_ui::fixture::FixtureMeasure;
-        let wide = HeroSet {
+        let wide = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: true,
@@ -1700,7 +1714,7 @@ mod tests {
             "the 5-control row collapses rather than crossing People"
         );
 
-        let roomy = HeroSet {
+        let roomy = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: false,
@@ -1728,7 +1742,7 @@ mod tests {
 
     #[test]
     fn a_verb_that_does_not_fit_is_dropped_whole() {
-        let set = HeroSet {
+        let set = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: true,
@@ -1763,13 +1777,13 @@ mod tests {
                 .1
                 .to_str()
                 .unwrap(),
-            "Mark Show as Unwatched"
+            "Mark episode as unwatched"
         );
     }
 
     #[test]
     fn the_widest_action_row_clears_the_people_column() {
-        let set = HeroSet {
+        let set = HeroSet { more: false,
             watchlist: true,
             version: false,
             restart: true,

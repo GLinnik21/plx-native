@@ -328,6 +328,9 @@ pub struct Metadata {
     pub guid: String,
     #[serde(default)]
     pub title: String,
+    /// PMS's edition label, kept separate from the title (e.g. Director's Cut).
+    #[serde(rename = "editionTitle", default, deserialize_with = "de_str")]
+    pub edition_title: String,
     /// The LIBRARY this row lives in, on the server that answered ("Movies", "Film Club"). Sent on
     /// a cross-library query such as `/library/all?guid=…`, which is the one place the app asks a
     /// server something without already knowing which of its libraries will answer.

@@ -126,3 +126,11 @@ fn proposal_play_capsule_keeps_its_minimum_and_grows_for_translations() {
     }
     assert!(play_width(&Wide, play_label(false)) > PW);
 }
+
+#[test]
+fn pdf_proposal_movie_facts_use_year_and_remaining_time() {
+    let d = Detail { year: 2024, aired: "2024-03-09".into(), dur_ms: 112 * 60_000, resume_ms: 74 * 60_000, ..Default::default() };
+    assert_eq!(meta_facts(&d, None), ("2024".into(), Some(plx_platform::i18n::msg::browse_detail_minutes_left(38))));
+    let fresh = Detail { resume_ms: 0, ..d };
+    assert_eq!(meta_facts(&fresh, None), ("2024".into(), Some(plx_ui::fmt::duration(112 * 60_000))));
+}

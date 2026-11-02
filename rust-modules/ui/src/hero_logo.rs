@@ -16,7 +16,7 @@
 //! out of the band as pure paint. That is what keeps a bottom-anchored hero column from lurching the
 //! moment a texture lands, and what keeps two items with different logo aspects level through a hero
 //! flip. It also means a hero logo now paints ABOVE the hero scrim's knee
-//! (`widgets::HERO_SCRIM_KNEE`) — up to y≈260 on home — where the wedge is still feathering in; the
+//! (`widgets::HERO_SCRIM_KNEE`) — up to y≈178 on home — where the wedge is still feathering in; the
 //! clearance that matters there is the top chrome's (`widgets::TOP_BAR_BOTTOM`), asserted in
 //! `home.rs`'s `the_home_hero_logo_never_reaches_the_top_bar`.
 //!
@@ -27,7 +27,8 @@
 //! is only made while that accounting can be seen (`placeholder::accounting_visible`) — but no
 //! cross-fade has been built on it. The swap is a cut, but nothing around it MOVES, which is the
 //! part that used to read as a glitch.
-use crate::label::{HAlign, Label, VAlign};
+use crate::label::HAlign;
+use crate::text_view::TextView;
 use plx_machine::machine::Measure;
 use crate::{theme, Painter, Rect};
 use std::os::raw::c_int;
@@ -64,7 +65,7 @@ impl LogoRung {
                 theme::logo::HERO_AREA,
                 theme::logo::HERO_H_MIN,
                 theme::logo::HERO_H_MAX,
-                theme::size::HERO,
+                theme::size::DISPLAY,
             ),
             LogoRung::Compact => (
                 theme::logo::COMPACT_AREA,
@@ -184,9 +185,11 @@ impl<'a> HeroLogo<'a> {
         // its replay need the same measurement census even when the logo happened to be resident
         // in only one run; texture residency is paint state, not logical replay state.
         let (_, _, _, sz) = self.rung.bounds();
-        let line = plx_gfx::text::elide_by(self.title, band.w, false, |t| {
-            measure.width_str(t, sz, true)
-        });
+        let lines = if sz > theme::size::TITLE { theme::hero::TITLE_LINES } else { 1 };
+        let fallback = TextView::new(self.title, sz, theme::TEXT_PRIMARY)
+            .bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32).max_lines(lines).h(self.align).with_measure(measure);
+        let fallback_h = fallback.measure_h(band.w)
+            - (sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32) + measure.cap_h(sz);
         // The hero draws the item the shelf under it has focused, and that shelf is the server
         // being browsed — so its clearLogo is asked of the current server. An item that came from
         // somewhere else (a merged Continue Watching row) names its own, once items carry one.
@@ -197,10 +200,6 @@ impl<'a> HeroLogo<'a> {
             p.tex(tex, place(band, w, h, self.align), 0.0, theme::TEXT_PRIMARY);
             return;
         }
-        // `cs` must outlive the draw — `Label` holds a non-owning pointer (ui/CLAUDE.md's first gotcha)
-        let Ok(cs) = std::ffi::CString::new(line) else {
-            return;
-        };
         // An item with a ratingKey whose logo has not resolved draws its title as text, and that is
         // a WAIT only while the logo can still arrive: counted (and sentinel-inked) then. A logo the
         // store has settled as a miss (the 404 of an item with no clearLogo) will never come, so
@@ -220,11 +219,9 @@ impl<'a> HeroLogo<'a> {
         } else {
             crate::placeholder::ink(p, crate::placeholder::Reason::HeroLogoText, self.rk, theme::TEXT_PRIMARY)
         };
-        Label::new(cs.as_ptr(), sz, ink)
-            .bold()
-            .h(self.align)
-            .v(VAlign::Baseline)
-            .draw(p, band);
+        TextView::new(self.title, sz, ink).bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32)
+            .max_lines(lines).h(self.align).with_measure(measure)
+            .draw(p, Rect::new(band.x, band.y + band.h - fallback_h, band.w, fallback_h));
     }
 }
 
@@ -380,7 +377,7 @@ mod tests {
     /// hero: the band's BOTTOM is the anchor and a taller logo grows out of its top.
     #[test]
     fn a_taller_logo_spills_upward_only() {
-        let band = Rect::new(90.0, 408.0, 660.0, band_h(Hero)); // home's worst-case stack
+        let band = Rect::new(96.0, 326.0, theme::hero::TEXT_W, band_h(Hero)); // home's three-line synopsis
         let floor = place(band, 600.0, 120.0, HAlign::Left);
         let tall = place(band, 268.0, 268.0, HAlign::Left);
         assert_eq!(
@@ -394,7 +391,7 @@ mod tests {
             "the tall logo left the anchor line"
         );
         assert_eq!(
-            tall.y, 260.0,
+            tall.y, 178.0,
             "the overflow must go UP out of the band, not down"
         );
         assert_eq!(
@@ -551,6 +548,23 @@ mod tests {
             });
             assert_eq!(peeks.get(), 1, "armed, failed={failed}");
         }
+    }
+
+    #[test]
+    fn pdf_proposal_long_title_wraps_to_two_display_lines_within_the_column() {
+        install_store(true);
+        let title = "The Unbearably Long Name of the Last House at the Edge of the World";
+        let band = Rect::new(96.0, 446.0, theme::hero::TEXT_W, band_h(Hero));
+        let measure = crate::fixture::FixtureMeasure;
+        let runs = crate::draw_census::capture_runs(|| {
+            HeroLogo::new(0, "", title, Hero).draw(Painter::recording(), band, &measure);
+        });
+        assert_eq!(runs.len(), 2, "the complete fallback has two lines: {runs:?}");
+        for run in &runs {
+            assert_eq!(run.size, theme::size::DISPLAY);
+            assert!(run.at.x + run.at.w <= band.x + band.w + 0.01);
+        }
+        assert!(runs[1].at.y > runs[0].at.y);
     }
 
     /// The logo is on its way: the hero shows its title as text in the meantime, and that is a wait.

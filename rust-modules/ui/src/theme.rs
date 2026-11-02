@@ -200,12 +200,20 @@ pub mod layout {
 
 /// Full-bleed hero treatment shared by Home and Detail (1920×1080 proposal).
 pub mod hero {
+    /// Both full-bleed heroes use the same reading column in the proposal.
+    pub const TEXT_W: f32 = 943.0;
+    /// Long titles without a clearLogo wrap over at most two DISPLAY lines.
+    pub const TITLE_LINES: usize = 2;
+    pub const TITLE_LEAD: f32 = super::size::DISPLAY as f32 * 1.06;
+    /// Facts are a CAPTION line box, including its optical air.
+    pub const FACTS_H: f32 = super::size::CAPTION as f32;
+
     /// Minimum Play/Resume capsule; translated labels may grow beyond it.
     pub const PLAY_MIN_W: f32 = 224.0;
     /// Atmospheric midpoint, 62% of the distance from the 34% origin to the foot.
     pub const SCRIM_MID_Y: f32 = (0.34 + (1.0 - 0.34) * 0.62) * crate::consts::SCR_H;
     /// People-column corner weight: four wrapped credit lines retain the 2.5:1 pure-white
-    /// contrast floor under the lighter atmosphere, with the same feather geometry.
+    /// contrast floor under the lighter atmosphere; its feather starts higher for the raised credits.
     pub const SCRIM_RIGHT_A: f32 = 0.78;
     /// Opacity at the atmospheric midpoint. The corner wedges supply local contrast.
     pub const SCRIM_MID_A: f32 = 0.55;
@@ -687,11 +695,10 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 /// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
 /// ~0.29: it needs 0.655 total, so the wedge must carry ~0.51 there and rather more at the title.
 ///
-/// The proposal's lighter atmosphere needs .75 at the corner to keep the far-right end of a
-/// long Detail title above 2.5:1 on pure white artwork (the .72 wedge yielded 2.44:1). An alpha
-/// rather than a colour, like [`CARD_SHADOW_REST_A`]: the ink is [`SCRIM_INK`], only the weight is
-/// the decision. Retuning it must preserve the bright-art and pure-white anchor tests.
-pub const SCRIM_TEXT_A: f32 = 0.75;
+/// The wider, two-line fallback can end at x=1039 above the atmospheric ramp. Its corner
+/// treatment peaks at .84 across the full frame width to preserve the bright-art and pure-white
+/// contrast floors. The treatment's geometry and these floors are pinned together by the tests.
+pub const SCRIM_TEXT_A: f32 = 0.84;
 
 /// **White overlay at alpha `a`** — the ramp every overlay on this palette rides.
 ///

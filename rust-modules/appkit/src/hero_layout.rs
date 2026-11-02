@@ -22,8 +22,8 @@ use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
 
 /// How many controls the hero row can hold at most: Play + bookmark + Play Version + Restart +
-/// Trailer + Alt + one watch face. [`row_rect`] sizes its stack storage by it.
-pub const MAX_CTLS: usize = 7;
+/// Trailer + Alt + one watch face + More. [`row_rect`] sizes its stack storage by it.
+pub const MAX_CTLS: usize = 8;
 
 /// How many of the row's controls are discs that unfurl to a verb on focus: Restart, Trailer, the
 /// watch toggle and Play Version (the bookmark disc never unfurls).
@@ -155,36 +155,38 @@ pub fn disc_caps_with<const N: usize>(
     open
 }
 
-/// The hero's meta line, as `(date, runtime or extent)`. `episode` is the on-deck episode the hero
-/// is showing, if any: it then supplies the aired date and its own runtime; otherwise the item's
-/// own date, and a show's seasons/episodes extent or a title's runtime.
+/// The date and duration shared by Home and Detail. A valid resume point replaces total duration.
+pub fn time_facts(year: i64, aired: &str, episode: bool, dur_ms: i64, resume_ms: i64) -> (String, Option<String>) {
+    let date = if episode { plx_ui::fmt::pretty_date(aired, year) }
+        else if year > 0 { year.to_string() } else { String::new() };
+    let resumes = plx_data::metadata::resume_ns(resume_ms, dur_ms) > 0;
+    let length = (dur_ms >= 60_000).then(|| {
+        if resumes {
+            let left = dur_ms.saturating_sub(resume_ms);
+            if left < 3_600_000 { plx_platform::i18n::msg::browse_detail_minutes_left((left / 60_000).max(1)) }
+            else { plx_ui::fmt::time_left(left) }
+        } else { plx_ui::fmt::duration(dur_ms) }
+    });
+    (date, length)
+}
+
+pub fn listing_facts(item: &plx_data::pms::PmsMovie) -> (String, Option<String>) {
+    time_facts(i64::from(item.year), &item.aired, item.kind == 3, item.dur_ns / 1_000_000, item.resume_ms)
+}
+
+/// An on-deck episode supplies its own date and runtime; an unstarted show keeps its extent.
 pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<String>) {
     if let Some(ep) = episode {
-        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(ep.dur_ms));
-        return (plx_ui::fmt::pretty_date(&ep.aired, 0), runtime);
+        return time_facts(0, &ep.aired, true, ep.dur_ms, ep.resume_ms);
     }
-    let date = plx_ui::fmt::pretty_date(&d.aired, d.year);
-    if d.is_show {
-        let seasons = d.seasons.len();
-        if seasons == 0 {
-            return (date, None);
-        }
-        let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
-        let seasons = plx_platform::i18n::msg::browse_detail_seasons(seasons as i64);
-        let extent = if episodes > 0 {
-            plx_platform::i18n::msg::browse_detail_extent(
-                &plx_platform::i18n::msg::browse_detail_episodes(episodes),
-                &seasons,
-            )
-        } else {
-            seasons
-        };
-        return (date, Some(extent));
-    }
-    (
-        date,
-        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(d.dur_ms)),
-    )
+    let facts = time_facts(d.year, &d.aired, d.kind == "episode", d.dur_ms, d.resume_ms);
+    if !d.is_show || d.seasons.is_empty() { return facts; }
+    let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
+    let seasons = plx_platform::i18n::msg::browse_detail_seasons(d.seasons.len() as i64);
+    let extent = if episodes > 0 {
+        plx_platform::i18n::msg::browse_detail_extent(&plx_platform::i18n::msg::browse_detail_episodes(episodes), &seasons)
+    } else { seasons };
+    (facts.0, Some(extent))
 }
 
 #[cfg(test)]

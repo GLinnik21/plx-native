@@ -111,9 +111,9 @@ pub(super) fn contrast_over_art(ink: [f32; 4], art: f32, a: f32) -> f32 {
     (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
 }
 
-/// One HERO-72 bold cap band, the device font's — quoted, not measured, because the host suite
-/// opens no SDL_ttf (the same boundary that keeps `detail::hero_chain` pure).
-pub(super) const HERO_CAP_H: f32 = 52.0;
+/// Two DISPLAY-48 lines: the first cap top through the second line's baseline. The cap height
+/// is quoted from the device font; the shared leading remains the source for the inter-line step.
+pub(super) const HERO_CAP_H: f32 = 35.0 + theme::hero::TITLE_LEAD;
 
 /// The height of home's synopsis block at its cap — the SHARED hero blurb
 /// ([`crate::hero_synopsis`]), so this table follows the rung and the leading instead of
