@@ -1515,8 +1515,8 @@ const KEYLINE_PAD_X: f32 = 7.0;
 const KEYLINE_PAD_Y: f32 = 6.0;
 const KEYLINE_RAD: f32 = 5.0;
 const KEYLINE_W: f32 = 1.5;
-/// The chip's label weight — the mock's `font-weight:600`. See [`keyline_chip`] for why it is bold.
-const KEYLINE_BOLD: std::os::raw::c_int = 1;
+/// Fine-print keylines use regular CAPTION, matching the hero identity and episode date family.
+const KEYLINE_BOLD: std::os::raw::c_int = 0;
 
 /// The width [`keyline_chip`] will occupy for `text` — the measure-first companion.
 pub fn keyline_chip_w(text: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
@@ -1541,9 +1541,8 @@ pub fn keyline_chip_w(text: &str, measure: &dyn plx_machine::machine::Measure) -
 /// ink is what makes a 1.5px ring exist at all here, and it is what shipped before this was
 /// briefly "corrected" to the mock's literal value.
 ///
-/// The label is BOLD for the same reason the mock sets `font-weight:600` on it: two or three caps
-/// at `CAPTION` inside a ring have to hold their own against it, and regular weight is what made
-/// this chip read as an empty frame in the first device photograph of the identity line.
+/// Regular CAPTION keeps the outlined label at the identity line's weight. The ring retains
+/// opaque ink so its thin SDF edge survives television rasterization.
 pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], measure: &dyn plx_machine::machine::Measure) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
@@ -1601,11 +1600,11 @@ pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, 
     use crate::hstack::{Flow, Item};
     let cy = r.y + r.h * 0.5;
     let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 0, cy);
-    let mut flow = Flow::new(r.x, 0.0);
+    let mut flow = Flow::new(r.x, theme::space::SM);
     let mut any = false;
     for (text, ink) in [(date, theme::TEXT_SECONDARY), (length, if resumes { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY }), (source, theme::TEXT_SECONDARY)] {
         if text.is_empty() { continue; }
-        let prefix = if any { measure.width(c"\u{b7}", theme::size::CAPTION, false) + 2.0 * theme::space::SM } else { 0.0 };
+        let prefix = if any { measure.width(c"\u{b7}", theme::size::CAPTION, false) + theme::space::SM } else { 0.0 };
         let budget = (r.x + r.w - flow.next_x() - prefix).max(0.0);
         if budget <= 0.0 { break; }
         let text = plx_gfx::text::elide_by(text, budget, false, |s| measure.width_str(s, theme::size::CAPTION, false));
@@ -1614,6 +1613,24 @@ pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, 
         flow.place(|x| Item::new(run.draw(p, &[text.as_str()], x, y)));
         any = true;
     }
+}
+
+#[cfg(test)]
+#[test]
+fn pdf_proposal_facts_keep_air_on_both_sides_of_each_dot() {
+    let m = crate::fixture::FixtureMeasure;
+    let runs = crate::draw_census::capture_runs(|| hero_facts(Painter::recording(),
+        Rect::new(96.0, 668.0, theme::hero::TEXT_W, theme::hero::FACTS_H),
+        "2024", "38 min left", true, "Shared by friend", &m));
+    assert_eq!(runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+        ["2024", "·", "38 min left", "·", "Shared by friend"]);
+    use plx_machine::machine::Measure;
+    for pair in runs.windows(2) {
+        let right = pair[0].at.x + m.width_str(&pair[0].text, theme::size::CAPTION, false);
+        assert!((pair[1].at.x - right - theme::space::SM).abs() < 0.01);
+    }
+    assert_eq!(runs[2].ink, theme::TEXT_PRIMARY);
+    assert_eq!(runs[4].ink, theme::TEXT_SECONDARY);
 }
 
 // ---- Key cap + key hint: a REMOTE BUTTON named in running prose --------------------------------

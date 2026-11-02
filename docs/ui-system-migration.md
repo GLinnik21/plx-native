@@ -641,7 +641,7 @@ and ratings reserve their full 34 px and 30 px bands. Facts reserve a CAPTION li
 stack upward from the facts bottom, above the action row. Home's poster tops rest at y=817.
 
 `widgets::hero_identity` draws edition, kind, genres and rating with outlined resolution and
-accessibility chips. `widgets::hero_facts` draws the year (movies) or aired date (episodes), then
+accessibility chips in regular CAPTION. `widgets::hero_facts` draws the year (movies) or aired date (episodes), then
 runtime or remaining time; source attribution follows within the width bound. Direct Play and
 Direct Stream are implicit; conversion and subscription warnings remain visible. Provider scores
 and captions use regular weight. `HeroLogo` retains the shared constant-area logo rule and falls
