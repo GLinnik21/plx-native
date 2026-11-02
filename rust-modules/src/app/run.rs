@@ -645,6 +645,7 @@ fn hud_model(
     let playpos_ns = plx_media::player::playpos_ns();
     plx_appkit::player_hud::model::HudModel {
         paused: plx_media::player::TX.paused.load(Relaxed),
+        is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
         scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
         playpos_ns,
         seek_display_ns: plx_media::player::seek_display_ns(),

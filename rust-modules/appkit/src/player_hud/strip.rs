@@ -4,11 +4,16 @@
 //! paints it, so the pop, the cull, the minimal scroll and the focused name's marquee are the Shelf's and
 //! not the strip's own.
 //!
+//! **Text declarations.** Card text resolves its declared face and parent/item predicates. A focused
+//! single-line title uses the Shelf's shared marquee; other text uses the shared TextView at the
+//! compiled width, leading and line limit. The strip's label alignment is shared with the Shelf.
+//!
 //! **What the Shelf draws, and what the source adds.** The Shelf draws every card, the focused one popped
 //! and ringed ([`RowStyle::rim`]), and the focused card's NAME as its label block, hung where the strip's
-//! names stand ([`RowStyle::label_drop`]) from the card's leading edge ([`RowStyle::label_start`]), so a name
-//! wider than the card glides instead of eliding. [`Cards::overlay`] draws the rest on EVERY card: the time
-//! (all of them) and the name of an unfocused card (elided, still), in the strip's inks.
+//! names stand ([`RowStyle::label_drop`]) with its declared alignment ([`RowStyle::label_start`]), so a name
+//! wider than the card glides instead of eliding. The source composes this shared label at its declaration
+//! layer, after preceding grounds, and at the real data-stack position. The other template text and
+//! decorations follow the same section paint path on every card.
 //!
 //! **The seat and the scroll are the Shelf's.** The screen feeds the Shelf its events
 //! ([`super::motion::HudMotion::strip`]); a draw only paints. Which chapter is focused is the engine's
@@ -53,13 +58,14 @@ pub struct Geometry {
     pub radius: f32,
     pub name_drop: f32,
     pub time_drop: f32,
+    pub leading_labels: bool,
 }
 
 impl Geometry {
     /// The strip an op describes (see [`Geometry::new`]).
     pub fn of(op: &DrawOp) -> Option<Geometry> {
-        let DrawOp::Strip { rect, card, pitch, radius, template, .. } = op else { return None };
-        Some(Geometry::new(*rect, *card, *pitch, *radius, template))
+        let DrawOp::Strip { rect, card, pitch, radius, template, leading_labels, .. } = op else { return None };
+        Some(Geometry { leading_labels: *leading_labels, ..Geometry::new(*rect, *card, *pitch, *radius, template) })
     }
 
     /// The strip whose viewport is `rect`, with its first card `card`, `pitch` apart and rounded by `radius`; its
@@ -69,7 +75,7 @@ impl Geometry {
     /// op back through [`Geometry::of`].
     pub fn new(rect: Rect, card: Rect, pitch: f32, radius: f32, template: &[CardOp]) -> Geometry {
         let drop_of = |bind: &str| {
-            template.iter().find_map(|c| match &c.op {
+            template.iter().filter(|c| c.below).find_map(|c| match &c.op {
                 DrawOp::Text { bind: b, rect: r, .. } if b == bind => Some(r.y - (card.y + card.h)),
                 _ => None,
             })
@@ -81,6 +87,7 @@ impl Geometry {
             radius,
             name_drop: drop_of("item.title").unwrap_or(0.0),
             time_drop: drop_of("item.start").unwrap_or(0.0),
+            leading_labels: true,
         }
     }
 
@@ -97,7 +104,7 @@ impl Geometry {
     /// the strip has always had, the rim over the video plane, labels from the card's leading edge and the name hung where
     /// the op stands it.
     pub fn style(&self) -> RowStyle {
-        RowStyle {
+        let style = RowStyle {
             w: self.card.w,
             h: self.card.h,
             gap: self.pitch - self.card.w,
@@ -109,9 +116,9 @@ impl Geometry {
             ..RowStyle::HOME
         }
         .with_rim(Rim { width: CH_FOCUS_RING_W, ink: theme::CONTROL_RIM_FOCUS_UNKEYED })
-        .with_leading_labels()
         .with_label_drop(self.name_drop)
-        .with_growing_seat()
+        .with_growing_seat();
+        if self.leading_labels { style.with_leading_labels() } else { style }
     }
 }
 
@@ -154,11 +161,130 @@ pub struct Cards<'a, E> {
     sid: u16,
     geo: Geometry,
     elem: PhantomData<fn() -> E>,
+    template: Option<&'a [CardOp]>,
+    groups: &'a [crate::hud_format::compile::OpGroup],
+    context: Option<(&'a crate::hud_format::compile::Compiled, &'a super::render::Frame<'a>)>,
+    current: usize,
+    paused: bool,
+    episode: bool,
 }
 
 impl<'a, E> Cards<'a, E> {
     pub fn new(chapters: &'a [Chapter], sid: u16, geo: Geometry) -> Self {
-        Cards { chapters, sid, geo, elem: PhantomData }
+        Cards { chapters, sid, geo, elem: PhantomData, template: None, groups: &[], context: None, current: 0, paused: false, episode: false }
+    }
+
+    /// Bind the compiled card declaration and the same parent predicates as the surrounding HUD.
+    pub(super) fn declared(mut self, op: &'a DrawOp, compiled: &'a crate::hud_format::compile::Compiled, frame: &'a super::render::Frame<'a>) -> Self {
+        if let DrawOp::Strip { template, groups, .. } = op { self.template = Some(template); self.groups = groups; }
+        self.context = Some((compiled, frame));
+        self.current = self.seat_at(frame.model);
+        self.paused = frame.model.paused;
+        self.episode = frame.meta.now_playing().is_some_and(|n| n.is_real_episode);
+        self
+    }
+
+    fn item_text(&self, i: usize, bind: &str) -> Option<String> {
+        match bind {
+            "item.title" => Some(self.name(i)),
+            "item.start" => Some(plx_ui::fmt::clock(self.chapters[i].start_ms)),
+            _ => self.context.and_then(|(_, frame)| super::sections::text_of(frame, bind)),
+        }
+    }
+
+    fn focused_text_label(&self, i: usize, op: &DrawOp, placed: Rect) -> Option<TileLabel> {
+        let DrawOp::Text { bind, size, bold, ink, alpha, max_lines: 1, .. } = op else { return None };
+        if bind != "item.title" { return None; }
+        let holds = |name: &str| self.holds(i, true, name);
+        let mut ink = ink.at(holds);
+        ink[3] *= alpha;
+        Some(TileLabel { title: CString::new(self.name(i)).ok(), title_face: Some(plx_ui::cards::LabelFace {
+            size: *size, bold: bold.at(holds), ink, width: placed.w, offset_x: placed.x - self.geo.card.x,
+            offset_y: placed.y - (self.geo.card.y + self.geo.card.h + self.geo.name_drop),
+        }), ..TileLabel::default() }.within_tile())
+    }
+
+    fn paint_contents(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure,
+        paint_label: &mut impl FnMut(Painter, &TileLabel)) {
+        let card = tile.rect.scaled(1.0 / tile.scale);
+        let (x, bottom) = (card.x, card.y + card.h);
+        if let Some(template) = self.template {
+            let holds = |name: &str| self.holds(i, tile.focused, name);
+            let mut title_drawn_by_shelf = false;
+            let base = p.translate(card.x - self.geo.card.x, card.y - self.geo.card.y);
+            let layer = |below: bool| if below { base } else { base.zoomed(plx_ui::Zoom::about(self.geo.card, (0.5, 0.5), tile.scale)) };
+            for (template_index, c) in template.iter().enumerate() {
+                if let Some(group) = self.groups.iter().find(|g| g.ops.start == template_index) {
+                    if let Some((_, frame)) = self.context {
+                        super::sections::group_for(frame, layer(template[group.ops.start].below), template, group, holds,
+                            |index| template[index].present.at(holds),
+                            if !template[group.ops.start].below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center },
+                            |bind| self.item_text(i, bind),
+                            |_, op, placed| {
+                                if !tile.focused || !template[group.ops.start].below || title_drawn_by_shelf { return false; }
+                                let DrawOp::Text { size, bold, .. } = op else { return false };
+                                let (cap_top, _) = plx_gfx::text::text_cap_band(*size, i32::from(bold.at(holds)));
+                                let line = Rect::new(placed.x, placed.y - cap_top, placed.w, 0.0);
+                                let Some(label) = self.focused_text_label(i, op, line) else { return false };
+                                paint_label(p, &label);
+                                title_drawn_by_shelf = true;
+                                true
+                            },
+                            |paint, op| self.paint_decor(paint, i, op, holds));
+                    }
+                }
+                if self.groups.iter().any(|g| g.ops.contains(&template_index)) || !c.present.at(holds) { continue; }
+                let below = c.below;
+                let paint = layer(below);
+                // Mandatory art is painted by the Shelf, once.
+                if template_index != 0 { self.paint_decor(paint, i, &c.op, holds); }
+                if let DrawOp::Text { rect, bind, size, bold, ink, alpha, max_lines, leading } = &c.op {
+                    if tile.focused && below && bind == "item.title" && *max_lines == 1 && !title_drawn_by_shelf {
+                        if let Some(label) = self.focused_text_label(i, &c.op, *rect) { paint_label(p, &label); }
+                        title_drawn_by_shelf = true;
+                        continue;
+                    }
+                    let Some(content) = self.item_text(i, bind) else { continue };
+                    let bold = bold.at(holds);
+                    let view = super::sections::text_view(&content, *size, bold, ink.at(holds), *max_lines, *leading)
+                        .h(if !below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center });
+                    view.with_measure(measure).draw(paint.alpha(*alpha), super::sections::line_frame(*rect, *size, bold));
+                }
+            }
+            return;
+        }
+
+        if !tile.focused {
+            let shown = plx_gfx::text::elide_by(&self.name(i), self.geo.card.w, false, |t| {
+                measure.width_str(t, theme::size::LABEL, true)
+            });
+            if let Ok(name) = CString::new(shown) {
+                p.text(name.as_ptr(), x, bottom + self.geo.name_drop, theme::size::LABEL, theme::TEXT_SECONDARY, 0, 1);
+            }
+        }
+        if let Ok(time) = CString::new(plx_ui::fmt::clock(self.chapters[i].start_ms)) {
+            p.text(time.as_ptr(), x, bottom + self.geo.time_drop, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
+        }
+    }
+
+    fn paint_decor(&self, paint: Painter, i: usize, op: &DrawOp, holds: impl Fn(&str) -> bool + Copy) {
+        let Some((compiled, frame)) = self.context else { return };
+        match op {
+            DrawOp::Image { bind, rect, radius } if bind == "item.thumb" => {
+                super::sections::still(paint, *rect, *radius, self.sid, &self.chapters[i].thumb, plx_ui::placeholder::Reason::CardGround);
+            }
+            _ => super::sections::decor(compiled, frame, paint, op, holds),
+        }
+    }
+
+    fn holds(&self, i: usize, focused: bool, name: &str) -> bool {
+        match name {
+            "item.focused" => focused,
+            "item.is_current" => i == self.current,
+            "transport.paused" => self.paused,
+            "title.is_episode" => self.episode,
+            _ => false,
+        }
     }
 
     /// The position chapter `i` starts at, in ns (what a press on its card seeks to).
@@ -201,6 +327,15 @@ where
     }
     /// The focused card's name: the Shelf hangs it under the card and glides it when it does not fit.
     fn label(&self, i: usize) -> TileLabel {
+        if let Some(template) = self.template {
+            let holds = |name: &str| self.holds(i, true, name);
+            if let Some(op @ DrawOp::Text { rect, .. }) = template.iter()
+                .filter(|c| c.below && c.present.at(holds)).map(|c| &c.op)
+                .find(|op| matches!(op, DrawOp::Text { bind, max_lines: 1, .. } if bind == "item.title")) {
+                return self.focused_text_label(i, op, *rect).unwrap_or_default();
+            }
+            return TileLabel::default();
+        }
         TileLabel { title: CString::new(self.name(i)).ok(), ..TileLabel::default() }.within_tile()
     }
     fn holdable(&self, _i: usize) -> bool {
@@ -209,25 +344,32 @@ where
     /// The time on every card and the name on every card but the focused one (whose name is the block's), at
     /// the card's LEADING edge and the drops the op stands them at: unscaled, so a pop never moves them.
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
-        let card = tile.rect.scaled(1.0 / tile.scale);
-        let (x, bottom) = (card.x, card.y + card.h);
-        if !tile.focused {
-            let shown = plx_gfx::text::elide_by(&self.name(i), self.geo.card.w, false, |t| {
-                measure.width_str(t, theme::size::LABEL, true)
-            });
-            if let Ok(name) = CString::new(shown) {
-                p.text(name.as_ptr(), x, bottom + self.geo.name_drop, theme::size::LABEL, theme::TEXT_SECONDARY, 0, 1);
-            }
+        self.paint_contents(p, i, tile, measure, &mut |_, _| {});
+    }
+    fn compose(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure,
+        label: Option<&TileLabel>, mut paint_label: impl FnMut(Painter, &TileLabel)) {
+        if self.template.is_none() {
+            if let Some(label) = label { paint_label(p, label); }
         }
-        if let Ok(time) = CString::new(plx_ui::fmt::clock(self.chapters[i].start_ms)) {
-            p.text(time.as_ptr(), x, bottom + self.geo.time_drop, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
-        }
+        self.paint_contents(p, i, tile, measure, &mut paint_label);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_same_size_strip_refreshes_its_shared_label_alignment() {
+        let card = Rect::new(96.0, 684.0, 288.0, 162.0);
+        let mut geo = Geometry::new(card, card, 312.0, 10.0, &[]);
+        let mut motion = super::super::motion::HudMotion::new();
+        let entry = plx_machine::machine::EntryId(0);
+        let original = motion.strip(entry, &geo).style().label_start;
+        geo.leading_labels = false;
+        let changed = motion.strip(entry, &geo).style().label_start;
+        assert_ne!(original, changed, "the retained Shelf must consume the new declaration");
+    }
 
     /// **The strip keeps the springs its own panel ran**: the pop stiffened at 300 and the scroll at 220
     /// (its `update` stepped them so), not the Shelf's defaults (320 and 170). Found in the simulator: opening the
@@ -241,6 +383,7 @@ mod tests {
             radius: 10.0,
             name_drop: 26.0,
             time_drop: 60.0,
+            leading_labels: true,
         };
         let style = geo.style();
         assert_eq!((style.k_scale, style.k_scroll), (300.0, 220.0));

@@ -419,6 +419,10 @@ pub mod codes {
         /// I9: a palette in the package whose id is `builtin:classic`, which declares none. Pointer
         /// `/palette`.
         E0902 = (Error, "HUD-E0902", "builtin-no-palette");
+        /// A playbar's containing band must explicitly keep its chrome steady during scrub. Pointer: the band's chrome.
+        E0904 = (Error, "HUD-E0904", "playbar-steady");
+        /// Card templates are decorative; descendants cannot register independent focus stops.
+        E0905 = (Error, "HUD-E0905", "card-decoration-only");
         /// I4: two interactive rects of the SAME `z` overlap in a state (a lower-`z` group may underlie a
         /// higher one, as the scrub grab band does). Pointer: the later control's item. Context: `state`,
         /// `slot`, the two `rects`.
@@ -531,7 +535,7 @@ mod freeze_tests {
 
     #[test]
     fn the_code_table_is_unique_and_well_formed() {
-        assert_eq!(codes::ALL.len(), 54, "38 parse and check codes, 16 lint codes");
+        assert_eq!(codes::ALL.len(), 56, "40 parse and check codes, 16 lint codes");
         let ids: HashSet<_> = codes::ALL.iter().map(|c| c.id).collect();
         let rules: HashSet<_> = codes::ALL.iter().map(|c| c.rule).collect();
         assert_eq!(ids.len(), codes::ALL.len(), "a code id is never reused");

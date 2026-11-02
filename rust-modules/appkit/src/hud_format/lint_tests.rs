@@ -247,7 +247,7 @@ fn a_finding_that_names_no_language_is_the_one_it_was_linted_in() {
 // ---------------------------------------------------------------------------------------------------
 
 fn key(open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> StateKey {
-    StateKey { open, slot, chapters, episode, paused }
+    StateKey { open, slot, chapters, episode, real_episode: None, paused }
 }
 
 #[test]

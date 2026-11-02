@@ -13,10 +13,9 @@
 //! **States.** The compiler walks `reach`'s own enumeration (`Layout::valuations`, `Layout::explore`)
 //! and evaluates every `when` with its own `Layout::holds`: there is no second state walk and no second
 //! condition evaluator, so the state count is `reach`'s by construction. A state is
-//! (open sections, slot) under a valuation of `chapters.present` and `title.is_episode`; a condition
-//! the package does not name has the one value it holds. A package that places `previous` or `next`
-//! names `title.is_episode` whether it writes the term or not (the command table makes the pair absent
-//! for a non-episode), so it is compiled as a movie as well as an episode.
+//! (open sections, slot) under independent valuations of chapters, actual episode identity and navigation-pair
+//! availability. Paint-only episode terms stay live; only a `when` or keyed geometry adds its compile axis.
+//! Placing Previous/Next adds the pair axis, preserving the native Classic state count.
 //!
 //! **`transport.paused`** is an axis of the compile ONLY when the package names it in a `when` or in a
 //! number or gap (a key that moves geometry): then every state is compiled twice, paused and playing
@@ -97,6 +96,8 @@ pub struct AppLabels {
     pub tab_chapters: String,
     /// the Up Next primary (`widgets_next_episode`)
     pub next_episode: String,
+    /// Every numeric countdown label, zero through the app-owned ten-second duration, measured before layout.
+    pub next_seconds: Vec<String>,
     /// the Up Next secondary (`widgets_next_credits`)
     pub watch_credits: String,
     /// the Skip pill over an intro
@@ -109,6 +110,8 @@ pub struct AppLabels {
     pub go_to_show: String,
     /// the Info card's Go to Movie button
     pub go_to_movie: String,
+    /// Other command labels used by declared pills/buttons, all measured in this compile's language.
+    pub commands: Vec<(&'static str, String)>,
 }
 
 impl AppLabels {
@@ -121,12 +124,27 @@ impl AppLabels {
             tab_info: msg::widgets_player_info_in(cx).to_owned(),
             tab_chapters: msg::widgets_player_chapters_in(cx).to_owned(),
             next_episode: msg::widgets_next_episode_in(cx).to_owned(),
+            next_seconds: (0..=crate::up_next::COUNTDOWN_MS / 1000).map(|s| msg::player_up_next_seconds_left_in(cx, i64::from(s))).collect(),
             watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
             skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
             skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
             from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
             go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
             go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
+            commands: vec![
+                ("toggle_play", msg::player_hud_play_pause_in(cx).to_owned()),
+                ("seek_back", msg::player_hud_skip_back_in(cx).to_owned()),
+                ("seek_forward", msg::player_hud_skip_forward_in(cx).to_owned()),
+                ("previous", msg::widgets_menu_previous_episode_in(cx).to_owned()),
+                ("next", msg::widgets_next_episode_in(cx).to_owned()),
+                ("open_tracks", msg::settings_audio_title_in(cx).to_owned()),
+                ("tracks_audio", msg::widgets_tracks_audio_in(cx).to_owned()),
+                ("tracks_subtitles", msg::widgets_tracks_subtitles_in(cx).to_owned()),
+                ("open_more", msg::widgets_menu_options_in(cx).to_owned()),
+                ("more_quality", msg::widgets_menu_quality_in(cx).to_owned()),
+                ("more_speed", msg::widgets_menu_speed_in(cx).to_owned()),
+                ("toggle_stats", msg::widgets_menu_stats_in(cx).to_owned()),
+            ],
         }
     }
 
@@ -139,7 +157,7 @@ impl AppLabels {
             ("from_beginning", _) => &self.from_beginning,
             ("go_to_detail", _) if episode => &self.go_to_show,
             ("go_to_detail", _) => &self.go_to_movie,
-            _ => "",
+            _ => self.commands.iter().find(|(key, _)| *key == command).map_or("", |(_, label)| label),
         }
     }
 
@@ -181,8 +199,10 @@ pub struct StateKey {
     pub slot: Slot,
     /// `chapters.present`; `true` for a package that does not name it
     pub chapters: bool,
-    /// `title.is_episode`; `true` for a package that does not name it
+    /// Navigation-pair availability; `true` when no Previous/Next control names this axis.
     pub episode: bool,
+    /// Actual episode identity, independent of the navigation pair; `None` when layout does not depend on it.
+    pub real_episode: Option<bool>,
     /// `transport.paused`: an axis of the compile only when a `when` or a number or gap of the package
     /// names it (see the module doc); `false` for a package that does not
     pub paused: bool,
@@ -325,11 +345,15 @@ impl Face {
 pub struct ControlRect {
     pub id: String,
     pub command: String,
+    /// The app-owned label used to measure this control in the compile's language.
+    pub label: String,
     /// the command with its parameters, ready for the app's one performer; `None` where the package named
     /// something outside the vocabulary
     pub act: Option<crate::player_hud::command::HudCommand>,
     pub face: Face,
     pub widget: Widget,
+    /// Focus belongs to the section actions container, independently of the widget face.
+    pub is_action: bool,
     pub rest: Rest,
     pub focus: Focus,
     pub rect: Rect,
@@ -420,10 +444,12 @@ pub enum DrawOp {
         visible: usize,
         radius: f32,
         template: Vec<CardOp>,
+        leading_labels: bool,
+        groups: Vec<OpGroup>,
     },
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
-    UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest },
+    UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest, credits_focus: Focus, next_focus: Focus, countdown: crate::up_next::CountdownFace },
     /// The Skip pill (slot Skip only), at both widths.
     SkipPill { rects: [Rect; 2] },
 }
@@ -432,11 +458,20 @@ pub enum DrawOp {
 /// are the frame's, so presence is a [`Live`] over them, evaluated per card per frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardOp {
+    /// Under-art cells stay fixed while in-art overlays share the card pop.
+    pub below: bool,
     pub op: DrawOp,
     pub present: Live<bool>,
     /// the RFC 6901 pointer into the package of the node that produced `op` (the strip's `card.art`, an
     /// overlay or below cell's content): the same provenance [`CompiledState::origin`] gives a state's ops
     pub origin: String,
+}
+
+impl AsRef<DrawOp> for DrawOp {
+    fn as_ref(&self) -> &DrawOp { self }
+}
+impl AsRef<DrawOp> for CardOp {
+    fn as_ref(&self) -> &DrawOp { &self.op }
 }
 
 /// **A `vstack` whose content is decided by DATA, left for the draw to place** (`docs/hud-plugins.md`, D6 and
@@ -717,7 +752,7 @@ impl CompiledState {
     fn tab(&self, section: &str) -> Option<Rect> {
         self.controls
             .iter()
-            .find(|c| c.widget == Widget::Pill && c.command == "toggle_section" && c.section.as_deref() == Some(section))
+            .find(|c| !c.is_action && c.widget == Widget::Pill && c.command == "toggle_section" && c.section.as_deref() == Some(section))
             .map(|c| c.rect)
     }
 
@@ -840,6 +875,7 @@ pub struct Compiled {
 struct Named {
     chapters: bool,
     episode: bool,
+    real_episode: bool,
     paused: bool,
 }
 
@@ -851,7 +887,7 @@ impl Default for Compiled {
     fn default() -> Self {
         Self {
             states: Vec::new(),
-            named: Named { chapters: false, episode: false, paused: false },
+            named: Named { chapters: false, episode: false, real_episode: false, paused: false },
             band: HudBand::CLASSIC,
             block: false,
             modal: true,
@@ -881,7 +917,8 @@ impl Compiled {
     }
 
     /// The state compiled under exactly `key`.
-    pub fn state(&self, key: StateKey) -> Option<&CompiledState> {
+    pub fn state(&self, mut key: StateKey) -> Option<&CompiledState> {
+        if !self.named.real_episode { key.real_episode = None; }
         self.states.iter().find(|s| s.key == key)
     }
 
@@ -889,11 +926,15 @@ impl Compiled {
     /// not name is ignored, so a query about `episode` finds the one valuation there is (a package that places
     /// `previous` or `next` names `episode`, so for it the query picks the movie or the episode form).
     pub fn lookup(&self, open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> Option<&CompiledState> {
+        self.lookup_content(open, slot, chapters, episode, episode, paused)
+    }
+
+    /// The frame's independent content identity and navigation availability.
+    pub fn lookup_content(&self, open: u8, slot: Slot, chapters: bool, pair: bool, real_episode: bool, paused: bool) -> Option<&CompiledState> {
         self.state(StateKey {
-            open,
-            slot,
-            chapters: chapters || !self.named.chapters,
-            episode: episode || !self.named.episode,
+            open, slot, chapters: chapters || !self.named.chapters,
+            episode: pair || !self.named.episode,
+            real_episode: self.named.real_episode.then_some(real_episode),
             paused: paused && self.named.paused,
         })
     }
@@ -985,7 +1026,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
     }
     let mut compiled = Compiled {
         states,
-        named: Named { chapters: layout.named_chapters, episode: layout.named_episode, paused: frame.paused },
+        named: Named { chapters: layout.named_chapters, episode: layout.named_pair, real_episode: layout.named_episode, paused: frame.paused },
         band: HudBand::CLASSIC,
         block: package.layout.get("band").and_then(Val::as_str) == Some("block"),
         modal: package.layout.get("sections").and_then(Val::as_str) != Some("inline"),
@@ -1349,7 +1390,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let mut cases = Vec::new();
         for (cond, v) in &k.cases {
             match cond.terms.first() {
-                Some(term) if is_live(&term.name) => cases.push((term.clone(), leaf(v))),
+                Some(term) if is_live(&term.name) || term.name == "title.is_episode" => cases.push((term.clone(), leaf(v))),
                 _ if self.holds(cond) => return Live { base: leaf(v), cases },
                 _ => {}
             }
@@ -1441,24 +1482,43 @@ impl<'e, 'p> Env<'e, 'p> {
     fn label(&self, item: &Object) -> &str {
         let command = item.get("command").and_then(Val::as_str).unwrap_or("");
         let section = item.get("section").and_then(Val::as_str);
-        self.labels.of(command, section, self.v.episode)
+        let key = match Self::act(item, command) {
+            Some(crate::player_hud::command::HudCommand::Seek(by)) => match by {
+                crate::player_hud::command::SeekBy::Secs(n) if n.get() < 0 => "seek_back",
+                crate::player_hud::command::SeekBy::Setting(crate::player_hud::command::SeekDir::Back) => "seek_back",
+                _ => "seek_forward",
+            },
+            Some(crate::player_hud::command::HudCommand::OpenTracks(crate::player_hud::command::TrackTab::Audio)) => "tracks_audio",
+            Some(crate::player_hud::command::HudCommand::OpenTracks(crate::player_hud::command::TrackTab::Subtitles)) => "tracks_subtitles",
+            Some(crate::player_hud::command::HudCommand::OpenMore(crate::player_hud::command::MorePage::Quality)) => "more_quality",
+            Some(crate::player_hud::command::HudCommand::OpenMore(crate::player_hud::command::MorePage::Speed)) => "more_speed",
+            _ => command,
+        };
+        self.labels.of(key, section, self.v.episode)
     }
 
     /// The width a control draws at: a disc is its size, a pill and a button are as wide as their label.
-    fn control_w(&self, item: &Object, widget: Widget, size: f32) -> f32 {
-        let label = self.label(item);
-        match widget {
+    fn control_w(&self, item: &Object, widget: Widget, size: f32, actions: bool) -> f32 {
+        let labels = if item.get("command").and_then(Val::as_str) == Some("go_to_detail") {
+            self.labels.variants("go_to_detail", None)
+        } else {
+            vec![self.label(item)]
+        };
+        let native_icon = actions && widget == Widget::Button && Self::rest(item) == Rest::Film && Self::focus(item) == Focus::Accent
+            && matches!(item.get("command").and_then(Val::as_str), Some("from_beginning" | "go_to_detail"));
+        labels.into_iter().map(|label| match widget {
             Widget::Disc => size,
-            Widget::Pill => TabPill::width_measured(label, theme::size::BODY, self.measure),
-            Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY, true, None, self.measure),
-        }
+            Widget::Pill if item.get("face").is_none() => TabPill::width_measured(label, theme::size::BODY, self.measure),
+            Widget::Pill | Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY,
+                item.get("face").is_some() || native_icon, None, self.measure),
+        }).fold(0.0, f32::max)
     }
 
     /// Is this control gone in this valuation? Its own `when`, or Previous / Next, which come and go
-    /// together with an episode (F6: the pair is the app's, not the package's, to collapse).
+    /// with navigation-pair availability (F6: the pair is the app's, not the package's, to collapse).
     fn absent(&self, item: &Object) -> bool {
         let pair = matches!(item.get("command").and_then(Val::as_str), Some("previous" | "next"));
-        !self.when(item) || (pair && !self.v.episode)
+        !self.when(item) || (pair && !self.v.pair)
     }
 
     /// The controls of a segment's (or `actions`') `items`; with `floor` the ones that CAN be absent
@@ -1476,7 +1536,7 @@ impl<'e, 'p> Env<'e, 'p> {
             }
             let widget = Self::widget(item);
             let size = item.get("size").and_then(Val::as_f64).unwrap_or(0.0) as f32;
-            let mut it = Item::new(self.control_w(item, widget, size));
+            let mut it = Item::new(self.control_w(item, widget, size, false));
             if let Some(g) = self.gap(item, "gap_after") {
                 it = it.after(g);
             }
@@ -1504,16 +1564,8 @@ impl<'e, 'p> Env<'e, 'p> {
 
     /// An `actions` cell's one button width: the widest label over every variant, floored at `min_w`.
     fn action_w(&self, o: &Object) -> f32 {
-        let widest = self
-            .objects(o, "items")
-            .into_iter()
-            .filter(|item| self.when(item))
-            .flat_map(|item| {
-                let command = item.get("command").and_then(Val::as_str).unwrap_or("");
-                let section = item.get("section").and_then(Val::as_str);
-                self.labels.variants(command, section)
-            })
-            .map(|label| Button::pill_w_measured(&cstring(label), theme::size::BODY, true, None, self.measure))
+        let widest = self.objects(o, "items").into_iter().filter(|item| self.when(item))
+            .map(|item| self.control_w(item, Self::widget(item), item.get("size").and_then(Val::as_f64).unwrap_or(0.0) as f32, true))
             .fold(0.0, f32::max);
         widest.max(self.num(o, "min_w").unwrap_or(0.0))
     }
@@ -1596,7 +1648,7 @@ impl<'e, 'p> Env<'e, 'p> {
                     if cells.is_empty() {
                         0.0
                     } else {
-                        self.gap(card, "below_gap").unwrap_or(0.0) + cells.iter().map(|(_, t)| self.text_h(t)).sum::<f32>()
+                        self.gap(card, "below_gap").unwrap_or(0.0) + cells.iter().map(|(cell, kind, o)| self.size_of(kind, o).h + self.gap(cell, "gap_before").unwrap_or(0.0) + self.gap(cell, "gap_after").unwrap_or(0.0)).sum::<f32>()
                     }
                 });
                 Size::new(self.dim(o, "w").unwrap_or(Dim::Fill), card_h + below)
@@ -1627,12 +1679,12 @@ impl<'e, 'p> Env<'e, 'p> {
             .fold(0.0, f32::max)
     }
 
-    /// The text cells under a strip card's art.
-    fn below_cells(&self, card: &'p Object) -> Vec<(&'p Object, &'p Object)> {
+    /// The decorative cells under a strip card's art.
+    fn below_cells(&self, card: &'p Object) -> Vec<(&'p Object, &'static str, &'p Object)> {
         self.objects(card, "below")
             .into_iter()
             .filter(|cell| self.when(cell))
-            .filter_map(|cell| cell.get("text").and_then(Val::as_object).map(|t| (cell, t)))
+            .filter_map(|cell| content(cell).map(|(kind, o)| (cell, kind, o)))
             .collect()
     }
 
@@ -1884,7 +1936,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 for span in HStack::new(&c.items, c.gap, Align::Leading(r.x)).placed() {
                     if let Some(ctl) = &c.ctl[span.i] {
                         let y = r.y + (r.h - ctl.size) * 0.5;
-                        self.push_control(ctl, Rect::new(span.x, y, span.w, ctl.size), out);
+                        self.push_control(ctl, Rect::new(span.x, y, span.w, ctl.size), false, out);
                     }
                 }
             }
@@ -1902,13 +1954,15 @@ impl<'e, 'p> Env<'e, 'p> {
             .unwrap_or_else(|| default_num(sub, key))
     }
 
-    fn push_control(&self, ctl: &Ctl<'_>, rect: Rect, out: &mut Out) {
+    fn push_control(&self, ctl: &Ctl<'_>, rect: Rect, is_action: bool, out: &mut Out) {
         let c = ControlRect {
             id: ctl.id.to_owned(),
             command: ctl.command.to_owned(),
+            label: self.label(ctl.o).to_owned(),
             act: Self::act(ctl.o, ctl.command),
             face: Self::face(ctl.o),
             widget: ctl.widget,
+            is_action,
             rest: ctl.rest,
             focus: ctl.focus,
             rect,
@@ -1987,7 +2041,7 @@ impl<'e, 'p> Env<'e, 'p> {
         for cell in cells {
             let Some((kind, c)) = content(cell) else { continue };
             match kind {
-                "text" if c.get("bind").and_then(Val::as_str).is_some_and(|b| b.starts_with("info.")) => data = true,
+                "text" if c.get("bind").and_then(Val::as_str).is_some_and(|b| b.starts_with("info.") || b.starts_with("item.")) => data = true,
                 "facts" => data = true,
                 "image" | "icon" | "rule" | "spacer" => {}
                 _ => return false,
@@ -2014,31 +2068,37 @@ impl<'e, 'p> Env<'e, 'p> {
         );
         let overlay = self.objects(card, "overlay");
         self.place_row(&overlay, 0.0, art, &Mode { replaces: &[], hide: false, standin_left: None, host: "" }, &mut tmp);
+        let below_start = tmp.ops.len();
         let mut y = art.y + card_h + self.gap(card, "below_gap").unwrap_or(0.0);
-        for (cell, text) in self.below_cells(card) {
-            let h = self.text_h(text);
-            let w = match self.dim(text, "w") {
-                Some(Dim::Px(w)) => w,
-                _ => card_w,
-            };
-            // the cell keeps its room on every card; a card draws it when its `item.*` terms hold
+        for (cell, kind, node) in self.below_cells(card) {
+            let size = self.size_of(kind, node);
+            let w = match size.w { Dim::Px(w) => w, Dim::Fill => card_w };
+            y += self.gap(cell, "gap_before").unwrap_or(0.0);
+            // A template cell keeps its room; item predicates decide which cards paint it.
             tmp.gate = item_terms(cell);
-            self.emit("text", text, Rect::new(art.x, y, w, h), VAlign::Top, mode, &mut tmp);
+            let x = match cell.get("align").and_then(Val::as_str) {
+                Some("center") => art.x + (card_w - w) * 0.5,
+                Some("end") => art.x + card_w - w,
+                _ => art.x,
+            };
+            self.emit(kind, node, Rect::new(x, y, w, size.h), VAlign::Top, mode, &mut tmp);
             tmp.gate.clear();
-            y += h;
+            y += size.h + self.gap(cell, "gap_after").unwrap_or(0.0);
         }
+        let groups = tmp.groups.clone();
         let template: Vec<CardOp> = tmp
             .ops
             .into_iter()
             .zip(tmp.present)
             .zip(tmp.origins)
-            .map(|((op, present), origin)| CardOp { op, present, origin })
+            .enumerate()
+            .map(|(i, ((op, present), origin))| CardOp { below: i >= below_start, op, present, origin })
             .collect();
         let radius = self.num(o, "radius").unwrap_or(0.0);
         // A strip is priced by the cards its Shelf paints, not by its width over the pitch: the Shelf culls against the
         // screen and a row at rest has scrolled (`Geometry::most_painted_at_rest`), read from the same style it is built with.
         let visible = Geometry::new(r, art, pitch, radius, &template).most_painted_at_rest();
-        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template });
+        out.push(&o.pointer, DrawOp::Strip { rect: r, card: art, pitch, visible, radius, template, leading_labels: o.get("label_align").and_then(Val::as_str) == Some("leading"), groups });
     }
 
     fn emit_actions(&self, o: &'p Object, r: Rect, out: &mut Out) {
@@ -2054,8 +2114,12 @@ impl<'e, 'p> Env<'e, 'p> {
             HStack::new(&widths, c.gap, Align::Leading(r.x)).placed().map(|s| (s.x, s.w)).collect()
         };
         for (ctl, (at, len)) in live.into_iter().zip(spans) {
-            let rect = if column { Rect::new(r.x, at, bw, len) } else { Rect::new(at, r.y, len, ih) };
-            self.push_control(ctl, rect, out);
+            let cell = if column { Rect::new(r.x, at, bw, len) } else { Rect::new(at, r.y, len, ih) };
+            // The common action cell measures the row/column; a disc keeps its declared square face.
+            let rect = if ctl.widget == Widget::Disc {
+                Rect::new(cell.cx() - ctl.size * 0.5, cell.cy() - ctl.size * 0.5, ctl.size, ctl.size)
+            } else { cell };
+            self.push_control(ctl, rect, true, out);
         }
     }
 
@@ -2167,9 +2231,11 @@ impl<'e, 'p> Env<'e, 'p> {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
                     let rest = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Rest::Film, Self::rest);
+                    let focus = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Focus::Accent, Self::focus);
+                    let countdown = crate::up_next::CountdownFace::named(up.and_then(|u| u.get("countdown")).and_then(Val::as_str).unwrap_or("fill_sweep"));
                     out.push(
                         up.map_or("", |u| u.pointer.as_str()),
-                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") },
+                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next"), credits_focus: focus("watch_credits"), next_focus: focus("play_next"), countdown },
                     );
                 }
             }
@@ -2215,7 +2281,7 @@ impl<'e, 'p> Env<'e, 'p> {
         // and the title here is a RECT, not text
         let title = out.title.unwrap_or_default();
         CompiledState {
-            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.episode, paused: self.paused },
+            key: StateKey { open: self.state.open, slot, chapters: self.v.chapters, episode: self.v.pair, real_episode: self.layout.named_episode.then_some(self.v.episode), paused: self.paused },
             controls: out.controls,
             ops,
             scrim,
@@ -2288,7 +2354,11 @@ impl<'e, 'p> Env<'e, 'p> {
         let align = self.name(up, "align").unwrap_or("end");
         // the floor: one start- or end-aligned replaced segment, every item that can be absent collapsed
         let floor = self.floor(up, replaces);
-        let w_next = stand_in_w(self.measure.width_str(&self.labels.next_episode, theme::size::BODY, true), floor.unwrap_or(0.0));
+        let countdown = crate::up_next::CountdownFace::named(up.get("countdown").and_then(Val::as_str).unwrap_or("fill_sweep"));
+        let label_w = std::iter::once(&self.labels.next_episode)
+            .chain(self.labels.next_seconds.iter().filter(|_| countdown == crate::up_next::CountdownFace::Numeric))
+            .map(|label| self.measure.width_str(label, theme::size::BODY, true)).fold(0.0, f32::max);
+        let w_next = stand_in_w(label_w, floor.unwrap_or(0.0));
         let w_credits = Button::pill_w_measured(&cstring(&self.labels.watch_credits), theme::size::BODY, false, None, self.measure);
         // the pills are one run, right-anchored at `edge`; its width comes from the offer's own layout
         let probe = up_next::layout_at(RowAnchor { right: 0.0, top: union.y, h: union.h }, w_next, w_credits);
@@ -2427,14 +2497,26 @@ fn weigh(op: &DrawOp) -> Contributor {
             c.blended_px = plate(ctl);
             match ctl.widget {
                 Widget::Disc => c.texture_bytes = 4 * (ctl.rect.h * ctl.rect.h).round() as u64,
-                Widget::Pill | Widget::Button => c.glyph_runs = 1,
+                Widget::Pill | Widget::Button => {
+                    c.glyph_runs = 1;
+                    if ctl.face != Face::default() {
+                        c.draw_ops += 1;
+                        c.texture_bytes = 4 * (ctl.rect.h * ctl.rect.h).round() as u64;
+                    }
+                }
             }
         }
-        DrawOp::UpNext { rects, credits_rest, next_rest } => {
-            c.draw_ops = 2 + usize::from(rects.still.is_some()) + usize::from(rects.caption.is_some());
+        DrawOp::UpNext { rects, credits_rest, next_rest, countdown, .. } => {
+            let extra = match countdown {
+                crate::up_next::CountdownFace::Ring => plx_ui::widgets::ButtonProgress::Ring.extra_draw_ops(),
+                crate::up_next::CountdownFace::Bar => plx_ui::widgets::ButtonProgress::Bar.extra_draw_ops(),
+                _ => 0,
+            };
+            c.draw_ops = 2 + usize::from(rects.still.is_some()) + usize::from(rects.caption.is_some()) + extra;
             c.glyph_runs = 2 + usize::from(rects.caption.is_some());
             c.texture_bytes = rects.still.map_or(0, |r| 4 * area(r));
-            c.blended_px = plate_rest(*credits_rest, rects.credits) + plate_rest(*next_rest, rects.next);
+            c.blended_px = plate_rest(*credits_rest, rects.credits) + plate_rest(*next_rest, rects.next)
+                + if extra > 0 { area(rects.next) } else { 0 };
         }
         DrawOp::SkipPill { rects } => {
             c.glyph_runs = 1;
@@ -2451,4 +2533,21 @@ fn cost_of(ops: &[DrawOp]) -> Cost {
         texture_bytes: cost.texture_bytes + part.texture_bytes,
         blended_px: cost.blended_px + part.blended_px,
     })
+}
+
+#[cfg(test)]
+mod content_axis_tests {
+    use super::*;
+
+    #[test]
+    fn loader_totality_rejects_a_missing_off_diagonal_state() {
+        let text = include_str!("fixtures/reference.plxhud.json").replace(r#"{ "id": "title", "cells": ["#,
+            r#"{ "id": "title", "when": "title.is_episode", "cells": ["#);
+        let package = super::super::parse::parse(text.as_bytes()).package.unwrap();
+        let mut compiled = compile(&package, &plx_ui::fixture::FixtureMeasure,
+            CompileCtx { labels: AppLabels::in_language(plx_platform::i18n::english()) });
+        assert!(crate::player_hud::loaded::answers_every_frame(&compiled));
+        compiled.states.retain(|state| !(state.key.open == 0 && state.key.slot == Slot::Discs && state.key.episode && state.key.real_episode == Some(false)));
+        assert!(!crate::player_hud::loaded::answers_every_frame(&compiled));
+    }
 }

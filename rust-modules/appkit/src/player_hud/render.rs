@@ -55,28 +55,21 @@
 //! `DrawFrame` the screen draws under and the Shelf paints, its springs stepped by the screen's tick. It draws
 //! the strip's geometry and classic's inks: a package's declared card inks are not read (PR8 stage 3).
 //!
-//! **What it does not draw yet** (each is a decision, not an omission): `rest: custom` (it takes the film).
-//! [`draw`] draws nothing for it, so a package that needs it shows less
-//! rather than something wrong. A title's declared `ink` and `bold` are not carried: classic's rule (an
-//! episode's kicker is primary and bold, a context line secondary and regular) draws, and only the
-//! declared sizes are honoured.
+//! **Declaration consumption.** Title lines take their declared ink, alpha, weight and size. An omitted
+//! kicker stays omitted. A labelled row control takes the same app-owned label the compiler measured, and
+//! the shared Button draws its declared rest, focus and optional face. Format 1.0 refuses `custom` rest,
+//! because it defines no ink keys that could describe it. The scrub preview receives the compiled track,
+//! including its width and thickness, and rides the painter translation of the bar's band.
 //!
-//! **What a package that is installed can still get wrong** (a package reaches these through the Player HUD page
-//! as well as the dev trigger, and none is a finding; each is a way a package draws or behaves wrongly):
-//! - a package with `title.main` and no `title.kicker` still draws the kicker, at classic's y
-//!   (`draw_title`, from `TitleLook::default()`);
-//! - a `button`, or a `pill` with no `section`, gets a focus stop and draws nothing (`draw_control`);
-//! - the scrub preview is hard-wired to `SB_X` / `SB_Y` / `sb_w` (`classic::draw_scrub_preview`), so a package
-//!   that places the bar elsewhere gets the preview card on classic's track;
-//! - `ClockWarm` prewarms the clocks at CAPTION (and the scrub's grown size) only (`motion.rs`), so a package
-//!   whose clocks use another rung is not prewarmed;
-//! - `Compiled::glyph` re-hashes the asset's source for every disc on every frame.
+//! Chapter-card text and decorative template cells use the shared Shelf and section widgets, including
+//! item predicates and data-stack layout.
 //!
-//! **The kicker is the one place it overrides the compile.** The compile folds `title.is_episode` into
-//! the state ([`StateKey::episode`] is the ROW's pair boolean, because that is what classic's golden
-//! equates it with), so a real episode with no queue neighbours compiles in the movie state. The kicker's
-//! face is therefore chosen from `now_playing().is_real_episode`, as classic's draw always did, and only
-//! the rects are taken from the ops.
+//! **Remaining limitations under conformance review.** `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
+//! declared clock rung. `Compiled::glyph` re-hashes the source on each lookup.
+//!
+//! **A real episode is independent of queue neighbours.** Title ink/weight cases keyed on
+//! `title.is_episode` remain live in the compile and resolve against `now_playing().is_real_episode`.
+//! The row's pair-presence valuation must not turn an isolated episode's kicker into a movie context line.
 
 use std::ffi::CString;
 
@@ -89,7 +82,7 @@ use super::classic::{
     draw_player_title_at, draw_playbar_look, draw_scrim_at, draw_scrub_preview, hud_env, hud_tab_state, tab_labels,
     tab_of_section, Kicker, Playbar, PlaybarLook, TitleLook,
 };
-use super::geometry::{frame_state, GROUP_ROW, GROUP_SECTION};
+use super::geometry::{GROUP_ROW, GROUP_SECTION};
 use super::sections;
 use super::model::HudModel;
 use super::motion::HudMotion;
@@ -129,7 +122,7 @@ pub struct Frame<'a> {
 /// ([`frame_state`], the lookup every geometry consumer takes too).
 fn state_for<'c>(compiled: &'c Compiled, open: u8, f: &Frame<'_>) -> Option<&'c CompiledState> {
     let chapters = crate::chapters_panel::has_chapters(f.meta);
-    frame_state(compiled, open, f.slot, chapters, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
+    super::geometry::frame_state_content(compiled, open, f.slot, chapters, f.model.is_episode, f.model.paused).map(|(state, skip)| state.skip_variant(skip))
 }
 
 /// **How a transport band moves this frame**: `dy` lower than the state it is walked from, seen at `alpha`.
@@ -544,8 +537,7 @@ fn walk<H: Host>(
 
     // the kicker's rect, remembered until the title's op arrives: the pair draws as one (one clip, one
     // marquee key, the paused reveal restarting when either line changes)
-    let mut kicker_rect: Option<(Rect, i32)> = None;
-    let mut bar: Option<Playbar> = None;
+    let mut bar: Option<(Playbar, Rect)> = None;
     let mut run = |span: &Span| {
         if !pick.takes(span) {
             return;
@@ -569,6 +561,7 @@ fn walk<H: Host>(
         let moved = q.dy() - walked.dy();
         // the end of the group being drawn: its children are drawn together, from their real heights
         let mut grouped_to = 0;
+        let mut kicker_rect: Option<TitleLine> = None;
         for (at, op) in state.ops[span.ops.clone()].iter().enumerate().map(|(k, op)| (span.ops.start + k, op)) {
             if at < grouped_to {
                 continue;
@@ -583,12 +576,15 @@ fn walk<H: Host>(
                 DrawOp::Scrim { rect } => draw_scrim_at(q, Rect { y: rect.y + m.dy, h: rect.h - m.dy, ..*rect }),
                 _ if hides_transport && !is_section_tab(op) => {}
                 DrawOp::Text { bind, rect, size, bold, ink, alpha, max_lines, leading } => match text_of(bind) {
-                    Some(Text::Kicker) => kicker_rect = Some((*rect, *size)),
-                    Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), *rect, *size),
+                    Some(Text::Kicker) => {
+                        if let Some(previous) = kicker_rect.take() { draw_title(f, row, q, Some(previous), None); }
+                        kicker_rect = Some(TitleLine::of(f, *rect, *size, bold, ink, *alpha, *max_lines, *leading));
+                    }
+                    Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), Some(TitleLine::of(f, *rect, *size, bold, ink, *alpha, *max_lines, *leading))),
                     None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading),
                 },
                 DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
-                DrawOp::UpNext { rects, .. } => {
+                DrawOp::UpNext { rects, credits_rest, next_rest, credits_focus, next_focus, countdown } => {
                     if let ControlSlot::UpNext(_) = f.slot {
                         let layout = Layout {
                             still: rects.still.unwrap_or_default(),
@@ -597,7 +593,13 @@ fn walk<H: Host>(
                             next: rects.next,
                         };
                         let decor = Decor { still: rects.still.is_some(), caption: rects.caption.is_some() };
-                        up_next::draw_over(f.ps, &layout, decor, row, f.up, q, f.focus == GROUP_ROW, f.btn, f.now, f.measure);
+                        let rest = |r| match r { Rest::Bare => TransportRest::Bare, Rest::Solid => TransportRest::Solid, _ => TransportRest::Film };
+                        let focus = |f| match f { Focus::Ring => TransportFocus::Ring, Focus::Accent => TransportFocus::Accent };
+                        let look = up_next::Look {
+                            credits: up_next::ButtonLook { rest: rest(*credits_rest), focus: focus(*credits_focus) },
+                            next: up_next::ButtonLook { rest: rest(*next_rest), focus: focus(*next_focus) }, countdown: *countdown,
+                        };
+                        up_next::draw_over(f.ps, &layout, decor, look, row, f.up, q, f.focus == GROUP_ROW, f.btn, f.now, f.measure);
                     }
                 }
                 DrawOp::SkipPill { rects } => {
@@ -611,7 +613,7 @@ fn walk<H: Host>(
                     live.clock_grow = row.preview.motion.clock_grow(f.now);
                     // a cancelled scrub's knob returns to the playhead rather than jumping to it
                     live.pos_ns = row.spring.apply(live.pos_ns, f.now);
-                    let holds = |name: &str| name == "transport.paused" && f.model.paused;
+                    let holds = sections::holds(f);
                     let look = PlaybarLook {
                         track: *track,
                         fill: fill.at(holds),
@@ -622,23 +624,23 @@ fn walk<H: Host>(
                         mark: *mark,
                     };
                     draw_playbar_look(q, live, look, f.measure);
-                    bar = Some(live);
+                    bar = Some((live, *track));
                 }
                 DrawOp::Ground { rect, ink, radius } => sections::ground(q, *rect, *radius, ink, f),
                 DrawOp::Rule { rect, ink } => sections::rule(q, *rect, ink, f),
                 DrawOp::Icon { rect, asset, ink } => sections::icon(compiled, q, *rect, asset, ink, f),
                 DrawOp::Image { rect, bind, radius } => sections::image(f, q, *rect, bind, *radius),
-                DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. } => {
-                    sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, bold, ink)
+                DrawOp::Facts { rect, order, badges, genres_max, playback_fact, size, bold, ink } => {
+                    sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, *size, bold, ink)
                 }
-                // not drawn by this renderer yet: see the module doc
-                DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved),
+                DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved, compiled),
             }
         }
+        if let Some(kicker) = kicker_rect.take() { draw_title(f, row, q, Some(kicker), None); }
         // right after the bar's band, so the still floats over the title block and the row above it
         // and under the tabs below, as classic orders them
-        if let Some(live) = bar.take() {
-            draw_scrub_preview(p, f.ps, f.model, row, live);
+        if let Some((live, track)) = bar.take() {
+            draw_scrub_preview(p, f.ps, f.model, row, live, track);
         }
     };
     // The stand-in's ops are the LAST span, carrying the id of the band that hosts them; they draw right
@@ -679,19 +681,64 @@ fn text_of(bind: &str) -> Option<Text> {
     }
 }
 
+/// The declared paint of one title line, resolved against the actual episode, independently of queue neighbours.
+#[derive(Clone, Copy)]
+struct TitleLine {
+    rect: Rect,
+    size: i32,
+    bold: bool,
+    ink: [f32; 4],
+    max_lines: u8,
+    leading: f32,
+}
+
+impl TitleLine {
+    #[allow(clippy::too_many_arguments)]
+    fn of(f: &Frame<'_>, rect: Rect, size: i32, bold: &crate::hud_format::compile::Live<bool>, ink: &crate::hud_format::compile::Live<[f32; 4]>, alpha: f32, max_lines: u8, leading: f32) -> Self {
+        let holds = sections::holds(f);
+        let mut ink = ink.at(holds);
+        ink[3] *= alpha;
+        Self { rect, size, bold: bold.at(holds), ink, max_lines, leading }
+    }
+
+    fn draw(self, q: Painter, text: &str, measure: &dyn plx_machine::machine::Measure) {
+        sections::text_view(text, self.size, self.bold, self.ink, self.max_lines, self.leading)
+            .with_measure(measure).draw(q, sections::line_frame(self.rect, self.size, self.bold));
+    }
+}
+
 /// The title pair, in the cell the compile placed it: the kicker's rect and size, and the main line's. The
 /// main line's right edge is the bound both lines fit before (the `w: fill` cell's, golden-pinned for classic in
 /// `classic-title-right.golden.tsv`).
-fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<(Rect, i32)>, main: Rect, title_size: i32) {
+fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<TitleLine>, main: Option<TitleLine>) {
+    let separate = main.is_none_or(|main| main.max_lines > 1 || kicker.is_some_and(|k| k.max_lines > 1 || k.rect.x != main.rect.x || k.rect.w != main.rect.w));
+    if separate {
+        let words = |ptr: *const std::os::raw::c_char| if ptr.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned() };
+        let (context, title) = if let Some(n) = f.meta.now_playing().filter(|n| n.is_real_episode) {
+            (plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title), n.title.clone())
+        } else {
+            (words(plx_media::route::ctxline_cptr(f.ps)), words(plx_media::route::title_cptr(f.ps)))
+        };
+        if let Some(line) = kicker { line.draw(q, &context, f.measure); }
+        if let Some(line) = main { line.draw(q, &title, f.measure); }
+        row.reset_title();
+        return;
+    }
+    let Some(main) = main else { return };
     let classic = TitleLook::default();
     let look = TitleLook {
-        x: main.x,
-        kicker_y: kicker.map_or(classic.kicker_y, |(k, _)| k.y),
-        title_y: main.y,
-        kicker_size: kicker.map_or(classic.kicker_size, |(_, size)| size),
-        title_size,
+        x: main.rect.x,
+        kicker_y: kicker.map_or(classic.kicker_y, |k| k.rect.y),
+        title_y: main.rect.y,
+        kicker_size: kicker.map_or(classic.kicker_size, |k| k.size),
+        title_size: main.size,
+        title_ink: main.ink,
+        title_bold: main.bold,
+        kicker_ink: kicker.map(|k| k.ink),
+        kicker_bold: kicker.map(|k| k.bold),
+        kicker_visible: kicker.is_some(),
     };
-    let right = main.x + main.w;
+    let right = main.rect.x + main.rect.w;
     let paused = f.model.paused;
     if let Some(n) = f.meta.now_playing().filter(|n| n.is_real_episode) {
         let kicker = CString::new(plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title)).unwrap_or_default();
@@ -777,6 +824,42 @@ fn section_open(state: &CompiledState, c: &crate::hud_format::compile::ControlRe
     matches!(c.act, Some(HudCommand::ToggleSection(s)) if state.key.open & s.open_bit() != 0)
 }
 
+/// A labelled transport control uses the same app label the compiler measured and the shared Button face.
+#[allow(clippy::too_many_arguments)]
+fn draw_labelled(compiled: &Compiled, f: &Frame<'_>, row: &HudMotion, e: &plx_ui::Env, q: Painter,
+    state: &CompiledState, c: &crate::hud_format::compile::ControlRect, row_index: Option<usize>) {
+    let label = match c.act {
+        Some(HudCommand::GoToDetail) => crate::info_panel::actions(f.meta)[1],
+        Some(HudCommand::FromBeginning) => crate::info_panel::actions(f.meta)[0],
+        _ => c.label.as_str(),
+    };
+    let Ok(label) = CString::new(label) else { return };
+    let (focused, scale) = if !c.is_action && c.widget == Widget::Pill && c.command == "toggle_section" {
+        let Some(i) = c.section.as_deref().and_then(tab_of_section) else { return };
+        (f.focus == super::geometry::GROUP_TABS && f.tab == i, 1.0)
+    } else if let Some(i) = row_index.and_then(|i| i32::try_from(i).ok()) {
+        (f.focus == GROUP_ROW && f.btn == i, row.scale(i))
+    } else {
+        let Some(i) = super::geometry::section_buttons(state).position(|k| k.id == c.id) else { return };
+        ((f.focus == GROUP_SECTION && usize::try_from(f.btn).is_ok_and(|b| b == i)) || row.held_button() == Some(i), row.section_scale(i))
+    };
+    let model = match f.slot { ControlSlot::Discs(controls) => HudModel { controls, ..*f.model }, _ => *f.model };
+    let button = plx_ui::widgets::Button::new(label.as_ptr(), theme::size::BODY, c.rect)
+        .enabled(c.act.is_some_and(|act| act.enabled(&model)))
+        .focused(focused).scale(scale).ground(ControlGround::Unkeyed)
+        .rest_face(match c.rest { _ if section_open(state, c) => TransportRest::Solid,
+            Rest::Bare => TransportRest::Bare, Rest::Solid => TransportRest::Solid, _ => TransportRest::Film })
+        .focus_face(match c.focus { Focus::Accent => TransportFocus::Accent, Focus::Ring => TransportFocus::Ring });
+    if c.face == Default::default() {
+        button.draw(e, q);
+    } else {
+        match glyph_of(compiled, c, &model) {
+            Glyph::Icon(icon) => button.icon(icon).draw(e, q),
+            Glyph::Svg(svg) => button.svg(svg).draw(e, q),
+        }
+    }
+}
+
 /// One control, at the rect the compile placed it.
 fn draw_control(
     compiled: &Compiled,
@@ -787,6 +870,16 @@ fn draw_control(
     state: &CompiledState,
     c: &crate::hud_format::compile::ControlRect,
 ) {
+    let native_tab = !c.is_action && c.widget == Widget::Pill && c.command == "toggle_section" && c.face == Default::default()
+        && c.rest == Rest::Film && c.focus == Focus::Accent;
+    let row_index = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str()));
+    let native_action = c.is_action && c.widget == Widget::Button && c.face == Default::default()
+        && c.rest == Rest::Film && c.focus == Focus::Accent
+        && matches!(c.act, Some(HudCommand::FromBeginning | HudCommand::GoToDetail));
+    if c.widget != Widget::Disc && !native_tab && !native_action {
+        draw_labelled(compiled, f, row, e, q, state, c, row_index);
+        return;
+    }
     match c.widget {
         // A disc of the replaced row: its stable declared index (`CompiledState::row_ids`) is the
         // control's identity for the springs and the cursor. Its command, and so its enabled bit, is the
@@ -795,18 +888,24 @@ fn draw_control(
         // own; its rest and focus faces are the widget's.
         Widget::Disc => {
             let ControlSlot::Discs(controls) = f.slot else { return };
-            let Some(i) = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str())) else { return };
-            let Ok(i) = i32::try_from(i) else { return };
+            let (i, focused, scale) = if c.is_action {
+                let Some(i) = super::geometry::section_buttons(state).position(|k| k.id == c.id) else { return };
+                let Ok(index) = i32::try_from(i) else { return };
+                (index, (f.focus == GROUP_SECTION && f.btn == index) || row.held_button() == Some(i), row.section_scale(i))
+            } else {
+                let Some(i) = row_index.and_then(|i| i32::try_from(i).ok()) else { return };
+                (i, f.focus == GROUP_ROW && f.btn == i, row.scale(i))
+            };
             let model = HudModel { controls, ..*f.model };
             let button = TransportButton::new(i, c.rect)
                 .enabled(c.act.is_some_and(|act| act.enabled(&model)))
-                .focused(f.focus == GROUP_ROW && f.btn == i)
+                .focused(focused)
                 .ground(ControlGround::Unkeyed)
-                .scale(row.scale(i))
+                .scale(scale)
                 .rest_face(match c.rest {
                     // an open section's own control wears the `solid` face, whatever it rests in
                     _ if section_open(state, c) => TransportRest::Solid,
-                    // `custom` (allowed inks) is not drawn yet: it takes the film
+                    // Format validation rejects `custom`; manually constructed ops use the film fallback.
                     Rest::Film | Rest::Custom => TransportRest::Film,
                     Rest::Bare => TransportRest::Bare,
                     Rest::Solid => TransportRest::Solid,
@@ -839,10 +938,7 @@ fn draw_control(
         }
         // An `actions` button of a section: the focus and the pop are the section group's.
         Widget::Button => {
-            let Some(i) = state
-                .controls
-                .iter()
-                .filter(|k| k.widget == Widget::Button)
+            let Some(i) = super::geometry::section_buttons(state)
                 .position(|k| k.id == c.id)
             else {
                 return;
@@ -1076,6 +1172,7 @@ mod tests {
 
     mod panel_goldens;
     mod transitions;
+    mod conformance;
 
     /// **The Chapters strip through the renderer** (`draw_state` over classic's `OPEN_CHAPTERS` state, the
     /// strip a `cards::Shelf`) against what the hand-written strip drew on the same playing item (frozen in

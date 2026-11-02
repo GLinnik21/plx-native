@@ -1,0 +1,6 @@
+{
+  "player.hud.play_pause": "Прайграванне / Паўза",
+  "player.hud.skip_back": "Назад",
+  "player.hud.skip_forward": "Наперад",
+  "player.up_next.seconds_left": "Наступная серыя · {seconds} с"
+}

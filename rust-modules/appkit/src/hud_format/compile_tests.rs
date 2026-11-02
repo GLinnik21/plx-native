@@ -47,12 +47,14 @@ fn labels() -> AppLabels {
         tab_info: msg::widgets_player_info().to_owned(),
         tab_chapters: msg::widgets_player_chapters().to_owned(),
         next_episode: msg::widgets_next_episode().to_owned(),
+        next_seconds: AppLabels::in_language(plx_platform::i18n::current()).next_seconds,
         watch_credits: msg::widgets_next_credits().to_owned(),
         skip_intro: msg::widgets_skip_intro().to_owned(),
         skip_credits: msg::widgets_skip_credits().to_owned(),
         from_beginning: msg::widgets_info_from_beginning().to_owned(),
         go_to_show: msg::widgets_info_go_show().to_owned(),
         go_to_movie: msg::widgets_info_go_movie().to_owned(),
+        commands: AppLabels::in_language(plx_platform::i18n::current()).commands,
     }
 }
 
@@ -156,7 +158,7 @@ fn compiled_classic_matches_the_hand_written_layout() {
                         (Slot::Skip, SkipKind::Credits),
                     ];
                     for (kind, skip) in slots {
-                        let key = StateKey { open: 0, slot: kind, chapters, episode, paused: false };
+                        let key = StateKey { open: 0, slot: kind, chapters, episode, real_episode: Some(episode), paused: false };
                         let got = compiled.geometry(key, skip).expect("the compact state exists");
                         compared += 1;
                         let frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode={episode}/chapters={chapters}/{kind:?}/{skip:?}"));
@@ -304,7 +306,7 @@ fn state_lookup_ignores_the_content_a_package_does_not_name() {
     let a = compiled.lookup(0, Slot::Discs, true, true, false).unwrap();
     let b = compiled.lookup(0, Slot::Discs, false, false, false).unwrap();
     assert_eq!(a.key, b.key, "a package that names neither condition has one valuation");
-    assert!(compiled.state(StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false }).is_none());
+    assert!(compiled.state(StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, real_episode: Some(false), paused: false }).is_none());
 }
 
 #[test]
@@ -577,7 +579,7 @@ fn a_strip_card_keeps_its_item_conditions_live() {
 fn a_state_the_package_cannot_reach_has_no_geometry() {
     let compiled = build(MINIMAL, &FM);
     // minimal lays out no section: the chapters section is not a state of it
-    assert!(compiled.geometry(StateKey { open: OPEN_CHAPTERS, slot: Slot::Discs, chapters: true, episode: true, paused: false }, SkipKind::Intro).is_none());
+    assert!(compiled.geometry(StateKey { open: OPEN_CHAPTERS, slot: Slot::Discs, chapters: true, episode: true, real_episode: Some(true), paused: false }, SkipKind::Intro).is_none());
     assert!(compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).is_none());
 }
 
@@ -1220,7 +1222,7 @@ fn no_band_under_the_bar_starts_on_the_clocks_line() {
 /// literal in the fixture is that arithmetic, spelt here from the constants.
 #[test]
 fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
-    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false };
+    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, real_episode: Some(false), paused: false };
     let geometry = build(CLASSIC, &FM).geometry(key, SkipKind::Intro).expect("the compact state exists");
     let cell_foot = geometry.playbar.y + classic::CLOCK_TOP + classic::clock_line_h(theme::size::CAPTION);
     let gap = geometry.tab_row.y - cell_foot;

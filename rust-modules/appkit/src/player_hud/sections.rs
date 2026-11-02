@@ -42,10 +42,14 @@ use crate::info_panel::{actions, info_chips, info_content, FactsShape};
 
 type Rgba = [f32; 4];
 
-/// The frame's answer to a `Live` term's NAME. Only `transport.paused` is a name the sections' own ops can
-/// key on; every other name (`item.*` is the strip card's, drawn by its own walk) is false here.
-pub(super) fn holds<'a>(f: &'a Frame<'_>) -> impl Fn(&str) -> bool + 'a {
-    move |name| name == "transport.paused" && f.model.paused
+/// The shared frame predicate for live paint: pause and the actual real-episode identity. A strip card
+/// adds its own `item.*` predicates to these parent values.
+pub(super) fn holds<'a>(f: &'a Frame<'_>) -> impl Fn(&str) -> bool + Copy + 'a {
+    move |name| match name {
+        "transport.paused" => f.model.paused,
+        "title.is_episode" => f.meta.now_playing().is_some_and(|n| n.is_real_episode),
+        _ => false,
+    }
 }
 
 /// A `Ground`: the section's panel, one rounded fill.
@@ -53,9 +57,10 @@ pub(super) fn ground(q: Painter, rect: Rect, radius: f32, ink: &Live<Rgba>, f: &
     q.rrect(rect, radius, radius, ink.at(holds(f)));
 }
 
-/// A `Rule`: one hairline across `rect`'s width, in the package's ink.
+/// A `Rule`: its compiled horizontal or vertical hairline extent, in the package's ink.
 pub(super) fn rule(q: Painter, rect: Rect, ink: &Live<Rgba>, f: &Frame<'_>) {
-    plx_ui::widgets::hairline_in(q, rect.x, rect.y, rect.w, ink.at(holds(f)));
+    let ink = ink.at(holds(f));
+    q.rect(rect, 0.0, ink, ink, 0.0);
 }
 
 /// An `Icon`: a package asset's glyph filling its cell.
@@ -73,29 +78,26 @@ pub(super) fn image(f: &Frame<'_>, q: Painter, rect: Rect, bind: &str, radius: f
         return;
     }
     let Some(c) = info_content(f.meta) else { return };
-    let mut drawn = false;
-    if !c.thumb.is_empty() {
-        let (t, tw, th) = resolve_tex_wh_on(
-            plx_media::route::item_sid(plx_media::route::cur_sid(f.ps)).raw(),
-            &c.thumb,
-            480,
-            270,
-            0,
-        );
-        if t != 0 {
-            q.tex_uv(t, rect.cover_uv(tw, th, plx_ui::Crop::Centre), rect, radius, theme::TINT_WHITE);
-            drawn = true;
-        }
-    }
-    if !drawn {
-        plx_ui::placeholder::flat(q, plx_ui::placeholder::Reason::InfoPanelStill, &c.thumb, rect, radius);
+    still(q, rect, radius, plx_media::route::item_sid(plx_media::route::cur_sid(f.ps)).raw(), &c.thumb, plx_ui::placeholder::Reason::InfoPanelStill);
+}
+
+/// The shared still image path for a section and an image declared inside a chapter template.
+pub(super) fn still(q: Painter, rect: Rect, radius: f32, sid: u16, key: &str, reason: plx_ui::placeholder::Reason) {
+    let (t, tw, th) = if key.is_empty() { (0, 0.0, 0.0) } else { resolve_tex_wh_on(sid, key, 480, 270, 0) };
+    if t != 0 {
+        q.tex_uv(t, rect.cover_uv(tw, th, plx_ui::Crop::Centre), rect, radius, theme::TINT_WHITE);
+    } else {
+        plx_ui::placeholder::flat(q, reason, key, rect, radius);
     }
 }
 
 /// The text a section's `text` bind names, or `None` for a bind with no arm here (`title.*` is the title
 /// pair's, `item.*` the strip card's).
-fn text_of(f: &Frame<'_>, bind: &str) -> Option<String> {
+pub(super) fn text_of(f: &Frame<'_>, bind: &str) -> Option<String> {
+    let words = |ptr: *const std::os::raw::c_char| if ptr.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned() };
     match bind {
+        "title.main" => Some(f.meta.now_playing().filter(|n| n.is_real_episode).map_or_else(|| words(plx_media::route::title_cptr(f.ps)), |n| n.title.clone())),
+        "title.kicker" => Some(f.meta.now_playing().filter(|n| n.is_real_episode).map_or_else(|| words(plx_media::route::ctxline_cptr(f.ps)), |n| plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title))),
         "info.title" => info_content(f.meta).map(|c| c.title),
         "info.summary" => info_content(f.meta).map(|c| c.summary),
         "label.info" => tab_labels(false)[0].map(str::to_owned),
@@ -117,7 +119,7 @@ pub(super) fn line_frame(rect: Rect, size: i32, bold: bool) -> Rect {
 }
 
 /// The shared [`TextView`] a section `text` draws through: wrapped at the compiled `max_lines` and `leading`.
-fn text_view<'a>(content: &'a str, size: i32, bold: bool, ink: Rgba, max_lines: u8, leading: f32) -> TextView<'a> {
+pub(super) fn text_view<'a>(content: &'a str, size: i32, bold: bool, ink: Rgba, max_lines: u8, leading: f32) -> TextView<'a> {
     let view = TextView::new(content, size, ink).leading(leading).max_lines(usize::from(max_lines));
     if bold {
         view.bold()
@@ -163,6 +165,7 @@ pub(super) fn facts_run(
     badges: &[String],
     genres_max: u32,
     playback_fact: bool,
+    size: i32,
     bold: &Live<bool>,
     ink: &Live<Rgba>,
 ) -> Option<FactsRun> {
@@ -175,6 +178,7 @@ pub(super) fn facts_run(
         playback_fact,
         ink: ink.at(holds(f)),
         bold: i32::from(bold.at(holds(f))),
+        size,
     };
     let chips = info_chips(&c, &shape, f.ps, f.measure);
     let row = chips.row(rect.x);
@@ -200,10 +204,11 @@ pub(super) fn facts(
     badges: &[String],
     genres_max: u32,
     playback_fact: bool,
+    size: i32,
     bold: &Live<bool>,
     ink: &Live<Rgba>,
 ) {
-    if let Some(run) = facts_run(f, rect, order, badges, genres_max, playback_fact, bold, ink) {
+    if let Some(run) = facts_run(f, rect, order, badges, genres_max, playback_fact, size, bold, ink) {
         run.draw(q, rect.x, rect.y + rect.h * 0.5, f);
     }
 }
@@ -219,38 +224,59 @@ pub(super) fn facts(
 ///
 /// A single line (a heading) keeps its line when it is empty, as the card's title does; a block collapses.
 pub(super) fn group(compiled: &Compiled, f: &Frame<'_>, q: Painter, state: &CompiledState, g: &OpGroup) {
+    group_for(f, q, &state.ops, g, holds(f), |_| true, plx_ui::label::HAlign::Left, |bind| text_of(f, bind), |_, _, _| false, |paint, op| decor(compiled, f, paint, op, holds(f)));
+}
+
+/// The same data-stack layout inside either a band or a decorative card template.
+pub(super) fn group_for<T: AsRef<DrawOp>>(
+    f: &Frame<'_>, q: Painter, ops: &[T], g: &OpGroup,
+    predicates: impl Fn(&str) -> bool + Copy,
+    present: impl Fn(usize) -> bool + Copy,
+    align: plx_ui::label::HAlign,
+    resolve_text: impl Fn(&str) -> Option<String>,
+    mut paint_text: impl FnMut(Painter, &DrawOp, Rect) -> bool,
+    paint_fixed: impl Fn(Painter, &DrawOp),
+) {
     enum Body<'a> {
-        Text { view: TextView<'a>, rect: Rect, alpha: f32 },
+        Text { view: TextView<'a>, rect: Rect, alpha: f32, op: &'a DrawOp },
         Facts { run: Option<FactsRun>, rect: Rect },
-        Fixed(&'a [DrawOp]),
+        Fixed(Vec<&'a DrawOp>),
     }
     // the texts a child names, owned first so the views can borrow them
-    let ops_of = |c: &crate::hud_format::compile::GroupChild| &state.ops[c.ops.clone()];
+    let ops_of = |c: &crate::hud_format::compile::GroupChild| c.ops.clone().filter(|i| present(*i)).map(|i| ops[i].as_ref()).collect::<Vec<_>>();
     let contents: Vec<Option<String>> = g
         .children
         .iter()
-        .map(|c| match ops_of(c) {
-            [DrawOp::Text { bind, .. }] => text_of(f, bind),
+        .map(|c| match ops_of(c).as_slice() {
+            [DrawOp::Text { bind, .. }] => resolve_text(bind),
             _ => None,
         })
         .collect();
     let mut bodies = Vec::with_capacity(g.children.len());
     let mut items = Vec::with_capacity(g.children.len());
     for (c, content) in g.children.iter().zip(&contents) {
-        let (body, h) = match ops_of(c) {
+        let child_ops = ops_of(c);
+        if !c.ops.is_empty() && child_ops.is_empty() {
+            bodies.push(Body::Fixed(child_ops));
+            items.push(Item::absent());
+            continue;
+        }
+        let (body, h) = match child_ops.as_slice() {
             [DrawOp::Text { rect, size, bold, ink, alpha, max_lines, leading, .. }] => {
                 let text = content.as_deref().unwrap_or("");
-                let view = text_view(text, *size, bold.at(holds(f)), ink.at(holds(f)), *max_lines, *leading);
+                let view = text_view(text, *size, bold.at(predicates), ink.at(predicates), *max_lines, *leading).h(align);
                 // a block with nothing to say takes no room; a heading keeps its line
                 let h = (!text.is_empty() || (*max_lines == 1 && content.is_some())).then(|| view.measure_h(rect.w));
-                (Body::Text { view, rect: *rect, alpha: *alpha }, h)
+                (Body::Text { view, rect: *rect, alpha: *alpha, op: child_ops[0] }, h)
             }
-            [DrawOp::Facts { rect, order, badges, genres_max, playback_fact, bold, ink, .. }] => {
-                let run = facts_run(f, *rect, order, badges, *genres_max, *playback_fact, bold, ink);
+            [DrawOp::Facts { rect, order, badges, genres_max, playback_fact, size, bold, ink }] => {
+                let bold = Live { base: bold.at(predicates), cases: Vec::new() };
+                let ink = Live { base: ink.at(predicates), cases: Vec::new() };
+                let run = facts_run(f, *rect, order, badges, *genres_max, *playback_fact, *size, &bold, &ink);
                 let h = run.as_ref().is_some_and(|r| r.n > 0).then_some(rect.h);
                 (Body::Facts { run, rect: *rect }, h)
             }
-            ops => (Body::Fixed(ops), Some(c.h)),
+            _ => (Body::Fixed(child_ops), Some(c.h)),
         };
         let item = h.map_or_else(Item::absent, Item::new);
         let item = c.after.map_or(item, |a| item.after(a));
@@ -259,23 +285,35 @@ pub(super) fn group(compiled: &Compiled, f: &Frame<'_>, q: Painter, state: &Comp
     }
     for span in VStack::new(&items, g.gap, g.anchor).placed() {
         match &bodies[span.i] {
-            Body::Text { view, rect, alpha } => {
+            Body::Text { view, rect, alpha, op } => {
+                let placed = Rect::new(rect.x, span.y, rect.w, 0.0);
+                if paint_text(q, op, placed) { continue; }
                 view.draw(if *alpha < 1.0 { q.alpha(*alpha) } else { q }, Rect::new(rect.x, span.y, rect.w, 0.0));
             }
             Body::Facts { run: Some(run), rect } => run.draw(q, rect.x, span.y + rect.h * 0.5, f),
             Body::Facts { run: None, .. } => {}
             Body::Fixed(ops) => {
                 let moved = q.translate(0.0, span.y - g.children[span.i].y);
-                for op in *ops {
-                    match op {
-                        DrawOp::Image { rect, bind, radius } => image(f, moved, *rect, bind, *radius),
-                        DrawOp::Icon { rect, asset, ink } => icon(compiled, moved, *rect, asset, ink, f),
-                        DrawOp::Rule { rect, ink } => rule(moved, *rect, ink, f),
-                        _ => {}
-                    }
-                }
+                for op in ops { paint_fixed(moved, op); }
             }
         }
+    }
+}
+
+/// Decorative ops share the section paint path, with an item's predicates layered over the frame's.
+/// Interactive ops have no arm: a card is one focus stop, and validation refuses descendants that need one.
+pub(super) fn decor(compiled: &Compiled, f: &Frame<'_>, q: Painter, op: &DrawOp, holds: impl Fn(&str) -> bool + Copy) {
+    let ink = |value: &Live<Rgba>| Live { base: value.at(holds), cases: Vec::new() };
+    match op {
+        DrawOp::Ground { rect, ink: value, radius } => ground(q, *rect, *radius, &ink(value), f),
+        DrawOp::Rule { rect, ink: value } => rule(q, *rect, &ink(value), f),
+        DrawOp::Icon { rect, asset, ink: value } => icon(compiled, q, *rect, asset, &ink(value), f),
+        DrawOp::Image { rect, bind, radius } => image(f, q, *rect, bind, *radius),
+        DrawOp::Facts { rect, order, badges, genres_max, playback_fact, size, bold, ink: value } => {
+            let bold = Live { base: bold.at(holds), cases: Vec::new() };
+            facts(f, q, *rect, order, badges, *genres_max, *playback_fact, *size, &bold, &ink(value));
+        }
+        _ => {}
     }
 }
 
@@ -307,12 +345,13 @@ pub(super) fn button(f: &Frame<'_>, q: Painter, e: &plx_ui::Env, c: &ControlRect
 
 /// **The chapters strip** (`DrawOp::Strip`): the Shelf held in `row` paints the playing item's chapters at the
 /// op's geometry ([`super::strip`]). The Shelf's springs are stepped by the screen's tick, not here.
-pub(super) fn strip<H: Host>(f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, q: Painter, op: &DrawOp, moved: f32)
+pub(super) fn strip<H: Host>(f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, q: Painter, op: &DrawOp, moved: f32, compiled: &Compiled)
 where
     H::Elem: IndexElem,
 {
     let Some(geo) = Geometry::of(op) else { return };
     let Some(src) = cards_for::<H::Elem>(geo, f.meta, f.ps) else { return };
+    let src = src.declared(op, compiled, f);
     // a Shelf stands at the SCREEN y it is given whatever its painter translates by (`SectionFrame`), so the rise
     // and the lift the walk put on `q` (`moved`) are added to where the strip stands
     let at = SectionFrame::new(geo.card.y + moved, geo.rect);

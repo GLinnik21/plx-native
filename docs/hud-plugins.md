@@ -512,7 +512,9 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   the Shelf's default, or `leading`, D11), `card`: {`art`, `overlay`, `below`, `below_gap`}}: the chapters
   `cards::Shelf` (D11); scroll and seat app-owned. Its cards may run past `SAFE`'s side edges, culled at the screen edge
   as today (`chapters_panel.rs:140-147`; SAFE's own doc lets "a shelf peeking off" reach the edge, `ui/src/consts.rs:88-93`),
-  and the focused card is always revealed inside `SAFE` (I5);
+  and the focused card is always revealed inside `SAFE` (I5). `overlay` and `below` accept decorative cells,
+  including nested `rect`/`vstack`, images, icons, rules, text and facts. They cannot contain `segment`, `actions`,
+  `playbar` or another `strip`: the Shelf owns each card's single focus stop and chapter seek action;
 - `actions` {`axis` (`row`, the default, or `column`), `gap`, `item_h`, `min_w`, `items`}: controls inside a section,
   items shaped as a segment's. Every `button` in it takes one width: the widest label over EVERY variant its slot can
   show, shown or not, floored at `min_w`, so the column never changes width with the item (classic: floor 352, 70 tall,
@@ -531,7 +533,7 @@ collapses as `Item::absent` does, so classic's Chapters pill exists only with ch
 `2 x CONTROL_GAP`, `player_hud.rs:724-727`), `widget` (`disc`
 through `TransportButton`, `pill` through `TabPill` labelled by the command's app string, `button`
 through `widgets::Button`), `size` (px), `rest` (`film` today's, `bare` glyph only, `solid` the focused
-colours at rest, `custom` with allowed inks), `focus` (`accent` today's, `ring`: rest face plus the white
+colours at rest; `custom` is refused because format 1.0 defines no keys for its inks), `focus` (`accent` today's, `ring`: rest face plus the white
 focus ring), `face` (optional: the command's classic glyph when absent). A pair that draws one face twice (`solid` with `accent`) is rejected. Faces: an asset
 or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}`;
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
@@ -631,7 +633,7 @@ Up Next (`layout.up_next`): `replaces` (segment ids), `band`, `align`, `still` (
 `watch_credits` and `play_next` {`rest`, `focus`}, `countdown`
 (`fill_sweep` classic `Button::progress`, `ring` extending it in place, `bar` through
 `widgets::progress_bar` (`ui/src/widgets.rs:1478`), `numeric` through the new i18n key
-`player.up_next.seconds_left` with a `fit_report`). While `slot.kind` is UpNext or Skip in the compact
+`player.up_next.seconds_left`. The compiler reserves the widest localized label over seconds 0 through 10). While `slot.kind` is UpNext or Skip in the compact
 state, the named segments leave the frame and the focus map; the others stay. The block's INSIDE is app-owned and
 drawn by `up_next::draw_over` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
 `TEXT_PRIMARY`, in a 460 box, elided; `up_next.rs:290-298`, `:320-330`), the still a 16:9 `draw_card` at the primary's
@@ -693,10 +695,10 @@ then hides the HUD; over a Skip or Up Next offer it first retires that segment i
 to Discs when its marker ends, when Watch Credits dismisses the offer, or when BACK dismisses it.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
-  of the content conditions the package names (`chapters.present`, `title.is_episode`; a placed `previous` or `next`
-  names `title.is_episode`, because the app drops that pair for a non-episode); `transport.paused` counts as
+  of the content conditions the package names (`chapters.present`, actual `title.is_episode`) and independent
+  navigation-pair availability (named by a placed `previous` or `next`); `transport.paused` counts as
   holding either way, because `toggle_play`'s keys flip it (F13). The compiler enumerates the valuations (two per
-  content condition, so at most four today). The only hard requirement: a More cell with `when: "title.is_episode"`
+  content/navigation condition, so at most eight). Paint-only episode terms remain live and add no geometry axis. The only hard requirement: a More cell with `when: "title.is_episode"`
   fails, since every movie would lose More and with it Stats for nerds, the bug-report path (F16).
 - R2. For every other key-less command (D5), the compiler computes whether some state reachable from the
   root by the edges above places an enabled-capable control carrying it, under EVERY valuation in which the command is
@@ -950,8 +952,9 @@ opener, through ONE shared placer.
   - Timing capsule: hides the whole HUD (`HudPolicy::Hidden`) and sits at the caption band, 836 (F22); a
     package never sees a frame it is up. Unchanged.
   - Info and Chapters: no longer popovers; they become sections (D6) and, as today, draw no scrim (F18).
-  - Scrub-preview card: it already takes the bar's geometry as arguments (F22), so it follows the
-    package's bar; lint requires its top to stay inside `SAFE` in every state that draws the bar.
+  - Scrub-preview card: its knob, horizontal clamp and scale pivot take the compiled track's x/y/width/height,
+    and the renderer applies the bar band's painter translation, so it follows a package's bar through inline
+    motion; lint requires its top to stay inside `SAFE` in every state that draws the bar.
   - Failure read-out and repair alert: own the frame or their group (F1, F22); unchanged.
   - Hold hint: none is wired in the player (F22).
 - Up Next and Skip with menus: a menu is an overlay, so the countdown cannot run while it is open (F19); a
@@ -1018,7 +1021,7 @@ image's proportions rounded to tokens and are approximate.
       { "id": "bar", "gap_before": "SM", "cells": [
         { "align": "start", "playbar": { "w": "fill", "fill": "gold", "track": "RAIL_TRACK", "thickness": 6,
           "knob": "always", "clocks": "ends", "clock_size": "CAPTION", "mark": "busy_only" } }
-      ] },
+      ], "chrome": "steady" },
       { "id": "row", "gap_before": "XS", "z": 1, "cells": [
         { "align": "center", "segment": { "id": "center", "gap": "LG", "items": [
           { "id": "subs", "command": "open_tracks", "tab": "subtitles", "widget": "disc", "size": 52,
@@ -1571,6 +1574,9 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
 - Example: `{"code": "HUD-E0301", "path": "/layout/block/2/cells/0/segment/items/1/command", "rule":
   "command-known", "message": "unknown command skip_back", "hint": "a relative jump is the command seek with a
   signed by in seconds: by -10", "nearest": ["seek"]}`.
+- `HUD-E0905` rejects an interactive descendant of a card template; move it into a band outside the card.
+- `HUD-E0904` rejects a playbar band whose `chrome` is omitted or `fades`: the bar and its preview must stay
+  visible through a scrub. Declare `chrome: steady` on that band, keeping fading controls in separate bands.
 - Codes are grouped by hundreds per rule family. Beyond the example: `HUD-E0601` app text does not fit (context `lang`,
   the string, its measured width, the room, the rect it meets); `HUD-W0602` app text fits but inside `CI_TEXT_SKEW`
   (an error in registry CI); `HUD-E0701` an SVG element outside the mask subset (for `linearGradient`,

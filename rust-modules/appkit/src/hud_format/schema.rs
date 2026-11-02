@@ -98,8 +98,7 @@
 //! the identity (`bold` false, a `pad` of 0, a cell `align` of `start`). The compiler reads them from here.
 //!
 //! **Open items, not settled by the spec** (the compiler and lint inherit them):
-//! * `rest: "custom"`: the spec says "with allowed inks" but names no key, so 1.0 has none; the name is
-//!   accepted and the compiler decides what it draws.
+//! * `rest: "custom"` is refused: 1.0 has no keys that could define its inks; accepted faces are explicit.
 //! * `valign` has no default; a band cell without `align` packs at `start`.
 //! * `label_align` is spelled `centre` (the spec's spelling) while `align` is spelled `center`.
 //! * D10's "app text takes no `w` and no `max_lines`" is a set of [`Rule::IfValue`] entries on the three
@@ -790,7 +789,7 @@ pub const BODY_SIZES: &[&str] = &[
 /// The three alignments of a cell in its band, and of the Up Next column.
 const ALIGNS: Ty = Ty::Enum(&["start", "center", "end"]);
 /// The two focus faces and the four rest faces of a control (the item node and an Up Next button).
-const RESTS: Ty = Ty::Enum(&["film", "bare", "solid", "custom"]);
+const RESTS: Ty = Ty::Enum(&["film", "bare", "solid"]);
 const FOCI: Ty = Ty::Enum(&["accent", "ring"]);
 
 const F_WHEN: Field = Field::opt(
@@ -813,7 +812,7 @@ const F_GAP_AFTER: Field = Field::opt(
 const F_REST: Field = Field::opt(
     "rest",
     RESTS,
-    "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+    "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
 )
 .default("\"film\"");
 const F_FOCUS: Field = Field::opt(
@@ -2508,7 +2507,7 @@ mod tests {
         assert_eq!(en(&CELL, "align"), ["start", "center", "end"]);
         assert_eq!(en(&CELL, "valign"), ["top", "center", "bottom"]);
         assert_eq!(en(&ITEM, "widget"), ["disc", "pill", "button"]);
-        assert_eq!(en(&ITEM, "rest"), ["film", "bare", "solid", "custom"]);
+        assert_eq!(en(&ITEM, "rest"), ["film", "bare", "solid"]);
         assert_eq!(en(&ITEM, "focus"), ["accent", "ring"]);
         assert_eq!(
             en(&UP_NEXT, "countdown"),

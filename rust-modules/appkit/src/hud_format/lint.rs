@@ -309,6 +309,9 @@ pub fn state_name(key: StateKey) -> String {
     if !key.episode {
         name.push_str(",movie");
     }
+    if let Some(episode) = key.real_episode {
+        name.push_str(if episode { ",real-episode" } else { ",not-real-episode" });
+    }
     if !key.chapters {
         name.push_str(",no-chapters");
     }

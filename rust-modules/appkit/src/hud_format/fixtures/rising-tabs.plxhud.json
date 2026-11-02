@@ -116,7 +116,7 @@
             }
           }
         ],
-        "when": "!sections"
+        "when": "!sections", "chrome": "steady"
       },
       {
         "id": "tabs",
