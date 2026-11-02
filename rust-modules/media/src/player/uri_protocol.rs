@@ -44,6 +44,38 @@ pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>) -> String {
         .to_string()
 }
 
+/// Only observed positive, finite video dimensions/rate are useful to an ACB experiment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VideoFacts { pub width: u32, pub height: u32, pub frame_rate: f64, pub bit_rate: Option<u64> }
+impl VideoFacts {
+    fn decode(value: &Value) -> Option<Self> {
+        let dim = |key| value.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0);
+        let rate = value.get("frameRate")?;
+        let frame_rate = rate.as_f64().or_else(|| Some(rate.get("num")?.as_f64()? / rate.get("den")?.as_f64()?))?;
+        if !frame_rate.is_finite() || frame_rate <= 0.0 { return None; }
+        Some(Self { width: dim("width")?, height: dim("height")?, frame_rate, bit_rate: value.get("bitRate").and_then(Value::as_u64).filter(|n| *n > 0) })
+    }
+}
+/// A validated observed ACB envelope; driver-only content, excluded from all diagnostics.
+#[derive(Clone, PartialEq)]
+pub struct AcbSource { pub(crate) media_id: MediaId, pub(crate) video: VideoFacts, text: String }
+impl std::fmt::Debug for AcbSource { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("AcbSource(<opaque>)") } }
+impl AcbSource { pub fn text(&self) -> &str { &self.text } }
+
+/// Pinned Stremio051818e descriptor, allowed ONLY for the explicitly controlled SDR720p24 fixture.
+/// Arbitrary URI/HDR streams require an actual validated sourceInfo envelope instead.
+pub fn build_acb_fixture_video(media_id: &MediaId, video: VideoFacts) -> Option<String> {
+    if video.width != 1280 || video.height != 720 || video.frame_rate != 24.0 { return None; }
+    Some(json!({"content":"movie","context":media_id,"video":{
+        "adaptive":false,"bitRate":video.bit_rate.unwrap_or(8_000_000),
+        "data3D":{"currentPattern":"2d","originalPattern":"2d","typeLR":"LR"},
+        "frameRate":video.frame_rate,"hdrType":"none","height":video.height,"width":video.width,
+        "mediaSei":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"maxContentLightLevel":0,"maxDisplayMasteringLuminance":0,"maxPicAverageLightLevel":0,"minDisplayMasteringLuminance":0,"whitePointX":0,"whitePointY":0},
+        "mediaVui":{"colorPrimaries":2,"matrixCoeffs":2,"transferCharacteristics":2,"videoFullRangeFlag":false},
+        "hfr":false,"path":"network","pixelAspectRatio":{"height":1,"width":1},"rotation":"0","scanType":"VIDEO_PROGRESSIVE","specificRendering":"none"
+    }}).to_string())
+}
+
 /// A call the machine asks the driver to send. Everything a payload needs except the URL.
 #[derive(Clone, PartialEq, Eq)]
 pub enum UriCall {
@@ -58,6 +90,7 @@ pub enum UriCall {
     Play {
         media_id: MediaId,
     },
+    NotifyForeground { media_id: MediaId },
     /// Stop the picture where it is; `currentTime` stops moving.
     Pause {
         media_id: MediaId,
@@ -95,6 +128,7 @@ impl UriCall {
             UriCall::Load { .. } => "load",
             UriCall::Subscribe { .. } => "subscribe",
             UriCall::Play { .. } => "play",
+            UriCall::NotifyForeground { .. } => "notifyForeground",
             UriCall::Pause { .. } => "pause",
             UriCall::Seek { .. } => "seek",
             UriCall::SelectTrack { .. } => "selectTrack",
@@ -109,6 +143,7 @@ impl UriCall {
         Some(
             match self {
                 UriCall::Load { .. } => return None,
+                UriCall::NotifyForeground { media_id } => json!({"connectionId":media_id}),
                 UriCall::Subscribe { media_id } => {
                     json!({ "mediaId": media_id, "subscribe": true })
                 }
@@ -226,6 +261,8 @@ pub struct Message {
     /// Supported explicit events only; `seen` is the diagnostic projection.
     pub(crate) normalized: Vec<Ev>,
     pub(crate) identity_conflict: bool,
+    pub(crate) video_info: Option<VideoFacts>,
+    pub(crate) acb_source: Option<AcbSource>,
     pub(crate) selected_track: Option<(&'static str, i64)>,
     pub(crate) reply_request: Option<plx_platform::tv::uri::RequestId>,
     pub(crate) reply_track: Option<&'static str>,
@@ -326,6 +363,13 @@ pub fn parse_event(payload: &str) -> Message {
         .or_else(|| object.get("error").and_then(Value::as_str))
         .map(diagnostic_text);
     message.current_time = object.get("currentTime").and_then(current_time_of);
+    message.video_info = object.get("videoInfo").and_then(VideoFacts::decode);
+    if let Some(source) = object.get("sourceInfo").filter(|value| value.is_object()) {
+        if let (Some(id), Some(video)) = (source.get("context").and_then(Value::as_str), source.get("video").and_then(VideoFacts::decode)) {
+            message.acb_source = Some(AcbSource {media_id: id.into(), video, text: source.to_string()});
+            if message.video_info.is_none() { message.video_info = Some(video); }
+        }
+    }
     // Known event envelopes can carry the same opaque identity. Diagnostic sourceInfo/streamingInfo
     // schemas are deliberately not interpreted.
     if object.get("mediaId").is_some_and(|id| !id.is_string()) {
@@ -445,6 +489,8 @@ pub fn parse_event(payload: &str) -> Message {
         message.normalized.clear();
         message.current_time = None;
         message.selected_track = None;
+        message.video_info = None;
+        message.acb_source = None;
         // Refusals still belong to an opaque identity and must pass the owner's check.
         if message.identity_conflict {
             message.media_id = None;
@@ -685,6 +731,7 @@ pub enum Method {
     Load,
     Subscribe,
     Play,
+    NotifyForeground,
     Pause,
     Seek,
     SelectTrack,
@@ -702,6 +749,7 @@ impl Method {
             "load" => Method::Load,
             "subscribe" => Method::Subscribe,
             "play" => Method::Play,
+            "notifyForeground" => Method::NotifyForeground,
             "pause" => Method::Pause,
             "seek" => Method::Seek,
             "selectTrack" => Method::SelectTrack,
@@ -806,4 +854,27 @@ mod tests {
         )
         .contains("SECRET"));
     }
+    #[test]
+    fn uri_acb_video_facts_are_strict_and_fixture_payload_has_pinned_shape() {
+        for value in [r#"{"width":1280,"height":720}"#,r#"{"width":0,"height":720,"frameRate":24}"#,r#"{"width":1280,"height":720,"frameRate":-1}"#,r#"{"width":1280,"height":720,"frameRate":{"num":24,"den":0}}"#] {
+            assert!(parse_event(&format!("{{\"videoInfo\":{value}}}")).video_info.is_none());
+        }
+        let facts=parse_event(r#"{"videoInfo":{"width":1280,"height":720,"frameRate":{"num":24000,"den":1001}}}"#).video_info.unwrap();
+        assert_eq!(facts.frame_rate,24000.0/1001.0); assert!(build_acb_fixture_video(&"m".into(),facts).is_none());
+        let facts=parse_event(r#"{"videoInfo":{"width":1280,"height":720,"frameRate":24}}"#).video_info.unwrap();
+        let payload:Value=serde_json::from_str(&build_acb_fixture_video(&"m".into(),facts).unwrap()).unwrap();
+        assert_eq!(payload["context"],"m"); assert_eq!(payload["video"]["hdrType"],"none"); assert_eq!(payload["video"]["mediaVui"]["transferCharacteristics"],2);
+        assert_eq!(serde_json::from_str::<Value>(&UriCall::NotifyForeground{media_id:"m".into()}.payload().unwrap()).unwrap(),json!({"connectionId":"m"}));
+    }
+
+    #[test]
+    fn uri_acb_observed_envelope_round_trips_privately_and_refusal_discards_it() {
+        let input=r#"{"mediaId":"m","sourceInfo":{"context":"m","video":{"width":1280,"height":720,"frameRate":24},"uri":"http://SECRET/?token=SECRET"}}"#;
+        let message=parse_event(input); let source=message.acb_source.as_ref().unwrap();
+        assert!(source.text().contains("SECRET"));
+        assert!(!format!("{message:?} {source:?}").contains("SECRET"));
+        let refused=parse_event(&input.replace("{\"mediaId", "{\"returnValue\":false,\"mediaId"));
+        assert!(refused.acb_source.is_none()); assert!(refused.video_info.is_none());
+    }
+
 }

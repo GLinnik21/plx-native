@@ -34,6 +34,8 @@ pub enum Event {
         session: SessionId,
         ok: bool,
     },
+    AcbTouched { session: SessionId },
+    AcbUnloadDispatched { session: SessionId },
     PollFailed {
         session: SessionId,
     },
@@ -66,6 +68,8 @@ pub enum Fx {
         message: Message,
     },
     Released,
+    UnloadAcb { session: SessionId },
+    AcbQuarantined,
     Fault,
 }
 
@@ -86,6 +90,10 @@ pub struct Lifecycle {
     faulted: bool,
     plane_observed: bool,
     release_reported: bool,
+    acb_touched: bool,
+    acb_unload_requested: bool,
+    bus_released: bool,
+    acb_tail_done: bool,
 }
 impl Default for Lifecycle {
     fn default() -> Self {
@@ -105,10 +113,19 @@ impl Lifecycle {
             faulted: false,
             plane_observed: false,
             release_reported: false,
+            acb_touched: false,
+            acb_unload_requested: false,
+            bus_released: false,
+            acb_tail_done: false,
         }
     }
+    pub fn poll_session(&self) -> Option<SessionId> { self.session.filter(|_| !self.bus_released) }
+    pub fn acb_exit_quarantine(&self) -> bool { self.acb_touched && self.bus_released && self.acb_tail_done && self.phase == Phase::Quarantined }
+    pub fn acb_tail_due(&self, session: SessionId) -> bool {
+        self.session == Some(session) && self.bus_released && self.acb_unload_requested && !self.acb_tail_done
+    }
     pub fn plane_open(&self) -> bool {
-        self.plane_observed
+        self.plane_observed || self.acb_touched
     }
     pub fn phase(&self) -> Phase {
         self.phase
@@ -270,6 +287,7 @@ impl Lifecycle {
                 if let UriCall::SelectTrack { kind, .. } = &pending.call {
                     message.reply_track = Some(*kind);
                 }
+                if message.acb_source.as_ref().is_some_and(|source| self.media_id.as_ref() != Some(&source.media_id)) { message.acb_source = None; message.video_info = None; }
                 // Bus success is not the method's ACK. Subscription events do not acknowledge a call.
                 if let Some(accepted) = message.return_value {
                     pending.ack = Some(reply.ok && accepted);
@@ -334,7 +352,13 @@ impl Lifecycle {
                     }
                 }
             }
-            Event::PollFailed { session } if self.session == Some(session) => {
+            Event::AcbTouched {session} if self.session == Some(session) && self.phase == Phase::Open => { self.acb_touched = true; }
+            Event::AcbUnloadDispatched {session} if self.session == Some(session) && self.bus_released && self.acb_unload_requested && !self.acb_tail_done => {
+                self.acb_tail_done = true;
+                self.phase = Phase::Quarantined;
+                fx.push(Fx::AcbQuarantined);
+            }
+            Event::PollFailed { session } if self.session == Some(session) && !self.bus_released => {
                 self.phase = Phase::Quarantined;
                 self.fault(fx);
             }
@@ -346,6 +370,15 @@ impl Lifecycle {
                 CloseStatus::Released
                     if matches!(self.phase, Phase::Closing | Phase::Quarantined) =>
                 {
+                    if self.acb_touched {
+                        self.bus_released = true;
+                        self.deadline = None;
+                        if !self.acb_unload_requested {
+                            self.acb_unload_requested = true;
+                            fx.push(Fx::UnloadAcb {session});
+                        }
+                        return;
+                    }
                     self.phase = Phase::Released;
                     self.plane_observed = false;
                     self.session = None;
@@ -770,4 +803,24 @@ mod tests {
             matches!(&own[..], [Fx::Deliver { method: Method::Play, message, .. }] if message.accepted() == Some(false))
         );
     }
+    #[test]
+    fn uri_acb_bus_release_runs_unloaded_once_then_retains_plane_quarantine() {
+        for overdue in [false,true] {
+            let mut m=open();
+            step(&mut m,Event::AcbTouched{session:SID});
+            step(&mut m,Event::Close{now_ms:0,allowance_ms:10_000});
+            if overdue { step(&mut m,Event::Tick{now_ms:10_001}); }
+            assert_eq!(step(&mut m,Event::Status{session:SID,status:CloseStatus::Released}),[Fx::UnloadAcb{session:SID}]);
+            assert!(m.acb_tail_due(SID)); assert!(!m.released()); assert!(m.plane_open());
+            assert!(step(&mut m,Event::Status{session:SID,status:CloseStatus::Released}).is_empty());
+            assert_eq!(step(&mut m,Event::AcbUnloadDispatched{session:SID}),[Fx::AcbQuarantined]);
+            assert!(step(&mut m,Event::AcbUnloadDispatched{session:SID}).is_empty());
+            assert_eq!(m.phase(),Phase::Quarantined); assert!(!m.released()); assert!(!m.acb_tail_due(SID));
+            assert!(m.acb_exit_quarantine()); assert!(m.poll_session().is_none());
+            assert!(step(&mut m,Event::Tick{now_ms:100_000}).is_empty());
+            assert!(step(&mut m,Event::Status{session:SID,status:CloseStatus::Released}).is_empty());
+            assert!(step(&mut m,Event::Open(Shape::Anon)).iter().all(|fx|!matches!(fx,Fx::Open{..})));
+        }
+    }
+
 }

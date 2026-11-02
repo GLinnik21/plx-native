@@ -14,6 +14,8 @@
 //! of the stream) stops logically at once. The ownership reducer keeps its adapter slot and window
 //! until the worker acknowledges successful unregister; unresolved release blocks another start.
 //! A deadline quarantines ownership, and a late successful acknowledgement still permits cleanup.
+//! ACB experiments add a separate fence: after bus release they dispatch UNLOADED once and retain
+//! plane quarantine until process exit, because asynchronous ACB completion is not proven.
 //!
 //! **What stays out of it.** No Engine thread runs, so nothing is reported to Plex; nothing here
 //! sets `ps.finished`, so a stop cannot mark the item watched. The URL is held by [`UriSession`] for
@@ -25,7 +27,7 @@
 
 use super::log;
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
-use super::uriprobe::{build_load, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant};
+use super::uriprobe::{build_load, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult, RouteStartTransaction};
 use plx_base::task::MainThread;
 use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
@@ -42,6 +44,7 @@ const CANVAS: (c_int, c_int) = (1_920, 1_080);
 pub struct UriSession {
     probe: UriProbe,
     lifecycle: Lifecycle,
+    acb_source: Option<super::uri_protocol::AcbSource>,
     transport: &'static dyn UriMedia,
     /// The media URL, for the `load` payload (re-built if the register ladder sends it again). Taken
     /// out the moment the session ends.
@@ -73,7 +76,7 @@ impl UriSession {
         let app_id = plx_base::paths::app_id().to_owned();
         let mut window_id = None;
         let mut created = false;
-        if variant != Variant::NoWindow && super::sink().window_mode() == super::VP_EXPORTED {
+        if !variant.acb() && variant != Variant::NoWindow && super::sink().window_mode() == super::VP_EXPORTED {
             let id = unsafe { super::sink().create_window(mt) };
             if id.is_null() {
                 log("uriprobe: t=0 window id=none (the television refused to create one)");
@@ -93,6 +96,7 @@ impl UriSession {
         let mut session = UriSession {
             probe: UriProbe::new(config),
             lifecycle: Lifecycle::new(),
+            acb_source: None,
             transport,
             url: url.to_owned(),
             app_id,
@@ -122,6 +126,8 @@ impl UriSession {
         self.attempt
     }
 
+    pub(super) fn acb_exit_quarantine(&self) -> bool { self.lifecycle.acb_exit_quarantine() }
+
     pub fn closing(&self) -> bool {
         matches!(self.lifecycle.phase(), super::uri_lifecycle::Phase::Closing | super::uri_lifecycle::Phase::Quarantined)
     }
@@ -136,14 +142,14 @@ impl UriSession {
     /// off, including the events of calls that failed on the spot, runs to the end before this
     /// returns.
     fn poll(&self) -> Result<UriPoll, String> {
-        match self.lifecycle.session() {
+        match self.lifecycle.poll_session() {
             Some(session) => self.transport.poll(session),
             None => Ok(UriPoll { replies: Vec::new(), close: CloseStatus::Released }),
         }
     }
 
     fn advance(&mut self, settle: &mut dyn Settler, mt: &MainThread, poll: Result<UriPoll, String>, now_ms: u64) {
-        let polled_session = self.lifecycle.session();
+        let polled_session = self.lifecycle.poll_session();
         match poll {
             Ok(poll) => {
                 for reply in poll.replies {
@@ -190,7 +196,15 @@ impl UriSession {
                         let ok = self.transport.close(session).is_ok();
                         events.push_back(LifeEvent::CloseQueued { session, ok });
                     }
-                    LifeFx::Deliver { method, ok, message } => self.inbox.push_back(UriEvent::Reply { method, ok, message }),
+                    LifeFx::Deliver { method, ok, mut message } => {
+                        if let Some(source) = message.acb_source.take() { self.acb_source = Some(source); }
+                        self.inbox.push_back(UriEvent::Reply { method, ok, message });
+                    }
+                    LifeFx::UnloadAcb {session} => {
+                        // The actual actuator is main-thread only; enqueue its addressed tail.
+                        self.inbox.push_back(UriEvent::AcbReleaseTail {session});
+                    }
+                    LifeFx::AcbQuarantined => log("uriprobe: acb=quarantined bus=released plane-release=unproven need-relaunch"),
                     LifeFx::Released => { self.inbox.push_back(UriEvent::Closed); }
                     LifeFx::Fault => {
                         log(&format!("uriprobe: t={now_ms} transport ownership unresolved or reply stream lost"));
@@ -209,6 +223,12 @@ impl UriSession {
 
     /// Step the machine once and execute what it asks for, in order.
     fn feed(&mut self, event: UriEvent, settle: &mut dyn Settler, mt: &MainThread, now_ms: u64) {
+        if let UriEvent::AcbReleaseTail {session} = event {
+            if !self.lifecycle.acb_tail_due(session) { return; }
+            unsafe { super::sink().plane_unload(mt) };
+            self.lifecycle(LifeEvent::AcbUnloadDispatched {session}, now_ms);
+            return;
+        }
         let mut effects = Vec::new();
         self.probe.step(event, now_ms, &mut effects);
         for effect in effects {
@@ -222,6 +242,11 @@ impl UriSession {
     /// Run one effect. `Some` is the event of an effect the transport refused to carry out.
     fn execute(&mut self, effect: UriEffect, settle: &mut dyn Settler, mt: &MainThread, now_ms: u64) -> Option<UriEvent> {
         match effect {
+            UriEffect::Acb {request, op} => {
+                let invoked = self.acb_execute(&op, mt, now_ms);
+                // Round up so a frame-start stamp never shortens the requested post-call spacing.
+                Some(UriEvent::AcbAnswered {request, invoked, completed_ms: self.now_ms().saturating_add(1)})
+            }
             UriEffect::Open(shape) => { self.lifecycle(LifeEvent::Open(shape), now_ms); None }
             UriEffect::Call(call) => { self.lifecycle(LifeEvent::Call(call), now_ms); None }
             UriEffect::Close => {
@@ -251,6 +276,40 @@ impl UriSession {
                 log(&line);
                 None
             }
+        }
+    }
+
+    fn acb_execute(&mut self, op: &AcbOp, mt: &MainThread, now_ms: u64) -> bool {
+        let sink = super::sink();
+        match op {
+            AcbOp::Check {dass} => {
+                let mode = sink.window_mode();
+                let initialized = super::ACB_OK.load(std::sync::atomic::Ordering::Relaxed);
+                let ptype = super::PTYPE.load(std::sync::atomic::Ordering::Relaxed);
+                let available = unsafe { sink.plane_probe_dass_available(mt) };
+                log("uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection");
+                log(&format!("uriprobe: t={now_ms} acb gate mode={mode} boot_handle={initialized} actual_ptype={ptype} dass_available={available}"));
+                mode == plx_platform::tv::sink::VP_ACB && initialized && ptype == 0 && (!*dass || available)
+            }
+            AcbOp::MediaId {media_id} => {
+                let Some(session) = self.lifecycle.session() else { return false };
+                self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
+                let Ok(id) = std::ffi::CString::new(&**media_id) else { return false };
+                unsafe { sink.plane_probe_media_id(mt, id.as_ptr()) == 1 }
+            }
+            AcbOp::Loaded => unsafe { sink.plane_probe_loaded(mt) == 1 },
+            AcbOp::Connect {enabled: false} => { log("uriprobe: acb control connectDass skipped (same timed slot)"); true }
+            AcbOp::Connect {enabled: true} => unsafe { sink.plane_probe_connect_dass(mt) == 1 },
+            AcbOp::VideoData {media_id, video} => {
+                log(&format!("uriprobe: acb video facts width={} height={} frameRate={} bitRate={:?}", video.width, video.height, video.frame_rate, video.bit_rate));
+                let observed = self.acb_source.as_ref().filter(|source| &source.media_id == media_id && source.video == *video);
+                let payload = observed.map(|source| source.text().to_owned()).or_else(|| super::uri_protocol::build_acb_fixture_video(media_id, *video));
+                let Some(payload) = payload else { log("uriprobe: acb invalid descriptor: no observed envelope or exact SDR720p24 fixture"); return false };
+                log(if observed.is_some() {"uriprobe: acb descriptor=observed-envelope"} else {"uriprobe: acb descriptor=explicit-SDR720p24-fixture"});
+                let Ok(payload) = std::ffi::CString::new(payload) else { return false };
+                unsafe { sink.plane_send_video_data(mt, payload.as_ptr()) == 1 }
+            }
+            AcbOp::Display => unsafe { sink.plane_probe_finish(mt) == 1 }
         }
     }
 
@@ -930,6 +989,36 @@ mod tests {
                 *rig.transport.close_status.lock().unwrap() = Some(CloseStatus::Released);
                 drive(&mut rig.ps, &mut rig.pa);
                 assert!(!rig.pa.uri_live());
+            });
+        }
+
+        #[test]
+        fn uri_acb_exported_host_is_invalid_without_creating_window_or_registering() {
+            let _serial=plx_base::testlock::serial(); let _host=ExportedHost::arm();
+            let _=logged(|| {
+                for variant in [Variant::AcbControl,Variant::AcbDass] {
+                    let mut rig=Rig::new(variant);
+                    assert!(!rig.session.as_ref().unwrap().window);
+                    rig.frame(0);
+                    assert!(rig.is_done()); assert_eq!(rig.status(),crate::route::RouteStartStatus::Failed);
+                    assert!(rig.transport.opened().is_empty()); assert!(rig.transport.sent().is_empty());
+                }
+            });
+        }
+
+        #[test]
+        fn uri_acb_quarantined_plane_exits_without_waiting_again_for_released_bus() {
+            let _serial=plx_base::testlock::serial();
+            let _=logged(|| {
+                let mut rig=Rig::new(Variant::AtLoad); rig.load_answered();
+                let mut session=rig.session.take().unwrap();
+                let sid=session.lifecycle.session().unwrap();
+                session.lifecycle(LifeEvent::AcbTouched{session:sid},0);
+                rig.pa.install_uri(session); stop(&mut rig.ps,&mut rig.pa); drive(&mut rig.ps,&mut rig.pa);
+                assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
+                let exit=crate::player::engine::exit_native_with(&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
+                assert_eq!(exit,crate::player::engine::NativeExit::WorkerInFirmware);
+                assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
             });
         }
 

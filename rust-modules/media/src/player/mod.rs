@@ -2759,14 +2759,12 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
 #[no_mangle]
 pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let r = if reply.is_null() {
-            String::new()
-        } else {
-            unsafe { CStr::from_ptr(reply) }
-                .to_string_lossy()
-                .into_owned()
+        let (code, binding_error) = if reply.is_null() { (None, false) } else {
+            let text = unsafe { CStr::from_ptr(reply) }.to_string_lossy();
+            let code = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|value| value.get("errorCode").and_then(serde_json::Value::as_i64));
+            (code, text.contains("ERROR_06"))
         };
-        log(&format!("acb_cb ev={ev} reply={r}"));
+        log(&format!("acb_cb ev={ev} errorCode={code:?} ERROR_06={binding_error}"));
     }));
 }
 

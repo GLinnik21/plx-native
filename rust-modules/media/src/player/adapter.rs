@@ -297,6 +297,9 @@ impl PlayerAdapter {
         self.uri.as_ref().map(|session| session.route_start_attempt())
     }
 
+    #[cfg(feature = "devtriggers")]
+    pub(super) fn uri_acb_exit_quarantine(&self) -> bool { self.uri.as_ref().is_some_and(|session| session.acb_exit_quarantine()) }
+
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
     #[cfg(feature = "devtriggers")]

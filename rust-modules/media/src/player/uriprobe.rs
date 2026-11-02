@@ -25,6 +25,12 @@
 //! separate ownership reducer retains the registration/window until confirmed release. Named→anon
 //! retry waits in `AwaitingClose`, then arms the new register deadline after `Closed`.
 //!
+//! The ACB arms require an existing boot-created playerType0 handle and a known SDR720p24
+//! fixture unless a validated native sourceInfo envelope arrives. They start service Play at
+//! loadCompleted independently of the staged 200/200/200/300ms bind. Bus release triggers one
+//! main-thread UNLOADED, then plane ownership stays quarantined until process exit: each arm
+//! requires a fresh process. No callback or return value is promoted to proof of a picture.
+//!
 //! The probe cannot see the video plane. The summary reports what the service said; the tester's
 //! eyes are the verdict, and no `video=shown` token is guessed.
 use plx_platform::tv::uri::{Shape, UriReply};
@@ -55,8 +61,8 @@ const TIME_LOG_EVERY_MS: u64 = 1_000;
 // What the tester chooses and what the route says
 
 /// What the trigger file asks for: where the window id goes (empty or `load`, `late`, `none`), and
-/// `drive`, which binds like `load` and then drives the transport. One build answers all four, so
-/// the tester needs fewer round trips.
+/// `drive`, which binds like `load` and then drives the transport, plus two explicit controlled
+/// ACB experiment arms. These share one developer build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     /// `windowId` in the `load` payload.
@@ -68,6 +74,10 @@ pub enum Variant {
     /// `windowId` in the `load` payload, then pause, resume, seek, a text and an audio track, and
     /// subtitle enable, each logged with the position around it.
     Drive,
+    /// Controlled known-SDR720p24 experiment: foreground + staged ACB, without connectDass.
+    AcbControl,
+    /// Identical controlled experiment, adding only fixed-zero connectDass in its timed slot.
+    AcbDass,
 }
 
 impl Variant {
@@ -79,6 +89,8 @@ impl Variant {
             "late" => Some(Variant::Late),
             "none" => Some(Variant::NoWindow),
             "drive" => Some(Variant::Drive),
+            "acb-control" => Some(Variant::AcbControl),
+            "acb-dass" => Some(Variant::AcbDass),
             _ => None,
         }
     }
@@ -89,6 +101,8 @@ impl Variant {
             Variant::Late => "late",
             Variant::NoWindow => "none",
             Variant::Drive => "drive",
+            Variant::AcbControl => "acb-control",
+            Variant::AcbDass => "acb-dass",
         }
     }
 
@@ -96,6 +110,9 @@ impl Variant {
     fn binds_at_load(self) -> bool {
         matches!(self, Variant::AtLoad | Variant::Drive)
     }
+
+    /// Is this one of the controlled, fresh-process ACB experiment arms?
+    pub fn acb(self) -> bool { matches!(self, Self::AcbControl | Self::AcbDass) }
 
     /// Does the session run the transport script once the service says `playing`?
     pub fn drives(self) -> bool {
@@ -155,12 +172,27 @@ pub struct Config {
 // Payloads. The only place a URL is spelled into text.
 
 pub use super::uri_protocol::{build_load, parse_event, scrub_text, MediaId, Message, Method, UriCall};
+use super::uri_protocol::VideoFacts;
 use super::uri_protocol::{Ev, Seen};
 #[cfg(test)]
 use super::uri_protocol::SCRUBBED_TEXT_CHARS;
 
 // ---------------------------------------------------------------------------------------------
 // Events in
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AcbRequest(u64);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AcbStep { Check, MediaId, Loaded, Connect, VideoData, Display }
+#[derive(Clone, Debug, PartialEq)]
+pub enum AcbOp {
+    Check { dass: bool },
+    MediaId { media_id: MediaId },
+    Loaded,
+    Connect { enabled: bool },
+    VideoData { media_id: MediaId, video: VideoFacts },
+    Display,
+}
 
 /// What the driver feeds [`UriProbe::step`].
 #[derive(Clone, Debug, PartialEq)]
@@ -171,6 +203,8 @@ pub enum UriEvent {
     Back,
     /// The previous registration actually released; the retry can now register.
     Closed,
+    AcbReleaseTail { session: plx_platform::tv::uri::SessionId },
+    AcbAnswered { request: AcbRequest, invoked: bool, completed_ms: u64 },
     /// Correlation assigned by the ownership reducer before this call can answer.
     Dispatched { method: Method, kind: Option<&'static str>, request: plx_platform::tv::uri::RequestId },
     /// Time has passed: the deadlines are checked against `now_ms`.
@@ -222,10 +256,11 @@ pub enum Settle {
 
 /// What the machine asks the driver to do, in order. Holds ids and log text, never the URL or a
 /// payload, so a derived `Debug` is safe.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum UriEffect {
     /// Register on the bus as `Shape`; the outcome returns as the `register` reply.
     Open(Shape),
+    Acb { request: AcbRequest, op: AcbOp },
     /// Send this call; the transport tags its answers with the method.
     Call(UriCall),
     /// Unregister (idempotent). The service unloads a pipeline whose load client leaves the bus.
@@ -246,6 +281,9 @@ enum Phase {
     Idle,
     Registering { deadline: u64 },
     AwaitingClose,
+    AcbBinding { request: AcbRequest, step: AcbStep, deadline: u64 },
+    AcbWaitingVideo { deadline: u64 },
+    AcbWait { next: AcbStep, deadline: u64 },
     Loading { deadline: u64 },
     SettingWindow { deadline: u64 },
     Starting { deadline: u64 },
@@ -260,6 +298,7 @@ impl Phase {
     fn name(self) -> &'static str {
         match self {
             Phase::Idle | Phase::Registering { .. } | Phase::AwaitingClose => "register",
+            Phase::AcbBinding {..} | Phase::AcbWaitingVideo {..} | Phase::AcbWait {..} => "acb",
             Phase::Loading { .. } => "load",
             Phase::SettingWindow { .. } => "setWindowId",
             Phase::Starting { .. } => "play",
@@ -375,6 +414,9 @@ pub struct UriProbe {
     time_unparsed_ms: Option<u64>,
     placed: Option<(u32, u32)>,
     facts: Facts,
+    acb_video: Option<VideoFacts>,
+    acb_sequence: u64,
+    foreground_sent: bool,
     requests: std::collections::BTreeMap<(Method, Option<&'static str>), plx_platform::tv::uri::RequestId>,
 }
 
@@ -402,6 +444,9 @@ impl UriProbe {
             time_unparsed_ms: None,
             placed: None,
             facts: Facts::default(),
+            acb_video: None,
+            acb_sequence: 0,
+            foreground_sent: false,
             requests: std::collections::BTreeMap::new(),
         }
     }
@@ -431,6 +476,8 @@ impl UriProbe {
                 fx.push(UriEffect::Open(Shape::Anon));
             }
             UriEvent::Closed => {},
+            UriEvent::AcbReleaseTail {..} => {},
+            UriEvent::AcbAnswered {request, invoked, completed_ms} => self.acb_answered(request, invoked, completed_ms, fx),
             UriEvent::Dispatched { method, kind, request } => { self.requests.insert((method, kind), request); },
             UriEvent::Tick => self.tick(now_ms, fx),
             UriEvent::Reply { method, ok, message } => self.reply(method, ok, &message, now_ms, fx),
@@ -458,8 +505,11 @@ impl UriProbe {
         };
         let armed = format!("armed variant={} scheme={} kind={kind} window={window} app={}", c.variant.label(), c.scheme.label(), c.app_id);
         fx.push(self.line(now_ms, &armed));
-        self.phase = Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS };
-        fx.push(UriEffect::Open(self.shape));
+        if self.config.variant.acb() { self.acb_dispatch(AcbStep::Check, now_ms, fx); }
+        else {
+            self.phase = Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS };
+            fx.push(UriEffect::Open(self.shape));
+        }
     }
 
     /// An accepted call starts provisional. An explicit paused observation can confirm pause;
@@ -483,6 +533,9 @@ impl UriProbe {
 
     fn tick(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
         match self.phase {
+            Phase::AcbBinding {deadline, ..} if now_ms >= deadline => self.stop(now_ms, End::Timeout("acb"), fx),
+            Phase::AcbWait {next, deadline} if now_ms >= deadline => self.acb_dispatch(next, now_ms, fx),
+            Phase::AcbWaitingVideo {deadline} if now_ms >= deadline => self.stop(now_ms, End::Timeout("acb-video"), fx),
             Phase::Registering { deadline } if now_ms >= deadline => self.stop(now_ms, End::Timeout("register"), fx),
             Phase::Loading { deadline } if now_ms >= deadline => self.stop(now_ms, End::Timeout("load"), fx),
             Phase::SettingWindow { deadline } if now_ms >= deadline => {
@@ -561,14 +614,15 @@ impl UriProbe {
                 if ok {
                     fx.push(self.line(now_ms, &format!("register shape={shape} ok")));
                     self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
-                    let window_id = if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
+                    let window_id = if self.config.variant.acb() { Some("window_id_dummy".to_owned()) }
+                        else if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
                     fx.push(UriEffect::Call(UriCall::Load { window_id }));
                 } else {
                     fx.push(self.line(now_ms, &format!("register shape={shape} refused({})", message.why())));
                     self.next_shape_or_stop(now_ms, End::Refused("register"), fx);
                 }
             }
-            Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } => {
+            Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::AcbBinding {..} | Phase::AcbWait {..} | Phase::AcbWaitingVideo {..} => {
                 self.service_message(method, ok, message, now_ms, fx)
             }
             _ => {}
@@ -592,6 +646,10 @@ impl UriProbe {
     fn service_message(&mut self, method: Method, ok: bool, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
         if self.requests.get(&(method, message.reply_track)).is_some_and(|request| message.reply_request != Some(*request)) { return; }
         if message.identity_conflict || (self.media_id.is_some() && message.media_id.is_some() && self.media_id != message.media_id) { return; }
+        if let Some(video) = message.video_info {
+            self.acb_video = Some(video);
+            if matches!(self.phase, Phase::AcbWaitingVideo {..}) { self.acb_dispatch(AcbStep::MediaId, now_ms, fx); }
+        }
         let denied = !ok || message.return_value == Some(false);
         let text = message.why();
         if let Some(kind) = message.confirmed_track {
@@ -615,6 +673,11 @@ impl UriProbe {
                     return;
                 }
                 self.stop(now_ms, End::Refused("play"), fx);
+                return;
+            }
+            Method::NotifyForeground => {
+                fx.push(self.line(now_ms, &format!("call notifyForeground {}", Self::said(ok, denied, &text))));
+                if denied { self.stop(now_ms, End::Refused("notifyForeground"), fx); }
                 return;
             }
             Method::Pause => {
@@ -675,6 +738,10 @@ impl UriProbe {
         }
         if let (Some(media_id), false) = (self.media_id.clone(), self.subscribed) {
             self.subscribed = true;
+            if self.config.variant.acb() && !self.foreground_sent {
+                self.foreground_sent = true;
+                fx.push(UriEffect::Call(UriCall::NotifyForeground {media_id: media_id.clone()}));
+            }
             fx.push(UriEffect::Call(UriCall::Subscribe { media_id }));
         }
         self.events(message, now_ms, fx);
@@ -747,7 +814,7 @@ impl UriProbe {
             Ev::EndOfStream => {
                 fx.push(self.line(now_ms, "ev=endOfStream"));
                 self.facts.eos_ev = true;
-                if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. }) {
+                if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::AcbBinding {..} | Phase::AcbWait {..} | Phase::AcbWaitingVideo {..}) {
                     self.stop(now_ms, End::Eos, fx);
                 }
             }
@@ -783,6 +850,13 @@ impl UriProbe {
         }
         self.facts.loaded_ms = Some(now_ms.saturating_sub(self.started_ms));
         self.settle(Settle::Started, fx);
+        if self.config.variant.acb() {
+            // Start service transport independently: some firmware emits videoInfo only after Play.
+            self.play(now_ms, fx);
+            if self.acb_video.is_some() { self.acb_dispatch(AcbStep::MediaId, now_ms, fx); }
+            else { self.phase = Phase::AcbWaitingVideo {deadline: now_ms.saturating_add(LOAD_TIMEOUT_MS)}; fx.push(self.line(now_ms, "acb waiting for real videoInfo dimensions/rate")); }
+            return;
+        }
         match (self.config.variant, self.config.window_id.clone(), self.media_id.clone()) {
             (Variant::Late, Some(window_id), Some(media_id)) => {
                 self.facts.window_call = WindowCall::Pending;
@@ -791,6 +865,46 @@ impl UriProbe {
             }
             _ => self.play(now_ms, fx),
         }
+    }
+
+    fn acb_dispatch(&mut self, step: AcbStep, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        let op = match step {
+            AcbStep::Check => AcbOp::Check { dass: self.config.variant == Variant::AcbDass },
+            AcbStep::MediaId => AcbOp::MediaId {media_id: self.media_id.clone().expect("loaded identity")},
+            AcbStep::Loaded => AcbOp::Loaded,
+            AcbStep::Connect => AcbOp::Connect {enabled: self.config.variant == Variant::AcbDass},
+            AcbStep::VideoData => AcbOp::VideoData {media_id: self.media_id.clone().expect("loaded identity"), video: self.acb_video.expect("observed video facts")},
+            AcbStep::Display => AcbOp::Display,
+        };
+        self.acb_sequence = self.acb_sequence.checked_add(1).expect("bounded ACB script");
+        let request = AcbRequest(self.acb_sequence);
+        self.phase = Phase::AcbBinding {request, step, deadline: now_ms.saturating_add(LATE_ID_TIMEOUT_MS)};
+        fx.push(self.line(now_ms, &format!("acb request={} step={step:?}", self.acb_sequence)));
+        fx.push(UriEffect::Acb {request, op});
+    }
+
+    fn acb_answered(&mut self, request: AcbRequest, invoked: bool, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        let Phase::AcbBinding {request: expected, step, deadline} = self.phase else { return };
+        if expected != request { return; }
+        if now_ms >= deadline { self.stop(now_ms, End::Timeout("acb"), fx); return; }
+        fx.push(self.line(now_ms, &format!("acb answer step={step:?} invoked={invoked} (not plane proof)")));
+        if !invoked { self.stop(now_ms, End::Refused("acb"), fx); return; }
+        let next = match step {
+            AcbStep::Check => {
+                self.phase = Phase::Registering {deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS)};
+                fx.push(UriEffect::Open(self.shape)); return;
+            }
+            AcbStep::MediaId => AcbStep::Loaded,
+            AcbStep::Loaded => AcbStep::Connect,
+            AcbStep::Connect => AcbStep::VideoData,
+            AcbStep::VideoData => AcbStep::Display,
+            AcbStep::Display => {
+                self.phase = if self.facts.playing_ms.is_some() { Phase::Playing {frozen_at: now_ms.saturating_add(FROZEN_TIME_MS)} }
+                    else { Phase::Starting {deadline: now_ms.saturating_add(PLAY_TIMEOUT_MS)} };
+                return;
+            }
+        };
+        self.phase = Phase::AcbWait {next, deadline: now_ms.saturating_add(if step == AcbStep::VideoData {300} else {200})};
     }
 
     fn play(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
@@ -1795,6 +1909,124 @@ mod tests {
         assert_eq!(rig.feed(UriEvent::Closed),[UriEffect::Open(Shape::Anon)]);
         assert!(rig.tick(REGISTER_TIMEOUT_MS-1).is_empty());
         let fx=rig.tick(1); assert!(rig.probe.is_done()); assert!(summary_of(&fx).contains("timeout:register"));
+    }
+
+    #[test]
+    fn uri_acb_experiment_variants_are_explicit_opt_in() {
+        for arm in ["acb-control", "acb-dass"] {
+            assert!(Variant::from_trigger(arm).is_some(), "missing controlled arm {arm}");
+        }
+        assert_eq!(Variant::from_trigger(""), Some(Variant::AtLoad));
+        assert!(Variant::from_trigger("acb").is_none());
+    }
+
+    fn acb_request(fx: &[UriEffect]) -> AcbRequest {
+        fx.iter().find_map(|fx| match fx {UriEffect::Acb {request,..} => Some(*request), _ => None}).expect("ACB effect")
+    }
+    fn acb_loaded(variant: Variant, early_video: bool) -> (Rig, Vec<UriEffect>) {
+        let mut rig=Rig::new(variant,None);
+        let fx=rig.start(); let request=acb_request(&fx);
+        let fx=rig.feed(UriEvent::AcbAnswered {request,invoked:true,completed_ms:rig.now});
+        assert!(fx.contains(&UriEffect::Open(Shape::Named)));
+        let fx=rig.msg("register","");
+        assert!(fx.contains(&load(Some("window_id_dummy"))));
+        let fx=rig.msg("load",r#"{"returnValue":true,"mediaId":"_m1"}"#);
+        let calls:Vec<_>=fx.iter().filter_map(|fx| match fx {UriEffect::Call(call)=>Some(call.method()),_=>None}).collect();
+        assert_eq!(calls,["notifyForeground","subscribe"]);
+        if early_video { rig.msg("subscribe",r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24}}"#); }
+        let fx=rig.msg("subscribe",r#"{"mediaId":"_m1","loadCompleted":true}"#);
+        assert_eq!(fx.iter().filter(|fx| matches!(fx,UriEffect::Call(UriCall::Play{..}))).count(),1);
+        (rig,fx)
+    }
+    #[test]
+    fn uri_acb_pair_has_same_real_delays_and_only_connect_invocation_differs() {
+        let run=|variant| {
+            let (mut rig,mut fx)=acb_loaded(variant,true);
+            let mut trace=Vec::new();
+            for step in 0..5 {
+                let request=acb_request(&fx);
+                let op=fx.iter().find_map(|fx| match fx {UriEffect::Acb{op,..}=>Some(op.clone()),_=>None}).unwrap();
+                trace.push((rig.now,op));
+                fx=rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms:rig.now});
+                if step<4 {
+                    let delay=if step==3 {300} else {200};
+                    assert!(rig.tick(delay-1).is_empty()); fx=rig.tick(1);
+                }
+            }
+            assert!(!fx.iter().any(|fx| matches!(fx,UriEffect::Call(UriCall::Play{..}))),"no second service Play");
+            trace
+        };
+        let control=run(Variant::AcbControl); let dass=run(Variant::AcbDass);
+        assert_eq!(control.iter().map(|(t,_)|*t-control[0].0).collect::<Vec<_>>(),[0,200,400,600,900]);
+        for (i,(a,b)) in control.iter().zip(&dass).enumerate() {
+            if i==2 { assert!(matches!(a.1,AcbOp::Connect{enabled:false})); assert!(matches!(b.1,AcbOp::Connect{enabled:true})); }
+            else { assert_eq!(a,b); }
+        }
+    }
+    #[test]
+    fn uri_acb_video_after_play_and_early_playing_do_not_erase_binding_waits() {
+        let (mut rig,fx)=acb_loaded(Variant::AcbDass,false);
+        assert!(!fx.iter().any(|fx| matches!(fx,UriEffect::Acb{..})));
+        rig.msg("subscribe",r#"{"mediaId":"_m1","playing":true}"#);
+        rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":100}"#);
+        assert!(matches!(rig.probe.phase,Phase::AcbWaitingVideo{..}));
+        let mut fx=rig.msg("subscribe",r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24}}"#);
+        for step in 0..5 {
+            let request=acb_request(&fx);
+            fx=rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms:rig.now});
+            if step<4 { fx=rig.tick(if step==3 {300} else {200}); }
+        }
+        assert!(matches!(rig.probe.phase,Phase::Playing{..}),"retains first playing, needs no second event");
+    }
+    #[test]
+    fn uri_acb_late_frame_preserves_delay_and_stop_cancels_every_stage() {
+        for at in 0..5 {
+            let (mut rig,mut fx)=acb_loaded(Variant::AcbDass,true);
+            for step in 0..at {
+                let request=acb_request(&fx); rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms:rig.now});
+                fx=rig.tick(if step==3 {300} else {200});
+            }
+            let request=acb_request(&fx);
+            let stop=rig.feed(UriEvent::Back); assert_eq!(closes(&stop),1);
+            assert!(rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms:rig.now}).is_empty());
+            assert!(rig.tick(100_000).is_empty());
+            assert!(rig.msg("subscribe",r#"{"videoInfo":{"width":1280,"height":720,"frameRate":24}}"#).is_empty());
+            assert!(rig.feed(UriEvent::Back).is_empty());
+        }
+        let (mut rig,fx)=acb_loaded(Variant::AcbDass,true);
+        rig.feed(UriEvent::AcbAnswered{request:acb_request(&fx),invoked:true,completed_ms:rig.now});
+        let fx=rig.tick(2_000); let request=acb_request(&fx);
+        assert_eq!(fx.iter().filter(|fx| matches!(fx,UriEffect::Acb{..})).count(),1);
+        rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms:rig.now});
+        assert!(rig.tick(199).is_empty()); assert!(rig.tick(1).iter().any(|fx| matches!(fx,UriEffect::Acb{op:AcbOp::Connect{..},..})));
+    }
+    #[test]
+    fn uri_acb_missing_video_eos_error_and_timeout_stop_without_binding() {
+        for end in ["eos","error","timeout","back"] {
+            let (mut rig,_)=acb_loaded(Variant::AcbControl,false);
+            let fx=match end {
+                "eos"=>rig.msg("subscribe",r#"{"mediaId":"_m1","endOfStream":true}"#),
+                "error"=>rig.msg("subscribe",r#"{"mediaId":"_m1","errorCode":104}"#),
+                "timeout"=>rig.tick(LOAD_TIMEOUT_MS),
+                _=>rig.feed(UriEvent::Back),
+            };
+            assert!(rig.probe.is_done(),"{end}"); assert_eq!(closes(&fx),1);
+            assert!(!fx.iter().any(|fx| matches!(fx,UriEffect::Acb{..})));
+        }
+    }
+
+    #[test]
+    fn uri_acb_delays_anchor_to_call_completion_and_late_answers_stop() {
+        let (mut rig,fx)=acb_loaded(Variant::AcbDass,true);
+        let request=acb_request(&fx); let completed_ms=rig.now+50;
+        rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms});
+        assert!(rig.tick(249).is_empty());
+        assert!(rig.tick(1).iter().any(|fx|matches!(fx,UriEffect::Acb{op:AcbOp::Loaded,..})));
+        let (mut rig,fx)=acb_loaded(Variant::AcbDass,true);
+        let request=acb_request(&fx); let completed_ms=rig.now+LATE_ID_TIMEOUT_MS;
+        let fx=rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms});
+        assert!(rig.probe.is_done()); assert_eq!(closes(&fx),1);
+        assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Acb{..})));
     }
 
 }

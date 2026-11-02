@@ -641,8 +641,8 @@ pub(super) fn exit_native_with(
         while pa.uri_live() {
             super::uriprobe_drive::drive(&mut ps, pa);
             if !pa.uri_live() { break; }
-            if clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
-                log("exit: URI registration unresolved; the display is left to the OS");
+            if pa.uri_acb_exit_quarantine() || clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
+                log("exit: URI ownership unresolved; the display is left to the OS");
                 if let Some(session) = pa.take_uri() { std::mem::forget(session); }
                 leak_parked_for_exit(pa);
                 return NativeExit::WorkerInFirmware;
