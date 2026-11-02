@@ -493,6 +493,15 @@ mod tests {
 /// pass 0 when there is none, and an unparseable date yields the empty string rather than a
 /// half-formatted one — every caller draws a date line only when it is non-empty.
 pub fn pretty_date(iso: &str, year: i64) -> String {
+    calendar_date(iso, year, |y, m, d| plx_platform::i18n::current().date(y, m, d))
+}
+
+/// Hero facts use a named month: `2 Mar 2024`, localized through the release-caption formatter.
+pub fn hero_date(iso: &str, year: i64) -> String {
+    calendar_date(iso, year, |y, m, d| plx_platform::i18n::current().named_date(y, m, d))
+}
+
+fn calendar_date(iso: &str, year: i64, format: impl FnOnce(i32, u8, u8) -> Option<String>) -> String {
     let parts: Vec<&str> = iso.split('-').collect();
     if parts.len() == 3 {
         if let (Ok(y), Ok(mo), Ok(da)) = (
@@ -501,7 +510,7 @@ pub fn pretty_date(iso: &str, year: i64) -> String {
             parts[2].parse::<i64>(),
         ) {
             if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
-                if let Some(date) = plx_platform::i18n::current().date(y, m, d) { return date; }
+                if let Some(date) = format(y, m, d) { return date; }
             }
         }
     }

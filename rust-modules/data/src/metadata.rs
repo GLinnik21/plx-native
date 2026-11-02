@@ -1924,6 +1924,14 @@ fn set_watched_local(state: &mut MetadataState, at: &crate::viewstate::ViewAt, o
     if d.sid != at.sid {
         return hit;
     }
+    // OnDeck is another mounted copy of an episode, independent of the season window below.
+    // Keep its toggle and resume point in step even when that episode is not loaded in the strip.
+    if let Some(ep) = d.on_deck.as_mut().filter(|ep|
+        at.covers_parts(d.sid, &ep.rk, 3, &d.rk, ep.season)) {
+        ep.watched = on;
+        ep.resume_ms = 0;
+        hit = true;
+    }
     // A show- or season-scoped change that names THIS show reaches its episodes and the season
     // tabs' counts as a whole: the server scrobbles every leaf, so the strip must not keep ticks
     // the user just cleared (or lack ones they just set).

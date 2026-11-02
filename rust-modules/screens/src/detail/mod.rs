@@ -3241,8 +3241,7 @@ fn hero_blurb<'a>(
     if let Some(d) = d {
         if d.is_show {
             if let Some(ep) = hero::hero_episode(d) {
-                let kicker = plx_ui::fmt::episode_kicker(ep.season, ep.index, &ep.title);
-                let lead = if kicker.is_empty() { kicker } else { format!("{kicker}: ") };
+                let lead = plx_appkit::hero_layout::episode_lead(ep.season, ep.index, &ep.title);
                 return (lead, ep.summary.clone());
             }
         }

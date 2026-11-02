@@ -140,6 +140,14 @@ impl LocaleContext {
         let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
         Some(self.date.format(&d).to_string())
     }
+    /// A named-month date for hero facts; uses the same localized month names as release captions.
+    pub fn named_date(&self, year: i32, month: u8, day: u8) -> Option<String> {
+        icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
+        let date = self.month_day(month, day, MonthWidth::Medium)?;
+        Some(if self.language == Language::Hu { format!("{year}. {date}") }
+            else { format!("{date} {year}") })
+    }
+
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
     /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Belarusian and Russian the genitive

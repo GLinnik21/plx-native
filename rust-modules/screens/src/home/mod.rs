@@ -3669,7 +3669,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     };
     let title_h = hero_logo::band_h(LogoRung::Hero);
     let lead = if episode {
-        plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
+        plx_appkit::hero_layout::episode_lead(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
     } else { String::new() };
     let synopsis = (!hero.summary.is_empty() || !lead.is_empty())
         .then(|| plx_ui::hero_synopsis(&hero.summary, &lead));

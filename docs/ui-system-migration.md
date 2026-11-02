@@ -641,7 +641,7 @@ and ratings reserve their full 34 px and 30 px bands. Facts reserve a CAPTION li
 stack upward from the facts bottom, above the action row. Home's poster tops rest at y=817.
 
 `widgets::hero_identity` draws edition, kind, genres and rating with outlined resolution and
-accessibility chips in regular CAPTION. `widgets::hero_facts` draws the year (movies) or aired date (episodes), then
+accessibility chips in regular CAPTION. `widgets::hero_facts` draws the year (movies) or named-month aired date (episodes), then
 runtime or remaining time; source attribution follows within the width bound. Direct Play and
 Direct Stream are implicit; conversion and subscription warnings remain visible. Provider scores
 and captions use regular weight. `HeroLogo` retains the shared constant-area logo rule and falls
@@ -650,7 +650,7 @@ LABEL/26 with 36 px leading and a three-line cap.
 
 Play/Resume has a 224 px minimum and grows for translations. Home places PageDots beside its
 controls. A show's started on-deck hero names and marks that episode, using its rating key and
-Leaf scope. More opens that episode's existing item menu; its play request uses the addressed
+Leaf scope. The optimistic metadata edit updates the on-deck copy even outside the loaded season. More opens that episode's existing item menu; its play request uses the addressed
 fetch path, independent of the season loaded below. Unstarted or finished shows retain whole-show
 watched actions.
 

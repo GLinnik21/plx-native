@@ -622,3 +622,12 @@ fn render_in_english_is_scoped_and_nests() {
     assert_eq!(inside, "3.5");
     assert_eq!(current().language(), Language::Be);
 }
+
+#[test]
+fn hero_named_dates_share_release_months_and_keep_hungarian_year_first() {
+    let en = LocaleContext::resolve(Preference::En, None, None, None, None);
+    assert_eq!(en.named_date(2024, 3, 2).as_deref(), Some("2 Mar 2024"));
+    assert_eq!(en.named_date(2023, 2, 29), None);
+    let hu = LocaleContext::resolve(Preference::Hu, None, None, None, None);
+    assert!(hu.named_date(2024, 3, 2).unwrap().starts_with("2024. "));
+}

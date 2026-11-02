@@ -134,3 +134,12 @@ fn pdf_proposal_movie_facts_use_year_and_remaining_time() {
     let fresh = Detail { resume_ms: 0, ..d };
     assert_eq!(meta_facts(&fresh, None), ("2024".into(), Some(plx_ui::fmt::duration(112 * 60_000))));
 }
+
+#[test]
+fn pdf_proposal_episode_facts_use_a_named_month_and_validate_resume() {
+    let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    assert_eq!(time_facts(2024, "2024-03-02", true, 48 * 60_000, 10 * 60_000),
+        ("2 Mar 2024".into(), Some("38 min left".into())));
+    assert_eq!(time_facts(2024, "2024-02-30", true, 48 * 60_000, 49 * 60_000),
+        ("2024".into(), Some(plx_ui::fmt::duration(48 * 60_000))));
+}

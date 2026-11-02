@@ -155,9 +155,15 @@ pub fn disc_caps_with<const N: usize>(
     open
 }
 
+/// The same episode lead on Home and Detail, including its prose separator.
+pub fn episode_lead(season: i64, index: i64, title: &str) -> String {
+    let kicker = plx_ui::fmt::episode_kicker(season, index, title);
+    if kicker.is_empty() { kicker } else { format!("{kicker}: ") }
+}
+
 /// The date and duration shared by Home and Detail. A valid resume point replaces total duration.
 pub fn time_facts(year: i64, aired: &str, episode: bool, dur_ms: i64, resume_ms: i64) -> (String, Option<String>) {
-    let date = if episode { plx_ui::fmt::pretty_date(aired, year) }
+    let date = if episode { plx_ui::fmt::hero_date(aired, year) }
         else if year > 0 { year.to_string() } else { String::new() };
     let resumes = plx_data::metadata::resume_ns(resume_ms, dur_ms) > 0;
     let length = (dur_ms >= 60_000).then(|| {

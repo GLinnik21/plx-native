@@ -273,10 +273,10 @@ pub fn watch_index(set: HeroSet) -> Option<usize> {
 }
 
 /// Has this show been started AT ALL? PMS puts `S1E1 off=0` on deck for a show nobody has
-/// touched, so "there is something on deck" is not the same question as "this show is underway" —
-/// ported verbatim from `ui/detail.rs::show_started`.
+/// touched, so "there is something on deck" is not the same question as "this show is underway".
+/// A locally marked on-deck leaf remains the subject until the server replaces it.
 pub fn show_started(d: &Detail) -> bool {
-    d.on_deck.as_ref().map(|e| e.resume_ms > 0).unwrap_or(false)
+    d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0 || e.watched)
         || d.seasons.iter().any(|s| s.viewed_leaf_count > 0)
 }
 
@@ -323,7 +323,7 @@ pub fn hero_watch_state(
     }
 }
 
-/// [`hero_watch_state`] for `d`. Ported verbatim from `ui/detail.rs::hero_mark`.
+/// Watch state of the episode displayed by the hero, or the series when there is no on-deck subject.
 pub fn hero_mark(d: &Detail) -> PosterMark {
     if let Some(ep) = hero_episode(d) {
         hero_watch_state(false, false, ep.watched, plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
@@ -1471,6 +1471,11 @@ mod tests {
         );
         d.seasons[0].viewed_leaf_count = 1;
         assert_eq!(hero_episode(&d).map(|ep| ep.rk.as_str()), Some("e1"));
+        d.seasons[0].viewed_leaf_count = 0;
+        d.on_deck.as_mut().unwrap().watched = true;
+        assert_eq!(hero_episode(&d).map(|ep| ep.rk.as_str()), Some("e1"),
+            "an optimistic watched flip retains the displayed leaf until the server replaces OnDeck");
+        assert_eq!(hero_mark(&d), PosterMark::Watched);
     }
 
     #[test]
