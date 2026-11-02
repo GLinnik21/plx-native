@@ -640,7 +640,9 @@ Home and Detail share `theme::hero` treatment tokens: a 224 px minimum Play/Resu
 the same stops to fused and layered rendering on both screens. The local corner wedges remain
 the shared `widgets::hero_scrim`; Detail enables the right wedge for its people column. The left
 wedge peaks at .75 rather than the proposal's .72: the existing contrast test measured 2.44:1 at
-the end of a long Detail title over pure-white art at .72, below its 2.5:1 floor.
+the end of a long Detail title over pure-white art at .72, below its 2.5:1 floor. The right
+feather starts at 60% rather than 65% of the frame to cover the top of a four-line credits block;
+its .50 peak remains unchanged. At 65%, that wrapped-credit case measured 2.34:1 over pure white.
 
 Detail's metadata and rating coordinates describe the tops of their complete 34 px and 30 px
 bands. Text and marks are centred within those bands, so the shared vertical stack's 16 px gaps

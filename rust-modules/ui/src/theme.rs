@@ -204,6 +204,9 @@ pub mod hero {
     pub const PLAY_MIN_W: f32 = 224.0;
     /// Atmospheric midpoint, 62% of the distance from the 34% origin to the foot.
     pub const SCRIM_MID_Y: f32 = (0.34 + (1.0 - 0.34) * 0.62) * crate::consts::SCR_H;
+    /// Start the people-column feather early enough for four wrapped credit lines to retain
+    /// the 2.5:1 pure-white contrast floor under the lighter atmosphere.
+    pub const SCRIM_RIGHT_TOP_Y: f32 = 0.60 * crate::consts::SCR_H;
     /// Opacity at the atmospheric midpoint. The corner wedges supply local contrast.
     pub const SCRIM_MID_A: f32 = 0.55;
     /// Opacity at the foot: retain the artwork's colour under the action row.

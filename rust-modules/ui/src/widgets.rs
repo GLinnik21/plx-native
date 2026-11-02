@@ -2403,7 +2403,7 @@ const HERO_SCRIM_KNEE: f32 = 0.39 * crate::consts::SCR_H; // 421.2
 /// risk (`GL_DITHER` is deliberately off) — ~1 8-bit code per 4–5px near its origin. If it bands,
 /// make these SMALLER (steeper = fewer codes per pixel); never re-enable dithering.
 const HERO_SCRIM_R_W: f32 = 700.0;
-const HERO_SCRIM_R_TOP: f32 = 0.65 * crate::consts::SCR_H; // 702
+const HERO_SCRIM_R_TOP: f32 = theme::hero::SCRIM_RIGHT_TOP_Y;
 const HERO_SCRIM_R_A: f32 = 0.50;
 
 /// Where the frame-wide ATMOSPHERIC ramp starts — the treatment's other half, which both heroes
