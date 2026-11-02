@@ -17,7 +17,7 @@ pub const PEOPLE_INK: [f32; 4] = theme::TEXT_SECONDARY;
 /// (L=0.317) the row needed α≈0.79 of scrim for 4.5:1 — an essentially black hero corner — so
 /// `widgets_hero_scrim_tests` carried it at a lowered 2.6 floor and wrote the ink step down as
 /// deferred. Tightening the hero rhythm is what came due: every rung the row moves up sits in
-/// less of the atmospheric ramp (it is linear in `y`), and the two named rungs the owner asked
+/// less of the atmospheric ramp (each segment is linear in `y`), and the two named rungs the owner asked
 /// for cost 0.16 of contrast, which no scrim retune buys back cheaply — the ramp's own
 /// measurement says it is 97% of the drop, and steepening it darkens the artwork the hero exists
 /// to show. One ink step costs nothing on screen and takes the row to the ordinary 3.0 floor,
