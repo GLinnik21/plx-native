@@ -199,6 +199,7 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
     Ok(match effect {
         AppFx::Session(command) => json!({"session":wire(command)?}),
         AppFx::SessionEffect(effect) => json!({"session_effect":wire(effect)?}),
+        AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => json!({"playback_trace":"status"}),
         AppFx::Preferences(_) => return Err("unsupported controlled preferences effect"),
         AppFx::Store(id, command) => json!({"store":id.ord().0,"command":store(command)?}),
         AppFx::StoreWork(work) => json!({"work":work_value(work)?}),
@@ -275,6 +276,7 @@ pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
             SessionEvent::Pump => json!("pump"),
             _ => return Err("unsupported Home Session delivery"),
         },
+        AppMsg::PlaybackTrace(plx_platform::playback_trace::Status::Off) => json!({"playback_trace":"off"}),
         AppMsg::Store(command) => store(command)?,
         AppMsg::StoreWork(work) => work_value(work)?,
         AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
@@ -369,6 +371,16 @@ mod tests {
     use super::encode;
     use plx_screens::registry::AppArg;
     use plx_machine::machine::{Fx, NavOp};
+
+    #[test]
+    fn controlled_diagnostics_only_records_the_deterministic_off_query() {
+        use plx_platform::playback_trace::{Command, Status};
+        use plx_screens::registry::{AppFx, AppMsg};
+        assert_eq!(super::app(&AppFx::PlaybackTrace(Command::Status)), Ok(serde_json::json!({"playback_trace":"status"})));
+        assert_eq!(super::message(&AppMsg::PlaybackTrace(Status::Off)), Ok(serde_json::json!({"playback_trace":"off"})));
+        assert!(super::app(&AppFx::PlaybackTrace(Command::Start)).is_err());
+        assert!(super::message(&AppMsg::PlaybackTrace(Status::Recording)).is_err());
+    }
 
     #[test]
     fn controlled_content_records_preview_and_panel_payloads() {

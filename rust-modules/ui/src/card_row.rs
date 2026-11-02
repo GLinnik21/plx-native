@@ -15,7 +15,7 @@ use crate::hstack::{Flow, Item};
 use crate::vstack::{Anchor, VStack};
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
-use crate::widgets::{card, pop_factor, Art};
+use crate::widgets::{pop_factor, Art};
 use crate::{Painter, Rect, Spring};
 use std::os::raw::c_char;
 
@@ -23,7 +23,7 @@ pub const MAX_ROW_ITEMS: usize = 24; // == home MAX_ITEMS
 
 /// A card row's motion + geometry. [`RowStyle::HOME`] is the single value both the home grid and the
 /// detail Related row pass, so the two rows are indistinguishable in look and animation.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct RowStyle {
     pub w: f32,
     pub h: f32,
@@ -49,6 +49,42 @@ pub struct RowStyle {
     /// A reserve from the physical edge, intersected with the shared safe area;
     /// [`RowStyle::with_right_reserve`] is how a screen declares one.
     pub right_reserve: f32,
+    /// **Where a focused tile's label block starts**: centred on the card whenever the block sits
+    /// inside the panel (every row but the HUD's chapter strip), or at the card's own leading edge
+    /// ([`LabelStart::Leading`]). See [`anchor_label`].
+    pub label_start: LabelStart,
+    /// **A rim drawn over the focused tile** ([`Rim`]), `None` for every row but a strip of tiles
+    /// laid over the video plane (the HUD's chapters, `docs/hud-plugins.md` D11), where the tile's
+    /// own sheen does not read against moving picture.
+    pub rim: Option<Rim>,
+    /// **A seat grows from rest**: a focused card the shelf is handed without a deliberate move (a restore, a reconcile,
+    /// the seat an opening page makes) is adopted at full pop for every row but a strip that OPENS with its seat
+    /// ([`with_growing_seat`](Self::with_growing_seat)), which pops it in from 1.0 like a deliberate move does.
+    pub seat_grows: bool,
+    /// **A label block that hangs `Some(d)` px under the card's UNSCALED bottom edge and is whole from
+    /// the first frame**, `None` for every row but the HUD's chapter strip (`docs/hud-plugins.md` D11):
+    /// the shelf's block hangs [`UNDER_DROP`] below and rides its band, which opens when the row takes
+    /// focus because a row stands under it that the band makes room for. A strip over the video plane has
+    /// nothing under it for a band to open for, and its name stands where the strip's persistent labels do.
+    pub label_drop: Option<f32>,
+}
+
+/// Where a label block starts under its tile: [`RowStyle::label_start`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelStart {
+    /// Centred on the card when the block fits the panel there ([`anchor_label`]'s first case): the
+    /// default every shelf keeps.
+    Centre,
+    /// From the card's own leading edge: [`anchor_label`]'s centred case is skipped, so the name
+    /// and the time under a chapter card stand at its left as the card's own text does.
+    Leading,
+}
+
+/// A ring painted over the focused tile at its popped rect ([`RowStyle::rim`]): `width` px of `ink`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rim {
+    pub width: f32,
+    pub ink: [f32; 4],
 }
 impl RowStyle {
     /// The furthest a row of `n` cells scrolls: the content past the viewport, 0 for a row that
@@ -56,6 +92,26 @@ impl RowStyle {
     pub fn max_scroll(&self, n: usize) -> f32 {
         let viewport = SCR_W - 2.0 * self.margin_x;
         (n as f32 * (self.w + self.gap) - self.gap - viewport).max(0.0)
+    }
+
+    /// This style with its adopted seat growing from rest ([`RowStyle::seat_grows`]).
+    pub const fn with_growing_seat(self) -> RowStyle {
+        RowStyle { seat_grows: true, ..self }
+    }
+
+    /// This style with its focused tile ringed by `rim` ([`RowStyle::rim`]).
+    pub const fn with_rim(self, rim: Rim) -> RowStyle {
+        RowStyle { rim: Some(rim), ..self }
+    }
+
+    /// This style with its label block hung `drop` px under the card and shown whole ([`RowStyle::label_drop`]).
+    pub const fn with_label_drop(self, drop: f32) -> RowStyle {
+        RowStyle { label_drop: Some(drop), ..self }
+    }
+
+    /// This style with its label blocks started at the card's leading edge ([`LabelStart::Leading`]).
+    pub const fn with_leading_labels(self) -> RowStyle {
+        RowStyle { label_start: LabelStart::Leading, ..self }
     }
 
     /// This style with `r` px of the panel's right edge reserved — see [`RowStyle::right_reserve`].
@@ -82,6 +138,10 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: false,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        seat_grows: false,
+        label_drop: None,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
     /// the scroll, the glow ring and the heading lift are all one vocabulary — and a different
@@ -108,6 +168,10 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: false,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        seat_grows: false,
+        label_drop: None,
     };
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
     /// magnification + scroll), so cast animates like the poster shelves.
@@ -129,6 +193,10 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: true,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        seat_grows: false,
+        label_drop: None,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -149,13 +217,21 @@ impl RowStyle {
         k_scroll: K_SCROLL,
         circular: true,
         right_reserve: 0.0,
+        label_start: LabelStart::Centre,
+        rim: None,
+        seat_grows: false,
+        label_drop: None,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
-    /// style's fixed radius scaled with the focus pop.
+    /// style's fixed radius scaled with the focus pop. A style with a [`rim`](Self::rim) keeps its radius
+    /// unscaled: the ring frames the card and rings at that radius, so a card grown past it shows its ground
+    /// beyond the ring's arc.
     #[inline]
     pub fn tile_radius(&self, rect: Rect, s: f32) -> f32 {
         if self.circular {
             rect.w * 0.5
+        } else if self.rim.is_some() {
+            self.radius
         } else {
             self.radius * s
         }
@@ -325,6 +401,9 @@ impl CardRow {
     /// move (a restore, a reconcile, a landing), so the tile must be drawn as it was left rather than
     /// growing from rest. The cell past the spring array shares `overflow`, as in [`CardRow::scale`].
     pub fn adopt(&mut self, i: usize, sty: &RowStyle) {
+        if sty.seat_grows {
+            return;
+        }
         if i < MAX_ROW_ITEMS { self.scale[i].jump(sty.focus_scale) } else { self.overflow.jump(sty.focus_scale) }
     }
     /// Put the springs that settle around a focused card where focus on cell `i` of `n` rests them,
@@ -597,6 +676,48 @@ pub fn scroll_into_view(cur: f32, fc: usize, n: usize, w: f32, gap: f32, vw: f32
     let lo = fc as f32 * slot + w + gap - vw; // right edge (+gap) on screen
     let hi = fc as f32 * slot - gap; // left edge (−gap) on screen
     reveal(cur, lo, hi, max_sx)
+}
+
+/// **The most cards a row of style `sty` paints at once while it rests**, whatever its length: the number a
+/// price counts when it must hold for every chapter list, and the most `cards::Shelf` paints.
+///
+/// The Shelf paints a card when [`on_axis`](crate::on_axis)`(x - scroll, w, SCR_W, lead)` holds, `x` being
+/// [`tile_rect`]'s and `lead` its `cull_margin`: against the SCREEN, never against the row's own width (a
+/// strip whose rect is 1728 wide still paints the card that peeks out past it). And a row at rest is not at
+/// scroll 0: [`scroll_into_view`] moves it only when the focused card would clip, so it rests on one of four
+/// lattices, none of which depends on how many cards there are: scroll 0; the scroll that just fits the
+/// focused card's trailing edge (moving right, `lo`); the one that just fits its leading edge (moving left,
+/// `hi`); and the end (`max_sx`). The first and the last leave a whole card at their edge, with no partial one; the middle two
+/// leave a PARTIAL card at the left, and paint one more.
+///
+/// The four scrolls are `scroll_into_view`'s own answers on a synthetic row (a screenful past the focus each
+/// way), not formulas spelled out a second time, and each is counted with `on_axis`. `0` for a style with no
+/// pitch.
+pub fn most_painted_at_rest(sty: &RowStyle, lead: f32) -> usize {
+    let pitch = sty.w + sty.gap;
+    if !pitch.is_finite() || pitch <= 0.0 {
+        return 0;
+    }
+    let vw = SCR_W - 2.0 * sty.margin_x;
+    let focus = (SCR_W / pitch).ceil() as usize + 2;
+    let n = 3 * focus;
+    let into_view = |cur: f32, fc: usize| scroll_into_view(cur, fc, n, sty.w, sty.gap, vw);
+    let end = into_view(0.0, n - 1);
+    // `focus` is a whole screenful from both ends, so `lo` and `hi` are the scrolls it clamps to
+    let rests = [0.0, into_view(0.0, focus), into_view(end, focus), end];
+    let reach = sty.w.max(1.0);
+    rests
+        .into_iter()
+        .map(|scroll| {
+            // the cards that can be on the screen at all, one to spare either side; `on_axis` decides
+            let first = ((scroll - sty.margin_x - lead - reach) / pitch).floor().max(0.0) as usize;
+            let last = (((scroll - sty.margin_x + SCR_W) / pitch).ceil().max(0.0) as usize).min(n - 1);
+            (first..=last)
+                .filter(|&i| crate::on_axis(tile_rect(i, sty.margin_x, pitch, scroll, 0.0, (sty.w, sty.h)).x, sty.w, SCR_W, lead))
+                .count()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// **The FULL height a `sty` heading ever rises by** — half the focus pop's growth, which is what a
@@ -885,7 +1006,8 @@ pub fn paint_visible(p: Painter, rect: Rect, scale: f32, labelled: bool) -> bool
     paint_visible_with_label_h(p, rect, scale, label_h)
 }
 
-/// A card whose caller declares a taller persistent caption block.
+/// A card whose caller declares how far below it something is drawn (`label_h`): a grid of value
+/// lines passes [`SORT_VALUE_REACH`].
 pub fn paint_visible_with_label_h(p: Painter, rect: Rect, scale: f32, label_h: f32) -> bool {
     if p.is_recording() { return true; }
     let mut bounds = tile_paint_bounds(rect, scale, label_h > 0.0);
@@ -908,6 +1030,23 @@ pub fn draw_tile(
     sty: &RowStyle,
     resume: Option<f32>,
 ) {
+    draw_tile_led(p, art, rect, s, sty, resume, None);
+}
+
+/// [`draw_tile`] for a tile whose art was asked for ahead of its draw ([`lead_focused`], which is
+/// the same call for a resting tile as for a lifted one): `led` is that answer, `None` resolves in
+/// the draw. A caller that needs the answer BEFORE it draws (to key a cache on the art, to see that
+/// it is still dissolving in) resolves once and hands it on; a second resolve would be a second
+/// occurrence of the card in `card_motion`.
+pub fn draw_tile_led(
+    p: Painter,
+    art: Art,
+    rect: Rect,
+    s: f32,
+    sty: &RowStyle,
+    resume: Option<f32>,
+    led: Option<crate::widgets::ArtImage>,
+) {
     let rad = sty.tile_radius(rect, s);
     // every tile carries a resting shadow + 1px perimeter stroke, both FOLDED into card()'s single
     // composite pass; a near-neighbour mid-pop (s slightly >1) lifts smoothly toward the focused
@@ -915,10 +1054,21 @@ pub fn draw_tile(
     let f = pop_factor(s, sty.focus_scale);
     // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
     // tile's size (a fan's live name) must not re-layout on every frame of a pop.
-    card(p, rect.scaled(1.0 / s), art, rad, true, s, f);
+    crate::widgets::card_named_led(p, rect.scaled(1.0 / s), art, None, rad, true, s, f, led);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }
+}
+
+/// Optional title metrics for a shared card label and its marquee. Absent keeps the native shelf face.
+#[derive(Clone, Copy, Debug)]
+pub struct LabelFace {
+    pub size: i32,
+    pub bold: bool,
+    pub ink: [f32; 4],
+    pub width: f32,
+    pub offset_x: f32,
+    pub offset_y: f32,
 }
 
 /// The metadata block under a FOCUSED tile: a centred title, optionally a second caption line
@@ -931,15 +1081,13 @@ pub fn draw_tile(
 /// from constants they could not see — [`TileLabel::height`] is the answer they were restating.
 #[derive(Default, Clone)]
 pub struct TileLabel {
+    pub title_face: Option<LabelFace>,
     pub title: Option<std::ffi::CString>,
     pub caption: Option<std::ffi::CString>,
-    /// A grid's optional third line, below its identity (title and year).
-    pub sort_info: Option<std::ffi::CString>,
-    pub sort_mark: &'static [crate::widgets::MarkLayer],
-    /// Scores have emphasis; ordinary sort metadata uses the regular details face.
-    pub sort_bold: bool,
-    /// Unfocused persistent captions elide; only the focused caption may marquee.
-    pub static_text: bool,
+    /// The sort value line of a library grid sorted by something other than Title or Random: the
+    /// ONE line such a grid draws under every poster, in place of the title and details block
+    /// ([`draw_sort_value`]). `None` for every other label.
+    pub value: Option<SortValue>,
     /// lead the FIRST line drawn with the amber play triangle (Continue Watching's tile has no play
     /// disc): the title when the block has one, else the details line. The mark hangs to the left of
     /// the line, which is centred as if it were not there. Set only while a press on the tile plays
@@ -967,6 +1115,31 @@ pub struct TileLabel {
     pub within_tile: bool,
 }
 
+/// **The sort value under one poster** of a library grid sorted by something other than Title or
+/// Random (spec "Under posters", item 5): the words, an optional "+1" for a second version, the
+/// rating provider's mark. The words are built once per item and cached by the screen; the grid
+/// only borrows them ([`draw_sort_value`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SortValue {
+    /// "98%", "2h 14m", "4K", "27 Oct", "Oct 2024": numbers and their units joined by a no-break
+    /// space. When the value is empty: the en dash for data the server does not have, "Never"
+    /// under Date viewed and Plays for something nobody played.
+    pub text: String,
+    /// A second version exists ("4K +1"): the first thing dropped when the line does not fit.
+    pub plus: bool,
+    /// The rating provider's mark, hung to the LEFT of the number so the number stays on the
+    /// poster's axis; dropped, after the "+1", when the line does not fit. Empty for every sort
+    /// that is not a score.
+    pub mark: &'static [crate::widgets::MarkLayer],
+    /// The value is empty: the dash for data the server does not have, or the word "Never" for
+    /// something never played. Either is drawn at [`theme::SORT_VALUE_MISSING_INK`] and never bold,
+    /// because an empty value stays quiet even under the focused poster.
+    pub missing: bool,
+}
+
+/// The "+1" a second version adds, after a no-break space.
+pub const SORT_VALUE_PLUS: &str = "\u{a0}+1";
+
 /// A label band part-way through opening or closing: its whole height, its expansion and how far
 /// what stands below it is drawn above its place ([`TileLabel::revealed`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -993,15 +1166,6 @@ pub struct LineBox {
 }
 
 impl TileLabel {
-    /// Fixed room for three lines; unknown values leave their own slot blank.
-    pub const SORT_BAND_H: f32 = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP
-        + 2.0 * UNDER_CAPTION_H + crate::consts::UNDER_LABEL_AIR;
-
-    pub fn all_lines(&self) -> [Option<LineBox>; 3] {
-        let [title, caption] = self.lines();
-        let top = UNDER_DROP + UNDER_LINE_H + 2.0 * UNDER_LINE_GAP + UNDER_CAPTION_H;
-        [title, caption, self.sort_info.as_ref().map(|_| self.line(top, top + UNDER_CAPTION_H))]
-    }
     /// **A line of the block is the label BAND's content, so it may not be on screen before the
     /// room for it is.** `band_h` is the band's whole height ([`CardRow::band_h`],
     /// `Grid::band_h`), `e` its live expansion, 0 collapsed → 1 open, and `rise` how far the tile
@@ -1179,12 +1343,25 @@ pub fn draw_focused_tile_led(
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }
+    // over the video plane the tile's sheen is not a mark: the rim is, at full strength on the popped rect
+    // the rim follows the style's own corner, not the pop's: `radius * s` grows the ring's corner with the
+    // lift while the card the ring is meant to frame keeps its radius (a circle's is half its width)
+    if let Some(rim) = sty.rim {
+        p.rring(rect, if sty.circular { rad } else { sty.radius }, rim.width, rim.ink);
+    }
 }
 
 /// The bottom edge of the card drawn at `rect` (scale `s`) at its UNSCALED size, about the same
 /// centre: the line a label block hangs from, which a pop or a press never moves.
 pub fn unscaled_bottom(rect: Rect, s: f32) -> f32 {
     rect.y + rect.h * 0.5 + (rect.h / s) * 0.5
+}
+
+/// The y a label block under the tile drawn at `rect` (scale `s`) hangs from: the unscaled bottom, moved by how
+/// far the style's own drop ([`RowStyle::label_drop`]) stands from the shelf's [`UNDER_DROP`] (not at all
+/// when it sets none).
+pub fn label_bottom(rect: Rect, s: f32, sty: &RowStyle) -> f32 {
+    unscaled_bottom(rect, s) + sty.label_drop.map_or(0.0, |d| d - UNDER_DROP)
 }
 
 /// The label block under a tile drawn at `rect` (scale `s`) alone, without the tile: what
@@ -1198,48 +1375,106 @@ pub fn draw_label(
     label: &TileLabel,
     measure: &dyn plx_machine::machine::Measure,
 ) {
-    draw_label_mode(p, rect, s, sty, label, measure, label.static_text, label.within_tile);
-}
-
-/// Persistent grid presentation borrows the cached words; focus changes only their presentation.
-pub(crate) fn draw_persistent_label(
-    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
-    measure: &dyn plx_machine::machine::Measure, focused: bool,
-) {
-    draw_label_mode(p, rect, s, sty, label, measure, !focused, true);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_label_mode(
-    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
-    measure: &dyn plx_machine::machine::Measure, static_text: bool, within_tile: bool,
-) {
     // The label block anchors to the UNSCALED card bottom (rect is scaled about its center, so
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
     // the label into the next shelf's title.
-    let bottom = unscaled_bottom(rect, s);
+    let bottom = label_bottom(rect, s, sty);
     // …and each LINE of the block rides the band's reveal ([`line_reveal_for`]). The card, its ring
     // and its resume bar do NOT: they are the tile, which is on screen either way; the alpha is
     // only about whether the room under it holds the line yet.
     let lines = label.lines();
-    if label.all_lines().iter().flatten().all(|l| l.alpha <= 0.0) {
+    if lines.iter().flatten().all(|l| l.alpha <= 0.0) {
         return;
     }
-    draw_label_block(p, rect, sty, label, lines, bottom, measure, static_text, within_tile);
-    if let (Some(text), Some(line)) = (&label.sort_info, label.all_lines()[2].filter(|l| l.alpha > 0.0)) {
-        let raw = text.to_string_lossy();
-        if !label.sort_bold && label.sort_mark.is_empty() {
-            let run = measure.fit_line(&raw, sty.w, theme::size::CAPTION, false);
-            p.alpha(line.alpha).text(run.as_ptr(), rect.cx(), bottom + line.top,
-                theme::size::CAPTION, theme::CAPTION_DETAIL_INK, 1, 0);
-            return;
-        }
-        crate::widgets::rating_cell_fitted(p.alpha(line.alpha), rect.cx(),
-            bottom + line.top + UNDER_CAPTION_H * 0.5, sty.w,
-            &crate::widgets::RatingCell { mark: label.sort_mark, value: &raw, suffix: "" }, measure);
-    }
+    draw_label_block(p, rect, sty, label, lines, bottom, measure);
 }
+
+/// The sort value line's box: CAPTION 24 on a 24 px line.
+pub const SORT_VALUE_H: f32 = 24.0;
+/// How far under the poster's bottom edge the value line's box starts at rest.
+pub const SORT_VALUE_GAP: f32 = 12.0;
+/// The same, measured from the LIFTED poster's bottom edge when the card is focused.
+pub const SORT_VALUE_GAP_LIFTED: f32 = 14.0;
+/// A row's collapsed gap under its posters while values show (40 otherwise): the air above a value
+/// is at most half the air below it, so it reads as its own poster's.
+pub const SORT_VALUE_ROW_GAP: f32 = 60.0;
+/// How far the FOCUSED row opens past the collapsed one while values show (the board's `openBy`).
+pub const SORT_VALUE_OPEN: f32 = 26.0;
+/// The Under posters band height ([`crate::caption_policy::band_h`]'s unit: the whole open gap)
+/// that opens a row [`SORT_VALUE_OPEN`] past the 40 px collapsed gap the band machinery counts from.
+pub const SORT_VALUE_BAND_H: f32 = COLLAPSED_GAP + SORT_VALUE_OPEN;
+/// Room under an UNSCALED poster bottom a value line can reach (the lifted card's shift, the focused
+/// gap and the box), what the grid culls and reveals with.
+pub const SORT_VALUE_REACH: f32 = 56.0;
+/// The rating mark beside a value: a 20 px box, the board's size, hung [`SORT_VALUE_MARK_GAP`] to the
+/// left of the number. A tomato is drawn past its box by `icons::mark_zoom` so its body is the board's
+/// 15 px disc (its viewBox leaves room for the stem), centred in the same box.
+const SORT_VALUE_MARK_D: f32 = 20.0;
+/// A budget no line reaches: asking the memoised fit for it yields the run's natural width.
+const SORT_VALUE_NATURAL: f32 = 1.0e5;
+const SORT_VALUE_MARK_GAP: f32 = 6.0;
+
+/// **The two textures of a sort value at lift factor `t`** (0 at rest, 1 fully lifted), as the
+/// `(regular, bold)` alphas: the weight change is a crossfade on the lift's own spring, so it is a
+/// function of the spring's value and nothing else (a snapped lift shows exactly one texture), and
+/// the LEAVING texture fades faster than the arriving one (the card taking focus is `rising`: its
+/// regular texture leaves; a card giving it up leaves with its bold). Both ends are exact.
+pub fn sort_value_weights(t: f32, rising: bool) -> (f32, f32) {
+    let t = t.clamp(0.0, 1.0);
+    if rising { ((1.0 - t) * (1.0 - t), t) } else { (1.0 - t, t * t) }
+}
+
+/// **A value line, drawn under one poster of a grid** (`rect` is the poster as drawn, scale `s`):
+/// CAPTION 24, tabular figures (the face's digits), centred on the poster's axis, 12 px under the
+/// poster at rest at 80% white and regular, 14 px under the LIFTED poster at 100% white and bold
+/// once the card is focused; between the two the weight is a crossfade of two textures on the
+/// lift ([`sort_value_weights`]). Never smaller type and never an ellipsis: a line wider than the
+/// tile drops its "+1", then its mark. The mark hangs to the left of the number, which stays on
+/// the axis, so the line is judged against the tile as symmetric about it.
+pub(crate) fn draw_sort_value(
+    p: Painter, rect: Rect, s: f32, sty: &RowStyle, value: &SortValue,
+    measure: &dyn plx_machine::machine::Measure, focused: bool,
+) {
+    use crate::caption_policy::{CAPTION_SHADOW, CAPTION_SHADOW_DY};
+    let size = theme::size::CAPTION;
+    let t = crate::widgets::pop_factor(s, sty.focus_scale);
+    let top = rect.y + rect.h + SORT_VALUE_GAP + (SORT_VALUE_GAP_LIFTED - SORT_VALUE_GAP) * t;
+    let cy = top + SORT_VALUE_H * 0.5;
+    let hang = 2.0 * (SORT_VALUE_MARK_D + SORT_VALUE_MARK_GAP);
+    // Judged on the bold face, the widest the line gets, so the choice is the same whichever
+    // texture shows; the memoised fitted run answers it, so a warm frame measures nothing.
+    let width_of = |text: &str, mark: bool| measure.fit_line_measured(text, SORT_VALUE_NATURAL, size, true).1
+        + if mark { hang } else { 0.0 };
+    let has_mark = !value.mark.is_empty();
+    let with_plus = value.plus.then(|| format!("{}{SORT_VALUE_PLUS}", value.text));
+    // A line that fits at its natural width is not given a budget it could be cut to: `natural` is
+    // that verdict, taken from the measure the choice already made (a dropped mark is measured bare).
+    let (text, mark, natural) = match &with_plus {
+        Some(plus) if width_of(plus, has_mark) <= sty.w => (plus.as_str(), value.mark, true),
+        _ if width_of(&value.text, has_mark) <= sty.w => (value.text.as_str(), value.mark, true),
+        _ => (value.text.as_str(), &[][..], has_mark && width_of(&value.text, false) <= sty.w),
+    };
+    let budget = if natural { SORT_VALUE_NATURAL } else { sty.w };
+    let (regular, bold) = if value.missing { (1.0, 0.0) } else { sort_value_weights(t, focused) };
+    let mut width = 0.0;
+    for (is_bold, alpha, ink) in [(false, regular, if value.missing { theme::SORT_VALUE_MISSING_INK } else { theme::SORT_VALUE_INK }),
+        (true, bold, theme::TEXT_PRIMARY)] {
+        if alpha <= 0.0 { continue; }
+        let (run, w) = measure.fit_line_measured(text, budget, size, is_bold);
+        width = f32::max(width, w);
+        let y = plx_gfx::text::text_vcenter_y(size, i32::from(is_bold), cy);
+        let layer = p.alpha(alpha);
+        layer.text(run.as_ptr(), rect.cx(), y + CAPTION_SHADOW_DY, size, CAPTION_SHADOW, 1, i32::from(is_bold));
+        layer.text(run.as_ptr(), rect.cx(), y, size, ink, 1, i32::from(is_bold));
+    }
+    if mark.is_empty() { return; }
+    let mark_rect = Rect::new(rect.cx() - width * 0.5 - SORT_VALUE_MARK_GAP - SORT_VALUE_MARK_D, cy - SORT_VALUE_MARK_D * 0.5,
+        SORT_VALUE_MARK_D, SORT_VALUE_MARK_D);
+    // The art's own zoom puts a tomato's body at the board's 15 px in the 20 px box (`icons::mark_zoom`).
+    for (mask, tint) in mark { crate::icons::draw(p, *mask, mark_rect.scaled(crate::icons::mark_zoom(*mask)), *tint); }
+}
+
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
 /// caption rung of the deck's state, replacing the details line, and always shown on the deck (the
 /// owner's 2026-10-22 call), Details Nothing included (`captions::deck_policy`); a
@@ -1593,9 +1828,16 @@ pub struct LabelRoom {
 /// The trailing edge is the card's, but never past `hi`: a card whose right edge is inside a
 /// reserved band (the Library's rail) ends its block where the band starts.
 pub fn anchor_label(lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -> LabelPlace {
+    anchor_label_from(LabelStart::Centre, lead, trail, w, want, room)
+}
+
+/// [`anchor_label`] for a row whose [`RowStyle::label_start`] is `start`: [`LabelStart::Leading`] skips
+/// the centred first case and so starts the block at the card's leading edge, still keeping the
+/// trailing and gliding cases for a card with no room to its right.
+pub fn anchor_label_from(start: LabelStart, lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -> LabelPlace {
     let cx = (lead + trail) * 0.5;
     let x = cx - w * 0.5;
-    if x >= room.lo && x + w <= room.hi {
+    if start == LabelStart::Centre && x >= room.lo && x + w <= room.hi {
         return LabelPlace { x, w, align: LabelAlign::Centre };
     }
     // Whole pixels: the room left before the panel edge is what the runs marquee against, and a
@@ -1616,10 +1858,18 @@ pub fn anchor_label(lead: f32, trail: f32, w: f32, want: f32, room: LabelRoom) -
 /// as they do in [`anchor_label`]'s leading case — and glides inside it (the caller's marquee).
 /// The tile is the UNSCALED card, so the pop never re-decides which lines overflow.
 fn tile_window(lead: f32, tile_w: f32, run: f32) -> LabelPlace {
-    if run <= tile_w {
-        LabelPlace { x: lead + (tile_w - run) * 0.5, w: run, align: LabelAlign::Centre }
-    } else {
+    tile_window_from(LabelStart::Centre, lead, tile_w, run)
+}
+
+/// [`tile_window`] for a row whose [`RowStyle::label_start`] is `start`: a run that fits stays at the card's
+/// leading edge under [`LabelStart::Leading`] instead of being centred, as every block of such a row does.
+fn tile_window_from(start: LabelStart, lead: f32, tile_w: f32, run: f32) -> LabelPlace {
+    if run > tile_w {
         LabelPlace { x: lead, w: tile_w, align: LabelAlign::Leading }
+    } else if start == LabelStart::Leading {
+        LabelPlace { x: lead, w: run, align: LabelAlign::Leading }
+    } else {
+        LabelPlace { x: lead + (tile_w - run) * 0.5, w: run, align: LabelAlign::Centre }
     }
 }
 
@@ -1721,7 +1971,7 @@ pub fn place_label_wide(p: Painter, rect: Rect, sty: &RowStyle, w: f32, want: f3
         floor: sty.margin_x - settled_dx,
     };
     let lead = rect.cx() - sty.w * 0.5;
-    anchor_label(lead, lead + sty.w, w, want, room)
+    anchor_label_from(sty.label_start, lead, lead + sty.w, w, want, room)
 }
 
 /// The focused tile's single-line title, drawn in the block `at`: plain whenever the run fits the
@@ -1751,8 +2001,10 @@ fn title_marquee(
     block: Option<&marquee::Block>,
     shadowed: bool,
     fade: bool,
+    face: Option<LabelFace>,
+    height: f32,
 ) {
-    let (sz, bold) = (theme::size::LABEL, 1);
+    let (sz, bold, ink) = face.map_or((theme::size::LABEL, 1, theme::TEXT_PRIMARY), |f| (f.size, i32::from(f.bold), f.ink));
     let lead = glyph_lead(sz, glyph);
     let budget = (at.w - lead).max(0.0);
     if w <= budget {
@@ -1765,7 +2017,7 @@ fn title_marquee(
         if shadowed {
             p.text(text, tx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz, crate::caption_policy::CAPTION_SHADOW, 0, bold);
         }
-        p.text(text, tx, y, sz, theme::TEXT_PRIMARY, 0, bold);
+        p.text(text, tx, y, sz, ink, 0, bold);
         return;
     }
     let Some(block) = block else { return };
@@ -1786,7 +2038,7 @@ fn title_marquee(
             &block.key,
             w,
             block.cycle_w,
-            Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
+            Rect::new(text_x0, y - MARQUEE_AIR, budget, height + 2.0 * MARQUEE_AIR),
             rtl,
             |dx| {
                 let window = fade.then_some((text_x0, text_x0 + budget));
@@ -1794,7 +2046,7 @@ fn title_marquee(
                     block_text(p, text, text_x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz,
                         crate::caption_policy::CAPTION_SHADOW, bold, w, window, rtl);
                 }
-                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, window, rtl);
+                block_text(p, text, text_x0 + dx, y, sz, ink, bold, w, window, rtl);
             },
         )
     });
@@ -1841,7 +2093,6 @@ pub fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
 /// caption — placed ONCE by [`place_label_wide`] from the wider of its two runs (plus the uncapped
 /// `want`), so both lines share one alignment: centred together, starting together at the card's
 /// leading edge, or ending together at its trailing edge when the room to the right is too small.
-#[allow(clippy::too_many_arguments)]
 fn draw_label_block(
     p: Painter,
     rect: Rect,
@@ -1850,40 +2101,22 @@ fn draw_label_block(
     lines: [Option<LineBox>; 2],
     bottom: f32,
     measure: &dyn plx_machine::machine::Measure,
-    static_text: bool,
-    within_tile: bool,
 ) {
     // Every run of the block is a label block's to a recording census, whatever its ink.
     #[cfg(any(test, feature = "test-support"))]
     let _label_scope = crate::draw_census::label_scope();
-    if static_text {
-        for (text, line, size, bold, ink) in [
-            (label.title.as_ref(), lines[0], theme::size::LABEL, true, theme::TEXT_PRIMARY),
-            (label.caption.as_ref(), lines[1], theme::size::CAPTION, false, theme::CAPTION_DETAIL_INK),
-        ] {
-            if let (Some(text), Some(line)) = (text, line.filter(|l| l.alpha > 0.0)) {
-                let run = measure.fit_line(&text.to_string_lossy(), sty.w, size, bold);
-                let p = p.alpha(line.alpha);
-                let y = bottom + line.top;
-                if label.shadowed {
-                    p.text(run.as_ptr(), rect.cx(), y + crate::caption_policy::CAPTION_SHADOW_DY, size,
-                        crate::caption_policy::CAPTION_SHADOW, 1, i32::from(bold));
-                }
-                p.text(run.as_ptr(), rect.cx(), y, size, ink, 1, i32::from(bold));
-            }
-        }
-        return;
-    }
+    let within_tile = label.within_tile;
     let full = under_budget(sty);
     let csz = theme::size::CAPTION;
+    let (title_size, title_bold) = label.title_face.map_or((theme::size::LABEL, true), |f| (f.size, f.bold));
     // Measured once and threaded through: the title's drawn width feeds both how wide the block
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
     let title_w_val = label.title.as_ref().map(|t| measure.fit_line_measured(
-        &t.to_string_lossy(), f32::INFINITY, theme::size::LABEL, true).1);
+        &t.to_string_lossy(), f32::INFINITY, title_size, title_bold).1);
     // The play mark leads the FIRST line drawn: the title, or the details line of a block with none.
     let title_mark = label.glyph && label.title.is_some();
     let caption_mark = label.glyph && label.title.is_none() && label.caption.is_some();
-    let lead = glyph_lead(theme::size::LABEL, title_mark);
+    let lead = glyph_lead(title_size, title_mark);
     let caption_lead = glyph_lead(csz, caption_mark);
     // The mark HANGS left of a line that is centred as if it were not there, so the window keeps its
     // room on both sides of the text (`2 * lead`): the line stays on the block's centre.
@@ -1895,7 +2128,7 @@ fn draw_label_block(
     // ([`anchor_label`]).
     let want = title_w_val.map_or(0.0, |w| w + 2.0 * lead).max(caption_run);
     let at = if within_tile {
-        tile_window(rect.cx() - sty.w * 0.5, sty.w, want)
+        tile_window_from(sty.label_start, rect.cx() - sty.w * 0.5 + label.title_face.map_or(0.0, |f| f.offset_x), label.title_face.map_or(sty.w, |f| f.width), want)
     } else {
         place_label_wide(p, rect, sty, title_run.max(caption_run.min(full)), want, label.settle_lag)
     };
@@ -1923,8 +2156,9 @@ fn draw_label_block(
     // not made room for yet is not drawn at all.
     let [title_line, caption_line] = lines.map(|line| line.filter(|l| l.alpha > 0.0));
     if let (Some(t), Some(line)) = (&label.title, title_line) {
-        title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top, title_mark, title_w_val.unwrap_or(0.0),
-            block.as_ref(), label.shadowed, within_tile);
+        title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top + label.title_face.map_or(0.0, |f| f.offset_y), title_mark, title_w_val.unwrap_or(0.0),
+            block.as_ref(), label.shadowed, within_tile, label.title_face,
+            label.title_face.filter(|f| f.size != theme::size::LABEL).map_or(UNDER_LINE_H, |f| measure.line_h(f.size)));
     }
     if let (Some(tc), Some(line)) = (&label.caption, caption_line) {
         let (p, y) = (p.alpha(line.alpha), bottom + line.top);
@@ -2404,6 +2638,105 @@ mod tests {
     /// A 1920 panel with the usual air at both edges and the 96px content margin.
     const ROOM: LabelRoom = LabelRoom { lo: EDGE_PAD, hi: SCR_W - EDGE_PAD, floor: MARGIN_X };
 
+    /// **`RowStyle::label_start`** (`docs/hud-plugins.md` D11): `Leading` skips the centred first case,
+    /// so a block that WOULD sit centred under its card starts at the card's own leading edge instead;
+    /// `Centre`, the default every row keeps, is `anchor_label` itself.
+    #[test]
+    fn a_leading_label_start_skips_the_centred_case_and_the_default_is_unchanged() {
+        // 288 wide card at x 700, a 200 wide block: centred it would start at 744
+        let (lead, trail) = (700.0, 988.0);
+        let centred = anchor_label(lead, trail, 200.0, 200.0, ROOM);
+        assert_eq!((centred.x, centred.align), (744.0, LabelAlign::Centre));
+        assert_eq!(anchor_label_from(LabelStart::Centre, lead, trail, 200.0, 200.0, ROOM), centred, "the default is the old function");
+        let leading = anchor_label_from(LabelStart::Leading, lead, trail, 200.0, 200.0, ROOM);
+        assert_eq!((leading.x, leading.w, leading.align), (lead, 200.0, LabelAlign::Leading));
+        // every shipped style keeps the centred case, and none carries a rim or a growing seat
+        for sty in [RowStyle::HOME, RowStyle::EPISODE, RowStyle::CAST] {
+            assert_eq!((sty.label_start, sty.rim, sty.seat_grows), (LabelStart::Centre, None, false));
+        }
+        let strip = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME }.with_leading_labels();
+        let p = Painter::root();
+        let rect = Rect::new(lead, 700.0, 288.0, 162.0);
+        assert_eq!(place_label(p, rect, &strip, 200.0, 0.0).align, LabelAlign::Leading);
+        assert_eq!(place_label(p, rect, &RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME }, 200.0, 0.0).align, LabelAlign::Centre);
+    }
+
+    /// **`RowStyle::rim`**: a focused tile of a style with a rim paints one `rring` over its popped
+    /// rect; the same tile of any other style paints none (so no other Shelf's frame changes).
+    #[test]
+    fn a_rim_rings_the_focused_tile_only_when_the_style_asks() {
+        let rings = |sty: &RowStyle| {
+            crate::draw_census::capture(|| {
+                draw_focused_tile_led(Painter::recording(), Art::Poster(None), Rect::new(100.0, 100.0, 288.0, 162.0), 1.07, sty, None, None)
+            })
+            .iter()
+            .filter(|(tag, _)| *tag == 3)
+            .count()
+        };
+        let plain = RowStyle { w: 288.0, h: 162.0, ..RowStyle::HOME };
+        assert_eq!(rings(&plain), 0, "no style but the HUD strip's rings its tile");
+        let rimmed = plain.with_rim(Rim { width: 2.5, ink: theme::CONTROL_RIM_FOCUS_UNKEYED });
+        assert_eq!(rings(&rimmed), 1, "one rim over the popped rect");
+    }
+
+    /// **The rim follows the style's corner, not the pop's**: the ring records its radius, and a rimmed tile
+    /// popped to 1.07 rings at the style's own radius (the card it frames), where `radius * s` grew the corner
+    /// with the lift. A circle keeps half its width.
+    #[test]
+    fn a_rim_rings_at_the_styles_radius_not_the_pops() {
+        let rimmed = RowStyle { w: 288.0, h: 162.0, radius: 10.0, ..RowStyle::HOME }
+            .with_rim(Rim { width: 2.5, ink: theme::CONTROL_RIM_FOCUS_UNKEYED });
+        let rect = Rect::new(100.0, 100.0, 288.0, 162.0).scaled(1.07);
+        let ring = |sty: &RowStyle| {
+            crate::draw_census::capture_rings(|| draw_focused_tile_led(Painter::recording(), Art::Poster(None), rect, 1.07, sty, None, None))
+        };
+        assert_eq!(ring(&rimmed), vec![(rect, 10.0)], "the ring's corner is the style's 10, not 10 * 1.07");
+        let round = RowStyle { circular: true, ..rimmed };
+        assert_eq!(ring(&round), vec![(rect, rect.w * 0.5)], "a circle's ring keeps half its width");
+    }
+
+    /// **A rimmed tile's card keeps the style's corner under its ring** (the ring is the card's frame): `radius * s`
+    /// rounded the card ground to 10.7 at the pop's 1.07 while the ring stayed at 10, so the ground showed past the
+    /// ring's arc at every corner (found in the simulator against the hand-written strip, 87 pixels of up to 17 levels).
+    /// Every other style keeps growing its corner with the lift.
+    #[test]
+    fn a_rimmed_tile_keeps_the_styles_corner_at_every_pop() {
+        let plain = RowStyle { w: 288.0, h: 162.0, radius: 10.0, ..RowStyle::HOME };
+        let rimmed = plain.with_rim(Rim { width: 2.5, ink: theme::CONTROL_RIM_FOCUS_UNKEYED });
+        let rect = Rect::new(100.0, 100.0, 288.0, 162.0);
+        for s in [1.0f32, 1.035, 1.07] {
+            assert_eq!(plain.tile_radius(rect, s), 10.0 * s, "a plain style's corner grows with the lift");
+            assert_eq!(rimmed.tile_radius(rect, s), 10.0, "a rimmed tile's corner stays at the style's, at pop {s}");
+        }
+        let round = RowStyle { circular: true, ..rimmed };
+        assert_eq!(round.tile_radius(rect, 1.07), rect.w * 0.5, "a circle keeps half its width");
+    }
+
+    /// **`RowStyle::label_drop`**: a block of a style that sets one hangs that far under the card's UNSCALED
+    /// bottom and is whole from the first frame; a style that sets none keeps `UNDER_DROP` (so no other row's
+    /// frame moves).
+    #[test]
+    fn a_label_drop_moves_the_block_and_the_default_does_not() {
+        let rect = Rect::new(100.0, 700.0, 288.0, 162.0).scaled(1.07);
+        let plain = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME };
+        assert_eq!(label_bottom(rect, 1.07, &plain), unscaled_bottom(rect, 1.07), "the default is the old bottom");
+        let dropped = plain.with_label_drop(26.0);
+        assert_eq!(label_bottom(rect, 1.07, &dropped) + UNDER_DROP, unscaled_bottom(rect, 1.07) + 26.0);
+        let label = TileLabel { title: std::ffi::CString::new("Opening").ok(), ..TileLabel::default() };
+        let name_y = |sty: &RowStyle| {
+            let runs = crate::draw_census::capture_runs(|| {
+                crate::record_walk(|| draw_label(Painter::root(), rect, 1.07, sty, &label, &crate::fixture::FixtureMeasure))
+            });
+            runs.iter().find(|r| r.text == "Opening").map(|r| r.at.y).expect("the title is drawn")
+        };
+        let card_bottom = 700.0 + 162.0;
+        assert_eq!(name_y(&plain), card_bottom + 30.0);
+        assert_eq!(name_y(&dropped), card_bottom + 26.0, "the strip's name stands 26 under the unscaled card");
+        for sty in [RowStyle::HOME, RowStyle::EPISODE, RowStyle::CAST, RowStyle::PROFILES] {
+            assert_eq!(sty.label_drop, None);
+        }
+    }
+
     /// A block that fits centred under its card is exactly where it always was: nothing is
     /// clipped, so nothing moves.
     #[test]
@@ -2418,6 +2751,21 @@ mod tests {
     /// A block held to its tile ([`TileLabel::within_tile`]) never has a window wider than the
     /// tile: a run that fits is centred like any block, one that does not leads from the tile's
     /// edge inside a tile-wide window.
+    #[test]
+    fn a_leading_row_keeps_a_fitting_block_at_the_cards_edge_inside_its_tile() {
+        assert_eq!(
+            tile_window_from(LabelStart::Leading, 100.0, 250.0, 100.0),
+            LabelPlace { x: 100.0, w: 100.0, align: LabelAlign::Leading },
+            "a name that fits starts at the card's edge, not centred"
+        );
+        assert_eq!(
+            tile_window_from(LabelStart::Leading, 100.0, 250.0, 900.0),
+            LabelPlace { x: 100.0, w: 250.0, align: LabelAlign::Leading },
+            "one that does not glides in the tile, never the neighbours' room"
+        );
+        assert_eq!(tile_window_from(LabelStart::Centre, 100.0, 250.0, 100.0), tile_window(100.0, 250.0, 100.0));
+    }
+
     #[test]
     fn a_block_held_to_its_tile_is_never_wider_than_the_tile() {
         assert_eq!(tile_window(100.0, 250.0, 100.0), LabelPlace { x: 175.0, w: 100.0, align: LabelAlign::Centre });
@@ -3671,34 +4019,218 @@ mod sort_caption_review_tests {
     }
 
     #[test]
-    fn review_persistent_captions_reuse_fitted_text_and_rating_widths() {
+    fn a_warm_sort_value_line_measures_nothing_and_a_focused_one_adds_only_its_second_texture() {
         let _guard = plx_base::testlock::serial();
         let measure = CachedMeasure::default();
-        let mut label = TileLabel::titled("A very long movie title repeated across frames", "1997");
-        label.static_text = true;
-        label.sort_info = std::ffi::CString::new("100%").ok();
-        label.sort_bold = true;
-        label.sort_mark = &[(crate::icons::Icon::Crowd, theme::RATING_AUDIENCE)];
-        let rect = Rect::new(100.0, 100.0, 200.0, 300.0);
-        let style = RowStyle { w: 200.0, ..crate::poster_grid::STYLE };
-        let draw = || draw_label(Painter::recording(), rect, 1.0, &style, &label, &measure);
-        draw();
+        let value = SortValue { text: "98%".into(), mark: &[(crate::icons::Icon::Crowd, theme::RATING_AUDIENCE)], ..Default::default() };
+        let rect = Rect::new(100.0, 100.0, 250.0, 375.0);
+        let style = RowStyle { w: 250.0, ..crate::poster_grid::STYLE };
+        let draw = |s: f32, focused: bool| draw_sort_value(Painter::recording(), rect, s, &style, &value, &measure, focused);
+        draw(1.0, false);
         let cold = measure.widths.get();
         assert!(cold > 0);
-        draw();
-        assert_eq!(measure.widths.get(), cold, "a warm persistent caption must not measure again");
-        // Focused identity lines keep the existing shared marquee, but reuse full-run metrics.
-        let mut focused = label.clone();
-        focused.static_text = false;
-        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        draw(1.0, false);
+        assert_eq!(measure.widths.get(), cold, "a warm value line must not measure again");
+        draw(style.focus_scale, true);
         let focused_cold = measure.widths.get();
-        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        draw(style.focus_scale, true);
         assert_eq!(measure.widths.get(), focused_cold);
-        // The ordinary metadata face takes the same fitted path, with no rating group.
-        let plain = TileLabel { sort_bold: false, sort_mark: &[], ..label };
-        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
-        let plain_cold = measure.widths.get();
-        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
-        assert_eq!(measure.widths.get(), plain_cold);
+    }
+
+    /// The ink a value line is drawn with at lift factor `t` (the card's scale on the way from rest to
+    /// `focus_scale`): the `(regular, bold)` effective alphas of the runs, the shadow's runs left out,
+    /// and the bold run's colour.
+    fn value_inks(t: f32, focused: bool, value: &SortValue) -> (f32, f32, Option<[f32; 4]>) {
+        let style = RowStyle { w: 250.0, ..crate::poster_grid::STYLE };
+        let rect = Rect::new(100.0, 100.0, 250.0, 375.0);
+        // a settled lift IS `focus_scale` (the spring lands on it), not 1 + 1 * (focus_scale - 1)
+        let s = if t >= 1.0 { style.focus_scale } else { 1.0 + t * (style.focus_scale - 1.0) };
+        let runs = crate::draw_census::capture_runs(|| draw_sort_value(
+            Painter::recording(), rect, s, &style, value, &crate::fixture::FixtureMeasure, focused));
+        // each texture is a shadow run (black) then an ink run; the ink is the run whose colour is not black
+        let ink = |bold: bool| runs.iter().filter(|run| run.bold == bold && run.ink[0] > 0.0).map(|run| run.ink).next();
+        (ink(false).map_or(0.0, |c| c[3]), ink(true).map_or(0.0, |c| c[3]), ink(true))
+    }
+
+    #[test]
+    fn a_focused_settled_value_is_drawn_at_the_full_ink_of_text_primary() {
+        let _guard = plx_base::testlock::serial();
+        let value = SortValue { text: "98%".into(), ..Default::default() };
+        // Settled and focused: the bold texture alone, at TEXT_PRIMARY's colour and an alpha of exactly 1.
+        let (regular, bold, colour) = value_inks(1.0, true, &value);
+        assert_eq!(regular, 0.0, "no regular texture left under the bold one");
+        assert_eq!(colour, Some(theme::TEXT_PRIMARY), "the peak channel IS #F7FAFC");
+        assert_eq!(bold, 1.0);
+        // Rest: the regular texture alone at 80% white.
+        let (regular, bold, _) = value_inks(0.0, false, &value);
+        assert!((regular - 0.8).abs() < 1e-6 && bold == 0.0, "rest is 80% white regular: {regular} {bold}");
+        // A missing value stays a regular 50% white dash, lifted or not (absence does not brighten).
+        let dash = SortValue { text: "\u{2013}".into(), missing: true, ..Default::default() };
+        for (t, focused) in [(0.0, false), (1.0, true)] {
+            let (regular, bold, _) = value_inks(t, focused, &dash);
+            assert!((regular - 0.5).abs() < 1e-6 && bold == 0.0, "dash t={t}: {regular} {bold}");
+        }
+    }
+
+    #[test]
+    fn a_tomato_mark_is_drawn_at_the_boards_15_px_body_hung_6_px_left_of_the_number() {
+        let _guard = plx_base::testlock::serial();
+        use crate::icons::Icon;
+        let mark: &'static [crate::widgets::MarkLayer] =
+            &[(Icon::Tomato, theme::RATING_FRESH), (Icon::TomatoCalyx, theme::RATING_LEAF)];
+        let value = SortValue { text: "98%".into(), mark, ..Default::default() };
+        let style = RowStyle { w: 250.0, ..crate::poster_grid::STYLE };
+        let rect = Rect::new(100.0, 100.0, 250.0, 375.0);
+        let (runs, icons) = {
+            let mut icons = Vec::new();
+            let runs = crate::draw_census::capture_runs(|| {
+                icons = crate::draw_census::capture_icons(|| draw_sort_value(
+                    Painter::recording(), rect, 1.0, &style, &value, &crate::fixture::FixtureMeasure, false));
+            });
+            (runs, icons)
+        };
+        assert!(runs.iter().any(|run| run.text == "98%"), "the number");
+        let number_left = rect.cx() - crate::fixture::FixtureMeasure.width_str("98%", theme::size::CAPTION, false) * 0.5;
+        assert_eq!(icons.len(), 2, "both layers of the mark");
+        let line_cy = rect.y + rect.h + SORT_VALUE_GAP + SORT_VALUE_H * 0.5;
+        for (id, at) in &icons {
+            // every layer shares one box, centred on the line and the board's 20 px box
+            let zoom = crate::icons::mark_zoom(*id);
+            assert!((at.w - SORT_VALUE_MARK_D * zoom).abs() < 0.01 && (at.cy() - line_cy).abs() < 0.01, "{id:?} {at:?}");
+            assert!((at.cx() + SORT_VALUE_MARK_D * 0.5 - (number_left - SORT_VALUE_MARK_GAP)).abs() < 0.01,
+                "the 20 px box hangs 6 px left of the number: {at:?} vs {number_left}");
+        }
+        let body = icons[0].1.w * 15.2 / 26.0;
+        assert!((body - 15.0).abs() < 0.05, "the body is the board's 15 px disc, not {body}");
+    }
+
+    #[test]
+    fn the_lift_crossfade_is_monotone_in_both_directions() {
+        let _guard = plx_base::testlock::serial();
+        let value = SortValue { text: "98%".into(), ..Default::default() };
+        for focused in [true, false] {
+            let steps: Vec<(f32, f32)> = (0..=20).map(|i| {
+                let (regular, bold, _) = value_inks(i as f32 / 20.0, focused, &value);
+                (regular, bold)
+            }).collect();
+            assert!(steps.windows(2).all(|w| w[1].1 >= w[0].1), "the bold ink only rises with the lift: {steps:?}");
+            assert!(steps.windows(2).all(|w| w[1].0 <= w[0].0), "the regular ink only falls with the lift: {steps:?}");
+            assert_eq!((steps[0], steps[20]), ((0.8, 0.0), (0.0, 1.0)), "exact ends (focused={focused})");
+            // the value never goes dimmer than the dimmer end part-way: the two textures together keep it readable
+            assert!(steps.iter().all(|&(regular, bold)| regular + bold >= 0.5), "{steps:?}");
+        }
+    }
+
+    #[test]
+    fn the_weight_crossfade_has_exact_ends_and_the_leaving_texture_fades_faster() {
+        for rising in [true, false] {
+            assert_eq!(sort_value_weights(0.0, rising), (1.0, 0.0), "at rest only the regular texture");
+            assert_eq!(sort_value_weights(1.0, rising), (0.0, 1.0), "lifted only the bold texture");
+            assert_eq!(sort_value_weights(-0.5, rising), (1.0, 0.0));
+            assert_eq!(sort_value_weights(2.0, rising), (0.0, 1.0));
+        }
+        for step in 1..10 {
+            let t = step as f32 / 10.0;
+            let (regular, bold) = sort_value_weights(t, true);
+            assert!(regular < 1.0 - t && bold == t, "the card taking focus loses its regular texture first: {t}");
+            let (regular, bold) = sort_value_weights(t, false);
+            assert!(bold < t && regular == 1.0 - t, "the card giving focus up loses its bold texture first: {t}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod rest_tests {
+    use super::*;
+
+    /// The most cards `sty` paints at ANY rest of a row of `n` cards, found the long way: focus walks the
+    /// whole row right and back, then zigzags, [`scroll_into_view`] steering the scroll and [`on_axis`]
+    /// counting what the Shelf paints at every rest. Nothing here knows the four lattices.
+    fn walked(sty: &RowStyle, lead: f32, n: usize) -> usize {
+        let pitch = sty.w + sty.gap;
+        let vw = SCR_W - 2.0 * sty.margin_x;
+        let painted = |scroll: f32| {
+            (0..n).filter(|&i| crate::on_axis(tile_rect(i, sty.margin_x, pitch, scroll, 0.0, (sty.w, sty.h)).x, sty.w, SCR_W, lead)).count()
+        };
+        let (mut cur, mut most) = (0.0, painted(0.0));
+        let mut rest = |fc: usize, cur: &mut f32| {
+            *cur = scroll_into_view(*cur, fc, n, sty.w, sty.gap, vw);
+            most = most.max(painted(*cur));
+        };
+        for fc in (0..n).chain((0..n).rev()) {
+            rest(fc, &mut cur);
+        }
+        // and the way a hand moves: a few right, fewer left, a long run each way
+        let mut fc = 0usize;
+        for step in 0..4 * n {
+            fc = if step % 7 < 4 { (fc + 1).min(n - 1) } else { fc.saturating_sub(2) };
+            rest(fc, &mut cur);
+        }
+        most
+    }
+
+    fn style(w: f32, gap: f32, margin_x: f32) -> RowStyle {
+        RowStyle { w, gap, margin_x, h: w * 9.0 / 16.0, ..RowStyle::HOME }
+    }
+
+    /// The HUD's two strips: the reference's 192 + 16 cards and the classic's 288 + 24, at the margins their
+    /// packages place them (the reference's strip stands at x 136, the classic's at 96).
+    #[test]
+    fn the_most_a_row_paints_at_rest_is_what_walking_scroll_into_view_finds() {
+        for (name, sty) in [("reference", style(192.0, 16.0, 136.0)), ("classic", style(288.0, 24.0, 96.0))] {
+            for lead in [0.0, 136.0] {
+                // longer rows do not move it: no lattice depends on the length
+                let found = most_painted_at_rest(&sty, lead);
+                for n in [60, 61, 97] {
+                    assert_eq!(walked(&sty, lead, n), found, "{name}, lead {lead}, {n} cards");
+                }
+            }
+        }
+        // the numbers the strips are priced at: ten and seven (the old width-over-pitch-plus-one gave eight and six).
+        assert_eq!(most_painted_at_rest(&style(192.0, 16.0, 136.0), 0.0), 10);
+        assert_eq!(most_painted_at_rest(&style(288.0, 24.0, 96.0), 0.0), 7);
+    }
+
+    /// A row at scroll 0 paints fewer than one that has scrolled: a partial card stands at the left.
+    #[test]
+    fn a_scrolled_row_paints_one_card_more_than_a_row_at_scroll_zero() {
+        let sty = style(192.0, 16.0, 136.0);
+        let pitch = sty.w + sty.gap;
+        let at = |scroll: f32| {
+            (0..40).filter(|&i| crate::on_axis(tile_rect(i, sty.margin_x, pitch, scroll, 0.0, (sty.w, sty.h)).x, sty.w, SCR_W, 0.0)).count()
+        };
+        let vw = SCR_W - 2.0 * sty.margin_x;
+        assert_eq!(at(0.0), 9, "scroll 0: nine, the ninth peeking in at the right");
+        // the first scroll after 0: the focus reaches the trailing edge
+        let right = scroll_into_view(0.0, 8, 40, sty.w, sty.gap, vw);
+        assert_eq!(at(right), 10, "scrolled right: a partial card at the left");
+        let left = scroll_into_view(scroll_into_view(0.0, 30, 40, sty.w, sty.gap, vw), 20, 40, sty.w, sty.gap, vw);
+        assert_eq!(at(left), 10, "scrolled left: a partial card at the left");
+        let end = scroll_into_view(0.0, 39, 40, sty.w, sty.gap, vw);
+        assert_eq!(at(end), 9, "at the end: the last card stands a margin from the edge");
+        assert_eq!(most_painted_at_rest(&sty, 0.0), 10);
+    }
+
+    #[test]
+    fn a_lead_past_the_left_edge_paints_the_cards_it_keeps() {
+        let sty = style(192.0, 16.0, 136.0);
+        assert!(most_painted_at_rest(&sty, 208.0) > most_painted_at_rest(&sty, 0.0));
+        assert_eq!(most_painted_at_rest(&sty, 208.0), walked(&sty, 208.0, 60));
+    }
+
+    #[test]
+    fn a_style_with_no_pitch_paints_nothing() {
+        assert_eq!(most_painted_at_rest(&style(0.0, 0.0, 96.0), 0.0), 0);
+        assert_eq!(most_painted_at_rest(&style(-8.0, 4.0, 96.0), 0.0), 0);
+        assert_eq!(most_painted_at_rest(&style(f32::NAN, 4.0, 96.0), 0.0), 0);
+    }
+
+    /// Cards no wider than a pixel each still price in a bounded number of steps, and a card as wide as the
+    /// screen paints itself and at most a neighbour.
+    #[test]
+    fn extreme_cards_are_priced_without_walking_the_row() {
+        assert!(most_painted_at_rest(&style(1.0, 0.0, 0.0), 0.0) >= SCR_W as usize);
+        let wide = most_painted_at_rest(&style(1920.0, 0.0, 96.0), 0.0);
+        assert!((1..=3).contains(&wide), "{wide}");
     }
 }

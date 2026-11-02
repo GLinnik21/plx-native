@@ -415,6 +415,7 @@ line from the same counter.
 A separate mode that guards **UI framerate**, not playback correctness. The app logs a once/sec
 `loop=<n> route=<login|profiles|library|detail|person|search|player|home>
 [overlay=<the topmost surface's own screen name, or `none` on a bare player>]
+[section=<chapters|info|chapters_info>, while the player page holds an HUD section open]
 fps=<n>` heartbeat; each
 *scene* in the manifest's `fps_scenes` sets its `plxnative-*` triggers (profiler **off**), runs, and
 asserts its gates. This is the automated form of the by-hand FPS hunting that found the hero /
@@ -619,8 +620,9 @@ marks pacing invalid if a render-profiler trigger is armed.
     and on a settled screen it grades nothing at all — `home-hero` carries an `_idle_gate_note`
     saying so. It is the only one left: this line said "three scenes" long after the other two
     (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
-    the fix that note asks for. The remaining scenes graded only by `loop_floor` are `info-panel`, `chapters-panel` and
-    `track-menu`, and they need no such note — the video plane stays **bound** throughout those
+    the fix that note asks for. The remaining scenes graded only by `loop_floor` are listed by `./tests/run.py --list --server`
+    (`info-panel` and `chapters-panel` pin `"overlay": "none"` and a `"section"` word, which `select_section` applies
+    to the heartbeats they grade; `track-menu` is still an overlay), and they need no such note — the video plane stays **bound** throughout those
     scenes, and the gate treats a bound plane as always-present (`machine/src/idle.rs`'s `VIDEO_PLANE`),
     so their `loop_floor` still grades a fill rate the way it always did.
   - `fps_floor` grades `fps=` on the **median** — "is this screen still animating, at rate".

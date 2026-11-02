@@ -1021,8 +1021,8 @@ mod tests {
     /// from its first page (`refresh_if_client_changed`), keeping the window the page asked for. The
     /// listing was read through client `(1, 1)` and the keys now answer `(2, 1)` for its server.
     fn rebuild(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize) {
-        state.current.as_mut().unwrap().client_key = Some(ClientKey { instance: 1, token: 1 });
-        let now = ClientKeys::from_keys([(ServerId::UNSET, ClientKey { instance: 2, token: 1 })]);
+        state.current.as_mut().unwrap().client_key = Some(ClientKey { instance: 1, token: 1, grant: 1 });
+        let now = ClientKeys::from_keys([(ServerId::UNSET, ClientKey { instance: 2, token: 1, grant: 1 })]);
         assert!(state.refresh_if_client_changed(adapter, &now));
         adapter.land(state.generation(), Landing::Header { rk: None, head: header("Set", total) });
         assert!(state.take_landing_for_test(adapter));

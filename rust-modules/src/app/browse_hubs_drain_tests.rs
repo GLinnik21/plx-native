@@ -119,7 +119,7 @@ fn the_browse_pump_arm_starts_the_reads_it_asked_for_again_after_a_refusal() {
 #[test]
 fn browse_run_starts_a_directory_read_its_step_emitted_in_the_same_call() {
     let _guard = plx_base::testlock::serial();
-    for work in [LibraryWork::Genres, LibraryWork::Letters] {
+    for work in [LibraryWork::Genres, LibraryWork::Letters { today: None }] {
         let mut rig = armed_rig();
         rig.bridge.stores.browse.borrow_mut().owe_letters_for_test();
         let target = rig.target;

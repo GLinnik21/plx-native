@@ -664,7 +664,7 @@ pub(crate) fn machine_name(id: plx_machine::machine::MachineId) -> String {
     match id {
         MachineId::Instance(id) => format!("inst:{}", id.0),
         MachineId::Store(id) => format!("store:{}", id.0),
-        MachineId::Session => "Session".into(), MachineId::Consent => "Consent".into(),
+        MachineId::Session => "Session".into(), MachineId::Consent => "Consent".into(), MachineId::Huds => "Huds".into(),
         MachineId::Input => "Input".into(), MachineId::Present => "Present".into(),
         MachineId::Nav => "Nav".into(), MachineId::Player => "Player".into(),
         MachineId::Cache => "Cache".into(),

@@ -14,5 +14,17 @@
   "settings.playback.instant_dpad_seeking.on": {
     "value": "On",
     "description": "Choice for the Instant D-pad seeking setting."
+  },
+  "settings.playback.dolby_vision": {
+    "value": "Dolby Vision",
+    "description": "Playback setting title. Whether Dolby Vision is used when the TV supports it; default Auto."
+  },
+  "settings.playback.dolby_vision.copy": {
+    "value": "Auto uses Dolby Vision when the TV supports it. Off plays the HDR10 layer instead. Files with no HDR10 layer are converted by your Plex server, and may not play.",
+    "description": "Explanation of the Dolby Vision playback setting. Names the picker's two labels: settings.playback.auto and settings.playback.dolby_vision.off. Off can stop a file with no HDR10 layer (Dolby Vision Profile 5) from playing, because the server may refuse to convert it."
+  },
+  "settings.playback.dolby_vision.off": {
+    "value": "Off",
+    "description": "Choice for the Dolby Vision setting (singular): Dolby Vision is never used."
   }
 }

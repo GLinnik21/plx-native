@@ -2,6 +2,8 @@
 
 Design proposal, 2026-09-21. Source observations below are from this live worktree, not from the historical filenames in the July audit. No implementation or performance verification accompanies this document. The reported TV sequence—visible art queued 47th and dropped frames increasing from 68 to 247—is the task's supplied incident evidence, not a measurement reproduced here.
 
+> Written for two workers. The pool is now `workers_for` in [poster.rs](../rust-modules/src/app/adapters/poster.rs): two, or three on a set with at least four cores and 2 GiB. Read every "two workers" below, `POSTER_WORKERS` and `WorkerId` (0 or 1) as that count: the typed sketch must take the count, not fix it. The one-speculative-obligation rule (§3, rule 2) is what keeps capacity for visible work, and it holds for any count of two or more.
+
 ## 1. Problem and scope
 
 Replace the poster adapter's implicit work protocol with a small, poster-specific request state machine. Keep two ordinary worker threads, the existing thread-spawn seam, and the SDL loop's ownership of application scheduling and result application. Make urgency and arrival order explicit data, independently of cache allocation. Do not migrate working one-shot mailboxes, playback services, or persistence into a common scheduler.
@@ -290,7 +292,7 @@ Before each behavior piece, audit prose made false by the change: `P_READY` term
 
 ## 5. What this does not fix
 
-**Two workers remain two workers. Their count is frozen until per-image imgtrace measurement exists.** The agreed order supplied for this task is **resident-eviction bug → imgtrace → lookahead/worker-count tuning from measurements → disk cache**. This design is preparation for that measured work, not permission to skip ahead or bundle those projects together.
+**Two workers remain two workers. Their count is frozen until per-image imgtrace measurement exists.** (Overtaken: that measurement now exists, and `workers_for` in `poster.rs` gives a set with at least four cores and 2 GiB three workers, every other set two.) The agreed order supplied for this task is **resident-eviction bug → imgtrace → lookahead/worker-count tuning from measurements → disk cache**. This design is preparation for that measured work, not permission to skip ahead or bundle those projects together.
 
 A scheduler cannot make two workers decode faster, shorten a slow server response, remove texture-upload stalls, or make 64 logical identities fit under the texture byte budget. `Delivered` does not repair the source/cache residency contract: `TexCache::evict_for` can drop residency independently of the adapter slot. That boundary is why resident-eviction work comes first. The scheduler also does not add transport cancellation, cure playback's blocking control paths, or establish a process-wide network budget.
 

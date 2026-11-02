@@ -110,7 +110,7 @@ impl CardSource<FixtureHost> for Cards {
         } else {
             TileLabel::default()
         };
-        if self.sort_caption { label.sort_info = std::ffi::CString::new("100%").ok(); }
+        if self.sort_caption { label.value = Some(crate::card_row::SortValue { text: "100%".into(), ..Default::default() }); }
         label
     }
     fn more(&self) -> bool {
@@ -155,7 +155,7 @@ trait Section {
 
 impl Section for Shelf {
     fn new() -> Self {
-        Shelf::new(ENTRY, &RowStyle::HOME)
+        Shelf::new(ENTRY, RowStyle::HOME)
     }
     fn on(&mut self, ev: &ScreenEvent<FixtureHost>, cx: &Cx9<'_>, src: &Cards, fx: &mut Effects<'_, FixtureHost>)
         -> Option<CardEvent<u32>> {
@@ -1071,7 +1071,7 @@ fn a_source_can_refuse_a_hold() {
     }
     let r = settled::<Shelf>(4);
     let src = NoHold(Cards::new(r.src.elems.clone(), false));
-    let mut shelf = Shelf::new(ENTRY, &RowStyle::HOME);
+    let mut shelf = Shelf::new(ENTRY, RowStyle::HOME);
     let mut r2 = r;
     r2.focus = Some(r2.key(100));
     let mut present = Present::new();
@@ -2389,7 +2389,7 @@ fn a_shelf_that_returned_adopts_a_landing_whole_under_the_image() {
 fn a_cull_margin_keeps_a_card_just_off_the_left_edge() {
     let mut plain = settled::<Shelf>(60);
     let mut margined = settled::<Shelf>(60);
-    margined.sect = Shelf::new(ENTRY, &RowStyle::HOME).cull_margin(400.0);
+    margined.sect = Shelf::new(ENTRY, RowStyle::HOME).cull_margin(400.0);
     for r in [&mut plain, &mut margined] {
         r.land_focus(130, By::Restore);
         r.run(300);
@@ -4079,7 +4079,7 @@ fn landing_rig() -> Rig<Shelf> {
 fn landing_rig_at(elem: u32) -> Rig<Shelf> {
     crate::containers::transition::set_page_image_held(false);
     let mut r = Rig::<Shelf>::new(40);
-    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     r.run(2);
     r.land_focus(elem, By::Restore);
     r.run(240);
@@ -4210,7 +4210,7 @@ fn a_sliding_card_starts_where_it_stood_and_its_stop_follows() {
 fn nothing_animates_on_the_first_load() {
     crate::containers::transition::set_page_image_held(false);
     let mut r = Rig::<Shelf>::new(0);
-    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     r.run(2);
     r.src.elems = (100..108).collect();
     r.run(1);
@@ -4220,7 +4220,7 @@ fn nothing_animates_on_the_first_load() {
     assert!(r.sect.ghost_probe().0.is_empty() && !r.sect.landing_pending());
 
     let mut p = Rig::<Shelf>::new(8);
-    p.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    p.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     p.src.unloaded = 0..8;
     p.run(2);
     p.src.elems = (200..208).collect();
@@ -4883,7 +4883,7 @@ fn an_external_grid_ghost_stays_in_its_row_when_the_page_shifts() {
 
 fn mount_animated_shelf(n: usize) -> Box<dyn CardHarness> {
     let mut r = Rig::<Shelf>::new(n);
-    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     Box::new(r)
 }
 fn mount_animated_grid(n: usize) -> Box<dyn CardHarness> {
@@ -5457,63 +5457,120 @@ fn the_rows_in_view_and_their_hold_reach_fit_the_rows_the_store_keeps() {
 }
 
 #[test]
-fn persistent_grid_captions_draw_every_visible_card_and_keep_focus_and_next_row_clear() {
+fn value_lines_draw_on_every_visible_card_and_space_the_rows_for_them() {
     let _guard = plx_base::testlock::serial();
     let mut r = Rig::<Grid>::new(30);
-    r.src.captioned = true; r.src.sort_caption = true;
-    r.sect.set_persistent_captions(true);
-    r.land_focus(100, By::Dir); r.run(120);
+    r.src.sort_caption = true;
+    r.sect.set_value_line(true);
+    // Focus in row 2: rows 0 and 1 are collapsed, so their pitch is the card and the 60 px row gap.
+    r.land_focus(112, By::Dir); r.run(120);
     let cx = r.cx();
-    let f = DrawFrame::new(&cx, Painter::recording());
-    let lines = r.sect.caption_lines_probe(&f, f.painter, &r.src);
-    for i in 0..6 {
-        assert_eq!(lines.iter().filter(|(index, ..)| *index == i).count(), 3,
-            "each poster is captioned, not just the focused one: {i}");
-    }
+    let y = |r: &Rig<Grid>, elem: u32| r.sect.place(&r.cx(), &r.src, &elem, At::SpringTarget).unwrap().rest_rect.y;
+    assert!((y(&r, 106) - y(&r, 100) - (GRID.style.h + crate::card_row::SORT_VALUE_ROW_GAP)).abs() < 0.5,
+        "collapsed rows are 60 px apart while values show");
+    // The focused row's band is open: the row below it sits SORT_VALUE_OPEN further down.
+    assert!((y(&r, 119) - y(&r, 113) - (GRID.style.h + crate::card_row::SORT_VALUE_ROW_GAP + crate::card_row::SORT_VALUE_OPEN)).abs() < 0.5,
+        "the focused row opens 26 px");
     let runs = crate::draw_census::capture_runs(|| {
         let mut frame = DrawFrame::new(&cx, Painter::recording());
         let p = frame.painter;
         r.sect.draw(&mut frame, p, &r.src);
     });
-    assert!(runs.iter().any(|run| run.text == "100%"), "a fitting sort value has no ellipsis");
-    assert!(runs.iter().any(|run| run.text == "Title 101"), "an unfocused fitting title has no ellipsis");
-    let c0 = r.sect.place(&cx, &r.src, &100, At::SpringTarget).unwrap();
-    let c6 = r.sect.place(&cx, &r.src, &106, At::SpringTarget).unwrap();
-    let last = lines.iter().filter(|(i, ..)| *i == 0).map(|(_, _, bottom, _)| *bottom).fold(0.0, f32::max);
-    let next_lifted_top = c6.rest_rect.y;
-    assert!(last < next_lifted_top, "last caption stays above even a popped next row");
-    assert!((c0.rest_rect.w / GRID.style.focus_scale - GRID.style.w).abs() < 0.01);
-    assert!((c0.rest_rect.h / GRID.style.focus_scale - GRID.style.h).abs() < 0.01);
-    let first_top = c0.rest_rect.y;
-    r.land_focus(101, By::Dir); r.run(120);
-    assert_eq!(r.focus, Some(r.key(101)));
-    assert_eq!(r.sect.place(&r.cx(), &r.src, &100, At::SpringTarget).unwrap().rest_rect.y, first_top,
-        "moving horizontally cannot change the permanent row pitch");
-    r.sect.set_persistent_captions(false);
+    let values: Vec<_> = runs.iter().filter(|run| run.text == "100%" && run.ink[3] > 0.5).collect();
+    assert!(values.iter().all(|run| run.size == crate::theme::size::CAPTION), "never smaller type");
+    assert_eq!(values.iter().filter(|run| run.bold).count(), 1, "exactly the lifted card's value is bold");
+    assert!(values.iter().filter(|run| !run.bold).count() >= 5, "every other visible card shows its value at rest");
+    assert!(runs.iter().all(|run| !run.text.starts_with("Title")), "no identity block while values show");
+    r.sect.set_value_line(false);
     r.run(120);
     let cx = r.cx(); let f = DrawFrame::new(&cx, Painter::recording());
-    assert!(r.sect.caption_probe(&f, f.painter, &r.src).iter().all(|(index, _)| *index == 1),
-        "turning the mode off restores focused-only captions");
+    assert!(r.sect.caption_probe(&f, f.painter, &r.src).iter().all(|(index, _)| *index == 12),
+        "turning values off restores the focused-only caption band");
+}
+
+/// The simulator measured the settled focused value at 217/255 where TEXT_PRIMARY is 247: the grid
+/// drew every value BEFORE every tile, and the lifted card's drop shadow (folded into its composite
+/// quad, 64 px past the poster) fell over the line. A value is painted over every tile.
+#[test]
+fn every_value_is_painted_after_every_tile_so_no_shadow_falls_on_it() {
+    let _guard = plx_base::testlock::serial();
+    let mut r = Rig::<Grid>::new(30);
+    r.src.sort_caption = true;
+    r.sect.set_value_line(true);
+    r.land_focus(112, By::Dir); r.run(120);
+    let cx = r.cx();
+    let draw = || {
+        let mut frame = DrawFrame::new(&cx, Painter::recording());
+        let p = frame.painter;
+        r.sect.draw(&mut frame, p, &r.src);
+    };
+    let census = crate::draw_census::capture(draw);
+    let last_tile = census.iter().rposition(|(tag, _)| *tag == TILE_PAINTED).expect("tiles are painted");
+    let first_value = census.iter().position(|(tag, _)| *tag == 100).expect("values are painted");
+    assert!(first_value > last_tile, "a value line goes over every tile (tile {last_tile}, value {first_value})");
+    // and the settled focused card's value is the whole of TEXT_PRIMARY, bold
+    let runs = crate::draw_census::capture_runs(draw);
+    let bold: Vec<_> = runs.iter().filter(|run| run.bold && run.ink[0] > 0.0).collect();
+    assert_eq!(bold.len(), 1, "exactly the lifted card's value is bold");
+    // (the pop spring settles within a millionth of its target: an alpha well inside one 8-bit step)
+    let ink = bold[0].ink;
+    assert_eq!(ink[..3], crate::theme::TEXT_PRIMARY[..3]);
+    assert!((ink[3] - 1.0).abs() < 0.5 / 255.0, "{ink:?}");
+    // the opener's redraw of the lifted card keeps the same order
+    let hold = crate::draw_census::capture(|| {
+        let mut frame = DrawFrame::new(&cx, Painter::recording());
+        r.sect.redraw(&mut frame, &r.src, Some(r.key(112)));
+    });
+    let tile = hold.iter().position(|(tag, _)| *tag == TILE_PAINTED).expect("the lifted tile");
+    assert!(hold.iter().position(|(tag, _)| *tag == 100).is_some_and(|value| value > tile), "{hold:?}");
 }
 
 #[test]
-fn plain_sort_caption_uses_the_regular_details_face() {
+fn a_value_line_drops_its_plus_then_its_mark_and_never_elides() {
     let _guard = plx_base::testlock::serial();
-    for (value, bold) in [("25 июн. 2026", false), ("2 ч 14 мин", false), ("64%", true)] {
-        let label = TileLabel { sort_info: Some(std::ffi::CString::new(value).unwrap()),
-            sort_bold: bold,
-            ..TileLabel::from_lines([Some("Film".into()), Some("2026".into())]) };
-        let runs = crate::draw_census::capture_runs(|| crate::card_row::draw_label(
-            Painter::recording(), Rect::new(100.0, 100.0, GRID.style.w, GRID.style.h),
-            1.0, &GRID.style, &label, &FixtureMeasure));
-        let value_run = runs.iter().find(|run| run.text == value).unwrap();
-        assert_eq!(value_run.bold, bold, "only ratings have emphasis");
-        assert_eq!(value_run.size, if bold { crate::theme::size::LABEL } else { crate::theme::size::CAPTION });
+    let mark: &'static [crate::widgets::MarkLayer] = &[(crate::icons::Icon::Crowd, crate::theme::RATING_AUDIENCE)];
+    let rect = Rect::new(100.0, 100.0, 250.0, 375.0);
+    let drawn = |style: &crate::card_row::RowStyle, value: &crate::card_row::SortValue, focused: bool| {
+        crate::draw_census::capture_runs(|| crate::card_row::draw_sort_value(
+            Painter::recording(), rect, if focused { style.focus_scale } else { 1.0 }, style, value, &FixtureMeasure, focused))
+    };
+    let value = crate::card_row::SortValue { text: "4K".into(), plus: true, mark, missing: false };
+    let wide = crate::card_row::RowStyle { w: 250.0, ..GRID.style };
+    // FixtureMeasure is size/2 per byte: "4K" is 24 px, "4K" + NBSP + "+1" is 24 + 12 + 24 + ...
+    let full = format!("4K{}", crate::card_row::SORT_VALUE_PLUS);
+    assert!(drawn(&wide, &value, false).iter().any(|run| run.text == full), "fits whole when there is room");
+    let tight = crate::card_row::RowStyle { w: 100.0, ..GRID.style };
+    let runs = drawn(&tight, &value, false);
+    assert!(runs.iter().any(|run| run.text == "4K") && !runs.iter().any(|run| run.text.contains("+1")), "+1 goes first");
+    // The glyphs the same call hands the painter: a dropped mark is the absence of its icon, which the words alone cannot show.
+    let marks = |style: &crate::card_row::RowStyle, value: &crate::card_row::SortValue| {
+        crate::draw_census::capture_icons(|| crate::card_row::draw_sort_value(
+            Painter::recording(), rect, 1.0, style, value, &FixtureMeasure, false))
+    };
+    assert_eq!(marks(&wide, &value).len(), mark.len(), "with room for everything the mark is drawn");
+    assert_eq!(marks(&tight, &value).len(), mark.len(), "the mark outlasts the +1 (24 px of words and 52 of mark hang fit 100)");
+    let bare = crate::card_row::RowStyle { w: 60.0, ..GRID.style };
+    let marked = crate::card_row::SortValue { text: "4K".into(), mark, ..Default::default() };
+    let runs = drawn(&bare, &marked, false);
+    assert!(runs.iter().any(|run| run.text == "4K"), "the words are drawn whole at 60 px");
+    assert!(marks(&bare, &marked).is_empty(), "the mark goes before the words are cut: no icon is painted at 60 px (24 + 52 > 60)");
+    let long = crate::card_row::SortValue { text: "Yesterday".into(), ..Default::default() };
+    let runs = drawn(&wide, &long, false);
+    assert!(runs.iter().all(|run| !run.text.contains('\u{2026}')) && runs.iter().any(|run| run.text == "Yesterday"));
+    // The number stays on the poster axis whatever hangs beside it.
+    let axis = rect.cx();
+    let at = drawn(&wide, &crate::card_row::SortValue { text: "98%".into(), mark, ..Default::default() }, false);
+    assert!(at.iter().all(|run| run.align == 1 && (run.at.x - axis).abs() < 0.01), "centred on the axis: {at:?}");
+    // A missing value is an en dash at 50% white, regular even on the focused card.
+    let dash = crate::card_row::SortValue { text: "\u{2013}".into(), missing: true, ..Default::default() };
+    for focused in [false, true] {
+        let runs = drawn(&wide, &dash, focused);
+        assert!(runs.iter().all(|run| !run.bold) && runs.iter().any(|run| run.text == "\u{2013}"), "focused={focused}");
     }
 }
 
 #[test]
-fn review_persistent_grid_borrows_labels_only_after_culling() {
+fn a_value_line_grid_borrows_labels_only_after_culling() {
     struct CachedCards {
         cards: Cards,
         label: TileLabel,
@@ -5539,12 +5596,37 @@ fn review_persistent_grid_borrows_labels_only_after_culling() {
     let painter = Painter::root();
     let frame = DrawFrame::new(&cx, painter);
     let mut grid = Grid::new(ENTRY, GRID.columns(GRID.cols, GRID.style, 5000.0));
-    grid.set_persistent_captions(true);
+    grid.set_value_line(true);
     let src = CachedCards { cards: Cards::new((100..130).collect(), false),
-        label: TileLabel::titled("Cached", "1997"), reads: Default::default() };
+        label: TileLabel { value: Some(crate::card_row::SortValue { text: "98%".into(), ..Default::default() }), ..TileLabel::titled("Cached", "1997") },
+        reads: Default::default() };
     assert!(grid.caption_probe(&frame, painter, &src).is_empty());
     assert!(src.reads.borrow().is_empty(), "culled tiles must not ask for words");
     grid.set_columns(GRID.cols, GRID.style, crate::consts::MARGIN_X);
     assert!(!grid.caption_probe(&frame, painter, &src).is_empty());
     assert!(!src.reads.borrow().is_empty(), "visible captions use the borrowed path");
+}
+
+/// **A Shelf takes its style by value** (`docs/hud-plugins.md` D11): a style built at runtime, here a
+/// package's 288 x 162 chapter cards, lives in the Shelf and is read back unchanged, and the pitch every
+/// geometry reads is that style's, not a `'static` constant's.
+#[test]
+fn a_shelf_holds_a_style_built_at_runtime() {
+    let wide = RowStyle { w: 288.0, h: 162.0, gap: 24.0, ..RowStyle::HOME };
+    let shelf = Shelf::new(ENTRY, wide);
+    assert_eq!((shelf.style().w, shelf.style().h, shelf.style().gap), (288.0, 162.0, 24.0));
+    assert_eq!(Shelf::new(ENTRY, RowStyle::HOME).style().w, RowStyle::HOME.w, "a shipped style passes by value too");
+}
+
+#[test]
+fn default_shelf_composition_keeps_the_label_before_the_source_overlay() {
+    let src = Cards::new(vec![1], false);
+    let tile = super::Tile { rect: Rect::new(100.0, 200.0, 200.0, 100.0), scale: 1.0, radius: 10.0, focused: true };
+    let label = TileLabel::default();
+    let draws = crate::draw_census::capture(|| src.compose(Painter::recording(), 0, &tile, &FixtureMeasure,
+        Some(&label), |_, given| {
+            assert!(std::ptr::eq(given, &label));
+            crate::draw_census::note(7777, tile.rect);
+        }));
+    assert_eq!(draws.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [7777, TILE_PAINTED]);
 }

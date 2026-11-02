@@ -694,6 +694,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
 
 fn inputs_for(signed_in: bool) -> RootInputs {
     RootInputs {
+        trace: plx_platform::playback_trace::Status::Off,
         signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
         language: plx_platform::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
@@ -880,4 +881,26 @@ fn a_rebuild_keeps_the_row_by_id_and_a_vanished_row_falls_to_its_neighbour() {
         assert_eq!(page.form.selected_id(), Some(&lands), "{from:?} left: focus falls to {lands:?}");
         page.form.set(root_form(&inputs_for(true)), None);
     }
+}
+
+#[test]
+fn playback_diagnostics_requests_are_effects_and_answered_status_drives_the_toggle() {
+    let _serial = plx_base::testlock::serial();
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    let mut present = plx_machine::present::Present::new();
+    let mut out = Vec::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
+    root.activate(root_key(RootId::PlaybackTrace), cx(None).views, &mut fx);
+    assert_eq!(root.state.trace, plx_platform::playback_trace::Status::Off,
+        "a press must not claim a recording before the runner answers");
+    assert!(out.iter().any(|s| matches!(s.fx, Fx::App(AppFx::PlaybackTrace(
+        plx_platform::playback_trace::Command::Start)))));
+    out.clear();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
+    root.step(&ScreenEvent::App(super::super::registry::AppMsg::PlaybackTrace(
+        plx_platform::playback_trace::Status::Recording)), &cx(None), &mut fx);
+    assert_eq!(root.state.trace, plx_platform::playback_trace::Status::Recording);
+    root.activate(root_key(RootId::PlaybackTrace), cx(None).views, &mut fx);
+    assert!(out.iter().any(|s| matches!(s.fx, Fx::App(AppFx::PlaybackTrace(
+        plx_platform::playback_trace::Command::Stop)))));
 }

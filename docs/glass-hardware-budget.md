@@ -33,7 +33,9 @@ Four consequences you can act on immediately:
   pixels on every side (68 for a glass that never rises), and unioned across every glass surface in the frame.** Not the surface. Keep
   that rectangle **under about 300,000 pixels and you stay at 60 fps**; past it you drop to 45, and
   it steps down from there. **The shipped Account panel sits just inside that line and is free**
-  (measured, §3.4).
+  (measured, §3.4). *(2026-10-30: that line was measured on the capture path, and §11 shows the
+  direct path prices the region at 7/16. The top bar's track is no longer held to it: its width
+  never decides its material, `widgets::tab_glass_on`.)*
 * **Glass steps your frame rate rather than sliding it: 60 → 45 → 36 → 30.** The blur refreshes on
   one frame in three, and that frame either fits in one 16.7 ms slot or takes two, or three. You are
   buying whole slots, so there is no partial credit — see §3.2, where the model reproduces every
@@ -602,10 +604,26 @@ hierarchy is made of. Brightening the idle label instead was the alternative and
 step (tertiary → secondary) buys 11 points of transparency and costs **36% of the idle:selected
 separation**, two steps buys 17 and costs half of it.
 
-The ground has to be the PIXELS. Five taps under the bar, every thirtieth drawn frame, from
-framebuffer 0 before the bar draws — a readback stalls a tiler, which is exactly why the rate is
-low: a hero holds for eight seconds and a scrim density has no business changing faster than the
-picture does. Measured on the panel with `homeosc` running, the frame rate is unchanged.
+The ground has to be the PIXELS. Five taps under the bar, once per `GROUND_SAMPLE_EVERY` drawn
+frames — a readback stalls a tiler, which is exactly why the rate is low: a hero holds for eight
+seconds and a scrim density has no business changing faster than the picture does. Measured on the
+panel with `homeosc` running, the frame rate was unchanged when the taps were copied from
+framebuffer 0 before the bar drew. They are now copied from the retained backdrop image of the
+bar's own band (the blurred prefix below it, which the frame builds before the page draws) at the
+frame boundary after the swap, so the copy adds no render pass to framebuffer 0
+(`gfx::sample_ground`); what that did to the frame is measured under "What to index on instead".
+The new reading agrees with the old one. On the demo library's 8 hero titles (television,
+2026-10-31, `src=image` on every `groundlog` line) the median |ΔL*| between the two probes was
+0.15 and the worst 1.8, the median |Δspan| 0.25 and the worst 2.1, and the bar was pixel-identical
+on all 8. That art is L* 17 to 51, so the density stayed at its 0.200 floor: that says nothing about
+bright grounds.
+The simulator measured the bright grounds (2026-10-31, not the Mali, frame cost not measured;
+`tools/glass-patterns.py` on `ui::testpat` grounds against the mock, both probes on one ladder): on
+`flat:52` to `flat:95`, `edge`, `ramp` and `rainbow:70` they solved the same density (|Δwant| 0.000,
+|ΔL*| 0.1 at most) and the idle labels measured 4.24 to 4.73 in the screenshot against the plate's
+median on every flat ground from L* 52 up, with both; only `checker:24` moved (want 0.330 to 0.287,
+L* 59.8 to 57.4, span 14.2 to 9.3), its labels measuring 5.1 to 5.5 against the median and 2.7 against
+the plate's brightest tenth with either probe, and 105 of the new probe's 106 lines read `src=image`.
 
 **The cheap sources are the wrong colour, and this cost an iteration.** Plex's `UltraBlurColors` are
 a derived muted palette for an ambient wash: for the hero whose top edge measures (0.00, 0.68, 0.91)
@@ -873,6 +891,46 @@ reverse of §3.1's order and of §8's rule 1, both of which were written when th
 and no surface bigger than 87,000 px had been tried. This is arithmetic over the shipped chain plus
 §8's own composite row, not a fresh measurement; what is measured is the 58 fps and the distribution
 below, and they are consistent with it.
+
+> **2026-10-30, the consequence for the top bar.** The bar's track used to be held to a width
+> (`GLASS_TRACK_MAX`, 672 px at the end), solved from the 300,000 px² budget of §3.1 and the chip's
+> reach, and a strip past it drew the flat capsule. That budget is the capture-path figure this
+> section corrects; the bar's real grab is `blur_region_for(false, ..)` (68 px past the members, not
+> 88); and the owner's Belarusian strip (679 px once the Watchlist mark joined the bar) lost the
+> glass for 7 px. The cap is gone: the bar is glass at any width, a strip past `TAB_VIEW_MAX`
+> scrolls inside a track that stays glass, and the unfurled chip is kept off the track by its NAME
+> budget instead (`widgets::chip_name_budget`). The widest bar's cost is measured, not priced:
+> 2026-10-30, `FLAVOR=debug`, `ARM_PROFILE=release`, mock, single runs apart from the two 1544 px
+> `hero-pong` legs. `GPU_ACTIVE` p50 on `hero-pong` reads 7.61M flat, 8.70M at 679 px and 9.65M at
+> 1544 px, the widest track. Missed refreshes in cycles 2-60 read 10 flat, 13 at 679 px, and 14 and
+> 16 at 1544 px on `hero-pong`, and 15 flat, 20 at 679 px and 17 at 1544 px on `grid-pong`. The
+> 1544 px `hero-pong` leg missed 104 and 69 before `backdrop::surface_with` stopped splitting the
+> shared band on touching sampling footprints.
+>
+> **2026-10-31, the ground probe reads the band's image.** Same setup (`FLAVOR=debug`,
+> `ARM_PROFILE=release`, mock library, `hero-pong`). The 2026-10-30 legs above were taken with the
+> probe that copied framebuffer 0 mid-page, which splits the frame's render pass on the Mali once
+> per reading: at 679 px `GPU_ACTIVE` p95 read 10.54M against 8.82M with the probe disabled, with
+> 93 period-31 gaps and 7 frames over one refresh. The probe now copies five 13-texel boxes from the
+> band's retained image at the frame boundary (`GroundProbe::kick_queued`), behind the same fence
+> and read-back; a reading now repeats every `GROUND_SAMPLE_EVERY` + 2 frames. At 679 px
+> `GPU_ACTIVE` reads p50 8.70M, p95 8.83M, p99 10.64M, with 0 frames over one refresh. At 1544 px
+> it reads p50 9.73M, p95 9.87M, p99 11.64M, with 3.7% of frames over one refresh; the old probe
+> read p50 9.65M, p95 11.47M, 6.8%. Missed refreshes in cycles 2-60 read 8 on `hero-pong` and 13
+> on `grid-pong`, both inside the control spread (`profile-tv`, fact (b)), so no change is claimed.
+>
+> The p99 sits about 1.9M over the p50 at 679 px, and that is not the probe. With the probe
+> disabled the 679 px p99 was 10.65M against 10.64M now. It is the hero flips, which make up the
+> 4.2% upper mode in both legs: the upper mode's gap histogram is gap 1 (the flips) and scattered
+> 15-18 and 440-450, with neither 31 nor 32, and the `GPU_ACTIVE` of the frame after a kick equals
+> the all-frames value (8.70M against 8.70M at 679 px, 9.73M against 9.73M at 1544 px). No probe-off
+> leg exists at 1544 px, so its 11.64M p99 has no baseline to be compared with.
+>
+> The copy now lands in the gap between frames. A kick-and-read repeats every
+> `GROUND_SAMPLE_EVERY` + 2 frames (copied at one boundary, read at the next), and the gap at that
+> frame is 2.88 ms against 1.67 ms (+1.21 ms, about 0.8M cycles) at 679 px, and 3.07 ms against
+> 1.74 ms at 1544 px. None of it shows in the next frame's `GPU_ACTIVE`. That was measured on the
+> HWCNT-serialised timeline, so its cost in an unprofiled frame is not determined.
 
 ### What it actually costs
 

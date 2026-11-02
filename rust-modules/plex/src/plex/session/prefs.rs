@@ -36,7 +36,7 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
+    DolbyVisionMode, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
     PlaintextConsent, HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
@@ -52,7 +52,7 @@ mod track_memory_document_tests;
 #[cfg(test)]
 mod track_memory_tests;
 pub use profile_prefs::{
-    effective, own_prefs, persist_profile_pref, put_own, stored_effective, ProfilePrefs, ProfilePrefsPref,
+    effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own_hud, stored_effective_hud, put_own, stored_effective, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite,
 };
 pub use track_memory::{
@@ -125,6 +125,9 @@ pub struct Preferences {
     /// Hidden-HUD D-pad jumps; off by default.
     #[serde(default, deserialize_with = "de_soft_instant_dpad_seeking", skip_serializing_if = "InstantDpadSeeking::is_default")]
     pub instant_dpad_seeking: InstantDpadSeeking,
+    /// Dolby Vision override (`Auto` or `Off`); `Auto` by default.
+    #[serde(default, deserialize_with = "de_soft_dolby_vision_mode", skip_serializing_if = "DolbyVisionMode::is_default")]
+    pub dolby_vision_mode: DolbyVisionMode,
     /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like
     /// [`Preferences::playback_quality`]: each profile keeps its own pick in `profile_prefs`, and a
     /// profile that has not picked reads this top-level key. Absence is Details, so a session written
@@ -149,6 +152,13 @@ pub struct Preferences {
     /// credentials.
     #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
     pub audio_enhancements: crate::plex::AudioEnhancements,
+    /// **The chosen player HUD's package id** (`docs/hud-plugins.md`, "Storage per install mode"): a frozen
+    /// install-wide fallback like [`Preferences::playback_quality`]. Each profile keeps its own pick in
+    /// `profile_prefs` ([`HudSelectionPref`]); a profile that has not picked reads this key, and empty is
+    /// the built-in (`builtin:classic`). A build with per-profile settings never writes it. Skipped while
+    /// empty so a session predating the field serializes exactly as it did.
+    #[serde(default, deserialize_with = "de_soft_string", skip_serializing_if = "String::is_empty")]
+    pub hud_selection: String,
 
     // ---- A5: the rest of the preference keys, in the order the legacy file always wrote them ----
     //
@@ -354,15 +364,15 @@ pub struct Preferences {
     /// record costs only itself, skipped while empty so a session that never picked anything per
     /// profile serializes exactly as it did before the field existed. Account-bound: a record whose
     /// stamp is not the signed-in account's reads as nothing, and sign-out drops the whole key
-    /// (`storage::state::ACCOUNT_BOUND_PREFERENCES`). Written only through [`persist_profile_pref`].
+    /// (`storage::state::ACCOUNT_BOUND_PREFERENCES`). Written only through [`persist_profile_pref`] and [`persist_profile_hud`].
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub profile_prefs: Vec<ProfilePrefsRecord>,
 }
 
 /// How long a setting's value lives, and who owns the write. `auto_sign_in`, `ui_resolution`,
 /// `hold_hint_taught` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
-/// scalars, the hero trailer autoplay switch (each with its install-wide key as the [`Fallback`]) and
-/// the library lists are `Profile`;
+/// scalars, the hero trailer autoplay switch, the chosen HUD's package id ([`HudSelectionPref`], a `String` row) (each
+/// with its install-wide key as the [`Fallback`]) and the library lists are `Profile`;
 /// `track_memory` is `PerShow` and `subtitle_offsets` is `PerItem`. Sign-out clears every row that
 /// is account-bound, whatever its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -508,6 +518,8 @@ setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(InstantDpadSeekingPref: InstantDpadSeeking = instant_dpad_seeking, "instant_dpad_seeking", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(DolbyVisionModePref: DolbyVisionMode = dolby_vision_mode, "dolby_vision_mode", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(DeckPressPref: DeckPress = deck_press, "deck_press", Profile fallback LegacyInstallKey,
@@ -525,6 +537,20 @@ setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Profil
     account false, live true, settings None, parse Soft);
 setting!(AudioEnhancementsPref: crate::plex::AudioEnhancements = audio_enhancements,
     "audio_enhancements", Profile fallback LegacyInstallKey, account false, live true, settings None, parse Soft);
+
+/// The chosen player HUD (PR10): a per-profile [`Row`] whose value is a package id, a `String`, so not a
+/// [`Setting`] (`Setting::Value` is `Copy`). It declares the same facts as the `LegacyInstallKey` settings;
+/// its accessors are `profile_prefs::{effective_hud, stored_effective_hud, persist_profile_hud}`.
+pub struct HudSelectionPref;
+impl Row for HudSelectionPref {
+    const KEY: &'static str = "hud_selection";
+    const SCOPE: Scope = Scope::Profile;
+    const ACCOUNT_BOUND: bool = false;
+    const LIVE: bool = false;
+    const SETTINGS: Option<SettingsWrite> = None;
+    const PARSE: Parse = Parse::Soft;
+    const FALLBACK: Fallback = Fallback::LegacyInstallKey;
+}
 
 // The hero trailer autoplay switch (P1c) is the tenth per-profile scalar: the Settings root page's System
 // section saves it through the `choose` door (Confirm), and `player::preview::enabled` reads its cell every frame.
@@ -624,9 +650,11 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
     Descriptor::of::<InstantDpadSeekingPref>(),
+    Descriptor::of::<DolbyVisionModePref>(),
     Descriptor::of::<DeckPressPref>(),
     Descriptor::of::<UnderPostersPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
+    Descriptor::of::<HudSelectionPref>(),
     // A5: the remaining keys.
     Descriptor::of::<AutoSignInPref>(),
     Descriptor::of::<TrailerAutoplayPref>(),
@@ -1337,6 +1365,17 @@ where
         return Ok(InstantDpadSeeking::default());
     };
     Ok(serde_json::from_value::<InstantDpadSeeking>(v).unwrap_or_default())
+}
+
+/// Dolby Vision mode is a preference too: a spelling this build does not know degrades to Auto.
+fn de_soft_dolby_vision_mode<'de, D>(d: D) -> Result<DolbyVisionMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(DolbyVisionMode::default());
+    };
+    Ok(serde_json::from_value::<DolbyVisionMode>(v).unwrap_or_default())
 }
 
 /// The deck-press mode is a preference too: a spelling this build does not know degrades to Details.

@@ -6184,34 +6184,28 @@ pub fn set_stream_declaration(
     dovi: plx_data::metadata::Dovi,
     immersive: bool,
 ) -> bool {
-    set_stream_declaration_with_capability(
+    install_stream_declaration(
         ps,
         vc,
         ac,
         fps,
         dovi,
         immersive,
-        plx_platform::devcaps::dv::capability(),
+        frozen_dv_decision(dolby_vision_mode(), plx_platform::devcaps::dv::capability(), dovi, vc),
     )
 }
 
-fn set_stream_declaration_with_capability(
+/// The write [`set_stream_declaration`] makes once its Dolby Vision decision is frozen, shared with
+/// the test helpers below so they exercise the same refusal and the same single assignment.
+fn install_stream_declaration(
     ps: &mut PlaybackSession,
     vc: &str,
     ac: &str,
     fps: f64,
     dovi: plx_data::metadata::Dovi,
     immersive: bool,
-    capability: plx_platform::devcaps::dv::DvCapability,
+    decision: plx_data::metadata::DvDecision,
 ) -> bool {
-    let decision = plx_data::metadata::DvDecision {
-        capability,
-        presentation: dovi.presentation(
-            !plx_data::metadata::dv_withheld(),
-            capability,
-            plx_data::metadata::dv_video_codec(vc),
-        ),
-    };
     if decision.presentation.refusal().is_some() {
         crate::player::log(&format!(
             "playurl: refusing Dolby Vision declaration capability={} presentation={}",
@@ -6241,7 +6235,23 @@ pub fn set_stream_declaration_for_test(
     immersive: bool,
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
-    set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
+    let decision = frozen_dv_decision(plx_plex::plex::session::DolbyVisionMode::Auto, capability, dovi, vc);
+    install_stream_declaration(ps, vc, ac, fps, dovi, immersive, decision)
+}
+
+/// [`set_stream_declaration_for_test`] with the Dolby Vision decision supplied, so a test can plant
+/// what the profile's setting makes of the probe (`frozen_dv_decision(Off, Supported, ..)`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_stream_declaration_decided_for_test(
+    ps: &mut PlaybackSession,
+    vc: &str,
+    ac: &str,
+    fps: f64,
+    dovi: plx_data::metadata::Dovi,
+    immersive: bool,
+    decision: plx_data::metadata::DvDecision,
+) -> bool {
+    install_stream_declaration(ps, vc, ac, fps, dovi, immersive, decision)
 }
 
 /// Begin an attempt on `caps`, so [`stream_pcm`] and the planner read that value (tests).
@@ -8170,6 +8180,8 @@ impl ResolveEnv {
             version: None,
             quality: quality(),
             direct_play_mode: direct_play_mode(),
+            dolby_vision_mode: dolby_vision_mode(),
+            dv_capability: plx_platform::devcaps::dv::capability(),
             caps: ps.attempt_caps(),
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
@@ -8182,8 +8194,6 @@ impl ResolveEnv {
             fresh_play: false,
             #[cfg(any(test, feature = "test-support"))]
             account_subtitles: None,
-            #[cfg(any(test, feature = "test-support"))]
-            dv_capability: None,
         }
     }
 }
@@ -8203,14 +8213,15 @@ fn playback_preview_with_capability(
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
-    let presentation = match capability {
-        Some(capability) => d.dovi.presentation(
-            !plx_data::metadata::dv_withheld(),
-            capability,
-            plx_data::metadata::dv_video_codec(vcodec),
-        ),
-        None => d.dovi.presentation_now(plx_data::metadata::dv_video_codec(vcodec)),
-    };
+    // The page answers for the play a press would start, so it plans from the same gated
+    // capability `ResolveEnv::dolby_vision_mode` hands the resolve.
+    let capability = dolby_vision_mode()
+        .gate(capability.unwrap_or_else(plx_platform::devcaps::dv::capability));
+    let presentation = d.dovi.presentation(
+        !plx_data::metadata::dv_withheld(),
+        capability,
+        plx_data::metadata::dv_video_codec(vcodec),
+    );
     let mode = direct_play_mode();
     // The facts row is a read-out of what the device would do NOW, with no attempt behind it, so it
     // is a start edge of its own: the value a play started this moment would begin on (the boot
@@ -9631,7 +9642,8 @@ const SIDE_MAX_PART_KBPS: i64 = 30_000;
 /// original Part (`player::subside`) — so the server need not burn it? Only on a LOCAL link (a
 /// relay or remote link would carry two reads of the film), with a real server Part to read (not
 /// a fixture or a pinned URL), and a known, moderate Part bitrate: `0` means nobody measured it
-/// and burns by design. A sidecar needs none of this (the app fetches it on its own).
+/// and burns by design. A sidecar needs none of this to be DRAWN (the app fetches it on its own);
+/// this gate decides only whether the reader also runs clock-only to place it on the remux's clock.
 fn side_reader_admitted(ps: &PlaybackSession) -> bool {
     side_reader_inputs_admit(
         cur_client(ps).is_some_and(|c| c.link() == Some(plx_plex::plex::probe::Location::Local)),
@@ -10263,6 +10275,14 @@ pub fn subtitle_presenter(ps: &PlaybackSession) -> SubtitlePresenter {
     }
 }
 
+/// **Does the app draw an external SIDECAR over the live remux?** The one case whose cues are in the
+/// Part's file time while the playhead is the remux's own: the draw adds the clock delta the side
+/// reader measured (`player::sidecar_clock_ns`), and the reader runs clock-only for it
+/// ([`side_reader_target`]).
+pub fn sidecar_over_remux(ps: &PlaybackSession) -> bool {
+    ps.cur_sub_sidecar && subtitle_presenter(ps) == SubtitlePresenter::ClientOverRemux
+}
+
 /// **Does the server burn the selected subtitle into the picture?** The gate every client-side
 /// draw is silenced by: a transcode burns whatever is selected, except a remux the app draws the
 /// subtitle over ([`SubtitlePresenter::ClientOverRemux`]).
@@ -10277,7 +10297,8 @@ pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
 }
 
 /// Make the side reader match the live route: start it for an admitted embedded pick, switch its
-/// track, or stop it for Off and a sidecar. Never blocks (see `player::subside::sync`).
+/// track, run it clock-only for a sidecar, or stop it for Off. Never blocks (see
+/// `player::subside::sync`).
 fn sync_side_reader(ps: &PlaybackSession) {
     crate::player::subside::sync(
         side_reader_target(ps).and_then(|t| crate::player::subside::spec_for(&t)),
@@ -10317,14 +10338,30 @@ pub struct SideReaderTarget {
     pub session: String,
     /// The Part's whole-file bitrate, for the log line.
     pub part_kbps: u32,
-    /// The 0-based position of the track to draw among the Part's subtitle streams.
+    /// The 0-based position of the track to draw among the Part's subtitle streams, or
+    /// [`crate::player::subside::CLOCK_ONLY`] for a sidecar: the reader then reads no subtitle at all
+    /// (the app fetches that itself) and only measures the remux's clock against the Part's.
     pub ordinal: i32,
+}
+
+impl SideReaderTarget {
+    /// Does the reader only measure the clock (a sidecar is drawn), reading no subtitle?
+    pub fn clock_only(&self) -> bool {
+        self.ordinal == crate::player::subside::CLOCK_ONLY
+    }
 }
 
 /// The side reader's inputs for this playback, or `None` unless the live route is a plain remux of
 /// a real (non-preview) playback on which the app draws an embedded track
-/// ([`SubtitlePresenter::ClientOverRemux`], not a sidecar — the app fetches that itself), or the
-/// dev trigger is armed with no subtitle selected in the route.
+/// ([`SubtitlePresenter::ClientOverRemux`]), or the dev trigger is armed with no subtitle selected
+/// in the route.
+///
+/// A SIDECAR the app draws over the remux gets a CLOCK-ONLY target, but only where an embedded
+/// track would be admitted too (a local link and a moderate Part bitrate, [`side_reader_admitted`]):
+/// the reader reads no cue, it finds the keyframe the remux started on so the sidecar, which is in
+/// file time, is drawn where the picture is (`player::sidecar_clock_ns`) once that scan matches —
+/// a moment after each remux start, and not at all off this gate, where the sidecar is drawn on
+/// the remux's own clock as it always was.
 pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
     if ps.preview || live_family(ps) != RouteFamily::Remux {
         return None;
@@ -10336,6 +10373,8 @@ pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
         && subtitle_presenter(ps) == SubtitlePresenter::ClientOverRemux
     {
         ps.cur_sub_ordinal
+    } else if sidecar_over_remux(ps) && side_reader_admitted(ps) {
+        crate::player::subside::CLOCK_ONLY
     } else {
         return None;
     };

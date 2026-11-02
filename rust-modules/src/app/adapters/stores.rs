@@ -53,6 +53,7 @@
 //! server's client once, at the launch, and hand it to the worker body; a server with none answers
 //! the failure without a GET; `docs/sans-io.md`, "The store job lane".)
 
+use plx_data::browse::bands::Zone;
 use plx_data::browse::discovery_job::{
     finish_browse_discovery_job, BrowseDiscoveryPort, BrowseDiscoveryReq,
 };
@@ -79,6 +80,13 @@ use plx_machine::job::{Job, Port};
 use plx_plex::plex::{Client, ClientKey, ClientKeys};
 
 use crate::app::bootstrap::HomeIo;
+
+/// The viewer's time zone for a bands read, as the platform layer reads it from the OS: this runner is
+/// where the zone may be read (the data job takes it as two plain functions, `Zone`, and no machine
+/// reads it), and a calendar family's edges are converted with it.
+fn os_zone() -> Zone {
+    Zone { local_midnight: plx_platform::i18n::local_midnight, local_date: plx_platform::i18n::local_calendar_date }
+}
 
 /// Fill `keys` with the registry's answer for every active server slot, in place (a pump that runs
 /// every frame allocates nothing for it). The only loop over `client_for` that feeds a step: an
@@ -847,7 +855,7 @@ impl StoreRunner {
             Self::Live => {
                 let Job { addr, req } = job;
                 plx_base::task::spawn_small("directory", move || {
-                    finish_browse_directory_job(&port, addr, client, req);
+                    finish_browse_directory_job(&port, addr, client, req, os_zone());
                 })
             }
             #[cfg(test)]
@@ -1040,7 +1048,7 @@ impl StoreRunner {
                     // whose client is gone is refused, which gives it back.
                     let (sid, key) = job.req.server();
                     match resolve(sid, key) {
-                        Some(client) => finish_browse_directory_job(&port, job.addr, client, job.req),
+                        Some(client) => finish_browse_directory_job(&port, job.addr, client, job.req, os_zone()),
                         None => port.refused(job.addr),
                     }
                 }

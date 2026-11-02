@@ -55,11 +55,12 @@ DUMP(off_stream_codecpar,  offsetof(AVStream, codecpar))
 DUMP(off_stream_metadata,  offsetof(AVStream, metadata))
 DUMP(sizeof_stream,        sizeof(AVStream))
 
-/* AVFormatContext — modelled through `nb_streams`/`streams`, plus duration by offset. */
+/* AVFormatContext — modelled through `nb_streams`/`streams`, plus duration and start_time by offset. */
 DUMP(off_fmt_nb_streams, offsetof(AVFormatContext, nb_streams))
 DUMP(off_fmt_streams,    offsetof(AVFormatContext, streams))
 DUMP(off_fmt_pb,         offsetof(AVFormatContext, pb))
 DUMP(off_fmt_duration,   offsetof(AVFormatContext, duration))
+DUMP(off_fmt_start_time, offsetof(AVFormatContext, start_time))
 
 /* AVCodecContext — set by AVOption name, but the venc self-check wants these. */
 DUMP(off_ctx_width,   offsetof(AVCodecContext, width))

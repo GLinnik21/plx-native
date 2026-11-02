@@ -12,7 +12,10 @@
 //!   which wakes a read blocked in the socket or in `curl_multi_wait`.
 //! - the clock mapping ([`Anchor`], [`delta_exact`], [`delta_assumed`]): the remux and the Part
 //!   disagree about time by a constant, because PMS snaps `offset` to a keyframe while the app
-//!   labels that keyframe `offset`; the cues are moved by `-delta` ([`SubCue::shifted`]).
+//!   labels that keyframe `offset`. An EMBEDDED track's cues are moved by `-delta`
+//!   ([`SubCue::shifted`]); a SIDECAR (file time, fetched by the app) is not read here at all —
+//!   a [`ReadCfg::clock_only`] pass measures the same `delta`, publishes it only when the keyframe
+//!   matched byte for byte, and `player::sidecar_clock_ns` adds it to the sidecar's render clock.
 //! - the pacing rule ([`pacing_parks`]): the reader stays [`WINDOW_NS`] ahead of the playhead.
 //!
 //! No URL, host, token or session identifier is ever logged from here.
@@ -79,12 +82,12 @@ fn fingerprint(data: &[u8]) -> ([u8; FINGERPRINT], [u8; FINGERPRINT]) {
 /// The remux playhead that the packet at remux stream time `anchor_pts_ns` is shown at —
 /// `fed − pts_shift + disp_base`, the formula `player::mod`'s position callback stores in
 /// `playpos_ns`.
-pub(super) fn playhead_of(anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
+pub(crate) fn playhead_of(anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
     anchor_pts_ns.saturating_sub(pts_shift).saturating_add(disp_base)
 }
 
 /// `delta = part_time − playhead` from a keyframe the scan matched byte for byte.
-pub(super) fn delta_exact(part_kf_pts: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
+pub(crate) fn delta_exact(part_kf_pts: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
     part_kf_pts.saturating_sub(playhead_of(anchor_pts_ns, pts_shift, disp_base))
 }
 
@@ -93,8 +96,10 @@ pub(super) fn keyframe_at_or_before(keyframes: &[i64], offset_ns: i64) -> Option
     keyframes.iter().copied().filter(|k| *k <= offset_ns).max()
 }
 
-/// `delta` when no keyframe matched: PMS starts a remux at the keyframe at or before `offset`, so
-/// that keyframe is taken to be the remux's first, and the clock is labelled as it would have been.
+/// `delta` when no keyframe matched: ASSUMES PMS started the remux on the last keyframe at or
+/// before `offset`. That is wrong whenever PMS started earlier (917 s: started 914.914, assumed
+/// 916.916, 2.002 s off), so the sidecar draw never uses it (only
+/// [`crate::player::subside::publish_exact`]'s byte-exact delta); an embedded track's cues still do.
 pub(super) fn delta_assumed(k_le: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
     delta_exact(k_le, anchor_pts_ns, pts_shift, disp_base)
 }
@@ -368,6 +373,11 @@ pub(crate) struct ReadCfg<'a> {
     pub ordinal: usize,
     /// The Part's whole-file bitrate, for the log line.
     pub kbps: u32,
+    /// Measure the clock mapping only: open the Part, scan for the anchor's keyframe and return
+    /// ([`RunEnd::Measured`]). No subtitle track is opened, enumerated or read (`ordinal` is unused),
+    /// no render store is touched, and the Part's connection is closed on return. For a SIDECAR the
+    /// app fetches itself, drawn over a remux.
+    pub clock_only: bool,
 }
 
 /// How a pass of the reader ended.
@@ -379,6 +389,8 @@ pub(crate) enum RunEnd {
     Failed,
     /// Retrying cannot help: the Part has no such track, no video stream, or the open was refused.
     Unusable,
+    /// A [`ReadCfg::clock_only`] pass finished its scan (matched or not): nothing is left to read.
+    Measured,
 }
 
 /// One open `AVFormatContext` over a [`SideIo`], freed in the one order libavformat needs.
@@ -468,6 +480,11 @@ unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c
     }
     if vi < 0 {
         return Err(RunEnd::Unusable);
+    }
+    if cfg.clock_only {
+        // The scan needs the video stream and nothing else. A film with a sidecar often has no
+        // embedded subtitle at all, and the Part's ASS sources are not this run's to install.
+        return Ok((d, vi, 0));
     }
     let subs = SubTracks::open(d.fmt, streams);
     let generation = begin_ass_sources(cfg.url, d.fmt, streams, subs.entries());
@@ -661,8 +678,10 @@ impl Delivery {
 /// staying [`WINDOW_NS`] ahead of the playhead. Returns when stopped or on failure; a Part that
 /// simply ends idles until the stop.
 ///
-/// `playpos` is the remux playhead, `clock` its `(pts_shift, disp_base)`. Never panics on bad
-/// input: every FFmpeg value is checked before use.
+/// `playpos` is the remux playhead, `clock` its `(pts_shift, disp_base)`. A
+/// [`ReadCfg::clock_only`] pass returns [`RunEnd::Measured`] after the keyframe scan (or at once if
+/// handed a delta) instead of decoding anything. Never panics on bad input: every FFmpeg value is
+/// checked before use.
 pub(crate) fn read_once(
     cfg: &ReadCfg,
     stop: &Arc<SideStop>,
@@ -703,6 +722,16 @@ pub(crate) fn read_once(
                 started.elapsed().as_millis(),
             ));
             *delta = Some(chosen);
+            if scan.matched.is_some() {
+                // Only a byte-exact match is the sidecar draw's to trust (`player::sidecar_clock_ns`).
+                crate::player::subside::publish_exact(chosen);
+            }
+            if cfg.clock_only {
+                return RunEnd::Measured; // `d` drops here: the Part's connection is closed
+            }
+        }
+        if cfg.clock_only {
+            return RunEnd::Measured; // a delta was handed in: nothing to scan
         }
         let delta_ns = delta.unwrap_or(0);
         // Pass B: from `offset − 15 s` (or the playhead on a reopen) decode the track.
@@ -949,6 +978,28 @@ mod tests {
         assert_eq!(delta_assumed(k, 0, 0, offset), -1_500_000_000);
     }
 
+    /// **The counterexample the assumed mapping cannot survive.** Measured on one real file (GOP
+    /// 2.002 s, first remux frame at 0.083 s): a remux asked for 917 s started on the Part keyframe
+    /// at 914.914 s, although 916.916 s is the keyframe at or before the offset (0.084 s earlier).
+    /// "The last keyframe at or before the offset" is therefore NOT what PMS starts on, and
+    /// [`delta_assumed`] is 2.002 s wrong here; only the byte-exact match
+    /// ([`Anchor::matches`] over the scanned keyframes) names the right one. Do not fit an epsilon
+    /// to this one data point.
+    #[test]
+    fn sidecar_clock_at_917_the_assumed_delta_is_two_seconds_wrong_and_only_the_exact_match_is_right() {
+        const MS: i64 = 1_000_000;
+        let keyframes = [912_914 * MS, 914_914 * MS, 916_916 * MS, 918_918 * MS];
+        let offset = 917_000 * MS;
+        let first_frame = 83 * MS;
+        let at_or_before = keyframe_at_or_before(&keyframes, offset).unwrap();
+        assert_eq!(at_or_before, 916_916 * MS, "the keyframe at or before 917 s");
+        let assumed = delta_assumed(at_or_before, first_frame, 0, offset);
+        let exact = delta_exact(914_914 * MS, first_frame, 0, offset);
+        assert_eq!(exact, -2_169 * MS, "the app clock led the content by 2.169 s");
+        assert_eq!(assumed, -167 * MS);
+        assert_eq!(assumed - exact, 2_002 * MS, "one GOP wrong");
+    }
+
     #[test]
     fn the_anchor_line_is_numbers_and_labels_only() {
         let exact = anchor_line(Some(598_500_000_000), 0, 600_000_000_000, 0, -1_500_000_000, Some(-1_500_000_000), 123, 45);
@@ -1059,12 +1110,13 @@ mod tests {
 
         crate::player::ass_source::reset();
         crate::player::request_subtitle(0);
+        crate::player::subside::stop("fixture: start from no measurement");
         let stop = SideStop::new();
         let url = format!("http://127.0.0.1:{port}/library/parts/1/out.mkv");
         let reader = {
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
-                let cfg = ReadCfg { url: &url, offset_ns: 2_000_000_000, ordinal: 0, kbps: 0 };
+                let cfg = ReadCfg { url: &url, offset_ns: 2_000_000_000, ordinal: 0, kbps: 0, clock_only: false };
                 let anchor = Anchor::of(0, &[0]); // matches no real keyframe: the assumed mapping
                 let mut delta = None;
                 let end = read_once(
@@ -1096,6 +1148,37 @@ mod tests {
         };
         stop.trigger();
         let (end, delta) = reader.join().expect("the reader must not panic");
+        assert_eq!(delta, Some(1_000_000_000), "assumed delta = keyframe at 2 s - (0 + disp_base 1 s)");
+        assert_eq!(
+            crate::player::subside::exact_delta_ns(),
+            None,
+            "the assumed delta must never reach the sidecar draw's mirror"
+        );
+
+        // A clock-only pass over the same Part (what a sidecar over this remux gets): it scans for
+        // the anchor and reads no cue at all — no subtitle track is opened, so the ASS source store
+        // stays as empty as `reset` left it — and returns `Measured` instead of decoding.
+        crate::player::ass_source::reset();
+        let stop2 = SideStop::new();
+        let url2 = format!("http://127.0.0.1:{port}/library/parts/1/out.mkv");
+        let mut clock_delta = None;
+        let clock_end = read_once(
+            &ReadCfg { url: &url2, offset_ns: 2_000_000_000, ordinal: 0, kbps: 0, clock_only: true },
+            &stop2,
+            &Anchor::of(0, &[0]),
+            &mut clock_delta,
+            &|_| 0,
+            &|| 0,
+            &|| (0, 1_000_000_000),
+        );
+        assert_eq!(clock_end, RunEnd::Measured, "a clock-only pass ends after its scan");
+        assert_eq!(clock_delta, Some(1_000_000_000), "the same mapping the track reader measured");
+        assert!(
+            crate::player::ass_source::selected(0).is_none(),
+            "a clock-only pass installs no ASS source: nothing of it is drawn"
+        );
+        assert_eq!(crate::player::subside::exact_delta_ns(), None, "no byte-exact match here: nothing is published");
+
         STOP_SERVER.store(true, Ordering::Release);
         let _ = server.join();
         crate::player::request_subtitle(-1);

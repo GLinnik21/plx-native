@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Titel",
+  "sort_facts.date_added": "Datum toegevoegd",
+  "sort_facts.release_date": "Releasedatum",
+  "sort_facts.rating": "Score",
+  "sort_facts.audience_rating": "Publieksscore",
+  "sort_facts.last_viewed": "Datum bekeken",
+  "sort_facts.random": "Willekeurig",
+  "sort_facts.a_to_z": "A–Z",
+  "sort_facts.z_to_a": "Z–A",
+  "sort_facts.oldest_first": "Oudste eerst",
+  "sort_facts.newest_first": "Nieuwste eerst",
+  "sort_facts.lowest_first": "Laagste eerst",
+  "sort_facts.highest_first": "Hoogste eerst"
+}

@@ -69,6 +69,11 @@ pub(crate) struct ChromeSnapshot {
     pub(crate) keys: Vec<u32>,
     widths: Vec<f32>,
     thumb: String,
+    /// The profile's full chip label and initial, as captured: the chip's name is ELIDED from
+    /// these to the room the strip leaves ([`widgets::chip_name_budget`]), so a change of the
+    /// strip's widths re-elides without re-reading the session.
+    label: String,
+    initial_text: String,
     initial: std::ffi::CString,
     name: std::ffi::CString,
     name_w: f32,
@@ -105,7 +110,8 @@ impl ChromeSnapshot {
     pub(crate) fn refresh_with_profile(&mut self, measure: &dyn Measure, directory: DirectoryView<'_>,
         captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
         let generation = directory.tabs_gen();
-        if self.tabs_generation != Some(generation) {
+        let strip_changed = self.tabs_generation != Some(generation);
+        if strip_changed {
             self.keys = strip_keys(directory);
             self.faces = self.keys.iter().map(|&key| match key {
                 widgets::TAB_KEY_HOME => TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()),
@@ -119,18 +125,30 @@ impl ChromeSnapshot {
         }
         let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
         let session_changed = captured.is_none() && self.session_watch.changed();
+        let mut profile_changed = false;
         if self.profile_generation != Some(generation) || session_changed {
             let current = captured.map_or_else(plx_plex::plex::session::current, |(profile, _)| profile.user.clone());
             let account = if let Some((_, saved)) = captured { saved.account(current.as_ref()) }
                 else { plx_plex::plex::session::peek().account(current.as_ref()) };
             self.thumb = current.map(|user| user.thumb).unwrap_or_default();
-            let label = plx_screens::account_menu::chip_label(&account);
-            let initial = account.name.as_deref().and_then(|name| name.chars().next())
+            self.label = plx_screens::account_menu::chip_label(&account);
+            self.initial_text = account.name.as_deref().and_then(|name| name.chars().next())
                 .map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-            (self.initial, self.name, self.name_w) =
-                widgets::profile_chip_text(&label, &initial, measure);
             self.profile_generation = Some(generation);
+            profile_changed = true;
         }
+        if profile_changed || strip_changed {
+            self.elide_chip_name(measure);
+        }
+    }
+
+    /// Elide the chip's name to the room the strip's CURRENT widths leave it. Called when the
+    /// profile changes and when the strip does (a library kind appearing or leaving changes the
+    /// track), because the budget is a function of both and drawing measures nothing.
+    fn elide_chip_name(&mut self, measure: &dyn Measure) {
+        let budget = widgets::chip_name_budget(widgets::tab_track_w(&self.widths));
+        (self.initial, self.name, self.name_w) =
+            widgets::profile_chip_text(&self.label, &self.initial_text, budget, measure);
     }
 
     pub(crate) fn labels(&self) -> TabLabels<'_> {
@@ -182,8 +200,9 @@ impl ChromeSnapshot {
         self.widths = widgets::tab_widths(&self.faces, measure);
         self.profile_generation = Some(1);
         self.thumb.clear();
-        (self.initial, self.name, self.name_w) =
-            widgets::profile_chip_text(name, initial, measure);
+        self.label = name.to_owned();
+        self.initial_text = initial.to_owned();
+        self.elide_chip_name(measure);
     }
 }
 
@@ -220,6 +239,53 @@ mod tests {
         });
         snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.name.to_str().unwrap(), "Synthetic owner");
+    }
+
+    /// A font (or a language) that lengthens the pills, standing in for one that fills the bar.
+    struct Wide;
+    impl Measure for Wide {
+        fn width(&self, s: &std::ffi::CStr, sz: i32, _bold: bool) -> f32 {
+            s.to_bytes().len() as f32 * sz as f32 * 3.0
+        }
+        fn cap_h(&self, sz: i32) -> f32 { sz as f32 * 0.7 }
+        fn line_h(&self, sz: i32) -> f32 { sz as f32 * 1.2 }
+    }
+
+    /// The chip's name is elided to the room the strip leaves it, so a change of the STRIP (a
+    /// library kind appearing or leaving) re-elides it with the profile untouched: the owner
+    /// holds the full label and re-asks `chip_name_budget` whenever `tabs_generation` moves, and
+    /// drawing measures nothing. A bar too wide to leave the name any room shows none.
+    #[test]
+    fn the_chip_name_is_re_elided_when_only_the_strip_changes() {
+        let _serial = plx_base::testlock::serial();
+        let directory = directory(&[SecKind::Movie, SecKind::Show]);
+        let mut snapshot = ChromeSnapshot::default();
+        // the first refresh captures whatever profile is seated; the label is then a long one, as
+        // a profile with a long name would have captured, and only the STRIP moves from here on
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        snapshot.label = "A profile name long enough to overflow any budget the bar could leave it".into();
+        snapshot.tabs_generation = None;
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        let roomy = snapshot.name_w;
+        let budget = widgets::chip_name_budget(widgets::tab_track_w(&snapshot.widths));
+        assert!(budget > 0.0, "the ordinary strip leaves the chip a name");
+        assert!(roomy > 0.0 && roomy <= budget, "name {roomy} against a budget of {budget}");
+        assert!(snapshot.name.to_str().unwrap().ends_with('\u{2026}'), "a long name is elided");
+
+        // the strip is rebuilt with wider pills; the profile generation does not move
+        snapshot.tabs_generation = None;
+        snapshot.refresh(&Wide, directory.view());
+        assert!(widgets::tab_track_w(&snapshot.widths) > 1500.0, "the fixture strip must fill the bar");
+        assert_eq!(widgets::chip_name_budget(widgets::tab_track_w(&snapshot.widths)), 0.0);
+        assert!(snapshot.name.as_bytes().is_empty() && snapshot.name_w == 0.0,
+            "no room, no name: {:?} ({})", snapshot.name, snapshot.name_w);
+        assert_eq!(widgets::chip_cap(1.0, snapshot.name_w), widgets::chip_cap(0.0, 0.0),
+            "and the capsule stays the closed circle");
+
+        // …and back: the name returns to the full budget of the ordinary strip
+        snapshot.tabs_generation = None;
+        snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
+        assert_eq!(snapshot.name_w, roomy);
     }
 
     #[test]

@@ -337,6 +337,10 @@ pub fn warm_tex_on(
 /// Source art for a [`card`]: a catalog poster (resolved 250×375, dark gradient skeleton), any
 /// keyed thumbnail at an explicit resolution (flat placeholder skeleton), or a person's headshot
 /// (the same thumbnail, but its EMPTY case draws a person glyph rather than a blank tile).
+///
+/// `Copy`: it is borrowed values all through (a tile's facts, a path, a size), so a caller that
+/// asks for a tile's art ahead of drawing it ([`lead_card_art`]) and draws it later holds it twice.
+#[derive(Clone, Copy)]
 pub enum Art<'a> {
     /// The facts a poster tile reads of its catalog row — see [`TileFacts`], which the caller (a
     /// screen) fills from the row; the library never names the row's own type.
@@ -1893,13 +1897,13 @@ pub const HAIRLINE_H: f32 = 1.0;
 /// buy you. The height is 1.0 and is not a parameter: a divider that is two pixels somewhere is a
 /// different object, and both files that made it a named constant gave it the same value.
 pub fn hairline(p: Painter, x: f32, y: f32, w: f32) {
-    p.rect(
-        Rect::new(x, y, w, HAIRLINE_H),
-        0.0,
-        theme::HAIRLINE,
-        theme::HAIRLINE,
-        0.0,
-    );
+    hairline_in(p, x, y, w, theme::HAIRLINE);
+}
+
+/// [`hairline`] in another ink: a HUD package's `rule` cell names its own token. The height is still
+/// [`HAIRLINE_H`].
+pub fn hairline_in(p: Painter, x: f32, y: f32, w: f32, ink: [f32; 4]) {
+    p.rect(Rect::new(x, y, w, HAIRLINE_H), 0.0, ink, ink, 0.0);
 }
 
 /// One dotted run: fine-print parts left to right, joined by a **`·` in
@@ -2630,9 +2634,15 @@ pub const CHIP_D: f32 = TAB_PILL_H;
 /// 8px inset plus the end pill's 18px label padding).
 const CHIP_NAME_GAP: f32 = 14.0;
 const CHIP_NAME_TAIL: f32 = 24.0;
-/// Name budget — a long profile name elides rather than growing the capsule into the CENTERED tab
-/// track sitting a few hundred px to its right.
+/// The CEILING of the name budget — a long profile name elides rather than growing the capsule
+/// into the CENTERED tab track sitting a few hundred px to its right. It is a ceiling and not the
+/// budget: the strip may be any width, so the budget a given bar allows is [`chip_name_budget`],
+/// which is this or the room the bar leaves, whichever is less.
 const CHIP_NAME_MAX: f32 = 320.0;
+/// The narrowest name budget worth unfurling for — an ellipsis and a glyph or two (three BODY
+/// ems). Under it the bar leaves the chip no name at all ([`chip_name_budget`] answers `0`) and the
+/// capsule stays the closed circle: a name elided to a lone "…" teaches nothing.
+const CHIP_NAME_MIN: f32 = 3.0 * theme::size::BODY as f32;
 /// **The chip's frame — one rect, owned here, for every page that wears the bar.**
 ///
 /// A CONSTANT rather than a rect recorded at draw the way [`tab_pill_at`]'s are, and the asymmetry
@@ -2657,20 +2667,28 @@ pub const CHIP_FRAME: Rect = Rect::new(
 
 /// **The focused capsule's rect — the ONE expression, drawn and priced from the same place.**
 ///
-/// [`profile_chip_with`] draws this and [`CHIP_CAP_MAX_R`] prices it, and until 2026-08-21 they were two
-/// arithmetics that happened to agree: the draw built the rect inline and the constant restated the
-/// same seven terms by hand, in a different file position, so a pad added to one would have left the
-/// other quietly describing a capsule nobody draws. That constant is what [`GLASS_TRACK_MAX`] is
-/// solved against, i.e. what keeps the band's two translucent faces from touching — the design-system
-/// rule for a graded field applies with more force here than it does to a scrim: the drawn shape and
-/// the shape a test grades must be one expression, not two that agree.
+/// [`profile_chip_with`] draws this and the clearance against the track prices it
+/// ([`chip_name_budget`]); until 2026-08-21 they were two arithmetics that happened to agree: the
+/// draw built the rect inline and a constant restated the same seven terms by hand, in a different
+/// file position, so a pad added to one would have left the other quietly describing a capsule
+/// nobody draws. That rect is what [`chip_name_budget`] keeps
+/// clear of the track, i.e. what keeps the band's two translucent faces from touching — the
+/// design-system rule for a graded field applies with more force here than it does to a scrim: the
+/// drawn shape and the shape a test grades must be one expression, not two that agree.
 ///
-/// `e` is the unfurl, 0..1; `name_w` the elided name's measured width ([`CHIP_NAME_MAX`] is its
-/// budget, so `chip_cap(1.0, CHIP_NAME_MAX)` is the widest capsule the control can ever draw).
-/// Only the WIDTH moves — the capsule grows rightward off a fixed left edge.
+/// `e` is the unfurl, 0..1; `name_w` the elided name's measured width ([`CHIP_NAME_MAX`] is the
+/// ceiling of its budget, so `chip_cap(1.0, CHIP_NAME_MAX)` is the widest capsule the control can
+/// ever draw). Only the WIDTH moves — the capsule grows rightward off a fixed left edge. **A chip
+/// with no name (`name_w == 0`) has nothing to unfurl for: it stays the closed circle at every
+/// `e`**, the gap and the tail being the name's air and not the capsule's own width — which is what
+/// a bar too wide to leave the name any room asks of it ([`chip_name_budget`]).
 pub const fn chip_cap(e: f32, name_w: f32) -> Rect {
     let closed = CHIP_D + 2.0 * TAB_TRACK_PAD;
-    let open = closed + CHIP_NAME_GAP + name_w + CHIP_NAME_TAIL;
+    let open = if name_w > 0.0 {
+        closed + CHIP_NAME_GAP + name_w + CHIP_NAME_TAIL
+    } else {
+        closed
+    };
     Rect::new(
         CHIP_FRAME.x - TAB_TRACK_PAD,
         CHIP_FRAME.y - TAB_TRACK_PAD,
@@ -2765,7 +2783,9 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 ///
 /// The tab band publishes the shared face on `GlassPlan`; both surfaces automatically declare
 /// their current rectangles in the same chrome layer. The planner captures their union once,
-/// and separates their z bands automatically if their sampling regions overlap.
+/// and separates their z bands only if their drawn rects overlap: inside each other's sampling
+/// reach they still sample the page, never each other, so they keep one source
+/// (`backdrop::surface_with`).
 ///
 /// **`frozen` is the opener lift's ground** (`lift_profile_chip`, the account menu up): the
 /// capsule then stands on the stack's latched underlay field through `Painter::glass_frozen`, with
@@ -2845,10 +2865,11 @@ fn chip_capsule(
 /// and Search drew them the other way round and got away with it only while the chip could not be
 /// focused there, which is the class of bug that made this a shared control in the first place.
 ///
-/// The two can no longer MEET, which is the third thing that changed: [`GLASS_TRACK_MAX`] is solved
-/// so the widest capsule clears the widest glass track by [`BAND_AIR`]. Overlap had to become
-/// impossible for the bar's design: although the layer mechanism supports stacked glass,
-/// overlapping two halves of one chrome band would still double its material.
+/// The two can no longer MEET, which is the third thing that changed: the name's budget is a
+/// function of the room the bar leaves ([`chip_name_budget`]), so the unfurled capsule clears the
+/// track by [`BAND_AIR`] whatever the strip's width. Overlap had to become impossible for the bar's
+/// design: although the layer mechanism supports stacked glass, overlapping two halves of one
+/// chrome band would still double its material.
 /// Application-owned profile data supplied to the bar. Rendering this view never opens the
 /// session file or asks which profile is current.
 #[derive(Clone, Copy)]
@@ -2870,19 +2891,33 @@ pub struct ChromeRead<'a> {
     pub chip_expand: f32,
 }
 
-/// Measure and own the chip's two glyph runs when the application's captured profile changes.
-/// The result belongs to that captured chrome owner; drawing performs no session read, elision or
-/// global cache lookup.
+/// Measure and own the chip's two glyph runs when the application's captured profile changes, **or
+/// when the strip's widths do**: `name_budget` is [`chip_name_budget`] of the bar's track, so the
+/// owner re-asks here for either. The result belongs to that captured chrome owner; drawing
+/// performs no session read, elision or global cache lookup.
+///
+/// A budget of `0` is the bar leaving the chip no room: the name is empty and measures `0`, which
+/// [`chip_cap`] draws as the closed circle. (It is not passed to `elide_by`, which reads a budget at
+/// or under zero as "no limit".)
 pub fn profile_chip_text(
     label: &str,
     initial: &str,
+    name_budget: f32,
     measure: &dyn plx_machine::machine::Measure,
 ) -> (CString, CString, f32) {
-    let name = CString::new(plx_gfx::text::elide_by(label, CHIP_NAME_MAX, false, |t| {
-        measure.width_str(t, theme::size::BODY, true)
-    }))
-    .unwrap_or_default();
-    let name_w = measure.width(&name, theme::size::BODY, true);
+    let name = if name_budget > 0.0 {
+        CString::new(plx_gfx::text::elide_by(label, name_budget.min(CHIP_NAME_MAX), false, |t| {
+            measure.width_str(t, theme::size::BODY, true)
+        }))
+        .unwrap_or_default()
+    } else {
+        CString::default()
+    };
+    let name_w = if name.as_bytes().is_empty() {
+        0.0
+    } else {
+        measure.width(&name, theme::size::BODY, true)
+    };
     (CString::new(initial).unwrap_or_default(), name, name_w)
 }
 
@@ -2919,12 +2954,12 @@ fn profile_chip_on(
     // every `e`; only the WIDTH moves, which is what `chip_cap` expresses. It was drawn only while
     // focused, faded in with `e`, until 2026-09-01; the resting surround is the design since, and
     // it is real glass again since 2026-09-02 (a flat copy of the face stood in for one day). The
-    // band is priced as the union of both surfaces at rest — `band_region`, `BAND_REGION_X0` —
-    // and measured on the set with the surround up: `home-hero` and `home-fold` both clear 50.
+    // band's grab is the union of both surfaces at rest, measured on the set with the surround up:
+    // `home-hero` and `home-fold` both clear 50.
     let e = expand.clamp(0.0, 1.0);
     {
         // The rect comes from [`chip_cap`] rather than being built here, because it is also what
-        // [`GLASS_TRACK_MAX`] is solved against — see there.
+        // [`chip_name_budget`] keeps clear of the track — see there.
         let cap = chip_cap(e, name_w);
         // the tab track's own material — literally the same material: glass when the track
         // resolved glass this frame, the flat capsule when it did not.
@@ -3052,10 +3087,11 @@ pub fn lift_profile_chip(
 /// for them instead of smearing across the grow.
 ///
 /// The two differ on ONE policy and deliberately: what happens when the word does not fit. The chip
-/// ELIDES to a fixed `CHIP_NAME_MAX` budget, because a profile name is user data of any length and
-/// a shortened name is still a name. A verb is not — half of "Mark as Unwatched" teaches less than
-/// the tick it was meant to explain — so a control with a hard bound to respect asks
-/// [`CircleButton::label_budget`] and shows the whole word or none of it
+/// ELIDES to [`chip_name_budget`], the room the bar leaves capped at `CHIP_NAME_MAX`, because a
+/// profile name is user data of any length and a shortened name is still a name; only a bar that
+/// leaves no room for a glyph or two takes the name away. A verb is not — half of "Mark as
+/// Unwatched" teaches less than the tick it was meant to explain — so a control with a hard bound
+/// to respect asks [`CircleButton::label_budget`] and shows the whole word or none of it
 /// (`detail::watch_cap_at`). Both are right for their content; neither is the default.
 const DISC_LABEL_LEAD: f32 = 26.0;
 const DISC_LABEL_GAP: f32 = 14.0;
@@ -5699,7 +5735,7 @@ impl View for TabPill {
 /// capsule rides *inside* the strip it marks, and a highlight that settles at a different rate from
 /// the row under it reads as two objects instead of one control. (The detail season row springs its
 /// own scroll at the same 240 — the directive above [`TAB_PILL_H`] covers their motion too.)
-const K_TAB_CAP: f32 = K_TAB_SCROLL;
+pub(crate) const K_TAB_CAP: f32 = K_TAB_SCROLL;
 /// Stiffness of a capsule's ALPHA — the app's shared appear spring
 /// ([`crate::popover::K_APPEAR`]), because entering or leaving a row is a FADE, not a journey.
 const K_TAB_CAP_A: f32 = crate::popover::K_APPEAR;
@@ -6033,8 +6069,8 @@ pub enum TabGround {
     /// nothing here scales: the capsule TRAVELLING under a row that encloses it is the whole focus
     /// mark, and a pill that also grew would be two answers to one question. `glass` is whether that
     /// track is drawn as the standing glass container this frame (it goes flat behind a panel and
-    /// past `GLASS_TRACK_MAX`), which decides whether the selection plate wears the material's own
-    /// perimeter or is a plain wash.
+    /// under the `flattabs` experiment, never for its width), which decides whether the selection
+    /// plate wears the material's own perimeter or is a plain wash.
     Tracked { glass: bool },
     /// **The detail page's season strip**, bare on artwork with each pill laying its own ground. Its
     /// focused pill is a CONTROL FACE and wears the whole of one: the `CTRL_FOCUS_SCALE` pop (the one
@@ -6523,7 +6559,9 @@ pub const TOP_BAR_BOTTOM: f32 = TOP_BAR_Y + TAB_PILL_H + TAB_TRACK_PAD; // 130
 const TAB_GAP: f32 = 16.0;
 /// How wide the pill strip may grow before it starts scrolling. The row stays CENTERED, but it
 /// must never reach the profile chip (a focus stop of its own at `MARGIN_X`), so the viewport is
-/// the screen less a symmetric chip-clearing margin, less the track's own inset on both ends.
+/// the screen less a symmetric chip-clearing margin, less the track's own inset on both ends. The
+/// track stays glass while the pills scroll inside it ([`tab_glass_on`]): the width never decides
+/// the material.
 const TAB_SIDE_CLEAR: f32 = CHIP_FRAME.x + CHIP_D + theme::space::MD;
 const TAB_VIEW_MAX: f32 = crate::consts::SCR_W - 2.0 * (TAB_SIDE_CLEAR + TAB_TRACK_PAD);
 /// **The shared top bar's outermost drawn chrome, for the overscan audit**
@@ -6796,7 +6834,7 @@ impl Default for StripRender {
 /// which trades this failure for its mirror image. Making the rect follow the unfurl re-solves the
 /// whole bar when focus lands on the chip. Keying `sample_ground` per caller costs far less than
 /// its doc used to claim (see there) but puts two densities on one line — which the lane's own
-/// geometry change makes less dangerous than it was, since `GLASS_TRACK_MAX` now guarantees the two
+/// geometry change makes less dangerous than it was, since `chip_name_budget` now guarantees the two
 /// can never be nearer than `BAND_AIR` and are usually ~300px apart. Settle it by LOOKING, with a
 /// ground that varies in luminance ACROSS the band: `pat:ramp`, `pat:edge`, `pat:orient`. Every
 /// pattern this was verified on (`flat:*`, `hbars`, `rainbow:70`) is uniform across x or uniform in
@@ -6808,8 +6846,8 @@ impl Default for StripRender {
 /// this is ordinary backdrop content rather than a self-reference.
 #[derive(Clone, Copy)]
 enum BarMaterial {
-    /// the flat dark capsule: `flattabs`, a popover open, a strip past [`GLASS_TRACK_MAX`], a
-    /// driver with no render target, or a source pass
+    /// the flat dark capsule: `flattabs`, a popover open, a driver with no render target, or a
+    /// source pass (never the strip's width)
     Flat,
     /// the glass track's solved face; the chip reproduces it locally without sampling the backdrop
     Glass(plx_gfx::gfx::GlassFace),
@@ -6846,8 +6884,9 @@ fn density_k(drawn: f32, want: f32) -> f32 {
 
 /// The weight being drawn, and the one the ground last asked for.
 ///
-/// `want` is published by the DRAW because the ground is framebuffer 0 and only the draw can read
-/// it; [`TabBand::step`] consumes it on the next frame. That one frame of lag is nothing against a
+/// `want` is published by the DRAW because the ground is the band's retained backdrop image and
+/// only the visible walk can see it (`backdrop::member_image` answers `None` anywhere else);
+/// [`TabBand::step`] consumes it on the next frame. That one frame of lag is nothing against a
 /// value that eases over hundreds of milliseconds, and it is the only ordering that does not put a
 /// readback in the update phase.
 ///
@@ -7296,130 +7335,77 @@ fn lstar(c: [f32; 4]) -> f32 {
 /// Sixteen is the bar's own rung — [`TAB_GAP`], the air between two pills inside the track. It is
 /// not decoration: the two capsules are one band in one material, and a band whose halves TOUCH
 /// draws its two 1px rims side by side, which reads as a bright seam exactly where the design has
-/// a continuous edge. See [`GLASS_TRACK_MAX`].
+/// a continuous edge. See [`chip_name_budget`].
 const BAND_AIR: f32 = theme::space::SM;
 
 /// **The widest box the profile chip ever draws** — [`chip_cap`] at full unfurl with a name at its
-/// budget, i.e. **the rect the control DRAWS**, not a hand-copy of the terms that build it. The
-/// name is elided to [`CHIP_NAME_MAX`] before it is measured, so this is arithmetic on constants
-/// and needs no font to evaluate, which is what makes every clearance solved against it a host test
-/// rather than a device capture.
+/// ceiling, i.e. **the rect the control DRAWS**, not a hand-copy of the terms that build it. The
+/// name is elided to at most [`CHIP_NAME_MAX`] before it is measured, so this is arithmetic on
+/// constants and needs no font to evaluate, which is what makes every clearance solved against it
+/// a host test rather than a device capture.
 ///
-/// Two of those clearances are HORIZONTAL and live here ([`CHIP_CAP_MAX_R`], and through it
-/// [`GLASS_TRACK_TOUCH_MAX`]). The third is VERTICAL and belongs to another screen: Home's shelf
-/// headings begin at the very margin this capsule sits on, so the grid's resting top (`GRID_TOP_Y`)
-/// is graded against this rect's bottom edge (the home grid's tests). Exported whole rather than as a
-/// second edge constant, for the same reason the `_R` form exists at all — one expression, drawn
-/// and graded from the same place.
+/// The clearance that reads it is VERTICAL and belongs to another screen: Home's shelf headings
+/// begin at the very margin this capsule sits on, so the grid's resting top (`GRID_TOP_Y`) is
+/// graded against this rect's bottom edge (the home grid's tests), and the overscan audit grades
+/// its edges ([`overscan_rects`]). Exported whole rather than as an edge constant, so the drawn and
+/// the graded rect are one expression. (The HORIZONTAL clearance, against the track, is not read
+/// off this rect: it is the name's budget, [`chip_name_budget`].)
 pub const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
 
-/// **Where the unfurled [`profile_chip_with`] capsule's right edge can reach, at its widest** — the one
-/// edge of [`CHIP_CAP_MAX`] the band's own arithmetic asks for, named because the reader there
-/// wants a position rather than a projection.
-const CHIP_CAP_MAX_R: f32 = CHIP_CAP_MAX.x + CHIP_CAP_MAX.w;
-
-/// The widest a track may be and still wear glass — the design system's `--glass-track-max`.
+/// **How wide a profile name the bar leaves room for — the one function that keeps the unfurled
+/// chip and the track apart.** `track_w` is the strip's track ([`tab_track_w`]), centred on the
+/// screen, so its left edge is `(SCR_W - track_w) / 2`; the capsule's right edge, [`chip_cap`] at
+/// full unfurl, is the closed circle's plus the name's gap, the name and the tail. The budget is the
+/// name width that leaves [`BAND_AIR`] between the two, capped at [`CHIP_NAME_MAX`] — and `0` when
+/// that room is under [`CHIP_NAME_MIN`], where the chip shows no name and its capsule stays the
+/// closed circle (see [`chip_cap`]).
 ///
-/// A track is charged by its LENGTH: what a glass surface costs is the blurred RECTANGLE, the
-/// surface grown 88px a side, so a 940-wide one priced at `(940 + 176) x (76 + 176)` = 281k px^2 —
-/// inside the ~300k a MOVING host holds 60 fps under (`docs/glass-hardware-budget.md`) — while a
-/// 1050-wide one was not. It is the one limit here a section table can trip on its own: enough
-/// libraries and the strip outgrows the budget, so the material has to come off by arithmetic
-/// rather than by anyone remembering.
+/// **This replaced a cap on the TRACK.** The track used to be held to a width (`GLASS_TRACK_MAX`,
+/// 672 px at the end) so that the widest capsule could not reach it, and a strip past it drew the
+/// flat capsule: the owner's Belarusian strip (679 px once the Watchlist mark joined the bar) lost
+/// the glass for 7 px. The bar gains entries and its labels vary by language, so its width must
+/// never decide its material, and the clearance moved to the one party whose width is user data
+/// anyway. A 679 px track leaves 394.5 px of room, so the shipped bar keeps the whole 320; the
+/// budget bites once the room falls under `CHIP_NAME_MAX`, past an 828 px track, and is `0` under
+/// `CHIP_NAME_MIN`, past 1300 px, both short of [`TAB_VIEW_MAX`]: one more pill wider than 133 px
+/// on today's widest strip is already in that range, so a change to the strip can shorten the
+/// name.
 ///
-/// **It is no longer the track's own arithmetic, because the track is no longer the only surface in
-/// the band.** [`profile_chip_with`] wears the same material now, and the two are priced and placed
-/// together:
-///
-/// * **The BUDGET is the UNION.** Two glass surfaces in a frame converge on one grab
-///   (`gfx::blur_region_union`), so the bar costs one snapshot — but that snapshot spans both. Its
-///   left edge is the capsule's ([`BAND_REGION_X0`]) and its right is the track's, over
-///   [`BAND_REGION_H`]; solving that for the width is [`GLASS_TRACK_BUDGET_MAX`].
-/// * **And the two must not TOUCH.** The track is centred, so its left edge is `(SCR_W - w) / 2`;
-///   the capsule's right edge stops at [`CHIP_CAP_MAX_R`]. Solving for [`BAND_AIR`] between them is
-///   [`GLASS_TRACK_TOUCH_MAX`] — **848** — written as the expression so that raising
-///   [`CHIP_NAME_MAX`] tightens the cap instead of silently letting the two meet.
-///
-/// **Which of the two BINDS moved on 2026-08-23, and this constant is now the `min` rather than the
-/// touch rule alone.** It was written as the touch expression with a comment saying the budget
-/// reached at 904 — true while the band's blurred region was 200px tall, i.e. while `TOP_BAR_Y` was
-/// 44. Dropping the bar 18px so its track clears the overscan frame (`consts::MARGIN_Y`) makes that
-/// region 218 tall, and 18 more rows of a ~1470-wide grab is 26k px², enough to put the touch width
-/// outside the budget. The two constraints were only ever ordered by coincidence; asserting one and
-/// documenting the other is what let that go unnoticed until the test caught it.
-///
-/// Overlap is what had to be made impossible, rather than handled. There is ONE blur cache: a
-/// second surface over the first gets no second blur, only a second frost and a second rim
-/// composited over material that already carries both — the double-darkening `draw_tab_row`'s
-/// source-pass note measures from the other direction. Nothing in the shader can undo that, so the
-/// geometry has to keep them apart, and the test below is what keeps them apart.
-///
-/// What it costs is stated plainly: the product's own strip is 572px, so the material survives
-/// today's bar with room for one more library and not two. What it buys is that the band is never
-/// two materials and never a doubled one, and never over the budget a measurement set.
-const GLASS_TRACK_MAX: f32 = if GLASS_TRACK_TOUCH_MAX < GLASS_TRACK_BUDGET_MAX {
-    GLASS_TRACK_TOUCH_MAX
-} else {
-    GLASS_TRACK_BUDGET_MAX
-};
-
-/// The widest track that still leaves [`BAND_AIR`] between the unfurled chip and the centred strip.
-const GLASS_TRACK_TOUCH_MAX: f32 = crate::consts::SCR_W - 2.0 * (CHIP_CAP_MAX_R + BAND_AIR);
-
-/// The track's blurred region HEIGHT, in authored px — priced at [`plx_gfx::gfx::BLUR_MARGIN`], the
-/// margin of a glass that RISES. The band's glass never rises, so its real region is grown
-/// [`plx_gfx::gfx::blur_region_for`]'s `BLUR_REACH` (68) only: 20 px less each side. This constant,
-/// [`GLASS_TRACK_BUDGET_MAX`] and the budget tests stay on the wider figure on purpose — an upper
-/// bound, so a width that fits it fits the real region with room to spare, and the track the owner
-/// sees is unchanged.
-///
-/// The top clamps to 0 — the track's own top edge (`TOP_BAR_Y - TAB_TRACK_PAD` = 54) is inside
-/// [`plx_gfx::gfx::BLUR_MARGIN`] 88 of the panel edge — so the whole region is
-/// `0 .. TOP_BAR_BOTTOM + BLUR_MARGIN`. If the bar ever drops far enough that the top stops
-/// clamping, this over-states the region and [`the_whole_bands_glass_fits_one_region_budget`] (which
-/// asks `gfx::blur_region` itself, not this) is what will say so.
-const BAND_REGION_H: f32 = TOP_BAR_BOTTOM + plx_gfx::gfx::BLUR_MARGIN;
-
-/// [`plx_gfx::gfx::GLASS_REGION_BUDGET`], restated here because that constant is `cfg(test)` on a
-/// deliberate argument — *"a number the shipping build never reads should not pretend to"* — and
-/// this one IS read by the shipping build, through [`GLASS_TRACK_MAX`]. The duplication is closed by
-/// an equality ([`tests::the_band_budget_restated_here_is_the_measured_one`]) rather than by a
-/// comment, which is the same trade `CHIP_CAP_MAX_R` makes against the rect `chip_cap` draws.
-const BAND_REGION_BUDGET: f32 = 300_000.0;
-
-/// The band's blurred region LEFT edge — the chip capsule's own left grown [`plx_gfx::gfx::BLUR_MARGIN`],
-/// clamped to the panel. It used to clamp to 0 and no longer does: the capsule starts at `MARGIN_X`
-/// 96 (it was 82 when the chip sat at a 90px margin with no [`TAB_TRACK_PAD`] inset), so the grab
-/// begins at 8. Written out because [`GLASS_TRACK_BUDGET_MAX`] is a closed form of what
-/// `gfx::blur_region_union` computes, and an assumed-0 left edge silently overcharges it by 16px of
-/// track — which is safe but wrong, and wrong in a constant the shipping build reads.
-const BAND_REGION_X0: f32 = {
-    let x = CHIP_FRAME.x - TAB_TRACK_PAD - plx_gfx::gfx::BLUR_MARGIN;
-    if x > 0.0 {
-        x
-    } else {
+/// The owner of the chip's text re-asks when either input changes (`app::chrome::ChromeSnapshot`:
+/// the strip's widths with `tabs_generation`, the label with the profile), because the elision
+/// belongs to its captured publication and drawing measures nothing.
+pub fn chip_name_budget(track_w: f32) -> f32 {
+    let circle = chip_cap(0.0, 0.0);
+    let track_left = (crate::consts::SCR_W - track_w) * 0.5;
+    let room = track_left - BAND_AIR - (circle.x + circle.w) - (CHIP_NAME_GAP + CHIP_NAME_TAIL);
+    if room < CHIP_NAME_MIN {
         0.0
+    } else {
+        room.min(CHIP_NAME_MAX)
     }
-};
-
-/// [`BAND_REGION_BUDGET`] solved for the track width, over the union
-/// `[BAND_REGION_X0, (SCR_W + w) / 2 + BLUR_MARGIN] x BAND_REGION_H`.
-const GLASS_TRACK_BUDGET_MAX: f32 = 2.0
-    * (BAND_REGION_BUDGET / BAND_REGION_H + BAND_REGION_X0
-        - (crate::consts::SCR_W * 0.5 + plx_gfx::gfx::BLUR_MARGIN));
+}
 
 /// Is the shared tab track wearing glass this frame?
 ///
-/// **Glass is the material.** `/tmp/plxnative-flattabs` takes it away, which is how the two are
-/// compared on one television without a second binary — and the one thing that made the flat track
-/// the answer for a while is gone: the density is no longer a constant that had to be legible over
-/// every possible hero at once, so it is not forced up to the flat capsule's own weight. See
-/// [`track_alpha_for`].
+/// **Glass is the material, at ANY width.** The strip's width never decides it: the bar gains
+/// entries as the app grows and its labels change length with the language, and a strip that
+/// outgrows [`TAB_VIEW_MAX`] scrolls inside a track that stays that wide ([`tab_view_w`]). It was
+/// once held to a measured width (the retired `GLASS_TRACK_MAX`, from a 300k px^2 region budget
+/// priced on the capture path), which dropped the owner's Belarusian strip to the flat capsule by
+/// 7 px; `docs/glass-hardware-budget.md` §11 is why that price was the wrong instrument (the shipped
+/// direct path charges the region at 7/16 and the composite area dominates), and the band's real
+/// grab is `blur_region_for(false, ..)`, 68 px past the members and not 88. What keeps the unfurled
+/// chip off the track is [`chip_name_budget`], not a cap on the track.
 ///
-/// The track's geometry budget and the explicit flat-material experiment are the only material
-/// refusals. Occlusion and source eligibility are handled by the frame's layer walk.
-fn tab_glass_on(track_w: f32) -> bool {
-    !flat_tabs_armed() && track_w <= GLASS_TRACK_MAX
+/// `/tmp/plxnative-flattabs` takes the material away, which is how the two are compared on one
+/// television without a second binary — and the one thing that made the flat track the answer for a
+/// while is gone: the density is no longer a constant that had to be legible over every possible
+/// hero at once, so it is not forced up to the flat capsule's own weight. See [`track_alpha_for`].
+///
+/// The explicit flat-material experiment is the only material refusal here. Occlusion and source
+/// eligibility are handled by the frame's layer walk.
+fn tab_glass_on() -> bool {
+    !flat_tabs_armed()
 }
 
 /// Trigger probes are latched; paint must not perform a filesystem stat per surface.
@@ -7564,9 +7550,9 @@ fn tab_stack(widths: &[f32]) -> HStack<'_> {
 fn tab_view_w(widths: &[f32]) -> f32 {
     tab_content_w(widths).min(TAB_VIEW_MAX).max(0.0)
 }
-/// The TRACK's own width — the pill area plus its uniform inset on both sides. What the glass
-/// budget is charged against ([`GLASS_TRACK_MAX`]), and what `draw_tab_row` builds its rect from.
-fn tab_track_w(widths: &[f32]) -> f32 {
+/// The TRACK's own width — the pill area plus its uniform inset on both sides. What the chip's name
+/// budget is solved against ([`chip_name_budget`]), and what `draw_tab_row` builds its rect from.
+pub fn tab_track_w(widths: &[f32]) -> f32 {
     tab_view_w(widths) + 2.0 * TAB_TRACK_PAD
 }
 
@@ -7771,19 +7757,25 @@ impl StripRender {
         // itself holds still, so those pixels are the app ground fading, not the screen's colour.
         let settled = crate::nav::page_alpha() >= 0.999;
         // **Decided BEFORE the ground is sampled, because it decides whether to sample at all.**
-        // `sample_ground` queues five framebuffer copies and reads them back later — so a track
-        // that is about to draw FLAT (a popover is up, `flattabs` is armed, or the strip is wider
-        // than `GLASS_TRACK_MAX`) must not pay for a number only the glass path consumes. It did,
-        // on every screen wearing the bar, for as long as the app was open.
-        let glass_on = tab_glass_on(track.w);
+        // `sample_ground` reads its taps from the retained image of the band this track's glass
+        // draws from — so a track that is about to draw FLAT because the `flattabs` experiment is
+        // armed (the only thing that turns `glass_on` off) has no band and no image, and there is
+        // nothing to read: its ground is the flat app ground, and `groundlog` says so (`src=flat`).
+        // It used to pay five framebuffer copies for a number only the glass path consumes, on every
+        // screen wearing the bar, for as long as the app was open.
+        let glass_on = tab_glass_on();
         let groundlog = ground_log_armed();
         // …and FASTER while a polarity is being decided: the decision is gated on two independent
         // readings, so the sampler's rate is the decision's rate, and every frame of it is spent
         // showing the material the bar is about to stop being.
         let (cr, cg, cb) = theme::CLEAR_RGB; // the app ground, as the token that names it
         let flat_ground = [cr, cg, cb];
-        let ground = if glass_on || groundlog {
-            plx_gfx::gfx::sample_ground([track.x, track.y, track.w, track.h], settled)
+        let ground = if glass_on {
+            // The rect the glass below is DRAWN at: the painter's placement (a lifted or zoomed
+            // chrome band) is part of it, and the band the ground is read from is found by that
+            // rect (`gfx::sample_ground`), so the unplaced `track` would match no band.
+            let at = p.place(track);
+            plx_gfx::gfx::sample_ground([at.x, at.y, at.w, at.h], settled)
                 .unwrap_or(flat_ground)
         } else {
             flat_ground
@@ -7792,7 +7784,11 @@ impl StripRender {
         // instrument that says what it read and what it chose is not optional. It is how the first
         // version of this was caught reading Plex's `UltraBlurColors`, which gave (0.30,0.23,0.18)
         // for a hero whose top edge is (0.00,0.68,0.91) and left the bar at its floor.
-        if groundlog {
+        // The VISIBLE walk's draw only: the declaration and source walks draw this bar too, and
+        // `sample_ground` refuses them (`blur_source_pass`), so a count landing on one would print
+        // `src=held` for a draw that was never going to read, and with a whole number of draws per
+        // frame the count lands on the same walk every time.
+        if groundlog && !plx_gfx::gfx::blur_source_pass() {
             // A safe atomic rather than `static mut`: a plain sample counter, same shape as
             // the diagnostic counters.
             static LAST: AtomicU32 = AtomicU32::new(0);
@@ -7807,12 +7803,16 @@ impl StripRender {
                 // thing it was armed to watch.
                 let drawn = track_density(ground, &mut band.density);
                 plx_base::eventlog::log(&format!(
-                    "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0}",
+                    "track_ground rgb={:.3},{:.3},{:.3} L*={:.1} span={:.1} want={:.3} drawn={:.3} rect={:.0},{:.0},{:.0},{:.0} src={}",
                     ground[0], ground[1], ground[2],
                     lstar([ground[0], ground[1], ground[2], 1.0]),
                     plx_gfx::gfx::ground_span(),
                     track_alpha_for(ground), drawn,
                     track.x, track.y, track.w, track.h,
+                    // where the ground came from: the band's image, nothing found this frame (the
+                    // last reading, or the flat ground before the first), a call refused before it
+                    // looked (the last reading), or no glass at all
+                    if !glass_on { "flat" } else { plx_gfx::gfx::ground_source().word() },
                 ));
             }
             LAST.store(n.wrapping_add(1), Relaxed);
@@ -7883,14 +7883,11 @@ impl StripRender {
                 );
             }
         } else {
-            // NOT during a blur source pass. `tab_glass_on` is false there by design — the flat
-            // track is the right source pixel — but deactivating on that basis makes the NEXT
-            // frame's `prepare` see an inactive state, call `activate`, and invalidate the
-            // backdrop. The cadence then resets on every source pass instead of following the
-            // configured refresh period. The old every-third experiment measured 50 refreshes/s
-            // against its intended 20 and an 11% whole-frame regression; the shipping period is
-            // now every changed present, but this guard is still what makes the configured policy
-            // authoritative rather than an accidental reactivation loop.
+            // Only the `flattabs` experiment lands here: `tab_glass_on` is `!flat_tabs_armed()` and
+            // nothing else. It does NOT go false during a blur source pass (nor with a popover up):
+            // the glass arm above runs and the glass call answers the pass itself
+            // (`gfx::draw_blur_backdrop`, `backdrop::surface_with`), and a chain that refuses is
+            // that arm's own flat `else`.
             // The flat capsule, which is the same material at its ceiling — there is nothing for
             // this path to say about ink any more. It once wrote the row's POLARITY here, and that
             // was a reported bug twice over: the write clobbered a value the spring owned, so the
@@ -8481,11 +8478,25 @@ impl ControlStyle {
 // centered together as one group (icon + gap + label + gap + accessory is centered in the pill).
 // Colour per `ControlStyle` (default Accent). The one reusable action button — hero Play (Primary),
 // detail/info actions (Accent), etc. ----
-pub struct Button {
+/// The shared button's countdown decoration. Extra draw ops are the conservative worst case priced by HUD lint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonProgress { FillSweep, Ring, Bar }
+
+impl ButtonProgress {
+    pub const fn extra_draw_ops(self) -> usize {
+        match self { Self::FillSweep => 0, Self::Ring => 4, Self::Bar => 2 }
+    }
+}
+
+pub struct Button<'a> {
     pub frame: Rect,
     pub label: *const c_char,
     pub sz: c_int,
     pub icon: Option<crate::icons::Icon>,
+    svg: Option<crate::icons::Svg<'a>>,
+    rest: Option<TransportRest>,
+    focus_face: TransportFocus,
+    enabled: bool,
     /// The TRAILING accessory glyph — a chevron saying the press opens a list rather than acting
     /// (`crate::screens::alt_sources`'s *Also available*). Deliberately its own slot rather than a
     /// second use of [`Button::icon`]: the leading icon is part of the label's own statement (the
@@ -8506,8 +8517,9 @@ pub struct Button {
     pub palette: ControlPalette,
     /// The FOCUS POP, as a factor on the frame — see [`Button::scale`].
     pub scale: f32,
-    /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
+    /// 0..1 countdown progress, in the face selected by the progress builder; None = an ordinary button.
     pub progress: Option<f32>,
+    progress_face: ButtonProgress,
 }
 /// [`Button`]'s icon box, as a multiple of its type size, and the icon→label gap. Named because
 /// [`Button::pill_w`] measures the same run `Button::draw` lays out — a literal in each would let
@@ -8519,13 +8531,17 @@ pub const BTN_PILL_AIR: f32 = 68.0;
 /// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
 const BTN_KEYLINE_W: f32 = 1.5;
 
-impl Button {
+impl<'a> Button<'a> {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
         Self {
             frame,
             label,
             sz,
             icon: None,
+            svg: None,
+            rest: None,
+            focus_face: TransportFocus::Accent,
+            enabled: true,
             trailing: None,
             focused: false,
             focus: None,
@@ -8534,6 +8550,7 @@ impl Button {
             palette: ControlPalette::default(),
             scale: 1.0,
             progress: None,
+            progress_face: ButtonProgress::FillSweep,
         }
     }
     /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the capsule's centre — normally [`CtlPop::scale`],
@@ -8556,6 +8573,27 @@ impl Button {
         self.trailing = Some(i);
         self
     }
+    /// A package glyph beside the label, in the same box and ink as a built-in icon.
+    pub fn svg(mut self, svg: crate::icons::Svg<'a>) -> Self {
+        self.svg = Some(svg);
+        self.icon = None;
+        self
+    }
+    /// Opt into the transport family's declared resting treatment; ordinary buttons keep their existing style.
+    pub fn rest_face(mut self, rest: TransportRest) -> Self {
+        self.rest = Some(rest);
+        self
+    }
+    /// A ring keeps the declared rest face while focused; accent focus lights the plate.
+    pub fn focus_face(mut self, focus: TransportFocus) -> Self {
+        self.focus_face = focus;
+        if self.rest.is_none() { self.rest = Some(TransportRest::Film); }
+        self
+    }
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
         self
@@ -8569,7 +8607,18 @@ impl Button {
     }
     /// The face this pill draws now.
     fn face_now(&self) -> ControlFace {
-        self.style.face_at(self.focus.unwrap_or(f32::from(self.focused)), self.ground, self.palette)
+        let mut face = match self.rest {
+            Some(rest) => ControlStyle::Accent.face(
+                rest == TransportRest::Solid || self.accent_focus(), self.ground, self.palette),
+            None => self.style.face_at(if self.enabled { self.focus.unwrap_or(f32::from(self.focused)) } else { 0.0 }, self.ground, self.palette),
+        };
+        if !self.enabled {
+            face.ink = theme::INK_DISABLED;
+        }
+        face
+    }
+    fn accent_focus(&self) -> bool {
+        self.enabled && self.focused && (self.rest.is_none() || self.focus_face == TransportFocus::Accent)
     }
     pub fn style(mut self, s: ControlStyle) -> Self {
         self.style = s;
@@ -8658,6 +8707,19 @@ impl Button {
     /// state, and only the FILL BEHIND the label changes — the ink never inverts.
     pub fn progress(mut self, frac: f32) -> Self {
         self.progress = Some(frac);
+        self.progress_face = ButtonProgress::FillSweep;
+        self
+    }
+    /// Trace a countdown around this same capsule; the label and its focus face stay independent.
+    pub fn progress_ring(mut self, frac: f32) -> Self {
+        self.progress = Some(frac);
+        self.progress_face = ButtonProgress::Ring;
+        self
+    }
+    /// The shared played-progress rail, clipped to this button's capsule.
+    pub fn progress_bar(mut self, frac: f32) -> Self {
+        self.progress = Some(frac);
+        self.progress_face = ButtonProgress::Bar;
         self
     }
 
@@ -8670,7 +8732,10 @@ impl Button {
         // (`face_box`). A stadium and a disc are returned untouched.
         let b = face_box(r);
         let rad = b.h * 0.5;
-        if matches!(self.style, ControlStyle::Keyline) && !self.focused {
+        let painted = self.rest != Some(TransportRest::Bare) || self.accent_focus();
+        if !painted {
+            // A bare transport button has only its label/glyph until accent focus arrives.
+        } else if matches!(self.style, ControlStyle::Keyline) && !self.accent_focus() {
             let rad = r.h * 0.5;
             // the knockout: stroke colour first, then the interior inset by it — the SDF has no
             // stroke-only mode (`keyline_chip` / `pass_capsule`'s construction); `bg` here is
@@ -8688,12 +8753,22 @@ impl Button {
             // FOCUS is an elevation as well as a fill — see `control_cast`. Drawn before the face
             // for draw order only: `control_cast_at` is outside-only, so nothing of it lies under
             // the plate, even while the plate fades.
-            if self.focused {
+            if self.accent_focus() {
                 control_cast_at(p, b, rad, self.focus.unwrap_or(1.0));
             }
-            control_rim(p, b, rad, face.top, face.body, self.focused, self.ground);
+            control_rim(p, b, rad, face.top, face.body, self.accent_focus(), self.ground);
+        }
+        if self.enabled && self.focused && self.focus_face == TransportFocus::Ring {
+            let o = theme::CONTROL_FOCUS_RING_GAP + theme::CONTROL_FOCUS_RING_W * 0.5;
+            let ring = Rect::new(b.x - o, b.y - o, b.w + 2.0 * o, b.h + 2.0 * o);
+            p.rring(ring, ring.h * 0.5, theme::CONTROL_FOCUS_RING_W, theme::CONTROL_FOCUS_RING);
         }
         let Some(frac) = self.progress else { return };
+        match self.progress_face {
+            ButtonProgress::Ring => { button_progress_ring(p, b, frac, face.ink); return; }
+            ButtonProgress::Bar => { progress_bar(p, b, rad, theme::space::XS, frac); return; }
+            ButtonProgress::FillSweep => {}
+        }
         let w = b.w * frac.clamp(0.0, 1.0);
         if w <= 0.0 {
             return;
@@ -8718,6 +8793,22 @@ impl Button {
         p.clip_clear();
     }
 }
+/// Trace the existing rounded-ring primitive clockwise from the top centre. Each monotone quadrant is
+/// clipped as it advances; no generated SVG, texture cache entry or renderer-specific drawing path is needed.
+fn button_progress_ring(p: Painter, r: Rect, frac: f32, ink: [f32; 4]) {
+    let half = r.w * 0.5;
+    let phase = frac.clamp(0.0, 1.0) * 4.0;
+    for (i, (right, bottom)) in [(true, false), (true, true), (false, true), (false, false)].into_iter().enumerate() {
+        let w = half * (phase - i as f32).clamp(0.0, 1.0);
+        if w <= 0.0 { continue; }
+        let x = match (right, bottom) { (true, false) => r.cx(), (true, true) => r.x + r.w - w,
+            (false, true) => r.cx() - w, (false, false) => r.x };
+        let clip = Rect::new(x, if bottom { r.cy() } else { r.y }, w, r.h * 0.5);
+        let _clip = crate::screen::ClipScope::open_in(p, clip);
+        p.rring(r, r.h * 0.5, theme::CONTROL_FOCUS_RING_W, ink);
+    }
+}
+
 /// **A standalone control face for a caller outside this module** — the same plate
 /// [`Button::plate`] draws (the capsule outline, the edge sheen, and the focus cast), for a control
 /// whose layout does not fit `Button`'s one-label-two-icons shape and so cannot be a `Button`
@@ -8744,7 +8835,7 @@ pub fn draw_control_face(
     }
     control_rim(p, b, rad, fill, fill, focused, ground);
 }
-impl View for Button {
+impl View for Button<'_> {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame.scaled(self.scale);
         let face = self.face_now();
@@ -8779,12 +8870,15 @@ impl View for Button {
         // sizing the pill without the chevron and then drawing one would push the label off-centre.
         // The accessory stands by its INK, so the pill's right pad is measured to the mark itself.
         let isz = self.sz as f32 * BTN_ICON_RATIO;
-        let items = Self::run_items(tw, self.sz, self.icon.is_some(), self.trailing);
+        let items = Self::run_items(tw, self.sz, self.icon.is_some() || self.svg.is_some(), self.trailing);
         for span in HStack::new(&items, BTN_ICON_GAP, StackAlign::Centre(r.cx())).placed() {
             match span.i {
                 0 => {
-                    if let Some(icon) = self.icon {
-                        crate::icons::draw(p, icon, Rect::new(span.x, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+                    let rect = Rect::new(span.x, r.y + (r.h - isz) * 0.5, isz, isz);
+                    if let Some(svg) = self.svg {
+                        crate::icons::draw_svg(p, svg, rect, ink);
+                    } else if let Some(icon) = self.icon {
+                        crate::icons::draw(p, icon, rect, ink);
                     }
                 }
                 1 => {
@@ -9147,24 +9241,6 @@ pub fn rating_group_w(
     rating_walk(0.0, caption, cells, measure, |_, _| {})
 }
 
-/// A single caption score centred with its mark. The native Measure retains both the fitted
-/// drawable and its width; drawing a warm cell does no CString construction or measurement.
-pub(crate) fn rating_cell_fitted(
-    p: Painter, cx: f32, cy: f32, budget: f32, cell: &RatingCell,
-    measure: &dyn plx_machine::machine::Measure,
-) {
-    debug_assert!(cell.suffix.is_empty(), "caption scores carry their unit in the value");
-    let lead = if cell.mark.is_empty() { 0.0 } else { RATING_MARK_D + RATING_GAP };
-    let (run, width) = measure.fit_line_measured(cell.value, (budget - lead).max(0.0), theme::size::LABEL, true);
-    let x = cx - (lead + width).min(budget) * 0.5;
-    if !cell.mark.is_empty() {
-        let rect = Rect::new(x, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
-        for (mask, tint) in cell.mark { crate::icons::draw(p, *mask, rect, *tint); }
-    }
-    let y = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy);
-    p.text(run.as_ptr(), x + lead, y, theme::size::LABEL, theme::TEXT_PRIMARY, 0, 1);
-}
-
 /// Draw one provider's group with its LEFT edge at `x`, centred on `cy`; returns its width.
 pub fn rating_group(
     p: Painter,
@@ -9477,4 +9553,20 @@ fn transport_button_disabled_never_draws_a_focused_face() {
         assert_eq!(census(disabled), census(TransportButton::new(0, rect).enabled(false)),
             "a disabled disc draws its idle face whatever order the builder ran in");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn button_progress_ring_uses_bounded_quadrants_and_leaves_the_default_face_unchanged() {
+    let _serial = plx_base::testlock::serial();
+    let label = CString::new("Next episode").unwrap();
+    let make = || Button::new(label.as_ptr(), theme::size::BODY, Rect::new(100.0, 800.0, 300.0, 64.0));
+    for (fraction, count) in [(0.0, 0), (0.1, 1), (0.25, 1), (0.5, 2), (1.0, 4), (1.5, 4)] {
+        let rings = crate::draw_census::capture_rings(|| make().progress_ring(fraction).draw(&Env::inert(), Painter::recording()));
+        assert_eq!(rings.len(), count, "fraction {fraction}: one clipped ring per reached quadrant");
+        assert!(rings.len() <= ButtonProgress::Ring.extra_draw_ops(), "the price covers every progress primitive");
+    }
+    let plain = crate::draw_census::capture(|| make().draw(&Env::inert(), Painter::recording()));
+    let zero = crate::draw_census::capture(|| make().progress_ring(0.0).draw(&Env::inert(), Painter::recording()));
+    assert_eq!(plain, zero, "zero progress adds no geometry or alternate resting face");
 }

@@ -3,19 +3,25 @@
 //! left as plain text (`HeaderItem::title`: no plate, which means "current among siblings", and no
 //! pill, which means "focusable"; design review S10); on the right a filter
 //! read-out ("12 of 40", only while a Type or Show filter narrows the list, at the read-out ink and
-//! one [`GAP`](plx_ui::page_header::GAP) before the control) and the one control, "Sort & Filter · <value> ▾".
+//! one [`GAP`](plx_ui::page_header::GAP) before the control) and the one control, the Library's own
+//! sort control (`HeaderItem::sort_control`): the sort icon, the chosen sort and a quiet down
+//! chevron, with "Sort & Filter" as its name, carried by the item and never drawn. The criterion is
+//! the SORT alone (a Type or Show filter is the read-out's "N of M", never part of the control), has
+//! no slot (the control ends at the row's right text edge and keeps its chevron) and a changed one
+//! swaps on the row's `HeaderSwap`, as the Library's does.
 //!
 //! This file DECLARES the row ([`Row::new`]); its layout, paint, motion (the focus capsule that
-//! travels, the pop) and focus group are the ui's, the same ones the Library, Collections and
-//! Recommended pages wear. The control a Sort & Filter menu has lifted is drawn by the host's opener
-//! lift, focused, above the menu's scrim ([`Row::draw_opener`], which is [`PageHeader::draw_opener`]:
-//! the one paint every header opener has), so the page's pass leaves it out ([`Row::draw`] with
-//! `lifted`) and the pill stays lit for as long as its panel is up (design review S12).
+//! travels, the pop, the criterion's swap) and focus group are the ui's, the same ones the Library,
+//! Collections and Recommended pages wear. The control a Sort & Filter menu has lifted is drawn by the
+//! host's opener lift, focused, above the menu's scrim ([`Row::draw_opener`], which is
+//! [`PageHeader::draw_opener`]: the one paint every header opener has), so the page's pass leaves it
+//! out ([`Row::draw`] with `lifted`) and the pill stays lit for as long as its panel is up (design
+//! review S12).
 //!
 //! The row is built here as a value ([`Row`]) from the measure, the summary and the read-out, and
 //! every consumer (paint, the focus rect, the menu's anchor) reads that one value.
 use plx_machine::machine::Measure;
-use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, PageHeader, PageHeaderSpec, Slot};
+use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, HeaderSwap, ItemRect, PageHeader, PageHeaderSpec, Slot};
 #[cfg(feature = "devtriggers")]
 use plx_ui::theme;
 use plx_ui::widgets::{focus_pill, CtlPop, TabStrip};
@@ -74,7 +80,8 @@ pub struct Row {
 }
 
 impl Row {
-    /// Build the row for `summary` and the read-out `count`.
+    /// Build the row for `summary` (the sort in force: the sort control's criterion) and the
+    /// read-out `count`.
     pub fn new(measure: &dyn Measure, summary: &str, count: Option<Count>) -> Self {
         use plx_platform::i18n::msg;
         let left = vec![HeaderItem {
@@ -86,13 +93,7 @@ impl Row {
         if let Some(readout) = count.and_then(|c| c.readout()) {
             right.push(HeaderItem { label: readout, readout: true, ..Default::default() });
         }
-        right.push(HeaderItem {
-            label: msg::watchlist_page_sort_filter().to_owned(),
-            value: Some(summary.to_owned()),
-            fold_glyph: true,
-            focusable: true,
-            ..Default::default()
-        });
+        right.push(HeaderItem::sort_control(msg::watchlist_page_sort_filter(), summary));
         let page = PageHeader::new(PageHeaderSpec { left, right, ..Default::default() }, &[], measure);
         let layout = page.layout(plx_ui::consts::SCR_W, measure);
         let sort = layout.items.iter().position(|it| matches!(it.slot, Slot::Right(_)) && it.focusable)
@@ -116,6 +117,13 @@ impl Row {
         focus_pill(self.plate())
     }
 
+    /// Begin the page's `swap` from the row this one replaces ([`HeaderSwap::begin`]): the criterion
+    /// a sort pick changed leaves at its own place and the new one arrives at its own, and a
+    /// read-out that comes, goes or says another thing dissolves.
+    pub fn begin_swap(&self, from: &Row, swap: &mut HeaderSwap) {
+        swap.begin(&from.row, &self.row);
+    }
+
     /// The row as one focus group (`id`), for the page's declaration of its header section.
     pub fn focus(&self, entry: plx_machine::machine::EntryId, id: plx_machine::machine::GroupId) -> HeaderFocus<'_> {
         self.row.focus(entry, id, (0.0, 0.0), Rect::FULL)
@@ -133,6 +141,12 @@ impl Row {
         self.row.layout.items.iter().filter(|it| matches!(it.slot, Slot::Right(_))).map(|it| it.text.x).fold(f32::MAX, f32::min)
     }
 
+    /// The control's item as declared (the row's last right item), for tests.
+    #[cfg(test)]
+    pub fn sort_item(&self) -> &HeaderItem {
+        self.row.page.spec().right.last().expect("the control is on the row")
+    }
+
     /// The laid-out items' text and plate rects, for geometry tests.
     #[cfg(test)]
     pub fn items(&self) -> &[ItemRect] {
@@ -146,15 +160,18 @@ impl Row {
     }
 
     /// Paint the row `dy` px from the document origin (a scrolled page: minus the scroll): the title, the read-out and the control, which the Sort & Filter menu has
-    /// `lifted` out of the page when it is up (the opener lift draws the only copy).
-    pub fn draw(&self, p: Painter, dy: f32, capsules: &TabStrip, pop: f32, lifted: bool) {
-        self.row.draw(p, -dy, capsules, pop, lifted.then_some(super::page::PILL_ELEM));
+    /// `lifted` out of the page when it is up (the opener lift draws the only copy). `swap` is the
+    /// page's, carrying the controls over from the row before this one ([`HeaderRow::draw_with`]).
+    pub fn draw(&self, p: Painter, dy: f32, capsules: &TabStrip, pop: f32, lifted: bool, swap: &HeaderSwap) {
+        self.row.draw_with(p, -dy, capsules, pop, lifted.then_some(super::page::PILL_ELEM), swap);
     }
 
     /// The control as the focused opener of its menu, `dy` px from the document origin
-    /// ([`HeaderRow::draw_opener`]): what the opener lift paints above the scrim.
-    pub fn draw_opener(&self, p: Painter, dy: f32, pop: f32) {
-        self.row.draw_opener(p, -dy, pop, super::page::PILL_ELEM);
+    /// ([`HeaderRow::draw_opener_with`]): what the opener lift paints above the scrim. It paints
+    /// through the page's `swap` as the page's pass does: a sort picked from the menu changes the
+    /// control that opened it, and until the menu is gone this lift is the only thing that draws it.
+    pub fn draw_opener(&self, p: Painter, dy: f32, pop: f32, swap: &HeaderSwap) {
+        self.row.draw_opener_with(p, -dy, pop, super::page::PILL_ELEM, swap);
     }
 }
 

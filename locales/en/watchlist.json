@@ -5,7 +5,7 @@
   },
   "watchlist.page.sort_filter": {
     "value": "Sort & Filter",
-    "description": "Label of the single pill on the Watchlist header that opens the sort and filter popover."
+    "description": "The name of the Watchlist header's sort control (the one that opens the sort and filter popover). Never drawn: the control shows the chosen sort next to the sort icon, so this string has no width limit to fit; it is the control's identity in the row."
   },
   "watchlist.filter.type_all": {
     "value": "Movies & TV Shows",

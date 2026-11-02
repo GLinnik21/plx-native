@@ -93,6 +93,11 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
             check_field_section(&format!("{tag} skip_interval={interval:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
         plx_media::route::restore_skip_interval(plx_media::route::SkipInterval::Seconds10);
+        for mode in plx_plex::plex::session::DolbyVisionMode::LADDER {
+            plx_media::route::restore_dolby_vision_mode(mode);
+            check_field_section(&format!("{tag} dolby_vision={mode:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
+        }
+        plx_media::route::restore_dolby_vision_mode(plx_plex::plex::session::DolbyVisionMode::Auto);
 
         // Nobody seated: the same rows, read-only (dimmed).
         check_field_section(&format!("{tag} read-only"), &FieldListInputs { read_only: true, ..playback(Quality::Original, DirectPlayMode::Auto) }, &mut out);
@@ -137,7 +142,7 @@ fn every_picker_level_fits_its_column_in_every_language() {
         for kind in [Kind::Playback, Kind::AudioSubtitles] {
             let prefs = AudioPreferences::default();
             let fields: &[PickerKind] = match kind {
-                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking],
+                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision],
                 Kind::AudioSubtitles => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
             };
             // The Interface resolution picker is opened from the Settings root, not a field list.
@@ -205,6 +210,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         ("hu", "Ha a hang nem a felirat nyelvén szól"),
         ("be", "Калі гук не на мове субцітраў"),
         ("ru", "Если аудио не на языке субтитров"),
+        ("nl", "Audio niet in ondertiteltaal"),
     ];
     for (tag, _) in WANT {
         assert!(SHIPPED.iter().any(|p| p.tag() == *tag), "{tag} is pinned but no longer shipped");
@@ -249,7 +255,7 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     let _serial = plx_base::testlock::serial();
     let layout = RouteLayout::screen();
     let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
-        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
+        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];
     let mut out = Vec::new();
     for language in SHIPPED {
@@ -319,7 +325,7 @@ fn the_playback_page_names_its_profile_or_asks_for_one_in_every_language() {
 fn each_local_picker_has_its_own_explanation_in_every_language() {
     let _serial = plx_base::testlock::serial();
     let fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
-        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking];
+        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision];
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();

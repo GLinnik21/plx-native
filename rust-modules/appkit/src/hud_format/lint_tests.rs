@@ -1,11 +1,11 @@
-//! **The lint's own tests** (`lint.rs`, the six `lint_*` check modules): the shipped languages and their
+//! **The lint's own tests** (`lint.rs`, the eight `lint_*` check modules): the shipped languages and their
 //! labels, the language collapse, the state and slot names, the compile's provenance accessors, the
 //! invalid-case support, the union of every check module's [`INVALID`](super::lint_zorder::INVALID) and
 //! [`UNIT_ONLY`](super::lint_zorder::UNIT_ONLY) lists and what the whole pipeline says about them.
 //!
 //! The goldens are here: `builtin_classic_passes_every_invariant` and `reference_passes_every_invariant`
-//! (zero findings in all ten shipped languages, measured with the real font advances), the four other
-//! fixtures (`other_fixtures_lint_without_an_error`), the requirement that every one of the fourteen lint
+//! (zero findings in all eleven shipped languages, measured with the real font advances), the four other
+//! fixtures (`other_fixtures_lint_without_an_error`), the requirement that every one of the sixteen lint
 //! codes has an invalid case or a stated reason it has none (`every_new_code_has_an_invalid_case`), and the
 //! behaviours of the whole run: sorted and deterministic output, every finding of a package reported in one
 //! run, the JSON report and the language context.
@@ -18,14 +18,14 @@ use plx_ui::fixture::FixtureMeasure;
 use plx_ui::Rect;
 
 use super::compile::{compile, CompileCtx, CompiledState, DrawOp, StateKey, OPEN_CHAPTERS, OPEN_INFO};
-use super::lint::testing::{apply, assert_case, Base, InvalidCase};
+use super::lint::testing::{apply, assert_case, without_cost, Base, InvalidCase};
 use super::lint::{
     collapse, ctx_for, lint, lint_with, named, slot_name, state_name, tag_language, LangCtx, LintLang, LintOptions,
 };
 use super::parse::{self, Object, Package};
 use super::reach::Slot;
 use super::validate::each_object;
-use super::{codes, lint_band, lint_menus, lint_safe, lint_size, lint_text, lint_zorder, report};
+use super::{codes, lint_band, lint_cost, lint_menus, lint_safe, lint_size, lint_text, lint_travel, lint_zorder, report};
 use super::{Context, Finding, Severity, BUILTIN_CLASSIC};
 
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
@@ -33,11 +33,12 @@ const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
 const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
 const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
 const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+const RISING_TABS: &str = include_str!("fixtures/rising-tabs.plxhud.json");
 
-/// The fourteen codes the lint registers (`HUD-E0601` ... `HUD-E1303`).
-const LINT_CODES: [&str; 14] = [
+/// The sixteen codes the lint registers (`HUD-E0601` ... `HUD-E1501`).
+const LINT_CODES: [&str; 16] = [
     "HUD-E0601", "HUD-W0602", "HUD-E0603", "HUD-E0604", "HUD-E1001", "HUD-E1002", "HUD-E1003", "HUD-E1101",
-    "HUD-E1102", "HUD-E1103", "HUD-E1201", "HUD-E1301", "HUD-E1302", "HUD-E1303",
+    "HUD-E1102", "HUD-E1103", "HUD-E1201", "HUD-E1301", "HUD-E1302", "HUD-E1303", "HUD-E1401", "HUD-E1501",
 ];
 
 fn package(text: &str) -> Package {
@@ -61,11 +62,11 @@ fn finding(code: &super::Code, pointer: &str, lang: Option<&str>, measured: f32)
 // ---------------------------------------------------------------------------------------------------
 
 #[test]
-fn the_ten_shipped_languages_in_catalog_order() {
+fn the_shipped_languages_in_catalog_order() {
     let tags: Vec<&str> = LintLang::shipped().iter().map(|l| l.tag).collect();
-    assert_eq!(tags, ["en", "es", "be", "fr", "it", "pt", "de", "hu", "ru", "pl"]);
+    assert_eq!(tags, ["en", "es", "be", "fr", "it", "pt", "de", "hu", "ru", "pl", "nl"]);
     let chapters: BTreeSet<String> = LintLang::shipped().into_iter().map(|l| l.labels.tab_chapters).collect();
-    assert!(chapters.len() > 5, "the labels are the languages' own, not one language ten times: {chapters:?}");
+    assert!(chapters.len() > 5, "the labels are the languages' own, not one language eleven times: {chapters:?}");
 }
 
 #[test]
@@ -104,7 +105,7 @@ fn the_labels_come_from_the_language_asked_for_never_from_the_current_one() {
 /// `text` linted in every shipped language, measured with the real font advances.
 fn lint_in_all_languages(text: &str) -> Vec<Finding> {
     let langs = LintLang::shipped();
-    assert_eq!(langs.len(), 10, "the goldens are the ten shipped languages");
+    assert_eq!(langs.len(), 11, "the goldens are the eleven shipped languages");
     lint(text, &ShippedMeasure, &langs)
 }
 
@@ -126,14 +127,15 @@ fn reference_passes_every_invariant() {
     assert!(found.is_empty(), "the reference package has {}", describe("reference.plxhud.json", &found));
 }
 
-/// The four other example packages, and the `(code, pointer)` pairs each is pinned to lint to. Every list
-/// is empty: all four are clean in every shipped language, so a finding in one is a new finding and a
+/// The five other example packages, and the `(code, pointer)` pairs each is pinned to lint to. Every list
+/// is empty: all five are clean in every shipped language, so a finding in one is a new finding and a
 /// change to a check or to the fixture, to be justified where it is added to its list.
-const OTHER_FIXTURES: [(&str, &str, &[(&str, &str)]); 4] = [
+const OTHER_FIXTURES: [(&str, &str, &[(&str, &str)]); 5] = [
     ("hero-center", HERO, &[]),
     ("minimal", MINIMAL, &[]),
     ("palette", PALETTE, &[]),
     ("tabs", TABS, &[]),
+    ("rising-tabs", RISING_TABS, &[]),
 ];
 
 #[test]
@@ -150,7 +152,7 @@ fn other_fixtures_lint_without_an_error() {
 
 #[test]
 fn the_goldens_are_clean_language_by_language_too() {
-    // The ten-language run collapses a finding every language shares and tags the rest, so an empty answer
+    // The eleven-language run collapses a finding every language shares and tags the rest, so an empty answer
     // already means every language was clean; one language at a time says which, were it not.
     for lang in LintLang::shipped() {
         for (name, text) in [("builtin:classic", BUILTIN_CLASSIC), ("reference", REFERENCE)] {
@@ -177,8 +179,27 @@ fn with_no_language_only_the_language_free_stages_run() {
 #[test]
 fn the_default_options_carry_the_ci_text_skew() {
     assert_eq!(LintOptions::default().text_skew, lint_text::CI_TEXT_SKEW);
-    assert_eq!(lint_text::CI_TEXT_SKEW, 0.0, "0 until PR12 measures it");
+    assert_eq!(lint_text::CI_TEXT_SKEW, 0.0, "the local/TV default has no registry headroom");
 }
+
+#[test]
+fn registry_headroom_is_applied_only_at_the_measured_type_rung() {
+    use super::lint::lint_fit;
+    let languages = [LintLang::for_tag("en").unwrap()];
+    let margin = |size| LintOptions {
+        text_skew_by_size: std::collections::BTreeMap::from([(size, 10000.0)]),
+        ..LintOptions::default()
+    };
+    // End clocks constrain each other's room. Minimal's default follow-head clocks have no
+    // fixed obstacle on their line; change the mode so the margin has a finite room to judge.
+    let text = MINIMAL.replacen("\"clock_size\": \"CAPTION\"", "\"clocks\": \"ends\", \"clock_size\": \"CAPTION\"",1);
+    assert!(lint_fit(&text,&ShippedMeasure,&languages,&margin(super::schema::size_rung("HUD_TITLE").unwrap())).is_empty());
+    let clocks = lint_fit(&text,&ShippedMeasure,&languages,&margin(super::schema::size_rung("CAPTION").unwrap()));
+    assert!(clocks.iter().any(|f| f.code == "HUD-W0602"), "{clocks:?}");
+    assert!(lint_fit(&text,&ShippedMeasure,&languages,&LintOptions::default()).is_empty(),
+        "normal playback uses the TV's own widths without a registry margin");
+}
+
 
 // ---------------------------------------------------------------------------------------------------
 // The language collapse and the tagging
@@ -245,7 +266,7 @@ fn a_finding_that_names_no_language_is_the_one_it_was_linted_in() {
 // ---------------------------------------------------------------------------------------------------
 
 fn key(open: u8, slot: Slot, chapters: bool, episode: bool, paused: bool) -> StateKey {
-    StateKey { open, slot, chapters, episode, paused }
+    StateKey { open, slot, chapters, episode, real_episode: None, paused }
 }
 
 #[test]
@@ -487,6 +508,8 @@ fn invalid_cases() -> Vec<&'static InvalidCase> {
         lint_menus::INVALID,
         lint_text::INVALID,
         lint_size::INVALID,
+        lint_cost::INVALID,
+        lint_travel::INVALID,
     ]
     .into_iter()
     .flatten()
@@ -502,6 +525,8 @@ fn unit_only() -> Vec<(&'static str, &'static str)> {
         lint_menus::UNIT_ONLY,
         lint_text::UNIT_ONLY,
         lint_size::UNIT_ONLY,
+        lint_cost::UNIT_ONLY,
+        lint_travel::UNIT_ONLY,
     ]
     .into_iter()
     .flatten()
@@ -509,6 +534,11 @@ fn unit_only() -> Vec<(&'static str, &'static str)> {
     .collect()
 }
 
+/// Every case, through [`assert_case`]: exactly its `(code, pointer)` pairs, with one exception. The cost
+/// verdict `HUD-E1401` is set aside unless the case is `lint_cost`'s own, because the ceilings are the
+/// television's exact maxima and any edit of the classic or the reference that adds a pixel to their heaviest
+/// state is over one (eleven cases do, incidentally); listing it in each of their `also` would tie eleven
+/// cases about other rules to the ceiling numbers, so every re-measure would churn them.
 #[test]
 fn every_invalid_case_yields_exactly_its_findings() {
     for case in invalid_cases() {
@@ -544,17 +574,17 @@ fn case_for(code: &str) -> &'static InvalidCase {
     invalid_cases().into_iter().find(|c| c.code == code).unwrap_or_else(|| panic!("no invalid case for {code}"))
 }
 
-/// Every one of the fourteen codes the lint registers has an invalid case of its own (a case whose `code`
+/// Every one of the sixteen codes the lint registers has an invalid case of its own (a case whose `code`
 /// it is: being only in another case's `also` list proves the code fires, not that its own fault is
 /// pinned), or is in a check module's `UNIT_ONLY` with the reason no parseable package reaches it.
 #[test]
 fn every_new_code_has_an_invalid_case() {
-    // the fourteen are the whole of the lint families: a code registered in one of them without a case is
+    // the sixteen are the whole of the lint families: a code registered in one of them without a case is
     // caught here, whatever LINT_CODES says
     let registered: BTreeSet<&str> = codes::ALL
         .iter()
         .map(|c| c.id)
-        .filter(|id| ["HUD-E06", "HUD-W06", "HUD-E10", "HUD-E11", "HUD-E12", "HUD-E13"].iter().any(|p| id.starts_with(p)))
+        .filter(|id| ["HUD-E06", "HUD-W06", "HUD-E10", "HUD-E11", "HUD-E12", "HUD-E13", "HUD-E14", "HUD-E15"].iter().any(|p| id.starts_with(p)))
         .collect();
     assert_eq!(registered, LINT_CODES.iter().copied().collect::<BTreeSet<_>>(), "the lint's code families");
 
@@ -579,7 +609,7 @@ fn every_new_code_has_an_invalid_case() {
 fn every_lint_finding_says_what_is_wrong_what_to_change_and_where() {
     for case in invalid_cases() {
         let text = apply(case.base, case.edits);
-        let found = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &LintOptions { text_skew: case.skew });
+        let found = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &LintOptions { text_skew: case.skew, ..LintOptions::default() });
         let ours: Vec<&Finding> = found.iter().filter(|f| LINT_CODES.contains(&f.code)).collect();
         assert!(!ours.is_empty(), "case `{}`: no lint finding", case.name);
         for f in ours {
@@ -591,7 +621,8 @@ fn every_lint_finding_says_what_is_wrong_what_to_change_and_where() {
                 assert_eq!(f.ctx, Context::default(), "{at}");
             } else {
                 assert!(f.ctx.state.is_some() && f.ctx.slot.is_some(), "{at}: the state and slot it was found in");
-                assert!(!f.ctx.rects.is_empty() || f.ctx.text.is_some(), "{at}: the rects or the text it concerns");
+                // a cost is a fact about a whole state: no rect, no text
+                assert!(f.code == "HUD-E1401" || !f.ctx.rects.is_empty() || f.ctx.text.is_some(), "{at}: the rects or the text it concerns");
             }
         }
     }
@@ -613,7 +644,7 @@ fn expected_of(case: &InvalidCase) -> BTreeSet<(String, String)> {
 fn findings_are_sorted_by_pointer_and_deterministic() {
     for case in invalid_cases() {
         let text = apply(case.base, case.edits);
-        let opts = LintOptions { text_skew: case.skew };
+        let opts = LintOptions { text_skew: case.skew, ..LintOptions::default() };
         let first = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &opts);
         let again = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &opts);
         assert!(!first.is_empty(), "case `{}`", case.name);
@@ -626,12 +657,52 @@ fn findings_are_sorted_by_pointer_and_deterministic() {
     }
 }
 
+/// **Splitting the lint into a fit pass and a price pass changed no byte of what it says.** The pipeline as it
+/// was (`lint::single_pipeline`, kept for this under `cfg(test)`) and the two passes joined, with one measure
+/// for both, are the same findings and the same cost lines: for the shipped fixtures in all eleven languages,
+/// for a package that does not parse, for no language at all, and for every invalid case.
+#[test]
+fn the_two_passes_say_what_the_one_pipeline_said() {
+    use super::lint::{lint_fit, lint_price, lint_report, single_pipeline, Linted};
+    let same = |what: &str, text: &str, langs: &[LintLang], opts: &LintOptions| {
+        let one = single_pipeline(text, &ShippedMeasure, langs, opts);
+        let two = lint_report(text, &ShippedMeasure, langs, opts);
+        assert_eq!(two.findings, one.findings, "{what}: the findings");
+        assert_eq!(two.costs, one.costs, "{what}: the cost lines");
+        // the passes alone are the halves: the fit pass has the pipeline's findings but the cost verdict, the
+        // price pass has the verdict and the lines
+        let (fit, price) = (lint_fit(text, &ShippedMeasure, langs, opts), lint_price(text, &ShippedMeasure, langs));
+        let cost = |f: &Finding| f.code == codes::E1401.id;
+        assert_eq!(fit, one.findings.iter().filter(|f| !cost(f)).cloned().collect::<Vec<_>>(), "{what}: the fit pass");
+        assert_eq!(price.findings, one.findings.iter().filter(|f| cost(f)).cloned().collect::<Vec<_>>(), "{what}: the price pass");
+        assert_eq!(price.costs, one.costs, "{what}: the price pass's lines");
+        assert_eq!(Linted::join(fit, price).findings, one.findings, "{what}: joined");
+    };
+    let all = LintLang::shipped();
+    for (name, text) in [
+        ("classic", BUILTIN_CLASSIC),
+        ("reference", REFERENCE),
+        ("minimal", MINIMAL),
+        ("hero-center", HERO),
+        ("tabs", TABS),
+        ("palette", PALETTE),
+        ("a package that does not parse", "{"),
+    ] {
+        same(name, text, &all, &LintOptions::default());
+        same(&format!("{name}, no language"), text, &[], &LintOptions::default());
+    }
+    let some: Vec<LintLang> = ["en", "be", "nl"].iter().map(|t| LintLang::for_tag(t).expect("shipped")).collect();
+    for case in invalid_cases() {
+        same(case.name, &apply(case.base, case.edits), &some, &LintOptions { text_skew: case.skew, ..LintOptions::default() });
+    }
+}
+
 #[test]
 fn a_report_with_findings_at_several_pointers_reads_in_document_order() {
     // lint_menus' wide-row case: findings from four checks at five pointers across the title column, the
     // control row and Up Next
     let case = case_for("HUD-E1302");
-    let found = lint_with(&apply(case.base, case.edits), &ShippedMeasure, &LintLang::shipped(), &LintOptions::default());
+    let found = without_cost(lint_with(&apply(case.base, case.edits), &ShippedMeasure, &LintLang::shipped(), &LintOptions::default()));
     let mut pointers: Vec<&str> = found.iter().map(|f| f.pointer.as_str()).collect();
     pointers.dedup();
     assert_eq!(pointers, EXPECTED_POINTERS, "{}", describe("wide-row", &found));
@@ -651,7 +722,7 @@ const EXPECTED_POINTERS: [&str; 5] = [
 /// The `(code, pointer)` pairs `edits` yield on `base`, linted in `langs` with `skew`.
 fn lint_set(base: Base, edits: &[(&str, &str)], langs: &[&str], skew: f32) -> BTreeSet<(String, String)> {
     let langs: Vec<LintLang> = langs.iter().map(|t| LintLang::for_tag(t).expect("a shipped tag")).collect();
-    lint_with(&apply(base, edits), &ShippedMeasure, &langs, &LintOptions { text_skew: skew })
+    without_cost(lint_with(&apply(base, edits), &ShippedMeasure, &langs, &LintOptions { text_skew: skew, ..LintOptions::default() }))
         .iter()
         .map(|f| (f.code.to_owned(), f.pointer.clone()))
         .collect()
@@ -723,7 +794,7 @@ const CLASSIC_ROW: &str = "/layout/block/0/cells/1/segment/items";
 fn every_kind_of_reach_error_is_linted_on_to_stage_three_in_every_language() {
     // Continuing past the reach and validate findings is only sound while `compile` and the six checks are
     // total over a package that parsed (`pr5c-handoff.md`). This runs one package for each rule of `check`
-    // (R1, R3, R4, I3, I9) through all of stage 3 in the ten languages: a panic in the compile or in a check
+    // (R1, R3, R4, I3, I9) through all of stage 3 in the eleven languages: a panic in the compile or in a check
     // fails it, the way an index into a part the broken package lacks would. Each must still report its own
     // reach code at its pointer.
     let more_absent = format!(",\n          {CLASSIC_MORE}");
@@ -848,7 +919,7 @@ const EXPECTED_JSON: &str = r##"{
 #[test]
 fn collapsed_language_context() {
     // A fault that does not depend on the language (a disc's size) is one finding without a language when
-    // the ten languages are linted together ...
+    // the eleven languages are linted together ...
     let all = small_disc(&LintLang::shipped().iter().map(|l| l.tag).collect::<Vec<_>>());
     assert_eq!(all.len(), 1, "{}", describe("small-disc", &all));
     assert_eq!(all[0].ctx.lang, None, "identical in every language: reported once, for all of them");

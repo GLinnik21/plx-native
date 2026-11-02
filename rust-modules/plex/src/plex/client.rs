@@ -905,6 +905,15 @@ impl QueryBuilder {
         self.parts.push(format!("{k}={v}"));
         self
     }
+    /// A term whose KEY carries the filter operator: `rating>>` with `9.49` is `rating>>=9.49` on the
+    /// wire (PMS reads the operator out of the key, `docs/pms-api.md` "Count probes at band edges").
+    /// `.str` encodes only the value, so a key with an operator in it would go out raw; here BOTH
+    /// are encoded (`rating%3E%3E=9.49`). A plain key such as `type` or `genre` comes out unchanged,
+    /// so this is also the spelling of a listing's own filter terms.
+    pub(super) fn range(mut self, field_op: &str, v: &str) -> Self {
+        self.parts.push(format!("{}={}", urlenc_str(field_op), urlenc_str(v)));
+        self
+    }
     pub(super) fn opt_int(self, k: &str, v: i64) -> Self {
         if v != 0 {
             self.int(k, v)

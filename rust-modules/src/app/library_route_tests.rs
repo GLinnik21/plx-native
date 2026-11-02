@@ -126,6 +126,28 @@ fn matches_words(want: &str, got: &str) -> bool {
     want.strip_suffix('*').map_or(want == got, |prefix| got.starts_with(prefix))
 }
 
+/// **A press is graded after the store workers it started have returned.** The rig's server is a
+/// closed port whose fetch fails at once, but on a real `page` worker: the Collections page reads
+/// Failed (focus on its Retry) only once that worker is back and a frame has applied its landing,
+/// and a fixed frame count races the worker's wall-clock (graded too early under load, the page
+/// was still Loading with focus on nothing). A worker made slow on purpose stands for a loaded
+/// machine: `settle` must not return, nor count a frame, before it has finished.
+#[test]
+fn settle_waits_for_the_store_workers_a_press_started() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let mut w = World::new("settle-joins-store-workers");
+    let returned = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&returned);
+    assert!(plx_base::task::spawn_small("page", move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        flag.store(true, Ordering::SeqCst);
+    }));
+    assert!(!returned.load(Ordering::SeqCst), "premise: the slow fetch is still out");
+    w.settle(1);
+    assert!(returned.load(Ordering::SeqCst), "settle counted its frames while a store worker was still out");
+}
+
 /// Every row in a fresh world; every deviation of every row is reported together.
 fn run(rows: Vec<Row>) {
     let mut fails = Vec::new();
@@ -307,7 +329,7 @@ fn many_libraries(w: &mut World) {
     {
         let mut browse = w.bridge.stores.browse.borrow_mut();
         for k in 0..9 {
-            browse.append_section_for_test(k % 2, 10 + k as i64, &format!("Extra library number {k}"), SecKind::Movie);
+            browse.append_section_for_test(k % 2, 10 + k as i64, &format!("Extra library number {k} of the household"), SecKind::Movie);
         }
     }
     w.bridge.refresh_browse_directory();
@@ -452,7 +474,8 @@ fn the_sort_filter_pill_is_painted_after_the_panel_in_the_dispatchers_own_draw()
     });
     let words: Vec<&str> = words.iter().map(|(s, _)| s.as_str()).collect();
     let at = |word: &str| words.iter().position(|w| *w == word);
-    let pills: Vec<usize> = (0..words.len()).filter(|i| words[*i] == "Sort & Filter").collect();
+    // The control draws its criterion and never its name ("Sort & Filter"): the pill's run is "Title".
+    let pills: Vec<usize> = (0..words.len()).filter(|i| words[*i] == "Title").collect();
     let (panel_first, panel_last) = (at("SORT").expect("the panel drew its Sort section"), at("Genre").expect("…and its last Filter row"));
     assert_eq!(pills.len(), 1, "the pill is drawn once, by the lift (the page pass left it out): {words:?}");
     assert!(pills[0] > panel_last && panel_first < panel_last,

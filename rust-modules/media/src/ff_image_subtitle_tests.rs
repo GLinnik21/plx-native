@@ -219,6 +219,7 @@ fn terminated_ass_header_and_packets_render_through_http_side_reader() {
                 offset_ns: 0,
                 ordinal: 0,
                 kbps: 0,
+                clock_only: false,
             };
             let anchor = Anchor::of(0, &[0]);
             let mut delta = Some(0);

@@ -1,12 +1,19 @@
 //! **PageHeader** — the one row of plain-text controls a library page wears under the top bar:
 //! the library names on the left (with a "+N" for the ones that do not fit) or a breadcrumb
 //! ("Films › Collections"), and the page's own controls on the right ("Collections · 12",
-//! "Recommended", "Sort & Filter · Title ▾"). The Library, its Collections and Recommended pages
-//! and the Watchlist all wear THIS row: one layout, one draw, one focus group ([`HeaderFocus`]).
+//! "Recommended", "≡ Date added ⌄"; the Library's own cluster is the board's: "Collections
+//! · 24 ›  Recommended ›  |  ≡ Date added ⌄", places with a chevron ([`HeaderItem::place`]), a
+//! [`HeaderItem::divider`] and a sort control ([`HeaderItem::sort_control`]) that is a leading
+//! [`HeaderItem::glyph`], its criterion alone ([`HeaderItem::value_only`]: the name "Sort & Filter"
+//! is carried, never drawn) and a quiet down chevron ([`HeaderItem::fold_quiet`]); the criterion has
+//! NO slot, so the control ends at [`TEXT_X1`] and the places slide as its width changes). The
+//! Library, its Collections and Recommended pages and the Watchlist all wear THIS row and the same
+//! sort control: one layout, one draw, one focus group ([`HeaderFocus`]); every new item field
+//! defaults to the look the other pages have.
 //!
 //! Geometry (spec): the text edges are x 96 and x 1771; a selected plate overhangs the text by
 //! [`OVERHANG`] (20), so the container is left 76, right 129, and a focus pill stands a constant
-//! [`PILL_FOCUS_OUTSET`] (2) past its plate, whatever its label (never a scale of the label's width). The row is
+//! [`PILL_FOCUS_OUTSET`](super::widgets::PILL_FOCUS_OUTSET) (2) past its plate, whatever its label (never a scale of the label's width). The row is
 //! [`HEIGHT`] (56) tall at [`TOP`] (148). The right cluster's BUDGET is sized ONCE from its widest
 //! case (`widest`), so the room the left group may use never changes when a value changes; the
 //! items inside the cluster are placed by what they DRAW, one [`GAP`] apart (the filter
@@ -41,15 +48,16 @@ use super::breadcrumb::{self, Crumb};
 use super::hstack::{Align, Flow, HStack, Item};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
-use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip, PILL_FOCUS_OUTSET};
+use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip};
 use super::xfade::Xfade;
-use super::{icons::{self, Icon}, theme, Painter, Rect};
+use super::{icons::{self, Icon}, theme, Painter, Rect, Spring};
 
 /// Left text edge of the first library name.
 pub const TEXT_X0: f32 = 96.0;
 /// Right text edge of the last right-cluster item.
 pub const TEXT_X1: f32 = 1771.0;
-/// How far a plate stands out past its text on each side (a focus pill: that and [`PILL_FOCUS_OUTSET`]).
+/// How far a plate stands out past its text on each side (a focus pill: that and
+/// [`PILL_FOCUS_OUTSET`](super::widgets::PILL_FOCUS_OUTSET)).
 pub const OVERHANG: f32 = 20.0;
 /// Top of the header row, and its height.
 pub const TOP: f32 = 148.0;
@@ -62,14 +70,16 @@ pub const BLOCK_H: f32 = 96.0;
 /// well clear of the scroll capsule (`scroll_capsule::Y + H`, 118).
 pub const GRID_TOP: f32 = TOP + BLOCK_H;
 /// **The text-edge gap between two adjacent items**, whatever their names: the first one's plate
-/// overhang, the focused pill's [`PILL_FOCUS_OUTSET`] past that plate, [`theme::space::SM`] of air,
-/// then the next item's plate and its overhang. The air is measured from the FOCUSED pill's extent
-/// ([`focus_pill`](super::widgets::focus_pill)) because that is the edge the eye reads against the neighbour (design review S9: the
-/// old `XS` of air was spent before the pill grew, and a 1.07 scale grew by more the wider the name
-/// was, so "Classics" read ~10 px from the "Movies" plate). The outset is a constant (S4), so the gap
-/// is one number, and every placement and every packing uses it. The breadcrumb's chevron takes the
-/// same air on each side ([`breadcrumb::AIR`]).
-pub const GAP: f32 = 2.0 * OVERHANG + PILL_FOCUS_OUTSET + theme::space::SM;
+/// overhang, [`theme::space::XS`] between the two plates, then the next item's plate and its
+/// overhang, 48 px text to text. The Design System's `PageHeader` is the same sum (`.row{gap:8px}`
+/// over items padded 20 px each side), and the owner-approved boards stand at it (the Library's
+/// names 30 px past the plate, its places 52 px ink to ink). The focused pill stands
+/// [`PILL_FOCUS_OUTSET`](super::widgets::PILL_FOCUS_OUTSET) (2) past its plate, so it still leaves `XS - 2` = 6 px before the
+/// neighbour's plate (a pill and a neighbour never touch, for any widths: the S9 review's air was
+/// measured from the FOCUSED pill's extent, [`focus_pill`](super::widgets::focus_pill), and a test
+/// holds that edge). The outset is a constant (S4), so the gap is one number, and every placement
+/// and every packing uses it.
+pub const GAP: f32 = 2.0 * OVERHANG + theme::space::XS;
 /// Clear space kept between the left group and the right cluster.
 pub const CLUSTER_GAP: f32 = 64.0;
 
@@ -107,6 +117,44 @@ pub struct HeaderItem {
     /// x (a count of another digit count) leaves at the old x and arrives at the new, instead of
     /// being cut (a row for ANOTHER library shows only the controls that library has).
     pub value_slot: Option<String>,
+    /// A mark that leads the text ([`GLYPH_SIZE`] px, [`GLYPH_GAP`] before the text), inked as the
+    /// value is: the sort control's three bars.
+    pub glyph: Option<Icon>,
+    /// A PLACE (the control opens a page): a chevron trails the text, [`PLACE_SIZE`] px at
+    /// [`theme::HEADER_PLACE_INK`], [`PLACE_GAP`] after it. "Collections · 24 ›", "Recommended ›".
+    pub place: bool,
+    /// `label` is the control's NAME, its identity in the row (what the row's [`HeaderSwap`] and the
+    /// tests know it by), and is NOT drawn, neither on the control nor as the menu's heading: the
+    /// control reads as its `value` alone. The sort control, whose visible text is the chosen
+    /// criterion and never "Sort & Filter".
+    pub value_only: bool,
+    /// With `fold_glyph`: the board's quiet down chevron ([`QUIET_FOLD_SIZE`] px at 65%, [`QUIET_FOLD_GAP`]
+    /// after the text) in place of the menu fold ([`FOLD_SIZE`] px at full ink, [`FOLD_GAP`]).
+    pub fold_quiet: bool,
+    /// A hairline between two controls ([`DIVIDER_W`] x [`DIVIDER_H`], [`theme::HEADER_DIVIDER_INK`]):
+    /// no stop, no label. It stands in the gap before the next item, [`DIVIDER_MARGIN`] clear of that
+    /// item's plate and [`OVERHANG`] clear of the plate before it ([`DIVIDER_TRAIL`] from that
+    /// item's text); the row keeps its one [`GAP`] between the divider's two neighbours and the
+    /// divider adds its own width and two [`DIVIDER_MARGIN`]s to it.
+    pub divider: bool,
+}
+
+impl HeaderItem {
+    /// **The sort control** (the board's "= Date added v"): the sort icon ([`Icon::Sort`]), the chosen
+    /// criterion and a quiet down chevron, and nothing else. `name` is the control's identity in the
+    /// row ("Sort & Filter"), which the row's [`HeaderSwap`] and the tests know it by; it is carried
+    /// by the item and not drawn (neither on the control nor as the menu's heading, [`Self::value_only`]);
+    /// `value` is the criterion, the only text it shows (a narrowing filter is the page's read-out,
+    /// not part of it). It is a stop and has no slot: it ends at [`TEXT_X1`] and its neighbours
+    /// slide as the criterion's width changes. The ONE declaration of it: the Library's row, the
+    /// Collections page's Sort and the Watchlist's wear it, so one page's sort button cannot drift
+    /// from another's.
+    pub fn sort_control(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: name.into(), value: Some(value.into()), glyph: Some(Icon::Sort), value_only: true,
+            fold_glyph: true, fold_quiet: true, focusable: true, ..Default::default()
+        }
+    }
 }
 
 /// What the header is built from.
@@ -179,37 +227,83 @@ fn text_w(s: &str, measure: &dyn Measure) -> f32 {
     CString::new(s).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
 }
 
+/// The separator between a label and its value ("Collections · 24").
+const SEP: &str = " \u{b7} ";
+
+/// What an item is made of, left to right, as stack items with the gap each part wears before it:
+/// the leading mark, the label (not drawn when the control is [`HeaderItem::value_only`]), the
+/// separator and the value, the place chevron, the fold glyph. `budgeted`: a [`HeaderItem::value_slot`]
+/// sizes the value at its slot (the room the item is BUDGETED, [`run_w`]); otherwise at what it
+/// draws ([`ink_w`]). The one place an item's width is made, so [`run_w`], [`ink_w`] and the paint
+/// ([`PageHeader::draw_face_at`], which walks the same parts in the same order) cannot disagree.
+fn parts(item: &HeaderItem, measure: &dyn Measure, budgeted: bool) -> Vec<Item> {
+    if item.divider { return vec![Item::new(DIVIDER_W)]; }
+    let w = |s: &str| text_w(s, measure);
+    let mut parts = Vec::with_capacity(6);
+    let mut lead = 0.0;
+    if item.glyph.is_some() {
+        parts.push(Item::new(GLYPH_SIZE));
+        lead = GLYPH_GAP;
+    }
+    let mut text = |parts: &mut Vec<Item>, width: f32| parts.push(Item::new(width).before(std::mem::take(&mut lead)));
+    if !item.value_only { text(&mut parts, w(&item.label)); }
+    let value = match (&item.value_slot, &item.value) {
+        (Some(slot), value) if budgeted => Some(w(slot).max(value.as_deref().map_or(0.0, w))),
+        (_, Some(value)) => Some(w(value)),
+        _ => None,
+    };
+    if let Some(value) = value {
+        if !item.value_only { text(&mut parts, w(SEP)); }
+        text(&mut parts, value);
+    }
+    if item.place { parts.push(Item::new(PLACE_SIZE).before(PLACE_GAP)); }
+    if item.fold_glyph { parts.push(fold_item(item.fold_quiet)); }
+    parts
+}
+
 /// The room an item is BUDGETED in the row: its drawn run, or for a control with a
 /// [`HeaderItem::value_slot`] the label and the separator and the slot (the count it holds may be
 /// wider than the slot, never narrower, so the budget never changes while the count is a few
 /// digits). It sizes `cluster_w` and `left_budget`; the items are placed by [`ink_w`].
 fn run_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
-    let w = |s: &str| text_w(s, measure);
-    let (sep, value) = match (&item.value_slot, &item.value) {
-        (Some(slot), value) => (Item::new(w(" \u{b7} ")), Item::new(w(slot).max(value.as_deref().map_or(0.0, w)))),
-        (None, Some(value)) => (Item::new(w(" \u{b7} ")), Item::new(w(value))),
-        (None, None) => (Item::absent(), Item::absent()),
-    };
-    let fold = if item.fold_glyph { fold_item() } else { Item::absent() };
-    HStack::new(&[Item::new(w(&item.label)), sep, value, fold], 0.0, Align::Leading(0.0)).width()
+    HStack::new(&parts(item, measure, true), 0.0, Align::Leading(0.0)).width()
 }
 
-/// The fold glyph as a run item: [`FOLD_SIZE`] wide, [`FOLD_GAP`] after whatever precedes it. `run_w`
-/// sizes the item with it and `draw_face_at` places the glyph from it, so the two cannot disagree.
-fn fold_item() -> Item {
-    Item::new(FOLD_SIZE).before(FOLD_GAP)
+/// The fold glyph as a run item: the menu fold ([`FOLD_SIZE`] wide, [`FOLD_GAP`] after whatever
+/// precedes it) or the board's quiet one. `parts` sizes the item with it and `draw_face_at` places
+/// the glyph from it, so the two cannot disagree.
+fn fold_item(quiet: bool) -> Item {
+    if quiet { Item::new(QUIET_FOLD_SIZE).before(QUIET_FOLD_GAP) } else { Item::new(FOLD_SIZE).before(FOLD_GAP) }
 }
 
 /// The width of what an item DRAWS: [`run_w`], less the unused part of a slot. The item's text box
 /// and its plate are this wide, and the next item stands one gap past it.
 fn ink_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
-    if item.value_slot.is_none() { return run_w(item, measure); }
-    let w = |s: &str| text_w(s, measure);
-    w(&item.label) + item.value.as_deref().map_or(0.0, |value| w(" \u{b7} ") + w(value))
+    HStack::new(&parts(item, measure, false), 0.0, Align::Leading(0.0)).width()
 }
 
 const FOLD_GAP: f32 = 10.0;
 const FOLD_SIZE: f32 = 22.0;
+/// The board's down chevron on the sort control: 20 px, 12 after the criterion, at 65%.
+pub const QUIET_FOLD_SIZE: f32 = 20.0;
+pub const QUIET_FOLD_GAP: f32 = 12.0;
+/// The mark that leads a control's text, and its air before the text (the sort icon).
+pub const GLYPH_SIZE: f32 = 26.0;
+pub const GLYPH_GAP: f32 = 12.0;
+/// A place's chevron, and its air after the text.
+pub const PLACE_SIZE: f32 = 20.0;
+pub const PLACE_GAP: f32 = 8.0;
+/// The divider between the places and the sort control: 2 x 32, standing [`DIVIDER_MARGIN`] (12)
+/// clear of the sort control's plate AFTER it and [`OVERHANG`] (20) clear of Recommended's plate
+/// BEFORE it (the board's 40 px from Recommended's text, [`DIVIDER_TRAIL`], and 32 px to the sort
+/// control's text, [`DIVIDER_LEAD`]: the plate's overhang plus the margin). The row's one [`GAP`]
+/// plus the divider's width and two margins is what separates the divider's two neighbours' text,
+/// 74 px; the part of it before the divider is [`DIVIDER_TRAIL`], the part after it [`DIVIDER_LEAD`].
+pub const DIVIDER_W: f32 = 2.0;
+pub const DIVIDER_H: f32 = 32.0;
+pub const DIVIDER_MARGIN: f32 = 12.0;
+pub const DIVIDER_LEAD: f32 = OVERHANG + DIVIDER_MARGIN;
+pub const DIVIDER_TRAIL: f32 = GAP + 2.0 * DIVIDER_MARGIN - DIVIDER_LEAD;
 
 /// One right-cluster item as the stack sees it: it DRAWS [`ink_w`], a [`HeaderItem::value_slot`] is
 /// its [`Item::slot`] (budget [`run_w`], never air). The one place a right-cluster item becomes a stack item, so
@@ -219,9 +313,16 @@ fn stack_item(item: &HeaderItem, measure: &dyn Measure) -> Item {
     if item.value_slot.is_some() { drawn.slot(run_w(item, measure)) } else { drawn }
 }
 
-/// The right cluster as stack items, in order.
+/// The right cluster as stack items, in order. A divider takes the gap [`DIVIDER_TRAIL`] before it
+/// and the item after it [`DIVIDER_LEAD`], so the row's one gap and the divider's margins are one
+/// rule here and the cluster's budget and its placement cannot disagree.
 fn cluster_items(items: &[HeaderItem], measure: &dyn Measure) -> Vec<Item> {
-    items.iter().map(|item| stack_item(item, measure)).collect()
+    items.iter().enumerate().map(|(i, item)| {
+        let stand = stack_item(item, measure);
+        if item.divider { stand.before(DIVIDER_TRAIL) }
+        else if i > 0 && items[i - 1].divider { stand.before(DIVIDER_LEAD) }
+        else { stand }
+    }).collect()
 }
 
 /// Width of a cluster of items laid out with [`GAP`] between them, each item as wide as it is BUDGETED ([`run_w`]: a slot's full width): the stack's
@@ -297,7 +398,7 @@ impl PageHeader {
     fn face(&self, slot: Slot) -> Face<'_> {
         let of = Self::face_of;
         fn plain<'a>(label: String, selected: bool) -> Face<'a> {
-            Face { label, value: None, selected, title: false, fold: false, dimmed: false, readout: false, fade: None }
+            Face { label, value: None, selected, title: false, fold: false, dimmed: false, readout: false, look: Look::default(), fade: None }
         }
         match slot {
             Slot::Left(i) => self.spec.left.get(i).map_or_else(|| plain(String::new(), false), of),
@@ -312,7 +413,7 @@ impl PageHeader {
     fn face_of(item: &HeaderItem) -> Face<'_> {
         Face {
             label: item.label.clone(), value: item.value.as_deref(), selected: item.selected_plate, title: item.title,
-            fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout, fade: None,
+            fold: item.fold_glyph, dimmed: item.dimmed, readout: item.readout, look: Look::of(item), fade: None,
         }
     }
 
@@ -371,8 +472,7 @@ impl PageHeader {
         }
         for (index, r) in layout.items.iter().enumerate() {
             if lifted == Some(index) { continue; }
-            let mut face = self.face(r.slot);
-            if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i, r.text.x); }
+            let face = self.face_in(r, swap);
             // Inked by what is under each pixel: a label a capsule's arc is crossing wears the
             // capsule's ink on its side of the arc and the resting one on the other.
             paint_inked(p, &self.ink(capsules, r, &face, ground), |focus, selected| {
@@ -380,7 +480,7 @@ impl PageHeader {
             });
         }
         for (item, text_x, text_w, opacity) in swap.leaving(&self.spec.right, layout) {
-            let face = Face { fade: Some(FaceFade { face: opacity, from_value: None, value_in: 1.0 }), ..Self::face_of(item) };
+            let face = Face { fade: Some(FaceFade::fade(opacity, None, 1.0)), ..Self::face_of(item) };
             self.draw_face_at(p, Rect::new(text_x, layout.top(), text_w, HEIGHT), &face, (0.0, 0.0), (0.0, 0.0));
         }
     }
@@ -390,19 +490,34 @@ impl PageHeader {
     /// focused control wears it. What [`Self::draw`] shows for a focused item, without the row
     /// around it, so a menu can keep it lit above its scrim.
     pub fn draw_opener(&self, p: Painter, layout: &HeaderLayout, index: usize, pop: f32) {
-        let Some(r) = layout.items.get(index) else { return };
-        let pill = focus_pill_popped(r.plate, pop);
-        p.rrect(pill, pill.h * 0.5, pill.h * 0.5, crate::ACCENT);
-        self.draw_face(p, layout, index, r.plate, true);
+        self.draw_opener_with(p, layout, index, pop, &HeaderSwap::new());
     }
 
-    /// Draw item `layout.items[index]`'s face (label, value, fold glyph) with its plate at `to`,
-    /// and no plate of its own (`focused`: the accent ink the focused control wears). The same
-    /// paint as [`Self::draw`]'s, so the opener's face ([`Self::draw_opener`] is its caller) cannot
-    /// drift from the row's.
-    pub fn draw_face(&self, p: Painter, layout: &HeaderLayout, index: usize, to: Rect, focused: bool) {
+    /// [`Self::draw_opener`] on a row that is changing under the reader. **A sort picked from the
+    /// menu is seen through the lift**: the menu pushes its edit and dismisses itself on one frame,
+    /// so the control that opened it is drawn by the lift (the page's pass leaves it out) for the
+    /// whole of the swap, and the lift must paint it as the page's pass would
+    /// ([`Self::face_in`], the one place a face meets its swap): the criterion it replaces falling
+    /// as the new one rises, the mark travelling and the right edge fixed. The pill rides the
+    /// face: the lift has no focus capsule to chase the new plate, so its left edge travels with
+    /// the mark (`fade.lead`) and its right edge stays, and it wears the face's opacity.
+    pub fn draw_opener_with(&self, p: Painter, layout: &HeaderLayout, index: usize, pop: f32, swap: &HeaderSwap) {
         let Some(r) = layout.items.get(index) else { return };
-        self.draw_face_at(p, r.text, &self.face(r.slot), (to.x - r.plate.x, to.y - r.plate.y), (f32::from(focused), 0.0));
+        let face = self.face_in(r, swap);
+        let lead = face.fade.map_or(0.0, |fade| fade.lead);
+        let pill = focus_pill_popped(Rect::new(r.plate.x + lead, r.plate.y, r.plate.w - lead, r.plate.h), pop);
+        face.fade.map_or(p, |fade| p.alpha(fade.face)).rrect(pill, pill.h * 0.5, pill.h * 0.5, crate::ACCENT);
+        self.draw_face_at(p, r.text, &face, (0.0, 0.0), (1.0, 0.0));
+    }
+
+    /// What `r` says about itself on a row `swap` is changing: its face, and for a right-cluster
+    /// control the swap's say about how it is painted now. The page's pass ([`Self::draw_with`])
+    /// and the opener lift ([`Self::draw_opener_with`]) both read a face here, so the two cannot
+    /// disagree about a frame of the swap.
+    fn face_in<'a>(&'a self, r: &ItemRect, swap: &'a HeaderSwap) -> Face<'a> {
+        let mut face = self.face(r.slot);
+        if let Slot::Right(i) = r.slot { face.fade = swap.fade_of(&self.spec.right, i, r.text.x); }
+        face
     }
 
     /// One item's label, value segment and fold glyph at the text box `text`, shifted by `(dx, dy)`,
@@ -429,13 +544,31 @@ impl PageHeader {
         let to_accent = |ink: [f32; 4]| theme::cross(ink, super::ACCENT_INK, focus.clamp(0.0, 1.0));
         let fade = face.fade;
         let p = fade.map_or(p, |fade| p.alpha(fade.face));
+        let look = face.look;
+        if look.divider {
+            // A hairline, vertically centred on the row; it has no text, no plate and no stop.
+            let line = Rect::new(text.x + dx + fade.map_or(0.0, |fade| fade.lead), text.y + dy + (text.h - DIVIDER_H) * 0.5, DIVIDER_W, DIVIDER_H);
+            p.rrect(line, 0.0, 0.0, theme::HEADER_DIVIDER_INK);
+            return;
+        }
         let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 1, text.y + dy + text.h * 0.5);
-        let mut x = text.x + dx;
+        // A slide in flight shifts what comes before the value by `lead`; the value and what trails
+        // it stand `value_slide` from rest (below, where the value begins).
+        let (lead, value_slide, from_dx) = fade.map_or((0.0, 0.0, 0.0), |fade| (fade.lead, fade.value_slide, fade.from_dx));
+        let mut x = text.x + dx + lead;
+        let centred = |x: f32, size: f32| Rect::new(x, text.y + dy + (text.h - size) * 0.5, size, size);
+        if let Some(glyph) = look.glyph {
+            icons::draw(p, glyph, centred(x, GLYPH_SIZE), to_accent(strong));
+            x += GLYPH_SIZE + GLYPH_GAP;
+        }
         // The label answers to both plates; what follows it (the separator, the value, the glyph)
         // only to the focus one: a value is full white whatever is selected.
         let label_ink = to_accent(theme::cross(rest, strong, selected.clamp(0.0, 1.0)));
-        if let Ok(c) = CString::new(face.label.as_str()) {
-            x += p.text(c.as_ptr(), x, y, theme::size::BODY, label_ink, 0, 0);
+        // (A value-only control's label is its name, not its look: nothing is drawn.)
+        if !look.value_only {
+            if let Ok(c) = CString::new(face.label.as_str()) {
+                x += p.text(c.as_ptr(), x, y, theme::size::BODY, label_ink, 0, 0);
+            }
         }
         // The separator stands for whichever value is there, so it fades only when the control
         // gains its first value or loses its last.
@@ -448,30 +581,42 @@ impl PageHeader {
             (false, None) => 0.0,
         };
         let mut value_end = x;
-        if sep_alpha > 0.0 {
-            if let Ok(sep) = CString::new(" \u{b7} ") {
+        if sep_alpha > 0.0 && !look.value_only {
+            if let Ok(sep) = CString::new(SEP) {
                 let advance = p.alpha(sep_alpha).text(sep.as_ptr(), x, y, theme::size::BODY, to_accent(rest), 0, 0);
                 x += advance;
                 value_end = x;
             }
         }
+        x += value_slide - lead;
         for (value, opacity) in leaving.into_iter().chain(face.value.map(|value| (value, arriving))) {
-            if opacity <= 0.0 { continue; }
+            let own = face.value == Some(value);
+            if opacity <= 0.0 && !own { continue; }
             if let Ok(v) = CString::new(value) {
-                let advance = p.alpha(opacity).text(v.as_ptr(), x, y, theme::size::BODY, to_accent(strong), 0, 0);
-                // The fold glyph follows the value the face wears, not the one leaving.
-                if face.value == Some(value) { value_end = x + advance; }
+                let at = if own { x } else { x + from_dx };
+                // The fold glyph follows the value the face wears, not the one leaving, and it stands
+                // where that value ENDS whether or not any of it is visible yet: a criterion that has
+                // not begun to arrive (frame zero of a slide) is not drawn, but still has its width.
+                let advance = if opacity > 0.0 {
+                    p.alpha(opacity).text(v.as_ptr(), at, y, theme::size::BODY, to_accent(strong), 0, 0)
+                } else {
+                    p.text_width_tracked(v.as_ptr(), theme::size::BODY, 0, 0.0)
+                };
+                if own { value_end = x + advance; }
             }
         }
         x = value_end;
+        // What trails the text stands where `parts` put it: each glyph its own gap after the run.
+        let mut run = Flow::new(x, 0.0);
+        run.push(Item::new(0.0));
+        if look.place {
+            let mark = run.push(Item::new(PLACE_SIZE).before(PLACE_GAP)).expect("present");
+            icons::draw(p, Icon::Chevron, centred(mark.box_x, PLACE_SIZE), to_accent(theme::HEADER_PLACE_INK));
+        }
         if face.fold {
-            // The run ends at `x` (a zero-width stand-in for the text before it): the glyph stands
-            // where `run_w` put it, `FOLD_GAP` on.
-            let mut run = Flow::new(x, 0.0);
-            run.push(Item::new(0.0));
-            let fold = run.push(fold_item()).expect("present");
-            icons::draw(p, Icon::ChevronDown,
-                Rect::new(fold.box_x, text.y + dy + (text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
+            let fold = run.push(fold_item(look.fold_quiet)).expect("present");
+            let (size, ink) = if look.fold_quiet { (QUIET_FOLD_SIZE, rest) } else { (FOLD_SIZE, strong) };
+            icons::draw(p, Icon::ChevronDown, centred(fold.box_x, size), to_accent(ink));
         }
     }
 }
@@ -486,8 +631,26 @@ struct Face<'a> {
     fold: bool,
     dimmed: bool,
     readout: bool,
+    look: Look,
     /// Set while the item rides a [`HeaderSwap`].
     fade: Option<FaceFade<'a>>,
+}
+
+/// What an item wears beyond its text ([`HeaderItem`]'s `glyph`, `place`, `value_only`, `fold_quiet`
+/// and `divider`): the paint's copy of them, which a row's own parts (a crumb, the "+N") never have.
+#[derive(Clone, Copy, Default)]
+struct Look {
+    glyph: Option<Icon>,
+    place: bool,
+    value_only: bool,
+    fold_quiet: bool,
+    divider: bool,
+}
+
+impl Look {
+    fn of(item: &HeaderItem) -> Self {
+        Self { glyph: item.glyph, place: item.place, value_only: item.value_only, fold_quiet: item.fold_quiet, divider: item.divider }
+    }
 }
 
 /// How a [`HeaderSwap`] has an item painted this frame.
@@ -499,6 +662,22 @@ struct FaceFade<'a> {
     /// The value this one replaces, and its opacity (falling); `value`'s own is `value_in`.
     from_value: Option<(&'a str, f32)>,
     value_in: f32,
+    /// A slide in flight, in px from where the face stands at rest: `lead` shifts what comes before
+    /// the value (the mark, the label), `value_slide` the value and what trails it. Both are the
+    /// same for a face whose width is unchanged (it slides whole); a control whose criterion changed
+    /// keeps its right edge, so its mark slides and its value does not.
+    lead: f32,
+    value_slide: f32,
+    /// Where the value this one replaces stood, relative to the value now (the old criterion
+    /// stood at its own x, ending at the same right edge).
+    from_dx: f32,
+}
+
+impl<'a> FaceFade<'a> {
+    /// A fade with no slide in it.
+    const fn fade(face: f32, from_value: Option<(&'a str, f32)>, value_in: f32) -> Self {
+        Self { face, from_value, value_in, lead: 0.0, value_slide: 0.0, from_dx: 0.0 }
+    }
 }
 
 /// **A built header row**: the widget, its geometry (document space: y is the row's own top before
@@ -564,13 +743,20 @@ impl HeaderRow {
     /// dim AND the menu's panel; `Z::OPENER`), so the panel never covers it. `pop` is the
     /// row's [`CtlPop`] factor, so the pill follows the press spring as the menu opens.
     pub fn draw_opener(&self, p: Painter, scroll: f32, pop: f32, elem: u32) {
+        self.draw_opener_with(p, scroll, pop, elem, &HeaderSwap::new());
+    }
+
+    /// [`Self::draw_opener`] while the screen's `swap` carries the row's controls from the row
+    /// before it ([`PageHeader::draw_opener_with`]): a sort picked from the menu changes the
+    /// control that opened it, which only the lift draws until the menu is gone.
+    pub fn draw_opener_with(&self, p: Painter, scroll: f32, pop: f32, elem: u32, swap: &HeaderSwap) {
         let Some((_, index)) = self.stops.iter().find(|(stop, _)| *stop == elem) else { return };
         let mut layout = self.layout.clone();
         for item in &mut layout.items {
             item.text.y -= scroll;
             item.plate.y -= scroll;
         }
-        self.page.draw_opener(p, &layout, *index, pop);
+        self.page.draw_opener_with(p, &layout, *index, pop, swap);
     }
 
     /// Paint the row `scroll` px up from its document position (it scrolls away with its page).
@@ -599,6 +785,9 @@ struct Carried {
     item: HeaderItem,
     x: f32,
     w: f32,
+    /// A read-out that rides the slide ([`HeaderSwap::glides_between`]): its move is the glide's, not
+    /// a difference to dissolve.
+    glides: bool,
 }
 
 impl Carried {
@@ -612,9 +801,11 @@ impl Carried {
     /// Does `item`, standing at `x`, read differently from this carried one? A slotted control by
     /// its value; a read-out by its text or by where it stands (it is unpinned, so it moves with
     /// the cluster: Collections arriving, a count's digit count, the Sort value), because it has
-    /// no value to cross-fade and a move is a dissolve at each x, not a cut.
+    /// no value to cross-fade and a move is a dissolve at each x, not a cut. **Unless the move is
+    /// the cluster's slide** (`glides`: the criterion changed and the read-out, whose text did not,
+    /// travels with its neighbours on the slide's spring): that is no difference to dissolve.
     fn differs(&self, item: &HeaderItem, x: f32) -> bool {
-        if self.item.readout { self.item.label != item.label || (self.x - x).abs() >= SAME_X } else { self.item.value != item.value }
+        if self.item.readout { self.item.label != item.label || (!self.glides && (self.x - x).abs() >= SAME_X) } else { self.item.value != item.value }
     }
 }
 
@@ -631,10 +822,24 @@ fn carried(item: &HeaderItem) -> bool { item.value_slot.is_some() || item.readou
 /// ([`Self::begin`]). The filter read-out rides the same swap: it is unpinned (one gap before the
 /// next item), so it stands at another x when Collections arrives or leaves, its count changes digit
 /// count or the Sort value changes, and it says another thing as the filter narrows; each is that
-/// leave-and-arrive, never a cut. A switch to another library's row ([`Self::begin_switch`]) shows only what the
+/// leave-and-arrive, never a cut, except that a Sort value change which moves a read-out whose text
+/// is the same moves it by what it moves Collections, and it GLIDES with them on the slide (below),
+/// not on a second clock beside it. A switch to another library's row ([`Self::begin_switch`]) shows only what the
 /// new library has: a control the old one had is not drawn on it, even fading. All on [`Xfade`], the one
 /// content-swap clock (`arrive`: the incoming ramp, [`Xfade::alpha`] smoothstepped), so no page keeps
-/// a timer of its own. Nothing glides: a label is never drawn between its two places.
+/// a timer of its own. A dissolving label is never drawn between its two places. **Items that a
+/// control's new width moves SLIDE** instead (the Library's sort criterion changing: Collections,
+/// Recommended and the divider stand where the row before had them and travel to the new row's
+/// places, the sort control's mark with them, on the swap's slide: the tab bar's own spring,
+/// critically damped, so with no overshoot; every drawn x is a function of its progress, so a landed
+/// or [`HeaderSwap::settle`]d spring is the new layout). The control itself keeps its right edge
+/// and its chevron: the criterion it replaces fades out at its own place and the new one fades in
+/// at its own, each ending at that edge ([`Criterion`]), on the same progress. A row built twice for
+/// one press (the queued sort, then the listing under it) carries that slide on, nothing jumping and
+/// nothing restarting: a rebuild that moves no target keeps the running spring as it is, and one that
+/// does (another criterion picked mid-slide) starts from where the pieces are drawn at the speed
+/// they have.
+/// A switch ([`HeaderSwap::begin_switch`]) slides nothing.
 ///
 /// **Held by the SCREEN beside the row's capsules**, for the same reason they are: the row is
 /// replaced whole on every rebuild, and the swap must outlive the row it began on. It is
@@ -650,6 +855,57 @@ pub struct HeaderSwap {
     running: bool,
     /// What the swap does with a control only one of the two rows has.
     edge: Edge,
+    /// **The slide**: the progress, 0 (every item where the row before had it) to 1 (where the new
+    /// row has it), of the cluster's items that moved when a control's width did (the sort control's
+    /// criterion). The tab bar's own spring ([`crate::widgets::K_TAB_CAP`], critically damped, so no
+    /// overshoot), the one the row's capsules travel on, so the plate under a place and the place
+    /// arrive together. Every drawn position is a pure function of it: a spring that lands (or is
+    /// jumped) puts every item at rest.
+    slide: Spring,
+    /// The items that slide; empty at rest.
+    glides: Vec<Glide>,
+}
+
+/// One right-cluster item a [`HeaderSwap`]'s slide carries: the item as the row before had it (its
+/// identity and the value it is leaving, if it has a [`Criterion`]) and where its text stood,
+/// `from`, and stands now, `to`.
+struct Glide {
+    item: HeaderItem,
+    from: f32,
+    to: f32,
+    /// Set for a control whose criterion changed: it keeps its right edge, so only what leads the
+    /// criterion (the mark) slides, and the criterion cross-fades.
+    criterion: Option<Criterion>,
+}
+
+/// **How a control that keeps its right edge swaps its criterion** while its mark slides: the
+/// criterion it replaces is drawn at ITS OWN rest x (`dx` px from where the new one rests, both
+/// ending at the control's one right edge) and fades out from the opacity it had when the slide
+/// began, `out0`; the new one is drawn at its own rest x and fades in from `in0`. The chevron after
+/// them is the new layout's and never moves. A slide begun from rest has `(1, 0)`; one picked up
+/// while another runs (a second build of the row, the listing that lands under the queued sort)
+/// starts from what the first has reached, so nothing jumps and the pair still sums to one.
+#[derive(Clone, Copy)]
+struct Criterion {
+    dx: f32,
+    out0: f32,
+    in0: f32,
+}
+
+impl Criterion {
+    /// The opacity of the criterion leaving, at slide progress `s`.
+    fn leaving(self, s: f32) -> f32 { self.out0 * (1.0 - s) }
+
+    /// The opacity of the criterion arriving, at slide progress `s`.
+    fn arriving(self, s: f32) -> f32 { self.in0 + (1.0 - self.in0) * s }
+}
+
+/// Is `a` the same control as `b`? A read-out is the read-out (whatever it says), a divider the
+/// divider, any other item by its label (the sort control's is its NAME, which its criterion does
+/// not change).
+fn same_item(a: &HeaderItem, b: &HeaderItem) -> bool {
+    if a.readout || b.readout { return a.readout && b.readout; }
+    a.divider == b.divider && a.label == b.label
 }
 
 /// What a [`HeaderSwap`] does with a control that only one of the two rows has.
@@ -673,10 +929,97 @@ impl Default for HeaderSwap {
 }
 
 impl HeaderSwap {
-    pub const fn new() -> Self { Self { clock: Xfade::new(), from: Vec::new(), running: false, edge: Edge::Fade } }
+    pub const fn new() -> Self {
+        Self { clock: Xfade::new(), from: Vec::new(), running: false, edge: Edge::Fade, slide: Spring::at(0.0), glides: Vec::new() }
+    }
 
-    /// Is a swap on screen?
-    pub fn is_active(&self) -> bool { self.running && self.clock.is_swapping() }
+    /// Is a swap on screen: a dissolve running or items sliding?
+    pub fn is_active(&self) -> bool { self.dissolving() || self.is_sliding() }
+
+    /// Is a dissolve (a value cross-fading, a control arriving or leaving) running?
+    fn dissolving(&self) -> bool { self.running && self.clock.is_swapping() }
+
+    /// Are items sliding to their new places?
+    pub fn is_sliding(&self) -> bool { !self.glides.is_empty() }
+
+    /// How far the slide has run, 0 (the row before) to 1 (the new row).
+    pub fn slide_progress(&self) -> f32 { self.slide.pos.clamp(0.0, 1.0) }
+
+    /// Put the slide at its end (the instant frame, a settle): every item stands at rest.
+    pub fn settle(&mut self) {
+        self.glides.clear();
+        self.slide = Spring::at(0.0);
+    }
+
+    /// The right-cluster items that stand elsewhere on `new` than on `old` (or say another value
+    /// while they do not dissolve): each where it is DRAWN now (a slide still running is picked up
+    /// where it is, so a second change never jumps) and where it will stand.
+    ///
+    /// **A criterion that changed carries on a slide that already runs to it**: the row is built
+    /// twice for one press (the queued sort, then the listing that lands under it), and the second
+    /// build says the criterion the first already shows. That one is no new change: the criterion
+    /// it replaced keeps fading out from where it had got to, and the control's face stays what
+    /// it was (its mark sliding, the criterion and the chevron where the layout has them).
+    ///
+    /// Also says whether a criterion changed on THIS rebuild (not one the running slide already
+    /// carries): [`Self::begin_with`] keeps a running slide for a rebuild that moves no target and
+    /// changes no criterion, and hands it over, speed and all, for one that does.
+    fn glides_between(&self, old: &HeaderRow, new: &HeaderRow) -> (Vec<Glide>, bool) {
+        let spot = |row: &HeaderRow, i: usize| row.layout.items.iter().find(|r| r.slot == Slot::Right(i)).map(|r| r.text.x);
+        let s = self.slide_progress();
+        let (before, after) = (&old.page.spec().right, &new.page.spec().right);
+        let mut changed_now = false;
+        let mut glides: Vec<Glide> = after.iter().enumerate().filter_map(|(i, item)| {
+            let (j, was) = before.iter().enumerate().find(|(_, was)| same_item(was, item))?;
+            let (rest, to) = (spot(old, j)?, spot(new, i)?);
+            // A read-out says another thing by its text; every other item by its value.
+            let changed = if item.readout { was.label != item.label } else { was.value != item.value };
+            // A slotted control whose value changed is the dissolve's (it leaves and arrives).
+            if carried(item) && changed { return None; }
+            // Where it is drawn now: a slide still running is picked up there, so a second change never jumps.
+            let live = self.glides.iter().find(|g| same_item(&g.item, item));
+            let from = live.map_or(rest, |g| g.to + (g.from - g.to) * (1.0 - s));
+            let running = live.and_then(|g| g.criterion.map(|c| (c, g.item.value.clone())));
+            let (value, criterion) = match (changed, running) {
+                (false, Some((c, leaving))) => (leaving, Some(Criterion { dx: c.dx, out0: c.leaving(s), in0: c.arriving(s) })),
+                (true, running) => (was.value.clone(),
+                    Some(Criterion { dx: rest - to, out0: running.map_or(1.0, |(c, _)| c.arriving(s)), in0: 0.0 })),
+                (false, None) => (was.value.clone(), None),
+            };
+            let glides = (from - to).abs() >= SAME_X || changed;
+            changed_now |= glides && changed;
+            glides.then(|| Glide { item: HeaderItem { value, ..was.clone() }, from, to, criterion })
+        }).collect();
+        // The read-out is the cluster's leading item, so a criterion change moves it by what it moves
+        // Collections, and it travels with them. Moved by anything else (Collections arriving, a
+        // count's digit count) there is no slide for it to ride, and it dissolves at each x.
+        let slides = glides.iter().chain(&self.glides).any(|g| g.criterion.is_some());
+        if !slides { glides.retain(|g| !g.item.readout); }
+        (glides, changed_now)
+    }
+
+    /// Does a slide that runs already end where every one of `glides` would end? Then a rebuild
+    /// that asks for them (no target moved, no criterion changed: the same press building its row
+    /// again as the listing refetches) has nothing to say to it.
+    fn already_runs_to(&self, glides: &[Glide]) -> bool {
+        self.is_sliding() && glides.iter().all(|new| {
+            self.glides.iter().any(|running| same_item(&running.item, &new.item) && (running.to - new.to).abs() < SAME_X)
+        })
+    }
+
+    /// The slide's rate to start the spring over `glides` at, so the item that moves furthest keeps
+    /// the speed it has: it is moving `(to - from) * vel` px a second on the running slide and will
+    /// cover `new.to - new.from` per unit of progress on the new one. The rate is kept between 0
+    /// and the spring's own natural frequency, the range a critically damped spring from rest
+    /// covers without overshoot, which a rescale of an undisturbed slide never leaves; a slide that
+    /// is not running (or whose item goes the other way) starts from rest.
+    fn carried_rate(&self, glides: &[Glide]) -> f32 {
+        glides.iter().filter_map(|new| {
+            let running = self.glides.iter().find(|running| same_item(&running.item, &new.item))?;
+            let span = new.to - new.from;
+            (span.abs() >= SAME_X).then(|| ((running.to - running.from) * self.slide.vel / span, span.abs()))
+        }).max_by(|a, b| a.1.total_cmp(&b.1)).map_or(0.0, |(rate, _)| rate.clamp(0.0, crate::widgets::K_TAB_CAP.sqrt()))
+    }
 
     /// The row `old` is being replaced by `new`: start a swap when a slotted control changed (its
     /// value, or its being there at all). A row that changes nothing a swap carries starts nothing
@@ -703,10 +1046,15 @@ impl HeaderSwap {
         let carry = |row: &HeaderRow| -> Vec<Carried> {
             row.page.spec().right.iter().enumerate().filter(|(_, item)| carried(item)).filter_map(|(i, item)| {
                 let at = row.layout.items.iter().find(|r| r.slot == Slot::Right(i))?;
-                Some(Carried { item: item.clone(), x: at.text.x, w: at.text.w })
+                Some(Carried { item: item.clone(), x: at.text.x, w: at.text.w, glides: false })
             }).collect()
         };
-        let before = carry(old);
+        // A switch shows nothing of the row left, so nothing slides from it; a change of the same
+        // page slides the items a control's new width moved.
+        let (glides, changed) = if edge == Edge::Fade { self.glides_between(old, new) } else { (Vec::new(), false) };
+        if edge == Edge::Cut { self.glides.clear(); }
+        let mut before = carry(old);
+        for readout in before.iter_mut().filter(|c| c.item.readout) { readout.glides = glides.iter().any(|g| g.item.readout); }
         let after = carry(new);
         let same = match edge {
             Edge::Fade => before.len() == after.len()
@@ -717,26 +1065,46 @@ impl HeaderSwap {
             // A switch is a different page: a Fade of the row it leaves must not outlive it (its
             // `leaving()` faces are the left library's, not the new page's).
             if edge == Edge::Cut { self.end(); }
-            return;
+        } else {
+            self.from = before;
+            self.running = true;
+            self.edge = edge;
+            self.clock.arrive();
         }
-        self.from = before;
-        self.running = true;
-        self.edge = edge;
-        self.clock.arrive();
+        // **A rebuild is not a restart.** One press builds the row three times or more as the listing
+        // refetches, and each build re-bases the glides on the x they are drawn at. A slide whose
+        // targets did not move (and that no criterion change rides) keeps its glides and its
+        // spring, position and velocity both; otherwise the new glides start from where the
+        // running ones are drawn, and the spring starts at the speed they have.
+        if !glides.is_empty() && (changed || !self.already_runs_to(&glides)) {
+            self.slide = Spring { pos: 0.0, vel: self.carried_rate(&glides) };
+            self.glides = glides;
+        }
     }
 
-    /// Stop at once, the row as it is.
+    /// Stop at once, the row as it is: the dissolve and the slide both.
     pub fn end(&mut self) {
+        self.end_dissolve();
+        self.settle();
+    }
+
+    fn end_dissolve(&mut self) {
         self.from.clear();
         self.running = false;
         self.clock = Xfade::new();
     }
 
-    /// One frame of the swap's clock: **decoration, not layout** ([`plx_machine::idle::decorative`]).
+    /// One frame of the swap's clocks: the dissolve's, and the slide's spring on the tab bar's own
+    /// stiffness. **Decoration, not layout** ([`plx_machine::idle::decorative`]).
     pub fn step(&mut self, dt: f32) {
-        if !self.running { return; }
-        plx_machine::idle::decorative(|| { self.clock.tick(dt, true); });
-        if !self.clock.is_swapping() { self.end(); }
+        if self.running {
+            plx_machine::idle::decorative(|| { self.clock.tick(dt, true); });
+            if !self.clock.is_swapping() { self.end_dissolve(); }
+        }
+        if self.is_sliding() {
+            plx_machine::idle::decorative(|| self.slide.step(1.0, crate::widgets::K_TAB_CAP, dt));
+            if self.slide.land(1.0, dt) { self.settle(); }
+        }
     }
 
     /// How far the swap has run, 0 (the old row) to 1 (the new one), eased.
@@ -755,23 +1123,43 @@ impl HeaderSwap {
     /// How the item `right[index]`, whose text stands at `x`, is painted now; `None` when the swap
     /// has nothing to say about it.
     fn fade_of<'a>(&'a self, right: &'a [HeaderItem], index: usize, x: f32) -> Option<FaceFade<'a>> {
-        if !self.is_active() { return None; }
-        let item = right.get(index).filter(|item| carried(item))?;
+        let item = right.get(index)?;
+        self.dissolve_of(item, x).or_else(|| self.glide_of(item))
+    }
+
+    /// The dissolve's say about `item` (a slotted control or the read-out), standing at `x`.
+    fn dissolve_of<'a>(&'a self, item: &'a HeaderItem, x: f32) -> Option<FaceFade<'a>> {
+        if !self.dissolving() || !carried(item) { return None; }
         let a = self.progress();
         let Some(before) = self.from.iter().find(|c| c.is(item)) else {
-            return (self.edge == Edge::Fade).then_some(FaceFade { face: a, from_value: None, value_in: 1.0 });
+            return (self.edge == Edge::Fade).then_some(FaceFade::fade(a, None, 1.0));
         };
         if !before.differs(item, x) { return None; }
-        if Self::moved(before, item, x) { return Some(FaceFade { face: a, from_value: None, value_in: 1.0 }); }
+        if Self::moved(before, item, x) { return Some(FaceFade::fade(a, None, 1.0)); }
         let from_value = before.item.value.as_deref().map(|value| (value, 1.0 - a));
-        Some(FaceFade { face: 1.0, from_value, value_in: if item.value.is_some() { a } else { 0.0 } })
+        Some(FaceFade::fade(1.0, from_value, if item.value.is_some() { a } else { 0.0 }))
+    }
+
+    /// The slide's say about `item`: it stands `(from - to) * (1 - progress)` px from its place, the
+    /// whole face together. A control whose criterion changed (the sort control's) changed width
+    /// with it and keeps its right edge: the mark before the criterion slides, the new criterion
+    /// stands at its own rest x and the chevron after it where the layout has it, so nothing of
+    /// the face is ever drawn right of that edge, and the criterion it replaces cross-fades out at
+    /// ITS rest x, ending at the same edge ([`Criterion`]). Both opacities come from the slide's one
+    /// progress, so they sum to 1 and end exact.
+    fn glide_of<'a>(&'a self, item: &'a HeaderItem) -> Option<FaceFade<'a>> {
+        let g = self.glides.iter().find(|g| same_item(&g.item, item))?;
+        let (s, shift) = (self.slide_progress(), (g.from - g.to) * (1.0 - self.slide_progress()));
+        let Some(c) = g.criterion else { return Some(FaceFade { lead: shift, value_slide: shift, ..FaceFade::fade(1.0, None, 1.0) }); };
+        let leaving = g.item.value.as_deref().map(|value| (value, c.leaving(s)));
+        Some(FaceFade { lead: shift, value_slide: 0.0, from_dx: c.dx, ..FaceFade::fade(1.0, leaving, if item.value.is_some() { c.arriving(s) } else { 0.0 }) })
     }
 
     /// The faces of the row before that leave: a slotted control the new row (`right`, placed as
     /// `layout`) does not have, and one it has at another x with another value. Each with where its
     /// text stood and its opacity now, falling.
     fn leaving<'a>(&'a self, right: &'a [HeaderItem], layout: &'a HeaderLayout) -> impl Iterator<Item = (&'a HeaderItem, f32, f32, f32)> + 'a {
-        let active = self.is_active();
+        let active = self.dissolving();
         let opacity = 1.0 - self.progress();
         let edge = self.edge;
         self.from.iter().filter(move |c| active && {
@@ -848,9 +1236,24 @@ impl<R> SharedRow<R> {
 
     /// The row for `key`, built by `build` when the one held was built for another key.
     pub fn get(&self, key: u64, build: impl FnOnce() -> R) -> std::rc::Rc<R> {
-        let mut cache = self.0.borrow_mut();
-        cache.refresh(key, || std::rc::Rc::new(build()));
-        std::rc::Rc::clone(cache.row().expect("refreshed above"))
+        self.get_replacing(key, build, |_, _| {})
+    }
+
+    /// [`Self::get`], telling `replaced(old, new)` when a row that was held is replaced by a rebuild
+    /// (the first build replaces nothing), before the new row is handed out. A page whose readers
+    /// are `&self` begins its [`HeaderSwap`] there (`swap.begin(old, new)`): the one place that
+    /// sees every rebuild, from whichever question or paint asked first, so the frame that changes
+    /// the row already draws at the swap's first step and never as a cut. `replaced` runs after
+    /// the cache is released, but it must not rebuild this row itself.
+    pub fn get_replacing(&self, key: u64, build: impl FnOnce() -> R, replaced: impl FnOnce(&R, &R)) -> std::rc::Rc<R> {
+        let (row, old) = {
+            let mut cache = self.0.borrow_mut();
+            let old = if cache.is_current(key) { None } else { cache.row().cloned() };
+            cache.refresh(key, || std::rc::Rc::new(build()));
+            (std::rc::Rc::clone(cache.row().expect("refreshed above")), old)
+        };
+        if let Some(old) = old { replaced(&old, &row); }
+        row
     }
 
     /// How many times a row has been built.

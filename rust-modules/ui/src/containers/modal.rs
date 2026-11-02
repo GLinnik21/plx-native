@@ -15,7 +15,8 @@
 //!   A surface's LIFT (the element it was opened from) is drawn by the dispatcher's one lift pass
 //!   (`Z::OPENER`), after every surface, so a panel never covers the element it grows out of. The
 //!   host page's own opener (`Screen::opener`) is drawn in that same pass, by the dispatcher.
-//! - `prune()` is the ONLY place Closing clears, so Closing surfaces step unconditionally (the
+//! - `prune()` clears a Closing surface once its fade settles (a page opening over one retires it
+//!   at once instead: `Navigation::commit`), so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
 //! - `on_miss(style)` is consulted only while the surface is `Open`: a click beside a Compact,
 //!   Sheet or PlayerPanel dismisses it; an Alert ignores the miss; an Opaque surface swallows it.
@@ -605,7 +606,8 @@ impl<H: Host> ModalStack<H> {
     }
 
     /// Dismiss: the phase goes to `Closing` NOW (the input owner changes on this frame); the body
-    /// leaves when `prune` clears it. Returns whether the id named an open surface.
+    /// leaves when `prune` clears it, or when a page opening over it retires it
+    /// (`Navigation::commit`). Returns whether the id named an open surface.
     pub fn dismiss(&mut self, id: EntryId) -> bool {
         let Some(s) = self.surfaces.iter_mut().find(|s| s.entry.id == id) else {
             return false;
@@ -715,13 +717,13 @@ impl<H: Host> ModalStack<H> {
         }
     }
 
-    /// The ONLY place Closing clears: a Closing surface whose fade settled leaves for good.
-    pub fn prune(&mut self) -> Vec<Life<H>> {
+    /// Retire every surface `gone` names: it leaves for good and its entry is kept for the
+    /// dispatcher's release.
+    pub fn retire_where(&mut self, gone: impl Fn(&Surface<H>) -> bool) -> Vec<Life<H>> {
         let mut out = Vec::new();
         let mut i = 0;
         while i < self.surfaces.len() {
-            let s = &self.surfaces[i];
-            if s.phase == Phase::Closing && (s.motion.settled() || s.faded()) {
+            if gone(&self.surfaces[i]) {
                 let s = self.surfaces.remove(i);
                 out.push(Life::Ev(s.entry.id, ScreenEvent::WillLeave(Leave::ForGood)));
                 out.push(Life::Unmount(s.entry.id));
@@ -730,6 +732,14 @@ impl<H: Host> ModalStack<H> {
                 i += 1;
             }
         }
+        out
+    }
+
+    /// Clears a Closing surface whose fade settled: it leaves for good. (A page opening over a
+    /// Closing surface retires it without waiting for the fade, through `retire_where` in
+    /// `Navigation::commit`.)
+    pub fn prune(&mut self) -> Vec<Life<H>> {
+        let out = self.retire_where(|s| s.phase == Phase::Closing && (s.motion.settled() || s.faded()));
         // The last surface is gone: nothing is dimming this host any more, and the next stack
         // presented over it — perhaps over a different page — starts from a fresh read.
         if self.surfaces.is_empty() {

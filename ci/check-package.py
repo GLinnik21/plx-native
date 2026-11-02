@@ -233,6 +233,8 @@ RELEASE_LEGITIMATE_TRIGGER_NAMES = {
     # release code names them on purpose.
     "plxnative-gputime.jsonl", "plxnative-gst.log", "plxnative-hwcnt.jsonl",
     "plxnative-anim.log",
+    # Explicit local playback-diagnostic export; a create-only sink, also in privacy erasure.
+    "plxnative-playback.log",
 }
 
 

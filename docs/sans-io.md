@@ -272,7 +272,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   loopback request; each failed with the page parked, and every suite is green with the directory
   read parked.
 - **A registry read is an input.** A step that decides from "which client does this server slot
-  hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token }` per server) as
+  hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token, grant }` per server) as
   an argument. The Bridge owns one buffer and refills it in place
   (`adapters::stores::refill_client_keys`, the only loop over `client_for` that feeds a step)
   immediately before the step, so a pump that runs every frame allocates nothing for it. The job

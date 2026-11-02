@@ -1250,5 +1250,187 @@
   "settings.consent.placeholder.webos_codename_short": {
     "value": "webOS codename",
     "description": "Placeholder shown inside angle brackets in the data preview, standing for the TV software's release codename."
+  },
+  "settings.hud.title": {
+    "value": "Player HUD",
+    "description": "Settings > Playback row and page title: the look of the playback controls (the player HUD)."
+  },
+  "settings.hud.copy": {
+    "value": "Choose how the playback controls look. Packages copied to this TV's HUD folder are listed here.",
+    "description": "Settings > Playback > Player HUD: the line under the page title."
+  },
+  "settings.hud.classic": {
+    "value": "Classic",
+    "description": "Settings > Playback > Player HUD: the name of the built-in HUD."
+  },
+  "settings.hud.builtin": {
+    "value": "Built-in",
+    "description": "Settings > Playback > Player HUD: the trust label of the HUD that ships with the app."
+  },
+  "settings.hud.unreviewed": {
+    "value": "Unreviewed",
+    "description": "Settings > Playback > Player HUD: the trust label of a package nobody has reviewed (a file copied to the TV)."
+  },
+  "settings.hud.until_restart": {
+    "value": "Installed until restart",
+    "description": "Settings > Playback > Player HUD: a package that only the temporary storage took, which a restart clears."
+  },
+  "settings.hud.unfit_language": {
+    "value": "Doesn't fit in {language}",
+    "description": "Settings > Playback > Player HUD: a package that does not fit in the current language (its text does not fit, or drawing it costs more than the HUD allows there), so the built-in HUD is drawn. {language} is the language's own name.",
+    "args": {
+      "language": "str"
+    }
+  },
+  "settings.hud.newer_format": {
+    "value": "Made for a newer PlxNative",
+    "description": "Settings > Playback > Player HUD: a package in a format this app version cannot read yet."
+  },
+  "settings.hud.older_format": {
+    "value": "Uses an older HUD format",
+    "description": "Settings > Playback > Player HUD: a package in a format this app version no longer reads."
+  },
+  "settings.hud.app_range": {
+    "value": "Not for this version",
+    "description": "Settings > Playback > Player HUD: a package that says it does not run on this app release."
+  },
+  "settings.hud.cant_install": {
+    "value": "Can't install this file",
+    "description": "Settings > Playback > Player HUD: a file in the HUD folder that cannot be installed (not a valid package, too large, or changed since it was listed)."
+  },
+  "settings.hud.already": {
+    "value": "Already installed",
+    "description": "Settings > Playback > Player HUD: a file in the HUD folder whose package is installed already, or an equal or newer version of it is."
+  },
+  "settings.hud.not_saved": {
+    "value": "Couldn't save it: the storage is read-only",
+    "description": "Settings > Playback > Player HUD: an install that no storage location on the TV accepted."
+  },
+  "settings.hud.folder": {
+    "value": "In the HUD folder",
+    "description": "Settings > Playback > Player HUD: the header over the files found in the HUD folder on the TV."
+  },
+  "settings.hud.install": {
+    "value": "Install",
+    "description": "Settings > Playback > Player HUD: the action word on a file in the HUD folder, and the confirming answer of the install question."
+  },
+  "settings.hud.install_question": {
+    "value": "Install this HUD?",
+    "description": "Settings > Playback > Player HUD: the question before an unreviewed file is installed."
+  },
+  "settings.hud.install_body": {
+    "value": "This file was copied to the TV and has not been reviewed. It changes how the playback controls look.",
+    "description": "Settings > Playback > Player HUD: the body of the install question."
+  },
+  "settings.hud.remove": {
+    "value": "Remove",
+    "description": "Settings > Playback > Player HUD: the action word on an installed package's removal row."
+  },
+  "settings.hud.address": {
+    "value": "Install from address",
+    "description": "Settings > Playback > Player HUD: Row that asks for an address to install a HUD package from. A row title."
+  },
+  "settings.hud.address_hint": {
+    "value": "Type gh:owner/repo or an https:// address",
+    "description": "Settings > Playback > Player HUD: The detail line of the install-from-address row: what to type. gh:owner/repo, gh:owner/repo@tag and https:// are typed as they are."
+  },
+  "settings.hud.address_form": {
+    "value": "Use gh:owner/repo, gh:owner/repo@tag or an https:// address.",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the typed address is not one of the accepted forms. The forms are typed as they are."
+  },
+  "settings.hud.address_lan": {
+    "value": "A plain http:// address must be a device on your home network, like 192.168.1.20.",
+    "description": "Settings > Playback > Player HUD: The line under the page title when a plain http:// address was typed that is not a device on the home network (a private address such as 192.168.1.20)."
+  },
+  "settings.hud.fetching": {
+    "value": "Downloading…",
+    "description": "Settings > Playback > Player HUD: The detail line of the install-from-address row while the package is downloading."
+  },
+  "settings.hud.fetch_not_found": {
+    "value": "Nothing at that address",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the address answered that there is nothing there (HTTP 404)."
+  },
+  "settings.hud.fetch_unreachable": {
+    "value": "Couldn't connect to that address",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the TV could not connect to the typed address."
+  },
+  "settings.hud.fetch_certificate": {
+    "value": "The TV's certificate check failed for that address",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the TV's own certificate check refused the typed address's certificate."
+  },
+  "settings.hud.too_large": {
+    "value": "That file is too large",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the file is larger than a HUD package may be."
+  },
+  "settings.hud.not_a_hud": {
+    "value": "That isn't a HUD package",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the file is not a HUD package (it does not parse as one)."
+  },
+  "settings.hud.offer_body": {
+    "value": "This package was downloaded from an address and has not been reviewed. It changes how the playback controls look.",
+    "description": "Settings > Playback > Player HUD: The body of the install question for a package downloaded from an address."
+  },
+  "settings.hud.offer_from": {
+    "value": "From {host}",
+    "description": "Settings > Playback > Player HUD: The prompt line naming where a downloaded package came from. {host} is the address's host name.",
+    "args": {
+      "host": "str"
+    }
+  },
+  "settings.hud.offer_dev": {
+    "value": "Development source",
+    "description": "Settings > Playback > Player HUD: The prompt label for a package fetched over plain http:// from a device on the home network (a development source)."
+  },
+  "settings.trace.section": {
+    "value": "Diagnostics",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.section"
+  },
+  "settings.trace.title": {
+    "value": "Record playback diagnostics",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.title"
+  },
+  "settings.trace.detail": {
+    "value": "Local: up to 60s / 8 MiB. May slow playback.",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.detail"
+  },
+  "settings.trace.export": {
+    "value": "Save diagnostic log",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.export"
+  },
+  "settings.trace.export_detail": {
+    "value": "Local recording and app log for support.",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.export_detail"
+  },
+  "settings.trace.delete": {
+    "value": "Delete diagnostic recordings",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.delete"
+  },
+  "settings.trace.off": {
+    "value": "Off",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.off"
+  },
+  "settings.trace.recording": {
+    "value": "Recording",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.recording"
+  },
+  "settings.trace.saved": {
+    "value": "Recorded",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.saved"
+  },
+  "settings.trace.exported": {
+    "value": "Saved",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.exported"
+  },
+  "settings.trace.unavailable": {
+    "value": "Unavailable",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.unavailable"
+  },
+  "settings.trace.failed": {
+    "value": "Failed",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.failed"
+  },
+  "settings.trace.saving": {
+    "value": "Saving",
+    "description": "Local playback diagnostics save in progress."
   }
 }

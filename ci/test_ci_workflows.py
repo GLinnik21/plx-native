@@ -230,6 +230,14 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertEqual(len(hero), 1, hero)
 
 
+class HudAuthoringPublication(unittest.TestCase):
+    def test_the_public_schema_and_examples_are_staged_by_pages(self):
+        # The files can pass every golden test while Pages silently omits the whole directory.
+        # Editors then receive 404 at the $schema URL embedded in every starter package.
+        self.assertIn("cp -R site/hud _site/", code("pages.yml"))
+        self.assertIn("site/hud/**", code("ci.yml"))
+
+
 class HostToolTests(unittest.TestCase):
     def test_ffmpeg_and_ass_tests_run_in_their_own_job_not_behind_the_replay(self):
         sim = code("simulators.yml")
@@ -1024,8 +1032,9 @@ class SiteVideoRelease(unittest.TestCase):
         self.assertNotIn("--ref main", hook)
         self.assertIn("actions: write", hook)
         self.assertNotIn("contents: write", hook)
-        # the release's own jobs gained no new permission, and the new one exists once
-        self.assertEqual(code("release.yml").count("actions: write"), 1)
+        # Only the two post-publication dispatch jobs may hold Actions write permission.
+        self.assertEqual(code("release.yml").count("actions: write"), 2)
+        self.assertEqual(job_body("release.yml", "hud-simulator").count("actions: write"), 1)
         self.assertEqual(code("site-video.yml").count("actions: write"), 1)
         # candidates and nightlies never refresh the film
         for name in ("rc.yml", "nightly.yml"):
@@ -1033,6 +1042,28 @@ class SiteVideoRelease(unittest.TestCase):
         # `publish` is the job that creates the release; the hook must come after it, never gate it
         self.assertNotIn("site-video", job_body("release.yml", "publish"))
         self.assertNotIn("site-video", job_body("release.yml", "build"))
+
+
+class HudSimulatorRelease(unittest.TestCase):
+    def test_only_a_supported_published_tree_dispatches_the_simulator_on_its_tag(self):
+        hook = job_body("release.yml", "hud-simulator")
+        self.assertIn("needs: [guard, publish]",hook)
+        self.assertIn("needs.publish.result == 'success'",hook)
+        self.assertIn("HTTP 404",hook)
+        self.assertIn("/contents/.github/workflows/hud-simulator.yml",hook)
+        self.assertLess(hook.index("HTTP 404"),hook.index("'workflow','run'"))
+        self.assertIn("'--ref',tag",hook)
+        self.assertNotIn("contents: write",hook)
+
+    def test_pull_requests_cannot_publish_and_development_publication_is_explicit(self):
+        attach = job_body("hud-simulator.yml","attach")
+        self.assertIn("github.event_name != 'pull_request'",attach)
+        self.assertIn("inputs.publish_development",attach)
+        self.assertIn("--development",attach)
+        self.assertIn("if: inputs.release_tag != ''",attach)
+        self.assertNotIn("continue-on-error",attach)
+        self.assertRegex(code("hud-simulator.yml"),r"publish_development:[\s\S]*?default: false")
+        self.assertNotIn("contents: write",job_body("hud-simulator.yml","build"))
 
 
 class ReleaseMainPushKey(unittest.TestCase):

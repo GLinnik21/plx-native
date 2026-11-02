@@ -2,8 +2,9 @@
 //! and handed to the screen as a value ([`LoadedHud`]).
 //!
 //! The owner (the application) builds one at boot (a label's width sets a pill's width, so the language is
-//! part of the plan's cache key, [`CompileKey`]; the process's language is fixed, so that is the only
-//! compile, but for a controlled run's and a dev package's, which come on the first player frame), and
+//! part of the plan's cache key, [`CompileKey`]; the process's language is fixed, so a compile is per
+//! package: at boot, whenever the profile's chosen package changes (the application's `HudDriver`), and on
+//! the first player frame for a controlled run's and a dev package's), and
 //! pushes the [`Arc<Compiled>`] into the player page the way it pushes the frame's
 //! [`HudModel`](super::model::HudModel).
 //! Nothing here reads a registry on its own account: the language arrives as a [`LocaleContext`] (the
@@ -13,7 +14,7 @@
 //!
 //! `builtin:classic` is the only package that ships in this release, and it always loads (it is embedded
 //! and a test parses and compiles it clean in every shipped language): [`load_classic`] cannot fail. A
-//! dev package that does not parse is refused ([`DevStep::Report`]) and the owner keeps drawing classic.
+//! dev package that does not parse is refused ([`DevStep::Report`]) and the owner keeps drawing what it drew: the chosen package, or classic.
 
 use std::sync::Arc;
 
@@ -52,9 +53,27 @@ pub fn load(bytes: &[u8], app_version: &str, cx: &LocaleContext, measure: &dyn M
     Ok(LoadedHud { key, language, compiled: Arc::new(compile(&package, measure, CompileCtx { labels: AppLabels::in_language(cx) })) })
 }
 
+/// **Does the package answer every frame the transport can be in?** For each slot the control row can hold
+/// (discs, Up Next, Skip), with and without chapters, as an episode or not, paused or playing, the compact
+/// state (`open == 0`) must exist: where `geometry::frame_state` answers `None` the renderer draws nothing and the
+/// frame has no controls, so the owner takes a package that fails this as unfit and draws classic instead. Classic
+/// passes (`classic_answers_every_frame_the_player_can_be_in`).
+pub fn answers_every_frame(compiled: &Compiled) -> bool {
+    use crate::hud_format::reach::Slot;
+    [Slot::Discs, Slot::UpNext, Slot::Skip].into_iter().all(|slot| {
+        [false, true].into_iter().all(|chapters| {
+            [false, true].into_iter().all(|episode| {
+                [false, true].into_iter().all(|real_episode| {
+                    [false, true].into_iter().all(|paused| compiled.lookup_content(0, slot, chapters, episode, real_episode, paused).is_some())
+                })
+            })
+        })
+    })
+}
+
 /// `builtin:classic`, the embedded package ([`crate::hud_format::CLASSIC_PACKAGE`]), compiled. It does not
 /// return a `Result`: the bytes are `include_str!`'d and `classic_loads_with_no_findings_in_every_shipped_language`
-/// parses and compiles them in all ten languages, so a failure here is a build that no test passed.
+/// parses and compiles them in all eleven languages, so a failure here is a build that no test passed.
 pub fn load_classic(app_version: &str, cx: &LocaleContext, measure: &dyn Measure) -> LoadedHud {
     load(crate::hud_format::CLASSIC_PACKAGE.as_bytes(), app_version, cx, measure).expect("the embedded builtin:classic parses")
 }
@@ -67,7 +86,53 @@ pub fn classic_for_test() -> Arc<Compiled> {
     load_classic("0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).compiled
 }
 
-/// **The dev trigger's value**: the path of the package to draw instead of classic, the first line of the
+/// **The reference package for a test that builds a player page**: the fixture the format's own tests draw
+/// (`inline` sections, a `toggle_section` disc for each in its row), loaded on the same English and fixture
+/// advances as [`classic_for_test`]. It is how a screen test runs the package-drawn opener and the inline policy.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reference_for_test() -> Arc<Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+    load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+        .expect("the reference fixture loads")
+        .compiled
+}
+
+/// **The reference package with two buttons in its Info section** ([`reference_for_test`] otherwise): the
+/// fixture's `spacer` cell is an `actions` column of `from_beginning` and `go_to_detail`, as classic's Info card
+/// has. The reference's own Info places no stop, so a test of travel through an inline Info section needs it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reference_with_info_actions_for_test() -> Arc<Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+    let spacer = r#"{ "align": "end", "spacer": { "w": 150 } }"#;
+    assert_eq!(text.matches(spacer).count(), 1, "the reference fixture has one spacer cell");
+    let actions = r#"{ "align": "end", "valign": "center", "actions": { "axis": "column", "gap": 12, "item_h": 52, "min_w": 200,
+          "items": [ { "id": "from_beginning", "command": "from_beginning", "widget": "button", "size": 52 },
+                     { "id": "go_to_detail", "command": "go_to_detail", "widget": "button", "size": 52 } ] } }"#;
+    load(text.replace(spacer, actions).as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+        .expect("the reference fixture with Info actions loads")
+        .compiled
+}
+
+/// **The reference with its Chapters and Info discs taken out of the row**, under `policy` (`"modal"` or `"inline"`): the
+/// two section bands stay, so both sections are laid out, and the package places no opener for either. A More fold
+/// row is the only way to either section. Loaded like [`reference_for_test`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn reference_without_openers_for_test(policy: &str) -> Arc<Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
+    let openers = concat!(
+        "          { \"id\": \"chapters\", \"command\": \"toggle_section\", \"section\": \"chapters\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"list\" },\n",
+        "          { \"id\": \"info\", \"command\": \"toggle_section\", \"section\": \"info\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"builtin:info\" },\n",
+    );
+    assert_eq!(text.matches(openers).count(), 1, "the reference's two section discs, as written");
+    let text = text.replace(openers, "").replace("\"sections\": \"inline\"", &format!("\"sections\": \"{policy}\""));
+    load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+        .expect("the reference without its openers loads")
+        .compiled
+}
+
+/// **The dev trigger's value**: the path of the package to draw instead of what is chosen (classic unless the profile picked a package), the first line of the
 /// trigger file, trimmed. `None` for an empty file (nothing armed).
 pub fn dev_package_path(value: &str) -> Option<&str> {
     let line = value.lines().next()?.trim();
@@ -167,7 +232,7 @@ mod tests {
     /// pill's width, so the claim is per language.
     #[test]
     fn classic_loads_with_no_findings_in_every_shipped_language() {
-        assert_eq!(SHIPPED.len(), 10, "the claim is about the ten shipped languages");
+        assert_eq!(SHIPPED.len(), 11, "the claim is about the eleven shipped languages");
         for language in SHIPPED {
             let cx = LocaleContext::resolve(language, None, None, None, None);
             let hud = load_classic("0.0.0-test", &cx, &ShippedMeasure);
@@ -205,7 +270,17 @@ mod tests {
                 }
             }
         }
-        assert_eq!(asked, SHIPPED.len() * 3 * 2 * 2 * 2, "the ten languages x every combination");
+        assert_eq!(asked, SHIPPED.len() * 3 * 2 * 2 * 2, "the eleven languages x every combination");
+    }
+
+    #[test]
+    fn classic_and_every_fixture_answer_every_frame() {
+        let en = plx_platform::i18n::english();
+        assert!(answers_every_frame(&load_classic("1.0", en, &ShippedMeasure).compiled));
+        let reference = include_str!("../hud_format/fixtures/reference.plxhud.json");
+        assert!(answers_every_frame(&load(reference.as_bytes(), "1.0", en, &ShippedMeasure).unwrap().compiled));
+        let minimal = include_str!("../hud_format/fixtures/minimal.plxhud.json");
+        assert!(answers_every_frame(&load(minimal.as_bytes(), "1.0", en, &ShippedMeasure).unwrap().compiled), "the compile gives even the smallest package its Up Next and Skip states");
     }
 
     /// The key is the bytes' digest: the same bytes in the same language are the same key, other bytes

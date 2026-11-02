@@ -1,19 +1,77 @@
 //! [`SampleRow`] — a still poster row for a page that illustrates one: a few tiles, one of them
 //! lifted and captioned, drawn by the SAME tile and label painters the shelves and the Library grid
-//! use. The Settings > Under posters preview is its caller, so what that page shows beneath a
-//! poster is the card the shelves draw, not a screen-local imitation of it.
+//! use. The Settings > Under posters page AND its Details picker are its callers, so what those
+//! pages show beneath a poster is the card the shelves draw, not a screen-local imitation of it.
+//!
+//! The row stands in a [`SampleFrame`]: the panel (a faint fill and a hairline rim), the scissor
+//! that clips the outer tiles to it, the dimming of every tile but the lifted one (a column: its
+//! value line dims with it) and an optional caption at the panel's foot.
 //!
 //! It is geometry and paint only: no springs (a still picture has no motion), no focus (the engine's
 //! focus is on the page's rows), no hit stops. The wrapper exists so a screen names no L0 tile
 //! painter, as [`AvatarRow`](super::AvatarRow) does for the circular row.
 
+use std::hash::{Hash, Hasher};
+
 use plx_machine::machine::Measure;
 
-use crate::card_row::{self, RowStyle, TileLabel};
-use crate::widgets::Art;
-use crate::{Painter, Rect};
+use crate::card_row::{self, RowStyle, SortValue, TileLabel};
+use crate::screen::ClipScope;
+use crate::widgets::{Art, ArtImage};
+use crate::{theme, Painter, Rect};
+
+/// The panel's corner radius.
+const FRAME_RAD: f32 = 24.0;
+/// The panel's fill: black at 20%, over the page.
+const FRAME_FILL_A: f32 = 0.20;
+/// The panel's rim, inside its edge.
+const FRAME_RIM_W: f32 = 1.0;
+/// The air between the panel's bottom edge and its foot caption's line box.
+const FOOT_BOTTOM: f32 = 32.0;
+/// The foot caption's line box: the MICRO rung and its leading.
+const FOOT_LINE_H: f32 = 28.0;
+
+/// **The panel a [`SampleRow`] stands in.** `rect` is the panel (the row's tiles are clipped to it,
+/// so a row wider than the panel shows its outer tiles cut by the edges), `row` is where the row
+/// of tiles stands (see [`SampleRow::tile`]), `rest_alpha` is how much of a tile that is not the
+/// lifted one shows, and `foot` is an optional caption centred at the panel's foot, in the
+/// tertiary ink at the MICRO rung.
+#[derive(Clone, Copy)]
+pub struct SampleFrame<'a> {
+    pub rect: Rect,
+    pub row: Rect,
+    pub rest_alpha: f32,
+    pub foot: Option<&'a str>,
+}
+
+impl SampleFrame<'_> {
+    /// The panel under the row: a faint fill and a hairline rim, painted before any tile.
+    fn panel(&self, p: Painter) {
+        p.rect(self.rect, FRAME_RAD, theme::scrim_black(FRAME_FILL_A), theme::scrim_black(FRAME_FILL_A), 0.0);
+        p.rring(self.rect, FRAME_RAD, FRAME_RIM_W, theme::HAIRLINE);
+    }
+
+    /// The caption at the panel's foot, centred, never cut: it is judged against the panel less its sides.
+    fn draw_foot(&self, p: Painter, measure: &dyn Measure) {
+        let Some(text) = self.foot else { return };
+        let size = theme::size::MICRO;
+        let (run, _) = measure.fit_line_measured(text, self.rect.w - 2.0 * theme::space::MD, size, false);
+        let cy = self.rect.y + self.rect.h - FOOT_BOTTOM - FOOT_LINE_H * 0.5;
+        p.text(run.as_ptr(), self.rect.cx(), plx_gfx::text::text_vcenter_y(size, 0, cy), size, theme::TEXT_TERTIARY, 1, 0);
+    }
+}
 
 /// A still row of tiles drawn with the shelves' own painters.
+///
+/// **The picture is painted once.** The panel, its rim and the tiles (the lifted one with its focus
+/// shadow and sheen) are a PICTURE that changes only when its inputs do ([`SampleRow::cache_key`]:
+/// the geometry, and each tile's art and state marks), and it is the part that costs the GPU - a
+/// translucent panel and a lifted tile through the focus program - and the part both Under posters
+/// pages draw at once while one slides over the other. It is drawn into a texture once per key and
+/// put on the frame as one quad ([`Painter::cached_region`]). The TEXT stays live over it: the label
+/// under the lifted tile, the sort values and the foot caption, which differ from page to page
+/// (the picker's hovered caption is not the stored one, its foot is not the page's) and which a
+/// quad would only blur.
 pub struct SampleRow;
 
 impl SampleRow {
@@ -31,39 +89,137 @@ impl SampleRow {
         Self::tile(sty, n, i, area).scaled(sty.focus_scale)
     }
 
-    /// Paint `tiles` as a row in `area`. Tile `focused` is lifted, drawn last (its z-order is the
-    /// shelves') and wears `label`; every other tile is at rest and wears none.
+    /// Paint `tiles` as a row in `frame`. Tile `focused` is lifted, drawn last (its z-order is the
+    /// shelves') and wears `label`; every other tile is at rest, dimmed to `frame.rest_alpha`, and
+    /// wears none.
     pub fn draw<'a>(
         p: Painter,
-        area: Rect,
+        frame: &SampleFrame<'_>,
         sty: &RowStyle,
         tiles: impl ExactSizeIterator<Item = Art<'a>>,
         focused: usize,
         label: &TileLabel,
         measure: &dyn Measure,
     ) {
-        Self::draw_labeled(p, area, sty, tiles, focused,
-            |i| if i == focused { label.clone() } else { TileLabel::default() }, measure);
+        let arts: Vec<Art<'a>> = tiles.collect();
+        let n = arts.len();
+        Self::framed(p, frame, sty, &arts, focused, measure, |p| {
+            // Over the picture, as `draw_focused` ends: the label hangs under the lifted tile.
+            if focused < n {
+                card_row::draw_label(p, Self::lifted(sty, n, focused, frame.row), sty.focus_scale, sty, label, measure);
+            }
+        });
     }
 
-    /// A persistent-caption sample; each tile uses the same label painter as a real grid.
-    pub fn draw_labeled<'a>(p: Painter, area: Rect, sty: &RowStyle,
+    /// Paint `tiles` as a library grid shows them while values are on: every tile wears its sort
+    /// value line (`value(i)`) at rest, and the lifted one wears it bold, through the same painter
+    /// a real grid draws with ([`card_row::draw_sort_value`]). A tile at rest is a dimmed column:
+    /// its value line dims with it.
+    pub fn draw_values<'a>(p: Painter, frame: &SampleFrame<'_>, sty: &RowStyle,
         tiles: impl ExactSizeIterator<Item = Art<'a>>, focused: usize,
-        mut label: impl FnMut(usize) -> TileLabel, measure: &dyn Measure) {
-        let n = tiles.len();
-        let mut lifted = None;
-        for (i, art) in tiles.enumerate() {
-            if i == focused {
-                lifted = Some((art, label(i)));
-            } else {
-                let rect = Self::tile(sty, n, i, area);
-                let mut label = label(i); label.static_text = true;
-                card_row::draw_label(p, rect, 1.0, sty, &label, measure);
-                card_row::draw_tile(p, art, rect, 1.0, sty, None);
+        mut value: impl FnMut(usize) -> SortValue, measure: &dyn Measure) {
+        let arts: Vec<Art<'a>> = tiles.collect();
+        let n = arts.len();
+        Self::framed(p, frame, sty, &arts, focused, measure, |p| {
+            // Over every tile, as the grid draws them: the lifted card's shadow reaches the value line.
+            for i in 0..n {
+                let (rect, s, layer) = if i == focused {
+                    (Self::lifted(sty, n, i, frame.row), sty.focus_scale, p)
+                } else {
+                    (Self::tile(sty, n, i, frame.row), 1.0, p.alpha(frame.rest_alpha))
+                };
+                card_row::draw_sort_value(layer, rect, s, sty, &value(i), measure, i == focused);
             }
+        });
+    }
+
+    /// The frame's panel and tiles as one cached picture ([`Painter::cached_region`]), then `text`
+    /// clipped to the frame, then its foot caption. The art of every tile is asked for ONCE, up front,
+    /// in the order the tiles are painted (the resting ones, the lifted one last): the key needs the
+    /// answer before anything is drawn, and the draw is handed it.
+    fn framed(p: Painter, frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>], focused: usize,
+        measure: &dyn Measure, text: impl FnOnce(Painter)) {
+        let led = Self::lead(p, sty, frame, arts, focused);
+        let key = Self::cache_key(frame, sty, arts, &led, focused);
+        // The skeletons in the picture are counted on every frame it is shown, drawn or served
+        // (`Painter::cached_region`): this draws nothing of the kind itself.
+        p.cached_region(key, frame.rect, |q| {
+            frame.panel(q);
+            let _clip = ClipScope::open_in(q, frame.rect);
+            Self::tiles(q, frame, sty, arts, &led, focused);
+        });
+        {
+            let _clip = ClipScope::open_in(p, frame.rect);
+            text(p);
         }
-        if let Some((art, label)) = lifted {
-            card_row::draw_focused(p, art, Self::lifted(sty, n, focused, area), sty.focus_scale, sty, None, &label, measure);
+        frame.draw_foot(p, measure);
+    }
+
+    /// Ask for every tile's art, in paint order (the resting tiles, then the lifted one), each once.
+    fn lead(p: Painter, sty: &RowStyle, frame: &SampleFrame<'_>, arts: &[Art<'_>], focused: usize) -> Vec<ArtImage> {
+        let n = arts.len();
+        let mut led = vec![ArtImage::NONE; n];
+        for (i, art) in arts.iter().enumerate().filter(|(i, _)| *i != focused) {
+            led[i] = card_row::lead_focused(p, art, Self::tile(sty, n, i, frame.row), 1.0);
+        }
+        if focused < n {
+            led[focused] = card_row::lead_focused(p, &arts[focused], Self::lifted(sty, n, focused, frame.row), sty.focus_scale);
+        }
+        led
+    }
+
+    /// The tiles of a row without their label, the lifted one last, the others dimmed.
+    fn tiles(p: Painter, frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>], led: &[ArtImage], focused: usize) {
+        let n = arts.len();
+        let rest = p.alpha(frame.rest_alpha);
+        for (i, art) in arts.iter().enumerate().filter(|(i, _)| *i != focused) {
+            card_row::draw_tile_led(rest, *art, Self::tile(sty, n, i, frame.row), 1.0, sty, None, Some(led[i]));
+        }
+        if focused < n {
+            card_row::draw_focused_tile_led(p, arts[focused], Self::lifted(sty, n, focused, frame.row), sty.focus_scale, sty, None, Some(led[focused]));
+        }
+    }
+
+    /// **The name of the picture [`tiles`](Self::tiles) and the panel draw**: every input of it, and
+    /// nothing of the text over it. `None` while the picture is not settled - a tile's art is still
+    /// dissolving in over its skeleton ([`ArtImage::shown`] below 1) - so it is drawn live until it
+    /// is, rather than frozen mid-fade into the texture.
+    ///
+    /// The inputs: the panel's rect (its rim and fill are constants), the row's rect, the style's
+    /// size, gap, radius and focus scale, which tile is lifted, how much of the rest shows, and per
+    /// tile the texture it resolved to and its decoded size (the crop) and what else the card draws
+    /// from its facts: the watched disc, the resume bar, the collection's name and fan.
+    fn cache_key(frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>], led: &[ArtImage], focused: usize) -> Option<u64> {
+        if led.iter().any(|image| image.shown < 1.0) {
+            return None;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for r in [frame.rect, frame.row] {
+            [r.x, r.y, r.w, r.h].map(f32::to_bits).hash(&mut h);
+        }
+        [frame.rest_alpha, sty.w, sty.h, sty.gap, sty.radius, sty.focus_scale].map(f32::to_bits).hash(&mut h);
+        (sty.circular, focused, arts.len()).hash(&mut h);
+        for (art, image) in arts.iter().zip(led) {
+            (image.tex, image.w.to_bits(), image.h.to_bits()).hash(&mut h);
+            Self::hash_art(art, &mut h);
+        }
+        Some(h.finish())
+    }
+
+    /// What of `art` the card draws besides its texture.
+    fn hash_art(art: &Art<'_>, h: &mut impl Hasher) {
+        std::mem::discriminant(art).hash(h);
+        match art {
+            Art::Poster(m) | Art::Still(m) => m
+                .map(|m| {
+                    (
+                        (m.src, m.thumb, m.still, m.art, m.kind as u8, m.title),
+                        (m.watched, m.unwatched, m.composite_thumb, m.child_count, m.season_index, m.ep_index),
+                        m.resume.map(|r| r.frac.to_bits()),
+                    )
+                })
+                .hash(h),
+            Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => (*sid, *key, res.0, res.1).hash(h),
         }
     }
 }
@@ -71,6 +227,9 @@ impl SampleRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draw_census::capture_runs;
+    use crate::fixture::FixtureMeasure;
+    use crate::placeholder;
 
     #[test]
     fn the_row_is_centred_and_the_lifted_tile_grows_about_its_own_centre() {
@@ -85,5 +244,319 @@ mod tests {
         let up = SampleRow::lifted(&sty, 3, 1, area);
         let (c0, c1) = ((tiles[1].x + tiles[1].w * 0.5), (up.x + up.w * 0.5));
         assert!((c0 - c1).abs() < 1e-3 && up.w > tiles[1].w);
+    }
+
+    /// The board's frame: Library cards 35 px apart in a 660 px panel stand at -80 / 205 / 490, the
+    /// outer two cut by the panel's edges and only the middle one wholly inside.
+    #[test]
+    fn a_row_wider_than_its_frame_stands_at_the_boards_offsets_with_the_outer_tiles_cut() {
+        let sty = RowStyle { gap: 35.0, ..RowStyle::HOME };
+        let frame = Rect::new(96.0, 470.0, 660.0, 556.0);
+        let row = Rect::new(frame.x, frame.y + 40.0, frame.w, sty.h);
+        let xs: Vec<f32> = (0..3).map(|i| SampleRow::tile(&sty, 3, i, row).x - frame.x).collect();
+        for (got, want) in xs.iter().zip([-80.0, 205.0, 490.0]) {
+            assert!((got - want).abs() < 1e-3, "{xs:?}");
+        }
+        assert_eq!((sty.w, sty.h), (250.0, 375.0), "the Library's own card");
+        let inside = |r: Rect| r.x >= frame.x && r.x + r.w <= frame.x + frame.w;
+        assert!(!inside(SampleRow::tile(&sty, 3, 0, row)) && !inside(SampleRow::tile(&sty, 3, 2, row)));
+        assert!(inside(SampleRow::lifted(&sty, 3, 1, row)), "the lifted tile is whole");
+    }
+
+    #[test]
+    fn the_foot_caption_is_centred_micro_tertiary_32_px_above_the_frames_bottom_and_absent_without_one() {
+        let sty = RowStyle { gap: 35.0, ..RowStyle::HOME };
+        let rect = Rect::new(96.0, 470.0, 660.0, 556.0);
+        let frame = |foot| SampleFrame { rect, row: Rect::new(rect.x, rect.y + 40.0, rect.w, sty.h), rest_alpha: 0.35, foot };
+        let draw = |foot| capture_runs(|| {
+            SampleRow::draw(Painter::recording(), &frame(foot), &sty, (0..3).map(|_| Art::Poster(None)), 1, &TileLabel::default(),
+                &FixtureMeasure);
+        });
+        let runs = draw(Some("Sorted by Year"));
+        let foot = runs.iter().find(|r| r.text == "Sorted by Year").expect("the foot caption is drawn");
+        assert_eq!((foot.size, foot.bold, foot.ink), (theme::size::MICRO, false, theme::TEXT_TERTIARY));
+        assert!((foot.at.x - rect.cx()).abs() < 1e-3 && foot.align == 1, "centred on the frame: {:?}", foot.at);
+        let bottom = rect.y + rect.h;
+        assert!(foot.at.y < bottom - FOOT_BOTTOM && foot.at.y > bottom - FOOT_BOTTOM - FOOT_LINE_H - 8.0, "its line box ends 32 px above the foot: {:?}", foot.at);
+        assert!(draw(None).iter().all(|r| r.text != "Sorted by Year"), "no foot, no caption");
+    }
+
+    #[test]
+    fn a_tile_at_rest_is_dimmed_with_its_value_line_and_the_lifted_column_is_not() {
+        let sty = RowStyle { gap: 35.0, ..RowStyle::HOME };
+        let rect = Rect::new(96.0, 470.0, 660.0, 556.0);
+        let frame = SampleFrame { rect, row: Rect::new(rect.x, rect.y + 40.0, rect.w, sty.h), rest_alpha: 0.35, foot: None };
+        let value = |i: usize| SortValue { text: ["2026", "2025", "2024"][i].to_string(), ..Default::default() };
+        let runs = capture_runs(|| {
+            SampleRow::draw_values(Painter::recording(), &frame, &sty, (0..3).map(|_| Art::Poster(None)), 1, value, &FixtureMeasure);
+        });
+        let ink = |text: &str| runs.iter().filter(|r| r.text == text).map(|r| r.ink[3]).fold(0.0f32, f32::max);
+        assert!(ink("2026") <= 0.35 + 1e-3 && ink("2026") > 0.0, "the left value dims with its tile: {}", ink("2026"));
+        assert!(ink("2024") <= 0.35 + 1e-3 && ink("2024") > 0.0, "and the right: {}", ink("2024"));
+        assert!(ink("2025") > 0.9, "the lifted column's value is whole: {}", ink("2025"));
+    }
+
+    // ---- the cached picture: what names it ----
+
+    use crate::tile::TileFacts;
+    use plx_gfx::gfx::RegionSlot;
+
+    fn board() -> (SampleFrame<'static>, RowStyle) {
+        let sty = RowStyle { gap: 35.0, ..RowStyle::HOME };
+        let rect = Rect::new(96.0, 470.0, 660.0, 556.0);
+        (SampleFrame { rect, row: Rect::new(rect.x, rect.y + 40.0, rect.w, sty.h), rest_alpha: 0.35, foot: None }, sty)
+    }
+
+    fn facts(thumb: &str) -> TileFacts<'_> {
+        TileFacts { thumb, src: 3, ..Default::default() }
+    }
+
+    fn image(tex: u32) -> ArtImage {
+        ArtImage { tex, w: 250.0, h: 375.0, shown: 1.0 }
+    }
+
+    fn key_of(frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>], led: &[ArtImage], focused: usize) -> Option<u64> {
+        SampleRow::cache_key(frame, sty, arts, led, focused)
+    }
+
+    /// The same inputs are the same name, however often they are asked; every input the picture is
+    /// drawn from is part of it. (The label, the values and the foot are not: they are drawn live over it.)
+    #[test]
+    fn each_input_of_the_picture_changes_its_key_and_the_text_over_it_does_not() {
+        let (frame, sty) = board();
+        let arts = [Art::Poster(Some(facts("/a"))), Art::Poster(Some(facts("/b"))), Art::Poster(Some(facts("/c")))];
+        let led = [image(5), image(6), image(7)];
+        let base = key_of(&frame, &sty, &arts, &led, 1).expect("a settled picture has a name");
+        assert_eq!(key_of(&frame, &sty, &arts, &led, 1), Some(base), "the same inputs are the same name");
+
+        // geometry and style
+        let moved = SampleFrame { rect: Rect::new(97.0, 470.0, 660.0, 556.0), ..frame };
+        let dimmer = SampleFrame { rest_alpha: 0.30, ..frame };
+        let wider = RowStyle { gap: 36.0, ..sty };
+        let bigger = RowStyle { focus_scale: sty.focus_scale + 0.01, ..sty };
+        assert_ne!(key_of(&moved, &sty, &arts, &led, 1), Some(base), "the panel's place");
+        assert_ne!(key_of(&dimmer, &sty, &arts, &led, 1), Some(base), "how much of a resting tile shows");
+        assert_ne!(key_of(&frame, &wider, &arts, &led, 1), Some(base), "the gap");
+        assert_ne!(key_of(&frame, &bigger, &arts, &led, 1), Some(base), "the lift");
+        assert_ne!(key_of(&frame, &sty, &arts, &led, 0), Some(base), "which tile is lifted");
+        assert_ne!(key_of(&frame, &sty, &arts[..2], &led[..2], 1), Some(base), "how many tiles");
+
+        // art: arrival (the texture), its decoded size, which poster, and the marks on it
+        let arrived = [image(5), image(6), image(8)];
+        let recut = [image(5), ArtImage { w: 300.0, ..image(6) }, image(7)];
+        assert_ne!(key_of(&frame, &sty, &arts, &arrived, 1), Some(base), "a poster arriving");
+        assert_ne!(key_of(&frame, &sty, &arts, &recut, 1), Some(base), "its crop");
+        let other = [arts[0], Art::Poster(Some(facts("/b2"))), arts[2]];
+        assert_ne!(key_of(&frame, &sty, &other, &led, 1), Some(base), "another poster on the same texture");
+        let seen = [arts[0], Art::Poster(Some(TileFacts { watched: true, ..facts("/b") })), arts[2]];
+        let half = [arts[0], Art::Poster(Some(TileFacts { resume: Some(crate::tile::Resume { frac: 0.4, left_ms: 1 }), ..facts("/b") })), arts[2]];
+        assert_ne!(key_of(&frame, &sty, &seen, &led, 1), Some(base), "the watched disc");
+        assert_ne!(key_of(&frame, &sty, &half, &led, 1), Some(base), "the resume bar");
+
+        // the text over it is not part of it
+        let footed = SampleFrame { foot: Some("The library you last opened"), ..frame };
+        assert_eq!(key_of(&footed, &sty, &arts, &led, 1), Some(base), "the foot caption is drawn live");
+    }
+
+    /// Art that has arrived and is still dissolving in over its skeleton is not a settled picture:
+    /// it has no name, so it is drawn live until it is whole.
+    #[test]
+    fn a_picture_with_art_mid_dissolve_has_no_name() {
+        let (frame, sty) = board();
+        let arts = [Art::Poster(Some(facts("/a"))), Art::Poster(Some(facts("/b"))), Art::Poster(Some(facts("/c")))];
+        let mid = [image(5), ArtImage { shown: 0.4, ..image(6) }, image(7)];
+        assert_eq!(key_of(&frame, &sty, &arts, &mid, 1), None);
+        let done = [image(5), ArtImage { shown: 1.0, ..image(6) }, image(7)];
+        assert!(key_of(&frame, &sty, &arts, &done, 1).is_some());
+    }
+
+    /// The slot half of the draw-count pin: the names ([`SampleRow::cache_key`]) of a scripted run of
+    /// frames go through `RegionSlot::serve`, the very step `region_paint` serves from, with a counter
+    /// for the texture. It does NOT go through `SampleRow::draw`; the asks `draw` makes are pinned by
+    /// `a_settled_draw_asks_for_its_region_by_name_once_and_an_unsettled_one_asks_without_a_name`.
+    /// Twenty frames of the same inputs are ONE fill; each changed input is one more; a frame
+    /// mid-dissolve has no name, so it never reaches the slot (it is drawn live); and the two pages of a
+    /// push - the same picture, so the same name - share the fill.
+    #[test]
+    fn the_same_inputs_fill_once_each_change_fills_again_and_a_dissolve_draws_live() {
+        let (frame, sty) = board();
+        let arts = [Art::Poster(Some(facts("/a"))), Art::Poster(Some(facts("/b"))), Art::Poster(Some(facts("/c")))];
+        let mut slot = RegionSlot::new();
+        let (mut fills, mut live) = (0u32, 0u32);
+        let mut frame_of = |led: &[ArtImage], frame: &SampleFrame<'_>, pages: usize| {
+            for _ in 0..pages {
+                match key_of(frame, &sty, &arts, led, 1) {
+                    None => live += 1,
+                    Some(k) => {
+                        slot.serve(&mut fills, k, |f| { *f += 1; true }, |_| true);
+                    }
+                }
+            }
+            (fills, live)
+        };
+        let resting = [image(5), image(6), image(7)];
+        for _ in 0..20 {
+            frame_of(&resting, &frame, 1);
+        }
+        assert_eq!(frame_of(&resting, &frame, 1).0, 1, "twenty frames, one fill");
+        for _ in 0..12 {
+            frame_of(&resting, &frame, 2); // a push: both pages, one picture
+        }
+        assert_eq!(frame_of(&resting, &frame, 2).0, 1, "both pages of a push are served by the one fill");
+        let mid = [image(5), ArtImage { shown: 0.5, ..image(6) }, image(7)];
+        assert_eq!(frame_of(&mid, &frame, 1), (1, 1), "a frame mid-dissolve is drawn live, and fills nothing");
+        let arrived = [image(5), image(6), image(8)];
+        assert_eq!(frame_of(&arrived, &frame, 1).0, 2, "the settled picture is filled once it is whole");
+        assert_eq!(frame_of(&arrived, &SampleFrame { rest_alpha: 0.5, ..frame }, 1).0, 3, "a changed input fills again");
+        assert_eq!(frame_of(&arrived, &SampleFrame { rest_alpha: 0.5, ..frame }, 1).0, 3, "and holds");
+    }
+
+    /// On the host no GL is linked: the picture is drawn live, once, with the page's own painter.
+    #[test]
+    fn without_a_gl_context_the_picture_is_drawn_live_exactly_once() {
+        let mut runs = 0;
+        Painter::root().cached_region(Some(1), Rect::new(0.0, 0.0, 10.0, 10.0), |_| runs += 1);
+        assert_eq!(runs, 1);
+        Painter::root().cached_region(None, Rect::new(0.0, 0.0, 10.0, 10.0), |_| runs += 1);
+        assert_eq!(runs, 2, "an unnamed picture is always live");
+    }
+
+    // ---- the cached picture: what it asks of the renderer, and what it owes the frame ----
+
+    /// The renderer's one slot as a table: `RegionSlot::serve` is the step, the texture a pair of
+    /// counters. What `region_paint` is to `Painter::cached_region`, this is on the host.
+    #[derive(Default)]
+    struct Texture {
+        slot: RegionSlot,
+        fills: u32,
+        serves: u32,
+    }
+
+    impl Texture {
+        fn serve(&mut self, key: Option<u64>, paint: &mut dyn FnMut()) -> bool {
+            let Some(key) = key else { return false };
+            let Self { slot, fills, serves } = self;
+            slot.serve(&mut (), key, |_| { paint(); *fills += 1; true }, |_| { *serves += 1; true })
+        }
+    }
+
+    /// What the cached picture draws: the panel and the tiles, as `framed` hands them to the region.
+    fn picture(q: Painter, frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>]) {
+        frame.panel(q);
+        let _clip = ClipScope::open_in(q, frame.rect);
+        SampleRow::tiles(q, frame, sty, arts, &vec![ArtImage::NONE; arts.len()], 1);
+    }
+
+    /// Ask for `arts` as the picture named `key`, from `serve`, and say how many placeholders the frame
+    /// counted.
+    fn counted(frame: &SampleFrame<'_>, sty: &RowStyle, arts: &[Art<'_>], key: u64,
+        mut serve: impl FnMut(Option<u64>, &mut dyn FnMut()) -> bool) -> u32 {
+        // Declared, not painted: the host has no GL, and a discovery walk is where every primitive
+        // declares itself while the counter still sees what a frame would.
+        let ((), seen) = placeholder::capture_declared(|| {
+            Painter::root().cached_region_in(
+                |k, _, _, _, paint| serve(k, paint), Some(key), frame.rect, |q| picture(q, frame, sty, arts));
+        });
+        seen.count
+    }
+
+    /// **The placeholders a picture holds are counted on every frame it is shown**, not only on the
+    /// frame it is drawn: the live draw, the fill and the frames served from the texture all read the
+    /// same count, for every kind of art (an empty `Poster` and an empty `Still` slot both wear a
+    /// skeleton), and a picture that is filled over another carries its own count, not the old one's.
+    #[test]
+    fn a_frame_served_from_the_texture_counts_the_placeholders_the_fill_drew() {
+        let (frame, sty) = board();
+        let live = |arts: &[Art<'_>]| counted(&frame, &sty, arts, 7, |_, _| false);
+        for arts in [
+            vec![Art::Poster(None), Art::Poster(None), Art::Poster(None)],
+            vec![Art::Still(None), Art::Still(None)],
+            vec![Art::Poster(None), Art::Still(None)],
+        ] {
+            let want = live(&arts);
+            assert!(want > 0, "a tile with no art wears a skeleton: {want}");
+            let mut texture = Texture::default();
+            assert_eq!(counted(&frame, &sty, &arts, 7, |k, p| texture.serve(k, p)), want, "the fill frame counts what a live draw counts");
+            for n in 0..3 {
+                assert_eq!(counted(&frame, &sty, &arts, 7, |k, p| texture.serve(k, p)), want, "served frame {n} counts it again");
+            }
+            assert_eq!((texture.fills, texture.serves), (1, 4), "one fill, and every frame after it is one quad");
+        }
+
+        // A different picture is a new fill, and the debt follows the key the texture holds.
+        let (three, one) = ([Art::Poster(None); 3], [Art::Poster(None)]);
+        let (want3, want1) = (live(&three), live(&one));
+        assert!(want3 > want1 && want1 > 0);
+        let mut texture = Texture::default();
+        for key in [1, 1, 2, 2] {
+            let (arts, want): (&[Art<'_>], u32) = if key == 1 { (&three, want3) } else { (&one, want1) };
+            assert_eq!(counted(&frame, &sty, arts, key, |k, p| texture.serve(k, p)), want, "key {key}");
+        }
+        assert_eq!(texture.fills, 2);
+    }
+
+    /// A picture that holds no placeholder counts none on a served frame either.
+    #[test]
+    fn a_picture_with_no_placeholder_is_served_without_one() {
+        let mut texture = Texture::default();
+        for _ in 0..3 {
+            let ((), seen) = placeholder::capture_declared(|| {
+                Painter::root().cached_region_in(
+                    |key, _, _, _, paint| texture.serve(key, paint), Some(3), Rect::new(0.0, 0.0, 10.0, 10.0), |_| {});
+            });
+            assert_eq!(seen.count, 0);
+        }
+        assert_eq!((texture.fills, texture.serves), (1, 3));
+    }
+
+    /// A clip the caller holds would be baked into the texture at one offset and served at every other:
+    /// under an open `ClipScope` (a scrolling list's) the renderer is not even asked, the picture is
+    /// drawn live with the painter given, and it is served again once the scope is gone.
+    #[test]
+    fn a_region_asked_under_an_open_clip_scope_is_drawn_live_and_never_filled() {
+        let (frame, _) = board();
+        let mut texture = Texture::default();
+        let ask = |texture: &mut Texture, p: Painter| {
+            let mut drawn_at = None;
+            p.cached_region_in(|key, _, _, _, paint| texture.serve(key, paint), Some(9), frame.rect, |q| drawn_at = Some(q.dx()));
+            drawn_at
+        };
+        let scope = ClipScope::open_in(Painter::root(), Rect::new(0.0, 0.0, 300.0, 300.0));
+        assert!(ClipScope::current().is_some());
+        for _ in 0..3 {
+            assert_eq!(ask(&mut texture, Painter::root().translate(5.0, 0.0)), Some(5.0), "live, in the caller's own space");
+        }
+        assert_eq!((texture.fills, texture.serves), (0, 0), "no fill and no quad under a clip");
+        drop(scope);
+        assert_eq!(ask(&mut texture, Painter::root().translate(5.0, 0.0)), Some(0.0), "the fill draws with the identity painter");
+        assert_eq!((texture.fills, texture.serves), (1, 1), "and with the clip gone it is served");
+    }
+
+    /// **What `SampleRow::draw` asks of the renderer, end to end** (the draw through `framed` and
+    /// `Painter::cached_region` to the renderer's door, `gfx::region_asks`; the host has no GL, so the
+    /// ask is all there is to see, and the draw is declared, not painted): a settled picture asks for its region BY NAME, once per draw - a
+    /// `framed` that stopped caching, or asked twice, fails here - and one whose art has not arrived
+    /// whole asks with no name, so it is drawn live and is never frozen mid-dissolve.
+    #[test]
+    fn a_settled_draw_asks_for_its_region_by_name_once_and_an_unsettled_one_asks_without_a_name() {
+        let (frame, sty) = board();
+        let asks_of = |arts: [Art<'_>; 3]| {
+            let before = plx_gfx::gfx::region_asks();
+            placeholder::declared(|| {
+                SampleRow::draw(Painter::root(), &frame, &sty, arts.into_iter(), 1, &TileLabel::default(), &FixtureMeasure);
+            });
+            let after = plx_gfx::gfx::region_asks();
+            (after.0 - before.0, after.1 - before.1)
+        };
+        let settled = [Art::Poster(None), Art::Poster(None), Art::Poster(None)];
+        assert_eq!(asks_of(settled), (1, 0), "one named ask per draw");
+        assert_eq!(asks_of(settled), (1, 0), "and again the next frame");
+
+        // Posters with a card identity and no texture yet: the art has not landed, so the skeleton is
+        // the picture and its card reports `shown` 0 - no name.
+        let waiting = |owner| Art::Poster(Some(TileFacts { owner, ..facts("/waiting") }));
+        crate::card_motion::begin_frame(100_000);
+        assert_eq!(asks_of([waiting(9_301), waiting(9_302), waiting(9_303)]), (0, 1), "unsettled art: asked for, but not by name");
+        assert_eq!(asks_of(settled), (1, 0), "settled again");
     }
 }

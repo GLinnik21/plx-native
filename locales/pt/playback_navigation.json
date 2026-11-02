@@ -2,5 +2,8 @@
   "settings.playback.instant_dpad_seeking": "Salto direto com direcional",
   "settings.playback.instant_dpad_seeking.copy": "Com os controlos ocultos, Esquerda/Direita salta o intervalo escolhido. Com os controlos visíveis, confirma com OK. Desativado mostra primeiro os controlos.",
   "settings.playback.instant_dpad_seeking.off": "Desativados",
-  "settings.playback.instant_dpad_seeking.on": "Ativados"
+  "settings.playback.instant_dpad_seeking.on": "Ativados",
+  "settings.playback.dolby_vision": "Dolby Vision",
+  "settings.playback.dolby_vision.copy": "Automático usa Dolby Vision quando o televisor o suporta. Desativado reproduz a camada HDR10. Os ficheiros sem camada HDR10 são convertidos pelo seu servidor Plex e podem não ser reproduzidos.",
+  "settings.playback.dolby_vision.off": "Desativado"
 }

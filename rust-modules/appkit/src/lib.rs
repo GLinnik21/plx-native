@@ -22,6 +22,7 @@
 #![allow(dead_code)]
 
 pub mod chapters_panel;
+pub mod chip_row; // the facts/badges chip run fitted tail-first into one line, shared by the Info card and the HUD's `facts` cell
 pub mod hero_layout; // shared hero row geometry and meta line (Detail and the catalog page)
 pub mod hud_format; // the HUD plugin package format 1.0: descriptor table, strict parser, SVG subset checker (docs/hud-plugins.md)
 pub mod held_key; // the key-hold half of hold-to-scrub, shared by the player HUD and the trailer transport

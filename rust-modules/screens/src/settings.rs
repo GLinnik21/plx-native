@@ -309,6 +309,11 @@ impl RouteSurface {
                     MachineId::Instance(self.id),
                     Delivery::Screen(ScreenEvent::Enter(e)),
                 )),
+                // an inner page raising or lowering the television keyboard (the HUD page's address field): the
+                // keyboard belongs to the SURFACE's instance, the one the dispatcher seats input on
+                Fx::Deliver(_, Delivery::Keyboard { up }) => {
+                    fx.push(Fx::Deliver(MachineId::Instance(self.id), Delivery::Keyboard { up }))
+                }
                 Fx::App(a) => fx.push(Fx::App(a)),
                 Fx::Log(l) => fx.push(Fx::Log(l)),
                 Fx::Press(arm) => fx.push(Fx::Press(arm)),
@@ -346,8 +351,9 @@ impl RouteSurface {
     /// libraries → Done/Cancel). Both are correct at the depth the ROOT surface puts them at —
     /// pushed over the Settings root, so the pop reveals it — and both empty the stack when the
     /// surface was booted ROOTED at that page, which `/tmp/plxnative-settings=privacy|home` does
-    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `devtrig::read` out and always
-    /// roots at `SettingsPage::Root`, so this was never a shipping bug — but a Pop with nothing
+    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `devtrig::read` out and roots
+    /// at `SettingsPage::Root`, except for the Library's Favorite libraries row, which roots at
+    /// that page and relies on exactly this — but a Pop with nothing
     /// under it is a statement the page means ("close me"), not an accident to be guarded against
     /// at each emitter, and the surface is the only thing that knows there is nothing under it.
     ///
@@ -474,6 +480,7 @@ fn mount_page(
         }
         SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
+        SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
     }
 }
 
@@ -696,6 +703,8 @@ impl<H: DirectoryLike> Machine<H> for RouteSurface {
             ScreenEvent::PressHold(id) => self.step_top(ScreenEvent::PressHold(*id), cx, fx),
             ScreenEvent::PressCommit(id) => self.step_top(ScreenEvent::PressCommit(*id), cx, fx),
             ScreenEvent::Timer(id) => self.step_top(ScreenEvent::Timer(*id), cx, fx),
+            ScreenEvent::App(super::registry::AppMsg::PlaybackTrace(status)) => self.step_top(
+                ScreenEvent::App(super::registry::AppMsg::PlaybackTrace(*status)), cx, fx),
             ScreenEvent::StoreChanged(o, g) => {
                 for eid in self.inner.entries.iter().map(|e| e.id).collect::<Vec<_>>() {
                     self.deliver(eid, ScreenEvent::StoreChanged(*o, *g), cx, fx);
@@ -974,6 +983,9 @@ enum RootId {
     /// ([`root_form`] assigns it); its identity is the machine, so a rebuild keeps the row.
     Plaintext(ServerMachineId),
     Privacy,
+    PlaybackTrace,
+    TraceExport,
+    TraceDelete,
     Legal,
     About,
 }
@@ -995,6 +1007,9 @@ impl FormId for RootId {
             RootId::About => 9,
             RootId::Resolution => 10,
             RootId::UnderPosters => 11,
+            RootId::PlaybackTrace => 12,
+            RootId::TraceExport => 13,
+            RootId::TraceDelete => 14,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1009,6 +1024,9 @@ enum Action {
     Door,
     AutoSignIn,
     TrailerAutoplay,
+    PlaybackTrace,
+    TraceExport,
+    TraceDelete,
     /// A server's "connect without encryption" switch.
     Plaintext(ServerMachineId),
 }
@@ -1050,6 +1068,7 @@ struct RootState {
     /// Each unencrypted-connection switch, in row order. Written to the canon only when there is
     /// one, so every other root's digest is unchanged.
     plaintext: Vec<bool>,
+    trace: plx_platform::playback_trace::Status,
 }
 
 impl LogicalState for RootState {
@@ -1058,6 +1077,7 @@ impl LogicalState for RootState {
         if self.under_posters != plx_plex::plex::session::UnderPosters::DEFAULT {
             w.u8(self.under_posters.pack());
         }
+        if self.trace != plx_platform::playback_trace::Status::Off { w.u8(0xd1).u8(self.trace as u8); }
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -1070,6 +1090,7 @@ impl LogicalState for RootState {
             "root sel={} auto_sign_in={} trailer_autoplay={} language={}",
             self.sel.0, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
         ));
+        out.push_str(&format!(" trace={:?}", self.trace));
         if !self.plaintext.is_empty() {
             out.push_str(&format!(" plaintext={:?}", self.plaintext));
         }
@@ -1095,6 +1116,7 @@ struct PlaintextRowInput {
 /// state) before calling the pure builder, so the builder itself never reads a global and a test
 /// can drive it directly with a synthesized combination no real session may currently be in.
 struct RootInputs {
+    trace: plx_platform::playback_trace::Status,
     signed_in: bool,
     /// A one-person account already skips the profile picker; only a multi-user account is ever
     /// shown the Automatically Sign In switch.
@@ -1120,10 +1142,23 @@ struct RootInputs {
 /// [`RootInputs`]. `RootPage::rebuild` gathers the inputs and calls this; the text-fit tests
 /// (`settings_text_fit_tests.rs`) call it directly, over every `RootInputs` combination worth
 /// checking, without a real signed-in session. Reordering the page is moving a line here.
+fn trace_label(status: plx_platform::playback_trace::Status) -> &'static str {
+    use plx_platform::playback_trace::Status;
+    match status {
+        Status::Off => plx_platform::i18n::msg::settings_trace_off(),
+        Status::Recording => plx_platform::i18n::msg::settings_trace_recording(),
+        Status::Saved => plx_platform::i18n::msg::settings_trace_saved(),
+        Status::Saving => plx_platform::i18n::msg::settings_trace_saving(),
+        Status::Exported => plx_platform::i18n::msg::settings_trace_exported(),
+        Status::Unavailable => plx_platform::i18n::msg::settings_trace_unavailable(),
+        Status::Failed => plx_platform::i18n::msg::settings_trace_failed(),
+    }
+}
+
 fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
     let signed_in = inputs.signed_in;
     // Order: Libraries, Playback (player experience only), System (Language, Automatically Sign
-    // In, Trailer autoplay), Unencrypted connections, Privacy, then About alone at the very end.
+    // In, Trailer autoplay), Unencrypted connections, Privacy, Diagnostics, then About alone at the very end.
     //
     // The Libraries section is Libraries and the row is Favorite libraries: the switch governs
     // the whole app — Home's shelves, the top tab strip and the Library's Sources picker.
@@ -1242,6 +1277,18 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
                 .detail(plx_platform::i18n::msg::settings_legal_detail())
                 .chevron(true),
         );
+    let recording = inputs.trace == plx_platform::playback_trace::Status::Recording;
+    let trace = FormSection::new(plx_platform::i18n::msg::settings_trace_section())
+        .disabled(inputs.trace == plx_platform::playback_trace::Status::Saving)
+        .item(RootId::PlaybackTrace, RowKind::Toggle, Action::PlaybackTrace,
+            Row::new(plx_platform::i18n::msg::settings_trace_title())
+                .detail(plx_platform::i18n::msg::settings_trace_detail()).toggle(recording))
+        .item(RootId::TraceExport, RowKind::Button, Action::TraceExport,
+            Row::new(plx_platform::i18n::msg::settings_trace_export())
+                .detail(plx_platform::i18n::msg::settings_trace_export_detail())
+                .value(trace_label(inputs.trace)))
+        .item(RootId::TraceDelete, RowKind::Button, Action::TraceDelete,
+            Row::new(plx_platform::i18n::msg::settings_trace_delete()));
     let about = FormSection::new(plx_platform::i18n::msg::settings_about_section()).item(
         RootId::About,
         RowKind::Nav(SettingsPage::About),
@@ -1256,6 +1303,7 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
         .section(system)
         .section(plaintext)
         .section(privacy)
+        .section(trace)
         .section(about)
 }
 
@@ -1278,6 +1326,7 @@ impl RootPage {
                 language: plx_platform::i18n::Preference::System,
                 under_posters: plx_plex::plex::session::UnderPosters::DEFAULT,
                 plaintext: Vec::new(),
+                trace: plx_platform::playback_trace::Status::Off,
             },
         };
         s.rebuild(directory);
@@ -1307,6 +1356,7 @@ impl RootPage {
         self.state.under_posters = plx_media::route::under_posters();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
+            trace: self.state.trace,
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
             auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language,
             under_posters: self.state.under_posters, plaintext,
@@ -1398,6 +1448,12 @@ impl RootPage {
         };
         match action {
             Action::Door => {}
+            Action::PlaybackTrace => fx.push(Fx::App(AppFx::PlaybackTrace(
+                if self.state.trace == plx_platform::playback_trace::Status::Recording {
+                    plx_platform::playback_trace::Command::Stop
+                } else { plx_platform::playback_trace::Command::Start }))),
+            Action::TraceExport => fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Export))),
+            Action::TraceDelete => fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Delete))),
             Action::AutoSignIn => {
                 let on = !self.state.auto_sign_in;
                 if let Ok(ticket) = plx_plex::plex::session::queue_update_ticket(move |current|
@@ -1478,11 +1534,24 @@ impl Machine<InnerHost> for RootPage {
         }
         match ev {
             ScreenEvent::Enter(_) => {
+                // Read diagnostic status through the runner, never through a global in the screen.
+                fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status)));
                 // a return from a child: the favourite count may have changed
                 self.rebuild(cx.views);
                 Handled::Yes
             }
+            ScreenEvent::App(super::registry::AppMsg::PlaybackTrace(status)) => {
+                if self.state.trace != *status {
+                    self.state.trace = *status;
+                    self.rebuild(cx.views);
+                    fx.invalidate(Provenance::Landing(MachineId::Session));
+                }
+                Handled::Yes
+            }
             ScreenEvent::Tick(t) => {
+                if matches!(self.state.trace, plx_platform::playback_trace::Status::Recording | plx_platform::playback_trace::Status::Saving) {
+                    fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status)));
+                }
                 let mut landed = self.session_watch.changed();
                 if self.pending_auto.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
                     Err(std::sync::mpsc::TryRecvError::Empty))) {

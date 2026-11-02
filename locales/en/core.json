@@ -240,7 +240,7 @@
     "args": {
       "value": "str"
     },
-    "description": "A percentage. es and be put a no-break space before the percent sign."
+    "description": "A percentage. de, es and be put a no-break space before the percent sign."
   },
   "core.unit_b": {
     "value": "{value} B",

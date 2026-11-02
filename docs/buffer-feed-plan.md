@@ -9,6 +9,7 @@ displayed its SDR720p24 fixture through ACB on the webOS 4.5 dev set, both with 
 The Kodi/Moonlight approach runs the pipeline **in-process** via
 `StarfishMediaAPIs` (libplayerAPIs), so ACB binds the app-owned sink. Audio already works
 via ACB in the earlier experiments; the video-plane failure was the reason for that pivot.
+The firmware inventories and URI-mode findings are recorded in `docs/uri-mode.md`.
 
 ## Components to build
 

@@ -31,6 +31,10 @@ struct ListingData {
     letters: Arc<Vec<(String, i64)>>,
     /// Do `letters` describe the listing the query now asks for ([`super::SecState::letters_current`])?
     letters_current: bool,
+    /// The bands of the sort the grid is ordered by, while the counts on hand describe the listing the
+    /// query now asks for ([`super::SecState::shown_bands`]); `None` for a title sort, a sort with no
+    /// ladder, counts not yet landed or a listing with no rail.
+    bands: Option<Arc<super::bands::BandRail>>,
     sort_idx: usize,
     sort_desc: bool,
     genre: Option<Arc<GenreEntry>>,
@@ -118,6 +122,54 @@ impl ListingSnapshot {
         self
     }
 
+    /// A fixture listing sorted by the server sort `key` (the fixture's one sort is `titleSort`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_sort_key(self, key: &str) -> Self {
+        self.with_sorts(&[(key, key)], 0)
+    }
+
+    /// A fixture listing offering `sorts` (key, title), sorted by the one at `index`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_sorts(mut self, sorts: &[(&str, &str)], index: usize) -> Self {
+        if let Some(data) = &mut self.data {
+            data.sorts = Arc::new(sorts.iter().map(|(key, title)| SortEntry {
+                desc_key: String::new(),
+                key: (*key).into(),
+                title: (*title).into(),
+                default_desc: false,
+            }).collect());
+            data.sort_idx = index;
+        }
+        self
+    }
+
+    /// A fixture listing whose value sort has these band counts (`BandRail::new`), shown as current.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_bands(mut self, rail: super::bands::BandRail) -> Self {
+        if let Some(data) = &mut self.data {
+            data.bands = Some(Arc::new(rail));
+        }
+        self
+    }
+
+    /// A fixture listing sorted in the given direction.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_sort_desc(mut self, descending: bool) -> Self {
+        if let Some(data) = &mut self.data {
+            data.sort_desc = descending;
+        }
+        self
+    }
+
+    /// A fixture listing with the Unwatched filter on or off.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_unwatched(mut self, on: bool) -> Self {
+        if let Some(data) = &mut self.data {
+            data.unwatched = on;
+        }
+        self
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn absent() -> Self {
         Self { data: None }
@@ -154,6 +206,7 @@ impl ListingSnapshot {
                 genres: Arc::new(Vec::new()),
                 letters: Arc::new(letters),
                 letters_current: true,
+                bands: None,
                 sort_idx: 0,
                 sort_desc: false,
                 genre: None,
@@ -230,6 +283,17 @@ impl<'a> ListingView<'a> {
     pub fn letters(self) -> &'a [(String, i64)] {
         self.0.data.as_ref().filter(|s| s.letters_current).map_or(&[], |s| s.letters.as_slice())
     }
+    /// The bands of THIS listing's value sort, laid out in the listing's own order for the direction it
+    /// is sorted in: each band's first item and size, the unlabelled items before the first band
+    /// (`lead`, the no-value items of an ascending sort) and after the last (`tail`). `None` while the
+    /// counts on hand were made for other terms or another sort, or when there is no ladder for the
+    /// sort, so a stale list can never size a jump. Only the sorts the rail is ready for have one
+    /// (`BandFamily::rail_ready`). The one exception is a calendar sort's previous-day bands, shown
+    /// until the new day's read lands (the rail does not blink out at midnight).
+    pub fn bands(self) -> Option<&'a super::bands::Offsets> {
+        let rail = self.0.data.as_ref()?.bands.as_deref()?;
+        Some(rail.listed(self.sort_desc()))
+    }
     pub fn sort_index(self) -> usize {
         self.0.data.as_ref().map_or(0, |s| s.sort_idx)
     }
@@ -256,16 +320,27 @@ impl<'a> ListingView<'a> {
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
-    /// Is the A-Z rail offered? The sort is the title, ascending (the order the counts sum in), and
-    /// there are letters of THIS listing to jump to. Unwatched and a genre do not hide it: the letters
-    /// are asked with the grid's own terms and shown only while they describe them ([`Self::letters`]).
+    /// Is the A-Z LETTERS rail offered? The sort is the listing's Title entry
+    /// ([`SortEntry::is_title_order`]: `titleSort` for the section's own listing, the server's declared
+    /// composite for seasons and episodes), ascending (the order the counts sum in), and there are
+    /// letters of THIS listing to jump to. Before the menu has landed no sort is sent and the server's
+    /// default order is that Title order (measured for seasons and episodes), so it counts as one.
+    /// Unwatched and a genre do not hide it: the letters are asked with the grid's own terms and shown
+    /// only while they describe them ([`Self::letters`]). A value sort has no letters rail, whatever
+    /// the letters on hand; its bands are [`Self::bands_available`].
     pub fn rail_available(self) -> bool {
         self.id().is_some()
             && self
                 .sorts()
                 .get(self.sort_index())
-                .is_none_or(|s| s.key == "titleSort" && !self.sort_desc())
+                .is_none_or(|s| s.is_title_order(self.library_type()) && !self.sort_desc())
             && self.letters().len() > 1
+    }
+    /// Is a rail of BANDS offered? The grid is ordered by a value sort with bands
+    /// (`BandFamily::rail_ready`), and the counts of THIS listing put items in at least two of them
+    /// ([`Self::bands`]). The title sort has the letters ([`Self::rail_available`]) and never both.
+    pub fn bands_available(self) -> bool {
+        self.id().is_some() && self.bands().is_some_and(|bands| bands.populated() >= 2)
     }
     pub fn letter_start(self, index: usize) -> usize {
         self.letters()
@@ -311,6 +386,7 @@ impl Iterator for ChangedPageRanges<'_, '_> {
 impl super::BrowseState {
     pub fn listing_snapshot(&self) -> ListingSnapshot {
         let sec = self.cur();
+        let kind = self.sections().get(sec).map(|section| section.kind);
         let id = self.sections().get(sec).and_then(|section| {
             Some(ListingId {
                 epoch: self.table_epoch(),
@@ -333,6 +409,7 @@ impl super::BrowseState {
                     genres: state.genres.clone(),
                     letters: state.shown_letters().unwrap_or(&state.letters).clone(),
                     letters_current: state.letters_current(),
+                    bands: kind.and_then(|kind| state.shown_bands(kind)).cloned(),
                     sort_idx: state.sort_idx,
                     sort_desc: state.sort_desc,
                     genre: state.genre.clone(),
@@ -622,15 +699,18 @@ impl<'a> DirectoryView<'a> {
         self.0.discovery
     }
     /// Press-time section, not necessarily the committed one during a page fade.
+    /// Includes `section` itself even when unpinned so jumping to an unpinned library from
+    /// Sort & Filter still surfaces its pill in the Library header while viewing it.
     pub fn rows_for(self, section: usize) -> impl Iterator<Item = &'a super::SrcRow> {
         let kind = self.sections().get(section).map(|s| s.kind);
         self.sections()
             .iter()
-            .filter(move |s| Some(s.kind) == kind && s.row.pinned)
+            .filter(move |s| Some(s.kind) == kind && (s.row.pinned || s.row.section == section))
             .map(|s| &s.row)
     }
 
-    /// Favourite libraries represented by the current type pill, with their table indices.
+    /// The libraries the header names for `section`'s type, with their table indices: its favourites,
+    /// and `section` itself when that library on view is not one.
     pub fn favorite_sections_for(
         self,
         section: usize,
@@ -708,6 +788,19 @@ mod tests {
         assert_eq!(
             view.rows_for(1).cloned().collect::<Vec<_>>(),
             state.source_rows_for(1)
+        );
+        // A library on view that is not a favourite (section 2: the friend's films default Off) is
+        // named beside the favourites of its type, and only while it is on view; the view and the
+        // store's oracle agree on it.
+        assert!(!state.pinned_for_test(2));
+        assert_eq!(
+            view.rows_for(2).map(|row| row.section).collect::<Vec<_>>(),
+            vec![0, 2],
+        );
+        assert_eq!(view.rows_for(0).map(|row| row.section).collect::<Vec<_>>(), vec![0]);
+        assert_eq!(
+            view.rows_for(2).cloned().collect::<Vec<_>>(),
+            state.source_rows_for(2)
         );
         assert_eq!(view.rows_for(999).count(), 0);
         state.source_mut(0).unwrap().name = "Changed".into();

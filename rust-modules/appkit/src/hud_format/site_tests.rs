@@ -1,4 +1,4 @@
-//! **Tests of what `site/hud/` publishes**: the emitted JSON Schema as a golden, the five valid examples
+//! **Tests of what `site/hud/` publishes**: the emitted JSON Schema as a golden, the six valid examples
 //! (byte-identical to the fixtures the parser's own tests use, so the two copies cannot drift), and the
 //! invalid examples with the lint report [`super::report`] prints for each, also goldens.
 //!
@@ -11,10 +11,10 @@
 //!
 //! and commit what changed. The invalid examples' own `*.plxhud.json` are authored, not generated.
 //!
-//! The site is not deployed by this change: `pages.yml` copies named files, and publishing `site/hud/` is a
-//! later PR. These files are committed so that the golden and the examples are held by CI whenever a PR
-//! touches Rust. KNOWN GAP: `ci.yml`'s path filter still excludes `site/**`, so a PR that edits only
-//! `site/hud/` does not run these tests; the PR that publishes `site/hud/` adds `site/hud/**` to `ci_paths`.
+//! `pages.yml` stages this directory at `/hud/`, preserving the schema and examples' bytes.
+//! `ci.yml` includes `site/hud/**` in its gate inputs, so an authoring-file-only PR runs these
+//! goldens too. Registry CI additionally compares the app's emitted schema with its mirror and
+//! checks the pinned corpus through stock Draft 2020-12 validation and the actual compiler.
 
 use std::fs;
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ use super::{check, parse, report, schema, schema_emit};
 /// The environment variable that turns a golden comparison into a rewrite.
 const BLESS: &str = "PLX_HUD_SCHEMA_WRITE";
 
-const EXAMPLES: [(&str, &str); 5] = [
+const EXAMPLES: [(&str, &str); 6] = [
     ("reference", include_str!("fixtures/reference.plxhud.json")),
     ("minimal", include_str!("fixtures/minimal.plxhud.json")),
     (
@@ -36,6 +36,7 @@ const EXAMPLES: [(&str, &str); 5] = [
     ),
     ("tabs", include_str!("fixtures/tabs.plxhud.json")),
     ("palette", include_str!("fixtures/palette.plxhud.json")),
+    ("rising-tabs", include_str!("fixtures/rising-tabs.plxhud.json")),
 ];
 
 fn blessing() -> bool {
@@ -240,6 +241,7 @@ fn the_examples_cover_what_the_plan_names() {
     };
     assert!(has("hero-center", r#""command": "toggle_play""#));
     assert!(has("tabs", r#""command": "toggle_section""#) && has("tabs", r#""widget": "pill""#));
+    assert!(has("rising-tabs", r#""sections": "modal""#) && has("rising-tabs", r#""widget": "pill""#));
     assert!(has("palette", r#""palette": {"#));
     assert!(!has("minimal", "palette") && !has("minimal", "assets"));
 }

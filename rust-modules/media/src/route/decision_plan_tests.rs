@@ -580,7 +580,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         "mde-p5-copy-client",
     );
     let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
-    env.dv_capability = Some(plx_platform::devcaps::dv::DvCapability::Supported);
+    env.dv_capability = plx_platform::devcaps::dv::DvCapability::Supported;
     let mut item = fourk_item(sid, vec![eac3_track()]);
     item.dovi = p5();
     env.cached_item = Some(item);
@@ -620,9 +620,13 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
 fn unconfirmed_profile_5_forbids_copy_before_mde() {
     use std::time::Duration;
 
-    for capability in [
-        plx_platform::devcaps::dv::DvCapability::Unknown,
-        plx_platform::devcaps::dv::DvCapability::Unsupported,
+    use plx_plex::plex::session::DolbyVisionMode;
+    // The third row is the Settings > Playback > Dolby Vision Off: a set that says Supported plans
+    // as Unsupported, because the mode rides `ResolveEnv` and is applied at the route.
+    for (capability, mode) in [
+        (plx_platform::devcaps::dv::DvCapability::Unknown, DolbyVisionMode::Auto),
+        (plx_platform::devcaps::dv::DvCapability::Unsupported, DolbyVisionMode::Auto),
+        (plx_platform::devcaps::dv::DvCapability::Supported, DolbyVisionMode::Off),
     ] {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _g = fresh_registry(&mut ps);
@@ -644,7 +648,8 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
             sid,
             "rk-4k",
         );
-        env.dv_capability = Some(capability);
+        env.dv_capability = capability;
+        env.dolby_vision_mode = mode;
         let mut item = fourk_item(sid, vec![eac3_track()]);
         item.dovi = p5();
         env.cached_item = Some(item);
@@ -673,6 +678,10 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
             plx_data::metadata::DvPresentation::NotDv,
         );
         assert!(plan.dv_decision.presentation.declared().is_none());
+        // The source decision the resolve froze: the set's own answer, whatever the setting, and
+        // the unsupported column's verdict on a Profile 5 (refuse direct play).
+        assert_eq!(plan.src_dv_decision.capability, capability, "{mode:?}");
+        assert!(plan.src_dv_decision.presentation.refusal().is_some(), "{capability:?} {mode:?}");
         plx_plex::plex::reset_servers_for_test();
     }
 }

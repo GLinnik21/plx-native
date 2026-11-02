@@ -1345,12 +1345,15 @@ pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
         );
         let key = (w.layer, w.next);
         let z = if w.discovery {
-            let r = crate::gfx::blur_region_for(rises, rect.x, rect.y, rect.w, rect.h);
-            let footprint = Rect::new(r[0], r[1], r[2], r[3]);
+            // The DRAWN rect, not its sampling footprint, decides whether this glass leaves a
+            // shared band: neighbours that merely sit within each other's `BLUR_REACH` sample
+            // the page, never each other, so they keep one source and one page pass
+            // ("adjacent glass samples the page", docs/liquid-glass.md). Only a glass whose
+            // body overlaps an earlier one's has that glass underneath it and needs its own band.
             let overlaps = w.glasses.iter().any(|&old| {
                 intersects(
                     Rect::new(old.x - 4.0, old.y - 4.0, old.w + 8.0, old.h + 8.0),
-                    footprint,
+                    rect,
                 )
             });
             let z = if w.shared && !overlaps && w.current == w.layer {
@@ -1420,6 +1423,30 @@ pub fn image(z: Z) -> Option<Rc<crate::gfx::BackdropImage>> {
             .get(&z)?
             .image
             .clone()
+    })
+}
+/// **The current image of the band that draws a glass at exactly `rect`**, with its z — for a
+/// consumer that wants the ground a glass sits on (the top bar's ground probe), asked from the
+/// VISIBLE walk after the frame's source jobs have run.
+///
+/// "Current" is `valid` and seen this frame: an image a refused job left behind describes an older
+/// page. The match is on the band's drawn members, not on coverage: a band above this glass covers
+/// the same rect and holds the glass in its image. `None` in a discovery or source walk (the
+/// image is not final, or is being made), with no walk, and for a rect no band lists.
+pub fn member_image(rect: Rect) -> Option<(Z, Rc<crate::gfx::BackdropImage>)> {
+    WALK.with(|w| {
+        let w = w.borrow();
+        let w = w.as_ref()?;
+        if w.discovery || w.ceiling != Z::ALL {
+            return None;
+        }
+        let sources = w.sources.borrow();
+        sources.entries.iter().find_map(|(&z, e)| {
+            let listed = e.members.contains(&rect);
+            (listed && e.valid && e.seen == sources.frame)
+                .then(|| e.image.clone().map(|image| (z, image)))
+                .flatten()
+        })
     })
 }
 /// Does the source at `z` have a rising member — the margin its region is grown by.
@@ -1646,6 +1673,47 @@ mod tests {
             below(&layers, Z(4)).map(|l| l.z).collect::<Vec<_>>(),
             vec![Z(0), Z(2)]
         );
+    }
+
+    /// **A glass finds ITS band's current image by its rect, and no other.** Two bands whose
+    /// images both cover the canvas: the answer for each rect is its own band's (a band above would
+    /// hold the glass in its image), nothing answers for a rect no band draws, a stale image
+    /// (`valid` false) answers nothing, and neither a discovery nor a source walk answers at all.
+    #[test]
+    fn a_glass_finds_its_own_bands_current_image_by_rect_and_no_other() {
+        let _guard = plx_base::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let (a, b) = (Rect::new(100.0, 40.0, 300.0, 76.0), Rect::new(900.0, 40.0, 300.0, 76.0));
+        let (za, zb);
+        {
+            let _walk = discover(sources.clone());
+            assert!(member_image(a).is_none(), "a discovery walk has no final image");
+            za = surface(a).unwrap().z;
+            zb = surface(b).unwrap().z;
+        }
+        assert_ne!(za, zb, "an unshared layer gives each glass its own band");
+        sources.borrow_mut().resolve();
+        let whole = [0.0, 0.0, 1920.0, 1080.0];
+        for (z, e) in sources.borrow_mut().entries.iter_mut() {
+            let mw = if *z == za { 10 } else { 20 };
+            e.image = Some(Rc::new(crate::gfx::BackdropImage::for_test(whole, mw, 8)));
+            e.valid = true;
+        }
+        {
+            let _walk = enter(sources.clone(), Z::ALL);
+            let (z, image) = member_image(a).expect("a's band has a current image");
+            assert_eq!((z, image.bytes()), (za, 10 * 8 * 4));
+            let (z, image) = member_image(b).expect("b's band has a current image");
+            assert_eq!((z, image.bytes()), (zb, 20 * 8 * 4));
+            assert!(member_image(Rect::new(500.0, 40.0, 300.0, 76.0)).is_none(), "no band draws this rect");
+        }
+        sources.borrow_mut().entries.get_mut(&za).unwrap().valid = false;
+        let _walk = enter(sources.clone(), Z::ALL);
+        assert!(member_image(a).is_none(), "an image a refused job left behind is not the ground");
+        assert!(member_image(b).is_some());
+        let _source = enter(sources.clone(), Z(5));
+        assert!(member_image(b).is_none(), "a source walk is drawing the image, not reading it");
     }
 
     #[test]
