@@ -627,11 +627,28 @@ pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
     exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
 }
 
-fn exit_native_with(
+pub(super) fn exit_native_with(
     pa: &mut super::adapter::PlayerAdapter,
     mut clock: impl FnMut() -> std::time::Instant,
     mut idle: impl FnMut(),
 ) -> NativeExit {
+    #[cfg(feature = "devtriggers")]
+    if pa.uri_live() {
+        let started = clock();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        super::uriprobe_drive::stop(&mut ps, pa);
+        while pa.uri_live() {
+            super::uriprobe_drive::drive(&mut ps, pa);
+            if !pa.uri_live() { break; }
+            if clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
+                log("exit: URI registration unresolved; the display is left to the OS");
+                if let Some(session) = pa.take_uri() { std::mem::forget(session); }
+                leak_parked_for_exit(pa);
+                return NativeExit::WorkerInFirmware;
+            }
+            idle();
+        }
+    }
     reap_abandoned_load(pa);
     if pa.has_abandoned_load() {
         log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
@@ -1675,12 +1692,12 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
         super::set_native_seek_refused(false);
     }
     // A URI-mode probe session (dev trigger `plxnative-uriprobe`) holds the route-start attempt and
-    // the exported window without an Engine in the slot: a second start under it is a no-op, as
-    // under a live Engine, and Back ends the session.
+    // the exported window without an Engine in the slot. Active double-start stays a no-op;
+    // closing or quarantined ownership refuses a new start until actual release.
     #[cfg(feature = "devtriggers")]
     if pa.uri_live() {
-        log("start_bufferfeed: a URI-mode probe session is running (no-op)");
-        return BufferfeedStartOutcome::AlreadyRunning;
+        log("start_bufferfeed: a URI-mode registration still owns its resources");
+        return if pa.uri_closing() { BufferfeedStartOutcome::Failed } else { BufferfeedStartOutcome::AlreadyRunning };
     }
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
@@ -1739,6 +1756,12 @@ fn start_bufferfeed_for(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
+    #[cfg(feature = "devtriggers")]
+    if pa.uri_live() {
+        // Reload/foreground starts reach this seam directly too. URI ownership never queues one.
+        let _ = crate::route::abort_route_start(route_start, crate::route::RouteStartResult::StartFailed);
+        return BufferfeedStartOutcome::Failed;
+    }
     // The last real stop's object may still be inside its off-frame `Unload`. A tail that is ready
     // runs now; one that is not defers this start into the release machine (never a blocking join:
     // PLX-NATIVE-1Q), which starts it the frame the tail has run or refuses it at the deadline.
@@ -2755,13 +2778,11 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
     // A URI-mode probe session (dev trigger `plxnative-uriprobe`) ends with the playback it stands
     // in for, whatever ended it (Back, an app switch, the next Play): its machine settles a start
-    // still pending, unloads and closes, and the exported window goes. It owns no Engine, so the
+    // still pending and requests unload/close; the adapter retains its window until release. It owns no Engine, so the
     // Engine-less ritual below then finishes the stop (the transcode session, the route) as it does
     // for a start which failed before an Engine existed.
     #[cfg(feature = "devtriggers")]
-    if let Some(probe) = pa.take_uri() {
-        super::uriprobe_drive::stop(ps, pa.mt(), probe);
-    }
+    super::uriprobe_drive::stop(ps, pa);
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
     // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
     // that fact in the session can go stale across a landing that replaced the session.

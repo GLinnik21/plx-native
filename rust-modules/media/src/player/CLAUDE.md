@@ -28,6 +28,11 @@ URI backend would have to — pause, resume, a seek, a text and an audio `select
 `setSubtitleEnable` — logging the position around each call, because the binding question is
 settled and the remaining question is whether the pipeline can be controlled. It is
 `devtriggers`-only, so a release build carries none of it, and it reports nothing to Plex.
+`uri_protocol.rs` holds shared pure builders/strict decoding; `uri_lifecycle.rs` owns registration
+and request correlation, close deadlines and quarantine. The probe's logical Done does not release
+its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
+outside the player screen, and blocks reuse through unresolved close. Generic track/seek events and
+method ACKs remain distinct observations; they do not invent confirmation or resume policy.
 The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
 The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on

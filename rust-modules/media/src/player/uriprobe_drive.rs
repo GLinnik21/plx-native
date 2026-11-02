@@ -11,8 +11,9 @@
 //! [`drive`] runs once a frame (before `observe_video_plane`, so the plane term it feeds reads this
 //! frame's answer). `engine::teardown` calls [`stop`] first, which ends the session on Back or an app
 //! switch exactly as it ends an Engine. A session that ends on its own (an error, a timeout, the end
-//! of the stream) is released by [`drive`] at once: its window is destroyed and the slot is freed, so
-//! the next Play is not refused as "already running".
+//! of the stream) stops logically at once. The ownership reducer keeps its adapter slot and window
+//! until the worker acknowledges successful unregister; unresolved release blocks another start.
+//! A deadline quarantines ownership, and a late successful acknowledgement still permits cleanup.
 //!
 //! **What stays out of it.** No Engine thread runs, so nothing is reported to Plex; nothing here
 //! sets `ps.finished`, so a stop cannot mark the item watched. The URL is held by [`UriSession`] for
@@ -23,10 +24,11 @@
 //! The whole module is the `devtriggers` surface (`player/mod.rs`).
 
 use super::log;
+use super::uri_lifecycle::{Event as LifeEvent, Effect as LifeEffect, Lifecycle};
 use super::uriprobe::{build_load, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant};
 use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult, RouteStartTransaction};
 use plx_base::task::MainThread;
-use plx_platform::tv::uri::{UriMedia, UriReply};
+use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
 use std::collections::VecDeque;
 use std::os::raw::c_int;
 use std::time::Instant;
@@ -39,6 +41,7 @@ const CANVAS: (c_int, c_int) = (1_920, 1_080);
 /// No `Debug`: [`url`](Self::url) is a media URL with a token in it.
 pub struct UriSession {
     probe: UriProbe,
+    lifecycle: Lifecycle,
     transport: &'static dyn UriMedia,
     /// The media URL, for the `load` payload (re-built if the register ladder sends it again). Taken
     /// out the moment the session ends.
@@ -89,6 +92,7 @@ impl UriSession {
         };
         let mut session = UriSession {
             probe: UriProbe::new(config),
+            lifecycle: Lifecycle::new(),
             transport,
             url: url.to_owned(),
             app_id,
@@ -109,9 +113,13 @@ impl UriSession {
         u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// The service says the video plays: from `playing` until the session ends.
+    /// Preserve a playing observation until actual registration release, including unresolved stop.
     pub fn plane_open(&self) -> bool {
-        self.probe.plane_open()
+        self.lifecycle.plane_open()
+    }
+
+    pub fn closing(&self) -> bool {
+        matches!(self.lifecycle.phase(), super::uri_lifecycle::Phase::Closing | super::uri_lifecycle::Phase::Quarantined)
     }
 
     /// Re-place the exported window for a coded picture of `width` x `height`.
@@ -123,10 +131,70 @@ impl UriSession {
     /// One frame: the replies which arrived, then the clock. Everything a reply or a deadline sets
     /// off, including the events of calls that failed on the spot, runs to the end before this
     /// returns.
-    fn advance(&mut self, settle: &mut dyn Settler, mt: &MainThread, replies: Vec<UriReply>, now_ms: u64) {
-        self.inbox.extend(replies.iter().map(UriEvent::from_reply));
+    fn poll(&self) -> Result<UriPoll, String> {
+        match self.lifecycle.session() {
+            Some(session) => self.transport.poll(session),
+            None => Ok(UriPoll { replies: Vec::new(), close: CloseStatus::Released }),
+        }
+    }
+
+    fn advance(&mut self, settle: &mut dyn Settler, mt: &MainThread, poll: Result<UriPoll, String>, now_ms: u64) {
+        let polled_session = self.lifecycle.session();
+        match poll {
+            Ok(poll) => {
+                for reply in poll.replies {
+                    self.lifecycle(LifeEvent::Reply(reply), now_ms);
+                    self.drain(settle, mt, now_ms);
+                }
+                if let Some(session) = polled_session {
+                    self.lifecycle(LifeEvent::Status { session, status: poll.close }, now_ms);
+                    self.drain(settle, mt, now_ms);
+                }
+            }
+            Err(_) => {
+                if let Some(session) = polled_session { self.lifecycle(LifeEvent::PollFailed {session}, now_ms); }
+            }
+        }
+        self.lifecycle(LifeEvent::Tick { now_ms }, now_ms);
         self.inbox.push_back(UriEvent::Tick);
         self.drain(settle, mt, now_ms);
+    }
+
+    /// Execute the ownership machine's typed effects; every immediate answer is addressed too.
+    fn lifecycle(&mut self, event: LifeEvent, now_ms: u64) {
+        let mut events = VecDeque::from([event]);
+        while let Some(event) = events.pop_front() {
+            let mut effects = Vec::new();
+            self.lifecycle.step(event, &mut effects);
+            for effect in effects {
+                match effect {
+                    LifeEffect::Open { request, shape } => {
+                        let result = self.transport.open(shape).map_err(|text| super::uri_protocol::Message::transport_failure(&text));
+                        events.push_back(LifeEvent::OpenAnswered { request, result });
+                    }
+                    LifeEffect::Call { session, request, call } => {
+                        self.inbox.push_back(UriEvent::Dispatched { method: super::uri_protocol::Method::of(call.method()), kind: match &call { UriCall::SelectTrack {kind,..} => Some(*kind), _ => None }, request });
+                        let payload = match &call {
+                            UriCall::Load { window_id } => build_load(&self.url, &self.app_id, window_id.as_deref()),
+                            other => other.payload().unwrap_or_default(),
+                        };
+                        let result = self.transport.call(session, request, call.method(), &payload);
+                        let message = result.as_ref().err().map(|text| super::uri_protocol::Message::transport_failure(text)).unwrap_or_default();
+                        events.push_back(LifeEvent::CallQueued { session, request, ok: result.is_ok(), message });
+                    }
+                    LifeEffect::Close { session } => {
+                        let ok = self.transport.close(session).is_ok();
+                        events.push_back(LifeEvent::CloseQueued { session, ok });
+                    }
+                    LifeEffect::Deliver { method, ok, message } => self.inbox.push_back(UriEvent::Reply { method, ok, message }),
+                    LifeEffect::Released => { self.inbox.push_back(UriEvent::Closed); }
+                    LifeEffect::Fault => {
+                        log(&format!("uriprobe: t={now_ms} transport ownership unresolved or reply stream lost"));
+                        self.inbox.push_back(UriEvent::Back);
+                    }
+                }
+            }
+        }
     }
 
     fn drain(&mut self, settle: &mut dyn Settler, mt: &MainThread, now_ms: u64) {
@@ -144,25 +212,17 @@ impl UriSession {
                 self.inbox.push_back(failed);
             }
         }
-        if self.probe.is_done() {
-            self.url = String::new();
-        }
+        if self.probe.is_done() { self.url = String::new(); }
     }
 
     /// Run one effect. `Some` is the event of an effect the transport refused to carry out.
     fn execute(&mut self, effect: UriEffect, settle: &mut dyn Settler, mt: &MainThread, now_ms: u64) -> Option<UriEvent> {
         match effect {
-            UriEffect::Open(shape) => self.transport.open(shape).err().map(|text| UriEvent::from_failure("register", &text)),
-            UriEffect::Call(call) => {
-                let method = call.method();
-                let payload = match &call {
-                    UriCall::Load { window_id } => build_load(&self.url, &self.app_id, window_id.as_deref()),
-                    other => other.payload().unwrap_or_default(),
-                };
-                self.transport.call(method, &payload).err().map(|text| UriEvent::from_failure(method, &text))
-            }
+            UriEffect::Open(shape) => { self.lifecycle(LifeEvent::Open(shape), now_ms); None }
+            UriEffect::Call(call) => { self.lifecycle(LifeEvent::Call(call), now_ms); None }
             UriEffect::Close => {
-                self.transport.close();
+                let allowance_ms = u64::try_from(super::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX);
+                self.lifecycle(LifeEvent::Close { now_ms, allowance_ms }, now_ms);
                 None
             }
             UriEffect::Settle(how) => {
@@ -190,14 +250,15 @@ impl UriSession {
         }
     }
 
-    /// Let go of what the session holds: the bus registration (idempotent, the machine closed it on
-    /// every way out already) and the exported window.
-    fn release(mut self, mt: &MainThread) {
+    /// Destroy the exported window only after the ownership reducer has observed release.
+    fn release(self, mt: &MainThread) {
+        self.release_with(|| unsafe { super::sink().destroy_window(mt) });
+    }
+
+    fn release_with(mut self, destroy: impl FnOnce()) {
         self.url = String::new();
-        self.transport.close();
-        if self.window {
-            unsafe { super::sink().destroy_window(mt) };
-        }
+        assert!(self.lifecycle.released(), "window ownership must be released first");
+        if self.window { destroy(); }
     }
 }
 
@@ -238,6 +299,7 @@ pub(super) fn start(
     url: &str,
     variant: Variant,
 ) -> Result<RouteStartAttempt, RouteStartResult> {
+    if pa.uri_live() { return Err(RouteStartResult::StartFailed); }
     let Some(attempt) = crate::route::claim_route_start_attempt(route_start) else {
         log("uriprobe: the prepared route lost its start before the probe began");
         return Err(RouteStartResult::StartFailed);
@@ -248,15 +310,15 @@ pub(super) fn start(
 }
 
 /// Once a frame, before `observe_video_plane`: drain the transport, step the machine, execute its
-/// effects, settle the attempt, place the window on `videoInfo`. A session that ended is released
-/// here and its slot freed.
+/// effects, settle the attempt, place the window on `videoInfo`. Logical Done frees the slot only
+/// after the registration's physical release; this runs even with no player screen.
 pub fn drive(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     let (session, mt) = pa.uri_split();
     let Some(session) = session else { return };
-    let replies = session.transport.poll();
+    let replies = session.poll();
     let now_ms = session.now_ms();
     session.advance(&mut RouteSettler(ps), mt, replies, now_ms);
-    let finished = session.probe.is_done();
+    let finished = session.probe.is_done() && session.lifecycle.released();
     if finished {
         if let Some(done) = pa.take_uri() {
             done.release(pa.mt());
@@ -266,20 +328,22 @@ pub fn drive(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
 
 /// End a session that is still running (`engine::teardown`: Back, or an app switch): the machine's
 /// own stop path settles a still-`Starting` attempt as failed, unloads once the service has named a
-/// media, closes the registration and writes the summary; then the window goes.
-pub(super) fn stop(ps: &mut PlaybackSession, mt: &MainThread, mut session: UriSession) {
+/// media, requests registration close and writes the summary. The adapter keeps the window and
+/// session until a later frame observes release.
+pub(super) fn stop(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
+    let (session, mt) = pa.uri_split();
+    let Some(session) = session else { return };
     session.inbox.clear();
     let now_ms = session.now_ms();
     let mut settle = RouteSettler(ps);
     session.feed(UriEvent::Back, &mut settle, mt, now_ms);
     session.drain(&mut settle, mt, now_ms);
-    session.release(mt);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::uri::Shape;
+    use plx_platform::tv::uri::{Shape, SessionId, RequestId, UriReply};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -298,26 +362,38 @@ mod tests {
         closes: AtomicUsize,
         replies: Mutex<VecDeque<UriReply>>,
         refuse_open: Mutex<Option<String>>,
+        current: Mutex<Option<SessionId>>,
+        requests: Mutex<Vec<(&'static str, RequestId)>>,
+        close_status: Mutex<Option<CloseStatus>>,
+        hold_close: std::sync::atomic::AtomicBool,
         refuse_call: Mutex<Option<(&'static str, String)>>,
     }
 
     impl UriMedia for Scripted {
-        fn open(&self, shape: Shape) -> Result<(), String> {
+        fn open(&self, shape: Shape) -> Result<SessionId, String> {
             self.opens.lock().unwrap().push(shape);
-            self.refuse_open.lock().unwrap().clone().map_or(Ok(()), Err)
+            if let Some(error) = self.refuse_open.lock().unwrap().clone() { return Err(error); }
+            let id = SessionId::new(self.opens.lock().unwrap().len() as u64);
+            *self.current.lock().unwrap() = Some(id);
+            *self.close_status.lock().unwrap() = Some(CloseStatus::Open);
+            self.requests.lock().unwrap().clear();
+            Ok(id)
         }
-        fn call(&self, method: &'static str, payload: &str) -> Result<(), String> {
+        fn call(&self, session: SessionId, request: RequestId, method: &'static str, payload: &str) -> Result<(), String> {
+            assert_eq!(*self.current.lock().unwrap(), Some(session));
             self.calls.lock().unwrap().push((method, payload.to_owned()));
-            match self.refuse_call.lock().unwrap().clone() {
-                Some((refused, text)) if refused == method => Err(text),
-                _ => Ok(()),
-            }
+            self.requests.lock().unwrap().push((method, request));
+            match self.refuse_call.lock().unwrap().clone() { Some((refused, text)) if refused == method => Err(text), _ => Ok(()) }
         }
-        fn poll(&self) -> Vec<UriReply> {
-            self.replies.lock().unwrap().drain(..).collect()
+        fn poll(&self, session: SessionId) -> Result<UriPoll, String> {
+            assert_eq!(*self.current.lock().unwrap(), Some(session));
+            Ok(UriPoll { replies: self.replies.lock().unwrap().drain(..).collect(), close: self.close_status.lock().unwrap().unwrap_or(CloseStatus::Open) })
         }
-        fn close(&self) {
+        fn close(&self, session: SessionId) -> Result<(), String> {
+            assert_eq!(*self.current.lock().unwrap(), Some(session));
             self.closes.fetch_add(1, Ordering::SeqCst);
+            *self.close_status.lock().unwrap() = Some(if self.hold_close.load(Ordering::SeqCst) { CloseStatus::Closing } else { CloseStatus::Released });
+            Ok(())
         }
     }
 
@@ -326,10 +402,10 @@ mod tests {
             Box::leak(Box::default())
         }
         fn say(&self, method: &'static str, payload: &str) {
-            self.replies.lock().unwrap().push_back(UriReply { method, payload: payload.to_owned(), ok: true });
+            self.replies.lock().unwrap().push_back(UriReply { session: self.current.lock().unwrap().unwrap(), request: if method == "register" { RequestId::new(0) } else { self.requests.lock().unwrap().iter().rev().find(|(m,_)| *m==method).map(|(_,id)| *id).unwrap_or(RequestId::new(0)) }, method, payload: payload.to_owned(), ok: true });
         }
         fn deny(&self, method: &'static str, text: &str) {
-            self.replies.lock().unwrap().push_back(UriReply { method, payload: text.to_owned(), ok: false });
+            self.replies.lock().unwrap().push_back(UriReply { session: self.current.lock().unwrap().unwrap(), request: if method == "register" { RequestId::new(0) } else { self.requests.lock().unwrap().iter().rev().find(|(m,_)| *m==method).map(|(_,id)| *id).unwrap_or(RequestId::new(0)) }, method, payload: text.to_owned(), ok: false });
         }
         fn sent(&self) -> Vec<&'static str> {
             self.calls.lock().unwrap().iter().map(|(method, _)| *method).collect()
@@ -377,7 +453,7 @@ mod tests {
         /// One frame, `ms` after the last.
         fn frame(&mut self, ms: u64) {
             self.now += ms;
-            let replies = self.transport.poll();
+            let replies = self.session.as_ref().unwrap().poll();
             let mut settle = RouteSettler(&mut self.ps);
             let session = self.session.as_mut().expect("a live session");
             session.advance(&mut settle, self.pa.mt(), replies, self.now);
@@ -402,8 +478,11 @@ mod tests {
 
         /// Back: what `engine::teardown` does with a live session.
         fn back(&mut self) {
-            let session = self.session.take().expect("a live session");
-            stop(&mut self.ps, self.pa.mt(), session);
+            let mut session = self.session.take().expect("a live session");
+            let mut settle = RouteSettler(&mut self.ps);
+            session.feed(UriEvent::Back, &mut settle, self.pa.mt(), self.now);
+            session.drain(&mut settle, self.pa.mt(), self.now);
+            self.session = Some(session);
         }
     }
 
@@ -476,6 +555,8 @@ mod tests {
             let mut rig = Rig::new(Variant::AtLoad);
             rig.transport.deny("register", "denied: com.webos.media");
             rig.frame(10);
+            assert_eq!(rig.transport.opened(), [Shape::Named], "no reuse before close ACK");
+            rig.frame(0);
             assert_eq!(rig.transport.opened(), [Shape::Named, Shape::Anon], "named, then anonymous");
             assert_eq!(rig.transport.closed(), 1, "the refused registration is closed before the next opens");
             assert!(rig.transport.sent().is_empty(), "nothing is sent before a registration succeeds");
@@ -484,7 +565,7 @@ mod tests {
             assert_eq!(rig.transport.sent(), ["load"], "the anonymous registration sends the load again");
             rig.back();
         });
-        assert!(line_with(&log, "register shape=named refused").contains("denied"), "{log}");
+        assert!(log.contains("register shape=named refused"), "{log}");
         assert!(log.contains("register shape=anon ok"), "{log}");
     }
 
@@ -495,6 +576,7 @@ mod tests {
             let mut rig = Rig::new(Variant::AtLoad);
             rig.transport.deny("register", "named refused");
             rig.frame(10);
+            rig.frame(0);
             rig.transport.deny("register", "anon refused");
             rig.frame(10);
             assert!(rig.is_done());
@@ -570,7 +652,7 @@ mod tests {
             assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
             rig.back();
         });
-        assert!(line_with(&log, "register shape=named refused").contains("no bus"), "{log}");
+        assert!(log.contains("register shape=named refused"), "{log}");
         assert!(line_with(&log, " summary ").contains("end=refused:register"), "{log}");
     }
 
@@ -604,7 +686,9 @@ mod tests {
             assert!(rig.pa.uri_live());
             transport.deny("register", "named refused");
             drive(&mut rig.ps, &mut rig.pa);
+            drive(&mut rig.ps, &mut rig.pa);
             transport.deny("register", "anon refused");
+            drive(&mut rig.ps, &mut rig.pa);
             drive(&mut rig.ps, &mut rig.pa);
             assert!(!rig.pa.uri_live(), "a finished session is released, so the next Play is not refused");
             assert!(!rig.pa.uri_plane_open());
@@ -633,11 +717,74 @@ mod tests {
                 drive(&mut rig.ps, &mut rig.pa);
             }
             assert!(rig.pa.uri_plane_open());
-            let session = rig.pa.take_uri().expect("still live");
-            stop(&mut rig.ps, rig.pa.mt(), session);
+            stop(&mut rig.ps, &mut rig.pa);
+            drive(&mut rig.ps, &mut rig.pa);
             assert!(!rig.pa.uri_plane_open());
         });
     }
+    #[test]
+    fn uriprobe_offscreen_stop_keeps_slot_through_deadline_and_releases_after_late_ack() {
+        let _serial = plx_base::testlock::serial();
+        let _ = logged(|| {
+            let mut rig = Rig::new(Variant::AtLoad);
+            rig.load_answered();
+            rig.transport.hold_close.store(true, Ordering::SeqCst);
+            let session = rig.session.take().unwrap(); rig.pa.install_uri(session);
+            stop(&mut rig.ps, &mut rig.pa); stop(&mut rig.ps, &mut rig.pa);
+            assert_eq!(rig.transport.closed(),1);
+            assert!(rig.pa.uri_live()); assert!(rig.pa.uri_closing());
+            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
+            let (session,mt)=rig.pa.uri_split();
+            let session=session.unwrap();
+            let poll=session.poll();
+            session.advance(&mut RouteSettler(&mut rig.ps),mt,poll,20_000);
+            assert!(session.closing()); assert!(!session.lifecycle.released());
+            assert!(rig.pa.uri_live());
+            // A frame loop with an idle route still polls; no player screen is required.
+            let mut idle=PlaybackSession::IDLE;
+            *rig.transport.close_status.lock().unwrap()=Some(CloseStatus::Released);
+            drive(&mut idle,&mut rig.pa);
+            assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
+        });
+    }
+
+    #[test]
+    fn uriprobe_driver_window_destroy_runs_only_after_ack_and_once() {
+        let _serial = plx_base::testlock::serial();
+        let _ = logged(|| {
+            let mut rig = Rig::new(Variant::AtLoad);
+            rig.load_answered();
+            rig.transport.hold_close.store(true,Ordering::SeqCst);
+            rig.session.as_mut().unwrap().window=true;
+            rig.back(); rig.back();
+            assert!(rig.session.as_ref().unwrap().window);
+            assert!(!rig.session.as_ref().unwrap().lifecycle.released());
+            assert_eq!(rig.transport.closed(),1);
+            *rig.transport.close_status.lock().unwrap()=Some(CloseStatus::Released);
+            rig.frame(0);
+            let destroys=std::cell::Cell::new(0);
+            rig.session.take().unwrap().release_with(||destroys.set(destroys.get()+1));
+            assert_eq!(destroys.get(),1);
+        });
+    }
+
+    #[test]
+    fn uriprobe_driver_delayed_initial_play_reply_cannot_grade_resume() {
+        let _serial = plx_base::testlock::serial();
+        let output=logged(|| {
+            let mut rig=Rig::new(Variant::Drive); rig.load_answered();
+            rig.transport.say("subscribe",r#"{"mediaId":"_m1","loadCompleted":true}"#); rig.frame(10);
+            let initial=*rig.transport.requests.lock().unwrap().iter().find(|(method,_)|*method=="play").unwrap();
+            rig.transport.say("subscribe",r#"{"mediaId":"_m1","playing":true}"#); rig.frame(10);
+            rig.frame(3_000); rig.frame(2_500);
+            let session=*rig.transport.current.lock().unwrap();
+            rig.transport.replies.lock().unwrap().push_back(UriReply{session:session.unwrap(),request:initial.1,method:"play",payload:r#"{"returnValue":false}"#.into(),ok:true});
+            rig.frame(10);
+            rig.back();
+        });
+        assert!(line_with(&output," summary ").contains("resume=sent"),"delayed initial ACK changed resume: {output}");
+    }
+
     /// The tests which need the host sink to export a window (the webOS 5+ path) or the whole
     /// engine around the driver: `make test-hostsim C=plx_media T=uriprobe`.
     #[cfg(feature = "hostsim")]
@@ -730,6 +877,26 @@ mod tests {
             assert!(line_with(&log, " armed ").contains("window=none"), "{log}");
             assert!(!log.contains("window id="), "{log}");
             assert!(!log.contains("window placed"), "{log}");
+        }
+
+        #[test]
+        fn uriprobe_closing_registration_refuses_engine_start_and_exit_keeps_display_safe() {
+            let _serial=plx_base::testlock::serial();
+            let _host=ExportedHost::arm();
+            let _=logged(|| {
+                let mut rig=Rig::new(Variant::AtLoad);
+                rig.load_answered();
+                rig.transport.hold_close.store(true,Ordering::SeqCst);
+                let session=rig.session.take().unwrap(); rig.pa.install_uri(session);
+                stop(&mut rig.ps,&mut rig.pa);
+                assert!(rig.pa.uri_live()); assert!(rig.pa.uri_closing());
+                assert_eq!(crate::player::start_bufferfeed_tracked(&mut rig.ps,&mut rig.pa),crate::player::BufferfeedStartOutcome::Failed);
+                let start=Instant::now(); let mut ticks=0;
+                let exit=crate::player::engine::exit_native_with(&mut rig.pa,|| { ticks+=1; start+std::time::Duration::from_secs(ticks*5) },||{});
+                assert_eq!(exit,crate::player::engine::NativeExit::WorkerInFirmware);
+                assert_eq!(rig.transport.closed(),1);
+                assert!(!rig.pa.uri_live(),"unresolved resource owner is deliberately leaked for process exit");
+            });
         }
 
         /// A stand-in for the media server that answers every request `200 {}` and remembers the
@@ -868,7 +1035,8 @@ mod tests {
                         "a second Play under a live session is a no-op"
                     );
                     crate::player::stop_bufferfeed(&mut fork.ps, &mut fork.pa);
-                    assert!(!fork.pa.uri_live(), "the stop ended the session");
+                    drive(&mut fork.ps, &mut fork.pa);
+                    assert!(!fork.pa.uri_live(), "the released stop ended the session");
                     assert!(!fork.pa.uri_plane_open());
                 });
             });
@@ -902,7 +1070,7 @@ mod tests {
                 });
             });
             only_the_encoder_stop(&fork.requests_after_stop());
-            assert!(line_with(&log, "register shape=named refused").contains("no bus"), "{log}");
+            assert!(log.contains("register shape=named refused"), "{log}");
             assert!(line_with(&log, " summary ").contains("end=refused:register"), "{log}");
         }
 

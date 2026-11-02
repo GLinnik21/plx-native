@@ -13,21 +13,23 @@
 //! **The URL never enters the machine.** [`UriEffect::Call`] names a method and the ids a payload
 //! needs; the driver, which holds the URL, builds the `load` payload with [`build_load`] and hands
 //! it to the transport. Every line the machine writes is built from whitelisted scalars
-//! ([`parse_event`]) and [`scrub_text`]ed hub text, never from a raw payload: a service event can
+//! ([`parse_event`]) and constrained, scrubbed diagnostic words, never from a raw payload: a service event can
 //! echo the URI (`sourceInfo`, `streamingInfo`, an error), and the log is posted by a tester.
 //!
 //! **Phases.** `Registering` (ladder: the named client, then the anonymous one, once), `Loading`
 //! (`load` sent; the reply carries `mediaId`, which is subscribed; waits for `loadCompleted`),
 //! `SettingWindow` ([`Variant::Late`] only: `setWindowId` after the load, its reply logged),
 //! `Starting` (`play` sent; waits for `playing`), `Playing` (watches `currentTime`), then `Done`.
-//! Back and every failure go to `Done` through one `stop`: `unload` once a `mediaId` is known,
-//! `close` always, the route-start attempt settled exactly once, the summary written once, and
-//! nothing after that.
+//! Back and every failure go to logical `Done` through one `stop`: `unload` once a `mediaId` is
+//! known, `close` requested, the attempt settled exactly once and the summary written once. The
+//! separate ownership reducer retains the registration/window until confirmed release. Named→anon
+//! retry waits in `AwaitingClose`, then arms the new register deadline after `Closed`.
 //!
 //! The probe cannot see the video plane. The summary reports what the service said; the tester's
 //! eyes are the verdict, and no `video=shown` token is guessed.
 use plx_platform::tv::uri::{Shape, UriReply};
-use serde_json::{json, Map, Value};
+#[cfg(test)]
+use serde_json::Value;
 
 /// How long each wait lasts, in milliseconds. A wait that runs out ends the session with
 /// `timeout:<phase>`, except the window call, whose silence is logged and played past.
@@ -48,7 +50,6 @@ const DRIVE_SEEK_TOLERANCE_MS: i64 = 5_000;
 /// `currentTime` is logged when it first moves and then at most this often.
 const TIME_LOG_EVERY_MS: u64 = 1_000;
 /// The longest an error text is kept after [`scrub_text`], in characters.
-const SCRUBBED_TEXT_CHARS: usize = 120;
 
 // ---------------------------------------------------------------------------------------------
 // What the tester chooses and what the route says
@@ -153,325 +154,13 @@ pub struct Config {
 // ---------------------------------------------------------------------------------------------
 // Payloads. The only place a URL is spelled into text.
 
-/// The `load` payload: `{"uri":U,"type":"media","payload":{"option":{"appId":A[,"windowId":W]}}}`.
-/// Built with the JSON writer, never by formatting the URL into a string.
-pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>) -> String {
-    let mut option = Map::new();
-    option.insert("appId".to_owned(), json!(app_id));
-    if let Some(window) = window_id {
-        option.insert("windowId".to_owned(), json!(window));
-    }
-    json!({ "uri": url, "type": "media", "payload": { "option": Value::Object(option) } }).to_string()
-}
-
-/// A call the machine asks the driver to send. Everything a payload needs except the URL.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UriCall {
-    /// `window_id` is the id to put in the payload (`Variant::AtLoad`/`Drive` with a window), else
-    /// `None`.
-    Load { window_id: Option<String> },
-    Subscribe { media_id: String },
-    Play { media_id: String },
-    /// Stop the picture where it is; `currentTime` stops moving.
-    Pause { media_id: String },
-    /// Jump to `position`, in milliseconds from the start.
-    Seek { media_id: String, position: i64 },
-    /// Select track `index` of `kind` (`"text"`, `"audio"`); the reply and `trackSelected` say
-    /// whether the pipeline took it.
-    SelectTrack { media_id: String, kind: &'static str, index: i64 },
-    /// Turn the pipeline's own subtitle rendering on.
-    SetSubtitleEnable { media_id: String, enable: bool },
-    SetWindowId { media_id: String, window_id: String },
-    Unload { media_id: String },
-}
-
-impl UriCall {
-    /// The method name under `luna://com.webos.media/`.
-    pub fn method(&self) -> &'static str {
-        match self {
-            UriCall::Load { .. } => "load",
-            UriCall::Subscribe { .. } => "subscribe",
-            UriCall::Play { .. } => "play",
-            UriCall::Pause { .. } => "pause",
-            UriCall::Seek { .. } => "seek",
-            UriCall::SelectTrack { .. } => "selectTrack",
-            UriCall::SetSubtitleEnable { .. } => "setSubtitleEnable",
-            UriCall::SetWindowId { .. } => "setWindowId",
-            UriCall::Unload { .. } => "unload",
-        }
-    }
-
-    /// The payload, for every call but `load` (which needs the URL: [`build_load`]).
-    pub fn payload(&self) -> Option<String> {
-        Some(match self {
-            UriCall::Load { .. } => return None,
-            UriCall::Subscribe { media_id } => json!({ "mediaId": media_id, "subscribe": true }),
-            UriCall::Play { media_id } | UriCall::Unload { media_id } | UriCall::Pause { media_id } => json!({ "mediaId": media_id }),
-            UriCall::Seek { media_id, position } => json!({ "mediaId": media_id, "position": position }),
-            UriCall::SelectTrack { media_id, kind, index } => json!({ "mediaId": media_id, "type": kind, "index": index }),
-            UriCall::SetSubtitleEnable { media_id, enable } => json!({ "mediaId": media_id, "enable": enable }),
-            UriCall::SetWindowId { media_id, window_id } => json!({ "mediaId": media_id, "windowId": window_id }),
-        }
-        .to_string())
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Events in: the whitelist
-
-/// A service event the probe knows by name. Anything else is logged as `ev=<name> (unparsed)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ev {
-    LoadCompleted,
-    Playing,
-    Paused,
-    EndOfStream,
-    CurrentTime,
-    BufferRange,
-    BufferingStart,
-    BufferingEnd,
-    SeekDone,
-    TrackSelected,
-    SourceInfo,
-    StreamingInfo,
-    VideoInfo,
-    AudioInfo,
-    UnloadCompleted,
-    Error,
-}
-
-/// The key each event arrives under, and the text it logs as.
-const EVENT_KEYS: [(&str, Ev); 16] = [
-    ("loadCompleted", Ev::LoadCompleted),
-    ("playing", Ev::Playing),
-    ("paused", Ev::Paused),
-    ("endOfStream", Ev::EndOfStream),
-    ("currentTime", Ev::CurrentTime),
-    ("bufferRange", Ev::BufferRange),
-    ("bufferingStart", Ev::BufferingStart),
-    ("bufferingEnd", Ev::BufferingEnd),
-    ("seekDone", Ev::SeekDone),
-    ("trackSelected", Ev::TrackSelected),
-    ("sourceInfo", Ev::SourceInfo),
-    ("streamingInfo", Ev::StreamingInfo),
-    ("videoInfo", Ev::VideoInfo),
-    ("audioInfo", Ev::AudioInfo),
-    ("unloadCompleted", Ev::UnloadCompleted),
-    ("error", Ev::Error),
-];
-
-impl Ev {
-    fn name(self) -> &'static str {
-        EVENT_KEYS.iter().find(|(_, ev)| *ev == self).map_or("?", |(key, _)| key)
-    }
-
-    /// The event a bare word names: the state words some builds send as a value
-    /// (`"state":"playing"`), and the old client's `"loaded"`.
-    fn of_word(word: &str) -> Option<Ev> {
-        if word == "loaded" {
-            return Some(Ev::LoadCompleted);
-        }
-        EVENT_KEYS.iter().find(|(key, _)| *key == word).map(|(_, ev)| *ev)
-    }
-}
-
-/// One whitelisted event of a message with the whitelisted scalars it carried, already formatted
-/// (`width=1920 height=1080 codec=H264`). Holds no raw text.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Seen {
-    ev: Ev,
-    detail: String,
-}
-
-/// What a service message said, reduced to the scalars the probe may keep. Every string in it is a
-/// token of `[A-Za-z0-9_-]` or went through [`scrub_text`]; there is no field for a payload, so
-/// `Debug` on it cannot print a URL.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Message {
-    return_value: Option<bool>,
-    media_id: Option<String>,
-    seen: Vec<Seen>,
-    /// An identifier-shaped top-level key of a message that named no event the probe knows.
-    unknown: Option<String>,
-    error_code: Option<i64>,
-    error_text: Option<String>,
-    current_time: Option<i64>,
-    dims: Option<(u32, u32)>,
-    dropped: Option<u64>,
-}
-
-/// A name the log may print: ASCII letters, digits, `_` and `-` only (no `.`, `:` or `/`), and
-/// short. Anything else (a URL, a path, a host) is refused outright, never filtered into a leaky
-/// remnant.
-fn token(text: &str) -> Option<String> {
-    let clean = !text.is_empty() && text.len() <= 40 && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    clean.then(|| text.to_owned())
-}
-
-/// A scalar of a service message as log text, whitelisted by type: numbers, booleans, tokens, and
-/// a `{num, den}` pair as `num/den`.
-fn scalar(value: &Value) -> Option<String> {
-    match value {
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        Value::String(s) => token(s),
-        Value::Object(o) => {
-            let part = |key| o.get(key).and_then(Value::as_i64);
-            Some(format!("{}/{}", part("num")?, part("den")?))
-        }
-        _ => None,
-    }
-}
-
-/// `key=value` pairs for the listed keys of `value` (an object), in the listed order.
-fn details(value: &Value, keys: &[&str]) -> String {
-    let Some(object) = value.as_object() else { return String::new() };
-    let parts: Vec<String> = keys
-        .iter()
-        .filter_map(|key| object.get(*key).and_then(scalar).map(|shown| format!("{key}={shown}")))
-        .collect();
-    parts.join(" ")
-}
-
-/// The position of a `currentTime` event, in either shape a firmware may send: a bare number
-/// (`{"currentTime":123}`, what uMediaClient reads) or the nested object umediaserver documents
-/// (`{"currentTime":{"currentTime":123,"mediaId":"_m1"}}`). Only the number is read; nothing else
-/// of the object is.
-fn current_time_of(value: &Value) -> Option<i64> {
-    let number = |v: &Value| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64));
-    number(value).or_else(|| value.as_object().and_then(|inner| inner.get("currentTime")).and_then(number))
-}
-
-/// The keys of a message that are not events: how a reply is told from an unknown event.
-const PLAIN_KEYS: [&str; 6] = ["returnValue", "mediaId", "subscribed", "subscribe", "errorCode", "errorText"];
-
-/// Reduce a service payload to what the probe may keep. A whitelist: a key it does not know
-/// contributes at most its own identifier-shaped NAME; a value it does not know is never read.
-pub fn parse_event(payload: &str) -> Message {
-    let mut message = Message::default();
-    let Ok(Value::Object(object)) = serde_json::from_str::<Value>(payload) else { return message };
-    message.return_value = object.get("returnValue").and_then(Value::as_bool);
-    message.media_id = object.get("mediaId").and_then(Value::as_str).and_then(token);
-    // The error fields sit at the top level or inside an `error` object.
-    let error_object = object.get("error").and_then(Value::as_object);
-    let field = |key: &str| object.get(key).or_else(|| error_object.and_then(|inner| inner.get(key)));
-    message.error_code = field("errorCode").and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())));
-    message.error_text = field("errorText")
-        .and_then(Value::as_str)
-        .or_else(|| object.get("error").and_then(Value::as_str))
-        .map(scrub_text);
-    message.current_time = object.get("currentTime").and_then(current_time_of);
-    for (key, ev) in EVENT_KEYS {
-        let Some(value) = object.get(key) else { continue };
-        if matches!(value, Value::Null | Value::Bool(false)) {
-            continue;
-        }
-        let detail = match ev {
-            Ev::VideoInfo => details(value, &["width", "height", "codec", "frameRate", "hdr"]),
-            Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate"]),
-            Ev::BufferRange => details(value, &["beginTime", "endTime"]),
-            Ev::CurrentTime => scalar(value).map(|v| format!("value={v}")).unwrap_or_default(),
-            _ => String::new(),
-        };
-        if ev == Ev::VideoInfo {
-            let dim = |key| value.get(key).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0);
-            message.dims = dim("width").zip(dim("height"));
-        }
-        message.seen.push(Seen { ev, detail });
-    }
-    for value in object.values() {
-        if let Value::String(word) = value {
-            if let Some(ev) = Ev::of_word(word) {
-                if message.seen.iter().all(|seen| seen.ev != ev) {
-                    message.seen.push(Seen { ev, detail: String::new() });
-                }
-            }
-        }
-    }
-    // An error event: an `error` key (above), or error fields on a message that is not a refused call.
-    if message.error_code.is_some_and(|code| code != 0) && message.return_value != Some(false) && message.seen.iter().all(|seen| seen.ev != Ev::Error) {
-        message.seen.push(Seen { ev: Ev::Error, detail: String::new() });
-    }
-    if message.seen.is_empty() {
-        message.unknown = object
-            .keys()
-            .filter(|key| !PLAIN_KEYS.contains(&key.as_str()))
-            .find_map(|key| (key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && key.len() <= 32).then(|| key.clone()));
-    }
-    message
-}
-
-/// Hub or service text made safe for a log line a tester will post: every whitespace-delimited word
-/// that could hold a URL, a path, an address, a host or a token is replaced by `<url>`, and the
-/// result is cut to [`SCRUBBED_TEXT_CHARS`]. A word is replaced when it contains `/` (a path, or
-/// `://`), `@`, a backslash, `token` (any case), `plex.direct`, a `host:port` colon followed by
-/// digits, or an interior `.`
-/// (a host name, a dotted quad, a file name) that is not part of one of this television's own
-/// service names (`com.webos.*`, `com.palm.*`, `com.lge.*`, `com.beb.*`), which the hub names in
-/// its refusals and which tell a tester why a call was denied.
-pub fn scrub_text(text: &str) -> String {
-    let words: Vec<String> = text.split_whitespace().map(scrub_word).collect();
-    words.join(" ").chars().take(SCRUBBED_TEXT_CHARS).collect()
-}
-
-fn scrub_word(word: &str) -> String {
-    let edge = |c: char| matches!(c, '.' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '{' | '}' | '"' | '\'' | '<' | '>' | '!' | '?');
-    let bare = word.trim_matches(edge);
-    let lower = bare.to_ascii_lowercase();
-    let service = ["com.webos.", "com.palm.", "com.lge.", "com.beb."].iter().any(|prefix| lower.starts_with(prefix))
-        && bare.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    let host_port = bare.rsplit_once(':').is_some_and(|(_, port)| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()));
-    let tainted = word.contains(['/', '@', '\\'])
-        || lower.contains("token")
-        || lower.contains("plex.direct")
-        || host_port
-        || (bare.contains('.') && !service);
-    if !tainted {
-        return word.to_owned();
-    }
-    // Only the core is replaced: the brackets and stops around it stay, so a sentence still reads.
-    let start = word.find(bare).unwrap_or(0);
-    format!("{}<url>{}", &word[..start], &word[start + bare.len()..])
-}
+pub use super::uri_protocol::{build_load, parse_event, scrub_text, MediaId, Message, Method, UriCall};
+use super::uri_protocol::{Ev, Seen};
+#[cfg(test)]
+use super::uri_protocol::SCRUBBED_TEXT_CHARS;
 
 // ---------------------------------------------------------------------------------------------
 // Events in
-
-/// Which call a reply answers (the transport tags every message with the method that was sent).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Method {
-    Register,
-    Load,
-    Subscribe,
-    Play,
-    Pause,
-    Seek,
-    SelectTrack,
-    SetSubtitleEnable,
-    SetWindowId,
-    Unload,
-    Dropped,
-    Other,
-}
-
-impl Method {
-    fn of(name: &str) -> Method {
-        match name {
-            "register" => Method::Register,
-            "load" => Method::Load,
-            "subscribe" => Method::Subscribe,
-            "play" => Method::Play,
-            "pause" => Method::Pause,
-            "seek" => Method::Seek,
-            "selectTrack" => Method::SelectTrack,
-            "setSubtitleEnable" => Method::SetSubtitleEnable,
-            "setWindowId" => Method::SetWindowId,
-            "unload" => Method::Unload,
-            "dropped" => Method::Dropped,
-            _ => Method::Other,
-        }
-    }
-}
 
 /// What the driver feeds [`UriProbe::step`].
 #[derive(Clone, Debug, PartialEq)]
@@ -480,6 +169,10 @@ pub enum UriEvent {
     Start,
     /// Back (or any stop the driver wants): end the session now.
     Back,
+    /// The previous registration actually released; the retry can now register.
+    Closed,
+    /// Correlation assigned by the ownership reducer before this call can answer.
+    Dispatched { method: Method, kind: Option<&'static str>, request: plx_platform::tv::uri::RequestId },
     /// Time has passed: the deadlines are checked against `now_ms`.
     Tick,
     /// A message from the transport, or the transport's refusal to send one.
@@ -487,8 +180,8 @@ pub enum UriEvent {
 }
 
 impl UriEvent {
-    /// The event for a transport message. The payload is parsed here and dropped: only the
-    /// whitelisted [`Message`] goes on. A transport failure's text is the hub's, scrubbed.
+    /// The diagnostic entrypoint: drop the raw payload after normalized decoding. Production
+    /// replies pass through the ownership reducer first, which validates session and request.
     pub fn from_reply(reply: &UriReply) -> UriEvent {
         let method = Method::of(reply.method);
         // `dropped` comes first: the transport's queue sends it with `ok: false` and a count, not a
@@ -496,12 +189,14 @@ impl UriEvent {
         let message = if method == Method::Dropped {
             Message { dropped: reply.payload.trim().parse().ok(), ..Message::default() }
         } else if !reply.ok {
-            Message { error_text: Some(scrub_text(&reply.payload)), ..Message::default() }
+            Message::transport_failure(&reply.payload)
         } else if method == Method::Register {
             Message::default()
         } else {
             parse_event(&reply.payload)
         };
+        let mut message = message;
+        message.reply_request = Some(reply.request);
         UriEvent::Reply { method, ok: reply.ok, message }
     }
 
@@ -510,7 +205,7 @@ impl UriEvent {
         UriEvent::Reply {
             method: Method::of(method),
             ok: false,
-            message: Message { error_text: Some(scrub_text(text)), ..Message::default() },
+            message: Message::transport_failure(text),
         }
     }
 }
@@ -550,6 +245,7 @@ pub enum UriEffect {
 enum Phase {
     Idle,
     Registering { deadline: u64 },
+    AwaitingClose,
     Loading { deadline: u64 },
     SettingWindow { deadline: u64 },
     Starting { deadline: u64 },
@@ -563,7 +259,7 @@ impl Phase {
     /// The name a failure in this phase is reported under.
     fn name(self) -> &'static str {
         match self {
-            Phase::Idle | Phase::Registering { .. } => "register",
+            Phase::Idle | Phase::Registering { .. } | Phase::AwaitingClose => "register",
             Phase::Loading { .. } => "load",
             Phase::SettingWindow { .. } => "setWindowId",
             Phase::Starting { .. } => "play",
@@ -631,7 +327,7 @@ struct Facts {
     pause_pos: Option<i64>,
     resume_pos: Option<i64>,
     seek_target: Option<i64>,
-    /// Which `selectTrack` a reply is expected for (`"text"` or `"audio"`).
+    /// The diagnostic machine's fallback when no addressed dispatch context was supplied.
     track_pending: Option<&'static str>,
 }
 
@@ -670,7 +366,7 @@ pub struct UriProbe {
     phase: Phase,
     shape: Shape,
     started_ms: u64,
-    media_id: Option<String>,
+    media_id: Option<MediaId>,
     subscribed: bool,
     settled: Option<Settle>,
     last_time: Option<i64>,
@@ -679,6 +375,7 @@ pub struct UriProbe {
     time_unparsed_ms: Option<u64>,
     placed: Option<(u32, u32)>,
     facts: Facts,
+    requests: std::collections::BTreeMap<(Method, Option<&'static str>), plx_platform::tv::uri::RequestId>,
 }
 
 impl std::fmt::Debug for UriProbe {
@@ -705,6 +402,7 @@ impl UriProbe {
             time_unparsed_ms: None,
             placed: None,
             facts: Facts::default(),
+            requests: std::collections::BTreeMap::new(),
         }
     }
 
@@ -728,6 +426,12 @@ impl UriProbe {
         match ev {
             UriEvent::Start => self.start(now_ms, fx),
             UriEvent::Back => self.stop(now_ms, End::Back, fx),
+            UriEvent::Closed if self.phase == Phase::AwaitingClose => {
+                self.phase = Phase::Registering { deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS) };
+                fx.push(UriEffect::Open(Shape::Anon));
+            }
+            UriEvent::Closed => {},
+            UriEvent::Dispatched { method, kind, request } => { self.requests.insert((method, kind), request); },
             UriEvent::Tick => self.tick(now_ms, fx),
             UriEvent::Reply { method, ok, message } => self.reply(method, ok, &message, now_ms, fx),
         }
@@ -816,7 +520,7 @@ impl UriProbe {
                 fx.push(UriEffect::Call(UriCall::Play { media_id }));
             }
             2 => {
-                let target = self.last_time.unwrap_or(0).max(0) + DRIVE_SEEK_MS;
+                let target = self.last_time.unwrap_or(0).max(0).saturating_add(DRIVE_SEEK_MS);
                 self.facts.seek_target = Some(target);
                 fx.push(self.line(now_ms, &format!("drive seek target={target}")));
                 fx.push(UriEffect::Call(UriCall::Seek { media_id, position: target }));
@@ -847,6 +551,7 @@ impl UriProbe {
         if method == Method::Dropped {
             let count = message.dropped.unwrap_or(0);
             fx.push(self.line(now_ms, &format!("transport dropped {count} replies")));
+            self.stop(now_ms, End::Refused("overflow"), fx);
             return;
         }
         match self.phase {
@@ -877,16 +582,20 @@ impl UriProbe {
             self.media_id = None;
             self.subscribed = false;
             fx.push(UriEffect::Close);
-            self.phase = Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS };
-            fx.push(UriEffect::Open(Shape::Anon));
+            self.phase = Phase::AwaitingClose;
         } else {
             self.stop(now_ms, end, fx);
         }
     }
 
     fn service_message(&mut self, method: Method, ok: bool, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        if self.requests.get(&(method, message.reply_track)).is_some_and(|request| message.reply_request != Some(*request)) { return; }
+        if message.identity_conflict || (self.media_id.is_some() && message.media_id.is_some() && self.media_id != message.media_id) { return; }
         let denied = !ok || message.return_value == Some(false);
         let text = message.why();
+        if let Some(kind) = message.confirmed_track {
+            match kind { "text" => self.facts.text = CallResult::Ok, "audio" => self.facts.audio = CallResult::Ok, _ => {} }
+        }
         match method {
             Method::Load if denied && self.media_id.is_none() && matches!(self.phase, Phase::Loading { .. }) => {
                 fx.push(self.line(now_ms, &format!("call load err({text})")));
@@ -918,22 +627,24 @@ impl UriProbe {
                 return;
             }
             Method::SelectTrack => {
-                let kind = self.facts.track_pending.take().unwrap_or("track");
+                let kind = message.reply_track.or_else(|| self.facts.track_pending.take()).unwrap_or("track");
                 let outcome = Self::outcome(ok, denied);
                 match kind {
-                    "text" => self.facts.text = outcome,
-                    _ => self.facts.audio = outcome,
+                    "text" => if self.facts.text != CallResult::Ok || outcome == CallResult::Refused { self.facts.text = outcome },
+                    "audio" => if self.facts.audio != CallResult::Ok || outcome == CallResult::Refused { self.facts.audio = outcome },
+                    _ => {},
                 }
                 fx.push(self.line(now_ms, &format!("call selectTrack {kind} {}", Self::said(ok, denied, &text))));
                 return;
             }
             Method::SetSubtitleEnable => {
                 // No event confirms this call: its own reply is the whole answer.
-                self.facts.subs = if ok && !denied { CallResult::Ok } else { CallResult::Refused };
+                self.facts.subs = if denied { CallResult::Refused } else if message.return_value == Some(true) { CallResult::Ok } else { CallResult::Unconfirmed };
                 fx.push(self.line(now_ms, &format!("call setSubtitleEnable {}", Self::said(ok, denied, &text))));
                 return;
             }
             Method::SetWindowId => {
+                if !denied && message.return_value != Some(true) { return; }
                 if denied {
                     self.facts.window_call = WindowCall::Refused;
                     fx.push(self.line(now_ms, &format!("call setWindowId err({text})")));
@@ -948,7 +659,7 @@ impl UriProbe {
             }
             Method::Load | Method::Subscribe | Method::Play if !denied && message.return_value == Some(true) && !message.has_events() => {
                 if method == Method::Play && matches!(self.phase, Phase::Driving { .. }) {
-                    self.facts.resume = CallResult::Ok;
+                    self.facts.resume = CallResult::Unconfirmed;
                 }
                 fx.push(self.line(now_ms, &format!("call {} ok", match method {
                     Method::Load => "load",
@@ -973,7 +684,9 @@ impl UriProbe {
             if self.phase == Phase::Done {
                 return;
             }
-            self.event(seen, message, now_ms, fx);
+            if message.normalized.contains(&seen.ev) { self.event(seen, message, now_ms, fx); }
+            else if seen.ev == Ev::CurrentTime { self.current_time(None, now_ms, fx); }
+            else { fx.push(self.event_line(now_ms, seen.ev.name(), "(unparsed)")); }
         }
         if message.seen.is_empty() {
             if let Some(name) = &message.unknown {
@@ -1019,17 +732,15 @@ impl UriProbe {
             Ev::SeekDone => {
                 fx.push(self.line(now_ms, "ev=seekDone"));
                 self.facts.seek_done_ev = true;
-                if self.facts.seek == CallResult::Unconfirmed {
-                    self.facts.seek = CallResult::Ok;
-                }
+                // The subscription's request ID is not the seek command's identity.
             }
             Ev::TrackSelected => {
                 fx.push(self.line(now_ms, "ev=trackSelected"));
-                if self.facts.text == CallResult::Unconfirmed {
-                    self.facts.text = CallResult::Ok;
-                }
-                if self.facts.audio == CallResult::Unconfirmed {
-                    self.facts.audio = CallResult::Ok;
+                // A generic subscription event cannot name a text or audio command.
+                match message.confirmed_track {
+                    Some("text") if self.facts.text == CallResult::Unconfirmed => self.facts.text = CallResult::Ok,
+                    Some("audio") if self.facts.audio == CallResult::Unconfirmed => self.facts.audio = CallResult::Ok,
+                    _ => {},
                 }
             }
             Ev::EndOfStream => {
@@ -1137,7 +848,7 @@ impl UriProbe {
         self.facts.ended = Some(end);
         self.settle(Settle::StartFailed, fx);
         if let Some(media_id) = self.media_id.take() {
-            fx.push(self.line(now_ms, "call unload sent"));
+            fx.push(self.line(now_ms, "call unload requested"));
             fx.push(UriEffect::Call(UriCall::Unload { media_id }));
         }
         fx.push(UriEffect::Close);
@@ -1228,22 +939,6 @@ impl UriProbe {
     }
 }
 
-impl Message {
-    fn has_events(&self) -> bool {
-        !self.seen.is_empty()
-    }
-
-    /// Why a call was refused, for a log line: the service's code and scrubbed text when it gave
-    /// them (`code -1: Denied`), else whatever the transport said.
-    fn why(&self) -> String {
-        match (self.error_code, &self.error_text) {
-            (Some(code), Some(text)) if !text.is_empty() => format!("code {code}: {text}"),
-            (Some(code), _) => format!("code {code}"),
-            (None, Some(text)) => text.clone(),
-            (None, None) => String::new(),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1288,10 +983,10 @@ mod tests {
             self.feed(ev)
         }
         fn msg(&mut self, method: &'static str, payload: &str) -> Vec<UriEffect> {
-            self.feed(UriEvent::from_reply(&UriReply { method, payload: payload.to_owned(), ok: true }))
+            self.feed(UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method, payload: payload.to_owned(), ok: true }))
         }
         fn deny(&mut self, method: &'static str, text: &str) -> Vec<UriEffect> {
-            self.feed(UriEvent::from_reply(&UriReply { method, payload: text.to_owned(), ok: false }))
+            self.feed(UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method, payload: text.to_owned(), ok: false }))
         }
         fn tick(&mut self, ms: u64) -> Vec<UriEffect> {
             self.after(ms, UriEvent::Tick)
@@ -1342,8 +1037,8 @@ mod tests {
     fn load(window: Option<&str>) -> UriEffect {
         call(UriCall::Load { window_id: window.map(str::to_owned) })
     }
-    fn media(id: &str) -> String {
-        id.to_owned()
+    fn media(id: &str) -> MediaId {
+        id.into()
     }
 
     // ------------------------------------------------------------------ happy paths
@@ -1358,7 +1053,7 @@ mod tests {
         let fx = rig.after(40, UriEvent::Reply { method: Method::Register, ok: true, message: Message::default() });
         assert_eq!(fx, [UriEffect::Log("uriprobe: t=40 register shape=named ok".into()), load(Some(WINDOW))]);
 
-        let fx = rig.after(60, UriEvent::from_reply(&UriReply { method: "load", payload: r#"{"returnValue":true,"mediaId":"_m1"}"#.into(), ok: true }));
+        let fx = rig.after(60, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "load", payload: r#"{"returnValue":true,"mediaId":"_m1"}"#.into(), ok: true }));
         assert_eq!(fx, [UriEffect::Log("uriprobe: t=100 call load ok".into()), call(UriCall::Subscribe { media_id: media("_m1") })]);
 
         let fx = rig.msg("subscribe", r#"{"returnValue":true,"subscribed":true}"#);
@@ -1373,7 +1068,7 @@ mod tests {
             ]
         );
 
-        let fx = rig.after(300, UriEvent::from_reply(&UriReply { method: "subscribe", payload: r#"{"mediaId":"_m1","loadCompleted":true}"#.into(), ok: true }));
+        let fx = rig.after(300, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"mediaId":"_m1","loadCompleted":true}"#.into(), ok: true }));
         assert_eq!(
             fx,
             [
@@ -1384,7 +1079,7 @@ mod tests {
         );
         assert!(!rig.probe.plane_open());
 
-        let fx = rig.after(100, UriEvent::from_reply(&UriReply { method: "subscribe", payload: r#"{"mediaId":"_m1","playing":true}"#.into(), ok: true }));
+        let fx = rig.after(100, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"mediaId":"_m1","playing":true}"#.into(), ok: true }));
         assert_eq!(logs(&fx), ["uriprobe: t=500 ev=playing"]);
         assert!(rig.probe.plane_open());
 
@@ -1480,7 +1175,7 @@ mod tests {
     fn current_time_is_logged_when_it_first_moves_then_once_a_second() {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
-        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
+        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
         assert!(has_log(&time(&mut rig, 10, 0), "(first report)"));
         assert!(time(&mut rig, 10, 0).is_empty(), "the same value again says nothing");
         assert!(has_log(&time(&mut rig, 10, 40), "ev=currentTime value=40"), "first move");
@@ -1497,7 +1192,7 @@ mod tests {
         rig.playing();
         let time = |rig: &mut Rig, ms: u64, value: i64| {
             let payload = format!(r#"{{"currentTime":{{"currentTime":{value},"mediaId":"_m1"}}}}"#);
-            rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload, ok: true }))
+            rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload, ok: true }))
         };
         assert!(has_log(&time(&mut rig, 10, 40), "ev=currentTime value=40 (first report)"));
         let fx = time(&mut rig, 600, 1040);
@@ -1512,7 +1207,7 @@ mod tests {
     fn a_current_time_in_no_known_shape_logs_one_line_and_arms_nothing() {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
-        let odd = |rig: &mut Rig, ms: u64, payload: &str| rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload: payload.to_owned(), ok: true }));
+        let odd = |rig: &mut Rig, ms: u64, payload: &str| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: payload.to_owned(), ok: true }));
         let fx = odd(&mut rig, 10, r#"{"currentTime":{"mediaId":"_m1"}}"#);
         assert_eq!(logs(&fx).len(), 1);
         assert!(has_log(&fx, "ev=currentTime (unparsed)"));
@@ -1534,10 +1229,10 @@ mod tests {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.start();
         let fx = rig.deny("register", "code -1027: Invalid permissions for com.webos.media.client.plxprobe");
-        assert_eq!(fx.len(), 3);
-        assert!(has_log(&fx, "register shape=named refused(code -1027: Invalid permissions for com.webos.media.client.plxprobe)"), "{fx:?}");
+        assert_eq!(fx.len(), 2);
+        assert!(has_log(&fx, "register shape=named refused(code <text> Invalid permissions for com.webos.media.client.plxprobe)"), "{fx:?}");
         assert_eq!(fx[1], UriEffect::Close);
-        assert_eq!(fx[2], UriEffect::Open(Shape::Anon));
+        assert_eq!(rig.feed(UriEvent::Closed), [UriEffect::Open(Shape::Anon)]);
         assert_eq!(settles(&fx, Settle::StartFailed), 0, "the ladder is not an end");
 
         let fx = rig.msg("register", "");
@@ -1547,6 +1242,7 @@ mod tests {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.start();
         rig.deny("register", "code -1: no");
+        rig.feed(UriEvent::Closed);
         let fx = rig.deny("register", "code -2: no");
         assert_eq!(settles(&fx, Settle::StartFailed), 1);
         assert_eq!((unloads(&fx), closes(&fx)), (0, 1));
@@ -1560,7 +1256,8 @@ mod tests {
         rig.msg("register", "");
         let fx = rig.msg("load", r#"{"returnValue":false,"errorCode":-1,"errorText":"Denied method call load for com.webos.media.client.plxprobe"}"#);
         assert!(has_log(&fx, "call load err(code"));
-        assert_eq!(&fx[fx.len() - 2..], [UriEffect::Close, UriEffect::Open(Shape::Anon)]);
+        assert_eq!(fx.last(), Some(&UriEffect::Close));
+        assert_eq!(rig.feed(UriEvent::Closed), [UriEffect::Open(Shape::Anon)]);
         assert_eq!(rig.msg("register", "")[1], load(Some(WINDOW)), "the anonymous client loads again");
         let fx = rig.msg("load", r#"{"returnValue":false,"errorCode":-1,"errorText":"Denied"}"#);
         assert_eq!(settles(&fx, Settle::StartFailed), 1);
@@ -1573,7 +1270,8 @@ mod tests {
         rig.start();
         rig.msg("register", "");
         let fx = rig.feed(UriEvent::from_failure("load", "no open worker"));
-        assert_eq!(fx.last(), Some(&UriEffect::Open(Shape::Anon)));
+        assert_eq!(fx.last(), Some(&UriEffect::Close));
+        assert_eq!(rig.feed(UriEvent::Closed), [UriEffect::Open(Shape::Anon)]);
     }
 
     // ------------------------------------------------------------------ timeouts
@@ -1623,7 +1321,7 @@ mod tests {
 
     #[test]
     fn a_frozen_current_time_ends_the_session_but_a_silent_one_does_not() {
-        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
+        let time = |rig: &mut Rig, ms: u64, value: i64| rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: format!(r#"{{"currentTime":{value}}}"#), ok: true }));
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
         time(&mut rig, 10, 0);
@@ -1644,7 +1342,7 @@ mod tests {
     fn a_frozen_nested_current_time_ends_the_session_like_a_bare_one() {
         let time = |rig: &mut Rig, ms: u64, value: i64| {
             let payload = format!(r#"{{"currentTime":{{"currentTime":{value},"mediaId":"_m1"}}}}"#);
-            rig.after(ms, UriEvent::from_reply(&UriReply { method: "subscribe", payload, ok: true }))
+            rig.after(ms, UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload, ok: true }))
         };
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.playing();
@@ -1685,9 +1383,9 @@ mod tests {
             for ev in [
                 UriEvent::Back,
                 UriEvent::Tick,
-                UriEvent::from_reply(&UriReply { method: "subscribe", payload: r#"{"error":{"errorCode":-1}}"#.into(), ok: true }),
-                UriEvent::from_reply(&UriReply { method: "subscribe", payload: r#"{"loadCompleted":true,"mediaId":"_m1"}"#.into(), ok: true }),
-                UriEvent::from_reply(&UriReply { method: "unload", payload: r#"{"returnValue":true}"#.into(), ok: true }),
+                UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"error":{"errorCode":-1}}"#.into(), ok: true }),
+                UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: r#"{"loadCompleted":true,"mediaId":"_m1"}"#.into(), ok: true }),
+                UriEvent::from_reply(&UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "unload", payload: r#"{"returnValue":true}"#.into(), ok: true }),
                 UriEvent::Start,
             ] {
                 assert!(rig.after(100_000, ev).is_empty(), "{name}: effects after Done");
@@ -1750,15 +1448,17 @@ mod tests {
         assert!(rig.msg("subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#).is_empty(), "no load was sent yet");
         // The `dropped` reply exactly as the transport's own queue makes it (`ok: false`), by
         // overflowing a real one: three pushes into a queue of one lose two.
-        let queue = ReplyQueue::new(1);
+        let queue = ReplyQueue::new(plx_platform::tv::uri::SessionId::new(1), 1);
         for _ in 0..3 {
-            queue.push("subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#.to_owned(), true);
+            queue.push(plx_platform::tv::uri::RequestId::new(1), "subscribe", r#"{"loadCompleted":true,"mediaId":"_m1"}"#.to_owned(), true);
         }
         let replies = queue.drain();
         let marker = replies.last().expect("the drain ends with the dropped reply");
         assert_eq!((marker.method, marker.ok), ("dropped", false), "the shape the queue sends");
         let fx: Vec<UriEffect> = replies.iter().flat_map(|reply| rig.feed(UriEvent::from_reply(reply))).collect();
-        assert_eq!(logs(&fx), ["uriprobe: t=0 transport dropped 2 replies"]);
+        assert_eq!(logs(&fx)[0], "uriprobe: t=0 transport dropped 2 replies");
+        assert!(rig.probe.is_done(), "loss invalidates the diagnostic stream");
+        assert_eq!(closes(&fx), 1);
     }
 
     #[test]
@@ -1766,9 +1466,9 @@ mod tests {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         rig.loading();
         let fx = rig.msg("subscribe", &format!(r#"{{"mediaId":"_m1","fooBar":{{"uri":"{URL}"}}}}"#));
-        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=fooBar (unparsed)"]);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=unknown (unparsed)"]);
         let fx = rig.msg("subscribe", &format!(r#"{{"mediaId":"_m1","{URL}":1}}"#));
-        assert!(fx.is_empty(), "a key that is not an identifier is not even named: {fx:?}");
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=unknown (unparsed)"]);
     }
 
     // ------------------------------------------------------------------ privacy
@@ -1858,9 +1558,9 @@ mod tests {
             assert_eq!(message.current_time, None, "{unreadable}");
             assert!(message.seen.iter().any(|seen| seen.ev == Ev::CurrentTime), "still an event: {unreadable}");
         }
-        // the object's other members are not read: its `mediaId` is not the message's
+        // The nested identity belongs to this event and survives opaque, without being logged.
         let message = parse_event(r#"{"currentTime":{"currentTime":40,"mediaId":"_m9"}}"#);
-        assert_eq!(message.media_id, None);
+        assert_eq!(message.media_id.as_deref(), Some("_m9"));
         assert_clean("Message", &format!("{message:?}"));
     }
 
@@ -1878,6 +1578,7 @@ mod tests {
         let mut all: Vec<UriEffect> = Vec::new();
         all.extend(rig.start());
         all.extend(rig.deny("register", &format!("code -1: Denied for {URL} at 192.168.1.5:32400")));
+        all.extend(rig.feed(UriEvent::Closed));
         all.extend(rig.msg("register", ""));
         all.extend(rig.msg("load", r#"{"returnValue":true,"mediaId":"_m1"}"#));
         all.extend(rig.msg("subscribe", &hostile));
@@ -1897,7 +1598,7 @@ mod tests {
 
     #[test]
     fn events_built_from_a_reply_hold_no_payload() {
-        let reply = UriReply { method: "subscribe", payload: hostile_event(), ok: true };
+        let reply = UriReply { session: plx_platform::tv::uri::SessionId::new(1), request: plx_platform::tv::uri::RequestId::new(1), method: "subscribe", payload: hostile_event(), ok: true };
         assert_clean("UriEvent", &format!("{:?}", UriEvent::from_reply(&reply)));
         assert_clean("failure", &format!("{:?}", UriEvent::from_failure("load", &format!("refused {URL}"))));
     }
@@ -2012,9 +1713,9 @@ mod tests {
         let summary = summary_of(&fx);
         assert!(summary.contains("variant=drive"), "{summary}");
         assert!(summary.contains("end=script"), "{summary}");
-        assert!(summary.contains("pause=froze pause_delta=0 resume=ok"), "{summary}");
+        assert!(summary.contains("pause=froze pause_delta=0 resume=sent"), "{summary}");
         assert!(summary.contains("seek=hit seek_delta=50"), "{summary}");
-        assert!(summary.contains("text=ok audio=ok subs=ok eos=no"), "{summary}");
+        assert!(summary.contains("text=sent audio=sent subs=ok eos=no"), "{summary}");
         assert_eq!(unloads(&fx), 1);
         assert!(rig.probe.is_done());
     }
@@ -2053,4 +1754,46 @@ mod tests {
         assert_eq!(Scheme::of(""), Scheme::Http);
         assert_eq!(Scheme::of("héllo"), Scheme::Http, "a multi-byte head is not a panic");
     }
+    #[test]
+    fn uri_regression_unrelated_strings_cannot_end_or_start_playback() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.playing();
+        let fx = rig.msg("subscribe", r#"{"description":"endOfStream","playing":false,"endOfStream":null}"#);
+        assert!(!rig.probe.is_done(), "unrelated string ended the probe: {fx:?}");
+        let message = parse_event(r#"{"description":"playing","playing":false}"#);
+        assert!(!message.seen.iter().any(|seen| seen.ev == Ev::Playing));
+    }
+
+    #[test]
+    fn uri_regression_generic_trackselected_cannot_confirm_both_tracks() {
+        let mut rig = Rig::new(Variant::Drive, Some(WINDOW));
+        rig.playing();
+        rig.tick(3_000); rig.tick(2_500); rig.tick(2_500); rig.tick(2_500);
+        rig.msg("selectTrack", r#"{"returnValue":true}"#);
+        rig.tick(2_500);
+        rig.msg("selectTrack", r#"{"returnValue":true}"#);
+        rig.msg("subscribe", r#"{"trackSelected":true}"#);
+        assert_eq!(rig.probe.facts.text, CallResult::Unconfirmed);
+        assert_eq!(rig.probe.facts.audio, CallResult::Unconfirmed);
+    }
+
+    #[test]
+    fn uri_regression_named_retry_waits_for_release_evidence() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.start();
+        let fx = rig.deny("register", "denied");
+        assert!(fx.contains(&UriEffect::Close));
+        assert!(!fx.contains(&UriEffect::Open(Shape::Anon)), "retry raced unregister: {fx:?}");
+    }
+
+    #[test]
+    fn uri_retry_deadline_begins_after_close_ack() {
+        let mut rig=Rig::new(Variant::AtLoad,Some(WINDOW)); rig.start();
+        rig.deny("register","denied");
+        assert!(rig.tick(100_000).is_empty()); assert!(!rig.probe.is_done());
+        assert_eq!(rig.feed(UriEvent::Closed),[UriEffect::Open(Shape::Anon)]);
+        assert!(rig.tick(REGISTER_TIMEOUT_MS-1).is_empty());
+        let fx=rig.tick(1); assert!(rig.probe.is_done()); assert!(summary_of(&fx).contains("timeout:register"));
+    }
+
 }

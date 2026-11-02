@@ -1,164 +1,155 @@
-//! The television's URI-mode media service as a dumb transport (issue #1064, the first probe).
-//!
-//! `com.webos.media` (uMediaserver) loads a URL itself when it is asked over the platform bus:
-//! `load {"uri": ..}`, then a stream of replies on the subscription, then `play`. This module is
-//! only the PIPE to that service: it registers a client, sends one named method with a payload
-//! string, and hands back what arrived. It reads no JSON, decides nothing and logs no payload;
-//! what a reply MEANS is the probe machine's business (`plx_media::player::uriprobe`).
-//!
-//! **Nothing here blocks the caller.** [`UriMedia::open`], [`call`](UriMedia::call) and
-//! [`close`](UriMedia::close) post a request to the transport's one worker and return; the worker
-//! is the only thread that touches the bus handle. Every outcome, including a refused
-//! registration and a call the bus would not send, comes back through [`poll`](UriMedia::poll) as a
-//! [`UriReply`]:
-//!
-//! | `method` | `ok` | `payload` |
-//! |---|---|---|
-//! | `"register"` | the registration succeeded | the hub's own refusal text when it did not |
-//! | the method sent (`"load"`, ...) | the bus delivered a message on that call | the message's JSON; or the hub's text when the call was not sent |
-//! | `"dropped"` | `false` | how many replies were lost to a full queue since the last such reply |
-//!
-//! `ok` is the TRANSPORT's verdict, never the method's: a reply whose JSON says
-//! `"returnValue": false` arrives with `ok: true` and the machine grades it.
-//!
-//! The whole module is the `devtriggers` surface (the probe is a developer test), so a release build
-//! carries neither the trait nor the webOS worker behind it.
+//! Nonblocking, addressed transport to the developer URI probe. Payloads stay opaque here.
+use std::sync::atomic::{AtomicU8, Ordering};
 
-/// How the client names itself on the bus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Shape {
-    /// `com.webos.media.client.plxprobe`: the name the Developer Mode role file grants outbound
-    /// permission to `com.webos.media` (docs/distribution.md).
-    Named,
-    /// A plain anonymous client, the one registration the hub accepts from this process (`ls2`).
-    Anon,
-}
+pub enum Shape { Named, Anon }
 
-/// One message from the transport. `Debug` prints the method, the verdict and the payload's LENGTH
-/// only: a payload can carry the media URL (an event echoing its `uri`), and a derive would write it
-/// into whatever formats this value.
-pub struct UriReply {
-    pub method: &'static str,
-    pub payload: String,
-    pub ok: bool,
-}
+/// A registration's identity. A stale owner cannot address its successor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SessionId(u64);
+impl SessionId { pub const fn new(value: u64) -> Self { Self(value) } }
 
-impl std::fmt::Debug for UriReply {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "UriReply {{ method: {:?}, ok: {}, payload: <{} bytes> }}", self.method, self.ok, self.payload.len())
+/// One call, not a subscription event's causal identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RequestId(u64);
+impl RequestId { pub const fn new(value: u64) -> Self { Self(value) } }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseStatus { Open, Closing, Released, Quarantined }
+
+/// Sticky release evidence, separate from the bounded reply stream.
+pub struct CloseSignal(AtomicU8);
+impl Default for CloseSignal { fn default() -> Self { Self::new() } }
+impl CloseSignal {
+    pub const fn new() -> Self { Self(AtomicU8::new(0)) }
+    pub fn status(&self) -> CloseStatus {
+        match self.0.load(Ordering::Acquire) {
+            0 => CloseStatus::Open, 1 => CloseStatus::Closing, 2 => CloseStatus::Released, _ => CloseStatus::Quarantined,
+        }
+    }
+    /// True once only: the caller which must post Close to the worker.
+    pub fn request_close(&self) -> bool { self.0.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() }
+    /// Only actual unregister success (or registration failure without a live handle) releases.
+    pub fn finish(&self, released: bool) {
+        let _ = self.0.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current != 2).then_some(if released { 2 } else { 3 })
+        });
     }
 }
 
-/// The pipe. `Sync` because the installed port holds one `&'static dyn UriMedia`.
-pub trait UriMedia: Sync {
-    /// Ask the worker to register as `shape`. `Err` only when no worker could be started or one is
-    /// already open; the registration's own outcome is the `"register"` reply of [`poll`](Self::poll).
-    fn open(&self, shape: Shape) -> Result<(), String>;
-    /// Queue `payload` for `luna://com.webos.media/<method>`. `Err` only when there is no open
-    /// worker or the payload cannot be sent as text; the bus's answer, and its refusal to send, are
-    /// replies. A call keeps its token: every later message on it arrives under the same `method`.
-    fn call(&self, method: &'static str, payload: &str) -> Result<(), String>;
-    /// Everything that has arrived since the last poll, oldest first. Never blocks.
-    fn poll(&self) -> Vec<UriReply>;
-    /// Ask the worker to unregister (uMediaserver unloads a pipeline whose load client leaves the
-    /// bus) and end. Idempotent.
-    fn close(&self);
+/// The real worker's slot. Closing and quarantined occupants cannot be replaced.
+pub struct SessionSlot<T> { next: u64, current: Option<(SessionId, T)> }
+impl<T> Default for SessionSlot<T> { fn default() -> Self { Self::new() } }
+impl<T> SessionSlot<T> {
+    pub const fn new() -> Self { Self { next: 0, current: None } }
+    pub fn open(&mut self, released: impl FnOnce(&T) -> bool, create: impl FnOnce(SessionId) -> Result<T, String>) -> Result<SessionId, String> {
+        if self.current.as_ref().is_some_and(|(_, value)| !released(value)) { return Err("registration occupied".to_owned()); }
+        self.next = self.next.checked_add(1).ok_or_else(|| "session identities exhausted".to_owned())?;
+        let id = SessionId(self.next);
+        let value = create(id)?;
+        self.current = Some((id, value));
+        Ok(id)
+    }
+    pub fn get(&self, id: SessionId) -> Result<&T, String> {
+        self.current.as_ref().filter(|(current, _)| *current == id).map(|(_, value)| value).ok_or_else(|| "stale session".to_owned())
+    }
 }
 
-/// The transport the installed port holds. Only `tv` reads the table; this is the `devtriggers` build's
-/// second way out of it (the other is the sink), read by the URI-mode probe's driver.
+pub struct UriReply { pub session: SessionId, pub request: RequestId, pub method: &'static str, pub payload: String, pub ok: bool }
+impl std::fmt::Debug for UriReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let method = match self.method {
+            "register" | "load" | "subscribe" | "play" | "pause" | "seek" | "selectTrack" | "setSubtitleEnable" | "setWindowId" | "unload" | "dropped" => self.method,
+            _ => "other",
+        };
+        f.debug_struct("UriReply").field("method", &method).field("session", &self.session).field("request", &self.request).field("ok", &self.ok).field("payload_bytes", &self.payload.len()).finish()
+    }
+}
+pub struct UriPoll { pub replies: Vec<UriReply>, pub close: CloseStatus }
+
+pub trait UriMedia: Sync {
+    fn open(&self, shape: Shape) -> Result<SessionId, String>;
+    /// Success means queued, never that the bus sent it or the service accepted it.
+    fn call(&self, session: SessionId, request: RequestId, method: &'static str, payload: &str) -> Result<(), String>;
+    fn poll(&self, session: SessionId) -> Result<UriPoll, String>;
+    fn close(&self, session: SessionId) -> Result<(), String>;
+}
 pub fn installed() -> &'static dyn UriMedia { super::port().uri_media }
 
-/// The bounded queue between a transport's worker (which pushes) and its poller (which drains).
-/// A full queue drops the NEWEST reply and counts it; the count comes back as one `dropped` reply
-/// at the end of the next drain, so a poller that fell behind says so instead of silently missing
-/// messages.
 pub struct ReplyQueue {
+    session: SessionId,
     sender: std::sync::mpsc::SyncSender<UriReply>,
     receiver: std::sync::Mutex<std::sync::mpsc::Receiver<UriReply>>,
     dropped: std::sync::atomic::AtomicU64,
 }
-
 impl ReplyQueue {
-    /// A queue that holds `depth` replies.
-    pub fn new(depth: usize) -> ReplyQueue {
+    pub fn new(session: SessionId, depth: usize) -> Self {
         let (sender, receiver) = std::sync::mpsc::sync_channel(depth);
-        ReplyQueue { sender, receiver: std::sync::Mutex::new(receiver), dropped: std::sync::atomic::AtomicU64::new(0) }
+        Self { session, sender, receiver: std::sync::Mutex::new(receiver), dropped: std::sync::atomic::AtomicU64::new(0) }
     }
-
-    /// Queue one reply, or count it dropped. Never blocks.
-    pub fn push(&self, method: &'static str, payload: String, ok: bool) {
-        if self.sender.try_send(UriReply { method, payload, ok }).is_err() {
-            self.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+    pub fn push(&self, request: RequestId, method: &'static str, payload: String, ok: bool) {
+        if self.sender.try_send(UriReply { session: self.session, request, method, payload, ok }).is_err() { self.dropped.fetch_add(1, Ordering::Relaxed); }
     }
-
-    /// Everything queued, oldest first, then the `dropped` reply if any were lost.
     pub fn drain(&self) -> Vec<UriReply> {
-        let receiver = self.receiver.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut replies: Vec<UriReply> = receiver.try_iter().collect();
-        let dropped = self.dropped.swap(0, std::sync::atomic::Ordering::Relaxed);
-        if dropped > 0 {
-            replies.push(UriReply { method: "dropped", payload: dropped.to_string(), ok: false });
-        }
+        let receiver = self.receiver.lock().unwrap_or_else(|p| p.into_inner());
+        let mut replies: Vec<_> = receiver.try_iter().collect();
+        let dropped = self.dropped.swap(0, Ordering::Relaxed);
+        if dropped > 0 { replies.push(UriReply { session: self.session, request: RequestId(0), method: "dropped", payload: dropped.to_string(), ok: false }); }
         replies
     }
 }
-
-/// No bus: host and test builds, and a port that was never installed.
 pub struct NoUriMedia;
-
 impl UriMedia for NoUriMedia {
-    fn open(&self, _shape: Shape) -> Result<(), String> { Err("no bus".to_owned()) }
-    fn call(&self, _method: &'static str, _payload: &str) -> Result<(), String> { Err("no bus".to_owned()) }
-    fn poll(&self) -> Vec<UriReply> { Vec::new() }
-    fn close(&self) {}
+    fn open(&self, _shape: Shape) -> Result<SessionId, String> { Err("no bus".to_owned()) }
+    fn call(&self, _session: SessionId, _request: RequestId, _method: &'static str, _payload: &str) -> Result<(), String> { Err("no bus".to_owned()) }
+    fn poll(&self, _session: SessionId) -> Result<UriPoll, String> { Err("no bus".to_owned()) }
+    fn close(&self, _session: SessionId) -> Result<(), String> { Err("no bus".to_owned()) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    const REQUEST: RequestId = RequestId::new(1);
     #[test]
-    fn debug_prints_the_length_of_a_payload_never_its_text() {
-        let reply = UriReply {
-            method: "load",
-            payload: r#"{"uri":"http://192.168.1.5:32400/video?X-Plex-Token=SECRETTOKEN"}"#.to_owned(),
-            ok: true,
-        };
+    fn uri_slot_retains_closing_and_quarantine_and_rejects_stale_owners() {
+        let mut slot = SessionSlot::new();
+        let first = slot.open(|s: &CloseSignal| s.status() == CloseStatus::Released, |_| Ok(CloseSignal::new())).unwrap();
+        let signal = slot.get(first).unwrap();
+        assert!(signal.request_close()); assert!(!signal.request_close());
+        assert_eq!(signal.status(), CloseStatus::Closing);
+        assert!(slot.open(|s| s.status() == CloseStatus::Released, |_| Ok(CloseSignal::new())).is_err());
+        slot.get(first).unwrap().finish(false);
+        assert!(slot.open(|s| s.status() == CloseStatus::Released, |_| Ok(CloseSignal::new())).is_err());
+        slot.get(first).unwrap().finish(true);
+        let second = slot.open(|s| s.status() == CloseStatus::Released, |_| Ok(CloseSignal::new())).unwrap();
+        assert_ne!(first, second); assert!(slot.get(first).is_err());
+        assert_eq!(slot.get(second).unwrap().status(), CloseStatus::Open);
+    }
+    #[test]
+    fn uri_terminal_status_survives_queue_overflow() {
+        let signal = CloseSignal::new();
+        let queue = ReplyQueue::new(SessionId::new(1), 1);
+        queue.push(REQUEST, "load", "one".into(), true);
+        queue.push(REQUEST, "load", "two".into(), true);
+        assert!(signal.request_close()); signal.finish(true);
+        let poll = UriPoll { replies: queue.drain(), close: signal.status() };
+        assert_eq!(poll.close, CloseStatus::Released);
+        assert_eq!(poll.replies.len(), 2); assert_eq!(poll.replies[1].method, "dropped");
+        assert!(queue.drain().is_empty()); assert_eq!(signal.status(), CloseStatus::Released);
+    }
+    #[test]
+    fn uri_debug_hides_payload_and_arbitrary_method_text() {
+        let reply = UriReply { session: SessionId::new(1), request: REQUEST, method: "SECRETMETHOD", payload: "http://host/?token=SECRET".into(), ok: true };
         let shown = format!("{reply:?}");
-        assert!(shown.contains("load") && shown.contains("true") && shown.contains("bytes"), "{shown}");
-        for leak in ["192.168", "SECRETTOKEN", "X-Plex-Token", "http"] {
-            assert!(!shown.contains(leak), "Debug leaked {leak:?}: {shown}");
-        }
+        assert!(shown.contains("true"));
+        for secret in ["http", "host", "token", "SECRET"] { assert!(!shown.contains(secret), "{shown}"); }
     }
-
     #[test]
-    fn no_uri_media_answers_no_bus_and_yields_nothing() {
-        let none = NoUriMedia;
-        assert_eq!(none.open(Shape::Named), Err("no bus".to_owned()));
-        assert_eq!(none.open(Shape::Anon), Err("no bus".to_owned()));
-        assert_eq!(none.call("load", "{}"), Err("no bus".to_owned()));
-        assert!(none.poll().is_empty());
-        none.close();
-    }
-
-    #[test]
-    fn a_full_queue_drops_the_newest_and_reports_the_count_once() {
-        let queue = ReplyQueue::new(2);
-        for n in 0..5 {
-            queue.push("load", n.to_string(), true);
-        }
-        let drained = queue.drain();
-        let shown: Vec<(&str, &str, bool)> = drained.iter().map(|r| (r.method, r.payload.as_str(), r.ok)).collect();
-        assert_eq!(shown, [("load", "0", true), ("load", "1", true), ("dropped", "3", false)]);
-        assert!(queue.drain().is_empty(), "the count is reported once");
-        queue.push("play", String::new(), true);
-        assert_eq!(queue.drain().len(), 1, "room again after a drain");
-    }
-
-    #[test]
-    fn an_uninstalled_port_hands_out_the_no_bus_transport() {
-        assert_eq!(installed().open(Shape::Anon), Err("no bus".to_owned()));
+    fn no_uri_media_answers_no_bus() {
+        assert_eq!(NoUriMedia.open(Shape::Named), Err("no bus".into()));
+        assert!(NoUriMedia.call(SessionId::new(1), REQUEST, "load", "{}").is_err());
+        assert!(NoUriMedia.poll(SessionId::new(1)).is_err());
+        assert!(NoUriMedia.close(SessionId::new(1)).is_err());
+        assert_eq!(installed().open(Shape::Anon), Err("no bus".into()));
     }
 }

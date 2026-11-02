@@ -735,13 +735,25 @@ pub mod ls2 {
         }
     }
 
-    /// Why there is no registration: the STAGE (`app-id`, `glib-context`, `register`, `attach`)
-    /// and, when the hub gave one, its own message.
+    /// Registration failure and its stage. `register-unregister` / `attach-unregister` retain
+    /// unresolved handles and contexts; other stages have confirmed cleanup.
     #[derive(Debug)]
     pub enum RegisterFail {
         Setup { stage: &'static str, detail: String,
             #[allow(dead_code)] // Numeric diagnostics are consumed by the ARM helper activation path.
             code: Option<i32> },
+    }
+
+    impl RegisterFail {
+        #[cfg(feature = "devtriggers")]
+        fn uri_diagnostic(&self) -> (&'static str, Option<i32>) {
+            match self { Self::Setup {stage, code, ..} => (*stage, *code) }
+        }
+
+        #[cfg(feature = "devtriggers")]
+        fn release_confirmed(&self) -> bool {
+            !matches!(self, Self::Setup { stage: "attach-unregister" | "register-unregister", .. })
+        }
     }
 
     impl std::fmt::Display for RegisterFail {
@@ -789,12 +801,12 @@ pub mod ls2 {
         if !registered || handle.is_null() {
             let code = Some(error.error_code);
             let detail = error_text(&error);
-            unsafe {
-                LSErrorFree(&mut error);
-                g_main_context_unref(context);
-            }
+            reset(&mut error);
+            let released = handle.is_null() || unsafe { LSUnregister(handle, &mut error) };
+            unsafe { LSErrorFree(&mut error) };
+            if released { unsafe { g_main_context_unref(context) }; }
             return Err(RegisterFail::Setup {
-                stage: "register",
+                stage: if released { "register" } else { "register-unregister" },
                 detail, code,
             });
         }
@@ -803,13 +815,12 @@ pub mod ls2 {
             let code = Some(error.error_code);
             let detail = error_text(&error);
             reset(&mut error);
-            unsafe {
-                LSUnregister(handle, &mut error);
-                LSErrorFree(&mut error);
-                g_main_context_unref(context);
-            }
+            let released = unsafe { LSUnregister(handle, &mut error) };
+            unsafe { LSErrorFree(&mut error) };
+            if released { unsafe { g_main_context_unref(context) }; }
+            // Failed cleanup leaves the handle and context alive. URI ownership must quarantine.
             return Err(RegisterFail::Setup {
-                stage: "attach",
+                stage: if released { "attach" } else { "attach-unregister" },
                 detail, code,
             });
         }
@@ -836,10 +847,7 @@ pub mod ls2 {
                 // A handle that would not unregister is still attached to this context, so the
                 // context is leaked rather than freed under it — a bounded leak, once per failed
                 // teardown, against a use-after-free (Codex review, 2026-09-04).
-                plx_base::eventlog::log(&format!(
-                    "ls2: unregister refused — leaking its glib context ({})",
-                    error_text(&error)
-                ));
+                plx_base::eventlog::log("ls2: unregister refused — retaining its glib context");
             }
             unsafe { LSErrorFree(&mut error) };
             unregistered

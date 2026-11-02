@@ -12,19 +12,20 @@
 //! `load` reply, then the events of a subscription) reaches [`on_message`] on the worker and goes
 //! onto a bounded reply queue the main thread drains with `poll`. A full queue drops the newest
 //! message and counts it; the count returns as one `dropped` reply. The callback's context lives
-//! in a worker-owned list that outlives the registration (it is dropped after it), and is leaked
-//! if the hub refuses to unregister, because the handle is then still attached to a callback.
+//! in a worker-owned list that outlives the registration. Both it and the Registration are retained
+//! if unregister fails, so Drop cannot retry invisibly or free storage a callback still references.
 //!
 //! The registration outlives playback on purpose: uMediaserver unloads a pipeline whose load
 //! client leaves the bus. `close` therefore lets the worker keep pumping for a short linger after
-//! its last op, so the `unload` it was just given is flushed before the unregister.
+//! its last op, so the `unload` it was just given is flushed before the unregister. Linger is only
+//! a flush allowance: the shared slot is reusable solely after successful unregister. Sticky
+//! close status lives outside the reply queue, so overflow cannot hide release or quarantine.
 //!
 //! Log lines carry the prefix `ls2uri:` and never a payload.
 use super::{error_text, g_main_context_iteration, register_as, LSCall, LSError, LSErrorFree, LSErrorInit, LSMessageGetPayload, Registration};
-use crate::tv::uri::{ReplyQueue, Shape, UriMedia, UriReply};
+use crate::tv::uri::{CloseSignal, CloseStatus, ReplyQueue, RequestId, SessionId, SessionSlot, Shape, UriMedia, UriPoll};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -41,18 +42,19 @@ const PUMP_ROUNDS: usize = 64;
 
 /// What the callers post to the worker.
 enum Op {
-    Call { method: &'static str, payload: CString },
+    Call { request: RequestId, method: &'static str, payload: CString },
     Close,
 }
 
 /// What the worker and the callbacks share with the poller.
 struct Shared {
     replies: ReplyQueue,
-    ended: AtomicBool,
+    close: CloseSignal,
 }
 
 /// The context of one `LSCall`: which method its messages answer.
 struct CallContext {
+    request: RequestId,
     method: &'static str,
     shared: Arc<Shared>,
 }
@@ -67,51 +69,47 @@ struct Worker {
 /// one probe), so it sits here rather than in the unit struct.
 pub struct Transport;
 
-static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+static WORKER: Mutex<SessionSlot<Worker>> = Mutex::new(SessionSlot::new());
 
-fn lock() -> MutexGuard<'static, Option<Worker>> {
+fn lock() -> MutexGuard<'static, SessionSlot<Worker>> {
     WORKER.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl UriMedia for Transport {
-    fn open(&self, shape: Shape) -> Result<(), String> {
-        let mut slot = lock();
-        if slot.as_ref().is_some_and(|worker| !worker.shared.ended.load(Ordering::Acquire)) {
-            return Err("already open".to_owned());
-        }
-        let (ops, inbox) = mpsc::channel();
-        let shared = Arc::new(Shared { replies: ReplyQueue::new(REPLY_QUEUE), ended: AtomicBool::new(false) });
-        let worker_shared = Arc::clone(&shared);
-        let spawned = plx_base::task::spawn("ls2uri", move || run(shape, inbox, worker_shared));
-        if spawned.is_none() {
-            return Err("worker thread refused".to_owned());
-        }
-        *slot = Some(Worker { ops, shared });
-        Ok(())
+    fn open(&self, shape: Shape) -> Result<SessionId, String> {
+        lock().open(|worker| worker.shared.close.status() == CloseStatus::Released, |session| {
+            let (ops, inbox) = mpsc::channel();
+            let shared = Arc::new(Shared { replies: ReplyQueue::new(session, REPLY_QUEUE), close: CloseSignal::new() });
+            let worker_shared = Arc::clone(&shared);
+            let spawned = plx_base::task::spawn("ls2uri", move || run(shape, inbox, worker_shared));
+            if spawned.is_none() { return Err("worker thread refused".to_owned()); }
+            Ok(Worker { ops, shared })
+        })
     }
 
-    fn call(&self, method: &'static str, payload: &str) -> Result<(), String> {
+    fn call(&self, session: SessionId, request: RequestId, method: &'static str, payload: &str) -> Result<(), String> {
         let slot = lock();
-        let Some(worker) = slot.as_ref() else { return Err("not open".to_owned()) };
-        if worker.shared.ended.load(Ordering::Acquire) {
-            return Err("worker ended".to_owned());
-        }
+        let worker = slot.get(session)?;
+        if worker.shared.close.status() != CloseStatus::Open { return Err("registration closing".to_owned()); }
         let payload = CString::new(payload).map_err(|_| "payload holds a NUL".to_owned())?;
-        worker.ops.send(Op::Call { method, payload }).map_err(|_| "worker gone".to_owned())
+        worker.ops.send(Op::Call { request, method, payload }).map_err(|_| "worker gone".to_owned())
     }
 
-    fn poll(&self) -> Vec<UriReply> {
+    fn poll(&self, session: SessionId) -> Result<UriPoll, String> {
         let slot = lock();
-        slot.as_ref().map_or_else(Vec::new, |worker| worker.shared.replies.drain())
+        let worker = slot.get(session)?;
+        Ok(UriPoll { replies: worker.shared.replies.drain(), close: worker.shared.close.status() })
     }
 
-    fn close(&self) {
-        // Taking the worker out is what makes a following `open` start a fresh one. Its thread
-        // is not joined: the caller is the frame loop, and the worker ends itself.
-        let worker = lock().take();
-        if let Some(worker) = worker {
-            let _ = worker.ops.send(Op::Close);
+    fn close(&self, session: SessionId) -> Result<(), String> {
+        let slot = lock();
+        let worker = slot.get(session)?;
+        if worker.shared.close.request_close() && worker.ops.send(Op::Close).is_err() {
+            // A missing worker is not evidence of unregister success.
+            worker.shared.close.finish(false);
+            return Err("worker gone".to_owned());
         }
+        Ok(())
     }
 }
 
@@ -124,14 +122,14 @@ extern "C" fn on_message(_handle: *mut c_void, message: *mut c_void, context: *m
     let context = unsafe { &*(context as *const CallContext) };
     let payload = unsafe { LSMessageGetPayload(message) };
     let text = if payload.is_null() { String::new() } else { unsafe { CStr::from_ptr(payload) }.to_string_lossy().into_owned() };
-    context.shared.replies.push(context.method, text, true);
+    context.shared.replies.push(context.request, context.method, text, true);
     true
 }
 
 /// One `LSCall` to `luna://com.webos.media/<method>`. `Err` carries the hub's own words.
-fn send(registration: &Registration, method: &'static str, payload: &CStr, shared: &Arc<Shared>) -> Result<Box<CallContext>, String> {
+fn send(registration: &Registration, request: RequestId, method: &'static str, payload: &CStr, shared: &Arc<Shared>) -> Result<Box<CallContext>, String> {
     let uri = CString::new(format!("luna://com.webos.media/{method}")).map_err(|_| "uri holds a NUL".to_owned())?;
-    let context = Box::new(CallContext { method, shared: Arc::clone(shared) });
+    let context = Box::new(CallContext { request, method, shared: Arc::clone(shared) });
     let mut error: LSError = unsafe { std::mem::zeroed() };
     unsafe { LSErrorInit(&mut error) };
     let called = unsafe {
@@ -172,24 +170,26 @@ fn run(shape: Shape, inbox: mpsc::Receiver<Op>, shared: Arc<Shared>) {
     let mut registration = match register_as(name) {
         Ok(registration) => registration,
         Err(fail) => {
-            plx_base::eventlog::log(&format!("ls2uri: register shape={label} refused after {}ms", started.elapsed().as_millis()));
-            shared.replies.push("register", fail.to_string(), false);
-            shared.ended.store(true, Ordering::Release);
+            let (stage, code) = fail.uri_diagnostic();
+            let code = code.map_or_else(|| "none".to_owned(), |code| code.to_string());
+            plx_base::eventlog::log(&format!("ls2uri: register shape={label} refused stage={stage} code={code} after {}ms", started.elapsed().as_millis()));
+            shared.replies.push(RequestId::new(0), "register", fail.to_string(), false);
+            shared.close.finish(fail.release_confirmed());
             return;
         }
     };
     plx_base::eventlog::log(&format!("ls2uri: register shape={label} ok after {}ms", started.elapsed().as_millis()));
-    shared.replies.push("register", String::new(), true);
+    shared.replies.push(RequestId::new(0), "register", String::new(), true);
     loop {
         match inbox.recv_timeout(PUMP_EVERY) {
-            Ok(Op::Call { method, payload }) => match send(&registration, method, &payload, &shared) {
+            Ok(Op::Call { request, method, payload }) => match send(&registration, request, method, &payload, &shared) {
                 Ok(context) => {
                     contexts.push(context);
-                    plx_base::eventlog::log(&format!("ls2uri: call {method} sent"));
+                    plx_base::eventlog::log("ls2uri: call sent");
                 }
                 Err(text) => {
-                    plx_base::eventlog::log(&format!("ls2uri: call {method} not sent ({text})"));
-                    shared.replies.push(method, text, false);
+                    plx_base::eventlog::log("ls2uri: call not sent");
+                    shared.replies.push(request, method, text, false);
                 }
             },
             Ok(Op::Close) | Err(RecvTimeoutError::Disconnected) => break,
@@ -204,10 +204,12 @@ fn run(shape: Shape, inbox: mpsc::Receiver<Op>, shared: Arc<Shared>) {
             std::thread::sleep(PUMP_EVERY);
         }
     }
-    shared.ended.store(true, Ordering::Release);
-    if !registration.unregister() {
-        // The handle is still attached to callbacks that point into `contexts`.
+    let released = registration.unregister();
+    if !released {
+        // Keep both alive: Drop must not make an unobserved second unregister attempt.
         std::mem::forget(contexts);
+        std::mem::forget(registration);
     }
-    plx_base::eventlog::log("ls2uri: closed");
+    shared.close.finish(released);
+    plx_base::eventlog::log(if released { "ls2uri: released" } else { "ls2uri: quarantined" });
 }

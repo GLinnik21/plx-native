@@ -287,6 +287,11 @@ impl PlayerAdapter {
         self.uri.as_ref().is_some_and(|session| session.plane_open())
     }
 
+    #[cfg(feature = "devtriggers")]
+    pub fn uri_closing(&self) -> bool {
+        self.uri.as_ref().is_some_and(|session| session.closing())
+    }
+
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
     #[cfg(feature = "devtriggers")]
@@ -295,7 +300,7 @@ impl PlayerAdapter {
         self.uri = Some(session);
     }
 
-    /// Take the probe's session out of the slot; the caller ends it (`uriprobe_drive::stop`).
+    /// Take a physically released probe out of the slot, or leak unresolved ownership at exit.
     #[cfg(feature = "devtriggers")]
     #[inline]
     pub(super) fn take_uri(&mut self) -> Option<super::uriprobe_drive::UriSession> {
