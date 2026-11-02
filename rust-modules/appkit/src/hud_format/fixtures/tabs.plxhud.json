@@ -15,7 +15,7 @@
     "block": [
       { "id": "bar", "cells": [
         { "align": "start", "playbar": { "w": "fill", "fill": "ACCENT", "track": "RAIL_TRACK", "thickness": 6, "clock_size": "CAPTION" } }
-      ] },
+      ], "chrome": "steady" },
       { "id": "row", "gap_before": "SM", "cells": [
         { "align": "start", "segment": { "id": "tabs", "gap": "MD", "items": [
           { "id": "open_chapters", "command": "toggle_section", "section": "chapters", "widget": "pill", "size": 52, "when": "chapters.present" },

@@ -8,12 +8,16 @@
 //! would shift them by a frame. The prewarm ([`ClockWarm::queue`]) is a draw-side read and so takes
 //! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
 //! because the app's snapshot is a frame old by then.
+use super::caption_rise::CaptionRise;
 use super::classic::fmt_time;
-use super::geometry::GROUP_ROW;
+use super::geometry::{GROUP_ROW, GROUP_SECTION, GROUP_STRIP, MAX_ROW_ITEMS};
 use super::model::HudModel;
 use super::state::*;
 use crate::knob_spring::KnobSpring;
-use plx_machine::machine::GroupId;
+use super::command::Section;
+use plx_machine::machine::{EntryId, GroupId, PresentHandle, Tick};
+use plx_ui::cards::Shelf;
+use plx_ui::containers::modal::PopoverMotion;
 use plx_ui::theme;
 use std::ffi::CString;
 use std::os::raw::{c_int};
@@ -124,6 +128,10 @@ fn row_pops(slot: ControlSlot) -> usize {
 /// exactly where [`step`](Self::step)'s doc says they must be.
 pub struct HudMotion {
     pub(super) pop: RowPop,
+    /// An open section's own buttons' focus pop ([`super::geometry::GROUP_SECTION`]), one spring per button
+    /// (the pop the Info card's buttons have always had). It is stepped while the screen focuses `GROUP_SECTION`
+    /// (the open Info page is the section).
+    pub(super) section_pop: RowPop,
     /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
     pub(super) title_clock: plx_ui::marquee::Clock,
     /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
@@ -140,7 +148,49 @@ pub struct HudMotion {
     pub(super) preview: crate::scrub_preview::ScrubPreview,
     /// The knob's return to the playhead when a scrub is cancelled ([`crate::knob_spring`]).
     pub(super) spring: KnobSpring,
+    /// **The chapters strip's Shelf** ([`super::strip`]): its pop, scroll and caption springs are LOGICAL state
+    /// the screen's tick steps (`Shelf::on`), so the shelf is held here with the rest of the HUD's motion and a
+    /// draw only paints it. Built by [`strip`](Self::strip) on first use.
+    strip: Option<Shelf>,
+    /// **Each section's appear spring**, the shared `PopoverMotion` the panels' surfaces ran (Chapters, then Info;
+    /// [`section_index`]): at 1 when the section is up and at rest, `0` when it is not, and in between while it
+    /// opens or fades. LOGICAL state like the Shelf's springs, stepped by [`step_appear`](Self::step_appear) from
+    /// the screen's tick and only read by a draw. Its target follows `HudState::sections` ([`follow`](Self::follow)).
+    appear: [PopoverMotion; 2],
+    /// **How far the PAGE is up**: one more `PopoverMotion`, aimed at `1` while ANY section is wanted and at `0`
+    /// otherwise, so a switch from one section to the other keeps it at `1` (the two section springs do not sum to
+    /// `1`: the rising one holds a frame). What the draw moves the transport's bands on, in a package whose
+    /// sections are modal: a band in the compact state alone fades with `1 - page`, one in the open states alone
+    /// with `page`, and one in both travels between its two places ([`super::render`]). Pointed by
+    /// [`follow`](Self::follow), cut by [`cut_sections`](Self::cut_sections), stepped beside the section springs.
+    page: PopoverMotion,
+    /// The sections the springs were last told are open (`StateKey::open` bits).
+    wants: u8,
+    /// **The focus a section had when it was put away**, per section (Chapters' card, Info's button): a section
+    /// fading out paints it, as the panels drew from their own cursor, though the page's focus has already moved
+    /// to the control that opened it. Set by [`hold_focus`](Self::hold_focus) at the dismissal, `None` while the
+    /// section is open or had no focus, and cleared when it opens again or has gone. It is paint only: a closing
+    /// section registers no stop and answers no key.
+    held: [Option<usize>; 2],
+    /// **The frame (`Tick::ms`) a section was dismissed on**, per section: its spring takes no step on that frame
+    /// ([`step_appear`](Self::step_appear)). A panel's surface stepped its spring ahead of the frame's keys, so the
+    /// frame a BACK landed on drew the card whole and the fade began on the next; the page steps after its keys.
+    dismissed: [Option<u32>; 2],
+    /// **How far the captions have risen to stand clear of an open section** ([`super::caption_rise`]): the
+    /// limit's own springs, stepped beside the appear springs so both start on the same frame.
+    caption: CaptionRise,
 }
+
+/// Which spring is `section`'s.
+fn section_index(section: Section) -> usize {
+    match section {
+        Section::Chapters => 0,
+        Section::Info => 1,
+    }
+}
+
+/// Both sections, in spring order.
+const SECTIONS: [Section; 2] = [Section::Chapters, Section::Info];
 
 impl Default for HudMotion {
     fn default() -> Self {
@@ -148,16 +198,256 @@ impl Default for HudMotion {
     }
 }
 
+/// **A section's spring has left**: at rest at 0, which is when a panel's `Surface` was pruned
+/// (`ModalStack::prune`, `PopoverMotion::settled`), not at `CLOSING_GONE`: the tail between the two is a few frames
+/// of an almost invisible card, and the old panel drew them.
+fn faded(spring: &PopoverMotion) -> bool {
+    spring.settled() && spring.appear < 0.5
+}
+
 impl HudMotion {
     pub fn new() -> Self {
         Self {
             pop: RowPop::new(),
+            section_pop: RowPop::new(),
             title_clock: plx_ui::marquee::Clock::new(),
             play_at: None,
             pause_seen: None,
             preview: crate::scrub_preview::ScrubPreview::new(),
             spring: KnobSpring::new(),
+            strip: None,
+            appear: [PopoverMotion::at(0.0); 2],
+            page: PopoverMotion::at(0.0),
+            wants: 0,
+            held: [None; 2],
+            dismissed: [None; 2],
+            caption: CaptionRise::new(),
         }
+    }
+
+    /// **Point the appear springs at the sections that are open now** (`StateKey::open` bits, the screen's
+    /// `HudState::sections`). A section that opens from nothing starts at appear 0 and holds that one frame
+    /// (`PopoverMotion::hold_one_frame`): the presented frame draws it invisible and the spring runs from the
+    /// next, as a surface's does. One that opens while still fading out is turned round where it is. A section
+    /// that closed fades back down. A call with nothing changed does nothing.
+    pub fn follow(&mut self, open: u8) {
+        let changed = open ^ self.wants;
+        let page_changed = (open != 0) != (self.wants != 0);
+        for section in SECTIONS {
+            if changed & section.open_bit() == 0 {
+                continue;
+            }
+            let spring = &mut self.appear[section_index(section)];
+            if open & section.open_bit() != 0 {
+                self.held[section_index(section)] = None;
+                self.dismissed[section_index(section)] = None;
+                let fresh = faded(spring);
+                spring.to(1.0);
+                if fresh {
+                    spring.hold_one_frame();
+                    // a new card, as a panel's surface was: every button at rest, not a hair off it
+                    if section == Section::Info {
+                        self.section_pop.reset();
+                    }
+                }
+            } else {
+                spring.to(0.0);
+            }
+        }
+        // The page is up while ANY section is wanted: it holds its first frame when it rises from nothing (a section
+        // is opening from nothing too), and a switch from one section to the other leaves it where it is.
+        if page_changed {
+            if open != 0 {
+                let fresh = faded(&self.page);
+                self.page.to(1.0);
+                if fresh {
+                    self.page.hold_one_frame();
+                }
+            } else {
+                self.page.to(0.0);
+            }
+        }
+        self.wants = open;
+    }
+
+    /// **Take every section away at once**, nothing composited of them again (`PopoverMotion::at(0.0)`, the jump
+    /// `ModalStack::hide` makes): a failed playback, a new film, the page leaving. The strip's Shelf goes with them.
+    pub fn cut_sections(&mut self) {
+        self.appear = [PopoverMotion::at(0.0); 2];
+        self.page = PopoverMotion::at(0.0);
+        self.wants = 0;
+        self.held = [None; 2];
+        self.dismissed = [None; 2];
+        self.strip = None;
+        self.caption.cut();
+    }
+
+    /// **Aim the captions' rise at the sections that are open** (`open`: `StateKey::open` bits), from the
+    /// resting top `top` of the block the state for them lays out ([`super::geometry::HudGeometry::open_top`])
+    /// and the HUD's `band`. The screen's tick calls it with [`follow`](Self::follow) and before
+    /// [`step_appear`](Self::step_appear); a call with nothing changed does nothing.
+    pub fn follow_captions(&mut self, open: u8, band: plx_media::player::text_style::HudBand, top: Option<f32>) {
+        self.caption.follow(open, band, top);
+    }
+
+    /// The rise the captions are drawn at this frame, per Position: [`HudBand::with_rise`](plx_media::player::text_style::HudBand::with_rise)
+    /// carries it to every caption reader.
+    pub fn caption_rise(&self) -> [f32; 3] {
+        self.caption.presented()
+    }
+
+    /// Where the captions' rise is headed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn caption_rise_target(&self) -> [f32; 3] {
+        self.caption.target()
+    }
+
+    /// **Remember where `section`'s focus was as the page puts it away**: `focus` and `btn` are the page's cursor
+    /// BEFORE it is handed back to the opener (the strip's card, or Info's button, when the cursor is in that
+    /// section's own group; any other group means the section was not what the focus was on, and it fades with
+    /// none). Called before [`follow`](Self::follow) drops the section, by every path that closes one.
+    pub fn hold_focus(&mut self, section: Section, focus: GroupId, btn: i32) {
+        let own = match section {
+            Section::Chapters => GROUP_STRIP,
+            Section::Info => GROUP_SECTION,
+        };
+        self.held[section_index(section)] = (focus == own).then(|| usize::try_from(btn).ok()).flatten();
+    }
+
+    /// **`section` was dismissed on the frame `now`** (the `Tick::ms` of the key or event that put it away): its spring
+    /// takes its first step on the next frame. Called with [`follow`](Self::follow) by every path that closes one.
+    pub fn dismissed_on(&mut self, section: Section, now: u32) {
+        self.dismissed[section_index(section)] = Some(now);
+    }
+
+    /// The chapter card the closing strip paints as focused, if it fades with one.
+    pub fn held_card(&self) -> Option<usize> {
+        self.held[section_index(Section::Chapters)]
+    }
+
+    /// The button the closing Info card paints as focused, if it fades with one.
+    pub fn held_button(&self) -> Option<usize> {
+        self.held[section_index(Section::Info)]
+    }
+
+    /// Step the sections' appear springs, once per frame from the screen's tick and never from a draw. A frame is
+    /// owed for as long as one moves: the spring notes `PresentEvent::Motion` on the handle the dispatcher gives
+    /// every machine and its surfaces alike, so no fingerprint term is needed. The Chapters strip's Shelf is
+    /// forgotten once its section has faded out.
+    pub fn step_appear(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
+        for (spring, dismissed) in self.appear.iter_mut().zip(self.dismissed) {
+            if dismissed == Some(t.ms) {
+                present.note(plx_machine::present::PresentEvent::Motion);
+                continue;
+            }
+            spring.tick(t, present);
+        }
+        // the page takes the same pause on a dismissal frame, so it falls as the section does
+        if self.dismissed.contains(&Some(t.ms)) {
+            present.note(plx_machine::present::PresentEvent::Motion);
+        } else {
+            self.page.tick(t, present);
+        }
+        // the captions' rise takes its first step on the frame the section's appear takes its first: it waits
+        // for a spring still held at appear 0 and for the frame a section was dismissed on
+        let waits = self.appear.iter().any(PopoverMotion::held) || self.dismissed.contains(&Some(t.ms));
+        self.caption.step(t, present, waits);
+        for section in SECTIONS {
+            if faded(&self.appear[section_index(section)]) && self.wants & section.open_bit() == 0 {
+                self.held[section_index(section)] = None;
+            }
+        }
+        if faded(&self.appear[section_index(Section::Chapters)]) && self.wants & Section::Chapters.open_bit() == 0 {
+            self.strip = None;
+        }
+    }
+
+    /// Is `section`'s spring still held at its first frame (`PopoverMotion::held`)?
+    pub fn section_held(&self, section: Section) -> bool {
+        self.appear[section_index(section)].held()
+    }
+
+    /// `section`'s appear this frame: `0` held or gone, `1` at rest.
+    pub fn section_appear(&self, section: Section) -> f32 {
+        self.appear[section_index(section)].appear
+    }
+
+    /// How far the page is up this frame: `0` with no section wanted and at rest, `1` with one up and at rest, and
+    /// in between while the first opens or the last closes (a switch from one section to the other keeps it at `1`).
+    pub fn page_appear(&self) -> f32 {
+        self.page.appear
+    }
+
+    /// Is the page's spring still moving, or held at its first frame?
+    pub fn page_moving(&self) -> bool {
+        !self.page.settled() || self.page.held()
+    }
+
+    /// Is any section's spring still moving, or held at its first frame?
+    pub fn sections_moving(&self) -> bool {
+        self.appear.iter().any(|spring| !spring.settled() || spring.held())
+    }
+
+    /// Put `section` at appear `a`, opening: the springs a test draws at a chosen point of the motion instead of
+    /// stepping to it. The page is left up (`1`, at rest): the transport's compact bands are gone and the draw is the
+    /// section's own layer, as it was before the page had a spring; [`set_page_for_test`](Self::set_page_for_test)
+    /// puts it elsewhere.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_section_appear_for_test(&mut self, section: Section, a: f32) {
+        let mut spring = PopoverMotion::at(a);
+        spring.to(1.0);
+        self.appear[section_index(section)] = spring;
+        self.page = PopoverMotion::at(1.0);
+        self.wants |= section.open_bit();
+    }
+
+    /// Put the page at `a`, aimed at the end it would be moving to (`1` while a section is wanted, else `0`): the
+    /// page of a test that draws at a chosen point of the motion.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_page_for_test(&mut self, a: f32) {
+        let mut spring = PopoverMotion::at(a);
+        spring.to(if self.wants != 0 { 1.0 } else { 0.0 });
+        self.page = spring;
+    }
+
+    /// **The sections that are PRESENTED**: open, or closed and still fading out (`StateKey::open` bits). The
+    /// draw's mask; the logical one, the screen's `HudState::sections`, still decides stops, groups and keys.
+    pub fn presented(&self) -> u8 {
+        SECTIONS
+            .into_iter()
+            .filter(|s| !faded(&self.appear[section_index(*s)]))
+            .fold(0, |bits, s| bits | s.open_bit())
+    }
+
+    /// **Does any section draw something this frame?** True while a section's appear is above 0: not on the frame
+    /// it is held at appear 0 (presented, drawn invisibly) and not once its spring has landed on 0 after a close,
+    /// where [`presented`](Self::presented) still counts it for the frames it is fading out. What the caption
+    /// draw order follows, so a caption changes layers only while a section is actually on screen.
+    pub fn sections_visible(&self) -> bool {
+        self.appear.iter().any(|spring| spring.appear > 0.0)
+    }
+
+    /// The strip's Shelf for a strip of this `geo`, under `entry`: held across frames so its springs live, and
+    /// rebuilt when the strip it drew is not this one (another entry or another card geometry).
+    pub fn strip(&mut self, entry: EntryId, geo: &super::strip::Geometry) -> &mut Shelf {
+        let style = geo.style();
+        let same = |s: &Shelf| s.entry() == entry && *s.style() == style;
+        if !self.strip.as_ref().is_some_and(same) {
+            self.strip = Some(Shelf::new(entry, style).cull_margin(super::strip::STRIP_CULL_MARGIN));
+        }
+        self.strip.as_mut().expect("the strip's shelf was just built")
+    }
+
+    /// The strip's Shelf as it is, for a read that must not build one (the screen's `Focusable` and its stops).
+    /// `None` until [`strip`](Self::strip) has built it, which the screen does when the Chapters section opens.
+    pub fn strip_shelf(&self) -> Option<&Shelf> {
+        self.strip.as_ref()
+    }
+
+    /// Forget the strip's Shelf: the Chapters section closed, so the next opening builds one at rest rather than
+    /// resuming the last opening's scroll.
+    pub fn drop_strip(&mut self) {
+        self.strip = None;
     }
 
     /// Step the control row's focus pop AND the resume clock — once per FRAME, from the player
@@ -170,7 +460,8 @@ impl HudMotion {
     /// overlay was open, and a resume pressed with the Info card open would stamp its 2 s from the
     /// moment the card CLOSED, or never.
     ///
-    /// `focus == GROUP_ROW` is the control column; anything else closes every pop. The index is bounded by
+    /// `focus == GROUP_ROW` pops the control column's `pop` and `focus == GROUP_SECTION` pops
+    /// [`section_pop`](Self::section_pop); any other group closes both. The index is bounded by
     /// the CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a
     /// control the narrower one does not have.
     pub fn step(&mut self, slot: ControlSlot, focus: GroupId, btn: i32, dt: f32, now: u32) {
@@ -189,6 +480,19 @@ impl HudMotion {
             .flatten()
             .filter(|&i| i < row_pops(slot));
         self.pop.step(f, dt);
+        // an open section's buttons pop on `GROUP_SECTION`; the index is bounded by what a segment can hold. A card
+        // fading out keeps the pop of the button it was on (the page's focus has already left it).
+        let section = match focus == GROUP_SECTION {
+            true => usize::try_from(btn).ok(),
+            false => self.held_button(),
+        }
+        .filter(|&i| i < MAX_ROW_ITEMS);
+        self.section_pop.step(section, dt);
+    }
+
+    /// Section button `i`'s focus pop this frame.
+    pub fn section_scale(&self, i: usize) -> f32 {
+        self.section_pop.scale(i)
     }
 
     /// Do the title block, control row and bottom tabs take the pointer? Not while a scrub has
@@ -259,3 +563,189 @@ impl HudMotion {
     }
 }
 
+
+#[cfg(test)]
+mod page_pins {
+    use super::*;
+    use plx_machine::present::Present;
+
+    const CHAPTERS: u8 = crate::hud_format::compile::OPEN_CHAPTERS;
+    const INFO: u8 = crate::hud_format::compile::OPEN_INFO;
+
+    /// The screen's own sequence over the real motion: a key calls `follow` (and `dismissed_on` for a close), and
+    /// each frame's tick steps the springs.
+    struct Rig {
+        m: HudMotion,
+        ms: u32,
+        present: Present,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            Self { m: HudMotion::new(), ms: 1_000, present: Present::new() }
+        }
+        fn open(&mut self, bits: u8) {
+            self.m.follow(bits);
+        }
+        fn close(&mut self, bits: u8, section: Section) {
+            self.m.follow(bits);
+            self.m.dismissed_on(section, self.ms);
+        }
+        fn frame(&mut self) {
+            let mut ph = PresentHandle::of(&mut self.present);
+            self.m.step_appear(Tick { ms: self.ms, dt_us: 16_667 }, &mut ph);
+            self.ms += 16;
+        }
+        fn frames(&mut self, n: usize) {
+            for _ in 0..n {
+                self.frame();
+            }
+        }
+        fn settle(&mut self) {
+            self.frames(300);
+        }
+    }
+
+    /// The page opens with the first section and falls with the last, at the sections' own pace.
+    #[test]
+    fn the_page_follows_a_section_open_and_closed() {
+        let mut rig = Rig::new();
+        assert_eq!((rig.m.page_appear(), rig.m.page_moving()), (0.0, false), "at rest, down");
+        rig.open(INFO);
+        assert!(rig.m.page_moving(), "the page is owed frames from the key on");
+        rig.settle();
+        assert_eq!((rig.m.page_appear(), rig.m.page_moving()), (1.0, false), "up, exactly, and at rest");
+        rig.close(0, Section::Info);
+        assert!(rig.m.page_moving());
+        rig.frames(3);
+        let mid = rig.m.page_appear();
+        assert!(mid > 0.0 && mid < 1.0, "falling: {mid}");
+        rig.settle();
+        assert_eq!((rig.m.page_appear(), rig.m.page_moving()), (0.0, false), "down, exactly, and at rest");
+    }
+
+    /// **A switch keeps the page up**: the two section springs do not sum to 1 (the rising one holds a frame), the
+    /// page never leaves 1 and is never owed a frame for it.
+    #[test]
+    fn a_switch_from_one_section_to_the_other_keeps_the_page_at_one() {
+        let mut rig = Rig::new();
+        rig.open(CHAPTERS);
+        rig.settle();
+        rig.close(INFO, Section::Chapters);
+        rig.open(INFO);
+        assert!(!rig.m.page_moving(), "no hold, no motion: the page is where it was");
+        for i in 0..40 {
+            rig.frame();
+            assert_eq!((rig.m.page_appear(), rig.m.page_moving()), (1.0, false), "frame {i}");
+        }
+        let (a, b) = (rig.m.section_appear(Section::Chapters), rig.m.section_appear(Section::Info));
+        assert!(a < 1.0 && b > 0.0, "the sections did switch: {a} {b}");
+    }
+
+    /// The page holds its first frame exactly as a section opening from nothing does, and a turned-round page
+    /// does not hold again.
+    #[test]
+    fn the_page_holds_one_frame_only_when_a_section_opens_from_nothing() {
+        let mut rig = Rig::new();
+        rig.open(INFO);
+        assert!(rig.m.page_moving());
+        rig.frame();
+        assert_eq!(rig.m.page_appear(), 0.0, "the presented frame draws the page down");
+        rig.frame();
+        assert!(rig.m.page_appear() > 0.0, "the spring runs from the frame after the hold");
+
+        // a page on its way down, opened again: turned round where it is, no hold
+        let mut rig = Rig::new();
+        rig.open(INFO);
+        rig.settle();
+        rig.close(0, Section::Info);
+        rig.frames(3);
+        let before = rig.m.page_appear();
+        rig.open(INFO);
+        rig.frame();
+        assert_ne!(rig.m.page_appear(), before, "no frame was spent held");
+        assert!(rig.m.page_appear() < before + 0.5, "and no jump");
+    }
+
+    /// A press that turns the page round mid-way leaves its value alone: the next frame carries on from it.
+    #[test]
+    fn a_page_turned_round_mid_way_is_continuous() {
+        for (from_open, expected_first) in [(true, "up"), (false, "down")] {
+            let mut rig = Rig::new();
+            if !from_open {
+                rig.open(INFO);
+                rig.settle();
+                rig.close(0, Section::Info);
+            } else {
+                rig.open(INFO);
+            }
+            rig.frames(6);
+            let at_press = rig.m.page_appear();
+            assert!(at_press > 0.0 && at_press < 1.0, "{expected_first}: mid-way {at_press}");
+            if from_open {
+                rig.close(0, Section::Info);
+            } else {
+                rig.open(INFO);
+            }
+            assert_eq!(rig.m.page_appear(), at_press, "the press itself moves nothing");
+            rig.frame();
+            assert!((rig.m.page_appear() - at_press).abs() < 0.2, "{expected_first}: {at_press} then {}", rig.m.page_appear());
+            // it settles at the end it was turned to
+            rig.settle();
+            assert_eq!(rig.m.page_appear(), if from_open { 0.0 } else { 1.0 });
+        }
+    }
+
+    /// A section dismissed on a frame takes no step on it, the page with it.
+    #[test]
+    fn the_page_takes_no_step_on_the_frame_a_section_was_dismissed() {
+        let mut rig = Rig::new();
+        rig.open(INFO);
+        rig.settle();
+        rig.close(0, Section::Info);
+        rig.frame();
+        assert_eq!(rig.m.page_appear(), 1.0, "the dismissal frame draws the page whole");
+        rig.frame();
+        assert!(rig.m.page_appear() < 1.0, "and the fade begins on the next");
+    }
+
+    /// A failed playback, a new film and the page leaving take everything at once.
+    #[test]
+    fn cutting_the_sections_cuts_the_page() {
+        let mut rig = Rig::new();
+        rig.open(INFO);
+        rig.frames(6);
+        assert!(rig.m.page_appear() > 0.0);
+        rig.m.cut_sections();
+        assert_eq!((rig.m.page_appear(), rig.m.page_moving()), (0.0, false));
+        // and a section opened afterwards holds its page again, as from nothing
+        rig.open(INFO);
+        assert!(rig.m.page_moving());
+        rig.frame();
+        assert_eq!(rig.m.page_appear(), 0.0);
+    }
+
+    /// `presented()` and `sections_visible()` keep their meaning: the page adds nothing to either.
+    #[test]
+    fn the_page_changes_neither_what_is_presented_nor_what_is_visible() {
+        let mut rig = Rig::new();
+        rig.m.set_page_for_test(0.5);
+        assert_eq!((rig.m.presented(), rig.m.sections_visible()), (0, false));
+        rig.open(INFO);
+        rig.frame();
+        assert_eq!((rig.m.presented(), rig.m.sections_visible()), (INFO, false), "held at appear 0: presented, not yet visible");
+    }
+
+    /// The sections' and the page's motion are told apart: the page can be down while a section moves.
+    #[test]
+    fn the_springs_report_their_own_motion() {
+        let mut rig = Rig::new();
+        assert!(!rig.m.page_moving() && !rig.m.sections_moving());
+        rig.open(CHAPTERS);
+        assert!(rig.m.page_moving() && rig.m.sections_moving());
+        rig.settle();
+        assert!(!rig.m.page_moving() && !rig.m.sections_moving());
+        rig.m.set_page_for_test(0.5);
+        assert!(rig.m.page_moving() && !rig.m.sections_moving());
+    }
+}

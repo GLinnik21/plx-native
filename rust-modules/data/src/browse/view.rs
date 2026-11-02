@@ -699,15 +699,18 @@ impl<'a> DirectoryView<'a> {
         self.0.discovery
     }
     /// Press-time section, not necessarily the committed one during a page fade.
+    /// Includes `section` itself even when unpinned so jumping to an unpinned library from
+    /// Sort & Filter still surfaces its pill in the Library header while viewing it.
     pub fn rows_for(self, section: usize) -> impl Iterator<Item = &'a super::SrcRow> {
         let kind = self.sections().get(section).map(|s| s.kind);
         self.sections()
             .iter()
-            .filter(move |s| Some(s.kind) == kind && s.row.pinned)
+            .filter(move |s| Some(s.kind) == kind && (s.row.pinned || s.row.section == section))
             .map(|s| &s.row)
     }
 
-    /// Favourite libraries represented by the current type pill, with their table indices.
+    /// The libraries the header names for `section`'s type, with their table indices: its favourites,
+    /// and `section` itself when that library on view is not one.
     pub fn favorite_sections_for(
         self,
         section: usize,
@@ -785,6 +788,19 @@ mod tests {
         assert_eq!(
             view.rows_for(1).cloned().collect::<Vec<_>>(),
             state.source_rows_for(1)
+        );
+        // A library on view that is not a favourite (section 2: the friend's films default Off) is
+        // named beside the favourites of its type, and only while it is on view; the view and the
+        // store's oracle agree on it.
+        assert!(!state.pinned_for_test(2));
+        assert_eq!(
+            view.rows_for(2).map(|row| row.section).collect::<Vec<_>>(),
+            vec![0, 2],
+        );
+        assert_eq!(view.rows_for(0).map(|row| row.section).collect::<Vec<_>>(), vec![0]);
+        assert_eq!(
+            view.rows_for(2).cloned().collect::<Vec<_>>(),
+            state.source_rows_for(2)
         );
         assert_eq!(view.rows_for(999).count(), 0);
         state.source_mut(0).unwrap().name = "Changed".into();

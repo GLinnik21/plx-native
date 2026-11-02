@@ -233,6 +233,12 @@ impl<Id, A, Dest> Form<Id, A, Dest> {
         self.sections.push(s);
         self
     }
+    /// `other`'s sections after this form's own: a page that embeds a list built elsewhere (the
+    /// Library's Sort & Filter menu holds the Sources list) keeps that list's sections whole.
+    pub fn then(mut self, other: Self) -> Self {
+        self.sections.extend(other.sections);
+        self
+    }
     /// Does the built form hold a focusable row `id` (in a visible section)? What a rebuild asks
     /// before it names a row to land on, so the landing never depends on a stale position.
     pub fn contains(&self, id: &Id) -> bool

@@ -18,7 +18,7 @@
       ] },
       { "id": "bar", "gap_before": "SM", "cells": [
         { "align": "start", "playbar": { "w": "fill", "fill": "ACCENT", "track": "RAIL_TRACK", "thickness": 6, "clock_size": "CAPTION" } }
-      ] },
+      ], "chrome": "steady" },
       { "id": "row", "gap_before": "SM", "cells": [
         { "align": "center", "segment": { "id": "hero", "items": [
           { "id": "play", "command": "toggle_play", "widget": "disc", "size": 96, "rest": "solid", "focus": "ring",

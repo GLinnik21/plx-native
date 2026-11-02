@@ -778,7 +778,9 @@ pub enum DemuxExitClass {
     FindStreamInfoFailed = 5,
     /// The container has no video stream (an audio-only stream included).
     NoVideoStream = 6,
-    /// The video codec has no framing the pipeline can be fed.
+    /// The video stream has no framing the pipeline can be fed: its codec has none, or it is HEVC
+    /// whose packets carry start codes with no hvcC record (a transport or raw stream under a
+    /// `.mp4` name, #1084). A `no_framing` on an HEVC title is the second case, not a lost codec.
     NoFraming = 7,
     /// The Load declared a different video codec than the file carries.
     LoadMismatch = 8,

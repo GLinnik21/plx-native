@@ -130,7 +130,7 @@ pub enum Reason {
     CardSkeleton,
     /// A `Thumb` or `Person` tile with no texture: the flat `CARD_PLACEHOLDER` ground.
     CardGround,
-    /// The playing item's still on the player's info panel (`appkit::info_panel`).
+    /// The playing item's still on the player's Info section (`appkit::player_hud::sections`).
     InfoPanelStill,
     /// The profile chip's avatar whose picture has not arrived (`widgets::profile_chip`).
     ProfileChip,

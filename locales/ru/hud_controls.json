@@ -1,0 +1,6 @@
+{
+  "player.hud.play_pause": "Воспроизведение / Пауза",
+  "player.hud.skip_back": "Назад",
+  "player.hud.skip_forward": "Вперёд",
+  "player.up_next.seconds_left": "Следующая серия · {seconds} с"
+}

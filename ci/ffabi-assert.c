@@ -94,6 +94,9 @@ SAME32(offsetof(AVFormatContext, streams), 28, "AVFormatContext.streams moved");
 SAME64(offsetof(AVFormatContext, streams), 48, "AVFormatContext.streams moved [host]");
 SAME32(offsetof(AVFormatContext, duration), 64, "OFF_FMT_DURATION != 64");
 SAME64(offsetof(AVFormatContext, duration), 104, "OFF_FMT_DURATION != 64 [host]");
+/* start_time is the int64 right before duration: how a transport stream's clock is rebased to 0. */
+SAME32(offsetof(AVFormatContext, start_time), 56, "OFF_FMT_START_TIME != 56");
+SAME64(offsetof(AVFormatContext, start_time), 96, "OFF_FMT_START_TIME != 56 [host]");
 
 /* --- AVFrame: poked directly by the encode path, and read by the lossless → PCM decoder. --- */
 SAME(offsetof(AVFrame, data), 0, "OFF_FRAME_DATA != 0");

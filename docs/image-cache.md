@@ -3,7 +3,7 @@
 ## Storage and ownership
 
 All reusable remote artwork enters `app/adapters/poster.rs` through the shared `ui::tex::Source`.
-Its two demand workers read the disk tier before fetching and decode off the render thread.
+Its demand workers (two, or three on a set with at least four cores and 2 GiB: `workers_for` in `poster.rs`, logged as `posters: workers=`) read the disk tier before fetching and decode off the render thread.
 `imgcache.rs` owns persistence; `ui::tex::TexCache` owns GPU residency. Screens choose the image
 and size, without choosing a caching policy. The sign-in QR code is transient authentication data
 and remains outside the artwork cache; bundled icons and fonts already live in the app package.

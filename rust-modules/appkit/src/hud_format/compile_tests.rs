@@ -24,7 +24,7 @@ use super::parse::{self, Package};
 use super::{check, Slot};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor};
 use crate::player_hud::{classic, Controls};
-use crate::{chapters_panel, info_panel};
+use crate::info_panel;
 
 const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
 const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
@@ -47,12 +47,14 @@ fn labels() -> AppLabels {
         tab_info: msg::widgets_player_info().to_owned(),
         tab_chapters: msg::widgets_player_chapters().to_owned(),
         next_episode: msg::widgets_next_episode().to_owned(),
+        next_seconds: AppLabels::in_language(plx_platform::i18n::current()).next_seconds,
         watch_credits: msg::widgets_next_credits().to_owned(),
         skip_intro: msg::widgets_skip_intro().to_owned(),
         skip_credits: msg::widgets_skip_credits().to_owned(),
         from_beginning: msg::widgets_info_from_beginning().to_owned(),
         go_to_show: msg::widgets_info_go_show().to_owned(),
         go_to_movie: msg::widgets_info_go_movie().to_owned(),
+        commands: AppLabels::in_language(plx_platform::i18n::current()).commands,
     }
 }
 
@@ -111,7 +113,8 @@ fn frozen_base() -> HudGeometry {
         tab_row: Rect::new(96.0, 949.0, 0.0, 64.0),
         title: Rect::new(96.0, 768.0, 0.0, 0.0),
         tabs: [None; 2],
-        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0 },
+        band: HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0, rise: [0.0; 3] },
+        open_height: 0.0,
     }
 }
 
@@ -155,7 +158,7 @@ fn compiled_classic_matches_the_hand_written_layout() {
                         (Slot::Skip, SkipKind::Credits),
                     ];
                     for (kind, skip) in slots {
-                        let key = StateKey { open: 0, slot: kind, chapters, episode, paused: false };
+                        let key = StateKey { open: 0, slot: kind, chapters, episode, real_episode: Some(episode), paused: false };
                         let got = compiled.geometry(key, skip).expect("the compact state exists");
                         compared += 1;
                         let frozen = frozen_classic_geometry(&format!("{language:?}/{measure_name}/episode={episode}/chapters={chapters}/{kind:?}/{skip:?}"));
@@ -303,7 +306,7 @@ fn state_lookup_ignores_the_content_a_package_does_not_name() {
     let a = compiled.lookup(0, Slot::Discs, true, true, false).unwrap();
     let b = compiled.lookup(0, Slot::Discs, false, false, false).unwrap();
     assert_eq!(a.key, b.key, "a package that names neither condition has one valuation");
-    assert!(compiled.state(StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false }).is_none());
+    assert!(compiled.state(StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, real_episode: Some(false), paused: false }).is_none());
 }
 
 #[test]
@@ -317,7 +320,7 @@ fn compiled_classic_info_section_matches_the_info_panel() {
             _ => None,
         });
         assert_eq!(ground, Some(card), "{name}: the info card's ground");
-        // the still: 320 x 180 at the card's padding, centred in its height (`InfoPanelState::draw`)
+        // the still: 320 x 180 at the card's padding, centred in its height (as the hand-written card drew it)
         let still = state.ops.iter().find_map(|op| match op {
             DrawOp::Image { rect, bind, .. } if bind == "info.still" => Some(*rect),
             _ => None,
@@ -330,35 +333,45 @@ fn compiled_classic_info_section_matches_the_info_panel() {
     }
 }
 
+/// The hand-written strip's layout, frozen (`ChaptersState::draw` at 6d4aded01: `CH_W` 288, `CH_H` 162,
+/// `CH_GAP` 24, `CH_TOP` 684, `MARGIN_X` 96, the name `CH_NAME_DROP` 26 and the time `CH_TIME_DROP` 34
+/// under the one before it): the first card, the pitch, and the name's and time's tops.
+const STRIP_CARD: Rect = Rect { x: 96.0, y: 684.0, w: 288.0, h: 162.0 };
+const STRIP_PITCH: f32 = 312.0;
+const STRIP_NAME_Y: f32 = 872.0;
+const STRIP_TIME_Y: f32 = 906.0;
+
 #[test]
-fn compiled_classic_chapters_section_matches_the_chapters_panel_but_for_its_top() {
-    // The hand-written strip is placed by its constants (`CH_TOP`), the compiled one by the chain from the
-    // tabs up, in which the timestamp is a LINE with a height: the strip's top is that line higher. The
-    // delta is reported here, not forced: a fixture note (PR5b) names the chapters gap a placeholder.
+fn compiled_classic_chapters_section_matches_the_chapters_panel() {
+    // The panel was placed by constants (`CH_TOP`), the compiled strip by the chain from the
+    // tabs up. The timestamp is a LINE with a height in that chain, and a line's height is its measurer's
+    // (`line_h` is the font's: 1.2 x the size in the fixture measure, 1.21 in the shipped advances, the
+    // face's own on the television), so no gap can land the strip on 684 for all of them. The fixture
+    // gives `item.start` the smallest leading (1 px: the stand-in for the zero-height origin the panel's
+    // `label_ys` used) and the tabs a gap of 43 less that, so the top is the same number on every measure.
+    for (name, measure) in [("fixture", &FM as &dyn Measure), ("shipped", &ShippedMeasure)] {
+        let compiled = build(CLASSIC, measure);
+        let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
+        let (card, pitch, rect) = state
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                DrawOp::Strip { card, pitch, rect, .. } => Some((*card, *pitch, *rect)),
+                _ => None,
+            })
+            .expect("the chapters strip");
+        assert_eq!((card.x, card.w, card.h), (STRIP_CARD.x, STRIP_CARD.w, STRIP_CARD.h), "{name}: the card's own shape");
+        assert_eq!(rect.x, MARGIN_X);
+        assert_eq!(pitch, STRIP_PITCH, "{name}: the cards' pitch");
+        // `card.y` is a difference of sums, so it equals 684 to the last f32 bit only by luck:
+        // compare to a thousandth of a pixel.
+        assert!((STRIP_CARD.y - card.y).abs() < 0.001, "{name}: the strip's top is {} not the panel's {}", card.y, STRIP_CARD.y);
+    }
     let compiled = build(CLASSIC, &FM);
     let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
-    let (card, pitch, rect) = state
-        .ops
-        .iter()
-        .find_map(|op| match op {
-            DrawOp::Strip { card, pitch, rect, .. } => Some((*card, *pitch, *rect)),
-            _ => None,
-        })
-        .expect("the chapters strip");
-    let want = chapters_panel::card_rect(0, 0.0);
-    assert_eq!((card.x, card.w, card.h), (want.x, want.w, want.h), "the card's own shape");
-    assert_eq!(rect.x, MARGIN_X);
-    assert_eq!(pitch, chapters_panel::card_rect(1, 0.0).x - want.x, "the cards' pitch");
-    // `want.y - card.y` is a difference of two sums, so it equals the line's height to the last f32 bit
-    // only by luck: compare to a thousandth of a pixel.
-    let caption = FM.line_h(theme::size::CAPTION);
-    assert!(
-        (want.y - card.y - caption).abs() < 0.001,
-        "the chapters strip sits one CAPTION line ({caption}) above the hand-written CH_TOP, not {}",
-        want.y - card.y
-    );
+    let card = state.ops.iter().find_map(|op| match op { DrawOp::Strip { card, .. } => Some(*card), _ => None }).expect("the strip");
     // Whatever the strip's top, the card is the same column: the name 26 px and the timestamp 34 px
-    // under the one before it (`CH_NAME_DROP`, `CH_TIME_DROP`), which `label_ys` stands for.
+    // under the one before it.
     let template = state
         .ops
         .iter()
@@ -373,11 +386,10 @@ fn compiled_classic_chapters_section_matches_the_chapters_panel_but_for_its_top(
             _ => None,
         })
     };
-    let (name_y, time_y) = chapters_panel::label_ys();
-    for (bind, hand) in [("item.title", name_y), ("item.start", time_y)] {
+    for (bind, hand) in [("item.title", STRIP_NAME_Y), ("item.start", STRIP_TIME_Y)] {
         let compiled_drop = y_of(bind).expect(bind) - card.y;
-        let hand_drop = hand - want.y;
-        assert!((compiled_drop - hand_drop).abs() < 0.001, "{bind}: {compiled_drop} under the card, the hand-written layout has {hand_drop}");
+        let hand_drop = hand - STRIP_CARD.y;
+        assert!((compiled_drop - hand_drop).abs() < 0.001, "{bind}: {compiled_drop} under the card, the panel's layout has {hand_drop}");
     }
 }
 
@@ -402,7 +414,7 @@ fn kind_of(op: &DrawOp) -> &'static str {
 #[test]
 fn classic_compact_cost_is_pinned() {
     // Pinned so a later change to what a state costs is VISIBLE in review, not so the numbers are right
-    // for a television: the ceilings are PR7's and PR8's to calibrate. English and FixtureMeasure, because
+    // for a television: the television's numbers are `lint_cost`'s ceilings. English and FixtureMeasure, because
     // the two tab pills' plates are part of the blended area and their width is the label's.
     let _en = language_on_this_thread_for_test(Preference::En);
     let compiled = build(CLASSIC, &FM);
@@ -421,7 +433,7 @@ fn classic_compact_cost_is_pinned() {
 }
 
 #[test]
-fn classic_cost_of_the_chapters_strip_counts_its_visible_cards() {
+fn classic_cost_of_the_chapters_strip_counts_the_cards_its_shelf_paints() {
     let compiled = build(CLASSIC, &FM);
     let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
     let (visible, template) = state
@@ -432,10 +444,76 @@ fn classic_cost_of_the_chapters_strip_counts_its_visible_cards() {
             _ => None,
         })
         .expect("the strip");
-    // 1728 / (288 + 24) = 5.5: five whole cards and a sixth that peeks in
-    assert_eq!(visible, 6);
+    // 288 + 24 cards: six at scroll 0 (the sixth peeking in at the right), and a row that has scrolled paints the
+    // partial card at its left besides
+    assert_eq!(visible, 7);
     assert_eq!(template, 3, "the card's art and its two text lines");
-    assert_eq!(state.cost.texture_bytes, 6 * 4 * 288 * 162, "one 288 x 162 texture per visible card");
+    assert_eq!(state.cost.texture_bytes, 7 * 4 * 288 * 162, "one 288 x 162 texture per painted card");
+}
+
+/// What the Shelf paints at the most, found by moving focus along a row of 60 chapters and back with
+/// `scroll_into_view` steering the scroll, and counting `on_axis` at every rest: the Shelf's own rule, with no
+/// knowledge of the strip's width.
+fn most_a_shelf_paints(rect: Rect, card: Rect, pitch: f32) -> usize {
+    use plx_ui::cards::{scroll_into_view, tile_rect};
+    let n = 60;
+    let vw = SCR_W - 2.0 * card.x;
+    let painted = |scroll: f32| (0..n).filter(|&i| plx_ui::on_axis(tile_rect(i, card.x, pitch, scroll, rect.y, (card.w, card.h)).x, card.w, SCR_W, 0.0)).count();
+    let (mut cur, mut most) = (0.0, painted(0.0));
+    for fc in (0..n).chain((0..n).rev()) {
+        cur = scroll_into_view(cur, fc, n, card.w, pitch - card.w, vw);
+        most = most.max(painted(cur));
+    }
+    most
+}
+
+/// REGRESSION: the strip was priced at its width over the pitch plus one (`r.w / pitch + 1`). The Shelf ignores
+/// the width and culls against the screen, and a row at rest has scrolled, so it paints more cards: 10 on the
+/// reference where the price said 8, 7 on the classic where it said 6.
+#[test]
+fn a_strip_is_priced_by_the_cards_its_shelf_paints_at_rest_in_both_fixtures() {
+    for (name, text, painted) in [("classic", CLASSIC, 7), ("reference", REFERENCE, 10)] {
+        let compiled = build(text, &FM);
+        let mut strips = 0;
+        for state in compiled.states().iter().filter(|s| s.key.open & OPEN_CHAPTERS != 0) {
+            for op in &state.ops {
+                let DrawOp::Strip { rect, card, pitch, visible, .. } = op else { continue };
+                strips += 1;
+                assert_eq!(*visible, most_a_shelf_paints(*rect, *card, *pitch), "{name}: the cards its Shelf paints at the most");
+                assert_eq!(*visible, painted, "{name}: the figure the ceilings are measured at");
+                assert!(*visible > (rect.w / pitch).floor() as usize + 1, "{name}: more than the width over the pitch plus one");
+            }
+        }
+        assert!(strips > 0, "{name}: a chapters strip");
+    }
+}
+
+/// A strip's price does not move with the chapter count: it is a function of the geometry alone, and the
+/// compiler is never told how many chapters the item has.
+#[test]
+fn a_strips_price_does_not_depend_on_the_chapter_count() {
+    let compiled = build(REFERENCE, &FM);
+    let (rect, card, pitch) = compiled
+        .states()
+        .iter()
+        .flat_map(|s| s.ops.iter())
+        .find_map(|op| match op {
+            DrawOp::Strip { rect, card, pitch, .. } => Some((*rect, *card, *pitch)),
+            _ => None,
+        })
+        .expect("the strip");
+    let priced = crate::player_hud::strip::Geometry::new(rect, card, pitch, 0.0, &[]).most_painted_at_rest();
+    use plx_ui::cards::{scroll_into_view, tile_rect};
+    for n in [12usize, 60, 200] {
+        let vw = SCR_W - 2.0 * card.x;
+        let painted = |scroll: f32| (0..n).filter(|&i| plx_ui::on_axis(tile_rect(i, card.x, pitch, scroll, rect.y, (card.w, card.h)).x, card.w, SCR_W, 0.0)).count();
+        let (mut cur, mut most) = (0.0, painted(0.0));
+        for fc in (0..n).chain((0..n).rev()) {
+            cur = scroll_into_view(cur, fc, n, card.w, pitch - card.w, vw);
+            most = most.max(painted(cur));
+        }
+        assert_eq!(most, priced, "{n} chapters");
+    }
 }
 
 #[test]
@@ -501,7 +579,7 @@ fn a_strip_card_keeps_its_item_conditions_live() {
 fn a_state_the_package_cannot_reach_has_no_geometry() {
     let compiled = build(MINIMAL, &FM);
     // minimal lays out no section: the chapters section is not a state of it
-    assert!(compiled.geometry(StateKey { open: OPEN_CHAPTERS, slot: Slot::Discs, chapters: true, episode: true, paused: false }, SkipKind::Intro).is_none());
+    assert!(compiled.geometry(StateKey { open: OPEN_CHAPTERS, slot: Slot::Discs, chapters: true, episode: true, real_episode: Some(true), paused: false }, SkipKind::Intro).is_none());
     assert!(compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).is_none());
 }
 
@@ -1144,7 +1222,7 @@ fn no_band_under_the_bar_starts_on_the_clocks_line() {
 /// literal in the fixture is that arithmetic, spelt here from the constants.
 #[test]
 fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
-    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, paused: false };
+    let key = StateKey { open: 0, slot: Slot::Discs, chapters: false, episode: false, real_episode: Some(false), paused: false };
     let geometry = build(CLASSIC, &FM).geometry(key, SkipKind::Intro).expect("the compact state exists");
     let cell_foot = geometry.playbar.y + classic::CLOCK_TOP + classic::clock_line_h(theme::size::CAPTION);
     let gap = geometry.tab_row.y - cell_foot;
@@ -1158,4 +1236,53 @@ fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {
         .expect("the tabs band");
     let Some(parse::Val::Keyed(gap_before)) = tabs.get("gap_before") else { panic!("the tabs' gap is keyed on the open section") };
     assert_eq!(gap_before.base.as_f64(), Some(f64::from(gap)), "the fixture's literal");
+}
+
+/// **The compiler carries R2's folds**, the list More's root is built from: the same commands, in the same order,
+/// `check` reports, for every fixture, and none for classic (so its More root is the one it always had).
+#[test]
+fn a_compile_carries_the_folds_check_reports() {
+    use super::reach::Fold;
+    let fold = |command, section| Fold { command, section };
+    assert_eq!(build(CLASSIC, &FM).folds(), [], "classic places everything: nothing folds");
+    assert_eq!(
+        build(REFERENCE, &FM).folds(),
+        [fold("from_beginning", None), fold("go_to_detail", None)],
+        "the reference folds its two Info actions"
+    );
+    for (name, text) in [("classic", CLASSIC), ("reference", REFERENCE), ("minimal", MINIMAL), ("hero", HERO), ("tabs", TABS), ("palette", PALETTE)] {
+        assert_eq!(build(text, &FM).folds(), check(&package(text)).folds, "{name}");
+    }
+    assert_eq!(Compiled::default().folds(), [], "a compile with no state folds nothing");
+}
+
+/// **A section that only a folded More row opens is compiled**, so the page has a state to draw when the fold row
+/// asks for it: the reference with its two section discs taken out places no opener, folds both rows, and
+/// still holds the Chapters-open and Info-open states (and, `inline`, both open). `check` does not count them: its graph is
+/// the package's own controls (R2), which is why the compiler walks `explore_with_folds`.
+#[test]
+fn a_section_only_a_fold_row_opens_is_compiled() {
+    let openers = concat!(
+        "          { \"id\": \"chapters\", \"command\": \"toggle_section\", \"section\": \"chapters\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"list\" },\n",
+        "          { \"id\": \"info\", \"command\": \"toggle_section\", \"section\": \"info\", \"widget\": \"disc\", \"size\": 52,\n",
+        "            \"rest\": \"bare\", \"focus\": \"accent\", \"face\": \"builtin:info\" },\n",
+    );
+    assert_eq!(REFERENCE.matches(openers).count(), 1);
+    let bare = REFERENCE.replace(openers, "");
+    let open_states = |compiled: &Compiled| {
+        let mut open: Vec<u8> = compiled.states().iter().filter(|s| s.key.chapters).map(|s| s.key.open).collect();
+        open.sort_unstable();
+        open.dedup();
+        open
+    };
+    let with_openers = build(REFERENCE, &FM);
+    assert_eq!(open_states(&with_openers), [0, OPEN_CHAPTERS, OPEN_INFO, OPEN_CHAPTERS | OPEN_INFO], "the reference's own openers reach all four");
+    let without = build(&bare, &FM);
+    let folded: Vec<_> = without.folds().iter().filter(|f| f.command == "toggle_section").map(|f| f.section).collect();
+    assert_eq!(folded, [Some("chapters"), Some("info")]);
+    assert_eq!(open_states(&without), [0, OPEN_CHAPTERS, OPEN_INFO, OPEN_CHAPTERS | OPEN_INFO], "the fold rows reach them too");
+    // modal: one at a time
+    let modal = build(&bare.replace("\"sections\": \"inline\"", "\"sections\": \"modal\""), &FM);
+    assert_eq!(open_states(&modal), [0, OPEN_CHAPTERS, OPEN_INFO]);
 }

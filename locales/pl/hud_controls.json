@@ -1,0 +1,6 @@
+{
+  "player.hud.play_pause": "Odtwarzanie / Pauza",
+  "player.hud.skip_back": "Przewiń wstecz",
+  "player.hud.skip_forward": "Przewiń do przodu",
+  "player.up_next.seconds_left": "Następny odcinek · {seconds} s"
+}
