@@ -260,9 +260,9 @@ pub fn row_primary(compiled: &Compiled, open: u8, slot: ControlSlot, model: &Hud
 }
 
 /// **An open section's own buttons** (`actions`), in the order the state places them: the controls the
-/// section group addresses (`ELEM_SECTION_BASE + i`) and the renderer's `Widget::Button` arm counts.
+/// section group addresses (`ELEM_SECTION_BASE + i`), regardless of their widget face.
 pub fn section_buttons(state: &CompiledState) -> impl Iterator<Item = &ControlRect> {
-    state.controls.iter().filter(|c| c.widget == Widget::Button && !state.row_ids.iter().any(|id| id.as_deref() == Some(c.id.as_str())))
+    state.controls.iter().filter(|c| c.is_action)
 }
 
 /// What a press of an open section's button `i` performs, `None` past the last button.
@@ -276,17 +276,20 @@ pub const fn section_elem(i: u32) -> u32 {
 }
 
 /// **The element that opens `section` in this state**: its tab (`ELEM_TAB_BASE + tab`) when the package opens
-/// it with a pill, else its disc in the replaced row (`control_elem` of the row ordinal); `None` when the
+/// it with a pill, else its disc or button in the replaced row (`control_elem` of the row ordinal); `None` when the
 /// state places no opener (a package with a section it opens by no control). It is where focus goes back to
 /// when the section closes, so the viewer lands on the control that opened it, whichever package drew it.
 pub fn opener_elem(state: &CompiledState, section: Section) -> Option<u32> {
     let c = state.controls.iter().find(|c| c.act == Some(HudCommand::ToggleSection(section)))?;
+    if c.is_action {
+        let ordinal = section_buttons(state).position(|item| item.id == c.id)?;
+        return Some(section_elem(u32::try_from(ordinal).ok()?));
+    }
     match c.widget {
         Widget::Pill => Some(ELEM_TAB_BASE + section.tab() as u32),
-        Widget::Disc => {
+        Widget::Disc | Widget::Button => {
             let ordinal = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str()))?;
             Some(control_elem(i32::try_from(ordinal).ok()?))
         }
-        Widget::Button => None,
     }
 }

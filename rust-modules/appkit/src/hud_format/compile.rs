@@ -352,6 +352,8 @@ pub struct ControlRect {
     pub act: Option<crate::player_hud::command::HudCommand>,
     pub face: Face,
     pub widget: Widget,
+    /// Focus belongs to the section actions container, independently of the widget face.
+    pub is_action: bool,
     pub rest: Rest,
     pub focus: Focus,
     pub rect: Rect,
@@ -750,7 +752,7 @@ impl CompiledState {
     fn tab(&self, section: &str) -> Option<Rect> {
         self.controls
             .iter()
-            .find(|c| c.widget == Widget::Pill && c.command == "toggle_section" && c.section.as_deref() == Some(section))
+            .find(|c| !c.is_action && c.widget == Widget::Pill && c.command == "toggle_section" && c.section.as_deref() == Some(section))
             .map(|c| c.rect)
     }
 
@@ -1934,7 +1936,7 @@ impl<'e, 'p> Env<'e, 'p> {
                 for span in HStack::new(&c.items, c.gap, Align::Leading(r.x)).placed() {
                     if let Some(ctl) = &c.ctl[span.i] {
                         let y = r.y + (r.h - ctl.size) * 0.5;
-                        self.push_control(ctl, Rect::new(span.x, y, span.w, ctl.size), out);
+                        self.push_control(ctl, Rect::new(span.x, y, span.w, ctl.size), false, out);
                     }
                 }
             }
@@ -1952,7 +1954,7 @@ impl<'e, 'p> Env<'e, 'p> {
             .unwrap_or_else(|| default_num(sub, key))
     }
 
-    fn push_control(&self, ctl: &Ctl<'_>, rect: Rect, out: &mut Out) {
+    fn push_control(&self, ctl: &Ctl<'_>, rect: Rect, is_action: bool, out: &mut Out) {
         let c = ControlRect {
             id: ctl.id.to_owned(),
             command: ctl.command.to_owned(),
@@ -1960,6 +1962,7 @@ impl<'e, 'p> Env<'e, 'p> {
             act: Self::act(ctl.o, ctl.command),
             face: Self::face(ctl.o),
             widget: ctl.widget,
+            is_action,
             rest: ctl.rest,
             focus: ctl.focus,
             rect,
@@ -2112,7 +2115,7 @@ impl<'e, 'p> Env<'e, 'p> {
         };
         for (ctl, (at, len)) in live.into_iter().zip(spans) {
             let rect = if column { Rect::new(r.x, at, bw, len) } else { Rect::new(at, r.y, len, ih) };
-            self.push_control(ctl, rect, out);
+            self.push_control(ctl, rect, true, out);
         }
     }
 

@@ -834,7 +834,7 @@ fn draw_labelled(compiled: &Compiled, f: &Frame<'_>, row: &HudMotion, e: &plx_ui
         _ => c.label.as_str(),
     };
     let Ok(label) = CString::new(label) else { return };
-    let (focused, scale) = if c.widget == Widget::Pill && c.command == "toggle_section" {
+    let (focused, scale) = if !c.is_action && c.widget == Widget::Pill && c.command == "toggle_section" {
         let Some(i) = c.section.as_deref().and_then(tab_of_section) else { return };
         (f.focus == super::geometry::GROUP_TABS && f.tab == i, 1.0)
     } else if let Some(i) = row_index.and_then(|i| i32::try_from(i).ok()) {
@@ -870,10 +870,10 @@ fn draw_control(
     state: &CompiledState,
     c: &crate::hud_format::compile::ControlRect,
 ) {
-    let native_tab = c.widget == Widget::Pill && c.command == "toggle_section" && c.face == Default::default()
+    let native_tab = !c.is_action && c.widget == Widget::Pill && c.command == "toggle_section" && c.face == Default::default()
         && c.rest == Rest::Film && c.focus == Focus::Accent;
     let row_index = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str()));
-    let native_action = c.widget == Widget::Button && row_index.is_none() && c.face == Default::default()
+    let native_action = c.is_action && c.widget == Widget::Button && c.face == Default::default()
         && c.rest == Rest::Film && c.focus == Focus::Accent
         && matches!(c.act, Some(HudCommand::FromBeginning | HudCommand::GoToDetail));
     if c.widget != Widget::Disc && !native_tab && !native_action {
@@ -888,14 +888,20 @@ fn draw_control(
         // own; its rest and focus faces are the widget's.
         Widget::Disc => {
             let ControlSlot::Discs(controls) = f.slot else { return };
-            let Some(i) = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str())) else { return };
-            let Ok(i) = i32::try_from(i) else { return };
+            let (i, focused, scale) = if c.is_action {
+                let Some(i) = super::geometry::section_buttons(state).position(|k| k.id == c.id) else { return };
+                let Ok(index) = i32::try_from(i) else { return };
+                (index, (f.focus == GROUP_SECTION && f.btn == index) || row.held_button() == Some(i), row.section_scale(i))
+            } else {
+                let Some(i) = row_index.and_then(|i| i32::try_from(i).ok()) else { return };
+                (i, f.focus == GROUP_ROW && f.btn == i, row.scale(i))
+            };
             let model = HudModel { controls, ..*f.model };
             let button = TransportButton::new(i, c.rect)
                 .enabled(c.act.is_some_and(|act| act.enabled(&model)))
-                .focused(f.focus == GROUP_ROW && f.btn == i)
+                .focused(focused)
                 .ground(ControlGround::Unkeyed)
-                .scale(row.scale(i))
+                .scale(scale)
                 .rest_face(match c.rest {
                     // an open section's own control wears the `solid` face, whatever it rests in
                     _ if section_open(state, c) => TransportRest::Solid,

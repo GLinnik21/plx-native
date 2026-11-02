@@ -559,3 +559,30 @@ fn nested_card_item_text_tracks_the_collapsed_stack_and_keeps_its_marquee() {
     let drew = chapter_frame_named(&compiled, true, name);
     assert!(drew.1.iter().any(|r| r.text == name && r.clip.is_some()), "shared marquee retains the whole focused name");
 }
+
+#[test]
+fn section_actions_are_painted_and_addressed_for_every_widget() {
+    let _serial = plx_base::testlock::serial();
+    for widget in ["pill", "disc", "button"] {
+        let text = REFERENCE.replace(r#"{ "align": "end", "spacer": { "w": 150 } }"#,
+            &format!(r#"{{ "align": "end", "actions": {{ "axis": "column", "gap": 0, "item_h": 70, "min_w": 0,
+            "items": [{{ "id": "action", "command": "open_more", "widget": "{widget}", "size": 70, "face": "builtin:pause" }}] }} }}"#));
+        let compiled = load(&text);
+        let state = compiled.lookup(crate::hud_format::compile::OPEN_INFO, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+        assert_eq!(super::super::super::geometry::section_buttons(state).map(|c| c.id.as_str()).collect::<Vec<_>>(), ["action"], "{widget}: the container owns focus identity");
+        let drew = info_frame(&compiled, GROUP_SECTION, 0);
+        assert!(drew.2.iter().any(|(icon, _)| *icon == Icon::Pause), "{widget}: accepted action face must paint");
+    }
+}
+
+#[test]
+fn closing_a_section_returns_to_its_row_button_opener() {
+    let text = REFERENCE.replace(r#""command": "toggle_section", "section": "chapters", "widget": "disc""#,
+        r#""command": "toggle_section", "section": "chapters", "widget": "button""#);
+    assert_ne!(text, REFERENCE);
+    let compiled = load(&text);
+    let state = compiled.lookup(0, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let ordinal = state.row_ids.iter().position(|id| id.as_deref() == Some("chapters")).unwrap();
+    assert_eq!(super::super::super::geometry::opener_elem(state, Section::Chapters),
+        Some(super::super::super::state::control_elem(ordinal as i32)));
+}
