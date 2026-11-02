@@ -124,7 +124,7 @@ pub const TEXT_READING: [f32; 4] = COOL_200;
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
 pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
 /// A page-header control's label at rest (`PageHeader`): white at 65%. A value segment beside it
-/// stays full white, so "Sort & Filter · Title" reads as a label and a value.
+/// stays full white, so "Collections · 24" reads as a label and a value.
 pub const CONTROL_TEXT_REST: [f32; 4] = with_a(WHITE, 0.65);
 /// The "312 of 1,284" read-out beside the header controls while a filter is on: white at 50%,
 /// quieter than [`CONTROL_TEXT_REST`] because it is not a control and takes no focus.

@@ -111,7 +111,12 @@ fn both_sort_and_filter_panels_name_facts_and_directions_the_same_way() {
     w.press(Key::Ok);
     let lib = library_panel(&w);
     let headings: Vec<_> = lib.iter().map(|(h, _)| h.as_str()).collect();
-    assert_eq!(headings, ["Sort", "Filter"], "a Movies library offers one type, so no Show section");
+    assert_eq!(
+        headings,
+        ["Sort", "Filter", "mac-mini", "Shared with you", ""],
+        "a Movies library offers one type, so no Show section; the library switcher (the Sources \
+         list, a group per server) and the Favorite libraries block follow Filter"
+    );
     let sort = section(&lib, "Sort");
     let labels: Vec<_> = sort.iter().map(|(l, _)| l.as_str()).collect();
     for (ours, theirs) in [("Title", "Title"), ("Date added", "Date Added"), ("Release date", "Release Date"), ("Score", "Critic Rating")] {

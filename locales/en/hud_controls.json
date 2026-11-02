@@ -1,0 +1,21 @@
+{
+  "player.hud.play_pause": {
+    "value": "Play / Pause",
+    "description": "Label for a declared player HUD pill or button that toggles playback; stable wording so its measured width does not change when paused."
+  },
+  "player.hud.skip_back": {
+    "value": "Skip back",
+    "description": "Label for a declared player HUD pill or button that seeks backward; the command owns the interval."
+  },
+  "player.hud.skip_forward": {
+    "value": "Skip forward",
+    "description": "Label for a declared player HUD pill or button that seeks forward; the command owns the interval."
+  },
+  "player.up_next.seconds_left": {
+    "value": "Next Episode · {seconds} s",
+    "description": "The Play Next button label with whole seconds remaining for a declared numeric HUD countdown; all values are measured before layout.",
+    "args": {
+      "seconds": "i64"
+    }
+  }
+}

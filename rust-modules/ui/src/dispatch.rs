@@ -1585,7 +1585,8 @@ where
         let mut set = RenderSet {
             // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
             // the screens' own renders and the FrameCache
-            extra_bytes: super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes()),
+            extra_bytes: super::tex::resident_bytes() + plx_gfx::gfx::region_resident_bytes()
+                + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes()),
             ..Default::default()
         };
         // A PageDip keeps the committed top as the visible/input page throughout its OUT half.
@@ -1882,7 +1883,8 @@ where
             self.input.hit.swap();
         }
         if plx_gfx::gfx::blur_source_pass() { report.render_set = set; return; }
-        set.extra_bytes = super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes());
+        set.extra_bytes = super::tex::resident_bytes() + plx_gfx::gfx::region_resident_bytes()
+            + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes());
         if let Err(breach) = set.check() {
             // The policy itself is `frame::on_breach` — assert on the host, log once on a
             // television — so that both halves are reachable from a test.

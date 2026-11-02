@@ -305,6 +305,14 @@ pub(crate) fn arm_cardsplit() {
     if plx_base::devtrig::flag("nocardsplit") {
         plx_gfx::overdraw::set_card_split(false);
     }
+    // `/tmp/plxnative-nopreviewcache` draws the Under posters preview live every frame (as before
+    // `gfx::region_paint`); `/tmp/plxnative-previewsnap` puts the cached quad on whole pixels.
+    if plx_base::devtrig::flag("nopreviewcache") {
+        plx_gfx::overdraw::set_region_cache(false);
+    }
+    if plx_base::devtrig::flag("previewsnap") {
+        plx_gfx::overdraw::set_region_snap(true);
+    }
 }
 
 /// `/tmp/plxnative-heroground` — the one-pass hero ground A/B.
@@ -1257,7 +1265,7 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "language" => plx_screens::family::SettingsPage::Language,
                 "contribute" => plx_screens::family::SettingsPage::Contribute,
                 "playback" => plx_screens::family::SettingsPage::Playback,
-                // root → Playback → the Quality picker (`SettingsPage::boot_trail`), so BACK works.
+                // root → Playback → the Quality picker (`SettingsPage::boot_trail`; BACK dismisses the surface, see there).
                 "picker-quality" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::Quality),
                 "picker-next-episode" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::NextEpisode),
                 "picker-deck-press" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DeckPress),
@@ -1267,6 +1275,8 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
                 "picker-dolby-vision" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::DolbyVision),
                 "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
+                // root → Playback → the Player HUD page (`SettingsPage::boot_trail`; BACK dismisses the surface, see there)
+                "player-hud" => plx_screens::family::SettingsPage::PlayerHud,
                 "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
                 _other => {
                     #[cfg(feature = "devtriggers")]
@@ -1423,7 +1433,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     true
 }
 
-/// `/tmp/plxnative-hud=<path>` — draw the package at that path instead of classic. Read ONCE, on the first
+/// `/tmp/plxnative-hud=<path>` — draw the package at that path instead of the chosen HUD (classic unless a package was picked). Read ONCE, on the first
 /// player frame (`run::refresh_hud`); the file is read here, the bytes are compiled by the owner, and a
 /// file that does not read or compile is remembered ([`DevPackage`]), so it is neither re-read nor
 /// recompiled every frame. Without the `devtriggers` feature the trigger reads as absent.
@@ -1681,11 +1691,11 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
             pin_headless_hud(app, fr.now, None);
         }
         if plx_base::devtrig::flag("info") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::Info);
+            crate::app::bridge::toggle_player_section(&mut app.pages, plx_appkit::player_hud::command::Section::Info);
             pin_headless_hud(app, fr.now, Some(0));
         }
         if plx_base::devtrig::flag("chapters") {
-            crate::app::bridge::open_player_overlay(&mut app.player.session, app.bridge.metadata_view(), &mut app.pages, plx_screens::player::overlay::OverlayKind::Chapters);
+            crate::app::bridge::toggle_player_section(&mut app.pages, plx_appkit::player_hud::command::Section::Chapters);
             pin_headless_hud(app, fr.now, Some(1));
         }
     }

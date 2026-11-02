@@ -140,7 +140,7 @@ impl Rig {
     fn new(n: usize) -> Self {
         tex::install(&Spy);
         LOG.with(|l| *l.borrow_mut() = Log::default());
-        Self { shelf: Shelf::new(ENTRY, &STYLE), src: Cards::new(n), view: FixtureView::default(), focus: None, ms: 0 }
+        Self { shelf: Shelf::new(ENTRY, STYLE), src: Cards::new(n), view: FixtureView::default(), focus: None, ms: 0 }
     }
 
     fn feed(&mut self, ev: ScreenEvent<FixtureHost>) {

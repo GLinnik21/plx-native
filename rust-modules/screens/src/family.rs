@@ -51,6 +51,8 @@ pub enum SettingsPage {
     ConsentStage(u8),
     /// One playback / account preference's choice list, pushed from Playback or Audio & Subtitles.
     Picker(PickerKind),
+    /// The Player HUD page: the installed packages, the drop folder and the chosen HUD (`hud_settings`).
+    PlayerHud,
 }
 
 /// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
@@ -80,13 +82,16 @@ pub enum PickerKind {
 }
 
 impl SettingsPage {
-    /// The pages a boot target opens the surface over, root first: `plxnative-settings=picker-…`
-    /// is reached as root → Playback → the picker (root → the picker for a root row's), so BACK from it
-    /// lands where an interactive visit would. Every other page is booted as the surface's root.
+    /// The pages a boot target asks the surface to stand on, root first: `plxnative-settings=picker-…` and
+    /// `player-hud` name root → Playback → the page (root → the picker for a root row's), the stack an interactive visit
+    /// builds. `RouteSurface::new` issues one request per page and the inner stack keeps only the newest request, so
+    /// what stands is the LAST page alone and BACK from it dismisses the surface instead of popping to its parent
+    /// (seen for the Player HUD page and two pickers). Every other page is booted as the surface's root.
     pub fn boot_trail(self) -> Vec<SettingsPage> {
         match self {
             SettingsPage::Picker(kind) if kind.parent() == SettingsPage::Root => vec![SettingsPage::Root, self],
             SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
+            SettingsPage::PlayerHud => vec![SettingsPage::Root, SettingsPage::Playback, self],
             page => vec![page],
         }
     }
@@ -124,6 +129,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::Preview(_) => 106,
             SettingsPage::ConsentStage(_) => 107,
             SettingsPage::Picker(_) => 112,
+            SettingsPage::PlayerHud => 115,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -161,6 +167,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Favourites
             | SettingsPage::Privacy
             | SettingsPage::Legal
+            | SettingsPage::PlayerHud
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
@@ -183,6 +190,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Preview(_) => "preview",
             SettingsPage::ConsentStage(_) => "stage",
             SettingsPage::Picker(_) => "picker",
+            SettingsPage::PlayerHud => "player-hud",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
@@ -343,6 +351,7 @@ mod tests {
             SettingsPage::Preview(0),
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
+            SettingsPage::PlayerHud,
         ];
         let mut ids: Vec<u32> = pages.iter().map(|p| plx_ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();

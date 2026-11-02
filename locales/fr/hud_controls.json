@@ -1,0 +1,6 @@
+{
+  "player.hud.play_pause": "Lecture / Pause",
+  "player.hud.skip_back": "Reculer",
+  "player.hud.skip_forward": "Avancer",
+  "player.up_next.seconds_left": "Épisode suivant · {seconds} s"
+}

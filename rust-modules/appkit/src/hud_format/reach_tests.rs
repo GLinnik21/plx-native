@@ -133,16 +133,13 @@ fn a_section_row_folds_only_for_a_section_the_package_lays_out() {
 
 #[test]
 fn the_state_enumeration_is_bounded_and_deterministic() {
-    // classic names `chapters.present` and `title.is_episode`: four valuations. Chapters absent: the
-    // compact state under three slots, plus the info section; chapters present: plus the chapters section.
-    // (3 + 1) x 2 + (3 + 2) x 2.
+    // Classic varies chapters and navigation-pair availability: four valuations. Its episode
+    // paint is live, so it adds no content axis. Chapters absent: three compact slots plus Info;
+    // chapters present: also Chapters. (3 + 1) x 2 + (3 + 2) x 2.
     assert_eq!(check(&package(CLASSIC)).states, 18);
-    // The reference names neither condition in a `when`, but it PLACES `previous` and `next`, and the
-    // spec's command table makes that pair absent for a non-episode whatever the package says: so it
-    // names `title.is_episode` too (see `a_placed_previous_or_next_names_title_is_episode`): two
-    // valuations (episode false, true) of one form each. Inline sections over two laid-out sections: the
-    // compact state under three slots, plus the three non-empty subsets, which wait on Discs (D7), is 6
-    // per valuation. 2 x 6 = 12 (it was 1 x 6 = 6 before the reach gap was closed).
+    // Reference places Previous/Next, so it varies pair availability independently of content.
+    // Neither real-episode placement nor numeric geometry is declared, so no content axis is needed.
+    // Three compact slots plus three non-empty inline subsets gives six states per pair valuation.
     assert_eq!(check(&package(REFERENCE)).states, 12);
     // The minimal package lays out no section: the compact state under its three slots.
     assert_eq!(check(&package(MINIMAL)).states, 3);
@@ -153,35 +150,35 @@ fn the_state_enumeration_is_bounded_and_deterministic() {
 }
 
 /// Both values of `title.is_episode` that the walk takes for a package, `chapters.present` held.
-fn episode_forms(text: &str) -> Vec<bool> {
+fn pair_forms(text: &str) -> Vec<bool> {
     let package = package(text);
     Layout::read(&package.layout)
         .valuations()
         .into_iter()
         .filter(|v| v.chapters)
-        .map(|v| v.episode)
+        .map(|v| v.pair)
         .collect()
 }
 
 #[test]
-fn a_placed_previous_or_next_names_title_is_episode() {
+fn a_placed_previous_or_next_names_pair_availability() {
     // The spec's command table: the previous / next pair is absent for a non-episode or with neither
     // neighbour, whatever the package says. A package that places either therefore has two forms, the
     // episode and the movie, although it never writes `title.is_episode` (the reference).
     assert!(!REFERENCE.contains("title.is_episode"), "the reference does not name the condition itself");
-    assert_eq!(episode_forms(REFERENCE), [false, true], "the reference has the movie form and the episode form");
-    assert_eq!(episode_forms(CLASSIC), [false, true], "classic names it in a `when` as well");
+    assert_eq!(pair_forms(REFERENCE), [false, true], "the reference has the movie form and the episode form");
+    assert_eq!(pair_forms(CLASSIC), [false, true], "classic names it in a `when` as well");
     // One placed command of the pair is enough: drop `next`, keep `previous`.
     let only_previous = edit(REFERENCE, REF_NEXT, "");
-    assert_eq!(episode_forms(&only_previous), [false, true], "previous alone");
+    assert_eq!(pair_forms(&only_previous), [false, true], "previous alone");
     // And the other way round.
     let only_next = edit(REFERENCE, REF_PREVIOUS, "");
-    assert_eq!(episode_forms(&only_next), [false, true], "next alone");
+    assert_eq!(pair_forms(&only_next), [false, true], "next alone");
     // A package that places neither has the one form it always had.
     let neither = edit(&edit(REFERENCE, REF_PREVIOUS, ""), REF_NEXT, "");
-    assert_eq!(episode_forms(&neither), [true], "no previous or next, no movie form");
+    assert_eq!(pair_forms(&neither), [true], "no previous or next, no movie form");
     assert_eq!(check(&package(&neither)).states, 6, "1 x 6: one valuation of the reference's six states");
-    assert_eq!(episode_forms(MINIMAL), [true], "the minimal package places neither");
+    assert_eq!(pair_forms(MINIMAL), [true], "the minimal package places neither");
 }
 
 #[test]
@@ -343,6 +340,18 @@ fn rows() -> Vec<Row> {
             ),
             &codes::E0902,
             "/palette",
+        ),
+        row(
+            "playbar_chrome_must_stay_steady",
+            c(r#""chrome": "steady""#, r#""chrome": "fades""#),
+            &codes::E0904,
+            "/layout/block/1/chrome",
+        ),
+        row(
+            "card_descendants_are_decorative",
+            edit(REFERENCE, r#""below": ["#, r#""below": [{ "segment": { "id": "hidden", "items": [{ "id": "hidden_more", "command": "open_more", "widget": "disc", "size": 32, "rest": "bare" }] } },"#),
+            &codes::E0905,
+            "/layout/block/4/cells/0/strip/card/below/0/segment",
         ),
         // I11: a by_interval map lists every rung of the viewer's Skip ladder.
         row(
@@ -523,14 +532,14 @@ fn previous_and_next_placed_only_under_chapters_present_fold_too() {
 }
 
 #[test]
-fn previous_and_next_placed_for_episodes_do_not_fold() {
-    // A movie asks for no Previous: the control being absent there is the app's own rule.
+fn previous_and_next_gated_on_content_fold_for_a_pair_without_episode_metadata() {
+    // A navigation pair can precede metadata; an explicit episode gate hides it in that off-diagonal frame.
     let text = edit(
         &edit(CLASSIC, PREV, &with_when(PREV, "title.is_episode")),
         NEXT,
         &with_when(NEXT, "title.is_episode"),
     );
-    assert_eq!(folds_of(&text), []);
+    assert_eq!(folds_of(&text), [fold("previous", None), fold("next", None)]);
 }
 
 #[test]
@@ -585,5 +594,15 @@ fn toggle_play_seek_and_stats_never_fold_and_open_more_is_not_a_fold() {
     let names: Vec<&str> = check(&package(MINIMAL)).folds.iter().map(|f| f.command).collect();
     for command in ["toggle_play", "seek", "toggle_stats", "open_more"] {
         assert!(!names.contains(&command), "{command} folded");
+    }
+}
+
+#[test]
+fn a_playbar_band_must_explicitly_stay_visible_during_scrub() {
+    for replacement in ["", r#""chrome": "fades", "#] {
+        let text = edit(CLASSIC, r#""chrome": "steady", "#, replacement);
+        let checked = check(&package(&text));
+        assert!(checked.findings.iter().any(|f| f.rule == "playbar-steady" && f.pointer.starts_with("/layout/block/1")),
+            "a fading or omitted chrome declaration makes the bar and preview vanish during scrub: {:?}", checked.findings);
     }
 }

@@ -5532,8 +5532,8 @@ def require_release_binary(tv, runner=None):
 
 # ---------------------------------------------------------------------------
 # FPS regression suite (UI perf gate — separate from the playback cases above).
-# The app logs a once/sec `loop=<n> route=<home|detail|player> [overlay=<info|chapters|menu|none>]
-# fps=<n>` heartbeat, carrying TWO rates that must never be confused:
+# The app logs a once/sec `loop=<n> route=<home|detail|player> [overlay=<menu|more|timing|none|...>]
+# [section=<info|chapters|chapters_info>] fps=<n>` heartbeat, carrying TWO rates that must never be confused:
 #
 #   loop=  LOOP ITERATIONS per second. Liveness only. A settled screen still reports ~62 while
 #          swapping nothing, so this CANNOT see a frozen animation. Graded by `loop_floor`.
@@ -5550,6 +5550,32 @@ def require_release_binary(tv, runner=None):
 # regressions.
 # ---------------------------------------------------------------------------
 LOOP_RE = re.compile(r"loop=(\d+) route=(\w+)(?: overlay=(\w+))?")
+
+# ` section=<word>` rides right after ` overlay=` while the player page holds an HUD section open
+# (`app/words.rs`'s `section_word`; absent, never `none`, with nothing open). A section is the page's state and
+# not a surface, so ` overlay=` keeps meaning the topmost MODAL surface and a scene that needs a section says so
+# with its own `"section"` key. It is applied as a filter over the heartbeat lines (`select_section`) rather than
+# as a group on every regex below, so each parser and gate keeps its signature.
+SECTION_RE = re.compile(r"\bloop=\d+ route=\w+(?: overlay=\w+)?(?: section=(\w+))?")
+
+
+def select_section(lines, scene):
+    """`lines` with the heartbeats whose ` section=` word is not the one `scene` pins removed.
+
+    A scene without a `"section"` key is left untouched, so every other scene reads exactly the lines it did.
+    A line that is not a heartbeat (a coldopen line, a FRAMEDROP, the install banner) is kept; a heartbeat with
+    no ` section=` field reads as `none`, which no scene that pins a section wants.
+    """
+    want = scene.get("section")
+    if not want:
+        return lines
+    out = []
+    for ln in lines:
+        m = SECTION_RE.search(ln)
+        if m is None or (m.group(1) or "none") == want:
+            out.append(ln)
+    return out
+
 
 # The desktop simulator (`make sim`) emits the SAME heartbeat, tagged `sim=1` (app.rs's SIM_TAG).
 # Its numbers describe a Mac's GPU, driver and compositor; every gate in this file is calibrated to
@@ -6341,7 +6367,7 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     loop_floor = scene.get("loop_floor", 0)
     warmup = scene.get("warmup_s", 5)
     run_secs = scene.get("run_secs", 18)
-    tag = route + (f"/{overlay}" if overlay else "")
+    tag = route + (f"/{overlay}" if overlay else "") + (f"/{scene['section']}" if scene.get("section") else "")
     print(f"\n=== fps:{name}  (route={tag}, loop_floor {loop_floor}/s) ===")
 
     make(["kill", f"TV={tv}"], timeout=40)
@@ -6399,6 +6425,8 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     # only copy of the HWCNT/phase evidence is lost before it can be compared with the A/B leg.
     stem = f"fps-{name}{log_suffix}"
     save_case_log(cfg, stem, lines)
+    # A scene that pins an HUD section grades only the heartbeats that name it; the saved log above stays whole.
+    lines = select_section(lines, scene)
     # The counter files come off the set here, once, for --save-logs and for the graphics profile
     # (which reads its HWCNT file out of `capture`) alike: the next trigger wipe deletes them.
     profiler = pull_profiler_files(cfg, files) if cfg.get("save_logs") or capture is not None else {}
@@ -7162,7 +7190,7 @@ def main():
             print(f"{c['name']:32s} suite={case_suite(c):6s} rk={c.get('rk', 'SKIP'):<5} "
                   f"{ops:20s} {', '.join(c.get('covers', []))}{mark}")
         for s in manifest.get("fps_scenes", []):
-            tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
+            tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "") + (f"/{s['section']}" if s.get("section") else "")
             # A bench scene (push/modal/deep-100) gates on missed refreshes, not loop_floor — it
             # has no `loop_floor` key at all, so assuming one crashed the listing partway through
             # printing. Print whichever this scene actually declares.

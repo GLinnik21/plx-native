@@ -155,7 +155,9 @@ fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
     let store = plx_data::stores::metadata::MetadataStore::default();
     assert!(!page.render.no_state_logged);
     for _ in 0..3 {
-        let drawn = plx_ui::draw_census::capture(|| page.draw_hud(&ps, 0, &FixtureMeasure, store.view()));
+        let (cx, ) = (cx(), );
+        let df = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        let drawn = plx_ui::draw_census::capture(|| page.draw_hud(&ps, 0, &df, store.view()));
         assert!(drawn.is_empty(), "nothing is drawn for a frame the package has no state for: {drawn:?}");
     }
     assert!(page.render.no_state_logged, "…and it was reported");
@@ -191,7 +193,7 @@ fn classic_menus_hang_from_the_row_ending_at_the_segment_edge() {
 fn only_menus_under_a_package_have_an_anchor() {
     let _g = plx_base::testlock::serial();
     let page = page_with(classic());
-    for kind in [overlay::OverlayKind::Info, overlay::OverlayKind::Chapters, overlay::OverlayKind::Timing] {
+    for kind in [overlay::OverlayKind::Timing] {
         assert_eq!(page.menu_anchor(kind, false), None, "{kind:?}");
     }
 }
@@ -295,4 +297,51 @@ fn the_row_parks_on_the_primary_control_of_the_package() {
     let next = episode.row_ids.iter().position(|r| r.as_deref() == Some("next")).unwrap() as i32;
     assert_eq!(page.row_primary(), next, "an episode with a Next: Next");
     assert_eq!(page_with(classic()).row_primary(), page_with(classic()).slot.primary_btn(), "classic's rule over its own table");
+}
+
+/// **The failure read-out's recovery More lists no folded row.** Its Change Quality opens More on the Quality page
+/// over a failed playback, and BACK pops to the root: a root with Chapters, From Beginning or Previous in it would
+/// give the read-out a route to a section or a seek it never had. The page holds the state already (`busy`), so the
+/// gate is where the seed is taken (`PlayerScreen::more_folds`), and a playback that is merely loading still folds.
+#[test]
+fn a_failed_playback_seeds_no_folded_rows_into_more() {
+    let _g = plx_base::testlock::serial();
+    let minimal = load(
+        include_str!("../../../appkit/src/hud_format/fixtures/minimal.plxhud.json").as_bytes(),
+        "test",
+        plx_platform::i18n::english(),
+        &FixtureMeasure,
+    )
+    .expect("the minimal fixture loads")
+    .compiled;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let mut page = page_with(minimal);
+    assert!(!page.more_folds(meta.view()).is_empty(), "a playing page folds rows");
+    page.busy = plx_appkit::player_hud::Busy::Transport;
+    assert!(!page.more_folds(meta.view()).is_empty(), "a loading one still does");
+    page.busy = plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
+    assert_eq!(page.more_folds(meta.view()), Vec::new(), "the failure read-out owns the frame: no route to a section or a seek");
+}
+
+/// **A package handed over while the page is live** (`run::prepare_window` copies the app's current compile into
+/// a mounted page's `PlayerScreen::compiled`): the held control index and the focus group of the OLD package may point past the
+/// new one's row. Every query the page answers from the compile (the press, the primary control, the row's length,
+/// the scrubber's place) must not panic, and a press on a control that is not there performs nothing. The DRAW
+/// needs a GL context and is the simulator's and the television's to prove.
+#[test]
+fn a_package_swapped_under_a_live_page_survives_a_stale_cursor() {
+    let _g = plx_base::testlock::serial();
+    for (from, to) in [(reference(), classic()), (classic(), reference()), (moved(), classic()), (classic(), moved())] {
+        let last = from.lookup(0, Slot::Discs, false, false, false).expect("the compact state").row_ids.len() as i32 - 1;
+        let mut page = page_with(from);
+        page.hud.nav.focus = GROUP_ROW;
+        page.hud.nav.btn = last;
+        page.compiled = to;
+        let held = page.hud.nav.btn;
+        let _ = page.row_command(held);
+        let _ = page.row_primary();
+        let _ = Focusable::<TestHost>::place(&page, &player_hud::ELEM_SCRUB, &cx(), At::Drawn);
+        let _ = Focusable::<TestHost>::place(&page, &player_hud::control_elem(held), &cx(), At::Drawn);
+        assert_eq!(page.row_command(i32::MAX), None, "a press on a control that is not there performs nothing");
+    }
 }

@@ -3439,14 +3439,21 @@ mod tests {
         // refused Load/Play — without restoring it. Establish the state this test asserts about,
         // and hand back whatever was there (see `[[test-suite-global-pollution]]`).
         //
-        // `state()` ranks four more inputs above `pb_state` (a seek in flight, the claim hold, a
-        // pending resolve, an Engine-less flight); the first two are plain globals a bystander can
-        // leave set, so they are established here too and handed back.
+        // `state()` ranks five more inputs above `pb_state` (a seek in flight, the claim hold, a
+        // pending resolve, an Engine-less flight, a queued start); every one is a plain global a
+        // bystander can leave set, so each is established here and, where it has a value to give
+        // back, handed back. A resolve a test started and never consumed (`menu_play_season_tests`
+        // did, until its rig withdrew it) read `Resolving` here: `cancel_play` withdraws it, and
+        // `reset_player_control_for_test` retires the Engine-less flight's control state.
         let prev = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Idle);
         let was_seeking = plx_media::player::SHARED.seeking.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let was_queued = plx_media::player::SHARED.start_queued.swap(false, std::sync::atomic::Ordering::Relaxed);
         plx_media::player::claim_hold::clear();
+        plx_media::route::cancel_play(&mut ps);
+        plx_media::route::reset_player_control_for_test(&ps);
         plx_media::route::clear_play_verdict_for_test(&mut ps);
         let head = header(&ps, &plx_media::player::Diag::default(), 1_000);
+        plx_media::player::SHARED.start_queued.store(was_queued, std::sync::atomic::Ordering::Relaxed);
         plx_media::player::SHARED.seeking.store(was_seeking, std::sync::atomic::Ordering::Relaxed);
         plx_media::player::restore_state_for_test(prev);
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two

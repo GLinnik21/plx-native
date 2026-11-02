@@ -58,9 +58,13 @@ pub(super) fn recorder_end_frame(
 }
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
-/// (`Frame::begin`); every field is written by exactly one phase and read by the ones after it.
+/// (`Frame::begin`); every field is written by one phase and read by the ones after it, except
+/// `ctrl`, which `content_requests` may re-resolve once after a player request changes the
+/// metadata store's skipped set.
 pub(crate) struct Frame {
-    /// The HUD's control slot for this frame, sampled once before input is read.
+    /// The HUD's control slot for this frame, sampled by `Frame::begin` for input and the pump.
+    /// `content_requests` re-resolves it once, and pushes it to the page, on a frame where BACK
+    /// dismissed an offer; `update` and `report` read the refreshed value.
     pub(crate) ctrl: plx_appkit::player_hud::ControlSlot,
     /// `clock::now()` at the ingest boundary — THE frame time every phase after it uses.
     pub(crate) now: u32,
@@ -376,14 +380,15 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
 
 /// **Make sure the player has a compiled HUD**, on each player frame in `prepare_window` (inside the frame
 /// iteration, before the draw): the app's layer is where the current locale is read
-/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The compile runs once per
-/// process: [`boot_hud`] does it at boot, and this does it on the first player frame when boot did not (a
-/// controlled replay or record run) and for the `plxnative-hud=<path>` package, which is read and compiled
-/// on that frame too, so THAT frame pays the compile. A language change does not recompile: the language is
-/// fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a changed setting is the "confirmed next-launch"
-/// one) and takes effect at the next launch. Every compile is handed to the mounter ([`adopt_hud`]), so the next
-/// player instance is constructed with the current one. `builtin:classic` always loads, so after this
-/// `app.hud` is `Some`.
+/// (`plx_platform::i18n::current()`), and the compile gets it as an argument. The classic HUD compiles once, at
+/// boot ([`boot_hud`]). A dev package (`plxnative-hud=<path>`, read and compiled on that frame, so THAT frame pays the
+/// compile) and a controlled run compile on their first player frame. A chosen package compiles in
+/// `Bridge::huds_tick`, in each frame's prepare window, when the resolved selection names a package not yet compiled
+/// for this language: the fit, the price and the load are one tick each (so one frame never carries two compiles), and
+/// none runs while a player is up. Every compile reaches the mounter through [`adopt_hud`]. A
+/// language change does not recompile: the language is fixed for the process (`i18n`'s `CURRENT` is a `OnceLock`; a
+/// changed setting is the "confirmed next-launch" one) and takes effect at the next launch. `builtin:classic` always
+/// loads, so after this `app.hud` is `Some`.
 fn refresh_hud(app: &mut App) {
     use plx_appkit::player_hud::loaded::{DevHud, DevStep};
     let cx = plx_platform::i18n::current();
@@ -429,6 +434,7 @@ pub(super) fn boot_hud(bridge: &mut super::bridge::Bridge, controlled: bool) -> 
         return None;
     }
     let loaded = plx_appkit::player_hud::loaded::load_classic(plx_plex::plex::identity::version(), plx_platform::i18n::current(), bridge.measure());
+    bridge.huds_start(loaded.clone());
     let mut hud = None;
     adopt_hud(bridge, &mut hud, loaded);
     hud
@@ -467,6 +473,13 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     super::adapters::poster::drain_decoded();
 
     fr.player = matches!(app.route(), AppArg::Player);
+    // The HUD package store's tick: three flag tests while nothing is in flight. A package the viewer
+    // picked, or a profile's own pick that a seat change brought in, is compiled one stage per tick (fit, price,
+    // load) with no player up (never while one is mounted or a playback is starting) and taken into use here, so a
+    // mounted page below draws it from the frame it lands on.
+    if let Some(hud) = app.bridge.huds_tick(fr.player) {
+        adopt_hud(&mut app.bridge, &mut app.hud, hud);
+    }
     // ---- the player page's per-frame HUD SNAPSHOT (`HudModel`) ----
     //
     // Sampled ONCE here and pushed into the screen as a value, so nothing the page prepares or
@@ -632,6 +645,7 @@ fn hud_model(
     let playpos_ns = plx_media::player::playpos_ns();
     plx_appkit::player_hud::model::HudModel {
         paused: plx_media::player::TX.paused.load(Relaxed),
+        is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
         scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
         playpos_ns,
         seek_display_ns: plx_media::player::seek_display_ns(),
@@ -774,6 +788,8 @@ unsafe fn present_and_swap(
         app.glass.sources.borrow_mut().finish();
         // …and a queued underlay-field reduction has had one more drawn frame to finish in.
         plx_gfx::gfx::field_frame_end();
+        // …and a region texture no page asked for this frame goes back to the driver.
+        plx_gfx::gfx::region_frame_end();
         // …and a frame that captured the page leaves a fence the next frames wait on.
         plx_gfx::gfx::snapshot_frame_end();
         // …and a ground probe's queued copy is read back here, between frames, if it is done.
@@ -1732,6 +1748,7 @@ fn park_playback(app: &mut App) {
         player.transport_reset(true);
     }
     close_player_overlays(&mut app.pages);
+    super::bridge::close_player_sections(&mut app.pages);
     plx_media::player::suspend_bufferfeed(&mut app.player.session, &mut app.adapters.player);
     // Also retire the resolve generation: its worker may finish after backgrounding,
     // including before the accepted start's Player page has ever mounted.
@@ -2132,10 +2149,6 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // `Tick` now — `step_scrub_hold`, formula for formula, and the debounce gone with
         // click-to-confirm (a key target waits for OK) — which is what makes the field have one
         // owner. Phase 12, PX-PLAYER.)
-        // A BACK-dismissed offer is gone for the rest of its SEGMENT even though `slot()` keeps
-        // resolving it from the playhead: resolve the latch here, once, before focus follows the
-        // row and before the bottom of the frame hands the page this slot.
-        fr.ctrl = resolve_offer_dismissal(app, fr.ctrl);
         follow_control_row(app, fr.ctrl, fr.now);
         // While the countdown runs, hold the HUD up — a timer nobody can see is a cut to the
         // next episode out of nowhere. `hud.dismissed` has to clear with it, not just the
@@ -2159,7 +2172,10 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // decides.
         // `bare` is the rule's third input and is the CONTAINER's answer now: "no panel is
         // up". It used to be `matches!(route, Route::Player { overlay: Overlay::None })`.
-        let bare = !app.pages.surface_up();
+        // …and a SECTION is the page's own state, not a surface (D7: the countdown cannot run behind an open one):
+        // with the ring on the row beside an inline page the tile is not drawn, so its clock must not run.
+        let section_up = super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.any());
+        let bare = !app.pages.surface_up() && !section_up;
         if matches!(app.route(), AppArg::Player) {
             let paused_now = paused();
             let mut parked = false;
@@ -2325,25 +2341,6 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     // (see the removed key/pointer arms above), so this deferred commit can never
                     // see either route.
                     // the transport's control row (discs or a stand-in)
-                    //
-                    // The Info card's own action column is the SURFACE's press, so it is asked
-                    // first and by identity rather than by a second `Route::Player` arm — the two
-                    // used to be two arms of one route, which reads as an ordering and compiles as
-                    // an unreachable branch.
-                    AppArg::Player
-                        if matches!(
-                            super::bridge::player_overlay_kind(&app.pages),
-                            Some(plx_screens::player::overlay::OverlayKind::Info)
-                        ) =>
-                    {
-                        commit_info_press(&mut app.player,
-                            &mut app.adapters.player,
-                            &mut app.repause_at,
-                            &mut app.refresh_hubs,
-                            &mut app.pages,
-                            &mut app.bridge,
-                        )
-                    }
                     AppArg::Player => activate_player_row(&mut app.player,
                         &mut app.adapters.player,
                         &mut app.repause_at,
@@ -2547,8 +2544,8 @@ fn loop_requests(app: &mut App) {
             // `(Frozen, Cached)` and never returns the page to `HostRender::Live` — the snapshot
             // survives the handover, which is what
             // `account_to_settings_never_unfreezes_the_host` pins.
-            plx_screens::registry::LoopReq::AccountSettings => {
-                super::bridge::open_settings(&mut app.pages);
+            plx_screens::registry::LoopReq::OpenSettings(page) => {
+                super::bridge::open_settings_at(&mut app.pages, page);
             }
             // `ps` is threaded rather than read from a global (lane D's lab gate: `player::diag`
             // has taken a `&PlaybackSession` since phase 9, and `lab::request_upload` with it).
@@ -2557,29 +2554,6 @@ fn loop_requests(app: &mut App) {
             }
         }
     }
-}
-
-/// **Turn the frame's raw `slot()` into what the viewer asked to see.** A BACK over an offer
-/// latches that segment in `HudState::dismissed_offer`; the slot is recomputed from the playhead
-/// every frame, so the latch has to be applied here — once, before focus follows the row and
-/// before the page is handed its slot for the frame.
-///
-/// Clearing `was_standin` is half of the operation: `follow_control_row` reads it as "a stand-in
-/// was under the ring last frame", and without this the dismissal would look like the segment
-/// ending under the ring and send the cursor to the scrubber. BACK dismissed an offer; it did not
-/// walk away from the row.
-fn resolve_offer_dismissal(
-    app: &mut App,
-    ctrl: plx_appkit::player_hud::ControlSlot,
-) -> plx_appkit::player_hud::ControlSlot {
-    let Some(player) = super::bridge::player_mut(&mut app.pages) else {
-        return ctrl;
-    };
-    let shown = player.hud.slot_after_dismissal(ctrl, &app.player.session);
-    if shown != ctrl {
-        player.hud.was_standin = false;
-    }
-    shown
 }
 
 /// Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
@@ -2748,10 +2722,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // are stepped from its own `Tick` for the reason `HudMotion::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
         // rate that depended on which panel was open. What the loop still owes the instance is
-        // this frame's ONE resolve of the control-row slot (`slot()`'s own doc: `playpos_ns` is
-        // written by LG's media thread and `player::pump` runs between the input handlers and
-        // the draw, so re-deriving it per call site let a keypress dispatch to a control the
-        // same frame then declined to draw).
+        // this frame's resolved control-row slot (`content_requests` re-resolves it after a
+        // dismissal; `slot()`'s own doc: `playpos_ns` is written by LG's media thread and
+        // `player::pump` runs between the input handlers and the draw, so re-deriving it per
+        // call site let a keypress dispatch to a control the same frame then declined to draw).
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.slot = fr.ctrl;
         }
@@ -3036,15 +3010,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // because `player::pump` republishes the state mid-iteration and this must
                         // be the post-pump value.
                         //
-                        // `transport` is the other per-frame fact the instance cannot resolve for
-                        // itself: the transport's MIDDLE is hidden behind an open Info card or
-                        // Chapters strip, and which panel is up is the container's answer.
+                        // An open Info card or Chapters strip is a SECTION, the page's own state, and
+                        // `PlayerScreen::middle_up` withholds the middle for it: no surface takes the
+                        // transport's picture any more, so there is no per-frame fact to hand the page.
                         let busy = plx_appkit::player_hud::busy(&app.player.session);
-                        let bare_middle = !matches!(
-                            super::bridge::player_overlay_kind(&app.pages),
-                            Some(plx_screens::player::overlay::OverlayKind::Info)
-                                | Some(plx_screens::player::overlay::OverlayKind::Chapters)
-                        );
                         // Both subtitle paths lift clear of the transport for the same reason and
                         // by the same test — an open track menu counts, since that is exactly when
                         // the user is reading the bottom of the screen. The Timing capsule is the
@@ -3053,7 +3022,6 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         let hud_policy = super::bridge::player_hud_policy(&app.pages);
                         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
-                            player.transport = bare_middle;
                             player.set_hud_policy(hud_policy);
                         }
                         // THE PAGE, and its panels: `Dispatcher::draw(.., true)` runs the page
@@ -3475,7 +3443,13 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             // as the opposite of what it says: the field that used to be `FPS=` is now `loop=`,
             // and `fps=` now means what it always should have — frames actually presented,
             // previously `pres=`. An old `FPS=60` is a LOOP rate and says nothing about frames.
-            let ov = super::words::overlay_suffix(&app.pages, &app.route());
+            // …and an open HUD section's own word right after it (` section=info`): a section is the page's
+            // state, not a surface, so it never changes what ` overlay=` says (`words::section_word`).
+            let ov = format!(
+                "{}{}",
+                super::words::overlay_suffix(&app.pages, &app.route()),
+                super::words::section_suffix(&app.pages)
+            );
             // `pos=<s>` rides the heartbeat while frames are actually being presented: the
             // same SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
             // that reporter's 10s cadence. tests/run.py grades playback progress from this.
@@ -4043,9 +4017,9 @@ mod lifecycle_regression_tests {
         assert!(app.route() == AppArg::Watchlist);
         let instance = app.pages.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
         let hex = [0x5d, 0x77, 0x6b, 0x1d, 0x96, 0xb6, 0x55, 0x00, 0x1f, 0x2a, 0x9c, 0x3e];
-        let fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         app.bridge.push_watchlist_req_for_test(MachineId::Instance(instance), WatchlistOut::OpenCatalog("plex://movie/not-a-hex".into()));
-        content_requests(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
         for i in 40..80 {
             frame(&mut app, i * 16);
         }
@@ -4054,7 +4028,7 @@ mod lifecycle_regression_tests {
             MachineId::Instance(instance),
             WatchlistOut::OpenCatalog("plex://movie/5d776b1d96b655001f2a9c3e".into()),
         );
-        content_requests(&mut app, &fr);
+        content_requests(&mut app, &mut fr);
         for i in 80..140 {
             frame(&mut app, i * 16);
         }
@@ -4080,7 +4054,7 @@ mod lifecycle_regression_tests {
                 fr.now = *t;
                 let inputs = if n == 0 { keys.clone() } else { vec![] };
                 super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
-                content_requests(app, &fr);
+                content_requests(app, &mut fr);
                 loop_requests(app);
             }
         };
@@ -4132,7 +4106,7 @@ mod lifecycle_regression_tests {
                     fr.now = *t;
                     let inputs = if n == 0 { keys.clone() } else { vec![] };
                     super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: *t, dt_us: 16_000 }, inputs);
-                    content_requests(app, &fr);
+                    content_requests(app, &mut fr);
                     loop_requests(app);
                 }
             };
@@ -4596,44 +4570,56 @@ mod lifecycle_regression_tests {
         assert_eq!(app.pages.focus().map(|k| k.elem), Some(ELEM_TAB_BASE), "…for the tab the pin named");
     }
 
-    /// The BACK latch is resolved before the page is handed the frame's slot. A stand-in that is
-    /// still under the playhead would otherwise reappear on the very next frame, and
-    /// `was_standin` would make its disappearance look like a segment ending under the ring.
+    /// **BACK over an offer swaps the discs in on the frame that took it.** The frame's slot is
+    /// sampled before the dispatcher runs, so the page asks the metadata store to retire the
+    /// segment and the loop re-resolves the row after draining that request. Without the re-resolve
+    /// the offer would be handed back to the page once more; without the store the next frame's
+    /// `slot()` would offer it again. Both are asserted here, on a mounted player whose slot the
+    /// REAL `player_hud::slot` produced.
     #[test]
-    fn a_dismissed_offer_resolves_to_the_discs_before_the_page_is_handed_the_slot() {
-        use plx_appkit::player_hud::{ControlSlot, Controls};
-        use plx_data::metadata::{Marker, MarkerKind};
+    fn back_over_an_offer_swaps_in_the_discs_on_the_same_frame() {
+        use plx_appkit::player_hud::{control_elem, geometry::GROUP_ROW, ControlSlot};
         let _serial = plx_base::testlock::serial();
-        let mut app = app();
-        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
-        frame(&mut app, 16);
-        let intro = Marker {
-            kind: MarkerKind::Intro,
-            start_ms: 1_000,
-            end_ms: 60_000,
-            final_seg: false,
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED back_over_an_offer_swaps_in_the_discs_on_the_same_frame: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
         };
-        let skip = plx_appkit::player_hud::slot_for(
-            Some(intro),
-            false,
-            plx_media::route::NextEpisodeMode::Countdown,
-        );
+        let mut t = playing_inside_final_credits(&mut rig);
         {
-            let player = super::super::bridge::player_mut(&mut app.pages).expect("the player page is mounted");
-            player.hud.dismissed_offer = Some((MarkerKind::Intro, intro.start_ms));
-            player.hud.was_standin = true;
-            player.hud.nav.focus = plx_appkit::player_hud::geometry::GROUP_ROW;
+            let player = super::super::bridge::player_mut(&mut rig.app.pages).expect("the player page is mounted");
+            assert!(matches!(player.slot, ControlSlot::UpNext(_)), "the credits offer is up");
+            assert_eq!(player.hud.nav.focus, GROUP_ROW, "the offer parked the ring on the row");
+            // This harness injects a key straight into the dispatcher, so it stands in for
+            // `note_global_press`, which the real input path runs before the page sees the press.
+            player.hud.visible_at_press = true;
         }
-        let shown = resolve_offer_dismissal(&mut app, skip);
+        let back = back_key(t);
+        step(&mut rig.app, &mut t, vec![back]);
+        let player = super::super::bridge::player(&rig.app.pages).expect("the player page is mounted");
         assert!(
-            matches!(shown, ControlSlot::Discs(Controls::NONE)),
-            "the dismissed offer resolves to the discs, with their live controls"
+            matches!(player.slot, ControlSlot::Discs(_)),
+            "the frame that took BACK draws the discs, not the offer it just dismissed"
         );
-        let player = super::super::bridge::player(&app.pages).expect("the player page is mounted");
-        assert!(!player.hud.was_standin, "the stand-in edge is spent, not mistaken for a departure");
-
-        let off = resolve_offer_dismissal(&mut app, ControlSlot::Discs(Controls::NONE));
-        assert!(matches!(off, ControlSlot::Discs(_)), "a plain row is untouched");
+        assert_eq!(player.hud.nav.btn, player.row_primary(), "the cursor is on a real disc");
+        let primary = player.row_primary();
+        // The app's re-seat is a delivery, drained at the top of the next frame — before any key
+        // that frame can be read. No press can land between these two frames.
+        step(&mut rig.app, &mut t, vec![]);
+        assert_eq!(
+            rig.app.pages.focus().map(|k| k.elem),
+            Some(control_elem(primary)),
+            "the FocusEngine followed the cursor, so OK presses what is drawn"
+        );
+        assert!(
+            plx_media::player::is_playing(&rig.app.player.session),
+            "the rig is still Playing, so a Discs row below can only come from the store"
+        );
+        let fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        assert!(
+            fr.ctrl.is_discs(),
+            "the segment is retired in the store, so the next frame's row is the discs, not the offer again"
+        );
     }
 
     /// Offer `standin` on a mounted player, let the offer seat the engine, retire it for `discs`,
@@ -4766,6 +4752,97 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// **More mounts with the rows its package folds, and a row that opens something closes More first.** The app
+    /// seeds the mount from the player page's compiled package and this frame's predicates
+    /// (`seed_menu_anchor`): classic's More lists no folded row, and a package that places only `open_more` lists
+    /// the commands the playing item can use (here an item with no neighbours, chapters or page: the track menu and
+    /// From Beginning). OK on the track-menu row dismisses More and presents the track menu on its Subtitles tab,
+    /// through the same performer a placed Subtitles disc reaches; the next More is mounted without them.
+    #[test]
+    fn more_lists_its_packages_folded_rows_and_a_row_that_opens_something_closes_it_first() {
+        use plx_appkit::more_menu::{Action, MoreRow};
+        use plx_appkit::player_hud::command::{HudCommand, MorePage, TrackTab};
+        use plx_screens::player::overlay::{OverlayKind, Panel};
+        use plx_ui::form::FormId;
+        let _serial = plx_base::testlock::serial();
+        let hud_keys = |app: &mut App| -> Vec<u32> {
+            let overlay = super::super::bridge::player_overlay_mut(&mut app.pages).expect("More is up");
+            let Panel::More(menu) = overlay.panel() else { panic!("More") };
+            menu.keys().into_iter().filter(|k| (30..=43).contains(k)).collect()
+        };
+        let open_more = |app: &mut App, now| {
+            super::playback::perform_hud_command(
+                HudCommand::OpenMore(MorePage::Root),
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                now,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+                &mut app.bridge,
+            );
+            for later in [now + 16, now + 32, now + 48, now + 64] {
+                frame(app, later);
+            }
+        };
+        // classic folds nothing
+        let mut app = self::app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        open_more(&mut app, 100);
+        assert_eq!(hud_keys(&mut app), Vec::<u32>::new(), "classic's More lists no folded row");
+
+        // a package that places only `open_more`
+        let minimal = plx_appkit::player_hud::loaded::load(
+            include_str!("../../appkit/src/hud_format/fixtures/minimal.plxhud.json").as_bytes(),
+            "0.0.0-test",
+            plx_platform::i18n::english(),
+            &plx_ui::fixture::FixtureMeasure,
+        )
+        .expect("the minimal fixture loads")
+        .compiled;
+        let mut app = self::app();
+        app.bridge.seed_player_compiled(minimal);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        open_more(&mut app, 100);
+        let tracks = Action::Hud(HudCommand::OpenTracks(TrackTab::Subtitles));
+        let begin = Action::Hud(HudCommand::FromBeginning);
+        assert_eq!(hud_keys(&mut app), vec![tracks.key().0, begin.key().0], "the rows the idle item can use, in the compiler's order");
+
+        // OK on the track-menu row: More closes, the track menu opens on Subtitles
+        let key = MoreRow::Act(tracks).key().0;
+        let plx_machine::machine::InputOwner::Entry(entry) = app.pages.nav.input_owner().expect("More owns input") else { panic!("an entry") };
+        let instance = app.pages.nav.entry(entry).and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("More's instance");
+        let page = plx_machine::machine::MachineId::Instance(instance);
+        app.pages.emit(page, plx_machine::machine::Fx::Deliver(page, plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::Activate(key))));
+        frame(&mut app, 200);
+        let reqs = app.bridge.take_player_reqs();
+        let asked: Vec<_> = reqs.iter().filter(|r| !matches!(r, plx_screens::registry::PlayerReq::ExtendHud(_))).collect();
+        assert_eq!(asked, [&plx_screens::registry::PlayerReq::Command(HudCommand::OpenTracks(TrackTab::Subtitles))], "the one performer is asked");
+        assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None, "More is closing before the command runs");
+        player_requests(
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            reqs,
+            216,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+            &mut app.ok_armed,
+            &mut app.input.press,
+        );
+        for later in [232, 248, 264, 280, 296] {
+            frame(&mut app, later);
+        }
+        assert_eq!(
+            super::super::bridge::player_overlay_kind(&app.pages),
+            Some(OverlayKind::Tracks { tab: 1 }),
+            "More closed and the track menu is the panel that owns input"
+        );
+    }
+
     /// The media globals the performer's seeks write, set for one test and put back after it, so a
     /// failed assertion does not leak a seek target into the next test.
     struct SeekGlobals {
@@ -4830,6 +4907,162 @@ mod lifecycle_regression_tests {
         assert_eq!(globals.seek_to(), 0, "Previous past the threshold restarts the item");
     }
 
+    /// **A section no control opens is reached through More, and focus ends on a drawn control.** The package places
+    /// no Chapters or Info opener (the reference with its two discs taken out), under both section policies. More
+    /// lists the Chapters row; OK on it closes More, the performer opens the strip, and the engine holds the strip's
+    /// first card, not the gear More was opened from. BACK then closes the section, and with no opener disc to hand focus
+    /// back to it lands on the scrub bar, which the package draws and the compact state focuses (the page's own rule: the
+    /// opener, else the latest section, else the scrubber).
+    #[test]
+    fn a_section_no_control_opens_is_reached_through_more_and_back_leaves_focus_on_a_drawn_control() {
+        use plx_appkit::more_menu::{Action, MoreRow};
+        use plx_appkit::player_hud::command::{HudCommand, MorePage, Section};
+        use plx_appkit::player_hud::geometry::{GROUP_SCRUB, GROUP_STRIP};
+        use plx_appkit::player_hud::ELEM_SCRUB;
+        use plx_machine::machine::{Delivery, Fx, InputOwner, MachineId, Tick};
+        use plx_ui::form::FormId;
+        use plx_ui::screen::ScreenEvent;
+        let _serial = plx_base::testlock::serial();
+        let chapter = |index: i64| plx_data::metadata::Chapter { index, start_ms: index * 60_000, title: format!("Chapter {index}"), thumb: String::new() };
+        for policy in ["modal", "inline"] {
+            let mut app = self::app();
+            app.bridge.seed_player_compiled(plx_appkit::player_hud::loaded::reference_without_openers_for_test(policy));
+            assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
+                sid: plx_plex::plex::ServerId::from_raw(0),
+                rk: "rk".into(),
+                show_rk: String::new(),
+                kind: String::new(),
+                audio: Vec::new(),
+                subs: Vec::new(),
+                video_fps: 0.0,
+                width: 0,
+                height: 0,
+                bitrate: 0,
+                dovi: Default::default(),
+                markers: Vec::new(),
+                chapters: (1..=2).map(chapter).collect(),
+                hdr: false,
+            }))));
+            super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+            frame(&mut app, 16);
+            // the loop pushes the frame's model into the page; the test pushes the one fact the rows read
+            super::super::bridge::player_mut(&mut app.pages).expect("mounted").model.chapters = true;
+            let page_entry = app.pages.nav.top_page().expect("the player page").id;
+            let held = |app: &App| app.pages.input.engine.current(InputOwner::Entry(page_entry)).map(|k| k.elem);
+
+            super::playback::perform_hud_command(
+                HudCommand::OpenMore(MorePage::Root),
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                100,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+                &mut app.bridge,
+            );
+            for later in [116, 132, 148, 164] {
+                frame(&mut app, later);
+            }
+            let row = MoreRow::Act(Action::Hud(HudCommand::ToggleSection(Section::Chapters)));
+            let InputOwner::Entry(more) = app.pages.nav.input_owner().expect("More owns input") else { panic!("an entry") };
+            let instance = app.pages.nav.entry(more).and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("More's instance");
+            let to = MachineId::Instance(instance);
+            app.pages.emit(to, Fx::Deliver(to, Delivery::Screen(ScreenEvent::Activate(row.key().0))));
+            frame(&mut app, 200);
+            let reqs = app.bridge.take_player_reqs();
+            player_requests(
+                &mut app.player,
+                &mut app.adapters.player,
+                &mut app.repause_at,
+                reqs,
+                216,
+                &mut app.refresh_hubs,
+                &mut app.pages,
+                &mut app.bridge,
+                &mut app.ok_armed,
+                &mut app.input.press,
+            );
+            for later in [232, 248, 264, 280, 296, 312, 328, 344] {
+                frame(&mut app, later);
+            }
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None, "{policy}: More is gone");
+            let sections = |app: &App| super::super::bridge::player(&app.pages).expect("mounted").hud.sections.iter().collect::<Vec<_>>();
+            assert_eq!(sections(&app), vec![Section::Chapters], "{policy}: the section opened");
+            assert_eq!(
+                held(&app),
+                Some(plx_appkit::player_hud::ELEM_CHAPTER_BASE),
+                "{policy}: the engine holds the strip's first card, not the gear More was opened from"
+            );
+            assert_eq!(super::super::bridge::player(&app.pages).expect("mounted").hud.nav.focus, GROUP_STRIP, "{policy}");
+
+            // BACK closes the section; there is no opener disc to give focus back to
+            let key = |edge_down: bool, at: u32| {
+                let tick = Tick { ms: at, dt_us: 16_000 };
+                if edge_down { plx_ui::fixture::key(plx_machine::machine::Key::Back, tick) } else { plx_ui::fixture::key_up(plx_machine::machine::Key::Back, tick) }
+            };
+            super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: 400, dt_us: 16_000 }, vec![key(true, 400)]);
+            frame(&mut app, 416);
+            super::super::bridge::frame(&mut app.pages, &mut app.bridge, Tick { ms: 512, dt_us: 16_000 }, vec![key(false, 512)]);
+            for later in [528, 560, 600, 700, 800] {
+                frame(&mut app, later);
+            }
+            assert_eq!(sections(&app), Vec::<Section>::new(), "{policy}: BACK closed it");
+            assert_eq!(held(&app), Some(ELEM_SCRUB), "{policy}: focus is on the scrub bar, which the package draws");
+            assert_eq!(super::super::bridge::player(&app.pages).expect("mounted").hud.nav.focus, GROUP_SCRUB, "{policy}");
+        }
+    }
+
+    /// **A folded Go to Show/Movie row performs `go_to_detail`**: the performer leaves playback for the page of the
+    /// playing item's `detail_rk` (the Info card's own destination), landing the Detail page on top and taking the
+    /// player down. The row's own gate (no row without a ratingKey) is `folded_tests::the_reference_folds_the_two_info_actions`.
+    #[test]
+    fn go_to_detail_leaves_playback_for_the_playing_items_page() {
+        use plx_appkit::player_hud::command::HudCommand;
+        use plx_screens::registry::ContentArg;
+        let _serial = plx_base::testlock::serial();
+        let mut app = self::app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
+            is_episode: false,
+            is_real_episode: false,
+            title: String::new(),
+            ep_title: String::new(),
+            season: 0,
+            index: 0,
+            summary: String::new(),
+            year: 0,
+            dur_ms: 0,
+            rating: String::new(),
+            thumb: String::new(),
+            detail_rk: "777".into(),
+        }))));
+        assert!(super::super::bridge::player(&app.pages).is_some(), "the player is up before the command");
+        perform_on_a_mounted_player(&mut app, HudCommand::GoToDetail, 100);
+        for later in [116, 132, 148, 164, 180, 196, 212] {
+            frame(&mut app, later);
+        }
+        let top = app.pages.nav.top_page().expect("a page is on top");
+        assert!(matches!(&top.arg, AppArg::Content(ContentArg::Detail { rk, .. }) if rk == "777"), "the item's own page is on top");
+        assert!(super::super::bridge::player(&app.pages).is_none(), "and the player is gone");
+    }
+
+    /// **A folded From Beginning row performs the Info card's own action**: the performer seeks to 0, wherever the
+    /// playhead is, and keeps the transport up. (The reference folds this command and `go_to_detail`.)
+    #[test]
+    fn from_beginning_seeks_to_the_start() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let mut app = self::app();
+        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        perform_on_a_mounted_player(&mut app, HudCommand::FromBeginning, 100);
+        assert_eq!(globals.seek_to(), 0, "the item starts over");
+        let player = super::super::bridge::player(&app.pages).expect("mounted");
+        assert!(player.hud.until >= 100 + HUD_LINGER_MS, "and the transport stays up");
+    }
+
     /// **`toggle_play` in the performer is the keys' own function**: a pending scrub target is taken
     /// as `SeekTo` (a seek, and the target is spent) where a bare transport toggle would leave it.
     #[test]
@@ -4868,20 +5101,19 @@ mod lifecycle_regression_tests {
         assert_eq!(globals.seek_to(), 60_000_000_000, "the second press accumulates");
     }
 
-    /// **Section commands toggle**: `toggle_section` opens its panel and dismisses it when the same
-    /// panel is already up, the way the Info card's own tab does.
+    /// **Section commands toggle**: `toggle_section` opens the section on the player PAGE (its own state,
+    /// `hud.sections`) and a second one closes it. Nothing reaches the overlay stack for it: no panel is pushed.
     #[test]
-    fn toggle_section_opens_its_panel_and_a_second_press_closes_it() {
+    fn toggle_section_opens_the_page_section_and_a_second_press_closes_it() {
         use plx_appkit::player_hud::command::{HudCommand, Section};
-        use plx_screens::player::overlay::OverlayKind;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         let mut now = 100;
-        for want in [Some(OverlayKind::Chapters), None] {
+        for want in [true, false] {
             super::playback::perform_hud_command(
-                HudCommand::ToggleSection(Section::Chapters),
+                HudCommand::ToggleSection(Section::Info),
                 &mut app.player,
                 &mut app.adapters.player,
                 &mut app.repause_at,
@@ -4894,9 +5126,113 @@ mod lifecycle_regression_tests {
                 now += 16;
                 frame(&mut app, now);
             }
-            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), want);
+            let open = super::super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.contains(Section::Info));
+            assert_eq!(open, want, "Info {}", if want { "opens" } else { "closes" });
+            assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None, "no overlay is pushed for a section");
             now += 100;
         }
+    }
+
+    /// **An app switch or a decoder park closes the open sections**, as it closed the Info card and the Chapters
+    /// strip when they were overlay panels (`close_player_overlays`): the viewer returns to the film, not to a page
+    /// whose first press the restore would spend.
+    #[test]
+    fn parking_playback_closes_the_open_sections() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::playback::perform_hud_command(
+            HudCommand::ToggleSection(Section::Info),
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            100,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        let mut now = 100;
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(super::super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.contains(Section::Info)));
+        park_playback(&mut app);
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(
+            super::super::bridge::player(&app.pages).is_some_and(|p| !p.hud.sections.any()),
+            "the page is closed when the film is parked",
+        );
+    }
+
+    /// **WILL and DID park twice in one drain** (`0x103` and `0x104` both reach `park_playback`, and the first park
+    /// keeps the URL): the second must not undo the first. A close that queues one TOGGLE per open section reopens
+    /// the page when the two are applied at the same step.
+    #[test]
+    fn parking_twice_in_one_drain_leaves_the_sections_closed() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::playback::perform_hud_command(
+            HudCommand::ToggleSection(Section::Info),
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            100,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        let mut now = 100;
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(super::super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.contains(Section::Info)));
+        park_playback(&mut app);
+        park_playback(&mut app);
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(
+            super::super::bridge::player(&app.pages).is_some_and(|p| !p.hud.sections.any()),
+            "two parks in one drain still leave the page closed",
+        );
+    }
+
+    /// Chapters opens only for an item that has chapters: with none playing, `toggle_section` is a no-op.
+    #[test]
+    fn toggle_section_chapters_does_nothing_for_an_item_without_chapters() {
+        use plx_appkit::player_hud::command::{HudCommand, Section};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
+        frame(&mut app, 16);
+        super::playback::perform_hud_command(
+            HudCommand::ToggleSection(Section::Chapters),
+            &mut app.player,
+            &mut app.adapters.player,
+            &mut app.repause_at,
+            100,
+            &mut app.refresh_hubs,
+            &mut app.pages,
+            &mut app.bridge,
+        );
+        let mut now = 100;
+        for _ in 0..24 {
+            now += 16;
+            frame(&mut app, now);
+        }
+        assert!(super::super::bridge::player(&app.pages).is_some_and(|p| !p.hud.sections.any()));
+        assert_eq!(super::super::bridge::player_overlay_kind(&app.pages), None);
     }
 
     /// **The app ladder's player OK arm is unreachable.** A mounted player page owns the keys
@@ -5041,6 +5377,9 @@ mod lifecycle_regression_tests {
         entered: mpsc::Receiver<()>,
         requests: Arc<Mutex<Vec<String>>>,
         stop: Arc<AtomicBool>,
+        /// The fixture's answer gate: while it is closed ([`Self::hold_answers`]) every request that
+        /// reaches the fixture waits, unanswered, until [`Self::answer_held`] opens it.
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
         worker: Option<std::thread::JoinHandle<()>>,
     }
 
@@ -5089,6 +5428,8 @@ mod lifecycle_regression_tests {
             let log = requests.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let stopping = stop.clone();
+            let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let fixture_gate = gate.clone();
             let worker = match plx_base::task::spawn_small_keeping("lifecycle-fixture", move || {
                 let mut first = true;
                 while !stopping.load(Ordering::Acquire) {
@@ -5127,6 +5468,13 @@ mod lifecycle_regression_tests {
                         arrived.send(()).unwrap();
                         let _ = wait.recv_timeout(Duration::from_secs(5));
                     }
+                    {
+                        let (closed, opened) = &*fixture_gate;
+                        let mut held = closed.lock().unwrap();
+                        while *held && !stopping.load(Ordering::Acquire) {
+                            held = opened.wait_timeout(held, Duration::from_millis(50)).unwrap().0;
+                        }
+                    }
                     let body = respond(&request);
                     // a handler answers `!503` for a refusal: a 5xx with an empty body
                     let (status, body) = match body.as_str() {
@@ -5161,8 +5509,21 @@ mod lifecycle_regression_tests {
                 entered,
                 requests,
                 stop,
+                gate,
                 worker: Some(worker),
             })
+        }
+
+        /// Close the answer gate: every request the fixture receives from now on is logged and then
+        /// waits, unanswered, until [`Self::answer_held`]. The worker that sent it blocks on its reply,
+        /// so a resolve started after this cannot land inside the frame that started it.
+        fn hold_answers(&self) {
+            *self.gate.0.lock().unwrap() = true;
+        }
+
+        fn answer_held(&self) {
+            *self.gate.0.lock().unwrap() = false;
+            self.gate.1.notify_all();
         }
 
         fn request(&mut self) {
@@ -5243,6 +5604,7 @@ mod lifecycle_regression_tests {
 
     impl Drop for Rig {
         fn drop(&mut self) {
+            self.answer_held();
             let _ = self.release.send(());
             plx_media::route::cancel_play(&mut self.app.player.session);
             // `cancel_play` withdraws the landing but leaves the detached resolve worker running,
@@ -5574,7 +5936,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe {
             update(app, &mut fr);
@@ -6835,7 +7197,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
         app.bridge.assert_no_store_jobs_left_for_test();
@@ -7584,7 +7946,7 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        content_requests(app, &fr);
+        content_requests(app, &mut fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
     }
@@ -8645,6 +9007,10 @@ mod lifecycle_regression_tests {
             "inside the credits the tile takes over",
         );
         assert!(!plx_media::route::play_pending(), "the countdown is still running");
+        // The successor's resolve answers at once (only the first request is held), so a worker
+        // scheduled between `playback_tick` and `update` inside one `step` lands and is pumped before
+        // the assertion below: hold its answers, so the request it makes is what is graded.
+        rig.hold_answers();
         t += plx_appkit::up_next::COUNTDOWN_MS;
         step(&mut rig.app, &mut t, vec![]);
         assert!(plx_media::route::play_pending(), "the countdown requests the successor");

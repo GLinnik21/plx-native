@@ -29,6 +29,8 @@ pub struct HudModel {
     /// `plx_media::player::TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
     /// title's reveal and the playbar's state mark.
     pub paused: bool,
+    /// The playing metadata is a genuine episode, independent of queue neighbours.
+    pub is_episode: bool,
     /// `plx_media::player::TX.scrub_ns.load(Relaxed)`: the live scrub preview's target, -1 when no
     /// scrub is in progress.
     pub scrub_ns: i64,
@@ -83,6 +85,7 @@ impl Default for HudModel {
     fn default() -> Self {
         Self {
             paused: false,
+            is_episode: false,
             scrub_ns: -1,
             playpos_ns: 0,
             seek_display_ns: -1,

@@ -309,6 +309,11 @@ impl RouteSurface {
                     MachineId::Instance(self.id),
                     Delivery::Screen(ScreenEvent::Enter(e)),
                 )),
+                // an inner page raising or lowering the television keyboard (the HUD page's address field): the
+                // keyboard belongs to the SURFACE's instance, the one the dispatcher seats input on
+                Fx::Deliver(_, Delivery::Keyboard { up }) => {
+                    fx.push(Fx::Deliver(MachineId::Instance(self.id), Delivery::Keyboard { up }))
+                }
                 Fx::App(a) => fx.push(Fx::App(a)),
                 Fx::Log(l) => fx.push(Fx::Log(l)),
                 Fx::Press(arm) => fx.push(Fx::Press(arm)),
@@ -346,8 +351,9 @@ impl RouteSurface {
     /// libraries → Done/Cancel). Both are correct at the depth the ROOT surface puts them at —
     /// pushed over the Settings root, so the pop reveals it — and both empty the stack when the
     /// surface was booted ROOTED at that page, which `/tmp/plxnative-settings=privacy|home` does
-    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `devtrig::read` out and always
-    /// roots at `SettingsPage::Root`, so this was never a shipping bug — but a Pop with nothing
+    /// (`app/run.rs`'s boot-target match). A `RELEASE` build compiles `devtrig::read` out and roots
+    /// at `SettingsPage::Root`, except for the Library's Favorite libraries row, which roots at
+    /// that page and relies on exactly this — but a Pop with nothing
     /// under it is a statement the page means ("close me"), not an accident to be guarded against
     /// at each emitter, and the surface is the only thing that knows there is nothing under it.
     ///
@@ -474,6 +480,7 @@ fn mount_page(
         }
         SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
+        SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
     }
 }
 

@@ -1150,6 +1150,50 @@ class FpsIdentity(unittest.TestCase):
         self.assertEqual(run.parse_fps(lines, "home", "privacy"), [59])
         self.assertEqual(run.parse_fps(lines, "home", "legal"), [58])
 
+    def test_a_scene_that_pins_a_section_grades_only_the_heartbeats_that_name_it(self):
+        """A section is the player page's state, not a surface: ` overlay=` stays `none` and the
+        heartbeat gains ` section=<word>` after it, which only a scene with a `"section"` key reads."""
+        lines = [
+            "loop=60 route=player overlay=none fps=60",
+            "loop=61 route=player overlay=none section=info fps=59",
+            "loop=62 route=player overlay=none section=chapters fps=58",
+            "loop=63 route=player overlay=none section=chapters_info fps=57",
+            "loop=64 route=player overlay=menu fps=56",
+            "coldopen screen=player ms=12",
+        ]
+        info = {"route": "player", "overlay": "none", "section": "info"}
+        picked = run.select_section(lines, info)
+        self.assertEqual(run.parse_fps(picked, "player", "none"), [59])
+        self.assertEqual(run.parse_loop(picked, "player", "none"), [61])
+        self.assertIn("coldopen screen=player ms=12", picked, "a line that is not a heartbeat is kept")
+        chapters = {"route": "player", "overlay": "none", "section": "chapters"}
+        self.assertEqual(run.parse_fps(run.select_section(lines, chapters), "player", "none"), [58])
+        # the word is exact: `chapters_info` is its own word, not a section named `chapters`
+        self.assertEqual(run.parse_fps(run.select_section(lines, {"section": "chapters_info"}), "player", "none"), [57])
+
+    def test_a_scene_without_a_section_key_reads_every_heartbeat_it_did_before(self):
+        lines = [
+            "loop=60 route=player overlay=none fps=60",
+            "loop=61 route=player overlay=none section=info fps=59",
+        ]
+        self.assertIs(run.select_section(lines, {"route": "player", "overlay": "none"}), lines)
+
+    def test_a_build_that_prints_no_section_word_gives_a_section_scene_no_samples(self):
+        """The failure the gate must keep loud: a heartbeat with no ` section=` field is `none`, so a
+        scene that pins a section finds nothing rather than grading the bare player as its card."""
+        lines = ["loop=60 route=player overlay=none fps=60"] * 8
+        picked = run.select_section(lines, {"route": "player", "overlay": "none", "section": "info"})
+        self.assertEqual(run.parse_fps(picked, "player", "none"), [])
+
+    def test_the_players_section_scenes_pin_a_bare_player_and_a_section_word(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        for name, word in (("info-panel", "info"), ("chapters-panel", "chapters")):
+            with self.subTest(scene=name):
+                self.assertEqual(scenes[name]["route"], "player")
+                self.assertEqual(scenes[name]["overlay"], "none",
+                                 "overlay= means a modal surface; the section is its own word")
+                self.assertEqual(scenes[name]["section"], word)
+
     def test_first_run_routes_have_the_50_fps_contract(self):
         lines = [
             "loop=60 route=home fps=7",

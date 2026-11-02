@@ -116,3 +116,74 @@ fn if_none_match_rides_the_caller_headers_and_a_304_comes_back_empty_with_the_va
     let got = got.expect("a 304 is an answer");
     assert_eq!((got.status, got.body.len(), got.etag.as_deref()), (304, 0, Some("W/\"v7\"")));
 }
+
+/// A LAN entry may upgrade, but the following public hop must never downgrade again.
+#[test]
+fn an_http_https_http_redirect_chain_is_aborted_before_the_downgrade() {
+    let mut sink = BodySink::new(None);
+    sink.redirect = Some(RedirectFloor::new(b"http://192.168.1.20/hud"));
+    for line in ["HTTP/1.1 302 Found\r\n", "Location: https://example.invalid/hud\r\n", "\r\n", "HTTP/1.1 302 Found\r\n"] {
+        assert_eq!(header_cb(line.as_ptr() as *mut c_char, 1, line.len(), (&mut sink as *mut BodySink).cast()), line.len());
+    }
+    let line = "Location: http://example.invalid/hud\r\n";
+    assert_eq!(header_cb(line.as_ptr() as *mut c_char, 1, line.len(), (&mut sink as *mut BodySink).cast()), 0,
+        "the header callback must refuse this hop before curl follows it");
+}
+
+#[test]
+fn the_bounded_public_fetch_never_reaches_plaintext_after_upgrading() {
+    let _serial = plx_base::testlock::serial();
+    assert!(curl_ready(), "this regression must exercise the host curl");
+    let cert = std::sync::Arc::new(mint_ca_issued_cert(&["127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
+    let _ca = TestCaGuard::install(&cert.pem, "hud-redirect-floor");
+    let plaintext = std::net::TcpListener::bind("127.0.0.1:0").expect("bind forbidden final hop");
+    plaintext.set_nonblocking(true).unwrap();
+    let final_port = plaintext.local_addr().unwrap().port();
+    let tls = spawn_scripted(cert, [("/secure", Reply::redirect(302, &format!("http://127.0.0.1:{final_port}/final")))]);
+    let response = format!("HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:{}/secure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", tls.port);
+    let (start_port, start) = crate::stream::test_support::one_shot_echo("127.0.0.1:0", response.into_bytes()).expect("bind HTTP entry");
+    let got = https_get_public_bounded(&format!("http://127.0.0.1:{start_port}/start"), 32);
+    start.join().unwrap();
+    assert_eq!(tls.requests.lock().unwrap().len(), 1, "the HTTPS hop really answered");
+    assert!(matches!(plaintext.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "the forbidden plaintext listener must never receive even a connection");
+    let Err(refusal) = got else { panic!("the plaintext final body must never be returned after HTTPS") };
+    assert_eq!(refusal.curl_rc, Some(23), "the header callback ended the transfer before following");
+    assert_eq!(refusal.status, None, "the redirect's status is not final response evidence");
+}
+
+#[test]
+fn the_public_redirect_floor_inherits_tls_through_relative_hops_and_ignores_other_locations() {
+    let mut floor = RedirectFloor::new(b"http://192.168.1.20/hud");
+    for line in [
+        "HTTP/1.1 200 OK\r\n", "Location: https://example.invalid/unused\r\n",
+        "HTTP/1.1 302 Found\r\n", "Location: http://192.168.1.20/next\r\n",
+        "location:\tHtTpS://example.invalid/hud\r\n",
+        "HTTP/2 307 Temporary Redirect\r\n", "Location: /relative\r\n",
+        "HTTP/2 308 Permanent Redirect\r\n", "Location: //example.invalid/another\r\n",
+        "HTTP/2 200 OK\r\n", "Location: http://example.invalid/not-a-redirect\r\n",
+        "HTTP/2 302 Found\r\n",
+    ] {
+        assert!(floor.accepts(line.as_bytes()), "{line:?}");
+    }
+    assert!(!floor.accepts(b"LoCaTiOn:  hTtP://example.invalid/downgrade\r\n"));
+    let mut secure = RedirectFloor::new(b"HTTPS://example.invalid/hud");
+    assert!(secure.accepts(b"HTTP/1.1 301 Moved Permanently\r\n"));
+    assert!(!secure.accepts(b"Location: http:other\r\n"), "absolute schemes need not have //");
+}
+
+#[test]
+fn the_bounded_public_fetch_can_upgrade_and_follow_relative_tls_locations() {
+    let _serial = plx_base::testlock::serial();
+    assert!(curl_ready(), "this regression must exercise the host curl");
+    let cert = std::sync::Arc::new(mint_ca_issued_cert(&["127.0.0.1"], ymd_from_now(-1), ymd_from_now(30)));
+    let _ca = TestCaGuard::install(&cert.pem, "hud-upgrade-allowed");
+    let tls = spawn_scripted(cert, [("/secure", Reply::redirect(302, "/final")), ("/final", Reply::ok(b"hud".to_vec()))]);
+    let response = format!("HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:{}/secure\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", tls.port);
+    let (port, start) = crate::stream::test_support::one_shot_echo("127.0.0.1:0", response.into_bytes()).expect("bind HTTP entry");
+    let got = https_get_public_bounded(&format!("http://127.0.0.1:{port}/start"), 32).expect("an upgrade and relative TLS hop are legal");
+    start.join().unwrap();
+    assert_eq!(got.status, 200);
+    assert_eq!(got.body, b"hud");
+    assert_eq!(tls.requests.lock().unwrap().len(), 2);
+}
