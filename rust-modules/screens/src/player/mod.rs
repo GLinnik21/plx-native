@@ -1372,11 +1372,15 @@ impl PlayerScreen {
     ///
     /// * UP off the TOPMOST group HIDES the transport (and the film plays on): the scrubber is parked for
     ///   the next reveal, the pending target dropped, and NOT re-armed — a hide that extended its own linger
-    ///   would not hide. With a section open the transport cannot hide, so the press is swallowed.
+    ///   would not hide. With a section open the transport cannot hide, so the press is swallowed (under a
+    ///   modal page whose tabs stand above it the topmost group IS the tabs: Up off a tab moves nothing).
     /// * DOWN off the BOTTOM group has nowhere to go and stays: the target is dropped and the press re-arms
     ///   the linger like any other.
-    /// * DOWN off a MODAL section's page (the strip, or the Info buttons) CLOSES that section and seats its
-    ///   opener's tab (D6). Only a modal package takes this arm (`self.modal()`); an inline page is in the order.
+    /// * The key TOWARD THE TABS off a MODAL section's page (the strip, or the Info buttons) CLOSES that section and
+    ///   seats its opener's tab (D6): Down when the tabs are compiled under the page (classic's), Up when they stand
+    ///   above it ([`player_hud::travel::Order::toward_tabs`]). Only a modal package takes this arm (`self.modal()`);
+    ///   an inline page is in the order. The key the other way is the page's far wall: `EdgeRule::Stop`
+    ///   ([`PlayerScreen::groups_in`]), which the dispatcher answers itself, so it never reaches this method.
     ///
     /// Anything else swallows the press; an edge nobody answers would be dropped as a dead key.
     fn answer_edge<H: AppLike>(
@@ -1389,6 +1393,7 @@ impl PlayerScreen {
     ) -> Handled {
         let group = focused.and_then(Self::hud_group_of);
         let order = self.travel_order(chapters);
+        let toward_tabs_key = if order.toward_tabs() == Dir::Up { consts::Key::Up } else { consts::Key::Down };
         let transport = matches!(group, Some(GROUP_SCRUB | GROUP_ROW | GROUP_TABS));
         match (group, key) {
             // an open page holds the transport up, so the hide this press asks for would show nothing now and
@@ -1406,9 +1411,9 @@ impl PlayerScreen {
                 self.scrub.disengage();
                 self.hud.extend(now, input::HUD_LINGER_MS);
             }
-            // **Down off the bottom of a modal section's page puts the page away** and lands on the control that
+            // **The key toward the tabs off a modal section's page puts the page away** and lands on the control that
             // opened it (D6); an inline page is in the order and, as its bottom, stays put.
-            (Some(GROUP_STRIP | GROUP_SECTION), consts::Key::Down) if self.modal() => {
+            (Some(GROUP_STRIP | GROUP_SECTION), consts::Key::Up | consts::Key::Down) if self.modal() && key == toward_tabs_key => {
                 if let Some(latest) = self.hud.sections.latest() {
                     self.close_section(latest, chapters, now, fx);
                 }
@@ -1783,8 +1788,8 @@ impl PlayerScreen {
         player_hud::travel::order(&self.compiled, self.hud.sections.bits(), self.eff_slot(), chapters, self.model.paused)
     }
 
-    /// **The control that opened the open section focus is leaving**, when it is in group `into`: where Up (or
-    /// Down) from a section lands, the way BACK does (`close_section`). `None` when focus is not on an open
+    /// **The control that opened the open section focus is leaving**, when it is in group `into`: where the key
+    /// toward the tabs from a modal section lands, the way BACK does (`close_section`). `None` when focus is not on an open
     /// section's stop, the package places no opener for it, or the opener belongs to another group (the row's
     /// usual landing then).
     fn opener_to_land_on<H: PlayerLike + crate::registry::MetadataLike>(&self, into: GroupId, cx: &Cx<'_, H>) -> Option<u32> {
@@ -2160,9 +2165,15 @@ impl PlayerScreen {
                 elem: plx_ui::screen::ElemKind::Control,
             });
         }
-        // An open section's page. Both take Up as the page's own top (nothing above it but a declared link), and
-        // Down off the bottom as the screen's to answer (`answer_edge`): a modal page is put away there.
-        let page_edge = [EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop];
+        // An open section's page. A MODAL page is left toward the tabs: that edge is the screen's to answer
+        // (`answer_edge` puts the page away), and the far edge is a wall (`Stop`), with only a declared link
+        // (`links`) beyond the near one. Which edge is which follows where the tabs are compiled
+        // (`Order::toward_tabs`): Down off the bottom of classic's page, Up off the top of one whose tabs stand
+        // above it. An INLINE page is in the order with everything else: Up is its own top, Down the screen's.
+        let page_edge = match self.modal().then(|| self.travel_order(has_ch).toward_tabs()) {
+            Some(Dir::Up) => [EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
+            _ => [EdgeRule::Stop, EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop],
+        };
         if let (Some((sgeo, src)), Some(shelf)) = (self.strip_source(cx), self.row.strip_shelf()) {
             let mut spec = shelf.group_spec(GROUP_STRIP, CardSource::<H>::len(&src), sgeo.rect);
             spec.edge = page_edge;
@@ -2398,16 +2409,19 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
     /// re-delivers to [`PlayerScreen::step`] as the key with `at_edge` set — [`PlayerScreen::answer_edge`] is the
     /// screen's answer.
     ///
-    /// **A MODAL section changes it** (D6/D8): it has taken the middle, so the one way into it is Up from the tab
-    /// that opened it, and the way out is Down off its bottom edge (`answer_edge`) or BACK.
+    /// **A MODAL section changes it** (D6/D8): it has taken the middle, so the one way into it is from the tab
+    /// that opened it, in the direction the page lies from the tabs ([`player_hud::travel::Order::toward_page`]:
+    /// Up when the tabs are compiled under the page, as classic's are, Down when they stand above it), and the way
+    /// out is the opposite key off the page's edge nearest the tabs (`answer_edge`) or BACK.
     fn links(&self, out: &mut Vec<Link>) {
+        let order = self.travel_order(self.model.chapters);
         if self.hud.sections.any() && self.modal() {
             if let Some(latest) = self.hud.sections.latest() {
-                out.push(Link { from: GROUP_TABS, dir: Dir::Up, to: Sections::group_of(latest) });
+                out.push(Link { from: GROUP_TABS, dir: order.toward_page(), to: Sections::group_of(latest) });
             }
             return;
         }
-        self.travel_order(self.model.chapters).links(out);
+        order.links(out);
     }
     /// The transport's clocks, queued for the presenting side to rasterise before the draw's
     /// back-buffer wait (`player_hud::motion::ClockWarm`). Only while the playbar is drawn: the gate is

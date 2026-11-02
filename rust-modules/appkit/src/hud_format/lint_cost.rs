@@ -825,6 +825,7 @@ mod tests {
             ("hero-center", include_str!("fixtures/hero-center.plxhud.json")),
             ("palette", include_str!("fixtures/palette.plxhud.json")),
             ("tabs", include_str!("fixtures/tabs.plxhud.json")),
+            ("rising-tabs", include_str!("fixtures/rising-tabs.plxhud.json")),
         ] {
             let found = e1401(text, &[]);
             assert!(found.is_empty(), "{name}: {:?}", found.iter().map(|f| &f.message).collect::<Vec<_>>());
