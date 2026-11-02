@@ -1475,14 +1475,20 @@ impl<'e, 'p> Env<'e, 'p> {
     }
 
     /// The width a control draws at: a disc is its size, a pill and a button are as wide as their label.
-    fn control_w(&self, item: &Object, widget: Widget, size: f32) -> f32 {
-        let label = self.label(item);
-        match widget {
+    fn control_w(&self, item: &Object, widget: Widget, size: f32, actions: bool) -> f32 {
+        let labels = if item.get("command").and_then(Val::as_str) == Some("go_to_detail") {
+            self.labels.variants("go_to_detail", None)
+        } else {
+            vec![self.label(item)]
+        };
+        let native_icon = actions && widget == Widget::Button && Self::rest(item) == Rest::Film && Self::focus(item) == Focus::Accent
+            && matches!(item.get("command").and_then(Val::as_str), Some("from_beginning" | "go_to_detail"));
+        labels.into_iter().map(|label| match widget {
             Widget::Disc => size,
             Widget::Pill if item.get("face").is_none() => TabPill::width_measured(label, theme::size::BODY, self.measure),
-            Widget::Pill | Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY, true,
-                item.get("face").map(|_| plx_ui::icons::Icon::More), self.measure),
-        }
+            Widget::Pill | Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY,
+                item.get("face").is_some() || native_icon, None, self.measure),
+        }).fold(0.0, f32::max)
     }
 
     /// Is this control gone in this valuation? Its own `when`, or Previous / Next, which come and go
@@ -1507,7 +1513,7 @@ impl<'e, 'p> Env<'e, 'p> {
             }
             let widget = Self::widget(item);
             let size = item.get("size").and_then(Val::as_f64).unwrap_or(0.0) as f32;
-            let mut it = Item::new(self.control_w(item, widget, size));
+            let mut it = Item::new(self.control_w(item, widget, size, false));
             if let Some(g) = self.gap(item, "gap_after") {
                 it = it.after(g);
             }
@@ -1535,16 +1541,8 @@ impl<'e, 'p> Env<'e, 'p> {
 
     /// An `actions` cell's one button width: the widest label over every variant, floored at `min_w`.
     fn action_w(&self, o: &Object) -> f32 {
-        let widest = self
-            .objects(o, "items")
-            .into_iter()
-            .filter(|item| self.when(item))
-            .flat_map(|item| {
-                let command = item.get("command").and_then(Val::as_str).unwrap_or("");
-                let section = item.get("section").and_then(Val::as_str);
-                self.labels.variants(command, section)
-            })
-            .map(|label| Button::pill_w_measured(&cstring(label), theme::size::BODY, true, None, self.measure))
+        let widest = self.objects(o, "items").into_iter().filter(|item| self.when(item))
+            .map(|item| self.control_w(item, Self::widget(item), item.get("size").and_then(Val::as_f64).unwrap_or(0.0) as f32, true))
             .fold(0.0, f32::max);
         widest.max(self.num(o, "min_w").unwrap_or(0.0))
     }

@@ -6,6 +6,8 @@ use std::sync::Arc;
 const REFERENCE: &str = include_str!("../../../hud_format/fixtures/reference.plxhud.json");
 
 fn load(text: &str) -> Arc<Compiled> {
+    let parsed = crate::hud_format::parse::parse(text.as_bytes());
+    assert!(parsed.findings.is_empty(), "{:?}", parsed.findings);
     crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM).unwrap().compiled
 }
 
@@ -109,5 +111,79 @@ fn a_scrub_preview_follows_a_moved_and_resized_track() {
         let moved = Rect { y: track.y + dy, ..track };
         let shifted = super::super::super::classic::scrub_preview_rect(moved, knob, 320.0, scale);
         assert!((shifted.y - expected.y - dy).abs() < 0.001, "the card follows the bar's vertical motion");
+    }
+}
+
+#[test]
+fn labelled_control_width_counts_only_the_glyphs_it_draws() {
+    let _serial = plx_base::testlock::serial();
+    for widget in ["pill", "button"] {
+        for glyph in [false, true] {
+            let text = REFERENCE.replace(r#"{ "id": "more", "command": "open_more", "widget": "disc""#,
+                &format!(r#"{{ "id": "more", "command": "open_more", "widget": "{widget}""#));
+            let text = if glyph { text } else { text.replace(r#", "face": "gear""#, "") };
+            let compiled = load(&text);
+            let state = compiled.lookup(0, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+            let label = CString::new(plx_platform::i18n::msg::widgets_menu_options()).unwrap();
+            let expected = if widget == "pill" && !glyph { TabPill::width_measured(label.to_str().unwrap(), theme::size::BODY, &FM) }
+                else { plx_ui::widgets::Button::pill_w_measured(&label, theme::size::BODY, glyph, None, &FM) };
+            assert_eq!(state.control("more").unwrap().rect.w, expected, "{widget}, glyph {glyph}: no phantom leading/trailing icon");
+        }
+    }
+}
+
+fn info_frame(compiled: &Compiled, focus: GroupId, btn: i32) -> Census {
+    let mut store = plx_data::stores::metadata::MetadataStore::default();
+    plx_data::metadata::set_current_for_test(store.state_mut(), Some(plx_data::metadata::Detail {
+        title: "A film".into(), year: 2001, ..plx_data::metadata::Detail::default()
+    }));
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let model = HudModel::default();
+    let up = Countdown::default();
+    let mut row = HudMotion::new();
+    row.set_section_appear_for_test(Section::Info, 1.0);
+    for _ in 0..30 { row.section_pop.step(Some(0), 0.016_667); }
+    let frame = Frame { entry: EntryId(0), ps: &ps, model: &model, up: &up,
+        slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None, focus, btn, tab: 0,
+        open: crate::hud_format::compile::OPEN_INFO, now: 1_000, transport: true, measure: &FM, meta: store.view() };
+    census(|| with_df(|df| assert!(draw(compiled, &frame, df, &mut row, Painter::root()))))
+}
+
+#[test]
+fn a_row_button_does_not_shift_the_info_actions_focus_or_pop() {
+    let _serial = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let text = REFERENCE.replace(r#"{ "id": "more", "command": "open_more", "widget": "disc""#,
+        r#"{ "id": "more", "command": "open_more", "widget": "button""#);
+    let text = text.replace(r#""z": 1"#, r#""z": 0"#);
+    let text = text.replace(r#"{ "align": "end", "spacer": { "w": 150 } }"#,
+        r#"{ "align": "end", "actions": { "axis": "column", "gap": 16, "item_h": 70, "min_w": 352,
+        "items": [{ "id": "from_beginning", "command": "from_beginning", "widget": "button", "size": 70 },
+        { "id": "detail", "command": "go_to_detail", "widget": "button", "size": 70 }] } }"#);
+    let drew = info_frame(&load(&text), GROUP_SECTION, 0);
+    let label = plx_platform::i18n::msg::widgets_info_from_beginning();
+    let action = drew.1.iter().find(|r| r.text == label).expect("Info's first action draws");
+    let expected = plx_ui::widgets::ControlStyle::Accent.colors(true, ControlGround::Keyed).1;
+    assert_eq!(action.ink, expected, "section index0 is still the focused action, regardless of row buttons");
+}
+
+#[test]
+fn actions_measure_the_same_parameterised_label_they_paint() {
+    let _serial = plx_base::testlock::serial();
+    for (command, expected) in [
+        (r#""seek", "by": -10"#, plx_platform::i18n::msg::player_hud_skip_back()),
+        (r#""open_tracks", "tab": "audio""#, plx_platform::i18n::msg::widgets_tracks_audio()),
+        (r#""open_more", "page": "quality""#, plx_platform::i18n::msg::widgets_menu_quality()),
+        (r#""open_more""#, plx_platform::i18n::msg::widgets_menu_options()),
+    ] {
+        let text = REFERENCE.replace(r#"{ "align": "end", "spacer": { "w": 150 } }"#,
+            &format!(r#"{{ "align": "end", "actions": {{ "axis": "column", "gap": 0, "item_h": 70, "min_w": 0,
+            "items": [{{ "id": "action", "command": {command}, "widget": "button", "size": 70 }}] }} }}"#));
+        let compiled = load(&text);
+        let state = compiled.lookup(crate::hud_format::compile::OPEN_INFO, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+        let label = CString::new(expected).unwrap();
+        let want = plx_ui::widgets::Button::pill_w_measured(&label, theme::size::BODY, false, None, &FM);
+        assert_eq!(state.control("action").unwrap().rect.w, want, "{command}: app label and actual glyph count decide width");
+        assert!(info_frame(&compiled, GROUP_SECTION, 0).1.iter().any(|r| r.text == expected));
     }
 }

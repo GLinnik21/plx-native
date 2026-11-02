@@ -55,28 +55,20 @@
 //! `DrawFrame` the screen draws under and the Shelf paints, its springs stepped by the screen's tick. It draws
 //! the strip's geometry and classic's inks: a package's declared card inks are not read (PR8 stage 3).
 //!
-//! **What it does not draw yet** (each is a decision, not an omission): `rest: custom` (it takes the film).
-//! [`draw`] draws nothing for it, so a package that needs it shows less
-//! rather than something wrong. A title's declared `ink` and `bold` are not carried: classic's rule (an
-//! episode's kicker is primary and bold, a context line secondary and regular) draws, and only the
-//! declared sizes are honoured.
+//! **Declaration consumption.** Title lines take their declared ink, alpha, weight and size. An omitted
+//! kicker stays omitted. A labelled row control takes the same app-owned label the compiler measured, and
+//! the shared Button draws its declared rest, focus and optional face. Format 1.0 refuses `custom` rest,
+//! because it defines no ink keys that could describe it. The scrub preview receives the compiled track,
+//! including its width and thickness, and rides the painter translation of the bar's band.
 //!
-//! **What a package that is installed can still get wrong** (a package reaches these through the Player HUD page
-//! as well as the dev trigger, and none is a finding; each is a way a package draws or behaves wrongly):
-//! - a package with `title.main` and no `title.kicker` still draws the kicker, at classic's y
-//!   (`draw_title`, from `TitleLook::default()`);
-//! - a `button`, or a `pill` with no `section`, gets a focus stop and draws nothing (`draw_control`);
-//! - the scrub preview is hard-wired to `SB_X` / `SB_Y` / `sb_w` (`classic::draw_scrub_preview`), so a package
-//!   that places the bar elsewhere gets the preview card on classic's track;
-//! - `ClockWarm` prewarms the clocks at CAPTION (and the scrub's grown size) only (`motion.rs`), so a package
-//!   whose clocks use another rung is not prewarmed;
-//! - `Compiled::glyph` re-hashes the asset's source for every disc on every frame.
+//! **Remaining limitations under conformance review.** Title wrapping (`max_lines`/`leading`), the Facts
+//! rung, the Up Next presentation and chapter-card templates must be checked before calling the format
+//! fully conformant. `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
+//! declared clock rung. `Compiled::glyph` re-hashes the source on each lookup.
 //!
-//! **The kicker is the one place it overrides the compile.** The compile folds `title.is_episode` into
-//! the state ([`StateKey::episode`] is the ROW's pair boolean, because that is what classic's golden
-//! equates it with), so a real episode with no queue neighbours compiles in the movie state. The kicker's
-//! face is therefore chosen from `now_playing().is_real_episode`, as classic's draw always did, and only
-//! the rects are taken from the ops.
+//! **A real episode is independent of queue neighbours.** Title ink/weight cases keyed on
+//! `title.is_episode` remain live in the compile and resolve against `now_playing().is_real_episode`.
+//! The row's pair-presence valuation must not turn an isolated episode's kicker into a movie context line.
 
 use std::ffi::CString;
 
@@ -912,10 +904,7 @@ fn draw_control(
         }
         // An `actions` button of a section: the focus and the pop are the section group's.
         Widget::Button => {
-            let Some(i) = state
-                .controls
-                .iter()
-                .filter(|k| k.widget == Widget::Button)
+            let Some(i) = super::geometry::section_buttons(state)
                 .position(|k| k.id == c.id)
             else {
                 return;
