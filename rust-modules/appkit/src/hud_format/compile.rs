@@ -1349,7 +1349,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let mut cases = Vec::new();
         for (cond, v) in &k.cases {
             match cond.terms.first() {
-                Some(term) if is_live(&term.name) => cases.push((term.clone(), leaf(v))),
+                Some(term) if is_live(&term.name) || term.name == "title.is_episode" => cases.push((term.clone(), leaf(v))),
                 _ if self.holds(cond) => return Live { base: leaf(v), cases },
                 _ => {}
             }

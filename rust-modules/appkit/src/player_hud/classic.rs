@@ -385,6 +385,12 @@ pub struct TitleLook {
     pub kicker_size: i32,
     /// the title's size (`text.size` of `title.main`); classic's is [`HUD_TITLE_SZ`]
     pub title_size: i32,
+    /// Package paint; absent kicker overrides retain the native episode/context distinction.
+    pub title_ink: [f32; 4],
+    pub title_bold: bool,
+    pub kicker_ink: Option<[f32; 4]>,
+    pub kicker_bold: Option<bool>,
+    pub kicker_visible: bool,
 }
 
 impl Default for TitleLook {
@@ -395,6 +401,11 @@ impl Default for TitleLook {
             title_y: SCR_H - 278.0,
             kicker_size: theme::size::CAPTION,
             title_size: HUD_TITLE_SZ,
+            title_ink: theme::TEXT_PRIMARY,
+            title_bold: true,
+            kicker_ink: None,
+            kicker_bold: None,
+            kicker_visible: true,
         }
     }
 }
@@ -412,14 +423,15 @@ pub(super) fn draw_player_title_at(
     paused: bool,
     clock: &plx_ui::marquee::Clock,
 ) {
-    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size } = look;
+    let TitleLook { x: left, kicker_y, title_y, kicker_size, title_size, title_ink, title_bold, .. } = look;
     let width = (right - left).max(0.0);
     let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(left, 0.0, width, SCR_H));
     let (text, ink, bold) = match kicker {
         Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, true),
         Kicker::Context(text) => (text, theme::TEXT_SECONDARY, false),
     };
-    if !text.is_null() {
+    if look.kicker_visible && !text.is_null() {
+        let (ink, bold) = (look.kicker_ink.unwrap_or(ink), look.kicker_bold.unwrap_or(bold));
         let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
         let fitted = measure.fit_line(&label, width, kicker_size, bold);
         p.text(fitted.as_ptr(), left, kicker_y, kicker_size, ink, 0, i32::from(bold));
@@ -430,7 +442,7 @@ pub(super) fn draw_player_title_at(
     }
     let full = unsafe { std::ffi::CStr::from_ptr(title) };
     let label = full.to_string_lossy();
-    let full_width = measure.width(full, title_size, true);
+    let full_width = measure.width(full, title_size, title_bold);
     if paused && full_width > width {
         // A show's display title can stay the same across episodes; the kicker is
         // part of the visible identity and must restart the reveal when it changes.
@@ -449,14 +461,14 @@ pub(super) fn draw_player_title_at(
             // an Arabic or Hebrew title's end is on its left: it moves right instead
             let rtl = plx_gfx::text::is_rtl_paragraph(&label);
             let x = plx_ui::marquee::TITLE.reveal_once_at(elapsed, full_width, width, rtl);
-            p.text(title, left + x, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
+            p.text(title, left + x, title_y, title_size, title_ink, 0, i32::from(title_bold));
             return;
         }
     } else {
         clock.release();
     }
-    let fitted = measure.fit_line(&label, width, title_size, true);
-    p.text(fitted.as_ptr(), left, title_y, title_size, theme::TEXT_PRIMARY, 0, 1);
+    let fitted = measure.fit_line(&label, width, title_size, title_bold);
+    p.text(fitted.as_ptr(), left, title_y, title_size, title_ink, 0, i32::from(title_bold));
 }
 
 /// How the playhead is drawn — see [`draw_playbar`].

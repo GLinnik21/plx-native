@@ -544,7 +544,7 @@ fn walk<H: Host>(
 
     // the kicker's rect, remembered until the title's op arrives: the pair draws as one (one clip, one
     // marquee key, the paused reveal restarting when either line changes)
-    let mut kicker_rect: Option<(Rect, i32)> = None;
+    let mut kicker_rect: Option<TitleLine> = None;
     let mut bar: Option<Playbar> = None;
     let mut run = |span: &Span| {
         if !pick.takes(span) {
@@ -583,8 +583,8 @@ fn walk<H: Host>(
                 DrawOp::Scrim { rect } => draw_scrim_at(q, Rect { y: rect.y + m.dy, h: rect.h - m.dy, ..*rect }),
                 _ if hides_transport && !is_section_tab(op) => {}
                 DrawOp::Text { bind, rect, size, bold, ink, alpha, max_lines, leading } => match text_of(bind) {
-                    Some(Text::Kicker) => kicker_rect = Some((*rect, *size)),
-                    Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), *rect, *size),
+                    Some(Text::Kicker) => kicker_rect = Some(TitleLine::of(f, *rect, *size, bold, ink, *alpha)),
+                    Some(Text::Title) => draw_title(f, row, q, kicker_rect.take(), TitleLine::of(f, *rect, *size, bold, ink, *alpha)),
                     None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading),
                 },
                 DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
@@ -679,19 +679,46 @@ fn text_of(bind: &str) -> Option<Text> {
     }
 }
 
+/// The declared paint of one title line, resolved against the actual episode, independently of queue neighbours.
+#[derive(Clone, Copy)]
+struct TitleLine {
+    rect: Rect,
+    size: i32,
+    bold: bool,
+    ink: [f32; 4],
+}
+
+impl TitleLine {
+    fn of(f: &Frame<'_>, rect: Rect, size: i32, bold: &crate::hud_format::compile::Live<bool>, ink: &crate::hud_format::compile::Live<[f32; 4]>, alpha: f32) -> Self {
+        let holds = |name: &str| match name {
+            "title.is_episode" => f.meta.now_playing().is_some_and(|n| n.is_real_episode),
+            "transport.paused" => f.model.paused,
+            _ => false,
+        };
+        let mut ink = ink.at(holds);
+        ink[3] *= alpha;
+        Self { rect, size, bold: bold.at(holds), ink }
+    }
+}
+
 /// The title pair, in the cell the compile placed it: the kicker's rect and size, and the main line's. The
 /// main line's right edge is the bound both lines fit before (the `w: fill` cell's, golden-pinned for classic in
 /// `classic-title-right.golden.tsv`).
-fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<(Rect, i32)>, main: Rect, title_size: i32) {
+fn draw_title(f: &Frame<'_>, row: &mut HudMotion, q: Painter, kicker: Option<TitleLine>, main: TitleLine) {
     let classic = TitleLook::default();
     let look = TitleLook {
-        x: main.x,
-        kicker_y: kicker.map_or(classic.kicker_y, |(k, _)| k.y),
-        title_y: main.y,
-        kicker_size: kicker.map_or(classic.kicker_size, |(_, size)| size),
-        title_size,
+        x: main.rect.x,
+        kicker_y: kicker.map_or(classic.kicker_y, |k| k.rect.y),
+        title_y: main.rect.y,
+        kicker_size: kicker.map_or(classic.kicker_size, |k| k.size),
+        title_size: main.size,
+        title_ink: main.ink,
+        title_bold: main.bold,
+        kicker_ink: kicker.map(|k| k.ink),
+        kicker_bold: kicker.map(|k| k.bold),
+        kicker_visible: kicker.is_some(),
     };
-    let right = main.x + main.w;
+    let right = main.rect.x + main.rect.w;
     let paused = f.model.paused;
     if let Some(n) = f.meta.now_playing().filter(|n| n.is_real_episode) {
         let kicker = CString::new(plx_ui::fmt::episode_kicker(n.season, n.index, &n.ep_title)).unwrap_or_default();
@@ -1076,6 +1103,7 @@ mod tests {
 
     mod panel_goldens;
     mod transitions;
+    mod conformance;
 
     /// **The Chapters strip through the renderer** (`draw_state` over classic's `OPEN_CHAPTERS` state, the
     /// strip a `cards::Shelf`) against what the hand-written strip drew on the same playing item (frozen in

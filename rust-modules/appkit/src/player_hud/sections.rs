@@ -53,9 +53,10 @@ pub(super) fn ground(q: Painter, rect: Rect, radius: f32, ink: &Live<Rgba>, f: &
     q.rrect(rect, radius, radius, ink.at(holds(f)));
 }
 
-/// A `Rule`: one hairline across `rect`'s width, in the package's ink.
+/// A `Rule`: its compiled horizontal or vertical hairline extent, in the package's ink.
 pub(super) fn rule(q: Painter, rect: Rect, ink: &Live<Rgba>, f: &Frame<'_>) {
-    plx_ui::widgets::hairline_in(q, rect.x, rect.y, rect.w, ink.at(holds(f)));
+    let ink = ink.at(holds(f));
+    q.rect(rect, 0.0, ink, ink, 0.0);
 }
 
 /// An `Icon`: a package asset's glyph filling its cell.
