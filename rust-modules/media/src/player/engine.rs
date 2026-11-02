@@ -2504,18 +2504,18 @@ fn start_side_reader(target: &crate::route::SideReaderTarget) {
     let clock_only = target.clock_only();
     let started = super::subside::spec_for(target).is_some_and(super::subside::start);
     if !started {
-        // A clock-only run gets its own label: the harness grades `subside: could not start` as
-        // the TRACK reader failing (`tests/run.py`).
-        log(if clock_only { "subside: clock-only failed" } else { "subside: could not start the reader thread" });
+        // One place decides the label and the burn, so the two roles can never drift: a
+        // clock-only reader that cannot start — no client for the running server, or a refused
+        // thread — never raises the failure that rebuilds the stream.
+        super::subside::failed_reading(clock_only, "subside: could not start the reader thread");
         if clock_only {
             // The app fetches that subtitle itself and no reader owns it: the sidecar is drawn on
-            // the remux's clock, as it was before the reader measured it. Never the server's burn.
+            // the remux's clock, as it was before the reader measured it.
             return;
         }
         // Nothing reads beside the stream: the demuxer must not leave the subtitle to a reader
         // that is not there.
         SHARED.side_subs_owner.store(false, Ordering::Release);
-        super::subside::raise_failure(); // the route falls back to the server's burn
     }
 }
 

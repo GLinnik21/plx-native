@@ -2126,11 +2126,11 @@ pub(crate) fn subtitle_offset_ns() -> i64 {
 }
 
 /// **The content time whose cue is on screen at playhead `now_ns`**: the playhead minus the
-/// offset, so a +2 s offset shows at 12 s the cue authored for 10 s. Embedded text and image-set
-/// lookups go through this one subtraction; saturating, so no offset can wrap a timestamp at
-/// either end of `i64`. A sidecar is asked at [`sidecar_clock_ns`] (the playhead plus the side
-/// reader's measured remux delta, [`subtitle_draw`]), and the screen subtracts the offset from
-/// that position itself.
+/// offset, so a +2 s offset shows at 12 s the cue authored for 10 s. Image-set lookups (and the
+/// image store's prune) go through this subtraction; saturating, so no offset can wrap a
+/// timestamp at either end of `i64`. Embedded TEXT is sampled at the playhead [`subtitle_draw`]
+/// returns and a sidecar at [`sidecar_clock_ns`]'s (the playhead plus the side reader's measured
+/// remux delta); the screen subtracts the viewer's offset from both positions itself.
 ///
 /// The sidecar holds its whole file, so any offset in its range is exact there. An EMBEDDED track
 /// only has the cues the demuxer has read, which is why [`subtitle_offset_range_ms`] gives it no

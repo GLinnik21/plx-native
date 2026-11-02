@@ -17,15 +17,16 @@
 //! its give-up path nor a mid-play start failure raises `FAILED` ([`failed_reading`]), and
 //! `route::side_subtitles_failed` ignores the flag for a sidecar anyway.
 //! It runs the keyframe scan only, to learn where in the Part the remux's first keyframe is: a
-//! sidecar is in file time, the remux is labelled with the REQUESTED offset, and PMS starts it on an
-//! earlier keyframe. A byte-exact match is published to [`exact_delta_ns`], which
+//! sidecar is in file time, the remux is labelled with the REQUESTED offset, and PMS starts it on
+//! a keyframe earlier than or at that offset (not always the last one before it). A byte-exact
+//! match is published to [`exact_delta_ns`], which
 //! `player::sidecar_clock_ns` adds to the sidecar's render clock; without one nothing is shifted
 //! (the assumed mapping is not trusted for this: it was measured 2.002 s wrong). The run is bound
 //! by the same gate as an embedded one (`route::side_reader_target`): off it there is no reader
 //! and a sidecar is drawn on the remux's clock, as before.
 //!
-//! Logs: `subside: open|anchor|reopen|failed|stop …` — labels and numbers, never the URL, host,
-//! token or session identifier.
+//! Logs: `subside: open|anchor|reopen|failed|clock-only failed|stop …` — labels and numbers, never
+//! the URL, host, token or session identifier.
 
 use crate::ff::subside::{read_once, Anchor, ReadCfg, RunEnd, SideStop};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -355,13 +356,12 @@ fn playpos() -> i64 {
 }
 
 /// The reader cannot go on, or could not start: one log line, and the failure the route answers
-/// with the server's burn. `embedded_label` is the line a TRACK reader leaves (the harness grades
-/// `subside: failed` and `subside: could not start` as that failure).
+/// with the server's burn. `embedded_label` is the line a TRACK reader leaves.
 ///
 /// A clock-only run has no track to lose: its failure is delta 0 (the sidecar keeps the remux's
 /// clock, as before the reader existed), it gets its own label, and it never raises the burn,
 /// which would re-encode the picture for a subtitle the app fetches itself.
-fn failed_reading(clock_only: bool, embedded_label: &'static str) {
+pub(crate) fn failed_reading(clock_only: bool, embedded_label: &'static str) {
     if clock_only {
         plx_base::eventlog::log("subside: clock-only failed");
     } else {
@@ -506,9 +506,10 @@ mod tests {
         });
     }
 
-    /// A mid-play start failure is one of the same two paths: a clock-only run never raises the
-    /// burn for it (the flag could otherwise be read against an embedded pick the viewer switched
-    /// to), and a track reader still does.
+    /// The policy both start-failure call sites use (`apply` for a mid-play pick, `engine` for the
+    /// run's own start): a clock-only run never raises the burn (the flag could otherwise be read
+    /// against an embedded pick the viewer switched to), and a track reader still does. The call
+    /// site's only input is `spec.ordinal == CLOCK_ONLY`, computed before `spec` moves.
     #[test]
     fn a_clock_only_start_failure_is_never_the_server_burn() {
         let _g = plx_base::testlock::serial();

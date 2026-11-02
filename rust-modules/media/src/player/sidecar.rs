@@ -237,17 +237,29 @@ pub fn selected() -> bool {
     state().want.is_some()
 }
 
+/// Put the test-only sidecar state in place: `stream_id` selected with `codec`, and `script`
+/// installed as the loaded file when given. The one door into the private state for tests.
+#[cfg(any(test, feature = "test-support"))]
+fn select_for_test(stream_id: i64, codec: &str, script: Option<&[u8]>) {
+    let mut st = state();
+    st.generation = st.generation.wrapping_add(1);
+    st.pending = None;
+    st.failed = None;
+    let selection = Selection {
+        server: plx_plex::plex::ServerId::UNSET, stream_id, key: String::new(), codec: codec.to_owned(),
+    };
+    st.want = Some(selection.clone());
+    st.loaded = script.map(|s| {
+        let content = decode(s.to_vec(), codec).expect("fixture: an authored script");
+        (selection, content)
+    });
+}
+
 /// Mark `stream_id` as the selected sidecar without fetching anything — for tests of what the
 /// selection KIND decides (the timing offset's range), which never draw a cue.
 #[cfg(any(test, feature = "test-support"))]
 pub fn select_without_fetch_for_test(stream_id: i64) {
-    let mut st = state();
-    st.generation = st.generation.wrapping_add(1);
-    st.pending = None;
-    st.want = Some(Selection {
-        server: plx_plex::plex::ServerId::UNSET, stream_id, key: String::new(), codec: String::new(),
-    });
-    st.failed = None;
+    select_for_test(stream_id, "", None);
 }
 
 /// Select `stream_id` as a sidecar and install `script` as its loaded file, without fetching: for
@@ -255,16 +267,7 @@ pub fn select_without_fetch_for_test(stream_id: i64) {
 /// script must be an authored ASS/SSA one, so nothing restyles it on a worker.
 #[cfg(any(test, feature = "test-support"))]
 pub fn select_loaded_for_test(stream_id: i64, script: &[u8]) {
-    let mut st = state();
-    st.generation = st.generation.wrapping_add(1);
-    st.pending = None;
-    st.failed = None;
-    let selection = Selection {
-        server: plx_plex::plex::ServerId::UNSET, stream_id, key: String::new(), codec: "ass".into(),
-    };
-    let content = decode(script.to_vec(), "ass").expect("fixture: an authored script");
-    st.want = Some(selection.clone());
-    st.loaded = Some((selection, content));
+    select_for_test(stream_id, "ass", Some(script));
 }
 
 /// Select `stream_id` as a sidecar whose conversion FAILED `age` ago, without fetching anything: the
