@@ -18,6 +18,10 @@ on:
         description: 'Publish a source-tagged development utility for registry testing'
         type: boolean
         default: false
+      dispatch_probe:
+        description: 'Test registry dispatch credentials without publishing an app release'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release_tag:
@@ -29,6 +33,7 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || !inputs.dispatch_probe
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -109,11 +114,22 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           test -n "$GH_TOKEN" || { echo "::error::HUD_REGISTRY_DISPATCH_TOKEN is required for the registry release check"; exit 1; }
-          python3 - <<'PY'
-          import json, os, subprocess
-          from pathlib import Path
-          pin = json.loads(Path('out/plxnative-hud-simulator-linux-x86_64.tar.pin.json').read_text())
-          pin['url'] = 'https://github.com/GLinnik21/plx-native/releases/download/' + os.environ['RELEASE_TAG'] + '/plxnative-hud-simulator-linux-x86_64.tar.gz'
-          body = json.dumps({'event_type':'app-release','client_payload':{'simulator':pin}})
-          subprocess.run(['gh','api','repos/GLinnik21/plxnative-huds/dispatches','--input','-'],input=body,text=True,check=True)
-          PY
+          python3 tools/hud_registry_dispatch.py --pin out/plxnative-hud-simulator-linux-x86_64.tar.pin.json --release-tag "$RELEASE_TAG"
+  dispatch-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.dispatch_probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Invoke the registry backstop through the configured dispatch credential
+        env:
+          GH_TOKEN: ${{ secrets.HUD_REGISTRY_DISPATCH_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PUBLISH_DEV: ${{ inputs.publish_development }}
+        run: |
+          test -z "$RELEASE_TAG" && test "$PUBLISH_DEV" != true || { echo "choose a probe or publication"; exit 1; }
+          test -n "$GH_TOKEN" || { echo "::error::HUD_REGISTRY_DISPATCH_TOKEN is required"; exit 1; }
+          python3 tools/hud_registry_dispatch.py --probe "$SOURCE_SHA"

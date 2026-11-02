@@ -36,3 +36,15 @@ released tag. Once attached, it sends `app-release` repository_dispatch to the r
 cross-repository API needs `HUD_REGISTRY_DISPATCH_TOKEN`, restricted to the registry repository
 with the permission needed for repository dispatch. A personal developer login is not embedded
 in the artifact or copied into Actions. The registry also checks weekly for missed releases.
+
+After configuring the scoped secret, a maintainer can dispatch `hud-simulator.yml` with
+`dispatch_probe=true`. This skips the simulator build and calls the same narrowly addressed
+registry API as stable notification, using event type `app-release-probe`. The registry runs
+its ordinary release-discovery/re-lint backstop without accepting an invented app-release pin.
+The receiving workflow must already be on the registry's default branch. This verifies delivery
+and credential scope without publishing or installing a TV app release.
+
+The initial native measurement contains 12,276 samples across all eleven shipped languages,
+nine type rungs and both weights. Its registry-only margins range from 4 to 9 pixels. Reports
+retain exact font hashes and host/TV source identities; the registry stores the evidence and
+tracks when a margin is carried across translation changes with the same native text stack.
