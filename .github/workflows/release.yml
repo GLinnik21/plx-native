@@ -664,4 +664,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.guard.outputs.tag }}
-        run: gh workflow run hud-simulator.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f "release_tag=$TAG"
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          repo, tag = os.environ['GITHUB_REPOSITORY'], os.environ['TAG']
+          probe = subprocess.run(['gh','api',f'repos/{repo}/contents/.github/workflows/hud-simulator.yml',
+                                  '--method','GET','-f',f'ref={tag}','--silent'],capture_output=True,text=True)
+          if probe.returncode:
+              if 'HTTP 404' in probe.stderr:
+                  print(f'::notice::{tag} predates HUD authoring simulators; no artifact is required')
+                  raise SystemExit(0)
+              raise SystemExit(probe.stderr)
+          subprocess.run(['gh','workflow','run','hud-simulator.yml','--repo',repo,'--ref',tag,'-f',f'release_tag={tag}'],check=True)
+          PY

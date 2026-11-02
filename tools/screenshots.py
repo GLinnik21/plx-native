@@ -300,6 +300,12 @@ def capture(binary, scene, defaults, hero, keep, *, prepare=None, assets=None):
         for line in scene.get("expect", []):
             if line not in log:
                 problems.append(f"expected log line missing: {line!r}")
+        if scene.get("expect_focus"):
+            focus = [line.split("focus route=player ",1)[1] for line in log.splitlines() if "focus route=player " in line]
+            fields = dict(word.split("=",1) for word in focus[-1].split() if "=" in word) if focus else {}
+            for key, value in scene["expect_focus"].items():
+                if fields.get(key) != value:
+                    problems.append(f"final player focus {key}: expected {value!r}, got {fields.get(key)!r}")
         # The boot line proves the person-page and Watchlist reads reach the mock, not the real provider.
         stand_in = mock_pms.discover_stand_in_problem(log)
         if stand_in:

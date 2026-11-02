@@ -34,7 +34,7 @@ class Matrix(unittest.TestCase):
         seek = next(s for s in scenes if s["name"] == "seeking")
         self.assertEqual(seek["scrub_point"], [940,730])
         cfg = preview.capture_scene(seek)["virtual"]
-        self.assertEqual(cfg["clicks"], "900:940.0:730.0")
+        self.assertEqual(cfg["clicks"], "600:940.0:730.0")
         self.assertLess(cfg["select"], 6)
         self.assertGreater(cfg["frames"], 6)
 

@@ -17,6 +17,7 @@ import sys
 import screenshots
 
 ROOT = Path(__file__).resolve().parents[1]
+PREROLL = 600
 DEFAULTS = {"canvas": "1920x1080", "settle_ms": 500, "after_ms": 1000, "timeout_s": 180, "stillclock_ms": 4000}
 LONG_TITLES = {
     "en": "The extraordinarily long chapter in which the last dragon returns across the frozen mountains",
@@ -105,6 +106,14 @@ def fixture(spec, hud):
                 if spec.get("slot") == "up_next":
                     item["Marker"] = [{"id": rk, "type": "credits", "startTimeOffset": 173000, "endTimeOffset": duration}]
             source = pms.lib.items[2011002]
+        start_at = 445000
+        if spec["background"] == "bright":
+            start_at = 30000
+        if spec.get("slot") == "up_next":
+            start_at = 174750
+        if spec.get("marker"):
+            start_at = 25000 if spec["marker"] == "intro" else 174750
+        source["viewOffset"] = start_at
         if spec.get("marker"):
             start = 20000 if spec["marker"] == "intro" else 173000
             source["Marker"] = [{"id": 99002, "type": spec["marker"], "startTimeOffset": start,
@@ -136,44 +145,48 @@ def fixture(spec, hud):
 
 def capture_scene(spec):
     triggers = {"play": "2011002" if spec["navigation_pair"] else "102", "clocksink": "", "simvideo": "", "focus": "", "hintoff": ""}
-    virtual = {"preroll": 900}
+    virtual = {"preroll": PREROLL}
     expect = [f'plxnative-hud: compiled for {spec["lang"]}', "simvideo: first picture decoded"]
     position = 31020 if spec["background"] == "bright" else 446020
     triggers["clockstop"] = str(position)
-    if spec["background"] == "bright":
-        triggers["autoseek"] = "30"
     if spec["paused"]:
         triggers["autopause"] = f"at={position}"
         expect.append("autopause: Pause accepted")
     else:
-        virtual["keys"] = "850:up"
+        virtual["keys"] = "550:up"
     if spec["open"] & 1:
         triggers["chapters"] = ""
     if spec["open"] & 2:
         triggers["info"] = ""
     if spec.get("opener"):
         # Reveal first, then click through the ordinary hit map. No manual command dispatch.
-        virtual.update(keys="570:up" if not spec["paused"] else "", overlay=True)
+        virtual.update(keys="420:up" if not spec["paused"] else "", overlay=True)
         x, y = spec["opener"]["point"]
-        virtual["clicks"] = f"600:{x}:{y}"
+        virtual["clicks"] = f"450:{x}:{y}"
         expect.append("ov=" + ("menu" if spec["opener"]["menu"] == "tracks" else "more"))
     if spec.get("seeking"):
         # Twelve frames let the normal six-frame key press release, while frame three records
         # the active scrub. This preserves the existing input-release contract.
         x,y = spec["scrub_point"]
-        virtual.update(frames=12, select=3, clicks=f"900:{x}:{y}")
+        virtual.update(frames=12, select=3, clicks=f"{PREROLL}:{x}:{y}")
     if spec.get("slot") == "up_next":
-        triggers.pop("simvideo", None)
-        triggers.update(autoseek="173", clockstop="175750")
-        expect = [item for item in expect if item != "simvideo: first picture decoded"] + ["slot=upnext"]
+        triggers.update(clockstop="175750")
+        expect += ["slot=upnext", "clockstop: clock held at 175750 ms"]
     if spec.get("marker"):
         # Deterministic markers around the frozen playhead, including a separate credits case.
-        triggers["autoseek"] = "173" if spec["marker"] == "credits" else "25"
         triggers["clockstop"] = "175750" if spec["marker"] == "credits" else "27020"
-        expect.append("slot=skip")
+        expect += ["slot=skip", "clockstop: clock held at " + triggers["clockstop"] + " ms"]
     if spec.get("failure"):
         triggers["failtest"] = ""
-    return {"name": spec["name"], "lang": spec["lang"], "triggers": triggers, "virtual": virtual, "expect": expect}
+    focus = {"slot": "upnext" if spec.get("slot") == "up_next" else spec.get("slot", "discs"),
+             "chap": str(int(bool(spec["open"] & 1))), "info": str(int(bool(spec["open"] & 2))),
+             "ov": "none"}
+    if spec.get("opener"):
+        focus["ov"] = "menu" if spec["opener"]["menu"] == "tracks" else "more"
+    if spec.get("failure"):
+        focus = {"hidden":"1"}
+    return {"name": spec["name"], "lang": spec["lang"], "triggers": triggers, "virtual": virtual,
+            "expect": expect, "expect_focus": focus}
 
 
 def run(binary, hud, output, only=None):

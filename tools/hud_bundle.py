@@ -33,8 +33,12 @@ def sha(path):
 def native_dependencies(inputs):
     """Resolve the loader's actual transitive libraries, preserving its SONAME basenames."""
     found = {}
+    # These libraries deliberately have no build-time rpath. Resolve their sibling SONAMEs
+    # using only known build inputs, not a developer's inherited loader override.
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = ":".join(sorted({str(path.parent.resolve()) for path in inputs}))
     for path in inputs:
-        report = subprocess.run(["ldd", str(path)], capture_output=True, text=True, check=True).stdout
+        report = subprocess.run(["ldd", str(path)], capture_output=True, text=True, check=True, env=env).stdout
         if "not found" in report:
             raise ValueError(f"unresolved native dependency of {path.name}")
         for name, absolute in re.findall(r"^\s*(\S+) => (/\S+)", report, re.M):
@@ -67,6 +71,10 @@ def pack(binary: Path, destination: Path):
         wrapper = stage / "bin/plxnative-sim"
         wrapper.write_text('#!/bin/sh\nset -eu\nbundle=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexport LD_LIBRARY_PATH="$bundle/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\nexport PLXNATIVE_APP_DIR="${PLXNATIVE_APP_DIR:-$bundle/pkg}"\nexec "$bundle/bin/plxnative-sim.real" "$@"\n')
         wrapper.chmod(0o755)
+        native_text = ROOT / "pkg/libass-plx-host.so.0"
+        if not native_text.is_file():
+            raise ValueError("build libass-host before packaging")
+        copy(native_text, stage / "pkg" / native_text.name)
         inputs = tracked()
         for name in inputs:
             if (name in {"LICENSE", "LICENSING.md", "THIRD-PARTY-NOTICES.md", "docs/screenshots/CREDITS.md", "tools/screenshots.py", "tools/demo_library.py",
@@ -77,6 +85,10 @@ def pack(binary: Path, destination: Path):
             prefix = "rust-modules/appkit/src/hud_format/fixtures/"
             if name.startswith(prefix) and (name.endswith(".plxhud.json") or name.endswith(".json") and "/invalid/" in name):
                 copy(ROOT / name, stage / "corpus" / name.removeprefix(prefix))
+        for name in inputs:
+            prefix = "site/hud/examples/invalid/"
+            if name.startswith(prefix) and name.endswith(".json"):
+                copy(ROOT / name, stage / "corpus/invalid" / name.removeprefix(prefix))
         copy(ROOT / "site/hud/schema/1.0.json", stage / "schema/1.0.json")
         ffmpeg = list((ROOT / "vendor/ffmpeg-prefix-host/lib").glob("lib*-plx.so.[0-9]*"))
         ffmpeg = {p.name: p for p in ffmpeg if re.fullmatch(r"lib.+-plx\.so\.\d+", p.name)}
@@ -93,8 +105,27 @@ def pack(binary: Path, destination: Path):
                 raise ValueError(f"required host library is missing: {name}")
             path = Path(matches[0]); direct.append(path)
             copy(path, stage / "lib" / name)
-        for name, path in native_dependencies([binary, *direct, *ffmpeg.values()]).items():
+        dependencies = native_dependencies([binary, native_text, *direct, *ffmpeg.values()])
+        for name, path in dependencies.items():
             copy(path, stage / "lib" / name)
+        # Preserve the distribution's copyright/license notices for every copied system library.
+        # The app, facade and FFmpeg source/licensing are identified by the repository notices.
+        system_packages = {}
+        for path in set(direct + list(dependencies.values())):
+            if str(path.resolve()).startswith(str(ROOT)):
+                continue
+            query = subprocess.run(["dpkg-query", "-S", str(path)],capture_output=True,text=True)
+            if query.returncode:
+                query = subprocess.run(["dpkg-query", "-S", "*/" + path.name],capture_output=True,text=True,check=True)
+            for line in query.stdout.splitlines():
+                package = line.split(": ",1)[0]
+                copyright = Path("/usr/share/doc") / package.split(":",1)[0] / "copyright"
+                if not copyright.is_file():
+                    raise ValueError("missing system-library copyright: " + package)
+                copy(copyright, stage / "licenses/system" / (package.replace(":","_") + ".txt"))
+                version = subprocess.check_output(["dpkg-query","-W","-f=${Version}",package],text=True)
+                system_packages[package] = version
+        (stage / "licenses/system-packages.json").write_text(json.dumps(system_packages,sort_keys=True,indent=2)+"\n")
         for path in [stage / "bin/plxnative-sim.real", *(stage / "lib").iterdir(), *(stage / "pkg").glob("*.so.*")]:
             relative = "$ORIGIN/../lib" if path.parent.name in {"bin", "pkg"} else "$ORIGIN"
             subprocess.run(["patchelf", "--set-rpath", relative, str(path)], check=True)
@@ -102,6 +133,10 @@ def pack(binary: Path, destination: Path):
         info = json.loads(subprocess.check_output([str(wrapper), "--hud-info"], env=env, text=True))
         if not info["source_sha"] or not source.startswith(info["source_sha"]):
             raise ValueError("binary does not report the source being packaged")
+        # Both app text shaping and native ASS use this dlopen-only library. Prove that the
+        # relocated tree can load its exports instead of trusting ldd's view of the executable.
+        subprocess.run(["python3", "-c", "import ctypes,sys; lib=ctypes.CDLL(sys.argv[1]); assert lib.plx_ass_abi_version() == 4; assert lib.plx_ass_create; assert lib.plx_ass_text_measure", str(stage / "pkg" / native_text.name)],
+                       env={**env,"LD_LIBRARY_PATH":str(stage / "lib")},check=True)
         metrics = subprocess.check_output([str(wrapper), "--hud-text-metrics"], env=env)
         (stage / "text-metrics.json").write_bytes(metrics)
         version = info["app_version"]
