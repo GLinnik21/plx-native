@@ -17,7 +17,8 @@
 //! | `PLXNATIVE_DUMP_NO_HOLD=1` | write every frame whatever the debt (a negative-test switch, never a render) |
 //! | `PLXNATIVE_DUMP_ALLOW_ABSENT=1` | do not fail on a settled-absent hero logo, a never-resolving card or a failed art request (a proof switch) |
 //! | `PLXNATIVE_DUMP_KEYS=<v>:<key>,...` | press `up`/`down`/`left`/`right`/`ok`/`back`: the down edge at the first iteration of virtual frame `<v>`, the up edge [`KEY_UP_AFTER`] frames later (the storyboard's compiled key schedule, `tests/video/feel.json`, arrives through this variable). `hold` is OK held for [`HOLD_UP_AFTER`] frames (the long press that opens an item's context menu) |
-//! | `PLXNATIVE_DUMP_ALLOW_OVERLAY=1` | do not fail when a modal or popover is open. A MOTION-REVIEW switch: the underlay's dim field is cadenced by presented iterations, so such a frame is not guaranteed to be hold-independent (the hold-injection gate does not cover it) and the render is never a deliverable |
+//! | `PLXNATIVE_DUMP_CLICKS=<v>:<x>:<y>,...` | native pointer click at canvas coordinates on virtual frame `<v>`, released six frames later |
+//! | `PLXNATIVE_DUMP_ALLOW_OVERLAY=1` | do not fail when a modal or popover is open. A MOTION-REVIEW switch: the underlay's dim field is cadenced by presented iterations, so such a frame is not guaranteed to be hold-independent (the hold-injection gate does not cover it) and the render is never a film deliverable (registry still previews may use it) |
 //! | `PLXNATIVE_DUMP_EXTRA_HOLDS=<k>` or `r<seed>` | force `k` (or a seeded 0..=3) EXTRA held repeats on every clean virtual frame: the hold-injection gate's switch |
 //!
 //! **The clock.** `clock::set_replay(ORIGIN_MS + T(v))`, `T(v) = round(v * 1000 / 60)`, where `v` is
@@ -384,17 +385,34 @@ pub(crate) fn parse_keys(spec: &str) -> Result<Vec<(u64, Key, u64)>, String> {
     Ok(out)
 }
 
-/// A scripted key that cannot be pressed AND released inside the run is an error at start, not a
-/// key that silently never happens: the run is `preroll + frames` virtual frames (the last is
-/// `preroll + frames - 1`), the down edge is on frame `v` and the up edge on `v + KEY_UP_AFTER`.
+/// Pointer clicks use the same virtual-clock driver and the same native input constructors as
+/// physical input: `<frame>:<x>:<y>,...`. A held repeat cannot replay either edge.
+pub(crate) fn parse_clicks(spec: &str) -> Result<Vec<(u64, f32, f32)>, String> {
+    let mut result = Vec::new();
+    for item in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let mut parts = item.split(':');
+        let parsed = (|| {
+            let at = parts.next()?.parse::<u64>().ok()?;
+            let x = parts.next()?.parse::<f32>().ok()?;
+            let y = parts.next()?.parse::<f32>().ok()?;
+            (parts.next().is_none() && (0.0..=WIDTH as f32).contains(&x) && (0.0..=HEIGHT as f32).contains(&y))
+                .then_some((at,x,y))
+        })();
+        result.push(parsed.ok_or_else(|| format!("PLXNATIVE_DUMP_CLICKS: {item:?} is not frame:x:y inside the canvas"))?);
+    }
+    result.sort_by_key(|point| point.0);
+    Ok(result)
+}
+
+/// Every scripted key must release before the last virtual frame.
 pub(crate) fn check_key_schedule(keys: &[(u64, Key, u64)], preroll: u32, frames: u32) -> Result<(), String> {
     let total = preroll as u64 + frames as u64;
     for &(v, key, up_after) in keys {
-        if v + up_after >= total {
+        if v.checked_add(up_after).is_none_or(|up| up >= total) {
             return Err(format!(
                 "PLXNATIVE_DUMP_KEYS: {key:?} at virtual frame {v} cannot come up before the run ends \
                  (its up edge is frame {}, the last frame is {}: {preroll} preroll + {frames} frames)",
-                v + up_after, total.saturating_sub(1)
+                v.saturating_add(up_after), total.saturating_sub(1)
             ));
         }
     }
@@ -494,6 +512,7 @@ struct Cfg {
     no_hold: bool,
     allow_absent: bool,
     keys: Vec<(u64, Key, u64)>,
+    clicks: Vec<(u64, f32, f32)>,
     allow_overlay: bool,
     extra_holds: ExtraHolds,
 }
@@ -516,11 +535,14 @@ impl Cfg {
             allow_absent: std::env::var_os("PLXNATIVE_DUMP_ALLOW_ABSENT").is_some(),
             allow_overlay: std::env::var_os("PLXNATIVE_DUMP_ALLOW_OVERLAY").is_some(),
             keys: std::env::var("PLXNATIVE_DUMP_KEYS").map_or_else(|_| Ok(Vec::new()), |s| parse_keys(&s)).unwrap_or_else(|e| panic!("framedump: {e}")),
+            clicks: std::env::var("PLXNATIVE_DUMP_CLICKS").map_or_else(|_| Ok(Vec::new()), |s| parse_clicks(&s)).unwrap_or_else(|e| panic!("framedump: {e}")),
             extra_holds: std::env::var("PLXNATIVE_DUMP_EXTRA_HOLDS")
                 .map_or(Ok(ExtraHolds::Fixed(0)), |s| ExtraHolds::parse(&s))
                 .unwrap_or_else(|e| panic!("framedump: {e}")),
         };
         check_key_schedule(&cfg.keys, cfg.preroll, cfg.frames).unwrap_or_else(|e| panic!("framedump: {e}"));
+        let clicks: Vec<_> = cfg.clicks.iter().map(|&(at,_,_)| (at,Key::Ok,KEY_UP_AFTER)).collect();
+        check_key_schedule(&clicks, cfg.preroll, cfg.frames).unwrap_or_else(|e| panic!("framedump: {e}"));
         Some(cfg)
     }
 }
@@ -583,6 +605,8 @@ struct Dump {
     done: bool,
     /// Index into `cfg.keys` of the next key to press.
     keys_next: usize,
+    clicks_next: usize,
+    click_ups: Vec<u64>,
     /// Key releases owed: (virtual frame to deliver on, key), in due order.
     ups: Vec<(u64, Key)>, // (due virtual frame, key), kept sorted by due
     /// The picture of the last CLEAN iteration of this virtual frame (pixels, hash): a frame is
@@ -637,6 +661,8 @@ impl Dump {
             lagged: Vec::new(),
             done: false,
             keys_next: 0,
+            clicks_next: 0,
+            click_ups: Vec::new(),
             ups: Vec::new(),
             settle: None,
             extras_run: 0,
@@ -731,6 +757,18 @@ pub(crate) fn iteration_begin(app: &mut App) {
                 let due = d.v + up_after;
                 let at_idx = d.ups.partition_point(|&(t, _)| t <= due);
                 d.ups.insert(at_idx, (due, key));
+            }
+            while d.clicks_next < d.cfg.clicks.len() && d.cfg.clicks[d.clicks_next].0 <= d.v {
+                let (_,x,y) = d.cfg.clicks[d.clicks_next];
+                d.clicks_next += 1;
+                app.inputs.push(crate::app::bridge::pointer_input(x,y,at));
+                app.inputs.push(crate::app::bridge::click_input(x,y,at));
+                d.click_ups.push(d.v + KEY_UP_AFTER);
+                plx_base::eventlog::log(&format!("framedump: click {x},{y} at virtual frame {}",d.v));
+            }
+            while d.click_ups.first().is_some_and(|due| *due <= d.v) {
+                d.click_ups.remove(0);
+                app.inputs.push(crate::app::bridge::release_input(at));
             }
             while let Some(&(due, key)) = d.ups.first() {
                 if due > d.v { break; }
@@ -1022,6 +1060,16 @@ mod tests {
         assert!(parse_keys("100").is_err());
         assert!(parse_keys("x:ok").is_err());
         assert!(parse_keys("100:menu").is_err());
+    }
+
+    #[test]
+    fn pointer_clicks_are_stably_ordered_and_cannot_escape_the_canvas() {
+        assert_eq!(parse_clicks("20:12.5:40,10:0:0,10:5:6").unwrap(),
+            [(10,0.0,0.0),(10,5.0,6.0),(20,12.5,40.0)]);
+        for bad in ["1:NaN:2","1:inf:2","1:-1:2","1:1921:2","1:1:1081","1:1:2:3","x:1:2"] {
+            assert!(parse_clicks(bad).is_err(), "{bad}");
+        }
+        assert!(check_key_schedule(&[(u64::MAX,Key::Ok,6)],0,10).is_err());
     }
 
     #[test]

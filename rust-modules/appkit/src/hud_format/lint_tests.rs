@@ -179,8 +179,27 @@ fn with_no_language_only_the_language_free_stages_run() {
 #[test]
 fn the_default_options_carry_the_ci_text_skew() {
     assert_eq!(LintOptions::default().text_skew, lint_text::CI_TEXT_SKEW);
-    assert_eq!(lint_text::CI_TEXT_SKEW, 0.0, "0 until PR12 measures it");
+    assert_eq!(lint_text::CI_TEXT_SKEW, 0.0, "the local/TV default has no registry headroom");
 }
+
+#[test]
+fn registry_headroom_is_applied_only_at_the_measured_type_rung() {
+    use super::lint::lint_fit;
+    let languages = [LintLang::for_tag("en").unwrap()];
+    let margin = |size| LintOptions {
+        text_skew_by_size: std::collections::BTreeMap::from([(size, 10000.0)]),
+        ..LintOptions::default()
+    };
+    // End clocks constrain each other's room. Minimal's default follow-head clocks have no
+    // fixed obstacle on their line; change the mode so the margin has a finite room to judge.
+    let text = MINIMAL.replacen("\"clock_size\": \"CAPTION\"", "\"clocks\": \"ends\", \"clock_size\": \"CAPTION\"",1);
+    assert!(lint_fit(&text,&ShippedMeasure,&languages,&margin(super::schema::size_rung("HUD_TITLE").unwrap())).is_empty());
+    let clocks = lint_fit(&text,&ShippedMeasure,&languages,&margin(super::schema::size_rung("CAPTION").unwrap()));
+    assert!(clocks.iter().any(|f| f.code == "HUD-W0602"), "{clocks:?}");
+    assert!(lint_fit(&text,&ShippedMeasure,&languages,&LintOptions::default()).is_empty(),
+        "normal playback uses the TV's own widths without a registry margin");
+}
+
 
 // ---------------------------------------------------------------------------------------------------
 // The language collapse and the tagging
@@ -590,7 +609,7 @@ fn every_new_code_has_an_invalid_case() {
 fn every_lint_finding_says_what_is_wrong_what_to_change_and_where() {
     for case in invalid_cases() {
         let text = apply(case.base, case.edits);
-        let found = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &LintOptions { text_skew: case.skew });
+        let found = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &LintOptions { text_skew: case.skew, ..LintOptions::default() });
         let ours: Vec<&Finding> = found.iter().filter(|f| LINT_CODES.contains(&f.code)).collect();
         assert!(!ours.is_empty(), "case `{}`: no lint finding", case.name);
         for f in ours {
@@ -625,7 +644,7 @@ fn expected_of(case: &InvalidCase) -> BTreeSet<(String, String)> {
 fn findings_are_sorted_by_pointer_and_deterministic() {
     for case in invalid_cases() {
         let text = apply(case.base, case.edits);
-        let opts = LintOptions { text_skew: case.skew };
+        let opts = LintOptions { text_skew: case.skew, ..LintOptions::default() };
         let first = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &opts);
         let again = lint_with(&text, &ShippedMeasure, &LintLang::shipped(), &opts);
         assert!(!first.is_empty(), "case `{}`", case.name);
@@ -674,7 +693,7 @@ fn the_two_passes_say_what_the_one_pipeline_said() {
     }
     let some: Vec<LintLang> = ["en", "be", "nl"].iter().map(|t| LintLang::for_tag(t).expect("shipped")).collect();
     for case in invalid_cases() {
-        same(case.name, &apply(case.base, case.edits), &some, &LintOptions { text_skew: case.skew });
+        same(case.name, &apply(case.base, case.edits), &some, &LintOptions { text_skew: case.skew, ..LintOptions::default() });
     }
 }
 
@@ -703,7 +722,7 @@ const EXPECTED_POINTERS: [&str; 5] = [
 /// The `(code, pointer)` pairs `edits` yield on `base`, linted in `langs` with `skew`.
 fn lint_set(base: Base, edits: &[(&str, &str)], langs: &[&str], skew: f32) -> BTreeSet<(String, String)> {
     let langs: Vec<LintLang> = langs.iter().map(|t| LintLang::for_tag(t).expect("a shipped tag")).collect();
-    without_cost(lint_with(&apply(base, edits), &ShippedMeasure, &langs, &LintOptions { text_skew: skew }))
+    without_cost(lint_with(&apply(base, edits), &ShippedMeasure, &langs, &LintOptions { text_skew: skew, ..LintOptions::default() }))
         .iter()
         .map(|f| (f.code.to_owned(), f.pointer.clone()))
         .collect()

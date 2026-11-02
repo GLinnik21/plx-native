@@ -95,9 +95,62 @@ use super::{codes, Finding, TextFact};
 /// requires app text to fit with to spare (`HUD-W0602`, a warning locally, an error in registry CI)
 /// (`docs/hud-plugins.md`, "Text fit: the app is the enforcement point", item (c) Headroom: "Until it is
 /// measured the margin is 0 and the TV decides"; and "LLM authoring", item 2: "`HUD-W0602` app text fits but
-/// inside `CI_TEXT_SKEW` (an error in registry CI)"). PR12 measures it; until then it is `0.0`. It is a measured
-/// margin, not a cap on a list, and is named as one.
+/// inside `CI_TEXT_SKEW` (an error in registry CI)"). Registry tools supply the measured per-rung profile through `LintOptions::text_skew_by_size`.
+/// This local fallback remains `0.0`: the TV compiles with its own widths and no registry margin.
 pub(super) const CI_TEXT_SKEW: f32 = 0.0;
+
+/// One member of the exact app-text corpus used for simulator/TV calibration. A clock is a
+/// maximum-width envelope chosen by the supplied measurer; every other role is the same string
+/// on both sides. Data only: the caller owns font initialization and serialization.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Metric {
+    pub lang: &'static str,
+    pub rung: &'static str,
+    pub size: i32,
+    pub bold: bool,
+    pub role: String,
+    pub text: String,
+    pub width: f32,
+}
+
+/// All app labels, every numeric countdown, the lint's numbered fallback/prefix candidates,
+/// digits and maximum clock envelopes, in every allowed rung and weight.
+pub fn metrics(measure: &dyn Measure, langs: &[super::lint::LintLang]) -> Vec<Metric> {
+    let mut result = Vec::new();
+    for lang in langs {
+        // Exhaustive destructuring makes a new compiler label require a corpus decision.
+        let AppLabels { tab_info, tab_chapters, next_episode, next_seconds, watch_credits,
+            skip_intro, skip_credits, from_beginning, go_to_show, go_to_movie, commands } = &lang.labels;
+        let mut strings: Vec<(String, String)> = [
+            ("label.info", tab_info), ("label.chapters", tab_chapters), ("next", next_episode),
+            ("credits", watch_credits), ("skip.intro", skip_intro), ("skip.credits", skip_credits),
+            ("from_beginning", from_beginning), ("go_to_show", go_to_show), ("go_to_movie", go_to_movie),
+        ].into_iter().map(|(role, text)| (role.to_owned(), text.clone())).collect();
+        strings.extend(commands.iter().map(|(role, text)| (format!("command.{role}"), text.clone())));
+        strings.extend(next_seconds.iter().enumerate().map(|(n, text)| (format!("next.seconds.{n}"), text.clone())));
+        if let Some(locale) = locale_of(lang.tag) {
+            for digit in 1..=9 {
+                strings.push((format!("chapter.{digit}"), msg::widgets_chapters_number_in(&locale, repdigit(digit, CHAPTER_DIGITS))));
+                let ordinal = msg::core_episode_ordinal_in(&locale, repdigit(digit, EPISODE_DIGITS), repdigit(digit, SEASON_DIGITS));
+                strings.push((format!("kicker.{digit}"), format!("{ordinal}{KICKER_SEPARATOR}")));
+            }
+        }
+        strings.extend((0..=9).map(|n| (format!("digit.{n}"), n.to_string())));
+        for &(rung, size) in super::schema::SIZE_RUNGS {
+            for bold in [false, true] {
+                let mut corpus = strings.clone();
+                for remaining in [false, true] {
+                    corpus.push((format!("clock.max.{remaining}"), clocks::widest_clock(measure, size, bold, remaining)));
+                }
+                for (role, text) in corpus {
+                    let width = measure.width_str(&text, size, bold);
+                    result.push(Metric { lang: lang.tag, rung, size, bold, role, text, width });
+                }
+            }
+        }
+    }
+    result
+}
 
 /// The digits of the numbers the lint formats, and the shape of the clock. Spelt once so the doc, the code and
 /// the tests agree: a chapter number up to 3 digits (the spec), a season of 2, an episode of 3, hours of 2.
@@ -597,7 +650,7 @@ impl Scan<'_, '_> {
             return;
         };
         let (measured, room) = (control.rect.w, right - control.rect.x);
-        let verdict = judge(measured, room, self.cx.opts.text_skew);
+        let verdict = judge(measured, room, self.cx.opts.skew_at(plx_ui::theme::size::BODY));
         if verdict == Verdict::Fits {
             return;
         }
@@ -649,7 +702,7 @@ impl Scan<'_, '_> {
                          than the {:.1} px the measurement skew needs",
                         control.id,
                         room - measured,
-                        self.cx.opts.text_skew
+                        self.cx.opts.skew_at(plx_ui::theme::size::BODY)
                     ),
                     "Leave at least the measurement skew between the simulator and the TV free beside the control",
                 ),
@@ -746,7 +799,7 @@ impl Scan<'_, '_> {
         let Some(tightest) = binding(&limits) else {
             return;
         };
-        let verdict = judge(measured, tightest.room, self.cx.opts.text_skew);
+        let verdict = judge(measured, tightest.room, self.cx.opts.skew_at(op.size));
         if verdict == Verdict::Fits {
             return;
         }
@@ -825,7 +878,7 @@ impl Scan<'_, '_> {
                     "the app text \"{string}\" fits with {:.1} px to spare before {before}, less than the {:.1} px \
                      the measurement skew needs",
                     tightest - measured,
-                    self.cx.opts.text_skew
+                    self.cx.opts.skew_at(op.size)
                 ),
                 "Leave at least the measurement skew between the simulator and the TV free beside the text",
             ),
@@ -1014,7 +1067,7 @@ mod tests {
                 labels: lang.labels.clone(),
             },
         );
-        let opts = LintOptions { text_skew: skew };
+        let opts = LintOptions { text_skew: skew, ..LintOptions::default() };
         let cx = LangCtx {
             package: &package,
             compiled: &compiled,
@@ -1042,7 +1095,7 @@ mod tests {
             text,
             &ShippedMeasure,
             &LintLang::shipped(),
-            &LintOptions { text_skew: skew },
+            &LintOptions { text_skew: skew, ..LintOptions::default() },
         )
         .into_iter()
         .filter(|f| f.code == "HUD-E0601" || f.code == "HUD-W0602")
@@ -1180,7 +1233,7 @@ mod tests {
                 REFERENCE,
                 &ShippedMeasure,
                 &langs,
-                &LintOptions { text_skew: skew },
+                &LintOptions { text_skew: skew, ..LintOptions::default() },
             )
             .into_iter()
             .any(|f| f.code == "HUD-W0602" && f.pointer == FALLBACK)
