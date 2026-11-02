@@ -339,5 +339,18 @@
   "settings.hud.not_a_hud": "To nie jest pakiet HUD",
   "settings.hud.offer_body": "Ten pakiet pobrano z adresu i nie został zweryfikowany. Zmienia wygląd elementów sterowania odtwarzaniem.",
   "settings.hud.offer_from": "Z {host}",
-  "settings.hud.offer_dev": "Źródło deweloperskie"
+  "settings.hud.offer_dev": "Źródło deweloperskie",
+  "settings.trace.section": "Diagnostyka",
+  "settings.trace.title": "Rejestruj diagnostykę",
+  "settings.trace.detail": "Lokalnie: 60s / 8 MiB. Może spowolnić film.",
+  "settings.trace.export": "Zapisz dziennik diagnostyczny",
+  "settings.trace.export_detail": "Lokalny dziennik dla pomocy technicznej.",
+  "settings.trace.delete": "Usuń zapisy diagnostyczne",
+  "settings.trace.off": "Wyłączone",
+  "settings.trace.recording": "Rejestrowanie",
+  "settings.trace.saved": "Zarejestrowano",
+  "settings.trace.exported": "Zapisano",
+  "settings.trace.unavailable": "Niedostępne",
+  "settings.trace.failed": "Błąd",
+  "settings.trace.saving": "Zapisywanie"
 }

@@ -497,16 +497,18 @@ pub mod runtime_file {
     pub const STORAGE_DIAGNOSTICS: &str = "plxnative-diag.log";
     pub const ANIMATION: &str = "plxnative-anim.log";
     pub const GST: &str = "plxnative-gst.log";
+    pub const PLAYBACK_DIAGNOSTICS: &str = "plxnative-playback.log";
     pub const GPU_TIME: &str = "plxnative-gputime.jsonl";
     pub const HARDWARE_COUNTERS: &str = "plxnative-hwcnt.jsonl";
 
-    pub const LOGS: [&str; 8] = [
+    pub const LOGS: [&str; 9] = [
         EVENTS,
         CRASH,
         STDERR,
         STORAGE_DIAGNOSTICS,
         ANIMATION,
         GST,
+        PLAYBACK_DIAGNOSTICS,
         GPU_TIME,
         HARDWARE_COUNTERS,
     ];

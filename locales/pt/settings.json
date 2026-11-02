@@ -336,5 +336,18 @@
   "settings.hud.not_a_hud": "Isso não é um pacote de HUD",
   "settings.hud.offer_body": "Este pacote foi baixado de um endereço e não foi revisado. Ele muda a aparência dos controles de reprodução.",
   "settings.hud.offer_from": "De {host}",
-  "settings.hud.offer_dev": "Fonte de desenvolvimento"
+  "settings.hud.offer_dev": "Fonte de desenvolvimento",
+  "settings.trace.section": "Diagnóstico",
+  "settings.trace.title": "Gravar diagnóstico",
+  "settings.trace.detail": "Local: 60s / 8 MiB. Pode abrandar o vídeo.",
+  "settings.trace.export": "Guardar registo de diagnóstico",
+  "settings.trace.export_detail": "Registo local para suporte.",
+  "settings.trace.delete": "Eliminar gravações de diagnóstico",
+  "settings.trace.off": "Desativado",
+  "settings.trace.recording": "A gravar",
+  "settings.trace.saved": "Gravado",
+  "settings.trace.exported": "Guardado",
+  "settings.trace.unavailable": "Indisponível",
+  "settings.trace.failed": "Erro",
+  "settings.trace.saving": "A guardar"
 }

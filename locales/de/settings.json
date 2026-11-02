@@ -333,5 +333,18 @@
   "settings.hud.not_a_hud": "Das ist kein HUD-Paket",
   "settings.hud.offer_body": "Dieses Paket wurde von einer Adresse heruntergeladen und nicht geprüft. Es ändert das Aussehen der Wiedergabesteuerung.",
   "settings.hud.offer_from": "Von {host}",
-  "settings.hud.offer_dev": "Entwicklungsquelle"
+  "settings.hud.offer_dev": "Entwicklungsquelle",
+  "settings.trace.section": "Diagnose",
+  "settings.trace.title": "Diagnose aufzeichnen",
+  "settings.trace.detail": "Lokal: 60s / 8 MiB. Kann Wiedergabe bremsen.",
+  "settings.trace.export": "Diagnoseprotokoll speichern",
+  "settings.trace.export_detail": "Lokales Protokoll für den Support.",
+  "settings.trace.delete": "Diagnoseaufzeichnungen löschen",
+  "settings.trace.off": "Aus",
+  "settings.trace.recording": "Aufzeichnung läuft",
+  "settings.trace.saved": "Aufgezeichnet",
+  "settings.trace.exported": "Gespeichert",
+  "settings.trace.unavailable": "Nicht verfügbar",
+  "settings.trace.failed": "Fehler",
+  "settings.trace.saving": "Speichern"
 }

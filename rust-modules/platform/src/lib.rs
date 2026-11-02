@@ -24,6 +24,7 @@ pub mod devcaps; // what this SoC decodes — the TV's own codec table, read onc
 pub mod i18n;
 pub mod imgcache; // bounded persistent artwork cache shared by every image source
 pub mod keymanager; // public LS2 key stores: keymanager3, legacy Palm service, or unavailable
+pub mod playback_trace;
 pub mod labcfg; // `lab.json` (the Cloud Lab session config) and the two answers `ui/` and `screens/` ask of it: is this key the trigger, is the menu row on
 // Stage A foundation: owner adapters connect these APIs in the next integration stage.
 #[allow(dead_code)]

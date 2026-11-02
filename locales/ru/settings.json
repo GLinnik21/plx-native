@@ -339,5 +339,18 @@
   "settings.hud.not_a_hud": "Это не пакет HUD",
   "settings.hud.offer_body": "Этот пакет загружен по адресу и не проверялся. Он меняет внешний вид элементов управления воспроизведением.",
   "settings.hud.offer_from": "С {host}",
-  "settings.hud.offer_dev": "Источник для разработки"
+  "settings.hud.offer_dev": "Источник для разработки",
+  "settings.trace.section": "Диагностика",
+  "settings.trace.title": "Запись диагностики",
+  "settings.trace.detail": "До 60 с / 8 MiB. Может замедлить видео.",
+  "settings.trace.export": "Сохранить журнал диагностики",
+  "settings.trace.export_detail": "Локальный журнал для поддержки.",
+  "settings.trace.delete": "Удалить записи диагностики",
+  "settings.trace.off": "Выключено",
+  "settings.trace.recording": "Идёт запись",
+  "settings.trace.saved": "Записано",
+  "settings.trace.exported": "Сохранено",
+  "settings.trace.unavailable": "Недоступно",
+  "settings.trace.failed": "Ошибка",
+  "settings.trace.saving": "Сохранение"
 }
