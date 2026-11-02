@@ -326,5 +326,18 @@
   "settings.hud.install": "Установить",
   "settings.hud.install_question": "Установить этот HUD?",
   "settings.hud.install_body": "Этот файл скопирован на телевизор и не проверялся. Он меняет внешний вид элементов управления воспроизведением.",
-  "settings.hud.remove": "Удалить"
+  "settings.hud.remove": "Удалить",
+  "settings.hud.address": "Установить по адресу",
+  "settings.hud.address_hint": "Введите gh:owner/repo или адрес https://",
+  "settings.hud.address_form": "Используйте gh:owner/repo, gh:owner/repo@tag или адрес https://.",
+  "settings.hud.address_lan": "Обычный адрес http:// должен указывать на устройство в домашней сети, например 192.168.1.20.",
+  "settings.hud.fetching": "Загрузка…",
+  "settings.hud.fetch_not_found": "По этому адресу ничего нет",
+  "settings.hud.fetch_unreachable": "Не удалось подключиться по этому адресу",
+  "settings.hud.fetch_certificate": "Проверка сертификата на телевизоре не пройдена для этого адреса",
+  "settings.hud.too_large": "Этот файл слишком большой",
+  "settings.hud.not_a_hud": "Это не пакет HUD",
+  "settings.hud.offer_body": "Этот пакет загружен по адресу и не проверялся. Он меняет внешний вид элементов управления воспроизведением.",
+  "settings.hud.offer_from": "С {host}",
+  "settings.hud.offer_dev": "Источник для разработки"
 }

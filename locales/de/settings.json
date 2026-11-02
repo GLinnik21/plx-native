@@ -320,5 +320,18 @@
   "settings.hud.install": "Installieren",
   "settings.hud.install_question": "Dieses HUD installieren?",
   "settings.hud.install_body": "Diese Datei wurde auf den Fernseher kopiert und nicht geprüft. Sie ändert das Aussehen der Wiedergabesteuerung.",
-  "settings.hud.remove": "Entfernen"
+  "settings.hud.remove": "Entfernen",
+  "settings.hud.address": "Von Adresse installieren",
+  "settings.hud.address_hint": "gh:owner/repo oder https://-Adresse eingeben",
+  "settings.hud.address_form": "Nutze gh:owner/repo, gh:owner/repo@tag oder eine https://-Adresse.",
+  "settings.hud.address_lan": "Eine einfache http://-Adresse muss ein Gerät in deinem Heimnetz sein, z. B. 192.168.1.20.",
+  "settings.hud.fetching": "Wird geladen…",
+  "settings.hud.fetch_not_found": "Unter dieser Adresse gibt es nichts",
+  "settings.hud.fetch_unreachable": "Verbindung zu dieser Adresse nicht möglich",
+  "settings.hud.fetch_certificate": "Die Zertifikatsprüfung des Fernsehers ist für diese Adresse fehlgeschlagen",
+  "settings.hud.too_large": "Diese Datei ist zu groß",
+  "settings.hud.not_a_hud": "Das ist kein HUD-Paket",
+  "settings.hud.offer_body": "Dieses Paket wurde von einer Adresse heruntergeladen und nicht geprüft. Es ändert das Aussehen der Wiedergabesteuerung.",
+  "settings.hud.offer_from": "Von {host}",
+  "settings.hud.offer_dev": "Entwicklungsquelle"
 }

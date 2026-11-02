@@ -326,5 +326,18 @@
   "settings.hud.install": "Усталяваць",
   "settings.hud.install_question": "Усталяваць гэты HUD?",
   "settings.hud.install_body": "Гэты файл скапіраваны на тэлевізар і не правяраўся. Ён змяняе выгляд элементаў кіравання прайграваннем.",
-  "settings.hud.remove": "Выдаліць"
+  "settings.hud.remove": "Выдаліць",
+  "settings.hud.address": "Усталяваць па адрасе",
+  "settings.hud.address_hint": "Увядзіце gh:owner/repo або адрас https://",
+  "settings.hud.address_form": "Выкарыстоўвайце gh:owner/repo, gh:owner/repo@tag або адрас https://.",
+  "settings.hud.address_lan": "Просты адрас http:// павінен быць прыладай у хатняй сетцы, напрыклад 192.168.1.20.",
+  "settings.hud.fetching": "Загрузка…",
+  "settings.hud.fetch_not_found": "Па гэтым адрасе нічога няма",
+  "settings.hud.fetch_unreachable": "Не ўдалося злучыцца па гэтым адрасе",
+  "settings.hud.fetch_certificate": "Праверка сертыфіката тэлевізарам не прайшла для гэтага адраса",
+  "settings.hud.too_large": "Гэты файл занадта вялікі",
+  "settings.hud.not_a_hud": "Гэта не пакет HUD",
+  "settings.hud.offer_body": "Гэты пакет загружаны па адрасе і не правяраўся. Ён змяняе выгляд элементаў кіравання прайграваннем.",
+  "settings.hud.offer_from": "З {host}",
+  "settings.hud.offer_dev": "Крыніца распрацоўшчыка"
 }

@@ -61,10 +61,12 @@ use plx_appkit::hud_format::{Finding, Severity};
 use plx_appkit::player_hud::loaded::{load, LoadedHud};
 use plx_base::fontcov::advances::WholePixelMeasure;
 use plx_base::storage_worker::submit_retained;
+use plx_data::hudpacks::address::Address;
 use plx_data::hudpacks::{
-    Candidate, Entry, HudEffect, HudEvent, HudStore, Loc, Meta, Notice, ReadError, Setup, Sha, Unloadable, Verdict,
-    WriteOutcome, BUILTIN_CLASSIC,
+    Candidate, Entry, FetchError, HudEffect, HudEvent, HudStore, Loc, Meta, Notice, ReadError, Setup, Sha, Tag,
+    Unloadable, Verdict, WriteOutcome, BUILTIN_CLASSIC,
 };
+use plx_net::net::{RequestFailure, Resp};
 use plx_machine::machine::Measure;
 use plx_platform::i18n::LocaleContext;
 
@@ -98,9 +100,41 @@ fn run_effect(effect: HudEffect, app_version: &str) -> Option<HudEvent> {
             None
         }
         HudEffect::Validate { tag, sha, bytes } => Some(HudEvent::Validated { tag, sha, verdict: verdict(&bytes, app_version) }),
-        // Not IO: the driver handles these.
-        HudEffect::Selection { .. } | HudEffect::Notice(_) => None,
+        // Not the storage worker's: a network request holds its thread for seconds, and `Refresh`, `Removed` and the pack
+        // reads queue behind whatever holds it. [`HudRunner::start`] gives a fetch its own lane before this is reached.
+        // Not IO at all: the driver handles `Selection` and `Notice`.
+        HudEffect::Fetch { .. } | HudEffect::Selection { .. } | HudEffect::Notice(_) => None,
     }
+}
+
+/// The bounded public GET a fetch makes: `plx_net::net::https_get_public_bounded` live, a fake in a host test.
+type Get = fn(&str, usize) -> Result<Resp, RequestFailure>;
+
+/// One fetch's blocking work: the body at `address`, or why there is none. A failure writes the one `hud:` line it is
+/// owed: the host (never the URL, whose query may carry a token) and a code, the HTTP status, `too_large`, or the
+/// `CURLcode` (with the X.509 verify result when libcurl reported one, which is what tells a CA this set lacks from a
+/// wrong clock).
+fn fetch(get: Get, address: &Address, max_bytes: usize) -> Result<Vec<u8>, FetchError> {
+    let (reason, code) = match get(address.url(), max_bytes) {
+        Ok(resp) if resp.ok() => return Ok(resp.body),
+        Ok(resp) => (if matches!(resp.status, 404 | 410) { FetchError::NotFound } else { FetchError::Unreachable }, resp.status.to_string()),
+        Err(failure) if failure.too_large() => (FetchError::TooLarge, "too_large".to_owned()),
+        Err(failure) => {
+            let code = match (failure.curl_rc, failure.verify) {
+                (Some(rc), Some(verify)) => format!("curl{rc}/x509-{verify}"),
+                (Some(rc), None) => format!("curl{rc}"),
+                (None, _) => "refused".to_owned(),
+            };
+            (if failure.certificate_refused() { FetchError::Certificate } else { FetchError::Unreachable }, code)
+        }
+    };
+    plx_base::eventlog::log(&format!("hud: fetch failed host={} code={code}", address.host()));
+    Err(reason)
+}
+
+/// What a fetch that never answered means to the store: nothing came back, so nothing is known but that.
+fn lost_fetch(tag: Tag) -> HudEvent {
+    HudEvent::Fetched { tag, result: Err(FetchError::Unreachable) }
 }
 
 /// `appkit`'s verdict as the store's.
@@ -299,6 +333,26 @@ impl<T> Slot<T> {
 }
 
 impl Executor {
+    /// [`run`](Self::run) for a network request: its own small-stack thread for that one request
+    /// (`task::spawn_small`, the lane the stores' fetches use for theirs), and never the storage worker. A thread the
+    /// OS refused leaves a sender that was dropped unanswered, which [`Slot::poll`] reports as a worker that died.
+    fn run_net<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> Slot<T> {
+        match self {
+            Executor::Worker => {
+                let (reply, answer) = std::sync::mpsc::channel();
+                if !plx_base::task::spawn_small("hud-fetch", move || {
+                    let _ = reply.send(job());
+                    plx_machine::idle::invalidate();
+                }) {
+                    plx_machine::idle::invalidate();
+                }
+                Slot::Waiting(answer)
+            }
+            #[cfg(test)]
+            Executor::Inline => Slot::Done(Some(job())),
+        }
+    }
+
     fn run<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> Slot<T> {
         match self {
             Executor::Worker => {
@@ -322,21 +376,49 @@ pub(crate) struct HudRunner {
     exec: Executor,
     app_version: Arc<str>,
     effects: VecDeque<Slot<Option<HudEvent>>>,
+    /// The fetches in flight, each on its own network thread and answered whenever it finishes, outside `effects`' order:
+    /// a fetch that takes seconds must not hold back the listing a `Refresh` starts behind it. The store is busy for the
+    /// whole of one, so there is one at most, plus any a `Refresh` displaced whose late answer the store drops.
+    fetches: Vec<(Tag, Slot<HudEvent>)>,
+    get: Get,
 }
 
 impl HudRunner {
     pub(crate) fn live(app_version: &str) -> Self {
-        Self { exec: Executor::Worker, app_version: app_version.into(), effects: VecDeque::new() }
+        Self {
+            exec: Executor::Worker,
+            app_version: app_version.into(),
+            effects: VecDeque::new(),
+            fetches: Vec::new(),
+            get: plx_net::net::https_get_public_bounded,
+        }
     }
 
+    /// A runner that runs each effect where it is started, with a network that refuses every fetch.
     #[cfg(test)]
     pub(crate) fn inline(app_version: &str) -> Self {
-        Self { exec: Executor::Inline, app_version: app_version.into(), effects: VecDeque::new() }
+        fn offline(_: &str, _: usize) -> Result<Resp, RequestFailure> {
+            Err(plx_net::net::RequestError::Transport.into())
+        }
+        Self {
+            exec: Executor::Inline,
+            app_version: app_version.into(),
+            effects: VecDeque::new(),
+            fetches: Vec::new(),
+            get: offline,
+        }
+    }
+
+    /// [`inline`](Self::inline) with `get` as the network.
+    #[cfg(test)]
+    pub(crate) fn on_network(mut self, get: Get) -> Self {
+        self.get = get;
+        self
     }
 
     /// Nothing is running.
     pub(crate) fn is_idle(&self) -> bool {
-        self.effects.is_empty()
+        self.effects.is_empty() && self.fetches.is_empty()
     }
 
     /// Start the IO effects of `fx`, in order, and leave the ones that are not IO in `fx`.
@@ -345,6 +427,12 @@ impl HudRunner {
         for effect in fx.drain(..) {
             if matches!(effect, HudEffect::Selection { .. } | HudEffect::Notice(_)) {
                 rest.push(effect);
+                continue;
+            }
+            if let HudEffect::Fetch { tag, address, max_bytes } = effect {
+                let get = self.get;
+                let slot = self.exec.run_net(move || HudEvent::Fetched { tag, result: fetch(get, &address, max_bytes) });
+                self.fetches.push((tag, slot));
                 continue;
             }
             let version = Arc::clone(&self.app_version);
@@ -360,6 +448,16 @@ impl HudRunner {
             let Some(answer) = front.poll() else { break };
             self.effects.pop_front();
             out.extend(answer.flatten());
+        }
+        let mut at = 0;
+        while at < self.fetches.len() {
+            match self.fetches[at].1.poll() {
+                None => at += 1,
+                Some(answer) => {
+                    let (tag, _) = self.fetches.remove(at);
+                    out.push(answer.unwrap_or_else(|| lost_fetch(tag)));
+                }
+            }
         }
     }
 }
@@ -569,6 +667,28 @@ impl HudDriver {
         }
     }
 
+    /// Fetch the package at the address the viewer typed (already parsed). Nothing is installed until the viewer has seen
+    /// what came back and confirmed it ([`install_offer`](Self::install_offer)).
+    pub(crate) fn fetch(&mut self, address: Address) {
+        if self.started {
+            self.step(HudEvent::Fetch { address });
+        }
+    }
+
+    /// Install the offer the page showed under `sha`; the viewer has confirmed. `now` is the unix time.
+    pub(crate) fn install_offer(&mut self, sha: Sha, now: u64) {
+        if self.started {
+            self.step(HudEvent::InstallOffer { sha, now });
+        }
+    }
+
+    /// The viewer declined the offer under `sha`: nothing was written.
+    pub(crate) fn decline_offer(&mut self, sha: Sha) {
+        if self.started {
+            self.step(HudEvent::DeclineOffer { sha });
+        }
+    }
+
     /// Why `sha` draws as classic in this process's language, when the lint refused it.
     #[cfg(test)]
     pub(crate) fn unfit(&self, sha: Sha, language: &'static str) -> Option<&Unfit> {
@@ -668,7 +788,9 @@ impl HudDriver {
         }
         self.land_pack(env);
         self.advance(env);
-        if !self.runner.is_idle() || self.store.busy() {
+        // An offer waiting for the viewer is the store's `busy` too, but it is no work in flight: nothing here will change
+        // until the viewer answers, and the selection compiles meanwhile.
+        if !self.runner.is_idle() || (self.store.busy() && self.store.offer().is_none()) {
             return None;
         }
         self.dirty = false;
@@ -1017,6 +1139,132 @@ mod tests {
         assert_eq!(drops[0].status, Ok(()));
         driver.install_drop(drops[0].sha.unwrap(), 1_700_000_000);
         settle(driver, cx);
+    }
+
+    // ---- install from an address ----
+
+    /// The network a host test gives the runner: the reference package at one URL, a `404` at another, an oversized body
+    /// at a third, a refused certificate at a fourth, and a page that is not a package at a fifth.
+    fn network(url: &str, max_bytes: usize) -> Result<Resp, RequestFailure> {
+        use plx_net::net::RequestError;
+        let reply = |status: u16, body: &[u8]| Ok(Resp { status, body: body.to_vec(), peer_pin: None, etag: None });
+        match url {
+            "https://example.com/hud.plxhud.json" => {
+                assert_eq!(max_bytes, MAX_PACKAGE_BYTES, "the fetch is bounded by the format's package limit");
+                reply(200, REFERENCE.as_bytes())
+            }
+            "https://example.com/missing.json" => reply(404, b"nope"),
+            "https://example.com/page.html" => reply(200, b"<html>not a package</html>"),
+            "https://example.com/big.json" => {
+                Err(RequestFailure { cause: RequestError::Transport, status: None, body_limit: Some(max_bytes), curl_rc: Some(23), verify: None })
+            }
+            "https://example.com/cert.json" => {
+                Err(RequestFailure { cause: RequestError::Transport, status: None, body_limit: None, curl_rc: Some(60), verify: Some(20) })
+            }
+            _ => Err(RequestError::Transport.into()),
+        }
+    }
+
+    fn fetching_driver(dir: &Dir) -> HudDriver {
+        let mut driver = HudDriver::new(HudRunner::inline(APP).on_network(network));
+        driver.setup = Some(dir.setup());
+        driver.faces = Some(pkg_faces());
+        driver.start(load_classic(APP, plx_platform::i18n::english(), &ShippedMeasure), APP);
+        driver
+    }
+
+    /// Tick until nothing is in flight: the runner's answers land and the store goes on. An offer waiting for the viewer
+    /// is not in flight, so unlike `settle` this does not insist the store is idle.
+    fn pump(driver: &mut HudDriver, cx: &LocaleContext) {
+        let env = Env { measure: &ShippedMeasure, cx, app_version: APP, player: false };
+        for _ in 0..64 {
+            driver.tick(&env);
+        }
+        assert!(driver.runner.is_idle(), "nothing is left in flight");
+    }
+
+    /// **An address fetches, validates with the real `admit`, offers what it found, and installs only on confirm**; the
+    /// package on disk hashes to the sha the page was shown and is unreviewed, from an address.
+    #[test]
+    fn an_address_is_fetched_offered_and_installed_on_confirm() {
+        let (dir, cx) = (Dir::new("address"), english());
+        let mut driver = fetching_driver(&dir);
+        driver.refresh(String::new());
+        pump(&mut driver, &cx);
+        driver.fetch(plx_data::hudpacks::address::parse("https://example.com/hud.plxhud.json").unwrap());
+        pump(&mut driver, &cx);
+        assert!(driver.take_notices().is_empty(), "an offer is not a result yet");
+        let offer = driver.store().offer().expect("a loadable package is offered");
+        assert_eq!(offer.meta.id, REFERENCE_ID);
+        assert_eq!(offer.sha, Sha::of(REFERENCE.as_bytes()));
+        assert!(entry(&driver, REFERENCE_ID).is_none(), "nothing is installed before the viewer confirms");
+        assert!(!dir.0.join("packs").exists() || std::fs::read_dir(dir.0.join("packs")).unwrap().next().is_none());
+
+        driver.install_offer(offer.sha, 1_700_000_000);
+        pump(&mut driver, &cx);
+        let installed = entry(&driver, REFERENCE_ID).expect("installed on confirm");
+        assert_eq!(installed.sha, Some(offer.sha));
+        assert_eq!(installed.source, Some(plx_data::hudpacks::Source::Address));
+        assert_eq!(installed.trust, plx_data::hudpacks::Trust::Unreviewed);
+        let on_disk = std::fs::read(dir.0.join("packs").join(format!("{}.plxhud.json", offer.sha.hex()))).unwrap();
+        assert_eq!(Sha::of(&on_disk), offer.sha, "the bytes written are the bytes the viewer was shown");
+        assert!(driver.take_notices().iter().any(|n| matches!(n, Notice::Installed { id, .. } if id == REFERENCE_ID)));
+    }
+
+    /// A viewer who cancels leaves nothing on disk; each failure names its reason and writes nothing.
+    #[test]
+    fn a_declined_or_failed_fetch_leaves_nothing_on_disk() {
+        let (dir, cx) = (Dir::new("address-fail"), english());
+        let mut driver = fetching_driver(&dir);
+        driver.refresh(String::new());
+        pump(&mut driver, &cx);
+        let nothing = |dir: &Dir| !dir.0.join("packs").exists() || std::fs::read_dir(dir.0.join("packs")).unwrap().next().is_none();
+
+        driver.fetch(plx_data::hudpacks::address::parse("https://example.com/hud.plxhud.json").unwrap());
+        pump(&mut driver, &cx);
+        let sha = driver.store().offer().expect("offered").sha;
+        driver.decline_offer(sha);
+        pump(&mut driver, &cx);
+        assert!(driver.store().offer().is_none() && !driver.store().busy());
+        assert!(driver.take_notices().is_empty(), "declining is the viewer's own answer");
+        assert!(nothing(&dir) && entry(&driver, REFERENCE_ID).is_none());
+
+        for (url, want) in [
+            ("https://example.com/missing.json", Notice::FetchFailed { reason: FetchError::NotFound }),
+            ("https://example.com/big.json", Notice::FetchFailed { reason: FetchError::TooLarge }),
+            ("https://example.com/cert.json", Notice::FetchFailed { reason: FetchError::Certificate }),
+            ("https://example.com/nobody-home.json", Notice::FetchFailed { reason: FetchError::Unreachable }),
+            ("https://example.com/page.html", Notice::Refused { sha: Sha::of(b"<html>not a package</html>"), reason: plx_data::hudpacks::Refusal::Invalid }),
+        ] {
+            driver.fetch(plx_data::hudpacks::address::parse(url).unwrap());
+            pump(&mut driver, &cx);
+            assert_eq!(driver.take_notices(), [want], "{url}");
+            assert!(driver.store().offer().is_none() && !driver.store().busy(), "{url}");
+            assert!(nothing(&dir), "{url}: nothing written");
+        }
+    }
+
+    /// The runner gives a fetch its own lane: an answer that has not landed does not hold back the storage queue behind it,
+    /// and a worker that died without answering reads as a fetch that reached nobody.
+    #[test]
+    fn a_fetch_does_not_hold_back_the_storage_queue() {
+        let mut store = HudStore::new();
+        let mut fx = Vec::new();
+        store.step(HudEvent::Fetch { address: plx_data::hudpacks::address::parse("https://example.com/x.json").unwrap() }, &mut fx);
+        let tag = fx.iter().find_map(|e| if let HudEffect::Fetch { tag, .. } = e { Some(*tag) } else { None }).expect("a fetch effect");
+
+        let mut runner = HudRunner::inline(APP);
+        let (worker, answer) = std::sync::mpsc::channel::<HudEvent>();
+        runner.fetches.push((tag, Slot::Waiting(answer)));
+        runner.effects.push_back(Slot::Done(Some(None)));
+        let mut out = Vec::new();
+        runner.ready(&mut out);
+        assert!(runner.effects.is_empty() && out.is_empty(), "the queue behind a slow fetch still drains");
+        assert!(!runner.is_idle(), "the fetch is still in flight");
+        drop(worker);
+        runner.ready(&mut out);
+        assert!(matches!(out.as_slice(), [HudEvent::Fetched { tag: t, result: Err(FetchError::Unreachable) }] if *t == tag));
+        assert!(runner.is_idle());
     }
 
     /// **A package in the drop folder installs, is selectable and the player draws it.** The whole path through

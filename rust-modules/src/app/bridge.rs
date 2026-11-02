@@ -1004,6 +1004,15 @@ impl Bridge {
                 self.huds_notice = None;
                 self.huds.install_drop(sha, plx_telemetry::telemetry::crashreport::now_secs());
             }
+            HudCmd::Fetch(address) => {
+                self.huds_notice = None;
+                self.huds.fetch(address);
+            }
+            HudCmd::InstallOffer(sha) => {
+                self.huds_notice = None;
+                self.huds.install_offer(sha, plx_telemetry::telemetry::crashreport::now_secs());
+            }
+            HudCmd::DeclineOffer(sha) => self.huds.decline_offer(sha),
         }
         self.huds_settle();
     }
@@ -1054,6 +1063,8 @@ impl Bridge {
                 .find(|p| p.tag() == tag)
                 .map_or_else(|| tag.to_owned(), |p| p.native_name().to_owned()),
             notice: self.huds_notice.clone(),
+            offer: self.huds.store().offer(),
+            fetching: self.huds.store().fetching(),
         };
         let delivered = self.huds_page.as_mut().is_some_and(|(page, sent)| {
             *sent = stamp;

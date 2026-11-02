@@ -323,5 +323,18 @@
   "settings.hud.install": "Instalar",
   "settings.hud.install_question": "Instalar este HUD?",
   "settings.hud.install_body": "Este arquivo foi copiado para a TV e não foi revisado. Ele muda a aparência dos controles de reprodução.",
-  "settings.hud.remove": "Remover"
+  "settings.hud.remove": "Remover",
+  "settings.hud.address": "Instalar de um endereço",
+  "settings.hud.address_hint": "Digite gh:owner/repo ou um endereço https://",
+  "settings.hud.address_form": "Use gh:owner/repo, gh:owner/repo@tag ou um endereço https://.",
+  "settings.hud.address_lan": "Um endereço http:// simples deve ser um dispositivo da sua rede doméstica, como 192.168.1.20.",
+  "settings.hud.fetching": "Baixando…",
+  "settings.hud.fetch_not_found": "Não há nada nesse endereço",
+  "settings.hud.fetch_unreachable": "Não foi possível conectar a esse endereço",
+  "settings.hud.fetch_certificate": "A verificação de certificado da TV falhou para esse endereço",
+  "settings.hud.too_large": "Esse arquivo é grande demais",
+  "settings.hud.not_a_hud": "Isso não é um pacote de HUD",
+  "settings.hud.offer_body": "Este pacote foi baixado de um endereço e não foi revisado. Ele muda a aparência dos controles de reprodução.",
+  "settings.hud.offer_from": "De {host}",
+  "settings.hud.offer_dev": "Fonte de desenvolvimento"
 }

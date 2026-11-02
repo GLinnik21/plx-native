@@ -18,6 +18,14 @@ impl TextBuffer {
     pub fn caret(&self) -> usize { self.caret }
     pub fn into_text(self) -> String { self.text }
 
+    /// The owned draft with a caller's insertion marker at its character-safe caret.
+    /// Fields that present their draft as one text run use this instead of appending a marker.
+    pub fn with_insertion_marker(&self, marker: &str) -> String {
+        let mut marked = self.text.clone();
+        marked.insert_str(self.caret, marker);
+        marked
+    }
+
     /// Apply a normalized keyboard event without consulting a store publication.
     pub fn edit(&mut self, edit: &plx_machine::machine::TextEdit) {
         use plx_machine::machine::TextEdit;

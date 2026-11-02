@@ -323,5 +323,18 @@
   "settings.hud.install": "Installer",
   "settings.hud.install_question": "Installer ce HUD ?",
   "settings.hud.install_body": "Ce fichier a été copié sur le téléviseur et n'a pas été vérifié. Il change l'apparence des commandes de lecture.",
-  "settings.hud.remove": "Retirer"
+  "settings.hud.remove": "Retirer",
+  "settings.hud.address": "Installer depuis une adresse",
+  "settings.hud.address_hint": "Saisissez gh:owner/repo ou une adresse https://",
+  "settings.hud.address_form": "Utilisez gh:owner/repo, gh:owner/repo@tag ou une adresse https://.",
+  "settings.hud.address_lan": "Une adresse http:// simple doit désigner un appareil de votre réseau local, comme 192.168.1.20.",
+  "settings.hud.fetching": "Téléchargement…",
+  "settings.hud.fetch_not_found": "Rien à cette adresse",
+  "settings.hud.fetch_unreachable": "Impossible de se connecter à cette adresse",
+  "settings.hud.fetch_certificate": "La vérification du certificat par le téléviseur a échoué pour cette adresse",
+  "settings.hud.too_large": "Ce fichier est trop volumineux",
+  "settings.hud.not_a_hud": "Ce n'est pas un paquet HUD",
+  "settings.hud.offer_body": "Ce paquet a été téléchargé depuis une adresse et n'a pas été vérifié. Il change l'apparence des commandes de lecture.",
+  "settings.hud.offer_from": "Depuis {host}",
+  "settings.hud.offer_dev": "Source de développement"
 }

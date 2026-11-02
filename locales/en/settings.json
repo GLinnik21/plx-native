@@ -1325,5 +1325,60 @@
   "settings.hud.remove": {
     "value": "Remove",
     "description": "Settings > Playback > Player HUD: the action word on an installed package's removal row."
+  },
+  "settings.hud.address": {
+    "value": "Install from address",
+    "description": "Settings > Playback > Player HUD: Row that asks for an address to install a HUD package from. A row title."
+  },
+  "settings.hud.address_hint": {
+    "value": "Type gh:owner/repo or an https:// address",
+    "description": "Settings > Playback > Player HUD: The detail line of the install-from-address row: what to type. gh:owner/repo, gh:owner/repo@tag and https:// are typed as they are."
+  },
+  "settings.hud.address_form": {
+    "value": "Use gh:owner/repo, gh:owner/repo@tag or an https:// address.",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the typed address is not one of the accepted forms. The forms are typed as they are."
+  },
+  "settings.hud.address_lan": {
+    "value": "A plain http:// address must be a device on your home network, like 192.168.1.20.",
+    "description": "Settings > Playback > Player HUD: The line under the page title when a plain http:// address was typed that is not a device on the home network (a private address such as 192.168.1.20)."
+  },
+  "settings.hud.fetching": {
+    "value": "Downloading…",
+    "description": "Settings > Playback > Player HUD: The detail line of the install-from-address row while the package is downloading."
+  },
+  "settings.hud.fetch_not_found": {
+    "value": "Nothing at that address",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the address answered that there is nothing there (HTTP 404)."
+  },
+  "settings.hud.fetch_unreachable": {
+    "value": "Couldn't connect to that address",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the TV could not connect to the typed address."
+  },
+  "settings.hud.fetch_certificate": {
+    "value": "The TV's certificate check failed for that address",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the TV's own certificate check refused the typed address's certificate."
+  },
+  "settings.hud.too_large": {
+    "value": "That file is too large",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the file is larger than a HUD package may be."
+  },
+  "settings.hud.not_a_hud": {
+    "value": "That isn't a HUD package",
+    "description": "Settings > Playback > Player HUD: The line under the page title when the file is not a HUD package (it does not parse as one)."
+  },
+  "settings.hud.offer_body": {
+    "value": "This package was downloaded from an address and has not been reviewed. It changes how the playback controls look.",
+    "description": "Settings > Playback > Player HUD: The body of the install question for a package downloaded from an address."
+  },
+  "settings.hud.offer_from": {
+    "value": "From {host}",
+    "description": "Settings > Playback > Player HUD: The prompt line naming where a downloaded package came from. {host} is the address's host name.",
+    "args": {
+      "host": "str"
+    }
+  },
+  "settings.hud.offer_dev": {
+    "value": "Development source",
+    "description": "Settings > Playback > Player HUD: The prompt label for a package fetched over plain http:// from a device on the home network (a development source)."
   }
 }
