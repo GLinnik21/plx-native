@@ -341,6 +341,58 @@ enum WindowCall {
     Silent,
 }
 
+/// Reported-position evidence collected strictly after Pause dispatch and before Resume.
+/// This is a diagnostic sampling criterion, never proof of hardware pause behavior. A stationary
+/// grade requires exact equality, observations spanning at least half the actual dwell, and a
+/// final report observed in the Resume frame. No firmware jitter or reporting cadence is assumed.
+#[derive(Debug, Default)]
+struct PauseSamples {
+    started_ms: Option<u64>,
+    ended_ms: Option<u64>,
+    first: Option<(u64, i64)>,
+    last: Option<(u64, i64)>,
+    range: Option<(i64, i64)>,
+    reports: u64,
+}
+
+impl PauseSamples {
+    fn begin(&mut self, now_ms: u64) {
+        *self = Self { started_ms: Some(now_ms), ..Self::default() };
+    }
+
+    fn observe(&mut self, now_ms: u64, position: i64) {
+        if self.ended_ms.is_some() || !self.started_ms.is_some_and(|at| now_ms > at) { return; }
+        self.first.get_or_insert((now_ms, position));
+        self.last = Some((now_ms, position));
+        self.range = Some(match self.range {
+            Some((low, high)) => (low.min(position), high.max(position)),
+            None => (position, position),
+        });
+        self.reports = self.reports.saturating_add(1);
+    }
+
+    fn end_fresh(&self) -> bool {
+        self.last.zip(self.ended_ms).is_some_and(|((at, _), end)| at == end)
+    }
+
+    fn span_ms(&self) -> Option<u64> {
+        self.first.zip(self.last).map(|((from, _), (to, _))| to.saturating_sub(from))
+    }
+
+    fn grade(&self) -> &'static str {
+        if self.range.is_some_and(|(low, high)| low != high) { return "moved"; }
+        let covered = self.started_ms.zip(self.ended_ms).zip(self.span_ms()).is_some_and(|((start, end), span)| {
+            let dwell = end.saturating_sub(start);
+            dwell > 0 && span > 0 && span >= dwell.div_ceil(2)
+        });
+        if self.end_fresh() && covered { "froze" } else { "unconfirmed" }
+    }
+
+    fn delta(&self) -> String {
+        self.first.zip(self.last).map_or_else(|| "-".to_owned(), |((_, from), (_, to))| (to - from).to_string())
+    }
+}
+
 /// What the summary reports: milliseconds since the start at which each thing was first seen.
 #[derive(Debug)]
 struct Facts {
@@ -365,6 +417,7 @@ struct Facts {
     eos_ev: bool,
     pause_pos: Option<i64>,
     resume_pos: Option<i64>,
+    pause_samples: PauseSamples,
     seek_target: Option<i64>,
     /// The diagnostic machine's fallback when no addressed dispatch context was supplied.
     track_pending: Option<&'static str>,
@@ -393,6 +446,7 @@ impl Default for Facts {
             eos_ev: false,
             pause_pos: None,
             resume_pos: None,
+            pause_samples: PauseSamples::default(),
             seek_target: None,
             track_pending: None,
         }
@@ -563,11 +617,13 @@ impl UriProbe {
         let position = |p: Option<i64>| p.map_or_else(|| "-".to_owned(), |v| v.to_string());
         match step {
             0 => {
+                self.facts.pause_samples.begin(now_ms);
                 self.facts.pause_pos = self.last_time;
                 fx.push(self.line(now_ms, &format!("drive pause pos={}", position(self.facts.pause_pos))));
                 fx.push(UriEffect::Call(UriCall::Pause { media_id }));
             }
             1 => {
+                self.facts.pause_samples.ended_ms = Some(now_ms);
                 self.facts.resume_pos = self.last_time;
                 self.facts.resume = CallResult::Unconfirmed;
                 fx.push(self.line(now_ms, &format!("drive resume pos={}", position(self.facts.resume_pos))));
@@ -924,13 +980,16 @@ impl UriProbe {
             }
             return;
         };
+        // Every valid report is fresh evidence, including an unchanged position.
+        self.facts.pause_samples.observe(now_ms, value);
         let moved = self.last_time.is_some_and(|last| last != value);
         self.last_time = Some(value);
         if self.facts.seek_target.is_some() && self.facts.seek_seen.is_none() {
             self.facts.seek_seen = Some(value);
         }
         if moved {
-            if matches!(self.phase, Phase::Playing { .. } | Phase::Starting { .. }) {
+            if matches!(self.phase, Phase::Playing { .. }) || (!self.config.transport && matches!(self.phase, Phase::Starting { .. })) {
+                // Drive waits for the explicit playing event before scheduling its one script.
                 self.phase = Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS };
             }
             let first = self.facts.time_moved.is_none();
@@ -1021,16 +1080,14 @@ impl UriProbe {
             (Some(a), Some(b)) => (b - a).to_string(),
             _ => "-".to_owned(),
         };
-        // Pause is proven by the position not moving across the pause/resume pair; a seek by where
-        // the first position after it landed, against the target.
+        // Pause labels grade reported positions only. Cached dispatch positions and an ACK or
+        // paused notification alone never supply fresh end-of-dwell sampling evidence.
         let paused = if self.facts.pause == CallResult::Refused {
             "refused"
+        } else if self.facts.pause_samples.started_ms.is_some() {
+            self.facts.pause_samples.grade()
         } else {
-            match (self.facts.pause_pos, self.facts.resume_pos) {
-                (Some(a), Some(b)) if (b - a).abs() <= DRIVE_SEEK_TOLERANCE_MS => "froze",
-                (Some(_), Some(_)) => "moved",
-                _ => call(self.facts.pause),
-            }
+            call(self.facts.pause)
         };
         let seek_landed = if self.facts.seek == CallResult::Refused {
             "refused"
@@ -1042,14 +1099,19 @@ impl UriProbe {
             }
         };
         format!(
-            "{summary} pause={paused} pause_delta={} resume={} seek={seek_landed} seek_delta={} text={} audio={} subs={} eos={}",
-            delta(self.facts.pause_pos, self.facts.resume_pos),
+            "{summary} pause={paused} pause_delta={} resume={} seek={seek_landed} seek_delta={} text={} audio={} subs={} eos={} \
+             pause_basis=reported_positions pause_samples={} pause_span_ms={} pause_end_fresh={} paused_event={}",
+            self.facts.pause_samples.delta(),
             call(self.facts.resume),
             delta(self.facts.seek_target, self.facts.seek_seen),
             call(self.facts.text),
             call(self.facts.audio),
             call(self.facts.subs),
             if self.facts.eos_ev { "yes" } else { "no" },
+            self.facts.pause_samples.reports,
+            self.facts.pause_samples.span_ms().map_or_else(|| "-".to_owned(), |span| span.to_string()),
+            if self.facts.pause_samples.end_fresh() { "yes" } else { "no" },
+            if self.facts.paused_ev { "yes" } else { "no" },
         )
     }
 }
@@ -1828,7 +1890,9 @@ mod tests {
         let summary = summary_of(&fx);
         assert!(summary.contains("variant=drive"), "{summary}");
         assert!(summary.contains("end=script"), "{summary}");
-        assert!(summary.contains("pause=froze pause_delta=0 resume=sent"), "{summary}");
+        // The paused event is independent evidence; this script supplied no clock reports
+        // during the dwell, so the reported-position grade remains unconfirmed.
+        assert!(summary.contains("pause=unconfirmed pause_delta=- resume=sent"), "{summary}");
         assert!(summary.contains("seek=hit seek_delta=50"), "{summary}");
         assert!(summary.contains("text=sent audio=sent subs=ok eos=no"), "{summary}");
         assert_eq!(unloads(&fx), 1);
@@ -2041,6 +2105,110 @@ mod tests {
             assert!(matches!(rig.probe.phase,Phase::AcbWaitingVideo{..}),"foreign video advanced binding: {fx:?}");
             assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Acb{..})));
         }
+    }
+
+    fn drive_pause_rig() -> Rig {
+        let mut rig=Rig::new(Variant::Drive,Some(WINDOW));
+        rig.playing();
+        rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":1000}"#);
+        let fx=rig.tick(DRIVE_FIRST_MS);
+        assert!(fx.iter().any(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))));
+        rig.msg("pause",r#"{"returnValue":true}"#);
+        rig
+    }
+    #[test]
+    fn uri_drive_review_ignored_pause_reports_movement_instead_of_freeze() {
+        let mut rig=drive_pause_rig();
+        rig.after(250,UriEvent::from_reply(&UriReply{session:plx_platform::tv::uri::SessionId::new(1),request:plx_platform::tv::uri::RequestId::new(1),method:"subscribe",payload:r#"{"mediaId":"_m1","currentTime":1250}"#.into(),ok:true}));
+        rig.after(2_250,UriEvent::from_reply(&UriReply{session:plx_platform::tv::uri::SessionId::new(1),request:plx_platform::tv::uri::RequestId::new(1),method:"subscribe",payload:r#"{"mediaId":"_m1","currentTime":3500}"#.into(),ok:true}));
+        rig.tick(0);
+        let fx=rig.feed(UriEvent::Back);
+        assert!(summary_of(&fx).contains("pause=moved"),"ignored Pause graded as freeze: {}",summary_of(&fx));
+    }
+    #[test]
+    fn uri_drive_review_no_pause_reports_are_unconfirmed() {
+        let mut rig=drive_pause_rig();
+        rig.msg("subscribe",r#"{"mediaId":"_m1","paused":true}"#);
+        rig.tick(DRIVE_STEP_MS);
+        let fx=rig.feed(UriEvent::Back);
+        assert!(summary_of(&fx).contains("pause=unconfirmed"),"cached position graded as freeze: {}",summary_of(&fx));
+    }
+    #[test]
+    fn uri_drive_review_early_reports_then_silence_do_not_confirm_pause() {
+        let mut rig=drive_pause_rig();
+        for _ in 0..2 {
+            rig.now+=100;
+            rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":1000}"#);
+        }
+        rig.tick(DRIVE_STEP_MS-200);
+        let fx=rig.feed(UriEvent::Back);
+        assert!(summary_of(&fx).contains("pause=unconfirmed"),"missing end observation reused: {}",summary_of(&fx));
+    }
+    #[test]
+    fn uri_drive_review_times_before_playing_start_transport_script_exactly_once() {
+        let mut rig=Rig::new(Variant::Drive,Some(WINDOW)); rig.loaded();
+        rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":1000}"#);
+        rig.now+=100;
+        rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":1100}"#);
+        rig.msg("subscribe",r#"{"mediaId":"_m1","playing":true}"#);
+        let fx=rig.tick(DRIVE_FIRST_MS);
+        assert_eq!(fx.iter().filter(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))).count(),1,"times bypassed Drive startup: {fx:?}");
+        let mut all=fx;
+        for _ in 0..6 {
+            all.extend(rig.msg("subscribe",r#"{"mediaId":"_m1","playing":true}"#));
+            all.extend(rig.tick(DRIVE_STEP_MS));
+        }
+        assert!(rig.probe.is_done(),"script must end despite repeated playing events");
+        assert_eq!(all.iter().filter(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))).count(),1);
+        assert!(summary_of(&all).contains("end=script"));
+    }
+
+    fn drive_report_after(rig: &mut Rig, after_ms: u64, position: i64) {
+        rig.now+=after_ms;
+        rig.msg("subscribe",&format!(r#"{{"mediaId":"_m1","currentTime":{position}}}"#));
+    }
+    #[test]
+    fn uri_drive_pause_equal_fresh_reports_with_full_coverage_grade_reported_freeze() {
+        let mut rig=drive_pause_rig();
+        drive_report_after(&mut rig,250,1000);
+        drive_report_after(&mut rig,2_250,1000);
+        rig.tick(0);
+        let fx=rig.feed(UriEvent::Back); let summary=summary_of(&fx);
+        assert!(summary.contains("pause=froze pause_delta=0"),"{summary}");
+        assert!(summary.contains("pause_basis=reported_positions pause_samples=2 pause_span_ms=2250 pause_end_fresh=yes"),"{summary}");
+    }
+    #[test]
+    fn uri_drive_pause_insufficient_coverage_or_single_frame_is_unconfirmed() {
+        for (first_after,second_after) in [(2_400,100),(2_500,0)] {
+            let mut rig=drive_pause_rig();
+            drive_report_after(&mut rig,first_after,1000);
+            drive_report_after(&mut rig,second_after,1000);
+            rig.tick(0);
+            let fx=rig.feed(UriEvent::Back); let summary=summary_of(&fx);
+            assert!(summary.contains("pause=unconfirmed"),"{summary}");
+            assert!(summary.contains("pause_end_fresh=yes"),"end freshness alone is insufficient: {summary}");
+        }
+        let mut rig=drive_pause_rig(); drive_report_after(&mut rig,DRIVE_STEP_MS,1000); rig.tick(0);
+        let fx=rig.feed(UriEvent::Back); assert!(summary_of(&fx).contains("pause=unconfirmed"));
+    }
+    #[test]
+    fn uri_drive_pause_equality_criterion_has_no_guessed_jitter_allowance() {
+        let mut rig=drive_pause_rig();
+        drive_report_after(&mut rig,250,1000);
+        drive_report_after(&mut rig,2_250,1001);
+        rig.tick(0);
+        let fx=rig.feed(UriEvent::Back);
+        assert!(summary_of(&fx).contains("pause=moved pause_delta=1"),"{}",summary_of(&fx));
+    }
+    #[test]
+    fn uri_drive_position_reports_without_playing_do_not_start_script_or_hide_play_timeout() {
+        let mut rig=Rig::new(Variant::Drive,Some(WINDOW)); rig.loaded();
+        drive_report_after(&mut rig,0,1000);
+        drive_report_after(&mut rig,5_000,6000);
+        let fx=rig.tick(DRIVE_FIRST_MS);
+        assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))));
+        let fx=rig.tick(PLAY_TIMEOUT_MS);
+        assert!(rig.probe.is_done()); assert!(summary_of(&fx).contains("end=timeout:play"));
     }
 
 }

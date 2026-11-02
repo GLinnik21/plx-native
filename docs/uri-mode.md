@@ -9,9 +9,9 @@ the same question:
 | **in-process** | the app's own process, through `StarfishMediaAPIs` (`libplayerAPIs`), with the URL or with fed buffers | ACB on 4.x, the exported window on 5+ |
 | **out-of-process** | `com.webos.media` (`umediaserver`) spawns `starfish-media-pipeline` | exported window (`option.windowId`) on 5+; controlled ACB binding demonstrated on the 4.5 dev set |
 
-Our app is in-process and feeds buffers (`docs/buffer-feed-plan.md`). The probe below asks the
-**out-of-process** question, because that is the only route that can play things our own demuxer
-and decoder cannot. The distinction matters: LG's own web apps are in-process too — `libcbe.so`
+Our normal playback is in-process and feeds buffers (`docs/buffer-feed-plan.md`). The probe below
+examines the **out-of-process** route to let the firmware fetch and demux media our own feeder
+cannot handle. LG's own web apps are in-process too — `libcbe.so`
 has `DT_NEEDED libplayerAPIs.so.1` and `libAcb.so.1` and imports 19 `StarfishMediaAPIs::*` and 22
 `Acb::*` symbols on webOS 4.10.0, and 23 `StarfishMediaAPIs` imports on 33.31.68. They play a
 `<video src>` URL through their own copy of the same library and bind its plane with ACB.
@@ -110,6 +110,12 @@ drive subtitles enable  call setSubtitleEnable ok
 summary … pause=froze pause_delta=0 resume=ok seek=hit seek_delta=-968 text=ok audio=ok subs=ok
 ```
 
+This is a historical summary from the earlier grader. Its cached positions and broad pause
+tolerance do not prove a pause. The current probe requires fresh, equal post-Pause positions
+covering at least half the dwell, including a report in the Resume observation frame; otherwise
+it leaves a stationary-position verdict unconfirmed. Advancing positions report movement.
+Method acknowledgements and service state events remain separate observations.
+
 Open on 5+: whether a `paused` event exists at all, whether `play` after `pause` resumes or
 restarts (the first position after resume dropped to 333 ms here), whether text `selectTrack`
 produces `trackSelected` and a rendered subtitle, and what the seek bar can be fed — the service
@@ -121,7 +127,8 @@ reports `currentTime` but no duration, so a duration has to come from `sourceInf
 2. Arm a variant in the install's runtime root:
    `echo load > /tmp/com.beb.plxnative.debug/plxnative-uriprobe` (empty, `load`, `late`, `none`, or
    `drive`). The separate controlled `acb-control` and `acb-dass` arms require a fresh process,
-   `ptype=0` and the fixture constraints in the measurement linked above. A `plex.direct` URL needs working name resolution on the set; a plain `http://` URL to
+   `ptype=0` and the fixture constraints in the measurement linked above. A `plex.direct` URL needs
+   working name resolution on the set; a plain `http://` URL to
    a LAN server does not.
 3. Play a title the route chooses to direct-play (`kind=direct` on the `armed` line), watch, press
    Back.
