@@ -2727,8 +2727,8 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // 0x9425_f33f_3f53_6aa5.
 // Opt-in playback diagnostics adds Root status and addressed command replies.
 // Live TV page: `ARG_SHAPE` gains `LiveTv`, `SCREEN_SHAPES` appends `LiveTvScreen::SHAPE`.
-// Both merged; replay anchors and pin will be updated by CI or rerecord.
-const SCREEN_SHAPES_PIN: u64 = 0x0; // Placeholder; CI will recompute
+// Merged both after rebase on main; shapes and replays need re-recording.
+const SCREEN_SHAPES_PIN: u64 = 0x912450b81a25451c;
 
 #[cfg(test)]
 mod arg_tests {
