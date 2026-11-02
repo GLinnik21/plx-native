@@ -255,3 +255,47 @@ fn a_standalone_kicker_is_not_discarded_without_a_main_title() {
     assert!(drew.1.iter().any(|r| r.text == label), "a declared kicker draws independently of title.main: {:?}", drew.1);
     assert!(!drew.1.iter().any(|r| r.size == theme::size::TITLE), "no undeclared main title");
 }
+
+#[test]
+fn numeric_up_next_reserves_every_countdown_label_in_every_language() {
+    let _serial = plx_base::testlock::serial();
+    let minimal = include_str!("../../../hud_format/fixtures/minimal.plxhud.json");
+    let text = minimal.replace(r#""countdown": "fill_sweep""#, r#""countdown": "numeric""#);
+    for language in plx_platform::i18n::SHIPPED {
+        let _lang = language_on_this_thread_for_test(language);
+        let locale = plx_platform::i18n::current();
+        let hud = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", locale, &FM).unwrap();
+        let state = hud.compiled.lookup(0, crate::hud_format::Slot::UpNext, false, false, false).unwrap();
+        let next = state.standin.up_next.unwrap().next;
+        let labels = crate::hud_format::compile::AppLabels::in_language(locale);
+        for label in &labels.next_seconds {
+            let label = CString::new(label.as_str()).unwrap();
+            let width = plx_ui::widgets::Button::pill_w_measured(&label, theme::size::BODY, false, None, &FM);
+            assert!(width <= next.w + 0.001, "{}: numeric label {:?} needs {width}, slot is {}", language.tag(), label, next.w);
+        }
+    }
+}
+
+#[test]
+fn declared_countdown_primitives_and_labelled_glyphs_are_priced() {
+    let _serial = plx_base::testlock::serial();
+    let minimal = include_str!("../../../hud_format/fixtures/minimal.plxhud.json");
+    let priced = |kind| {
+        let text = minimal.replace(r#""countdown": "fill_sweep""#, &format!(r#""countdown": "{kind}""#));
+        let compiled = load(&text);
+        crate::hud_format::lint_cost::state_cost(compiled.lookup(0, crate::hud_format::Slot::UpNext, false, false, false).unwrap())
+    };
+    let base = priced("fill_sweep");
+    assert_eq!(priced("ring").draw_ops, base.draw_ops + plx_ui::widgets::ButtonProgress::Ring.extra_draw_ops());
+    assert_eq!(priced("bar").draw_ops, base.draw_ops + plx_ui::widgets::ButtonProgress::Bar.extra_draw_ops());
+    assert_eq!(priced("numeric").glyph_runs, base.glyph_runs, "numeric replaces the primary's one run, it adds no unpriced label");
+    let button = REFERENCE.replace(r#"{ "id": "more", "command": "open_more", "widget": "disc""#,
+        r#"{ "id": "more", "command": "open_more", "widget": "button""#);
+    let plain = button.replace(r#", "face": "gear""#, "");
+    let cost = |text: &str| {
+        let c = load(text);
+        crate::hud_format::lint_cost::state_cost(c.lookup(0, crate::hud_format::Slot::Discs, true, false, false).unwrap())
+    };
+    assert!(cost(&button).texture_bytes > cost(&plain).texture_bytes, "the declared SVG beside a label costs a mask too");
+    assert_eq!(cost(&button).draw_ops, cost(&plain).draw_ops + 1);
+}

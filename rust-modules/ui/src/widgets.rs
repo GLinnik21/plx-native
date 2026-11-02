@@ -8478,6 +8478,16 @@ impl ControlStyle {
 // centered together as one group (icon + gap + label + gap + accessory is centered in the pill).
 // Colour per `ControlStyle` (default Accent). The one reusable action button — hero Play (Primary),
 // detail/info actions (Accent), etc. ----
+/// The shared button's countdown decoration. Extra draw ops are the conservative worst case priced by HUD lint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonProgress { FillSweep, Ring, Bar }
+
+impl ButtonProgress {
+    pub const fn extra_draw_ops(self) -> usize {
+        match self { Self::FillSweep => 0, Self::Ring => 4, Self::Bar => 2 }
+    }
+}
+
 pub struct Button<'a> {
     pub frame: Rect,
     pub label: *const c_char,
@@ -8507,8 +8517,9 @@ pub struct Button<'a> {
     pub palette: ControlPalette,
     /// The FOCUS POP, as a factor on the frame — see [`Button::scale`].
     pub scale: f32,
-    /// 0..1 left-to-right FILL sweep across the pill; None = an ordinary button.
+    /// 0..1 countdown progress, in the face selected by the progress builder; None = an ordinary button.
     pub progress: Option<f32>,
+    progress_face: ButtonProgress,
 }
 /// [`Button`]'s icon box, as a multiple of its type size, and the icon→label gap. Named because
 /// [`Button::pill_w`] measures the same run `Button::draw` lays out — a literal in each would let
@@ -8539,6 +8550,7 @@ impl<'a> Button<'a> {
             palette: ControlPalette::default(),
             scale: 1.0,
             progress: None,
+            progress_face: ButtonProgress::FillSweep,
         }
     }
     /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the capsule's centre — normally [`CtlPop::scale`],
@@ -8575,6 +8587,7 @@ impl<'a> Button<'a> {
     /// A ring keeps the declared rest face while focused; accent focus lights the plate.
     pub fn focus_face(mut self, focus: TransportFocus) -> Self {
         self.focus_face = focus;
+        if self.rest.is_none() { self.rest = Some(TransportRest::Film); }
         self
     }
     pub fn enabled(mut self, enabled: bool) -> Self {
@@ -8694,6 +8707,19 @@ impl<'a> Button<'a> {
     /// state, and only the FILL BEHIND the label changes — the ink never inverts.
     pub fn progress(mut self, frac: f32) -> Self {
         self.progress = Some(frac);
+        self.progress_face = ButtonProgress::FillSweep;
+        self
+    }
+    /// Trace a countdown around this same capsule; the label and its focus face stay independent.
+    pub fn progress_ring(mut self, frac: f32) -> Self {
+        self.progress = Some(frac);
+        self.progress_face = ButtonProgress::Ring;
+        self
+    }
+    /// The shared played-progress rail, clipped to this button's capsule.
+    pub fn progress_bar(mut self, frac: f32) -> Self {
+        self.progress = Some(frac);
+        self.progress_face = ButtonProgress::Bar;
         self
     }
 
@@ -8738,6 +8764,11 @@ impl<'a> Button<'a> {
             p.rring(ring, ring.h * 0.5, theme::CONTROL_FOCUS_RING_W, theme::CONTROL_FOCUS_RING);
         }
         let Some(frac) = self.progress else { return };
+        match self.progress_face {
+            ButtonProgress::Ring => { button_progress_ring(p, b, frac, face.ink); return; }
+            ButtonProgress::Bar => { progress_bar(p, b, rad, theme::space::XS, frac); return; }
+            ButtonProgress::FillSweep => {}
+        }
         let w = b.w * frac.clamp(0.0, 1.0);
         if w <= 0.0 {
             return;
@@ -8762,6 +8793,22 @@ impl<'a> Button<'a> {
         p.clip_clear();
     }
 }
+/// Trace the existing rounded-ring primitive clockwise from the top centre. Each monotone quadrant is
+/// clipped as it advances; no generated SVG, texture cache entry or renderer-specific drawing path is needed.
+fn button_progress_ring(p: Painter, r: Rect, frac: f32, ink: [f32; 4]) {
+    let half = r.w * 0.5;
+    let phase = frac.clamp(0.0, 1.0) * 4.0;
+    for (i, (right, bottom)) in [(true, false), (true, true), (false, true), (false, false)].into_iter().enumerate() {
+        let w = half * (phase - i as f32).clamp(0.0, 1.0);
+        if w <= 0.0 { continue; }
+        let x = match (right, bottom) { (true, false) => r.cx(), (true, true) => r.x + r.w - w,
+            (false, true) => r.cx() - w, (false, false) => r.x };
+        let clip = Rect::new(x, if bottom { r.cy() } else { r.y }, w, r.h * 0.5);
+        let _clip = crate::screen::ClipScope::open_in(p, clip);
+        p.rring(r, r.h * 0.5, theme::CONTROL_FOCUS_RING_W, ink);
+    }
+}
+
 /// **A standalone control face for a caller outside this module** — the same plate
 /// [`Button::plate`] draws (the capsule outline, the edge sheen, and the focus cast), for a control
 /// whose layout does not fit `Button`'s one-label-two-icons shape and so cannot be a `Button`
@@ -9506,4 +9553,20 @@ fn transport_button_disabled_never_draws_a_focused_face() {
         assert_eq!(census(disabled), census(TransportButton::new(0, rect).enabled(false)),
             "a disabled disc draws its idle face whatever order the builder ran in");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn button_progress_ring_uses_bounded_quadrants_and_leaves_the_default_face_unchanged() {
+    let _serial = plx_base::testlock::serial();
+    let label = CString::new("Next episode").unwrap();
+    let make = || Button::new(label.as_ptr(), theme::size::BODY, Rect::new(100.0, 800.0, 300.0, 64.0));
+    for (fraction, count) in [(0.0, 0), (0.1, 1), (0.25, 1), (0.5, 2), (1.0, 4), (1.5, 4)] {
+        let rings = crate::draw_census::capture_rings(|| make().progress_ring(fraction).draw(&Env::inert(), Painter::recording()));
+        assert_eq!(rings.len(), count, "fraction {fraction}: one clipped ring per reached quadrant");
+        assert!(rings.len() <= ButtonProgress::Ring.extra_draw_ops(), "the price covers every progress primitive");
+    }
+    let plain = crate::draw_census::capture(|| make().draw(&Env::inert(), Painter::recording()));
+    let zero = crate::draw_census::capture(|| make().progress_ring(0.0).draw(&Env::inert(), Painter::recording()));
+    assert_eq!(plain, zero, "zero progress adds no geometry or alternate resting face");
 }

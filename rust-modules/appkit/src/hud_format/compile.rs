@@ -97,6 +97,8 @@ pub struct AppLabels {
     pub tab_chapters: String,
     /// the Up Next primary (`widgets_next_episode`)
     pub next_episode: String,
+    /// Every numeric countdown label, zero through the app-owned ten-second duration, measured before layout.
+    pub next_seconds: Vec<String>,
     /// the Up Next secondary (`widgets_next_credits`)
     pub watch_credits: String,
     /// the Skip pill over an intro
@@ -123,6 +125,7 @@ impl AppLabels {
             tab_info: msg::widgets_player_info_in(cx).to_owned(),
             tab_chapters: msg::widgets_player_chapters_in(cx).to_owned(),
             next_episode: msg::widgets_next_episode_in(cx).to_owned(),
+            next_seconds: (0..=crate::up_next::COUNTDOWN_MS / 1000).map(|s| msg::player_up_next_seconds_left_in(cx, i64::from(s))).collect(),
             watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
             skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
             skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
@@ -441,7 +444,7 @@ pub enum DrawOp {
     },
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
-    UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest },
+    UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest, credits_focus: Focus, next_focus: Focus, countdown: crate::up_next::CountdownFace },
     /// The Skip pill (slot Skip only), at both widths.
     SkipPill { rects: [Rect; 2] },
 }
@@ -2197,9 +2200,11 @@ impl<'e, 'p> Env<'e, 'p> {
             Slot::UpNext => {
                 if let Some(rects) = standin.up_next {
                     let rest = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Rest::Film, Self::rest);
+                    let focus = |key: &str| up.and_then(|u| u.get(key)).and_then(Val::as_object).map_or(Focus::Accent, Self::focus);
+                    let countdown = crate::up_next::CountdownFace::named(up.and_then(|u| u.get("countdown")).and_then(Val::as_str).unwrap_or("fill_sweep"));
                     out.push(
                         up.map_or("", |u| u.pointer.as_str()),
-                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next") },
+                        DrawOp::UpNext { rects, credits_rest: rest("watch_credits"), next_rest: rest("play_next"), credits_focus: focus("watch_credits"), next_focus: focus("play_next"), countdown },
                     );
                 }
             }
@@ -2318,7 +2323,11 @@ impl<'e, 'p> Env<'e, 'p> {
         let align = self.name(up, "align").unwrap_or("end");
         // the floor: one start- or end-aligned replaced segment, every item that can be absent collapsed
         let floor = self.floor(up, replaces);
-        let w_next = stand_in_w(self.measure.width_str(&self.labels.next_episode, theme::size::BODY, true), floor.unwrap_or(0.0));
+        let countdown = crate::up_next::CountdownFace::named(up.get("countdown").and_then(Val::as_str).unwrap_or("fill_sweep"));
+        let label_w = std::iter::once(&self.labels.next_episode)
+            .chain(self.labels.next_seconds.iter().filter(|_| countdown == crate::up_next::CountdownFace::Numeric))
+            .map(|label| self.measure.width_str(label, theme::size::BODY, true)).fold(0.0, f32::max);
+        let w_next = stand_in_w(label_w, floor.unwrap_or(0.0));
         let w_credits = Button::pill_w_measured(&cstring(&self.labels.watch_credits), theme::size::BODY, false, None, self.measure);
         // the pills are one run, right-anchored at `edge`; its width comes from the offer's own layout
         let probe = up_next::layout_at(RowAnchor { right: 0.0, top: union.y, h: union.h }, w_next, w_credits);
@@ -2457,14 +2466,26 @@ fn weigh(op: &DrawOp) -> Contributor {
             c.blended_px = plate(ctl);
             match ctl.widget {
                 Widget::Disc => c.texture_bytes = 4 * (ctl.rect.h * ctl.rect.h).round() as u64,
-                Widget::Pill | Widget::Button => c.glyph_runs = 1,
+                Widget::Pill | Widget::Button => {
+                    c.glyph_runs = 1;
+                    if ctl.face != Face::default() {
+                        c.draw_ops += 1;
+                        c.texture_bytes = 4 * (ctl.rect.h * ctl.rect.h).round() as u64;
+                    }
+                }
             }
         }
-        DrawOp::UpNext { rects, credits_rest, next_rest } => {
-            c.draw_ops = 2 + usize::from(rects.still.is_some()) + usize::from(rects.caption.is_some());
+        DrawOp::UpNext { rects, credits_rest, next_rest, countdown, .. } => {
+            let extra = match countdown {
+                crate::up_next::CountdownFace::Ring => plx_ui::widgets::ButtonProgress::Ring.extra_draw_ops(),
+                crate::up_next::CountdownFace::Bar => plx_ui::widgets::ButtonProgress::Bar.extra_draw_ops(),
+                _ => 0,
+            };
+            c.draw_ops = 2 + usize::from(rects.still.is_some()) + usize::from(rects.caption.is_some()) + extra;
             c.glyph_runs = 2 + usize::from(rects.caption.is_some());
             c.texture_bytes = rects.still.map_or(0, |r| 4 * area(r));
-            c.blended_px = plate_rest(*credits_rest, rects.credits) + plate_rest(*next_rest, rects.next);
+            c.blended_px = plate_rest(*credits_rest, rects.credits) + plate_rest(*next_rest, rects.next)
+                + if extra > 0 { area(rects.next) } else { 0 };
         }
         DrawOp::SkipPill { rects } => {
             c.glyph_runs = 1;

@@ -61,8 +61,8 @@
 //! because it defines no ink keys that could describe it. The scrub preview receives the compiled track,
 //! including its width and thickness, and rides the painter translation of the bar's band.
 //!
-//! **Remaining limitations under conformance review.** The Up Next presentation and chapter-card
-//! templates still need declaration consumption. Keyed geometry and `when: title.is_episode` still use
+//! **Remaining limitations under conformance review.** Chapter-card templates still need declaration
+//! consumption. Keyed geometry and `when: title.is_episode` still use
 //! the queue-pair axis and need an independent real-episode valuation before full conformance. `ClockWarm` still prewarms CAPTION and the scrub's grown rung rather than a package's
 //! declared clock rung. `Compiled::glyph` re-hashes the source on each lookup.
 //!
@@ -583,7 +583,7 @@ fn walk<H: Host>(
                     None => sections::text(f, q, *rect, bind, *size, bold, ink, *alpha, *max_lines, *leading),
                 },
                 DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
-                DrawOp::UpNext { rects, .. } => {
+                DrawOp::UpNext { rects, credits_rest, next_rest, credits_focus, next_focus, countdown } => {
                     if let ControlSlot::UpNext(_) = f.slot {
                         let layout = Layout {
                             still: rects.still.unwrap_or_default(),
@@ -592,7 +592,13 @@ fn walk<H: Host>(
                             next: rects.next,
                         };
                         let decor = Decor { still: rects.still.is_some(), caption: rects.caption.is_some() };
-                        up_next::draw_over(f.ps, &layout, decor, row, f.up, q, f.focus == GROUP_ROW, f.btn, f.now, f.measure);
+                        let rest = |r| match r { Rest::Bare => TransportRest::Bare, Rest::Solid => TransportRest::Solid, _ => TransportRest::Film };
+                        let focus = |f| match f { Focus::Ring => TransportFocus::Ring, Focus::Accent => TransportFocus::Accent };
+                        let look = up_next::Look {
+                            credits: up_next::ButtonLook { rest: rest(*credits_rest), focus: focus(*credits_focus) },
+                            next: up_next::ButtonLook { rest: rest(*next_rest), focus: focus(*next_focus) }, countdown: *countdown,
+                        };
+                        up_next::draw_over(f.ps, &layout, decor, look, row, f.up, q, f.focus == GROUP_ROW, f.btn, f.now, f.measure);
                     }
                 }
                 DrawOp::SkipPill { rects } => {
