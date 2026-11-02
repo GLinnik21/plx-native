@@ -112,3 +112,17 @@ fn pill_w_gaps_only_the_icons_it_carries() {
     assert_eq!(pill_w(&Mono, &label, 20, false, CHEV), text + chevron_ink() + HERO_ICON_GAP + air);
     assert_eq!(pill_w(&Mono, &label, 20, true, CHEV), box_w + text + chevron_ink() + 2.0 * HERO_ICON_GAP + air);
 }
+
+#[test]
+fn proposal_play_capsule_keeps_its_minimum_and_grows_for_translations() {
+    for resumes in [false, true] {
+        assert_eq!(play_width(&Mono, play_label(resumes)), 224.0);
+    }
+    struct Wide;
+    impl Measure for Wide {
+        fn width(&self, _: &CStr, _: i32, _: bool) -> f32 { 300.0 }
+        fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+        fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+    }
+    assert!(play_width(&Wide, play_label(false)) > PW);
+}

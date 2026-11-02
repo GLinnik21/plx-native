@@ -2735,13 +2735,14 @@ impl DetailScreen {
             tint: theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
         };
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
-        // The atmospheric ramp: nothing above the scrim's top, one straight stop to its foot.
+        // Both heroes use the proposal's three-stop atmosphere, including the preview fade.
         let ramp = (visible > 0.01).then(|| {
-            let y0 = plx_ui::widgets::HERO_BASE_SCRIM_Y0;
-            let foot = plx_ui::detail_layout::base_scrim_a(plx_ui::consts::SCR_H, visible)
-                * self.preview_base_scrim;
-            let h = plx_ui::consts::SCR_H;
-            plx_ui::widgets::WashRamp { ink: theme::scrim(1.0), stops: [(y0, 0.0), (h, foot), (h, foot)] }
+            let [y0, knee, mid, foot] = plx_ui::landing_hero::base_scrim_ramp(visible);
+            plx_ui::widgets::WashRamp {
+                ink: theme::scrim(1.0),
+                stops: [(y0, 0.0), (knee, mid * self.preview_base_scrim),
+                    (plx_ui::consts::SCR_H, foot * self.preview_base_scrim)],
+            }
         });
         // The still dissolves over its ground while the page scrolls, so where the ground is drawn
         // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
@@ -2754,15 +2755,15 @@ impl DetailScreen {
             false
         };
         if let Some(ramp) = ramp.filter(|_| !ramp_in_ground) {
-            let y0 = ramp.stops[0].0;
-            p.rect(
-                Rect::new(0.0, y0, plx_ui::consts::SCR_W, plx_ui::consts::SCR_H - y0),
-                0.0,
-                theme::scrim(0.0),
-                theme::scrim(ramp.stops[1].1),
-                0.0,
-            );
+            for pair in ramp.stops.windows(2) {
+                let [(top, a), (bottom, b)] = pair else { unreachable!() };
+                p.rect(
+                    Rect::new(0.0, *top, plx_ui::consts::SCR_W, bottom - top),
+                    0.0, theme::scrim(*a), theme::scrim(*b), 0.0,
+                );
+            }
         }
+
         if visible > 0.01 {
             plx_ui::widgets::hero_scrim(
                 p,
@@ -2891,21 +2892,23 @@ impl DetailScreen {
         if !d.rating.is_empty() {
             parts.push(&d.rating);
         }
+        // `y` is the row's outer top. Centre the text and chips inside its badge-height band.
+        let (top, base) = plx_gfx::text::text_cap_band(theme::size::BODY, 0);
+        let cy = y + plx_ui::widgets::BADGE_H * 0.5;
+        let text_y = cy - (top + base) * 0.5;
         // One flow: the dotted run, then the resolution badge and the chips, `XS` apart; the run
         // keeps `SM` from the first badge (an empty run is absent: no room and no gap).
         let run_w = plx_ui::widgets::dotted_run(
             p,
             &parts,
             plx_ui::consts::MARGIN_X,
-            y,
+            text_y,
             theme::size::BODY,
             theme::TEXT_SECONDARY,
             theme::space::SM,
         );
         let mut flow = Flow::new(plx_ui::consts::MARGIN_X, theme::space::XS);
         flow.push(if run_w > 0.0 { Item::new(run_w).after(theme::space::SM) } else { Item::absent() });
-        let (top, base) = plx_gfx::text::text_cap_band(theme::size::BODY, 0);
-        let cy = y + (top + base) * 0.5;
         if let Some(res) = plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height) {
             flow.place(|x| {
                 Item::new(plx_ui::widgets::badge(p, x, cy, &res, None, plx_ui::widgets::BadgeStyle::Filled, measure))
@@ -2929,8 +2932,7 @@ impl DetailScreen {
         y: f32,
         measure: &dyn plx_machine::machine::Measure,
     ) {
-        let (top, base) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);
-        let cy = y + (top + base) * 0.5;
+        let cy = y + plx_ui::widgets::RATING_MARK_D * 0.5;
         // The groups are measured lazily, one at a time, and the row stops at the first that does
         // not fit: a later, smaller group never jumps the queue, and no group past the break is
         // ever measured (a replay holds only the widths the recording asked for), so this does not

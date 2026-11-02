@@ -198,6 +198,18 @@ pub mod layout {
     pub const PLAYER_MENU_BOTTOM: f32 = crate::consts::SCR_H - 316.0;
 }
 
+/// Full-bleed hero treatment shared by Home and Detail (1920×1080 proposal).
+pub mod hero {
+    /// Minimum Play/Resume capsule; translated labels may grow beyond it.
+    pub const PLAY_MIN_W: f32 = 224.0;
+    /// Atmospheric midpoint, 62% of the distance from the 34% origin to the foot.
+    pub const SCRIM_MID_Y: f32 = (0.34 + (1.0 - 0.34) * 0.62) * crate::consts::SCR_H;
+    /// Opacity at the atmospheric midpoint. The corner wedges supply local contrast.
+    pub const SCRIM_MID_A: f32 = 0.55;
+    /// Opacity at the foot: retain the artwork's colour under the action row.
+    pub const SCRIM_FOOT_A: f32 = 0.86;
+}
+
 /// The **logo presence ladder** — how big a clearLogo is DRAWN. The third size axis of the design
 /// system, beside [`size`] (type) and [`space`] (gaps), and it exists for the same reason: a logo
 /// used to be sized by a per-screen literal (96 on the home hero, 120 on the detail hero, 54 on the

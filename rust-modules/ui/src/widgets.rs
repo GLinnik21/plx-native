@@ -2411,11 +2411,9 @@ const HERO_SCRIM_R_A: f32 = 0.50;
 /// line, running to the foot of the panel. It sits here with the wedge's own stops because it is
 /// one treatment's first stop, and it was declared verbatim, under the same name, in two screens.
 ///
-/// The two screens' CURVES below it are deliberately **not** unified — home's is a two-stop ramp
-/// with a midpoint knee, detail's a single linear stop, and they land within ~0.05 alpha of each
-/// other everywhere. Retuning the atmospheric floor is a different decision from sharing its
-/// origin, and only the panel can judge it; the curves stay as `ui::landing_hero::base_scrim_a` /
-/// `detail::base_scrim_a`, which is also what the legibility table below grades.
+/// Both screens share the three-stop curve in `landing_hero::base_scrim_ramp`: zero at this
+/// origin, .55 at 62% of the remaining height, .86 at the foot. Fused ground and layered
+/// drawing use those same stops; `detail_layout::base_scrim_a` delegates to the same curve.
 pub const HERO_BASE_SCRIM_Y0: f32 = 0.34 * crate::consts::SCR_H; // 367.2
 
 /// The hero wedge's alpha at `x`, at or below [`HERO_SCRIM_KNEE`] — which is where every hero text

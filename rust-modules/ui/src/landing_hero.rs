@@ -1,4 +1,4 @@
-//! Shared geometry and atmospheric curve for a bottom-anchored landing-page hero. Keeping these
+//! Shared landing-page geometry and the atmospheric curve used by both full-bleed heroes. Keeping these
 //! pure lets the renderer, route narrative and legibility tests use one definition.
 
 use super::hstack::Item;
@@ -7,8 +7,8 @@ use super::{consts::SCR_H, theme, widgets::HERO_BASE_SCRIM_Y0};
 
 pub const TEXT_BOTTOM: f32 = 692.0;
 pub const COL_W: f32 = 660.0;
-pub const KNEE_Y: f32 = 0.65 * SCR_H;
-pub const MID_WEIGHT: f32 = 0.55;
+pub const KNEE_Y: f32 = theme::hero::SCRIM_MID_Y;
+pub const MID_WEIGHT: f32 = theme::hero::SCRIM_MID_A / theme::hero::SCRIM_FOOT_A;
 /// How much a bound preview multiplies the hero scrim curve. The shape stays the wedge, the
 /// bottom ramp and the feathered corner. 1.35 is the video-bound row the legibility table grades.
 ///
@@ -43,7 +43,7 @@ pub fn hero_stack(title_h: f32, meta_h: f32, synopsis_h: Option<f32>) -> HeroSta
     HeroStack { title, meta, synopsis: spans.next() }
 }
 
-pub fn base_scrim_bottom_a(hero_a: f32) -> f32 { 0.30 + 0.64 * hero_a.clamp(0.0, 1.0) }
+pub fn base_scrim_bottom_a(hero_a: f32) -> f32 { theme::hero::SCRIM_FOOT_A * hero_a.clamp(0.0, 1.0) }
 
 pub fn base_scrim_ramp(hero_a: f32) -> [f32; 4] {
     let foot = base_scrim_bottom_a(hero_a);
@@ -75,4 +75,19 @@ mod tests {
         assert!(bare.synopsis.is_none());
         assert!((bare.meta.y + bare.meta.h - TEXT_BOTTOM).abs() < 0.01);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn proposal_atmosphere_has_identical_stops_on_both_heroes() {
+    let origin = HERO_BASE_SCRIM_Y0;
+    for strength in [0.0, 0.25, 1.0] {
+        for (y, alpha) in [(origin, 0.0), (KNEE_Y, 0.55), (SCR_H, 0.86)] {
+            let want = alpha * strength;
+            assert!((base_scrim_a(y, strength) - want).abs() < 1e-6);
+            assert!((crate::detail_layout::base_scrim_a(y, strength) - want).abs() < 1e-6);
+        }
+    }
+    assert_eq!(base_scrim_a(0.0, 1.0), 0.0);
+    assert_eq!(base_scrim_a(SCR_H + 100.0, 1.0), theme::hero::SCRIM_FOOT_A);
 }

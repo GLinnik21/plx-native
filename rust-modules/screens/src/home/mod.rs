@@ -3494,7 +3494,7 @@ fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) ->
     // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info.
     let has_disc = disc_hex(item).is_some();
     let items = [
-        Item::new(plx_appkit::hero_layout::pill_w(measure, label, theme::size::BODY, true, None)),
+        Item::new(plx_appkit::hero_layout::play_width(measure, label)),
         if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
         Item::new(HERO_CTRL_D),
     ];

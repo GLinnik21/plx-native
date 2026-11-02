@@ -59,9 +59,9 @@ pub const HERO_GROUP: GroupId = GroupId(0);
 // the disc-unfurl budget and the meta line) lives in `appkit::hero_layout`, so the catalog page lays
 // out with the same numbers.
 pub use plx_appkit::hero_layout::{HeroWidths, CD, DISCS, MAX_CTLS};
-use plx_appkit::hero_layout::{FACTS_R, PW};
+use plx_appkit::hero_layout::FACTS_R;
 #[cfg(test)]
-use plx_appkit::hero_layout::CGAP;
+use plx_appkit::hero_layout::{CGAP, PW};
 const PEOPLE_MAX_LINES: usize = 2;
 /// Names on the hero's Starring line: a summary. The whole cast is the Cast row further down the
 /// page, one headshot per credit with nothing cut (`cards::Cards` counts `Detail::credits_len`).
@@ -385,14 +385,7 @@ pub fn hero_pill_label(has_restart: bool) -> &'static CStr {
 }
 
 pub fn hero_pill_w(measure: &dyn Measure, has_restart: bool) -> f32 {
-    plx_appkit::hero_layout::pill_w(
-        measure,
-        hero_pill_label(has_restart),
-        theme::size::BODY,
-        true,
-        None,
-    )
-    .max(PW)
+    plx_appkit::hero_layout::play_width(measure, hero_pill_label(has_restart))
 }
 
 pub fn alt_pill_w(measure: &dyn Measure) -> f32 {

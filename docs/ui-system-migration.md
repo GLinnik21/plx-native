@@ -631,3 +631,16 @@ enum, and every attempt to place them while it existed was going to fail the sam
 `ci/check-deps.sh`'s `testmod` gate counts `#[cfg(test)] mod` blocks in `app/mod.rs` and requires 0.
 It was red at 4 for two phases and is green now. The gate is the thing to trust rather than this
 table: a count in prose is a measurement nothing re-takes.
+
+### Hero proposal alignment (2026-11-02)
+
+Home and Detail share `theme::hero` treatment tokens: a 224 px minimum Play/Resume capsule
+(expanding for translated labels), and an atmospheric scrim with opacity 0 at 34% of the frame,
+0.55 at 62% of the remaining height, and 0.86 at the foot. `landing_hero::base_scrim_ramp` supplies
+the same stops to fused and layered rendering on both screens. The local corner wedges remain
+the shared `widgets::hero_scrim`; Detail enables the right wedge for its people column.
+
+Detail's metadata and rating coordinates describe the tops of their complete 34 px and 30 px
+bands. Text and marks are centred within those bands, so the shared vertical stack's 16 px gaps
+are measured between the objects it actually paints. The proposal retains the shared logo area
+rule, provider-grouped ratings, LABEL/36 synopsis capped at three lines, and bottom-aligned credits.

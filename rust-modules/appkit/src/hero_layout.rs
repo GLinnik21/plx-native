@@ -29,7 +29,7 @@ pub const MAX_CTLS: usize = 7;
 pub const DISCS: usize = 4;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
-pub const PW: f32 = 168.0;
+pub const PW: f32 = theme::hero::PLAY_MIN_W;
 
 /// The row's inter-control air and its disc diameter: the SHARED control-family numbers
 /// (`ui::widgets::CONTROL_GAP` / `StatusOverlay::CTRL_H`), not a second copy of them.
@@ -77,6 +77,11 @@ pub fn play_label(resumes: bool) -> &'static CStr {
     } else {
         plx_platform::i18n::msg::browse_detail_play_c()
     }
+}
+
+/// Play/Resume geometry for both heroes. Labels grow naturally beyond the design minimum.
+pub fn play_width(measure: &dyn Measure, label: &CStr) -> f32 {
+    pill_w(measure, label, theme::size::BODY, true, None).max(PW)
 }
 
 /// [`play_label`] as text, for the rows that take a `&str`.

@@ -1,9 +1,11 @@
 //! Shared detail hero geometry, also used by the contrast and safe-area audits.
-use super::{consts::{MARGIN_X, MARGIN_Y, SCR_H}, theme, widgets};
+use super::{consts::{MARGIN_X, MARGIN_Y}, theme, widgets};
 use super::hstack::Item;
 use super::vstack::{Anchor, VStack};
 #[cfg(any(test, feature = "test-support"))]
 use super::{consts::SCR_W, Rect};
+#[cfg(test)]
+use super::consts::SCR_H;
 
 pub const HERO_TEXT_W: f32 = 943.0;
 pub const TITLE_BOTTOM: f32 = 566.0;
@@ -111,8 +113,7 @@ pub fn people_top(btn_y: f32, lines: usize) -> f32 {
 }
 
 pub fn base_scrim_a(y: f32, hero_vis: f32) -> f32 {
-    0.95 * hero_vis.clamp(0.0, 1.0)
-        * ((y - widgets::HERO_BASE_SCRIM_Y0).max(0.0) / (SCR_H - widgets::HERO_BASE_SCRIM_Y0)).min(1.0)
+    super::landing_hero::base_scrim_a(y, hero_vis)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -279,10 +280,10 @@ mod tests {
     }
 
     #[test]
-    fn base_scrim_preserves_the_legacy_foot_and_clamps_inputs() {
+    fn base_scrim_uses_the_shared_proposal_foot_and_clamps_inputs() {
         assert_eq!(base_scrim_a(0.0, 1.0), 0.0);
-        assert_eq!(base_scrim_a(SCR_H, 1.0), 0.95);
-        assert_eq!(base_scrim_a(SCR_H + 100.0, 2.0), 0.95);
+        assert_eq!(base_scrim_a(SCR_H, 1.0), theme::hero::SCRIM_FOOT_A);
+        assert_eq!(base_scrim_a(SCR_H + 100.0, 2.0), theme::hero::SCRIM_FOOT_A);
         assert_eq!(base_scrim_a(SCR_H, -1.0), 0.0);
     }
 
