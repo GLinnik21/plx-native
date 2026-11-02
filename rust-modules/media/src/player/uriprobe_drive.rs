@@ -85,6 +85,7 @@ impl UriSession {
             kind: if crate::route::is_segmented_hls(ps) { Kind::Hls } else { Kind::Direct },
             window_id: window_id.clone(),
             app_id: app_id.clone(),
+            transport: variant.drives(),
         };
         let mut session = UriSession {
             probe: UriProbe::new(config),

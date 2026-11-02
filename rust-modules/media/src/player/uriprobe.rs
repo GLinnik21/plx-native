@@ -37,6 +37,14 @@ const LATE_ID_TIMEOUT_MS: u64 = 5_000;
 const PLAY_TIMEOUT_MS: u64 = 20_000;
 /// `currentTime` must change at least this often once it has been reported at all.
 const FROZEN_TIME_MS: u64 = 10_000;
+/// The transport script (`Variant::Drive`): how long after `playing` the first step runs, and how
+/// long each following step waits.
+const DRIVE_FIRST_MS: u64 = 3_000;
+const DRIVE_STEP_MS: u64 = 2_500;
+/// How far past the position at seek time the script jumps.
+const DRIVE_SEEK_MS: i64 = 20_000;
+/// How close to the requested position a following `currentTime` counts as landing on it.
+const DRIVE_SEEK_TOLERANCE_MS: i64 = 5_000;
 /// `currentTime` is logged when it first moves and then at most this often.
 const TIME_LOG_EVERY_MS: u64 = 1_000;
 /// The longest an error text is kept after [`scrub_text`], in characters.
@@ -45,8 +53,9 @@ const SCRUBBED_TEXT_CHARS: usize = 120;
 // ---------------------------------------------------------------------------------------------
 // What the tester chooses and what the route says
 
-/// Where the window id goes, chosen by the content of the trigger file (empty or `load`, `late`,
-/// `none`). One build answers all three, so the tester needs fewer round trips.
+/// What the trigger file asks for: where the window id goes (empty or `load`, `late`, `none`), and
+/// `drive`, which binds like `load` and then drives the transport. One build answers all four, so
+/// the tester needs fewer round trips.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
     /// `windowId` in the `load` payload.
@@ -55,6 +64,9 @@ pub enum Variant {
     Late,
     /// No window id at all.
     NoWindow,
+    /// `windowId` in the `load` payload, then pause, resume, seek, a text and an audio track, and
+    /// subtitle enable, each logged with the position around it.
+    Drive,
 }
 
 impl Variant {
@@ -65,6 +77,7 @@ impl Variant {
             "" | "load" => Some(Variant::AtLoad),
             "late" => Some(Variant::Late),
             "none" => Some(Variant::NoWindow),
+            "drive" => Some(Variant::Drive),
             _ => None,
         }
     }
@@ -74,7 +87,18 @@ impl Variant {
             Variant::AtLoad => "at-load",
             Variant::Late => "late",
             Variant::NoWindow => "none",
+            Variant::Drive => "drive",
         }
+    }
+
+    /// Does the `load` payload carry the window id?
+    fn binds_at_load(self) -> bool {
+        matches!(self, Variant::AtLoad | Variant::Drive)
+    }
+
+    /// Does the session run the transport script once the service says `playing`?
+    pub fn drives(self) -> bool {
+        self == Variant::Drive
     }
 }
 
@@ -122,6 +146,8 @@ pub struct Config {
     pub window_id: Option<String>,
     /// The app id the `load` payload names (not a secret).
     pub app_id: String,
+    /// Run the transport script after `playing` ([`Variant::Drive`]).
+    pub transport: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -141,10 +167,20 @@ pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>) -> String {
 /// A call the machine asks the driver to send. Everything a payload needs except the URL.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UriCall {
-    /// `window_id` is the id to put in the payload (`Variant::AtLoad` with a window), else `None`.
+    /// `window_id` is the id to put in the payload (`Variant::AtLoad`/`Drive` with a window), else
+    /// `None`.
     Load { window_id: Option<String> },
     Subscribe { media_id: String },
     Play { media_id: String },
+    /// Stop the picture where it is; `currentTime` stops moving.
+    Pause { media_id: String },
+    /// Jump to `position`, in milliseconds from the start.
+    Seek { media_id: String, position: i64 },
+    /// Select track `index` of `kind` (`"text"`, `"audio"`); the reply and `trackSelected` say
+    /// whether the pipeline took it.
+    SelectTrack { media_id: String, kind: &'static str, index: i64 },
+    /// Turn the pipeline's own subtitle rendering on.
+    SetSubtitleEnable { media_id: String, enable: bool },
     SetWindowId { media_id: String, window_id: String },
     Unload { media_id: String },
 }
@@ -156,6 +192,10 @@ impl UriCall {
             UriCall::Load { .. } => "load",
             UriCall::Subscribe { .. } => "subscribe",
             UriCall::Play { .. } => "play",
+            UriCall::Pause { .. } => "pause",
+            UriCall::Seek { .. } => "seek",
+            UriCall::SelectTrack { .. } => "selectTrack",
+            UriCall::SetSubtitleEnable { .. } => "setSubtitleEnable",
             UriCall::SetWindowId { .. } => "setWindowId",
             UriCall::Unload { .. } => "unload",
         }
@@ -166,7 +206,10 @@ impl UriCall {
         Some(match self {
             UriCall::Load { .. } => return None,
             UriCall::Subscribe { media_id } => json!({ "mediaId": media_id, "subscribe": true }),
-            UriCall::Play { media_id } | UriCall::Unload { media_id } => json!({ "mediaId": media_id }),
+            UriCall::Play { media_id } | UriCall::Unload { media_id } | UriCall::Pause { media_id } => json!({ "mediaId": media_id }),
+            UriCall::Seek { media_id, position } => json!({ "mediaId": media_id, "position": position }),
+            UriCall::SelectTrack { media_id, kind, index } => json!({ "mediaId": media_id, "type": kind, "index": index }),
+            UriCall::SetSubtitleEnable { media_id, enable } => json!({ "mediaId": media_id, "enable": enable }),
             UriCall::SetWindowId { media_id, window_id } => json!({ "mediaId": media_id, "windowId": window_id }),
         }
         .to_string())
@@ -401,6 +444,10 @@ pub enum Method {
     Load,
     Subscribe,
     Play,
+    Pause,
+    Seek,
+    SelectTrack,
+    SetSubtitleEnable,
     SetWindowId,
     Unload,
     Dropped,
@@ -414,6 +461,10 @@ impl Method {
             "load" => Method::Load,
             "subscribe" => Method::Subscribe,
             "play" => Method::Play,
+            "pause" => Method::Pause,
+            "seek" => Method::Seek,
+            "selectTrack" => Method::SelectTrack,
+            "setSubtitleEnable" => Method::SetSubtitleEnable,
             "setWindowId" => Method::SetWindowId,
             "unload" => Method::Unload,
             "dropped" => Method::Dropped,
@@ -503,6 +554,8 @@ enum Phase {
     SettingWindow { deadline: u64 },
     Starting { deadline: u64 },
     Playing { frozen_at: u64 },
+    /// The transport script ([`Variant::Drive`]): `step` runs at `deadline`.
+    Driving { step: usize, deadline: u64 },
     Done,
 }
 
@@ -514,7 +567,7 @@ impl Phase {
             Phase::Loading { .. } => "load",
             Phase::SettingWindow { .. } => "setWindowId",
             Phase::Starting { .. } => "play",
-            Phase::Playing { .. } | Phase::Done => "currentTime",
+            Phase::Playing { .. } | Phase::Driving { .. } | Phase::Done => "currentTime",
         }
     }
 }
@@ -527,6 +580,20 @@ enum End {
     Error(Option<i64>),
     Timeout(&'static str),
     Refused(&'static str),
+    /// The transport script ran to its last step.
+    Script,
+}
+
+/// What became of one transport call (`pause`, `seek`, `selectTrack`, `setSubtitleEnable`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum CallResult {
+    #[default]
+    NotSent,
+    /// The service said ok and the matching event followed.
+    Ok,
+    /// The service said ok, but the event that proves it did not follow.
+    Unconfirmed,
+    Refused,
 }
 
 /// What became of `setWindowId` (the `setWindowId=` of the summary).
@@ -550,6 +617,22 @@ struct Facts {
     audio_seen: Option<u64>,
     failed_in: Option<&'static str>,
     ended: Option<End>,
+    /// The transport script: what each call came to, and what the events said.
+    pause: CallResult,
+    resume: CallResult,
+    seek: CallResult,
+    text: CallResult,
+    audio: CallResult,
+    subs: CallResult,
+    paused_ev: bool,
+    seek_done_ev: bool,
+    seek_seen: Option<i64>,
+    eos_ev: bool,
+    pause_pos: Option<i64>,
+    resume_pos: Option<i64>,
+    seek_target: Option<i64>,
+    /// Which `selectTrack` a reply is expected for (`"text"` or `"audio"`).
+    track_pending: Option<&'static str>,
 }
 
 impl Default for Facts {
@@ -563,6 +646,20 @@ impl Default for Facts {
             audio_seen: None,
             failed_in: None,
             ended: None,
+            pause: CallResult::NotSent,
+            resume: CallResult::NotSent,
+            seek: CallResult::NotSent,
+            text: CallResult::NotSent,
+            audio: CallResult::NotSent,
+            subs: CallResult::NotSent,
+            paused_ev: false,
+            seek_done_ev: false,
+            seek_seen: None,
+            eos_ev: false,
+            pause_pos: None,
+            resume_pos: None,
+            seek_target: None,
+            track_pending: None,
         }
     }
 }
@@ -619,7 +716,7 @@ impl UriProbe {
     /// From `playing` until the end: the service has said the video plays. A claim about the
     /// service, not an observation of the plane.
     pub fn plane_open(&self) -> bool {
-        matches!(self.phase, Phase::Playing { .. })
+        matches!(self.phase, Phase::Playing { .. } | Phase::Driving { .. })
     }
 
     /// Apply one event at `now_ms`, pushing what the driver must execute onto `fx`, in order. Once
@@ -661,6 +758,17 @@ impl UriProbe {
         fx.push(UriEffect::Open(self.shape));
     }
 
+    /// What a transport call that has just been answered came to. An ok reply is provisional: the
+    /// event that proves it (paused, seekDone, trackSelected) upgrades it to [`CallResult::Ok`].
+    fn outcome(ok: bool, denied: bool) -> CallResult {
+        if ok && !denied { CallResult::Unconfirmed } else { CallResult::Refused }
+    }
+
+    /// The tail of a call's log line: `ok`, or `err(<why>)`.
+    fn said(ok: bool, denied: bool, text: &str) -> String {
+        if ok && !denied { "ok".to_owned() } else { format!("err({text})") }
+    }
+
     fn shape_label(shape: Shape) -> &'static str {
         match shape {
             Shape::Named => "named",
@@ -681,8 +789,58 @@ impl UriProbe {
             Phase::Playing { frozen_at } if self.facts.time_moved.is_some() && now_ms >= frozen_at => {
                 self.stop(now_ms, End::Timeout("currentTime"), fx)
             }
+            Phase::Driving { step, deadline } if now_ms >= deadline => self.drive_step(step, now_ms, fx),
             _ => {}
         }
+    }
+
+    /// One step of the transport script. Each step sends its call, logs what it asked for (with the
+    /// position it can see), and schedules the next; the last one ends the session, so a tester
+    /// without a picture still learns whether the pipeline accepted the calls.
+    fn drive_step(&mut self, step: usize, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        let Some(media_id) = self.media_id.clone() else {
+            self.stop(now_ms, End::Script, fx);
+            return;
+        };
+        let position = |p: Option<i64>| p.map_or_else(|| "-".to_owned(), |v| v.to_string());
+        match step {
+            0 => {
+                self.facts.pause_pos = self.last_time;
+                fx.push(self.line(now_ms, &format!("drive pause pos={}", position(self.facts.pause_pos))));
+                fx.push(UriEffect::Call(UriCall::Pause { media_id }));
+            }
+            1 => {
+                self.facts.resume_pos = self.last_time;
+                self.facts.resume = CallResult::Unconfirmed;
+                fx.push(self.line(now_ms, &format!("drive resume pos={}", position(self.facts.resume_pos))));
+                fx.push(UriEffect::Call(UriCall::Play { media_id }));
+            }
+            2 => {
+                let target = self.last_time.unwrap_or(0).max(0) + DRIVE_SEEK_MS;
+                self.facts.seek_target = Some(target);
+                fx.push(self.line(now_ms, &format!("drive seek target={target}")));
+                fx.push(UriEffect::Call(UriCall::Seek { media_id, position: target }));
+            }
+            3 => {
+                self.facts.track_pending = Some("text");
+                fx.push(self.line(now_ms, "drive selectTrack type=text index=0"));
+                fx.push(UriEffect::Call(UriCall::SelectTrack { media_id, kind: "text", index: 0 }));
+            }
+            4 => {
+                self.facts.track_pending = Some("audio");
+                fx.push(self.line(now_ms, "drive selectTrack type=audio index=1"));
+                fx.push(UriEffect::Call(UriCall::SelectTrack { media_id, kind: "audio", index: 1 }));
+            }
+            5 => {
+                fx.push(self.line(now_ms, "drive subtitles enable"));
+                fx.push(UriEffect::Call(UriCall::SetSubtitleEnable { media_id, enable: true }));
+            }
+            _ => {
+                self.stop(now_ms, End::Script, fx);
+                return;
+            }
+        }
+        self.phase = Phase::Driving { step: step + 1, deadline: now_ms + DRIVE_STEP_MS };
     }
 
     fn reply(&mut self, method: Method, ok: bool, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
@@ -697,14 +855,14 @@ impl UriProbe {
                 if ok {
                     fx.push(self.line(now_ms, &format!("register shape={shape} ok")));
                     self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
-                    let window_id = if self.config.variant == Variant::AtLoad { self.config.window_id.clone() } else { None };
+                    let window_id = if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
                     fx.push(UriEffect::Call(UriCall::Load { window_id }));
                 } else {
                     fx.push(self.line(now_ms, &format!("register shape={shape} refused({})", message.why())));
                     self.next_shape_or_stop(now_ms, End::Refused("register"), fx);
                 }
             }
-            Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } => {
+            Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } => {
                 self.service_message(method, ok, message, now_ms, fx)
             }
             _ => {}
@@ -740,7 +898,39 @@ impl UriProbe {
             }
             Method::Play if denied => {
                 fx.push(self.line(now_ms, &format!("call play err({text})")));
+                if matches!(self.phase, Phase::Driving { .. }) {
+                    // A refused resume is a finding, not the end of the session: the script still
+                    // has the seek and the track calls to ask about.
+                    self.facts.resume = CallResult::Refused;
+                    return;
+                }
                 self.stop(now_ms, End::Refused("play"), fx);
+                return;
+            }
+            Method::Pause => {
+                self.facts.pause = Self::outcome(ok, denied);
+                fx.push(self.line(now_ms, &format!("call pause {}", Self::said(ok, denied, &text))));
+                return;
+            }
+            Method::Seek => {
+                self.facts.seek = Self::outcome(ok, denied);
+                fx.push(self.line(now_ms, &format!("call seek {}", Self::said(ok, denied, &text))));
+                return;
+            }
+            Method::SelectTrack => {
+                let kind = self.facts.track_pending.take().unwrap_or("track");
+                let outcome = Self::outcome(ok, denied);
+                match kind {
+                    "text" => self.facts.text = outcome,
+                    _ => self.facts.audio = outcome,
+                }
+                fx.push(self.line(now_ms, &format!("call selectTrack {kind} {}", Self::said(ok, denied, &text))));
+                return;
+            }
+            Method::SetSubtitleEnable => {
+                // No event confirms this call: its own reply is the whole answer.
+                self.facts.subs = if ok && !denied { CallResult::Ok } else { CallResult::Refused };
+                fx.push(self.line(now_ms, &format!("call setSubtitleEnable {}", Self::said(ok, denied, &text))));
                 return;
             }
             Method::SetWindowId => {
@@ -757,6 +947,9 @@ impl UriProbe {
                 return;
             }
             Method::Load | Method::Subscribe | Method::Play if !denied && message.return_value == Some(true) && !message.has_events() => {
+                if method == Method::Play && matches!(self.phase, Phase::Driving { .. }) {
+                    self.facts.resume = CallResult::Ok;
+                }
                 fx.push(self.line(now_ms, &format!("call {} ok", match method {
                     Method::Load => "load",
                     Method::Subscribe => "subscribe",
@@ -809,12 +1002,40 @@ impl UriProbe {
                     self.facts.playing_ms = Some(now_ms.saturating_sub(self.started_ms));
                 }
                 if matches!(self.phase, Phase::Starting { .. }) {
-                    self.phase = Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS };
+                    self.phase = if self.config.transport {
+                        Phase::Driving { step: 0, deadline: now_ms + DRIVE_FIRST_MS }
+                    } else {
+                        Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS }
+                    };
+                }
+            }
+            Ev::Paused => {
+                fx.push(self.line(now_ms, "ev=paused"));
+                self.facts.paused_ev = true;
+                if self.facts.pause == CallResult::Unconfirmed {
+                    self.facts.pause = CallResult::Ok;
+                }
+            }
+            Ev::SeekDone => {
+                fx.push(self.line(now_ms, "ev=seekDone"));
+                self.facts.seek_done_ev = true;
+                if self.facts.seek == CallResult::Unconfirmed {
+                    self.facts.seek = CallResult::Ok;
+                }
+            }
+            Ev::TrackSelected => {
+                fx.push(self.line(now_ms, "ev=trackSelected"));
+                if self.facts.text == CallResult::Unconfirmed {
+                    self.facts.text = CallResult::Ok;
+                }
+                if self.facts.audio == CallResult::Unconfirmed {
+                    self.facts.audio = CallResult::Ok;
                 }
             }
             Ev::EndOfStream => {
                 fx.push(self.line(now_ms, "ev=endOfStream"));
-                if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. }) {
+                self.facts.eos_ev = true;
+                if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. }) {
                     self.stop(now_ms, End::Eos, fx);
                 }
             }
@@ -879,6 +1100,9 @@ impl UriProbe {
         };
         let moved = self.last_time.is_some_and(|last| last != value);
         self.last_time = Some(value);
+        if self.facts.seek_target.is_some() && self.facts.seek_seen.is_none() {
+            self.facts.seek_seen = Some(value);
+        }
         if moved {
             if matches!(self.phase, Phase::Playing { .. } | Phase::Starting { .. }) {
                 self.phase = Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS };
@@ -940,10 +1164,11 @@ impl UriProbe {
             Some(End::Back) | None => "back".to_owned(),
             Some(End::Eos) => "eos".to_owned(),
             Some(End::Error(code)) => format!("error:{}", code.map_or_else(|| "?".to_owned(), |c| c.to_string())),
+            Some(End::Script) => "script".to_owned(),
             Some(End::Timeout(phase)) => format!("timeout:{phase}"),
             Some(End::Refused(phase)) => format!("refused:{phase}"),
         };
-        format!(
+        let summary = format!(
             "summary load={load} playing={} t_load={} t_playing={} currentTime_advanced={} videoInfo={} audioInfo={} window={} \
              setWindowId={window_call} variant={} scheme={} shape={} end={end}",
             if self.facts.playing_ms.is_some() { "yes" } else { "no" },
@@ -956,6 +1181,49 @@ impl UriProbe {
             self.config.variant.label(),
             self.config.scheme.label(),
             Self::shape_label(self.shape),
+        );
+        if !self.config.transport {
+            return summary;
+        }
+        let call = |what: CallResult| match what {
+            CallResult::NotSent => "none",
+            CallResult::Ok => "ok",
+            CallResult::Unconfirmed => "sent",
+            CallResult::Refused => "refused",
+        };
+        let delta = |from: Option<i64>, to: Option<i64>| match (from, to) {
+            (Some(a), Some(b)) => (b - a).to_string(),
+            _ => "-".to_owned(),
+        };
+        // Pause is proven by the position not moving across the pause/resume pair; a seek by where
+        // the first position after it landed, against the target.
+        let paused = if self.facts.pause == CallResult::Refused {
+            "refused"
+        } else {
+            match (self.facts.pause_pos, self.facts.resume_pos) {
+                (Some(a), Some(b)) if (b - a).abs() <= DRIVE_SEEK_TOLERANCE_MS => "froze",
+                (Some(_), Some(_)) => "moved",
+                _ => call(self.facts.pause),
+            }
+        };
+        let seek_landed = if self.facts.seek == CallResult::Refused {
+            "refused"
+        } else {
+            match (self.facts.seek_target, self.facts.seek_seen) {
+                (Some(target), Some(seen)) if (seen - target).abs() <= DRIVE_SEEK_TOLERANCE_MS => "hit",
+                (Some(_), Some(_)) => "miss",
+                _ => call(self.facts.seek),
+            }
+        };
+        format!(
+            "{summary} pause={paused} pause_delta={} resume={} seek={seek_landed} seek_delta={} text={} audio={} subs={} eos={}",
+            delta(self.facts.pause_pos, self.facts.resume_pos),
+            call(self.facts.resume),
+            delta(self.facts.seek_target, self.facts.seek_seen),
+            call(self.facts.text),
+            call(self.facts.audio),
+            call(self.facts.subs),
+            if self.facts.eos_ev { "yes" } else { "no" },
         )
     }
 }
@@ -996,6 +1264,7 @@ mod tests {
             kind: Kind::Direct,
             window_id: window.map(str::to_owned),
             app_id: "com.test.app".to_owned(),
+            transport: variant.drives(),
         }
     }
 
@@ -1667,9 +1936,113 @@ mod tests {
 
     #[test]
     fn the_trigger_text_picks_the_variant() {
-        for (text, want) in [("", Some(Variant::AtLoad)), ("\n", Some(Variant::AtLoad)), ("load\n", Some(Variant::AtLoad)), (" Late ", Some(Variant::Late)), ("none", Some(Variant::NoWindow)), ("lates", None), ("http://x", None)] {
+        for (text, want) in [
+            ("", Some(Variant::AtLoad)),
+            ("\n", Some(Variant::AtLoad)),
+            ("load\n", Some(Variant::AtLoad)),
+            (" Late ", Some(Variant::Late)),
+            ("none", Some(Variant::NoWindow)),
+            ("drive", Some(Variant::Drive)),
+            (" DRIVE ", Some(Variant::Drive)),
+            ("lates", None),
+            ("http://x", None),
+        ] {
             assert_eq!(Variant::from_trigger(text), want, "{text:?}");
         }
+    }
+
+    #[test]
+    fn drive_binds_like_load_then_pauses_resumes_seeks_and_selects_tracks() {
+        let mut rig = Rig::new(Variant::Drive, Some(WINDOW));
+        rig.start();
+        let fx = rig.msg("register", "");
+        assert_eq!(fx[1], load(Some(WINDOW)), "drive binds at load, like the at-load variant");
+
+        rig.loaded();
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","playing":true}"#);
+        assert!(!rig.probe.is_done(), "the session ended on playing: {fx:?}");
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","currentTime":{"currentTime":1000}}"#);
+        assert!(has_log(&fx, "currentTime"), "the position did not arrive: {fx:?}");
+
+        // Pause: the position at the call, and the call itself.
+        let fx = rig.tick(3_000);
+        assert!(has_log(&fx, "drive pause pos=1000"), "{fx:?}");
+        assert!(fx.contains(&call(UriCall::Pause { media_id: media("_m1") })));
+        let fx = rig.msg("pause", r#"{"returnValue":true}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=3000 call pause ok"]);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","paused":true}"#);
+        assert!(has_log(&fx, "ev=paused"), "{fx:?}");
+
+        // Resume: the same position, a second play, and the position moving again.
+        let fx = rig.tick(2_500);
+        assert!(has_log(&fx, "drive resume pos=1000"), "{fx:?}");
+        assert!(fx.contains(&call(UriCall::Play { media_id: media("_m1") })));
+        let fx = rig.msg("play", r#"{"returnValue":true}"#);
+        assert!(has_log(&fx, "call play ok"), "{fx:?}");
+        rig.msg("subscribe", r#"{"mediaId":"_m1","currentTime":{"currentTime":1500}}"#);
+
+        // Seek: 20 s past where it is, then where the first position after it landed.
+        let fx = rig.tick(2_500);
+        assert!(has_log(&fx, "drive seek target=21500"), "{fx:?}");
+        assert!(fx.contains(&call(UriCall::Seek { media_id: media("_m1"), position: 21_500 })));
+        rig.msg("seek", r#"{"returnValue":true}"#);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","seekDone":true}"#);
+        assert!(has_log(&fx, "ev=seekDone"), "{fx:?}");
+        rig.msg("subscribe", r#"{"mediaId":"_m1","currentTime":{"currentTime":21550}}"#);
+
+        // A text track, then an audio track, then the subtitle switch.
+        let fx = rig.tick(2_500);
+        assert!(has_log(&fx, "drive selectTrack type=text index=0"), "{fx:?}");
+        assert!(fx.contains(&call(UriCall::SelectTrack { media_id: media("_m1"), kind: "text", index: 0 })));
+        rig.msg("selectTrack", r#"{"returnValue":true}"#);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":true}"#);
+        assert!(has_log(&fx, "ev=trackSelected"), "{fx:?}");
+
+        let fx = rig.tick(2_500);
+        assert!(has_log(&fx, "drive selectTrack type=audio index=1"), "{fx:?}");
+        rig.msg("selectTrack", r#"{"returnValue":true}"#);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":true}"#);
+
+        let fx = rig.tick(2_500);
+        assert!(has_log(&fx, "drive subtitles enable"), "{fx:?}");
+        rig.msg("setSubtitleEnable", r#"{"returnValue":true}"#);
+
+        // The last step ends the session, and the summary carries what each call came to.
+        let fx = rig.tick(2_500);
+        let summary = summary_of(&fx);
+        assert!(summary.contains("variant=drive"), "{summary}");
+        assert!(summary.contains("end=script"), "{summary}");
+        assert!(summary.contains("pause=froze pause_delta=0 resume=ok"), "{summary}");
+        assert!(summary.contains("seek=hit seek_delta=50"), "{summary}");
+        assert!(summary.contains("text=ok audio=ok subs=ok eos=no"), "{summary}");
+        assert_eq!(unloads(&fx), 1);
+        assert!(rig.probe.is_done());
+    }
+
+    #[test]
+    fn a_refused_pause_is_reported_and_the_script_carries_on() {
+        let mut rig = Rig::new(Variant::Drive, Some(WINDOW));
+        rig.playing();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","currentTime":{"currentTime":2000}}"#);
+        rig.tick(3_000);
+        let fx = rig.msg("pause", r#"{"returnValue":false,"errorCode":-1,"errorText":"paused is not supported"}"#);
+        assert!(has_log(&fx, "call pause err("), "{fx:?}");
+        let fx = rig.tick(2_500);
+        assert!(has_log(&fx, "drive resume pos=2000"), "the script continues: {fx:?}");
+        let fx = rig.feed(UriEvent::Back);
+        let summary = summary_of(&fx);
+        assert!(summary.contains("pause=refused"), "{summary}");
+        assert!(summary.contains("end=back"), "{summary}");
+    }
+
+    #[test]
+    fn a_drive_session_that_reaches_the_end_of_the_stream_reports_it() {
+        let mut rig = Rig::new(Variant::Drive, Some(WINDOW));
+        rig.playing();
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","endOfStream":true}"#);
+        assert!(has_log(&fx, "ev=endOfStream"), "{fx:?}");
+        assert!(summary_of(&fx).contains("eos=yes"), "{}", summary_of(&fx));
+        assert!(summary_of(&fx).contains("end=eos"), "{}", summary_of(&fx));
     }
 
     #[test]

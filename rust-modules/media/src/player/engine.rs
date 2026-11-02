@@ -1944,7 +1944,7 @@ fn start_bufferfeed_inner(
                     }
                     return super::uriprobe_drive::start(ps, pa, route_start, &url, variant);
                 }
-                None => log("uriprobe: the trigger file names no variant (empty, load, late or none): NOT armed, playing normally"),
+                None => log("uriprobe: the trigger file names no variant (empty, load, late, none or drive): NOT armed, playing normally"),
             }
         }
     }

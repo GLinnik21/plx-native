@@ -23,8 +23,12 @@ records the pivot (treat it as history, not spec). URI mode exists in the tree o
 developer probe: `uriprobe.rs` (the pure machine) and `uriprobe_drive.rs` (its driver, forked to
 from `engine::start_bufferfeed_inner` by the `plxnative-uriprobe` trigger) play one stream through
 `com.webos.media` with no Engine behind it, to learn what webOS 5+ does with the exported window id
-(issue #1064). It is `devtriggers`-only, so a release build carries none of it, and it reports
-nothing to Plex. The stream side: `PMS HTTP GET` → demux → per-lane access-unit
+(issue #1064). Its `drive` variant goes one step further and drives the transport the way a real
+URI backend would have to — pause, resume, a seek, a text and an audio `selectTrack`, and
+`setSubtitleEnable` — logging the position around each call, because the binding question is
+settled and the remaining question is whether the pipeline can be controlled. It is
+`devtriggers`-only, so a release build carries none of it, and it reports nothing to Plex.
+The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
 The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
