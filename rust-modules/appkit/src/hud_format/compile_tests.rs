@@ -53,6 +53,7 @@ fn labels() -> AppLabels {
         from_beginning: msg::widgets_info_from_beginning().to_owned(),
         go_to_show: msg::widgets_info_go_show().to_owned(),
         go_to_movie: msg::widgets_info_go_movie().to_owned(),
+        commands: AppLabels::in_language(plx_platform::i18n::current()).commands,
     }
 }
 

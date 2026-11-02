@@ -1,0 +1,14 @@
+{
+  "player.hud.play_pause": {
+    "value": "Play / Pause",
+    "description": "Label for a declared player HUD pill or button that toggles playback; stable wording so its measured width does not change when paused."
+  },
+  "player.hud.skip_back": {
+    "value": "Skip back",
+    "description": "Label for a declared player HUD pill or button that seeks backward; the command owns the interval."
+  },
+  "player.hud.skip_forward": {
+    "value": "Skip forward",
+    "description": "Label for a declared player HUD pill or button that seeks forward; the command owns the interval."
+  }
+}

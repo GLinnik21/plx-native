@@ -250,7 +250,7 @@ pub fn row_primary(compiled: &Compiled, open: u8, slot: ControlSlot, model: &Hud
 /// **An open section's own buttons** (`actions`), in the order the state places them: the controls the
 /// section group addresses (`ELEM_SECTION_BASE + i`) and the renderer's `Widget::Button` arm counts.
 pub fn section_buttons(state: &CompiledState) -> impl Iterator<Item = &ControlRect> {
-    state.controls.iter().filter(|c| c.widget == Widget::Button)
+    state.controls.iter().filter(|c| c.widget == Widget::Button && !state.row_ids.iter().any(|id| id.as_deref() == Some(c.id.as_str())))
 }
 
 /// What a press of an open section's button `i` performs, `None` past the last button.

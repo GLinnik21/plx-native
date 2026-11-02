@@ -531,7 +531,7 @@ collapses as `Item::absent` does, so classic's Chapters pill exists only with ch
 `2 x CONTROL_GAP`, `player_hud.rs:724-727`), `widget` (`disc`
 through `TransportButton`, `pill` through `TabPill` labelled by the command's app string, `button`
 through `widgets::Button`), `size` (px), `rest` (`film` today's, `bare` glyph only, `solid` the focused
-colours at rest, `custom` with allowed inks), `focus` (`accent` today's, `ring`: rest face plus the white
+colours at rest; `custom` is refused because format 1.0 defines no keys for its inks), `focus` (`accent` today's, `ring`: rest face plus the white
 focus ring), `face` (optional: the command's classic glyph when absent). A pair that draws one face twice (`solid` with `accent`) is rejected. Faces: an asset
 or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}`;
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
@@ -950,8 +950,9 @@ opener, through ONE shared placer.
   - Timing capsule: hides the whole HUD (`HudPolicy::Hidden`) and sits at the caption band, 836 (F22); a
     package never sees a frame it is up. Unchanged.
   - Info and Chapters: no longer popovers; they become sections (D6) and, as today, draw no scrim (F18).
-  - Scrub-preview card: it already takes the bar's geometry as arguments (F22), so it follows the
-    package's bar; lint requires its top to stay inside `SAFE` in every state that draws the bar.
+  - Scrub-preview card: its knob, horizontal clamp and scale pivot take the compiled track's x/y/width/height,
+    and the renderer applies the bar band's painter translation, so it follows a package's bar through inline
+    motion; lint requires its top to stay inside `SAFE` in every state that draws the bar.
   - Failure read-out and repair alert: own the frame or their group (F1, F22); unchanged.
   - Hold hint: none is wired in the player (F22).
 - Up Next and Skip with menus: a menu is an overlay, so the countdown cannot run while it is open (F19); a

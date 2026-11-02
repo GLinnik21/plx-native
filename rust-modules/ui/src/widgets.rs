@@ -8478,11 +8478,15 @@ impl ControlStyle {
 // centered together as one group (icon + gap + label + gap + accessory is centered in the pill).
 // Colour per `ControlStyle` (default Accent). The one reusable action button — hero Play (Primary),
 // detail/info actions (Accent), etc. ----
-pub struct Button {
+pub struct Button<'a> {
     pub frame: Rect,
     pub label: *const c_char,
     pub sz: c_int,
     pub icon: Option<crate::icons::Icon>,
+    svg: Option<crate::icons::Svg<'a>>,
+    rest: Option<TransportRest>,
+    focus_face: TransportFocus,
+    enabled: bool,
     /// The TRAILING accessory glyph — a chevron saying the press opens a list rather than acting
     /// (`crate::screens::alt_sources`'s *Also available*). Deliberately its own slot rather than a
     /// second use of [`Button::icon`]: the leading icon is part of the label's own statement (the
@@ -8516,13 +8520,17 @@ pub const BTN_PILL_AIR: f32 = 68.0;
 /// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
 const BTN_KEYLINE_W: f32 = 1.5;
 
-impl Button {
+impl<'a> Button<'a> {
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
         Self {
             frame,
             label,
             sz,
             icon: None,
+            svg: None,
+            rest: None,
+            focus_face: TransportFocus::Accent,
+            enabled: true,
             trailing: None,
             focused: false,
             focus: None,
@@ -8553,6 +8561,26 @@ impl Button {
         self.trailing = Some(i);
         self
     }
+    /// A package glyph beside the label, in the same box and ink as a built-in icon.
+    pub fn svg(mut self, svg: crate::icons::Svg<'a>) -> Self {
+        self.svg = Some(svg);
+        self.icon = None;
+        self
+    }
+    /// Opt into the transport family's declared resting treatment; ordinary buttons keep their existing style.
+    pub fn rest_face(mut self, rest: TransportRest) -> Self {
+        self.rest = Some(rest);
+        self
+    }
+    /// A ring keeps the declared rest face while focused; accent focus lights the plate.
+    pub fn focus_face(mut self, focus: TransportFocus) -> Self {
+        self.focus_face = focus;
+        self
+    }
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
         self
@@ -8566,7 +8594,18 @@ impl Button {
     }
     /// The face this pill draws now.
     fn face_now(&self) -> ControlFace {
-        self.style.face_at(self.focus.unwrap_or(f32::from(self.focused)), self.ground, self.palette)
+        let mut face = match self.rest {
+            Some(rest) => ControlStyle::Accent.face(
+                rest == TransportRest::Solid || self.accent_focus(), self.ground, self.palette),
+            None => self.style.face_at(if self.enabled { self.focus.unwrap_or(f32::from(self.focused)) } else { 0.0 }, self.ground, self.palette),
+        };
+        if !self.enabled {
+            face.ink = theme::INK_DISABLED;
+        }
+        face
+    }
+    fn accent_focus(&self) -> bool {
+        self.enabled && self.focused && (self.rest.is_none() || self.focus_face == TransportFocus::Accent)
     }
     pub fn style(mut self, s: ControlStyle) -> Self {
         self.style = s;
@@ -8667,7 +8706,10 @@ impl Button {
         // (`face_box`). A stadium and a disc are returned untouched.
         let b = face_box(r);
         let rad = b.h * 0.5;
-        if matches!(self.style, ControlStyle::Keyline) && !self.focused {
+        let painted = self.rest != Some(TransportRest::Bare) || self.accent_focus();
+        if !painted {
+            // A bare transport button has only its label/glyph until accent focus arrives.
+        } else if matches!(self.style, ControlStyle::Keyline) && !self.accent_focus() {
             let rad = r.h * 0.5;
             // the knockout: stroke colour first, then the interior inset by it — the SDF has no
             // stroke-only mode (`keyline_chip` / `pass_capsule`'s construction); `bg` here is
@@ -8685,10 +8727,15 @@ impl Button {
             // FOCUS is an elevation as well as a fill — see `control_cast`. Drawn before the face
             // for draw order only: `control_cast_at` is outside-only, so nothing of it lies under
             // the plate, even while the plate fades.
-            if self.focused {
+            if self.accent_focus() {
                 control_cast_at(p, b, rad, self.focus.unwrap_or(1.0));
             }
-            control_rim(p, b, rad, face.top, face.body, self.focused, self.ground);
+            control_rim(p, b, rad, face.top, face.body, self.accent_focus(), self.ground);
+        }
+        if self.enabled && self.focused && self.focus_face == TransportFocus::Ring {
+            let o = theme::CONTROL_FOCUS_RING_GAP + theme::CONTROL_FOCUS_RING_W * 0.5;
+            let ring = Rect::new(b.x - o, b.y - o, b.w + 2.0 * o, b.h + 2.0 * o);
+            p.rring(ring, ring.h * 0.5, theme::CONTROL_FOCUS_RING_W, theme::CONTROL_FOCUS_RING);
         }
         let Some(frac) = self.progress else { return };
         let w = b.w * frac.clamp(0.0, 1.0);
@@ -8741,7 +8788,7 @@ pub fn draw_control_face(
     }
     control_rim(p, b, rad, fill, fill, focused, ground);
 }
-impl View for Button {
+impl View for Button<'_> {
     fn draw(&self, _e: &Env, p: Painter) {
         let r = self.frame.scaled(self.scale);
         let face = self.face_now();
@@ -8776,12 +8823,15 @@ impl View for Button {
         // sizing the pill without the chevron and then drawing one would push the label off-centre.
         // The accessory stands by its INK, so the pill's right pad is measured to the mark itself.
         let isz = self.sz as f32 * BTN_ICON_RATIO;
-        let items = Self::run_items(tw, self.sz, self.icon.is_some(), self.trailing);
+        let items = Self::run_items(tw, self.sz, self.icon.is_some() || self.svg.is_some(), self.trailing);
         for span in HStack::new(&items, BTN_ICON_GAP, StackAlign::Centre(r.cx())).placed() {
             match span.i {
                 0 => {
-                    if let Some(icon) = self.icon {
-                        crate::icons::draw(p, icon, Rect::new(span.x, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+                    let rect = Rect::new(span.x, r.y + (r.h - isz) * 0.5, isz, isz);
+                    if let Some(svg) = self.svg {
+                        crate::icons::draw_svg(p, svg, rect, ink);
+                    } else if let Some(icon) = self.icon {
+                        crate::icons::draw(p, icon, rect, ink);
                     }
                 }
                 1 => {

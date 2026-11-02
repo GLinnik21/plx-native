@@ -109,6 +109,8 @@ pub struct AppLabels {
     pub go_to_show: String,
     /// the Info card's Go to Movie button
     pub go_to_movie: String,
+    /// Other command labels used by declared pills/buttons, all measured in this compile's language.
+    pub commands: Vec<(&'static str, String)>,
 }
 
 impl AppLabels {
@@ -127,6 +129,20 @@ impl AppLabels {
             from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
             go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
             go_to_movie: msg::widgets_info_go_movie_in(cx).to_owned(),
+            commands: vec![
+                ("toggle_play", msg::player_hud_play_pause_in(cx).to_owned()),
+                ("seek_back", msg::player_hud_skip_back_in(cx).to_owned()),
+                ("seek_forward", msg::player_hud_skip_forward_in(cx).to_owned()),
+                ("previous", msg::widgets_menu_previous_episode_in(cx).to_owned()),
+                ("next", msg::widgets_next_episode_in(cx).to_owned()),
+                ("open_tracks", msg::settings_audio_title_in(cx).to_owned()),
+                ("tracks_audio", msg::widgets_tracks_audio_in(cx).to_owned()),
+                ("tracks_subtitles", msg::widgets_tracks_subtitles_in(cx).to_owned()),
+                ("open_more", msg::widgets_menu_options_in(cx).to_owned()),
+                ("more_quality", msg::widgets_menu_quality_in(cx).to_owned()),
+                ("more_speed", msg::widgets_menu_speed_in(cx).to_owned()),
+                ("toggle_stats", msg::widgets_menu_stats_in(cx).to_owned()),
+            ],
         }
     }
 
@@ -139,7 +155,7 @@ impl AppLabels {
             ("from_beginning", _) => &self.from_beginning,
             ("go_to_detail", _) if episode => &self.go_to_show,
             ("go_to_detail", _) => &self.go_to_movie,
-            _ => "",
+            _ => self.commands.iter().find(|(key, _)| *key == command).map_or("", |(_, label)| label),
         }
     }
 
@@ -325,6 +341,8 @@ impl Face {
 pub struct ControlRect {
     pub id: String,
     pub command: String,
+    /// The app-owned label used to measure this control in the compile's language.
+    pub label: String,
     /// the command with its parameters, ready for the app's one performer; `None` where the package named
     /// something outside the vocabulary
     pub act: Option<crate::player_hud::command::HudCommand>,
@@ -1441,7 +1459,19 @@ impl<'e, 'p> Env<'e, 'p> {
     fn label(&self, item: &Object) -> &str {
         let command = item.get("command").and_then(Val::as_str).unwrap_or("");
         let section = item.get("section").and_then(Val::as_str);
-        self.labels.of(command, section, self.v.episode)
+        let key = match Self::act(item, command) {
+            Some(crate::player_hud::command::HudCommand::Seek(by)) => match by {
+                crate::player_hud::command::SeekBy::Secs(n) if n.get() < 0 => "seek_back",
+                crate::player_hud::command::SeekBy::Setting(crate::player_hud::command::SeekDir::Back) => "seek_back",
+                _ => "seek_forward",
+            },
+            Some(crate::player_hud::command::HudCommand::OpenTracks(crate::player_hud::command::TrackTab::Audio)) => "tracks_audio",
+            Some(crate::player_hud::command::HudCommand::OpenTracks(crate::player_hud::command::TrackTab::Subtitles)) => "tracks_subtitles",
+            Some(crate::player_hud::command::HudCommand::OpenMore(crate::player_hud::command::MorePage::Quality)) => "more_quality",
+            Some(crate::player_hud::command::HudCommand::OpenMore(crate::player_hud::command::MorePage::Speed)) => "more_speed",
+            _ => command,
+        };
+        self.labels.of(key, section, self.v.episode)
     }
 
     /// The width a control draws at: a disc is its size, a pill and a button are as wide as their label.
@@ -1449,8 +1479,9 @@ impl<'e, 'p> Env<'e, 'p> {
         let label = self.label(item);
         match widget {
             Widget::Disc => size,
-            Widget::Pill => TabPill::width_measured(label, theme::size::BODY, self.measure),
-            Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY, true, None, self.measure),
+            Widget::Pill if item.get("face").is_none() => TabPill::width_measured(label, theme::size::BODY, self.measure),
+            Widget::Pill | Widget::Button => Button::pill_w_measured(&cstring(label), theme::size::BODY, true,
+                item.get("face").map(|_| plx_ui::icons::Icon::More), self.measure),
         }
     }
 
@@ -1906,6 +1937,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let c = ControlRect {
             id: ctl.id.to_owned(),
             command: ctl.command.to_owned(),
+            label: self.label(ctl.o).to_owned(),
             act: Self::act(ctl.o, ctl.command),
             face: Self::face(ctl.o),
             widget: ctl.widget,

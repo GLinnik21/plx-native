@@ -545,7 +545,7 @@ fn walk<H: Host>(
     // the kicker's rect, remembered until the title's op arrives: the pair draws as one (one clip, one
     // marquee key, the paused reveal restarting when either line changes)
     let mut kicker_rect: Option<TitleLine> = None;
-    let mut bar: Option<Playbar> = None;
+    let mut bar: Option<(Playbar, Rect)> = None;
     let mut run = |span: &Span| {
         if !pick.takes(span) {
             return;
@@ -622,7 +622,7 @@ fn walk<H: Host>(
                         mark: *mark,
                     };
                     draw_playbar_look(q, live, look, f.measure);
-                    bar = Some(live);
+                    bar = Some((live, *track));
                 }
                 DrawOp::Ground { rect, ink, radius } => sections::ground(q, *rect, *radius, ink, f),
                 DrawOp::Rule { rect, ink } => sections::rule(q, *rect, ink, f),
@@ -637,8 +637,8 @@ fn walk<H: Host>(
         }
         // right after the bar's band, so the still floats over the title block and the row above it
         // and under the tabs below, as classic orders them
-        if let Some(live) = bar.take() {
-            draw_scrub_preview(p, f.ps, f.model, row, live);
+        if let Some((live, track)) = bar.take() {
+            draw_scrub_preview(p, f.ps, f.model, row, live, track);
         }
     };
     // The stand-in's ops are the LAST span, carrying the id of the band that hosts them; they draw right
@@ -804,6 +804,42 @@ fn section_open(state: &CompiledState, c: &crate::hud_format::compile::ControlRe
     matches!(c.act, Some(HudCommand::ToggleSection(s)) if state.key.open & s.open_bit() != 0)
 }
 
+/// A labelled transport control uses the same app label the compiler measured and the shared Button face.
+#[allow(clippy::too_many_arguments)]
+fn draw_labelled(compiled: &Compiled, f: &Frame<'_>, row: &HudMotion, e: &plx_ui::Env, q: Painter,
+    state: &CompiledState, c: &crate::hud_format::compile::ControlRect, row_index: Option<usize>) {
+    let label = match c.act {
+        Some(HudCommand::GoToDetail) => crate::info_panel::actions(f.meta)[1],
+        Some(HudCommand::FromBeginning) => crate::info_panel::actions(f.meta)[0],
+        _ => c.label.as_str(),
+    };
+    let Ok(label) = CString::new(label) else { return };
+    let (focused, scale) = if c.widget == Widget::Pill && c.command == "toggle_section" {
+        let Some(i) = c.section.as_deref().and_then(tab_of_section) else { return };
+        (f.focus == super::geometry::GROUP_TABS && f.tab == i, 1.0)
+    } else if let Some(i) = row_index.and_then(|i| i32::try_from(i).ok()) {
+        (f.focus == GROUP_ROW && f.btn == i, row.scale(i))
+    } else {
+        let Some(i) = super::geometry::section_buttons(state).position(|k| k.id == c.id) else { return };
+        ((f.focus == GROUP_SECTION && usize::try_from(f.btn).is_ok_and(|b| b == i)) || row.held_button() == Some(i), row.section_scale(i))
+    };
+    let model = match f.slot { ControlSlot::Discs(controls) => HudModel { controls, ..*f.model }, _ => *f.model };
+    let button = plx_ui::widgets::Button::new(label.as_ptr(), theme::size::BODY, c.rect)
+        .enabled(c.act.is_some_and(|act| act.enabled(&model)))
+        .focused(focused).scale(scale).ground(ControlGround::Unkeyed)
+        .rest_face(match c.rest { _ if section_open(state, c) => TransportRest::Solid,
+            Rest::Bare => TransportRest::Bare, Rest::Solid => TransportRest::Solid, _ => TransportRest::Film })
+        .focus_face(match c.focus { Focus::Accent => TransportFocus::Accent, Focus::Ring => TransportFocus::Ring });
+    if c.face == Default::default() {
+        button.draw(e, q);
+    } else {
+        match glyph_of(compiled, c, &model) {
+            Glyph::Icon(icon) => button.icon(icon).draw(e, q),
+            Glyph::Svg(svg) => button.svg(svg).draw(e, q),
+        }
+    }
+}
+
 /// One control, at the rect the compile placed it.
 fn draw_control(
     compiled: &Compiled,
@@ -814,6 +850,16 @@ fn draw_control(
     state: &CompiledState,
     c: &crate::hud_format::compile::ControlRect,
 ) {
+    let native_tab = c.widget == Widget::Pill && c.command == "toggle_section" && c.face == Default::default()
+        && c.rest == Rest::Film && c.focus == Focus::Accent;
+    let row_index = state.row_ids.iter().position(|id| id.as_deref() == Some(c.id.as_str()));
+    let native_action = c.widget == Widget::Button && row_index.is_none() && c.face == Default::default()
+        && c.rest == Rest::Film && c.focus == Focus::Accent
+        && matches!(c.act, Some(HudCommand::FromBeginning | HudCommand::GoToDetail));
+    if c.widget != Widget::Disc && !native_tab && !native_action {
+        draw_labelled(compiled, f, row, e, q, state, c, row_index);
+        return;
+    }
     match c.widget {
         // A disc of the replaced row: its stable declared index (`CompiledState::row_ids`) is the
         // control's identity for the springs and the cursor. Its command, and so its enabled bit, is the

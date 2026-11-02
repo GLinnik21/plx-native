@@ -652,12 +652,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -771,12 +770,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -865,12 +863,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -938,12 +935,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -1011,12 +1007,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -1103,12 +1098,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -1176,12 +1170,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -1258,12 +1251,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -1331,12 +1323,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -1424,12 +1415,11 @@
             },
             "rest": {
               "default": "film",
-              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+              "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
               "enum": [
                 "film",
                 "bare",
-                "solid",
-                "custom"
+                "solid"
               ],
               "type": "string"
             },
@@ -3298,12 +3288,11 @@
         },
         "rest": {
           "default": "film",
-          "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest, `custom` (1.0 defines no ink keys for it: the compiler decides).",
+          "description": "The resting face: `film` today's, `bare` the glyph only, `solid` the focused colours at rest. `custom` is unsupported because 1.0 has no keys defining its inks.",
           "enum": [
             "film",
             "bare",
-            "solid",
-            "custom"
+            "solid"
           ],
           "type": "string"
         }

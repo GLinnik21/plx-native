@@ -752,15 +752,15 @@ pub fn draw_playbar_look(p: Painter, bar: Playbar, look: PlaybarLook, measure: &
 }
 
 /// The bar's x for a position `pos_ns` of `dur_ns`, clamped to the bar's ends.
-fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
-    SB_X + (sb_w() as f64 * (pos_ns as f64 / dur_ns.max(1) as f64).clamp(0.0, 1.0)) as f32
+pub(super) fn bar_x(track: Rect, pos_ns: i64, dur_ns: i64) -> f32 {
+    track.x + (track.w as f64 * (pos_ns as f64 / dur_ns.max(1) as f64).clamp(0.0, 1.0)) as f32
 }
 
 /// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
 /// at the knob's position, floated above the knob; after it, the same still fading out. Draws
 /// nothing for a part with no BIF index, and nothing until the first still lands.
-pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar) {
-    use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, PosterStills, Stills};
+pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, model: &HudModel, row: &mut HudMotion, bar: Playbar, track: Rect) {
+    use crate::scrub_preview::{card_size, draw, still_ms, PosterStills, Stills};
     let mut stills = PosterStills {
         sid: plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw(),
         part: plx_media::route::cur_part_id(ps),
@@ -774,7 +774,7 @@ pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSess
         let target = still_ms(bar.pos_ns);
         let shown = row.preview.step((stills.part, &generation), target, bar.now, |ms| stills.look(ms));
         let absent = row.preview.absent();
-        row.preview.motion.observe(shown, target, absent, bar_x(bar.pos_ns, bar.dur_ns), bar.now)
+        row.preview.motion.observe(shown, target, absent, bar_x(track, bar.pos_ns, bar.dur_ns), bar.now)
     };
     let Some(sh) = show else { return };
     let Some((tex, tw, th)) = stills.tex(sh.ms) else { return };
@@ -785,7 +785,12 @@ pub(super) fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSess
         ((ow / oh - tw / th).abs() < 0.01).then_some((otex, t))
     });
     let (w, _) = card_size(tw, th);
-    let rest = card_rect(sh.knob_x, SB_X, sb_w(), SB_Y, w);
-    let r = scaled_about(rest, sh.knob_x, SB_Y + SB_H * 0.5, sh.scale);
+    let r = scrub_preview_rect(track, sh.knob_x, w, sh.scale);
     draw(p.alpha(sh.alpha), r, tex, tw, th, prev);
+}
+
+/// The shared preview card placement, over the playbar's compiled track.
+pub(super) fn scrub_preview_rect(track: Rect, knob_x: f32, card_w: f32, scale: f32) -> Rect {
+    let rest = crate::scrub_preview::card_rect(knob_x, track.x, track.w, track.y, card_w);
+    crate::scrub_preview::scaled_about(rest, knob_x, track.cy(), scale)
 }
