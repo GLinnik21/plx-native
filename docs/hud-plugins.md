@@ -633,7 +633,7 @@ Up Next (`layout.up_next`): `replaces` (segment ids), `band`, `align`, `still` (
 `watch_credits` and `play_next` {`rest`, `focus`}, `countdown`
 (`fill_sweep` classic `Button::progress`, `ring` extending it in place, `bar` through
 `widgets::progress_bar` (`ui/src/widgets.rs:1478`), `numeric` through the new i18n key
-`player.up_next.seconds_left` with a `fit_report`). While `slot.kind` is UpNext or Skip in the compact
+`player.up_next.seconds_left`. The compiler reserves the widest localized label over seconds 0 through 10). While `slot.kind` is UpNext or Skip in the compact
 state, the named segments leave the frame and the focus map; the others stay. The block's INSIDE is app-owned and
 drawn by `up_next::draw_over` for every package: the caption is the one template `widgets_next_caption` (CAPTION, bold,
 `TEXT_PRIMARY`, in a 460 box, elided; `up_next.rs:290-298`, `:320-330`), the still a 16:9 `draw_card` at the primary's

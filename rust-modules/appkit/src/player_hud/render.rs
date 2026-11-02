@@ -633,7 +633,6 @@ fn walk<H: Host>(
                 DrawOp::Facts { rect, order, badges, genres_max, playback_fact, size, bold, ink } => {
                     sections::facts(f, q, *rect, order, badges, *genres_max, *playback_fact, *size, bold, ink)
                 }
-                // not drawn by this renderer yet: see the module doc
                 DrawOp::Strip { .. } => sections::strip(f, df, row, q, op, moved, compiled),
             }
         }
@@ -900,7 +899,7 @@ fn draw_control(
                 .rest_face(match c.rest {
                     // an open section's own control wears the `solid` face, whatever it rests in
                     _ if section_open(state, c) => TransportRest::Solid,
-                    // `custom` (allowed inks) is not drawn yet: it takes the film
+                    // Format validation rejects `custom`; manually constructed ops use the film fallback.
                     Rest::Film | Rest::Custom => TransportRest::Film,
                     Rest::Bare => TransportRest::Bare,
                     Rest::Solid => TransportRest::Solid,

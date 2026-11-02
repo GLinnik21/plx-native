@@ -10,9 +10,10 @@
 //!
 //! **What the Shelf draws, and what the source adds.** The Shelf draws every card, the focused one popped
 //! and ringed ([`RowStyle::rim`]), and the focused card's NAME as its label block, hung where the strip's
-//! names stand ([`RowStyle::label_drop`]) from the card's leading edge ([`RowStyle::label_start`]), so a name
-//! wider than the card glides instead of eliding. [`Cards::overlay`] draws the rest on EVERY card: the time
-//! (all of them) and the name of an unfocused card (elided, still), in the strip's inks.
+//! names stand ([`RowStyle::label_drop`]) with its declared alignment ([`RowStyle::label_start`]), so a name
+//! wider than the card glides instead of eliding. The source composes this shared label at its declaration
+//! layer, after preceding grounds, and at the real data-stack position. The other template text and
+//! decorations follow the same section paint path on every card.
 //!
 //! **The seat and the scroll are the Shelf's.** The screen feeds the Shelf its events
 //! ([`super::motion::HudMotion::strip`]); a draw only paints. Which chapter is focused is the engine's

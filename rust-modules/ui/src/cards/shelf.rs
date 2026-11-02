@@ -1024,8 +1024,8 @@ impl Shelf {
     /// The label block the focused card `i` is drawn with: its source's label, revealed as far as
     /// the band has opened and the room under it holds each line ([`card_row::line_reveal_for`],
     /// the heading below it as `at.below_rise` says it is drawn), placed for where the tile settles.
-    /// What [`draw_card`](Self::draw_card) paints and [`caption_lines_probe`](Self::caption_lines_probe)
-    /// reads, so a test sees the ink the frame carries.
+    /// The default label passed to [`CardSource::compose`]; a source with a decorative template may
+    /// compose the shared label painter at a different resolved position.
     fn focused_label<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, at: SectionFrame) -> TileLabel {
         // a style that hangs its block at its own drop shows it whole: no band opens for it
         let label = src.label(i);
@@ -1033,11 +1033,10 @@ impl Shelf {
         label.settling(self.row.settle_lag(src.len(), i, &self.style))
     }
 
-    /// Test support: every caption LINE [`draw`](Self::draw) puts on screen now for the focused card,
-    /// `(card index, top y, bottom y, alpha)` in screen space for a painter with no translate and
-    /// no scroll (the tests'), from the same label and boxes the draw paints
-    /// ([`TileLabel::lines`](card_row::TileLabel::lines)): a line that is not drawn (alpha 0) is
-    /// not listed.
+    /// Test support: the default focused caption's `(card index, top y, bottom y, alpha)` with
+    /// no painter translation or scroll, from [`TileLabel::lines`](card_row::TileLabel::lines).
+    /// Invisible lines are omitted. A source that repositions labels in [`CardSource::compose`]
+    /// is checked through the paint census instead; this probe describes its initial label.
     #[cfg(any(test, feature = "test-support"))]
     pub fn caption_lines_probe<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, src: &S, at: SectionFrame) -> Vec<(usize, f32, f32, f32)> {
         let Some(i) = super::focused_index(&f.focus, self.entry, src).filter(|&i| i < src.len() && src.loaded(i)) else {

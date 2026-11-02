@@ -133,16 +133,13 @@ fn a_section_row_folds_only_for_a_section_the_package_lays_out() {
 
 #[test]
 fn the_state_enumeration_is_bounded_and_deterministic() {
-    // classic names `chapters.present` and `title.is_episode`: four valuations. Chapters absent: the
-    // compact state under three slots, plus the info section; chapters present: plus the chapters section.
-    // (3 + 1) x 2 + (3 + 2) x 2.
+    // Classic varies chapters and navigation-pair availability: four valuations. Its episode
+    // paint is live, so it adds no content axis. Chapters absent: three compact slots plus Info;
+    // chapters present: also Chapters. (3 + 1) x 2 + (3 + 2) x 2.
     assert_eq!(check(&package(CLASSIC)).states, 18);
-    // The reference names neither condition in a `when`, but it PLACES `previous` and `next`, and the
-    // spec's command table makes that pair absent for a non-episode whatever the package says: so it
-    // names `title.is_episode` too (see `a_placed_previous_or_next_names_title_is_episode`): two
-    // valuations (episode false, true) of one form each. Inline sections over two laid-out sections: the
-    // compact state under three slots, plus the three non-empty subsets, which wait on Discs (D7), is 6
-    // per valuation. 2 x 6 = 12 (it was 1 x 6 = 6 before the reach gap was closed).
+    // Reference places Previous/Next, so it varies pair availability independently of content.
+    // Neither real-episode placement nor numeric geometry is declared, so no content axis is needed.
+    // Three compact slots plus three non-empty inline subsets gives six states per pair valuation.
     assert_eq!(check(&package(REFERENCE)).states, 12);
     // The minimal package lays out no section: the compact state under its three slots.
     assert_eq!(check(&package(MINIMAL)).states, 3);
