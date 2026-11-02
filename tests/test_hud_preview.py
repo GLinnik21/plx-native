@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +45,20 @@ class Matrix(unittest.TestCase):
         self.assertEqual(cfg["clicks"], "600:940.0:730.0")
         self.assertLess(cfg["select"], 6)
         self.assertGreater(cfg["frames"], 6)
+
+    def test_isolated_episode_parents_have_real_mock_art_and_a_queue_of_one(self):
+        movie = {"type":"movie","ratingKey":"102","Media":[{"Part":[{"id":1020}]}]}
+        lib = SimpleNamespace(items={102:movie,201:{"type":"show"},2011:{"type":"season"}},
+                              images={201:{"logo":"real-show-logo"},2011:{"thumb":"real-season-thumb"}})
+        spec = {"navigation_pair":False,"real_episode":True,"background":"dark","chapters":True}
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary); hud=root/"example.json"; hud.write_text("{}")
+            preview.fixture(spec,hud)(SimpleNamespace(lib=lib),root)
+        self.assertEqual(lib.images[99100],lib.images[201])
+        self.assertEqual(lib.images[99101],lib.images[2011])
+        self.assertEqual(movie["grandparentRatingKey"],lib.items[99100]["ratingKey"])
+        queue=preview.screenshots.mock_pms.Library.continuous_queue(lib,movie)
+        self.assertEqual(queue,[movie])
 
     def test_a_new_shipped_language_requires_a_long_title_sample(self):
         value = inspection()

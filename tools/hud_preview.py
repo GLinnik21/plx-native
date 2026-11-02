@@ -110,6 +110,14 @@ def fixture(spec, hud):
                     item["Marker"] = [{"id": rk, "type": "credits", "startTimeOffset": 173000, "endTimeOffset": duration}]
             source = pms.lib.items[2011002]
         if spec.get("real_episode") and not spec["navigation_pair"]:
+            # The Home frame renders before the play trigger lands. Give the isolated episode
+            # real synthetic parent records and catalog artwork too, so that boot never owes
+            # an image for a nonexistent parent. Its show has only this episode in the queue.
+            for old,new in ((201,99100),(2011,99101)):
+                parent = copy.deepcopy(pms.lib.items[old])
+                parent.update(ratingKey=str(new),key=f"/library/metadata/{new}")
+                pms.lib.items[new] = parent
+                pms.lib.images[new] = dict(pms.lib.images[old])
             source.update(type="episode", grandparentRatingKey="99100", parentRatingKey="99101",
                           grandparentTitle="Design Review", parentTitle="Season 1", parentIndex=1,index=1)
         start_at = 445000
