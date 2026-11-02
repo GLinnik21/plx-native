@@ -12,6 +12,21 @@ a Jellyfin backend to that engine and ships it as a separate app. If you use Ple
 > television (an LG C1) against one Jellyfin server, so expect rough edges, and please
 > [say how it went](https://github.com/tiper/fin-native/issues) on yours.
 
+## Screenshots
+
+<p>
+  <img src="docs/screenshots/finnative/home.jpg" width="49%" alt="Home: a featured film with its artwork and a row of posters">
+  <img src="docs/screenshots/finnative/library.jpg" width="49%" alt="The Movies library as a poster grid">
+</p>
+<p>
+  <img src="docs/screenshots/finnative/detail.jpg" width="49%" alt="A film's page: artwork, details, Play, played and favourite buttons, cast">
+  <img src="docs/screenshots/finnative/signin.jpg" width="49%" alt="Sign-in with a Quick Connect code and QR">
+</p>
+
+Captured in FinNative's desktop simulator against a Jellyfin server holding only the open films
+credited under [Credit](#credit), so every title and image is free to show. The simulator
+draws the same interface as the television but plays no video, so there is no player screenshot.
+
 ## What works
 
 - **Sign-in** with Quick Connect from your phone, or with the server's address, a username and a
@@ -89,6 +104,11 @@ Homebrew Channel catalogue yet.
   by SchulzCode (0BSD).
 - Third-party components keep their own licences: see
   [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+- **The films in the screenshots** are Blender Foundation open movies, licensed
+  [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/): *Big Buck Bunny* (c) 2008 Blender
+  Foundation | peach.blender.org, *Elephants Dream* (c) 2006 Blender Foundation | orange.blender.org,
+  *Sintel* (c) 2010 Blender Foundation | durian.blender.org and *Tears of Steel* (c) 2012 Blender
+  Foundation | mango.blender.org. Their posters and stills are the films' own artwork.
 
 FinNative is not endorsed by the PlxNative project. Please report FinNative problems
 [here](https://github.com/tiper/fin-native/issues), not upstream.
