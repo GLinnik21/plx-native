@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-02T21:10:26Z",
+ "generated": "2026-11-02T21:17:16Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -111,9 +111,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 86,
-   "now": 202.0,
+   "now": 202,
    "prev7": 156.5,
    "shown": true,
    "state": "worse",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -62.6,
-   "change7_pct": 20.2,
-   "d30": 1090,
-   "delta30": -682.5,
-   "delta7": 68.5,
+   "change30_pct": -62.7,
+   "change7_pct": 20.1,
+   "d30": 1091.0,
+   "delta30": -684.0,
+   "delta7": 68,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 97,
-   "now": 407.5,
+   "now": 407,
    "prev7": 339,
    "shown": true,
    "state": "worse",
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.8,
+   "change30_pct": -3.2,
    "change7_pct": 16.4,
-   "d30": 2586,
-   "delta30": -71.5,
+   "d30": 2597.0,
+   "delta30": -82.5,
    "delta7": 355.0,
    "group": "ci",
    "id": "minutes",
@@ -168,16 +168,16 @@
    "change30_pct": -64.3,
    "change7_pct": 15.7,
    "d30": 1157,
-   "delta30": -744,
+   "delta30": -744.0,
    "delta7": 56.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 207,
-   "n_prev": 224,
-   "now": 413,
-   "prev7": 357.0,
+   "n_now": 206,
+   "n_prev": 225,
+   "now": 413.0,
+   "prev7": 357,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -410,16 +410,16 @@
   {
    "change30_pct": 27.2,
    "change7_pct": 7.5,
-   "d30": 224.0,
-   "delta30": 61.0,
+   "d30": 224,
+   "delta30": 61,
    "delta7": 20.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 86,
-   "now": 285.0,
+   "now": 285,
    "prev7": 265.0,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -79.4,
-   "change7_pct": 8.2,
-   "d30": 1053.0,
-   "delta30": -836.5,
-   "delta7": 16.5,
+   "change30_pct": -79.5,
+   "change7_pct": 8.0,
+   "d30": 1053,
+   "delta30": -837,
+   "delta7": 16,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 85,
-   "now": 216.5,
+   "now": 216,
    "prev7": 200,
    "shown": true,
    "state": "flat",
@@ -538,16 +538,16 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -2.7,
-   "d30": 17.0,
-   "delta30": 1.0,
+   "d30": 17,
+   "delta30": 1,
    "delta7": -0.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 86,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18.5,
    "shown": false,
    "state": "flat",
@@ -601,7 +601,7 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 286,
+   "d30": 286.0,
    "delta30": -283.0,
    "delta7": 0.0,
    "group": "ci",
@@ -622,7 +622,7 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 939,
+   "d30": 939.0,
    "delta30": -936.0,
    "delta7": 0.0,
    "group": "ci",
@@ -667,11 +667,6 @@
    "change_pct": 69.9,
    "commits": [
     {
-     "pr": 1199,
-     "sha": "3d381ea13",
-     "title": "HUD plugins: the reference's gear is a gear"
-    },
-    {
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
@@ -715,6 +710,11 @@
      "pr": 1212,
      "sha": "3bc30f4ed",
      "title": "Preserve UTF-8 in fixed text buffers"
+    },
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
     }
    ],
    "from": 193.0,
@@ -728,11 +728,6 @@
    "change_pct": 32.3,
    "commits": [
     {
-     "pr": 1199,
-     "sha": "3d381ea13",
-     "title": "HUD plugins: the reference's gear is a gear"
-    },
-    {
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
@@ -776,6 +771,11 @@
      "pr": 1212,
      "sha": "3bc30f4ed",
      "title": "Preserve UTF-8 in fixed text buffers"
+    },
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
     }
    ],
    "from": 215.0,
@@ -789,11 +789,6 @@
    "change_pct": 29.1,
    "commits": [
     {
-     "pr": 1199,
-     "sha": "3d381ea13",
-     "title": "HUD plugins: the reference's gear is a gear"
-    },
-    {
      "pr": 1198,
      "sha": "fede88a18",
      "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
@@ -837,6 +832,11 @@
      "pr": 1212,
      "sha": "3bc30f4ed",
      "title": "Preserve UTF-8 in fixed text buffers"
+    },
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
     }
    ],
    "from": 156.5,
@@ -844,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-11-02",
    "threshold_pct": 20.0,
-   "to": 202.0
+   "to": 202
   },
   {
-   "change_pct": 20.2,
+   "change_pct": 20.1,
    "commits": [
-    {
-     "pr": 1199,
-     "sha": "3d381ea13",
-     "title": "HUD plugins: the reference's gear is a gear"
-    },
     {
      "pr": 1198,
      "sha": "fede88a18",
@@ -898,23 +893,23 @@
      "pr": 1212,
      "sha": "3bc30f4ed",
      "title": "Preserve UTF-8 in fixed text buffers"
+    },
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
     }
    ],
    "from": 339,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-01",
+   "since": "2026-11-02",
    "threshold_pct": 15.0,
-   "to": 407.5
+   "to": 407
   },
   {
    "change_pct": 16.4,
    "commits": [
-    {
-     "pr": 1199,
-     "sha": "3d381ea13",
-     "title": "HUD plugins: the reference's gear is a gear"
-    },
     {
      "pr": 1198,
      "sha": "fede88a18",
@@ -959,6 +954,11 @@
      "pr": 1212,
      "sha": "3bc30f4ed",
      "title": "Preserve UTF-8 in fixed text buffers"
+    },
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
     }
    ],
    "from": 2159.5,

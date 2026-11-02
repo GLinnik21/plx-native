@@ -1,4 +1,4 @@
-{"updated":"2026-11-02T21:10:09Z",
+{"updated":"2026-11-02T21:16:57Z",
 "ci":[
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30922414156,"at":"2026-08-04T15:06:18Z","sha":"84f813d70","title":"docs: the README says why this exists, in the first person","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":97},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4453,7 +4453,8 @@
 {"id":41513737764,"at":"2026-11-02T19:50:58Z","sha":"c63ecab29","title":"docs: close resolved HUD title truncation gap","pr":1212,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":301,"macOS simulator build + launch":178,"Linux simulator build + launch":325,"Windows launcher syntax":30}},
 {"id":41515097018,"at":"2026-11-02T19:59:59Z","sha":"3bc30f4ed","title":"Preserve UTF-8 in fixed text buffers","pr":1212,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":35,"macOS simulator build + launch":216,"macOS tests against bundled FFmpeg and ASS":232,"Linux simulator build + launch":294}},
 {"id":41516541852,"at":"2026-11-02T20:09:06Z","sha":"c00f47223","title":"docs: record visible URI ACB playback on the 4.5 dev set","pr":1213,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":152,"Linux simulator build + launch":266,"macOS tests against bundled FFmpeg and ASS":254,"Windows launcher syntax":42}},
-{"id":41524255011,"at":"2026-11-02T20:59:49Z","sha":"7058db22d","title":"player: require fresh pause evidence and preserve URI Drive startup","pr":1213,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":208,"Linux simulator build + launch":354,"Windows launcher syntax":27,"macOS tests against bundled FFmpeg and ASS":213}}
+{"id":41524255011,"at":"2026-11-02T20:59:49Z","sha":"7058db22d","title":"player: require fresh pause evidence and preserve URI Drive startup","pr":1213,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":208,"Linux simulator build + launch":354,"Windows launcher syntax":27,"macOS tests against bundled FFmpeg and ASS":213}},
+{"id":41526080115,"at":"2026-11-02T21:11:37Z","sha":"f0e9b85b9","title":"Player: add native URI probes and retain display ownership","pr":1213,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":208,"macOS tests against bundled FFmpeg and ASS":168,"Linux simulator build + launch":307,"Windows launcher syntax":28}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
