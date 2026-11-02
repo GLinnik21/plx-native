@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-02T17:01:39Z",
+ "generated": "2026-11-02T17:09:49Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -69,9 +69,9 @@
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 98,
-   "now": 327.0,
+   "now": 327,
    "prev7": 192.0,
    "shown": true,
    "state": "worse",
@@ -102,18 +102,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.2,
-   "change7_pct": 22.8,
+   "change30_pct": 3.7,
+   "change7_pct": 30.2,
    "d30": 270.0,
-   "delta30": -6.0,
-   "delta7": 49.0,
+   "delta30": 10.0,
+   "delta7": 65.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 98,
-   "now": 264.0,
+   "now": 280,
    "prev7": 215.0,
    "shown": true,
    "state": "worse",
@@ -123,18 +123,39 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.0,
-   "change7_pct": 18.9,
-   "d30": 1090,
-   "delta30": -687,
-   "delta7": 64,
+   "change30_pct": 38.0,
+   "change7_pct": 20.4,
+   "d30": 243.5,
+   "delta30": 92.5,
+   "delta7": 57,
+   "group": "ci",
+   "id": "ci|host unit tests (hostsim)",
+   "kind": "job",
+   "label": "CI: host unit tests (hostsim)",
+   "n_now": 83,
+   "n_prev": 97,
+   "now": 336,
+   "prev7": 279,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -62.9,
+   "change7_pct": 19.3,
+   "d30": 1091.0,
+   "delta30": -686.5,
+   "delta7": 65.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 99,
-   "now": 403,
+   "now": 404.5,
    "prev7": 339,
    "shown": true,
    "state": "worse",
@@ -144,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.4,
+   "change30_pct": -2.7,
    "change7_pct": 16.5,
-   "d30": 2555.5,
-   "delta30": -60.5,
+   "d30": 2564,
+   "delta30": -69,
    "delta7": 353,
    "group": "ci",
    "id": "minutes",
@@ -169,15 +190,15 @@
    "change7_pct": 14.0,
    "d30": 1143.5,
    "delta30": -737.5,
-   "delta7": 50.0,
+   "delta7": 50,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 213,
-   "n_prev": 218,
+   "n_prev": 217,
    "now": 406,
-   "prev7": 356.0,
+   "prev7": 356,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -345,18 +366,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 24.5,
-   "change7_pct": 16.9,
+   "change30_pct": 23.9,
+   "change7_pct": 16.3,
    "d30": 314.0,
-   "delta30": 77.0,
-   "delta7": 56.5,
+   "delta30": 75.0,
+   "delta7": 54.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 98,
-   "now": 391.0,
+   "now": 389,
    "prev7": 334.5,
    "shown": true,
    "state": "flat",
@@ -367,17 +388,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 4.9,
+   "change7_pct": 5.0,
    "d30": null,
    "delta30": null,
-   "delta7": 15.5,
+   "delta7": 16.0,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 98,
-   "now": 334.5,
+   "now": 335,
    "prev7": 319.0,
    "shown": true,
    "state": "flat",
@@ -387,31 +408,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 37.4,
-   "change7_pct": 19.9,
-   "d30": 243.5,
-   "delta30": 91.0,
-   "delta7": 55.5,
-   "group": "ci",
-   "id": "ci|host unit tests (hostsim)",
-   "kind": "job",
-   "label": "CI: host unit tests (hostsim)",
-   "n_now": 82,
-   "n_prev": 97,
-   "now": 334.5,
-   "prev7": 279,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 26.6,
+   "change30_pct": 27.1,
    "change7_pct": 5.8,
-   "d30": 222.0,
-   "delta30": 59.0,
+   "d30": 221,
+   "delta30": 60.0,
    "delta7": 15.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -429,10 +429,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -79.2,
+   "change30_pct": -79.4,
    "change7_pct": 10.7,
-   "d30": 1045.0,
-   "delta30": -828.0,
+   "d30": 1053,
+   "delta30": -836.0,
    "delta7": 21.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -459,9 +459,9 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 98,
-   "now": 182.0,
+   "now": 182,
    "prev7": 163.5,
    "shown": true,
    "state": "flat",
@@ -538,7 +538,7 @@
   {
    "change30_pct": 5.9,
    "change7_pct": -5.3,
-   "d30": 17.0,
+   "d30": 17,
    "delta30": 1.0,
    "delta7": -1.0,
    "group": "ci",
@@ -587,9 +587,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 98,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -601,16 +601,16 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 287,
+   "d30": 287.0,
    "delta30": -284.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 97,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -622,16 +622,16 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 939,
-   "delta30": -936.0,
-   "delta7": 0.0,
+   "d30": 940.5,
+   "delta30": -937.5,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 97,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 70.3,
    "commits": [
     {
-     "pr": 1164,
-     "sha": "79dd54785",
-     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
-    },
-    {
      "pr": 1194,
      "sha": "22b02fa9c",
      "title": "HUD plugins: the More fold"
@@ -715,6 +710,11 @@
      "pr": 1204,
      "sha": "8da3add42",
      "title": "Dependencies: sentry-native -> 0.17.5"
+    },
+    {
+     "pr": 1209,
+     "sha": "1c9a75db4",
+     "title": "Publish HUD authoring files and verify registry setup"
     }
    ],
    "from": 192.0,
@@ -722,16 +722,11 @@
    "label": "CI: host harness tests",
    "since": "2026-11-01",
    "threshold_pct": 20.0,
-   "to": 327.0
+   "to": 327
   },
   {
    "change_pct": 32.5,
    "commits": [
-    {
-     "pr": 1164,
-     "sha": "79dd54785",
-     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
-    },
     {
      "pr": 1194,
      "sha": "22b02fa9c",
@@ -776,6 +771,11 @@
      "pr": 1204,
      "sha": "8da3add42",
      "title": "Dependencies: sentry-native -> 0.17.5"
+    },
+    {
+     "pr": 1209,
+     "sha": "1c9a75db4",
+     "title": "Publish HUD authoring files and verify registry setup"
     }
    ],
    "from": 152.5,
@@ -786,13 +786,8 @@
    "to": 202.0
   },
   {
-   "change_pct": 22.8,
+   "change_pct": 30.2,
    "commits": [
-    {
-     "pr": 1164,
-     "sha": "79dd54785",
-     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
-    },
     {
      "pr": 1194,
      "sha": "22b02fa9c",
@@ -837,6 +832,11 @@
      "pr": 1204,
      "sha": "8da3add42",
      "title": "Dependencies: sentry-native -> 0.17.5"
+    },
+    {
+     "pr": 1209,
+     "sha": "1c9a75db4",
+     "title": "Publish HUD authoring files and verify registry setup"
     }
    ],
    "from": 215.0,
@@ -844,16 +844,11 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-02",
    "threshold_pct": 20.0,
-   "to": 264.0
+   "to": 280
   },
   {
-   "change_pct": 18.9,
+   "change_pct": 20.4,
    "commits": [
-    {
-     "pr": 1164,
-     "sha": "79dd54785",
-     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
-    },
     {
      "pr": 1194,
      "sha": "22b02fa9c",
@@ -898,6 +893,72 @@
      "pr": 1204,
      "sha": "8da3add42",
      "title": "Dependencies: sentry-native -> 0.17.5"
+    },
+    {
+     "pr": 1209,
+     "sha": "1c9a75db4",
+     "title": "Publish HUD authoring files and verify registry setup"
+    }
+   ],
+   "from": 279,
+   "id": "ci|host unit tests (hostsim)",
+   "label": "CI: host unit tests (hostsim)",
+   "since": "2026-11-02",
+   "threshold_pct": 20.0,
+   "to": 336
+  },
+  {
+   "change_pct": 19.3,
+   "commits": [
+    {
+     "pr": 1194,
+     "sha": "22b02fa9c",
+     "title": "HUD plugins: the More fold"
+    },
+    {
+     "pr": 1196,
+     "sha": "72de84aab",
+     "title": "Captions rise clear of an open player section"
+    },
+    {
+     "pr": 1199,
+     "sha": "3d381ea13",
+     "title": "HUD plugins: the reference's gear is a gear"
+    },
+    {
+     "pr": 1198,
+     "sha": "fede88a18",
+     "title": "HUD plugins: the cost ceilings, measured, and every state's cost in --hud-lint (I12)"
+    },
+    {
+     "pr": 1195,
+     "sha": "2200ceb34",
+     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
+    },
+    {
+     "pr": 1202,
+     "sha": "1e9bd1d02",
+     "title": "Draw a sidecar over a remux on the content's clock: a clock-only side reader"
+    },
+    {
+     "pr": 1203,
+     "sha": "f2449cc55",
+     "title": "Honor Player HUD design declarations through shared UI components"
+    },
+    {
+     "pr": 1206,
+     "sha": "f1436ba47",
+     "title": "Add source-pinned Player HUD registry tooling"
+    },
+    {
+     "pr": 1204,
+     "sha": "8da3add42",
+     "title": "Dependencies: sentry-native -> 0.17.5"
+    },
+    {
+     "pr": 1209,
+     "sha": "1c9a75db4",
+     "title": "Publish HUD authoring files and verify registry setup"
     }
    ],
    "from": 339,
@@ -905,16 +966,11 @@
    "label": "Wait after merge",
    "since": "2026-11-01",
    "threshold_pct": 15.0,
-   "to": 403
+   "to": 404.5
   },
   {
    "change_pct": 16.5,
    "commits": [
-    {
-     "pr": 1164,
-     "sha": "79dd54785",
-     "title": "HUD plugins: Chapters and Info are HUD sections; the strip is a cards::Shelf"
-    },
     {
      "pr": 1194,
      "sha": "22b02fa9c",
@@ -959,6 +1015,11 @@
      "pr": 1204,
      "sha": "8da3add42",
      "title": "Dependencies: sentry-native -> 0.17.5"
+    },
+    {
+     "pr": 1209,
+     "sha": "1c9a75db4",
+     "title": "Publish HUD authoring files and verify registry setup"
     }
    ],
    "from": 2142,
@@ -981,25 +1042,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 391.0
-  },
-  {
-   "group": "ci",
-   "id": "ci|armv7 cross-build and artifact assertions",
-   "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 334.5
+   "now": 389
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 334.5
+   "now": 336
+  },
+  {
+   "group": "ci",
+   "id": "ci|armv7 cross-build and artifact assertions",
+   "label": "CI: armv7 cross-build and artifact assertions",
+   "now": 335
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 327.0
+   "now": 327
   }
  ],
  "slowest_local": [
