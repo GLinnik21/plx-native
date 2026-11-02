@@ -24,7 +24,7 @@
 //! The whole module is the `devtriggers` surface (`player/mod.rs`).
 
 use super::log;
-use super::uri_lifecycle::{Event as LifeEvent, Effect as LifeEffect, Lifecycle};
+use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
 use super::uriprobe::{build_load, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant};
 use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult, RouteStartTransaction};
 use plx_base::task::MainThread;
@@ -172,11 +172,11 @@ impl UriSession {
             self.lifecycle.step(event, &mut effects);
             for effect in effects {
                 match effect {
-                    LifeEffect::Open { request, shape } => {
+                    LifeFx::Open { request, shape } => {
                         let result = self.transport.open(shape).map_err(|text| super::uri_protocol::Message::transport_failure(&text));
                         events.push_back(LifeEvent::OpenAnswered { request, result });
                     }
-                    LifeEffect::Call { session, request, call } => {
+                    LifeFx::Call { session, request, call } => {
                         self.inbox.push_back(UriEvent::Dispatched { method: super::uri_protocol::Method::of(call.method()), kind: match &call { UriCall::SelectTrack {kind,..} => Some(*kind), _ => None }, request });
                         let payload = match &call {
                             UriCall::Load { window_id } => build_load(&self.url, &self.app_id, window_id.as_deref()),
@@ -186,13 +186,13 @@ impl UriSession {
                         let message = result.as_ref().err().map(|text| super::uri_protocol::Message::transport_failure(text)).unwrap_or_default();
                         events.push_back(LifeEvent::CallQueued { session, request, ok: result.is_ok(), message });
                     }
-                    LifeEffect::Close { session } => {
+                    LifeFx::Close { session } => {
                         let ok = self.transport.close(session).is_ok();
                         events.push_back(LifeEvent::CloseQueued { session, ok });
                     }
-                    LifeEffect::Deliver { method, ok, message } => self.inbox.push_back(UriEvent::Reply { method, ok, message }),
-                    LifeEffect::Released => { self.inbox.push_back(UriEvent::Closed); }
-                    LifeEffect::Fault => {
+                    LifeFx::Deliver { method, ok, message } => self.inbox.push_back(UriEvent::Reply { method, ok, message }),
+                    LifeFx::Released => { self.inbox.push_back(UriEvent::Closed); }
+                    LifeFx::Fault => {
                         log(&format!("uriprobe: t={now_ms} transport ownership unresolved or reply stream lost"));
                         self.inbox.push_back(UriEvent::Back);
                     }

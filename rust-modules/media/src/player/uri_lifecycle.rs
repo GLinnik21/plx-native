@@ -47,7 +47,7 @@ pub enum Event {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Effect {
+pub enum Fx {
     Open {
         request: RequestId,
         shape: Shape,
@@ -127,13 +127,13 @@ impl Lifecycle {
             .expect("URI request identities exhausted");
         RequestId::new(self.next)
     }
-    fn fault(&mut self, fx: &mut Vec<Effect>) {
+    fn fault(&mut self, fx: &mut Vec<Fx>) {
         if !self.faulted {
             self.faulted = true;
-            fx.push(Effect::Fault);
+            fx.push(Fx::Fault);
         }
     }
-    pub fn step(&mut self, event: Event, fx: &mut Vec<Effect>) {
+    pub fn step(&mut self, event: Event, fx: &mut Vec<Fx>) {
         match event {
             Event::Open(shape) if self.released() => {
                 let request = self.request();
@@ -141,7 +141,7 @@ impl Lifecycle {
                 self.phase = Phase::Opening;
                 self.faulted = false;
                 self.release_reported = false;
-                fx.push(Effect::Open { request, shape });
+                fx.push(Fx::Open { request, shape });
             }
             Event::Open(_) => self.fault(fx),
             Event::OpenAnswered { request, result }
@@ -156,7 +156,7 @@ impl Lifecycle {
                     Ok(session) => {
                         self.session = Some(session);
                         if matches!(self.phase, Phase::Closing | Phase::Quarantined) {
-                            fx.push(Effect::Close { session });
+                            fx.push(Fx::Close { session });
                         }
                     }
                     Err(message) => {
@@ -164,9 +164,9 @@ impl Lifecycle {
                         self.phase = Phase::Released;
                         if closing {
                             self.release_reported = true;
-                            fx.push(Effect::Released);
+                            fx.push(Fx::Released);
                         } else {
-                            fx.push(Effect::Deliver {
+                            fx.push(Fx::Deliver {
                                 method: Method::Register,
                                 ok: false,
                                 message,
@@ -186,13 +186,13 @@ impl Lifecycle {
                         confirmed: false,
                     },
                 );
-                fx.push(Effect::Call {
+                fx.push(Fx::Call {
                     session,
                     request,
                     call,
                 });
             }
-            Event::Call(call) => fx.push(Effect::Deliver {
+            Event::Call(call) => fx.push(Fx::Deliver {
                 method: Method::of(call.method()),
                 ok: false,
                 message: Message::default(),
@@ -209,7 +209,7 @@ impl Lifecycle {
                     if let UriCall::SelectTrack { kind, .. } = &pending.call {
                         message.reply_track = Some(*kind);
                     }
-                    fx.push(Effect::Deliver {
+                    fx.push(Fx::Deliver {
                         method: Method::of(pending.call.method()),
                         ok: false,
                         message,
@@ -230,7 +230,7 @@ impl Lifecycle {
                     && reply.request == RequestId::new(0)
                 {
                     self.phase = Phase::Open;
-                    fx.push(Effect::Deliver {
+                    fx.push(Fx::Deliver {
                         method,
                         ok: reply.ok,
                         message: if reply.ok {
@@ -305,7 +305,7 @@ impl Lifecycle {
                 if message.normalized.contains(&Ev::Playing) {
                     self.plane_observed = true;
                 }
-                fx.push(Effect::Deliver {
+                fx.push(Fx::Deliver {
                     method,
                     ok: reply.ok,
                     message,
@@ -318,19 +318,19 @@ impl Lifecycle {
                 if self.released() {
                     if !self.release_reported {
                         self.release_reported = true;
-                        fx.push(Effect::Released);
+                        fx.push(Fx::Released);
                     }
                 } else if !matches!(self.phase, Phase::Closing | Phase::Quarantined) {
                     self.phase = Phase::Closing;
                     self.deadline = Some(now_ms.saturating_add(allowance_ms));
                     if let Some(session) = self.session {
-                        fx.push(Effect::Close { session });
+                        fx.push(Fx::Close { session });
                     }
                     // An outstanding Open still owes its addressed answer. Never release early.
                     else if self.opening.is_none() {
                         self.phase = Phase::Released;
                         self.release_reported = true;
-                        fx.push(Effect::Released);
+                        fx.push(Fx::Released);
                     }
                 }
             }
@@ -353,7 +353,7 @@ impl Lifecycle {
                     self.requests.clear();
                     self.deadline = None;
                     self.release_reported = true;
-                    fx.push(Effect::Released);
+                    fx.push(Fx::Released);
                 }
                 CloseStatus::Quarantined => {
                     self.phase = Phase::Quarantined;
@@ -377,7 +377,7 @@ impl Lifecycle {
 mod tests {
     use super::*;
     const SID: SessionId = SessionId::new(1);
-    fn step(machine: &mut Lifecycle, event: Event) -> Vec<Effect> {
+    fn step(machine: &mut Lifecycle, event: Event) -> Vec<Fx> {
         let mut fx = Vec::new();
         machine.step(event, &mut fx);
         fx
@@ -385,7 +385,7 @@ mod tests {
     fn open() -> Lifecycle {
         let mut m = Lifecycle::new();
         let fx = step(&mut m, Event::Open(Shape::Named));
-        let Effect::Open { request, .. } = fx[0] else {
+        let Fx::Open { request, .. } = fx[0] else {
             panic!("open")
         };
         step(
@@ -418,7 +418,7 @@ mod tests {
                     allowance_ms: 10_000
                 }
             ),
-            vec![Effect::Close { session: SID }]
+            vec![Fx::Close { session: SID }]
         );
         assert!(step(
             &mut m,
@@ -431,7 +431,7 @@ mod tests {
         assert!(!m.released());
         assert_eq!(
             step(&mut m, Event::Tick { now_ms: 10_010 }),
-            vec![Effect::Fault]
+            vec![Fx::Fault]
         );
         assert_eq!(m.phase(), Phase::Quarantined);
         assert_eq!(m.session(), Some(SID));
@@ -452,7 +452,7 @@ mod tests {
                     status: CloseStatus::Released
                 }
             ),
-            vec![Effect::Released]
+            vec![Fx::Released]
         );
         assert!(step(
             &mut m,
@@ -481,7 +481,7 @@ mod tests {
                     status: CloseStatus::Quarantined
                 }
             ),
-            vec![Effect::Fault]
+            vec![Fx::Fault]
         );
         assert_eq!(m.session(), Some(SID));
         assert!(!m.released());
@@ -492,11 +492,11 @@ mod tests {
                     media_id: "m".into()
                 })
             )[0],
-            Effect::Deliver { ok: false, .. }
+            Fx::Deliver { ok: false, .. }
         ));
         assert!(step(&mut m, Event::Open(Shape::Anon))
             .iter()
-            .all(|e| !matches!(e, Effect::Open { .. })));
+            .all(|e| !matches!(e, Fx::Open { .. })));
     }
     #[test]
     fn uri_lifecycle_repeated_methods_are_addressed_independently() {
@@ -517,10 +517,10 @@ mod tests {
                 index: 1,
             }),
         );
-        let Effect::Call { request: a, .. } = first[0] else {
+        let Fx::Call { request: a, .. } = first[0] else {
             panic!()
         };
-        let Effect::Call { request: b, .. } = second[0] else {
+        let Fx::Call { request: b, .. } = second[0] else {
             panic!()
         };
         assert_ne!(a, b);
@@ -536,7 +536,7 @@ mod tests {
                 }),
             );
             assert!(
-                matches!(&fx[0], Effect::Deliver { message, .. } if message.reply_track==Some(kind) && message.confirmed_track.is_none())
+                matches!(&fx[0], Fx::Deliver { message, .. } if message.reply_track==Some(kind) && message.confirmed_track.is_none())
             );
         }
         assert!(step(
@@ -564,14 +564,14 @@ mod tests {
                 ok: false,
             }),
         );
-        assert_eq!(fx, vec![Effect::Fault]);
+        assert_eq!(fx, vec![Fx::Fault]);
         assert!(!m.released());
     }
     #[test]
     fn uri_lifecycle_pending_open_close_waits_for_answer_then_closes_returned_session() {
         let mut m = Lifecycle::new();
         let fx = step(&mut m, Event::Open(Shape::Named));
-        let Effect::Open { request, .. } = fx[0] else {
+        let Fx::Open { request, .. } = fx[0] else {
             panic!()
         };
         assert!(step(
@@ -591,7 +591,7 @@ mod tests {
                     result: Ok(SID)
                 }
             ),
-            vec![Effect::Close { session: SID }]
+            vec![Fx::Close { session: SID }]
         );
         assert!(!m.released());
         assert_eq!(
@@ -602,12 +602,12 @@ mod tests {
                     status: CloseStatus::Released
                 }
             ),
-            vec![Effect::Released]
+            vec![Fx::Released]
         );
     }
     fn call_request(m: &mut Lifecycle, call: UriCall) -> RequestId {
         let fx = step(m, Event::Call(call));
-        let Effect::Call { request, .. } = fx[0] else {
+        let Fx::Call { request, .. } = fx[0] else {
             panic!()
         };
         request
@@ -617,7 +617,7 @@ mod tests {
         request: RequestId,
         method: &'static str,
         payload: &str,
-    ) -> Vec<Effect> {
+    ) -> Vec<Fx> {
         step(
             m,
             Event::Reply(UriReply {
@@ -704,7 +704,7 @@ mod tests {
             "subscribe",
             r#"{"trackSelected":true,"seekDone":true}"#,
         );
-        assert!(matches!(&fx[0],Effect::Deliver{message,..} if message.confirmed_track.is_none()));
+        assert!(matches!(&fx[0],Fx::Deliver{message,..} if message.confirmed_track.is_none()));
         let fx = reply(
             &mut m,
             sub,
@@ -712,7 +712,7 @@ mod tests {
             r#"{"trackSelected":{"type":"text","index":0}}"#,
         );
         assert!(
-            matches!(&fx[0],Effect::Deliver{message,..} if message.confirmed_track==Some("text"))
+            matches!(&fx[0],Fx::Deliver{message,..} if message.confirmed_track==Some("text"))
         );
         let repeated = call_request(
             &mut m,
@@ -730,7 +730,7 @@ mod tests {
             r#"{"trackSelected":{"type":"text","index":0}}"#,
         );
         assert!(
-            matches!(&fx[0],Effect::Deliver{message,..} if message.confirmed_track.is_none()),
+            matches!(&fx[0],Fx::Deliver{message,..} if message.confirmed_track.is_none()),
             "historical same-target commands make attribution ambiguous"
         );
     }
@@ -767,7 +767,7 @@ mod tests {
             r#"{"returnValue":false,"mediaId":"owner"}"#,
         );
         assert!(
-            matches!(&own[..], [Effect::Deliver { method: Method::Play, message, .. }] if message.accepted() == Some(false))
+            matches!(&own[..], [Fx::Deliver { method: Method::Play, message, .. }] if message.accepted() == Some(false))
         );
     }
 }
