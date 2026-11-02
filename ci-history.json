@@ -1,4 +1,4 @@
-{"updated":"2026-11-02T15:51:03Z",
+{"updated":"2026-11-02T15:51:36Z",
 "ci":[
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30922414156,"at":"2026-08-04T15:06:18Z","sha":"84f813d70","title":"docs: the README says why this exists, in the first person","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":97},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4425,7 +4425,8 @@
 {"id":41468985038,"at":"2026-11-02T15:10:33Z","sha":"b18e34c88","title":"Merge fix-830-owner-stamp into fix-1025-viewstate-identity","pr":1122,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":220,"Windows launcher syntax":23,"Linux simulator build + launch":249,"macOS simulator build + launch":229}},
 {"id":41469463711,"at":"2026-11-02T15:13:28Z","sha":"cb2c42123","title":"Merge origin/main into fix-599-other-videos","pr":1033,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":259,"macOS tests against bundled FFmpeg and ASS":213,"macOS simulator build + launch":241,"Windows launcher syntax":22}},
 {"id":41470270285,"at":"2026-11-02T15:18:20Z","sha":"bed180737","title":"fix(hud): bind stable simulator uploads to the actual release tag commit","pr":1206,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":211,"macOS simulator build + launch":194,"Linux simulator build + launch":256}},
-{"id":41472191447,"at":"2026-11-02T15:30:08Z","sha":"f1436ba47","title":"Add source-pinned Player HUD registry tooling","pr":1206,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":198,"macOS tests against bundled FFmpeg and ASS":242,"Windows launcher syntax":23,"Linux simulator build + launch":304}}
+{"id":41472191447,"at":"2026-11-02T15:30:08Z","sha":"f1436ba47","title":"Add source-pinned Player HUD registry tooling","pr":1206,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":198,"macOS tests against bundled FFmpeg and ASS":242,"Windows launcher syntax":23,"Linux simulator build + launch":304}},
+{"id":41474286609,"at":"2026-11-02T15:42:51Z","sha":"929b56869","title":"player: the URI probe's `drive` variant exercises pause, resume, seek and track selection","pr":1207,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":204,"Windows launcher syntax":21,"macOS simulator build + launch":210,"Linux simulator build + launch":319}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
