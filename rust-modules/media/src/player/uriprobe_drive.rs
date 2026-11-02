@@ -39,6 +39,18 @@ use std::time::Instant;
 /// picture (`videoInfo`) only changes the SOURCE rectangle (`engine::place_exported` does the same).
 const CANVAS: (c_int, c_int) = (1_920, 1_080);
 
+// The actuator reads platform facts through this seam; the probe machine receives only its answer.
+#[derive(Clone,Copy)]
+enum AcbGateFact { Mode, BootHandle, PlayerType, DassAvailable, Initialized }
+struct AcbGateCheck { mode:i32, boot_handle:bool, ptype:i32, dass_available:bool, initialized:bool, ready:bool }
+fn check_acb_gate(dass:bool, read:impl Fn(AcbGateFact)->i32)->AcbGateCheck {
+    let mode=read(AcbGateFact::Mode); let boot_handle=read(AcbGateFact::BootHandle)!=0;
+    let ptype=read(AcbGateFact::PlayerType); let dass_available=read(AcbGateFact::DassAvailable)!=0;
+    let initialized=read(AcbGateFact::Initialized)==1;
+    let ready=mode==plx_platform::tv::sink::VP_ACB && boot_handle && initialized && ptype==0 && (!dass || dass_available);
+    AcbGateCheck {mode,boot_handle,ptype,dass_available,initialized,ready}
+}
+
 /// One running probe: the machine, the pipe to `com.webos.media`, and what the driver owns for it.
 /// No `Debug`: [`url`](Self::url) is a media URL with a token in it.
 pub struct UriSession {
@@ -283,13 +295,16 @@ impl UriSession {
         let sink = super::sink();
         match op {
             AcbOp::Check {dass} => {
-                let mode = sink.window_mode();
-                let initialized = super::ACB_OK.load(std::sync::atomic::Ordering::Relaxed);
-                let ptype = super::PTYPE.load(std::sync::atomic::Ordering::Relaxed);
-                let available = unsafe { sink.plane_probe_dass_available(mt) };
+                let check=check_acb_gate(*dass,|fact|match fact {
+                    AcbGateFact::Mode=>sink.window_mode(),
+                    AcbGateFact::BootHandle=>i32::from(super::ACB_OK.load(std::sync::atomic::Ordering::Relaxed)),
+                    AcbGateFact::PlayerType=>super::PTYPE.load(std::sync::atomic::Ordering::Relaxed),
+                    AcbGateFact::DassAvailable=>i32::from(unsafe {sink.plane_probe_dass_available(mt)}),
+                    AcbGateFact::Initialized=>i32::from(unsafe {sink.plane_probe_initialized(mt)}),
+                });
                 log("uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection");
-                log(&format!("uriprobe: t={now_ms} acb gate mode={mode} boot_handle={initialized} actual_ptype={ptype} dass_available={available}"));
-                mode == plx_platform::tv::sink::VP_ACB && initialized && ptype == 0 && (!*dass || available)
+                log(&format!("uriprobe: t={now_ms} acb gate mode={} boot_handle={} actual_ptype={} dass_available={} initialized={}",check.mode,check.boot_handle,check.ptype,check.dass_available,check.initialized));
+                check.ready
             }
             AcbOp::MediaId {media_id} => {
                 let Some(session) = self.lifecycle.session() else { return false };
@@ -846,6 +861,27 @@ mod tests {
             rig.back();
         });
         assert!(line_with(&output," summary ").contains("resume=sent"),"delayed initial ACK changed resume: {output}");
+    }
+
+    #[test]
+    fn uri_acb_review_refused_initializer_invalidates_both_arms() {
+        for dass in [false,true] {
+            let check=check_acb_gate(dass,|fact|match fact {
+                AcbGateFact::Mode=>plx_platform::tv::sink::VP_ACB,
+                AcbGateFact::BootHandle|AcbGateFact::DassAvailable=>1,
+                AcbGateFact::PlayerType|AcbGateFact::Initialized=>0,
+            });
+            assert!(!check.ready,"created handle and playerType0 cannot prove initialization succeeded");
+        }
+        for dass in [false,true] {
+            let ready=check_acb_gate(dass,|fact|match fact {
+                AcbGateFact::Mode=>plx_platform::tv::sink::VP_ACB,
+                AcbGateFact::PlayerType=>0,
+                _=>1,
+            });
+            assert!(ready.ready,"valid initialized boot handle must remain usable");
+        }
+
     }
 
     /// The tests which need the host sink to export a window (the webOS 5+ path) or the whole

@@ -823,4 +823,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn uri_acb_review_other_video_info_never_reaches_waiting_owner() {
+        let mut m=open();
+        let load=call_request(&mut m,UriCall::Load{window_id:None});
+        reply(&mut m,load,"load",r#"{"returnValue":true,"mediaId":"owner"}"#);
+        let sub=call_request(&mut m,UriCall::Subscribe{media_id:"owner".into()});
+        for payload in [
+            r#"{"videoInfo":{"mediaId":"other","width":1280,"height":720,"frameRate":24}}"#,
+            r#"{"mediaId":"owner","videoInfo":{"mediaId":"other","width":1280,"height":720,"frameRate":24}}"#,
+            r#"{"mediaId":"owner","videoInfo":{"mediaId":42,"width":1280,"height":720,"frameRate":24}}"#,
+        ] {
+            assert!(reply(&mut m,sub,"subscribe",payload).is_empty(),"foreign facts reached owner: {payload}");
+        }
+    }
+
 }

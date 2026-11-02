@@ -32,6 +32,9 @@ Freshly copied from the dev television under `tools/tv-lock.sh`:
   `0x2c944` to the table at `0x2c9a8`, rather than inferring a sink from the function name.
 - Only fixed mode 0 is considered here. The wrapper contains no range check before the
   core indexes its mode table; arbitrary mode input must not be exposed.
+- `AcbAPI_initialize` at `0x15c4c` forwards the core's return value. The core at `0xcd5c`
+  returns 1 after its first valid initialization and callback installation; invalid input
+  or repeated initialization returns 0. A nonzero create handle alone is not this evidence.
 - Offline inventories contain the export on 3.4.0, 3.9.2, 4.4.2 and 4.10.0. It is absent
   on 2.2.3; the entire library is absent on 5.3.1 and later inventoried firmware.
   The call must remain optional and cannot become a requirement for ordinary ACB playback.

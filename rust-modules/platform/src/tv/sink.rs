@@ -104,6 +104,8 @@ pub trait VideoSink: Sync {
     unsafe fn destroy_window(&self, mt: &MainThread);
     unsafe fn plane_create(&self, mt: &MainThread, app_id: *const c_char, player_type: c_int) -> c_long;
     #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_initialized(&self, mt: &MainThread) -> bool;
+    #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, mt: &MainThread) -> bool;
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_media_id(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
@@ -157,6 +159,8 @@ macro_rules! refuse_every_verb {
             _dst_y: c_int, _dst_w: c_int, _dst_h: c_int) -> c_int { 0 }
         unsafe fn destroy_window(&self, _mt: &MainThread) {}
         unsafe fn plane_create(&self, _mt: &MainThread, _app_id: *const c_char, _player_type: c_int) -> c_long { 0 }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_initialized(&self, _mt: &MainThread) -> bool { false }
         #[cfg(feature = "devtriggers")]
         unsafe fn plane_probe_dass_available(&self, _mt: &MainThread) -> bool { false }
         #[cfg(feature = "devtriggers")]

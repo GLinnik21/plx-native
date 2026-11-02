@@ -64,6 +64,7 @@ void vp_destroy_window(void);
 /* ACB (App Common Binding) — VP_ACB only; every verb is a no-op in the other modes, so callers
  * need not branch. On webOS 5 this whole sequence has no replacement: it is deleted outright. */
 long acb_create(const char *appId, int playerType);        /* create+initialize; 0 = failed */
+int acb_probe_initialized(void);
 int acb_probe_dass_available(void);
 int acb_probe_media_id(const char *mediaId);
 int acb_probe_loaded(void);

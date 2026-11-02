@@ -1267,6 +1267,8 @@ impl VideoSink for HostSink {
         acb_create(app_id, player_type)
     }
     #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_initialized(&self, _: &MainThread) -> bool { false }
+    #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, _: &MainThread) -> bool { false }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_media_id(&self, _: &MainThread, _media_id: *const c_char) -> c_int { 0 }

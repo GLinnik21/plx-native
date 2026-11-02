@@ -2029,4 +2029,18 @@ mod tests {
         assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Acb{..})));
     }
 
+    #[test]
+    fn uri_acb_review_wrong_nested_video_cannot_advance_descriptor_wait() {
+        for payload in [
+            r#"{"videoInfo":{"mediaId":"other","width":1280,"height":720,"frameRate":24}}"#,
+            r#"{"mediaId":"_m1","videoInfo":{"mediaId":"other","width":1280,"height":720,"frameRate":24}}"#,
+            r#"{"mediaId":"_m1","videoInfo":{"mediaId":42,"width":1280,"height":720,"frameRate":24}}"#,
+        ] {
+            let (mut rig,_)=acb_loaded(Variant::AcbDass,false);
+            let fx=rig.msg("subscribe",payload);
+            assert!(matches!(rig.probe.phase,Phase::AcbWaitingVideo{..}),"foreign video advanced binding: {fx:?}");
+            assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Acb{..})));
+        }
+    }
+
 }

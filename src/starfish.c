@@ -71,6 +71,8 @@ static struct {
      * AcbAPI_connectDass@0x16720 forwards mode+1 and long* task to core@0x10a14.
      * External zero selects sinkTypeList[1]="main"; only that proven mode is exposed. */
     int  (*connectDass)(long, int, long *);
+    /* Probe-only observation of the existing boot initialization; BF behavior is unchanged. */
+    int probe_initialize_result;
 } acb;
 
 static struct {
@@ -798,6 +800,7 @@ int sf_feed_abi_is_cow(void) {
  * read as true of this block until that is done. */
 long acb_create(const char *appId, int playerType) {
     if (vp_mode() != VP_ACB) return 0;
+    acb.probe_initialize_result = 0;
     g_acb = acb.create();
     /* NO FALLBACK ID. This used to substitute the shipped app's literal id for a NULL `appId`,
      * which was the far half of a double fallback: the Rust side read `getenv("APPID")` and passed
@@ -809,8 +812,8 @@ long acb_create(const char *appId, int playerType) {
      * rather than guessing is what keeps the pair readable together. */
     if (g_acb) {
         if (appId) {
-            int initialized = acb.initialize(g_acb, playerType, appId, acb_cb);
-            if (elogf) { fprintf(elogf, "acb initialize playerType=%d rv=%d callback=registered\n", playerType, initialized); fflush(elogf); }
+            acb.probe_initialize_result = acb.initialize(g_acb, playerType, appId, acb_cb);
+            if (elogf) { fprintf(elogf, "acb initialize playerType=%d rv=%d callback_installed=%d\n", playerType, acb.probe_initialize_result, acb.probe_initialize_result == 1); fflush(elogf); }
         } else {
             /* AND HAND BACK NOTHING. Returning the live handle here made the refusal half-done:
              * the Rust side stores `ACB_OK = acb != 0`, so `acb_bind`, `acb_send_video_data` and
@@ -832,6 +835,10 @@ long acb_create(const char *appId, int playerType) {
 }
 /* Developer URI experiments use the same process-lifetime boot handle and callback as BF.
  * These split the existing bind solely to preserve observed inter-call delays. */
+/* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
+ * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
+ * Keep this gate probe-only; normal acb_create still returns its historical handle result. */
+int acb_probe_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
 int acb_probe_media_id(const char *mediaId) {
     if (!g_acb || !mediaId) return 0;

@@ -382,6 +382,7 @@ pub fn parse_event(payload: &str) -> Message {
         "paused",
         "endOfStream",
         "currentTime",
+        "videoInfo",
         "seekDone",
         "trackSelected",
         "unloadCompleted",
@@ -400,6 +401,14 @@ pub fn parse_event(payload: &str) -> Message {
                 message.media_id = Some(id);
             }
         }
+    }
+    // Only the already-validated native ACB envelope gives sourceInfo.context identity meaning.
+    if let Some(source) = message.acb_source.as_ref() {
+        if message.media_id.as_ref().is_some_and(|outer| outer != &source.media_id) { message.identity_conflict = true; }
+        else { message.media_id = Some(source.media_id.clone()); }
+    } else if let Some(source) = object.get("sourceInfo") {
+        if source.get("video").and_then(VideoFacts::decode).is_some()
+            && source.get("context").is_some_and(|id| !id.is_string()) { message.identity_conflict = true; }
     }
     let track = object.get("trackSelected").and_then(Value::as_object);
     message.selected_track = track.and_then(|track| {
@@ -876,6 +885,25 @@ mod tests {
         assert!(!format!("{message:?} {source:?}").contains("SECRET"));
         let refused=parse_event(&input.replace("{\"mediaId", "{\"returnValue\":false,\"mediaId"));
         assert!(refused.acb_source.is_none()); assert!(refused.video_info.is_none());
+    }
+
+    #[test]
+    fn uri_acb_review_video_info_identity_is_validated_before_facts() {
+        let nested=parse_event(r#"{"videoInfo":{"mediaId":"other","width":1280,"height":720,"frameRate":24}}"#);
+        assert_eq!(nested.media_id.as_deref(),Some("other"),"nested videoInfo identity must survive for owner validation");
+        for id in [r#""other""#, "42", "null"] {
+            let payload=format!(r#"{{"mediaId":"owner","videoInfo":{{"mediaId":{id},"width":1280,"height":720,"frameRate":24}}}}"#);
+            let message=parse_event(&payload);
+            assert!(message.identity_conflict,"{payload}");
+            assert!(message.video_info.is_none(),"invalid identity published binding facts: {message:?}");
+        }
+        for context in [r#""other""#, "42", "null"] {
+            let payload=format!(r#"{{"mediaId":"owner","sourceInfo":{{"context":{context},"video":{{"width":1280,"height":720,"frameRate":24}}}}}}"#);
+            let message=parse_event(&payload);
+            assert!(message.identity_conflict,"{payload}");
+            assert!(message.video_info.is_none() && message.acb_source.is_none());
+        }
+
     }
 
 }

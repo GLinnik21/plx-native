@@ -68,6 +68,8 @@ mod sys {
 
         pub(super) fn acb_create(app_id: *const c_char, player_type: c_int) -> c_long;
         #[cfg(feature = "devtriggers")]
+        pub(super) fn acb_probe_initialized() -> c_int;
+        #[cfg(feature = "devtriggers")]
         pub(super) fn acb_probe_dass_available() -> c_int;
         #[cfg(feature = "devtriggers")]
         pub(super) fn acb_probe_media_id(media_id: *const c_char) -> c_int;
@@ -239,6 +241,8 @@ impl plx_platform::tv::sink::VideoSink for StarfishSink {
         sys::acb_create(app_id, player_type)
     }
     #[inline]
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_initialized(&self, _: &MainThread) -> bool { sys::acb_probe_initialized() != 0 }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, _: &MainThread) -> bool { sys::acb_probe_dass_available() != 0 }
     #[cfg(feature = "devtriggers")]
