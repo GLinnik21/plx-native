@@ -1019,7 +1019,7 @@ image's proportions rounded to tokens and are approximate.
       { "id": "bar", "gap_before": "SM", "cells": [
         { "align": "start", "playbar": { "w": "fill", "fill": "gold", "track": "RAIL_TRACK", "thickness": 6,
           "knob": "always", "clocks": "ends", "clock_size": "CAPTION", "mark": "busy_only" } }
-      ] },
+      ], "chrome": "steady" },
       { "id": "row", "gap_before": "XS", "z": 1, "cells": [
         { "align": "center", "segment": { "id": "center", "gap": "LG", "items": [
           { "id": "subs", "command": "open_tracks", "tab": "subtitles", "widget": "disc", "size": 52,
@@ -1572,6 +1572,8 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
 - Example: `{"code": "HUD-E0301", "path": "/layout/block/2/cells/0/segment/items/1/command", "rule":
   "command-known", "message": "unknown command skip_back", "hint": "a relative jump is the command seek with a
   signed by in seconds: by -10", "nearest": ["seek"]}`.
+- `HUD-E0904` rejects a playbar band whose `chrome` is omitted or `fades`: the bar and its preview must stay
+  visible through a scrub. Declare `chrome: steady` on that band, keeping fading controls in separate bands.
 - Codes are grouped by hundreds per rule family. Beyond the example: `HUD-E0601` app text does not fit (context `lang`,
   the string, its measured width, the room, the rect it meets); `HUD-W0602` app text fits but inside `CI_TEXT_SKEW`
   (an error in registry CI); `HUD-E0701` an SVG element outside the mask subset (for `linearGradient`,

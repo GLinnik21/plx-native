@@ -14,7 +14,7 @@
     "block": [
       { "id": "bar", "cells": [
         { "align": "start", "playbar": { "w": "fill", "fill": "ACCENT", "track": "RAIL_TRACK", "thickness": 6, "clock_size": "CAPTION" } }
-      ] },
+      ], "chrome": "steady" },
       { "id": "row", "gap_before": "SM", "cells": [
         { "align": "end", "segment": { "id": "right", "items": [
           { "id": "more", "command": "open_more", "widget": "disc", "size": 52 }

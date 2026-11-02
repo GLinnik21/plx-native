@@ -344,6 +344,12 @@ fn rows() -> Vec<Row> {
             &codes::E0902,
             "/palette",
         ),
+        row(
+            "playbar_chrome_must_stay_steady",
+            c(r#""chrome": "steady""#, r#""chrome": "fades""#),
+            &codes::E0904,
+            "/layout/block/1/chrome",
+        ),
         // I11: a by_interval map lists every rung of the viewer's Skip ladder.
         row(
             "i11_ladder_missing_rungs",
@@ -585,5 +591,15 @@ fn toggle_play_seek_and_stats_never_fold_and_open_more_is_not_a_fold() {
     let names: Vec<&str> = check(&package(MINIMAL)).folds.iter().map(|f| f.command).collect();
     for command in ["toggle_play", "seek", "toggle_stats", "open_more"] {
         assert!(!names.contains(&command), "{command} folded");
+    }
+}
+
+#[test]
+fn a_playbar_band_must_explicitly_stay_visible_during_scrub() {
+    for replacement in ["", r#""chrome": "fades", "#] {
+        let text = edit(CLASSIC, r#""chrome": "steady", "#, replacement);
+        let checked = check(&package(&text));
+        assert!(checked.findings.iter().any(|f| f.rule == "playbar-steady" && f.pointer.starts_with("/layout/block/1")),
+            "a fading or omitted chrome declaration makes the bar and preview vanish during scrub: {:?}", checked.findings);
     }
 }

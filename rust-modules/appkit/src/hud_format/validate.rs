@@ -29,6 +29,7 @@ pub fn check(package: &Package) -> Vec<Finding> {
     identity(&package.layout, &mut out);
     builtin_has_no_palette(package, &mut out);
     face_ladders(&package.layout, &mut out);
+    playbar_chrome(&package.layout, &mut out);
     out
 }
 
@@ -130,6 +131,22 @@ fn face_ladders(layout: &Object, out: &mut Vec<Finding>) {
                     missing[0]
                 ),
             ));
+        }
+    });
+}
+
+/// A scrub fades transport chrome; its bar and preview must remain visible for the gesture's whole lifetime.
+fn playbar_chrome(layout: &Object, out: &mut Vec<Finding>) {
+    each_object(layout, &mut |band| {
+        if band.node != "band" || band.get("chrome").and_then(Val::as_str) == Some("steady") {
+            return;
+        }
+        let mut has_bar = false;
+        each_object(band, &mut |cell| has_bar |= cell.node == "playbar");
+        if has_bar {
+            out.push(Finding::new(&codes::E0904, pointer_push(&band.pointer, "chrome"),
+                "the playbar's band fades during scrub, hiding the bar and its preview while the gesture is active",
+                "set this band's chrome to steady; put fading title text and controls in separate bands"));
         }
     });
 }

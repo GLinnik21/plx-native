@@ -32,7 +32,7 @@
       { "id": "bar", "gap_before": "SM", "cells": [
         { "align": "start", "playbar": { "w": "fill", "fill": "gold", "track": "RAIL_TRACK", "thickness": 6,
           "knob": "always", "clocks": "ends", "clock_size": "CAPTION", "mark": "busy_only" } }
-      ] },
+      ], "chrome": "steady" },
       { "id": "row", "gap_before": "XS", "z": 1, "cells": [
         { "align": "center", "segment": { "id": "center", "gap": "LG", "items": [
           { "id": "subs", "command": "open_tracks", "tab": "subtitles", "widget": "disc", "size": 52,
