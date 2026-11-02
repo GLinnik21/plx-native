@@ -1,4 +1,4 @@
-{"updated":"2026-11-02T18:49:06Z",
+{"updated":"2026-11-02T18:55:17Z",
 "ci":[
 {"id":30913024672,"at":"2026-08-04T13:16:43Z","sha":"6109f4470","title":"legal: LICENSE is verbatim MIT again, so GitHub can read it","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":126},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30922414156,"at":"2026-08-04T15:06:18Z","sha":"84f813d70","title":"docs: the README says why this exists, in the first person","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":97},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -4444,7 +4444,8 @@
 {"id":41487108673,"at":"2026-11-02T17:01:25Z","sha":"1c9a75db4","title":"Publish HUD authoring files and verify registry setup","pr":1209,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":161,"macOS simulator build + launch":145,"Linux simulator build + launch":320,"Windows launcher syntax":43}},
 {"id":41491004966,"at":"2026-11-02T17:25:15Z","sha":"3c1dc2b83","title":"Clarify which diagnostic messages enter lab snapshots and ship in releases","pr":1210,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":346,"macOS simulator build + launch":217,"macOS tests against bundled FFmpeg and ASS":219,"Windows launcher syntax":26}},
 {"id":41494129805,"at":"2026-11-02T17:45:22Z","sha":"60b35acea","title":"Add opt-in firmware playback diagnostics","pr":1210,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":20,"Linux simulator build + launch":334}},
-{"id":41501427342,"at":"2026-11-02T18:31:44Z","sha":"7c870e59c","title":"screens: update SCREEN_SHAPES_PIN after merging diagnostics and Live TV","pr":993,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":28,"Linux simulator build + launch":324,"macOS tests against bundled FFmpeg and ASS":198},"failed":["macOS simulator build + launch"]}
+{"id":41501427342,"at":"2026-11-02T18:31:44Z","sha":"7c870e59c","title":"screens: update SCREEN_SHAPES_PIN after merging diagnostics and Live TV","pr":993,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":28,"Linux simulator build + launch":324,"macOS tests against bundled FFmpeg and ASS":198},"failed":["macOS simulator build + launch"]},
+{"id":41502731463,"at":"2026-11-02T18:40:01Z","sha":"957a7d734","title":"player: use Fx naming for URI lifecycle effects","pr":1211,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":366,"macOS simulator build + launch":299,"Windows launcher syntax":23,"macOS tests against bundled FFmpeg and ASS":308}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
