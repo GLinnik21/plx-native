@@ -2398,13 +2398,13 @@ const HERO_SCRIM_KNEE: f32 = 0.39 * crate::consts::SCR_H; // 421.2
 
 /// The mirrored RIGHT wedge — for a hero with a right-aligned column, which today means detail's
 /// "Starring" block at x 1270..1830, the one piece of hero copy the left wedge by definition cannot
-/// reach. Weaker and shorter than the left one because the bottom-up ramp is already ~0.65 across
-/// that band: this closes the gap, it does not carry the load. It is also the component's banding
+/// reach. Shorter than the left one, feathered across both axes; its corner weight preserves
+/// contrast at the top of a wrapped credits block under the shared atmospheric ramp. It is also the component's banding
 /// risk (`GL_DITHER` is deliberately off) — ~1 8-bit code per 4–5px near its origin. If it bands,
 /// make these SMALLER (steeper = fewer codes per pixel); never re-enable dithering.
 const HERO_SCRIM_R_W: f32 = 700.0;
-const HERO_SCRIM_R_TOP: f32 = theme::hero::SCRIM_RIGHT_TOP_Y;
-const HERO_SCRIM_R_A: f32 = 0.50;
+const HERO_SCRIM_R_TOP: f32 = 0.65 * crate::consts::SCR_H; // 702
+const HERO_SCRIM_R_A: f32 = theme::hero::SCRIM_RIGHT_A;
 
 /// Where the frame-wide ATMOSPHERIC ramp starts — the treatment's other half, which both heroes
 /// paint under this wedge (`screens::home`'s `Backdrop::draw` / `detail::draw_backdrop`): nothing above this
