@@ -28,9 +28,10 @@ normal build.
 
 Five pieces of this feature already exist, and the design is mostly wiring them together.
 
-* **One log sink.** Every diagnostic line in the app goes through `plx_base::eventlog::log(&str)`,
-  which is also where `redact_tokens` already strips `X-Plex-Token=…`. A ring buffer tapped there
-  sees *everything* the app knows and inherits the redaction that is already the shipped policy.
+* **The app event-log sink.** Messages sent through `plx_base::eventlog::log(&str)` enter the
+  diagnostic ring after the shipped credential scrubber. Opt-in firmware playback messages go to
+  the separate local playback trace and are absent from lab snapshots; see
+  [Playback diagnostics](playback-diagnostics.md).
 * **One structured state snapshot, already audited for secrets.** `player::Diag` (`player/mod.rs`,
   ~50 fields) is the exact list this ask enumerates — playback stage, load payload video/audio
   codec, video w/h, position/duration, fed bytes, feed state, `http_status`, `net_rx`, callback

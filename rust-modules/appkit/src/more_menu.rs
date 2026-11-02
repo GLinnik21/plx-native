@@ -6,10 +6,10 @@
 //! # Why an overflow menu exists at all
 //!
 //! **Stats for nerds**, the diagnostics overlay (`crate::app::diagnostics`), needs a home a stranger can
-//! find, because it is how this app gets bug reports off televisions nobody here owns — every other
-//! diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the remote FIFO, the
-//! capture stream) is compiled out of RELEASE builds by the `devtriggers` feature, which is what a
-//! user installs. "Press `…`, turn Stats for nerds on, photograph the screen" is a sentence that
+//! find, because it is how this app gets bug reports off televisions nobody here owns. Stats for
+//! nerds and the opt-in playback diagnostics in Settings ship in release builds. Developer triggers,
+//! the remote FIFO and capture stream require the `devtriggers` feature. "Press `…`, turn Stats
+//! for nerds on, photograph the screen" is a sentence that
 //! fits in a GitHub reply and needs no ssh, no root and no rebuild.
 //!
 //! It held that one row for a while, and a menu with one row is not a mistake either: the
