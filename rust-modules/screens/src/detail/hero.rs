@@ -1985,10 +1985,9 @@ mod tests {
         );
     }
 
-    /// The people lines are one bottom-anchored stack: the cast line stays pinned to the button row's
-    /// bottom whether or not a credit line exists above it, and the credit stands wholly above it.
+    /// The people lines share the facts bottom above the actions; adding a credit grows upward.
     #[test]
-    fn the_people_lines_stack_up_from_the_button_row() {
+    fn the_people_lines_stack_up_from_the_facts_bottom() {
         let _g = plx_base::testlock::serial();
         let measure = plx_ui::fixture::FixtureMeasure;
         let credit = |tag: &str| plx_data::metadata::Cast { tag: tag.into(), role: String::new(), thumb: String::new(), id: 0, tag_key: String::new() };
