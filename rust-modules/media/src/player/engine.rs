@@ -2501,10 +2501,13 @@ fn reload_start_outcome(
 /// Start the side subtitle reader for the live remux this engine run plays, drawing the track
 /// the route's target names (or, for a sidecar, measuring the clock only).
 fn start_side_reader(target: &crate::route::SideReaderTarget) {
+    let clock_only = target.clock_only();
     let started = super::subside::spec_for(target).is_some_and(super::subside::start);
     if !started {
-        log("subside: could not start the reader thread");
-        if target.clock_only() {
+        // A clock-only run gets its own label: the harness grades `subside: could not start` as
+        // the TRACK reader failing (`tests/run.py`).
+        log(if clock_only { "subside: clock-only failed" } else { "subside: could not start the reader thread" });
+        if clock_only {
             // The app fetches that subtitle itself and no reader owns it: the sidecar is drawn on
             // the remux's clock, as it was before the reader measured it. Never the server's burn.
             return;

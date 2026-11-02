@@ -4305,9 +4305,10 @@ fn clear_remux_run() {
     s.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// **The measured case.** With Boost Dialog on, a direct play is a PMS remux that (re)starts on the
-/// Part keyframe at or before the requested offset while the app labels that frame with the
-/// REQUESTED offset (`disp_base`), so the playhead runs ahead of the content by `offset + 0.083 s -
+/// **The measured case.** With Boost Dialog on, a direct play is a PMS remux that (re)starts on a
+/// Part keyframe EARLIER than or at the requested offset — not always the last one (917 s started
+/// on 914.914 s while 916.916 s existed) — while the app labels that frame with the REQUESTED
+/// offset (`disp_base`), so the playhead runs ahead of the content by `offset + 0.083 s -
 /// keyframe` and an external subtitle (file time) drew early. `(requested, remux started on)`, the
 /// first remux frame at 0.083 s, GOP 2.002 s: the four rows measured on one real file.
 #[test]
@@ -4366,6 +4367,33 @@ fn sidecar_clock_only_a_sidecar_over_a_live_remux_is_moved_and_only_by_a_measure
     // the engine run is over: its measurement does not survive it
     crate::player::subside::stop("test");
     assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), playhead);
+    clear_remux_run();
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// **The draw's wiring.** The screen asks `player::subtitle_draw` for BOTH the source and the
+/// position it samples, so a sidecar over a remux is drawn at the content's clock. A regression
+/// that handed the sidecar the raw playhead (the bug), or that moved the source choice back into
+/// the screen, has to fail here.
+#[test]
+fn sidecar_clock_the_draw_asks_the_sidecar_at_the_corrected_position() {
+    const SCRIPT: &[u8] = b"[Script Info]\nScriptType: v4.00+\n[Events]\n\
+        Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,SIDE\n";
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = sidecar_over_admitted_remux(&mut ps);
+    crate::player::sidecar::select_loaded_for_test(79, SCRIPT);
+    let playhead = remux_started_at(917_000_000_000, 83_000_000);
+    let (source, position) = crate::player::subtitle_draw(&ps).expect("the app draws the sidecar");
+    assert!(matches!(source.content, crate::player::ass::Content::Script { .. }), "the drawn source is the sidecar");
+    assert_eq!(position, playhead, "nothing measured yet: drawn exactly as before");
+    measured(914_914_000_000, 83_000_000, 917_000_000_000);
+    let (source, position) = crate::player::subtitle_draw(&ps).expect("the app draws the sidecar");
+    assert!(matches!(source.content, crate::player::ass::Content::Script { .. }), "still the sidecar");
+    assert_eq!(position, 914_914_000_000, "drawn at the content whose picture is on screen");
+    assert_ne!(position, playhead, "the raw playhead is exactly the bug");
+    crate::player::sidecar::reset();
     clear_remux_run();
     live.finish();
     cleanup(&mut ps);

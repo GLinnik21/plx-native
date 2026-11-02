@@ -27,13 +27,18 @@
 //! burned and a sidecar is drawn from here. The fact is PASSED IN rather than read: the playback session is
 //! the frame's publication, and the draw that calls this already holds it.
 //!
-//! Over a REMUX the playhead is not file time: PMS starts the remux on the Part keyframe at or
-//! before the requested offset, and the engine labels that frame with the requested offset
-//! (`disp_base`), so the playhead leads the content by the snap (0.6 s to 2.2 s measured). The side
-//! reader finds that keyframe clock-only (`subside::CLOCK_ONLY`: no cue read, byte-exact anchor
-//! match only) and `player::sidecar_clock_ns` adds its delta to the position the sidecar is drawn
-//! at, for a sidecar over a live remux only. Without an exact match, or off the reader's
-//! local-link and bitrate gate, nothing is added and the sidecar keeps the remux's clock.
+//! Over a REMUX the playhead is not file time: PMS starts the remux on a Part keyframe EARLIER
+//! than or at the requested offset — not always the last one (a 917 s request started on 914.914 s
+//! while 916.916 s existed; see `ff_subside`'s `sidecar_clock_at_917…` test) — and the engine
+//! labels that frame with the requested offset (`disp_base`), so the playhead leads the content by
+//! the snap (0.6 s to 2.2 s measured). The side reader finds that keyframe clock-only
+//! (`subside::CLOCK_ONLY`: no cue read, byte-exact anchor match only) and
+//! `player::sidecar_clock_ns` adds its delta to the position the sidecar is drawn at, for a
+//! sidecar over a live remux only. Without an exact match, or off the reader's local-link and
+//! bitrate gate, nothing is added and the sidecar keeps the remux's clock. Until the measurement
+//! lands (a moment after each remux start), nothing is added either: the sidecar is drawn exactly
+//! as before for that moment, and a cue already shown early can appear a second time once the
+//! position drops.
 //!
 //! The screen asks `player::subtitle_draw` for the source and that position, and subtracts the
 //! viewer's timing offset from the clock it samples there, so the offset composes with the
@@ -243,6 +248,23 @@ pub fn select_without_fetch_for_test(stream_id: i64) {
         server: plx_plex::plex::ServerId::UNSET, stream_id, key: String::new(), codec: String::new(),
     });
     st.failed = None;
+}
+
+/// Select `stream_id` as a sidecar and install `script` as its loaded file, without fetching: for
+/// tests of what the DRAW is handed for a sidecar over a remux (`player::subtitle_draw`). The
+/// script must be an authored ASS/SSA one, so nothing restyles it on a worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn select_loaded_for_test(stream_id: i64, script: &[u8]) {
+    let mut st = state();
+    st.generation = st.generation.wrapping_add(1);
+    st.pending = None;
+    st.failed = None;
+    let selection = Selection {
+        server: plx_plex::plex::ServerId::UNSET, stream_id, key: String::new(), codec: "ass".into(),
+    };
+    let content = decode(script.to_vec(), "ass").expect("fixture: an authored script");
+    st.want = Some(selection.clone());
+    st.loaded = Some((selection, content));
 }
 
 /// Select `stream_id` as a sidecar whose conversion FAILED `age` ago, without fetching anything: the
