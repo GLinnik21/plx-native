@@ -2038,7 +2038,7 @@ impl<'e, 'p> Env<'e, 'p> {
         for cell in cells {
             let Some((kind, c)) = content(cell) else { continue };
             match kind {
-                "text" if c.get("bind").and_then(Val::as_str).is_some_and(|b| b.starts_with("info.")) => data = true,
+                "text" if c.get("bind").and_then(Val::as_str).is_some_and(|b| b.starts_with("info.") || b.starts_with("item.")) => data = true,
                 "facts" => data = true,
                 "image" | "icon" | "rule" | "spacer" => {}
                 _ => return false,

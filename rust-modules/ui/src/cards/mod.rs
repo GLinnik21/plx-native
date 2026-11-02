@@ -253,6 +253,13 @@ pub trait CardSource<H: Host> {
     /// Anything drawn on EVERY card after its body (a persistent poster label, a cast name).
     /// `tile` is where the card was drawn, press and pop included.
     fn overlay(&self, _p: Painter, _i: usize, _tile: &Tile, _measure: &dyn Measure) {}
+    /// Compose a Shelf card's focused label with its overlays. The default preserves label-before-overlay.
+    /// A decorative source may invoke the same shared label painter at its declared layer and position.
+    fn compose(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure,
+        label: Option<&TileLabel>, mut paint_label: impl FnMut(Painter, &TileLabel)) {
+        if let Some(label) = label { paint_label(p, label); }
+        self.overlay(p, i, tile, measure);
+    }
     /// Whether card `i`'s content is present to paint. A card that is not (a slot of a paged
     /// listing whose page has not landed) is skipped by `draw`; its stop still registers.
     fn loaded(&self, _i: usize) -> bool {

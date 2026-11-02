@@ -224,7 +224,7 @@ pub(super) fn facts(
 ///
 /// A single line (a heading) keeps its line when it is empty, as the card's title does; a block collapses.
 pub(super) fn group(compiled: &Compiled, f: &Frame<'_>, q: Painter, state: &CompiledState, g: &OpGroup) {
-    group_for(f, q, &state.ops, g, holds(f), |_| true, plx_ui::label::HAlign::Left, |paint, op| decor(compiled, f, paint, op, holds(f)));
+    group_for(f, q, &state.ops, g, holds(f), |_| true, plx_ui::label::HAlign::Left, |bind| text_of(f, bind), |_, _, _| false, |paint, op| decor(compiled, f, paint, op, holds(f)));
 }
 
 /// The same data-stack layout inside either a band or a decorative card template.
@@ -233,10 +233,12 @@ pub(super) fn group_for<T: AsRef<DrawOp>>(
     predicates: impl Fn(&str) -> bool + Copy,
     present: impl Fn(usize) -> bool + Copy,
     align: plx_ui::label::HAlign,
+    resolve_text: impl Fn(&str) -> Option<String>,
+    mut paint_text: impl FnMut(Painter, &DrawOp, Rect) -> bool,
     paint_fixed: impl Fn(Painter, &DrawOp),
 ) {
     enum Body<'a> {
-        Text { view: TextView<'a>, rect: Rect, alpha: f32 },
+        Text { view: TextView<'a>, rect: Rect, alpha: f32, op: &'a DrawOp },
         Facts { run: Option<FactsRun>, rect: Rect },
         Fixed(Vec<&'a DrawOp>),
     }
@@ -246,7 +248,7 @@ pub(super) fn group_for<T: AsRef<DrawOp>>(
         .children
         .iter()
         .map(|c| match ops_of(c).as_slice() {
-            [DrawOp::Text { bind, .. }] => text_of(f, bind),
+            [DrawOp::Text { bind, .. }] => resolve_text(bind),
             _ => None,
         })
         .collect();
@@ -265,7 +267,7 @@ pub(super) fn group_for<T: AsRef<DrawOp>>(
                 let view = text_view(text, *size, bold.at(predicates), ink.at(predicates), *max_lines, *leading).h(align);
                 // a block with nothing to say takes no room; a heading keeps its line
                 let h = (!text.is_empty() || (*max_lines == 1 && content.is_some())).then(|| view.measure_h(rect.w));
-                (Body::Text { view, rect: *rect, alpha: *alpha }, h)
+                (Body::Text { view, rect: *rect, alpha: *alpha, op: child_ops[0] }, h)
             }
             [DrawOp::Facts { rect, order, badges, genres_max, playback_fact, size, bold, ink }] => {
                 let bold = Live { base: bold.at(predicates), cases: Vec::new() };
@@ -283,7 +285,9 @@ pub(super) fn group_for<T: AsRef<DrawOp>>(
     }
     for span in VStack::new(&items, g.gap, g.anchor).placed() {
         match &bodies[span.i] {
-            Body::Text { view, rect, alpha } => {
+            Body::Text { view, rect, alpha, op } => {
+                let placed = Rect::new(rect.x, span.y, rect.w, 0.0);
+                if paint_text(q, op, placed) { continue; }
                 view.draw(if *alpha < 1.0 { q.alpha(*alpha) } else { q }, Rect::new(rect.x, span.y, rect.w, 0.0));
             }
             Body::Facts { run: Some(run), rect } => run.draw(q, rect.x, span.y + rect.h * 0.5, f),

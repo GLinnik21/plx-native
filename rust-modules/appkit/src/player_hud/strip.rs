@@ -183,6 +183,89 @@ impl<'a, E> Cards<'a, E> {
         self
     }
 
+    fn item_text(&self, i: usize, bind: &str) -> Option<String> {
+        match bind {
+            "item.title" => Some(self.name(i)),
+            "item.start" => Some(plx_ui::fmt::clock(self.chapters[i].start_ms)),
+            _ => self.context.and_then(|(_, frame)| super::sections::text_of(frame, bind)),
+        }
+    }
+
+    fn focused_text_label(&self, i: usize, op: &DrawOp, placed: Rect) -> Option<TileLabel> {
+        let DrawOp::Text { bind, size, bold, ink, alpha, max_lines: 1, .. } = op else { return None };
+        if bind != "item.title" { return None; }
+        let holds = |name: &str| self.holds(i, true, name);
+        let mut ink = ink.at(holds);
+        ink[3] *= alpha;
+        Some(TileLabel { title: CString::new(self.name(i)).ok(), title_face: Some(plx_ui::cards::LabelFace {
+            size: *size, bold: bold.at(holds), ink, width: placed.w, offset_x: placed.x - self.geo.card.x,
+            offset_y: placed.y - (self.geo.card.y + self.geo.card.h + self.geo.name_drop),
+        }), ..TileLabel::default() }.within_tile())
+    }
+
+    fn paint_contents(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure,
+        paint_label: &mut impl FnMut(Painter, &TileLabel)) {
+        let card = tile.rect.scaled(1.0 / tile.scale);
+        let (x, bottom) = (card.x, card.y + card.h);
+        if let Some(template) = self.template {
+            let holds = |name: &str| self.holds(i, tile.focused, name);
+            let mut title_drawn_by_shelf = false;
+            let base = p.translate(card.x - self.geo.card.x, card.y - self.geo.card.y);
+            let layer = |below: bool| if below { base } else { base.zoomed(plx_ui::Zoom::about(self.geo.card, (0.5, 0.5), tile.scale)) };
+            for (template_index, c) in template.iter().enumerate() {
+                if let Some(group) = self.groups.iter().find(|g| g.ops.start == template_index) {
+                    if let Some((_, frame)) = self.context {
+                        super::sections::group_for(frame, layer(template[group.ops.start].below), template, group, holds,
+                            |index| template[index].present.at(holds),
+                            if !template[group.ops.start].below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center },
+                            |bind| self.item_text(i, bind),
+                            |_, op, placed| {
+                                if !tile.focused || !template[group.ops.start].below || title_drawn_by_shelf { return false; }
+                                let DrawOp::Text { size, bold, .. } = op else { return false };
+                                let (cap_top, _) = plx_gfx::text::text_cap_band(*size, i32::from(bold.at(holds)));
+                                let line = Rect::new(placed.x, placed.y - cap_top, placed.w, 0.0);
+                                let Some(label) = self.focused_text_label(i, op, line) else { return false };
+                                paint_label(p, &label);
+                                title_drawn_by_shelf = true;
+                                true
+                            },
+                            |paint, op| self.paint_decor(paint, i, op, holds));
+                    }
+                }
+                if self.groups.iter().any(|g| g.ops.contains(&template_index)) || !c.present.at(holds) { continue; }
+                let below = c.below;
+                let paint = layer(below);
+                // Mandatory art is painted by the Shelf, once.
+                if template_index != 0 { self.paint_decor(paint, i, &c.op, holds); }
+                if let DrawOp::Text { rect, bind, size, bold, ink, alpha, max_lines, leading } = &c.op {
+                    if tile.focused && below && bind == "item.title" && *max_lines == 1 && !title_drawn_by_shelf {
+                        if let Some(label) = self.focused_text_label(i, &c.op, *rect) { paint_label(p, &label); }
+                        title_drawn_by_shelf = true;
+                        continue;
+                    }
+                    let Some(content) = self.item_text(i, bind) else { continue };
+                    let bold = bold.at(holds);
+                    let view = super::sections::text_view(&content, *size, bold, ink.at(holds), *max_lines, *leading)
+                        .h(if !below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center });
+                    view.with_measure(measure).draw(paint.alpha(*alpha), super::sections::line_frame(*rect, *size, bold));
+                }
+            }
+            return;
+        }
+
+        if !tile.focused {
+            let shown = plx_gfx::text::elide_by(&self.name(i), self.geo.card.w, false, |t| {
+                measure.width_str(t, theme::size::LABEL, true)
+            });
+            if let Ok(name) = CString::new(shown) {
+                p.text(name.as_ptr(), x, bottom + self.geo.name_drop, theme::size::LABEL, theme::TEXT_SECONDARY, 0, 1);
+            }
+        }
+        if let Ok(time) = CString::new(plx_ui::fmt::clock(self.chapters[i].start_ms)) {
+            p.text(time.as_ptr(), x, bottom + self.geo.time_drop, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
+        }
+    }
+
     fn paint_decor(&self, paint: Painter, i: usize, op: &DrawOp, holds: impl Fn(&str) -> bool + Copy) {
         let Some((compiled, frame)) = self.context else { return };
         match op {
@@ -245,15 +328,10 @@ where
     fn label(&self, i: usize) -> TileLabel {
         if let Some(template) = self.template {
             let holds = |name: &str| self.holds(i, true, name);
-            if let Some(DrawOp::Text { rect, size, bold, ink, alpha, .. }) = template.iter()
-                .filter(|c| c.below && c.present.at(holds))
-                .map(|c| &c.op)
+            if let Some(op @ DrawOp::Text { rect, .. }) = template.iter()
+                .filter(|c| c.below && c.present.at(holds)).map(|c| &c.op)
                 .find(|op| matches!(op, DrawOp::Text { bind, max_lines: 1, .. } if bind == "item.title")) {
-                let mut ink = ink.at(holds);
-                ink[3] *= alpha;
-                return TileLabel { title: CString::new(self.name(i)).ok(), title_face: Some(plx_ui::cards::LabelFace {
-                    size: *size, bold: bold.at(holds), ink, width: rect.w, offset_x: rect.x - self.geo.card.x, offset_y: rect.y - (self.geo.card.y + self.geo.card.h + self.geo.name_drop),
-                }), ..TileLabel::default() }.within_tile();
+                return self.focused_text_label(i, op, *rect).unwrap_or_default();
             }
             return TileLabel::default();
         }
@@ -265,57 +343,14 @@ where
     /// The time on every card and the name on every card but the focused one (whose name is the block's), at
     /// the card's LEADING edge and the drops the op stands them at: unscaled, so a pop never moves them.
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
-        let card = tile.rect.scaled(1.0 / tile.scale);
-        let (x, bottom) = (card.x, card.y + card.h);
-        if let Some(template) = self.template {
-            let holds = |name: &str| self.holds(i, tile.focused, name);
-            let mut title_drawn_by_shelf = false;
-            let base = p.translate(card.x - self.geo.card.x, card.y - self.geo.card.y);
-            let layer = |below: bool| if below { base } else { base.zoomed(plx_ui::Zoom::about(self.geo.card, (0.5, 0.5), tile.scale)) };
-            for (template_index, c) in template.iter().enumerate().filter(|(_, c)| c.present.at(holds)) {
-                if let Some(group) = self.groups.iter().find(|g| g.ops.start == template_index) {
-                    if let Some((_, frame)) = self.context {
-                        super::sections::group_for(frame, layer(template[group.ops.start].below), template, group, holds,
-                            |index| template[index].present.at(holds),
-                            if !template[group.ops.start].below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center },
-                            |paint, op| self.paint_decor(paint, i, op, holds));
-                    }
-                }
-                if self.groups.iter().any(|g| g.ops.contains(&template_index)) { continue; }
-                let below = c.below;
-                let paint = layer(below);
-                // Mandatory art is painted by the Shelf, once.
-                if template_index != 0 { self.paint_decor(paint, i, &c.op, holds); }
-                if let DrawOp::Text { rect, bind, size, bold, ink, alpha, max_lines, leading } = &c.op {
-                    if tile.focused && below && bind == "item.title" && *max_lines == 1 && !title_drawn_by_shelf {
-                        title_drawn_by_shelf = true;
-                        continue;
-                    }
-                    let content = match bind.as_str() {
-                        "item.title" => self.name(i),
-                        "item.start" => plx_ui::fmt::clock(self.chapters[i].start_ms),
-                        _ => match self.context.and_then(|(_, f)| super::sections::text_of(f, bind)) { Some(text) => text, None => continue },
-                    };
-                    let bold = bold.at(holds);
-                    let view = super::sections::text_view(&content, *size, bold, ink.at(holds), *max_lines, *leading)
-                        .h(if !below || self.geo.leading_labels { plx_ui::label::HAlign::Left } else { plx_ui::label::HAlign::Center });
-                    view.with_measure(measure).draw(paint.alpha(*alpha), super::sections::line_frame(*rect, *size, bold));
-                }
-            }
-            return;
+        self.paint_contents(p, i, tile, measure, &mut |_, _| {});
+    }
+    fn compose(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure,
+        label: Option<&TileLabel>, mut paint_label: impl FnMut(Painter, &TileLabel)) {
+        if self.template.is_none() {
+            if let Some(label) = label { paint_label(p, label); }
         }
-
-        if !tile.focused {
-            let shown = plx_gfx::text::elide_by(&self.name(i), self.geo.card.w, false, |t| {
-                measure.width_str(t, theme::size::LABEL, true)
-            });
-            if let Ok(name) = CString::new(shown) {
-                p.text(name.as_ptr(), x, bottom + self.geo.name_drop, theme::size::LABEL, theme::TEXT_SECONDARY, 0, 1);
-            }
-        }
-        if let Ok(time) = CString::new(plx_ui::fmt::clock(self.chapters[i].start_ms)) {
-            p.text(time.as_ptr(), x, bottom + self.geo.time_drop, theme::size::CAPTION, theme::TEXT_SECONDARY, 0, 0);
-        }
+        self.paint_contents(p, i, tile, measure, &mut paint_label);
     }
 }
 

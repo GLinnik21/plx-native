@@ -498,3 +498,64 @@ fn content_geometry_focus_and_pair_availability_are_independent() {
     assert!(crate::player_hud::loaded::answers_every_frame(&compiled));
 
 }
+
+fn chapter_below(body: &str) -> String {
+    let start = REFERENCE.find("\"below\": [").unwrap();
+    let end = start + REFERENCE[start..].find("\n            ]").unwrap();
+    format!("{}\"below\": [{}{}", &REFERENCE[..start], body, &REFERENCE[end..])
+}
+
+#[test]
+fn a_card_group_dispatches_when_its_first_child_is_absent() {
+    let _serial = plx_base::testlock::serial();
+    let compiled = load(&chapter_below(r#"{ "vstack": { "w": "fill", "gap": 0, "cells": [
+        { "when": "item.focused", "text": { "bind": "info.summary", "size": "MICRO", "ink": "TEXT_PRIMARY", "max_lines": 2 } },
+        { "rule": { "axis": "h", "length": 80, "ink": "gold" } }
+    ] } }"#));
+    let state = compiled.lookup(crate::hud_format::compile::OPEN_CHAPTERS, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let rect = state.ops.iter().find_map(|op| match op { DrawOp::Strip { groups, .. } => groups.first().map(|g| Rect::new(g.rect.x, g.rect.y, 80.0, 1.0)), _ => None }).unwrap();
+    for focused in [false, true] {
+        assert!(chapter_frame(&compiled, focused).0.iter().any(|(_, r)| *r == rect), "group's present rule survives first-child absence, focused={focused}");
+    }
+}
+
+#[test]
+fn a_focused_chapter_label_paints_after_its_declared_background() {
+    let _serial = plx_base::testlock::serial();
+    let compiled = load(&chapter_below(r#"{ "rect": { "h": 60, "ink": "PANEL_TOP", "cells": [
+        { "text": { "bind": "item.title", "size": "BODY", "ink": "TEXT_PRIMARY", "max_lines": 1 } }
+    ] } }"#));
+    let state = compiled.lookup(crate::hud_format::compile::OPEN_CHAPTERS, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let ground = state.ops.iter().find_map(|op| match op { DrawOp::Strip { template, .. } => template.iter().find_map(|c| match c.op { DrawOp::Ground { rect, .. } => Some(rect), _ => None }), _ => None }).unwrap();
+    for focused in [false, true] {
+        let drew = chapter_frame(&compiled, focused);
+        let title = drew.1.iter().find(|r| r.text == "Chapter").unwrap();
+        let bg = drew.0.iter().position(|(_, r)| *r == ground).unwrap();
+        let text = drew.0.iter().position(|(kind, r)| *kind == 100 && r.x == title.at.x && r.y == title.at.y).unwrap();
+        assert!(bg < text, "background precedes visible title, focused={focused}");
+    }
+}
+
+#[test]
+fn nested_card_item_text_tracks_the_collapsed_stack_and_keeps_its_marquee() {
+    let _serial = plx_base::testlock::serial();
+    let compiled = load(&chapter_below(r#"{ "vstack": { "w": "fill", "gap": 0, "cells": [
+        { "text": { "bind": "info.summary", "size": "MICRO", "ink": "TEXT_PRIMARY", "max_lines": 2 } },
+        { "text": { "bind": "item.start", "size": "CAPTION", "ink": "TEXT_SECONDARY", "leading": 32 } },
+        { "text": { "bind": "item.title", "size": "BODY", "ink": "TEXT_PRIMARY", "max_lines": 1, "leading": 36 } }
+    ] } }"#));
+    let state = compiled.lookup(crate::hud_format::compile::OPEN_CHAPTERS, crate::hud_format::Slot::Discs, true, false, false).unwrap();
+    let top = state.ops.iter().find_map(|op| match op { DrawOp::Strip { groups, .. } => groups.first().map(|g| g.rect.y), _ => None }).expect("card item text participates in shared data stack");
+    let mut positions = Vec::new();
+    for focused in [false, true] {
+        let drew = chapter_frame(&compiled, focused);
+        let time = drew.1.iter().find(|r| r.text == "2:05").expect("item.start resolves");
+        let title = drew.1.iter().find(|r| r.text == "Chapter").expect("item.title resolves");
+        positions.push(title.at.y);
+        assert!(time.at.y <= top && title.at.y < top + 40.0, "absent summary collapses, focused={focused}: {:?}", drew.1);
+    }
+    assert!((positions[0] - positions[1]).abs() < 0.001, "focused name follows actual stack placement");
+    let name = "A very long chapter name that must glide through its declared slot";
+    let drew = chapter_frame_named(&compiled, true, name);
+    assert!(drew.1.iter().any(|r| r.text == name && r.clip.is_some()), "shared marquee retains the whole focused name");
+}

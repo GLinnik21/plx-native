@@ -1003,11 +1003,11 @@ impl Shelf {
             a if a < 1.0 => pr.alpha(a),
             _ => pr,
         };
+        let label = focused.then(|| self.focused_label(src, i, at));
         if focused {
-            let label = self.focused_label(src, i, at);
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
-            card_row::draw_focused(pr, src.art(i), rect, s, &self.style, src.progress(i), &label, f.measure);
+            card_row::draw_focused_tile_led(pr, src.art(i), rect, s, &self.style, src.progress(i), None);
             #[cfg(feature = "devtriggers")]
             if !pr.is_recording() {
                 note_focused(pr, rect, i, src);
@@ -1016,7 +1016,9 @@ impl Shelf {
             card_row::draw_tile(pr, src.art(i), rect, s, &self.style, src.progress(i));
         }
         let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused };
-        src.overlay(pr, i, &tile, f.measure);
+        src.compose(pr, i, &tile, f.measure, label.as_ref(), |paint, label| {
+            if focused { card_row::draw_label(paint, rect, s, &self.style, label, f.measure); }
+        });
     }
 
     /// The label block the focused card `i` is drawn with: its source's label, revealed as far as

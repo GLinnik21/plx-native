@@ -5617,3 +5617,16 @@ fn a_shelf_holds_a_style_built_at_runtime() {
     assert_eq!((shelf.style().w, shelf.style().h, shelf.style().gap), (288.0, 162.0, 24.0));
     assert_eq!(Shelf::new(ENTRY, RowStyle::HOME).style().w, RowStyle::HOME.w, "a shipped style passes by value too");
 }
+
+#[test]
+fn default_shelf_composition_keeps_the_label_before_the_source_overlay() {
+    let src = Cards::new(vec![1], false);
+    let tile = super::Tile { rect: Rect::new(100.0, 200.0, 200.0, 100.0), scale: 1.0, radius: 10.0, focused: true };
+    let label = TileLabel::default();
+    let draws = crate::draw_census::capture(|| src.compose(Painter::recording(), 0, &tile, &FixtureMeasure,
+        Some(&label), |_, given| {
+            assert!(std::ptr::eq(given, &label));
+            crate::draw_census::note(7777, tile.rect);
+        }));
+    assert_eq!(draws.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), [7777, TILE_PAINTED]);
+}
