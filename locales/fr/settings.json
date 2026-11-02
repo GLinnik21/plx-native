@@ -336,5 +336,18 @@
   "settings.hud.not_a_hud": "Ce n'est pas un paquet HUD",
   "settings.hud.offer_body": "Ce paquet a été téléchargé depuis une adresse et n'a pas été vérifié. Il change l'apparence des commandes de lecture.",
   "settings.hud.offer_from": "Depuis {host}",
-  "settings.hud.offer_dev": "Source de développement"
+  "settings.hud.offer_dev": "Source de développement",
+  "settings.trace.section": "Diagnostic",
+  "settings.trace.title": "Enregistrer un diagnostic",
+  "settings.trace.detail": "Local : 60s / 8 Mio. Peut ralentir la lecture.",
+  "settings.trace.export": "Enregistrer le journal",
+  "settings.trace.export_detail": "Journal local pour l’assistance.",
+  "settings.trace.delete": "Supprimer les diagnostics",
+  "settings.trace.off": "Désactivé",
+  "settings.trace.recording": "Enregistrement",
+  "settings.trace.saved": "Enregistré",
+  "settings.trace.exported": "Sauvegardé",
+  "settings.trace.unavailable": "Indisponible",
+  "settings.trace.failed": "Échec",
+  "settings.trace.saving": "Sauvegarde"
 }

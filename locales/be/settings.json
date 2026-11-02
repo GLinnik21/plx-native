@@ -339,5 +339,18 @@
   "settings.hud.not_a_hud": "Гэта не пакет HUD",
   "settings.hud.offer_body": "Гэты пакет загружаны па адрасе і не правяраўся. Ён змяняе выгляд элементаў кіравання прайграваннем.",
   "settings.hud.offer_from": "З {host}",
-  "settings.hud.offer_dev": "Крыніца распрацоўшчыка"
+  "settings.hud.offer_dev": "Крыніца распрацоўшчыка",
+  "settings.trace.section": "Дыягностыка",
+  "settings.trace.title": "Запіс дыягностыкі",
+  "settings.trace.detail": "Да 60 с / 8 MiB. Можа запаволіць відэа.",
+  "settings.trace.export": "Захаваць журнал дыягностыкі",
+  "settings.trace.export_detail": "Лакальны журнал для падтрымкі.",
+  "settings.trace.delete": "Выдаліць запісы дыягностыкі",
+  "settings.trace.off": "Выключана",
+  "settings.trace.recording": "Ідзе запіс",
+  "settings.trace.saved": "Запісана",
+  "settings.trace.exported": "Захавана",
+  "settings.trace.unavailable": "Недаступна",
+  "settings.trace.failed": "Памылка",
+  "settings.trace.saving": "Захаванне"
 }

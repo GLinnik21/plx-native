@@ -25,6 +25,7 @@ fn overflowing(page: &str, table: &TableView, out: &mut Vec<String>) {
 /// product).
 fn base_root_inputs() -> RootInputs {
     RootInputs {
+        trace: plx_platform::playback_trace::Status::Off,
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
         language: plx_platform::i18n::Preference::System,
@@ -51,6 +52,13 @@ fn every_settings_row_fits_its_column_in_every_language() {
         overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).form.table, &mut out);
 
         overflowing_root(&format!("{tag} root (signed in)"), &base_root_inputs(), &mut out);
+        for trace in [plx_platform::playback_trace::Status::Off, plx_platform::playback_trace::Status::Recording,
+            plx_platform::playback_trace::Status::Saved, plx_platform::playback_trace::Status::Saving,
+            plx_platform::playback_trace::Status::Exported, plx_platform::playback_trace::Status::Unavailable,
+            plx_platform::playback_trace::Status::Failed] {
+            overflowing_root(&format!("{tag} diagnostics={trace:?}"),
+                &RootInputs { trace, ..base_root_inputs() }, &mut out);
+        }
         for signed_in in [true, false] {
             overflowing_root(&format!("{tag} signed_in={signed_in}"),
                 &RootInputs { signed_in, ..base_root_inputs() }, &mut out);

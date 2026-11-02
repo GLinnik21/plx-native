@@ -333,5 +333,18 @@
   "settings.hud.not_a_hud": "Ez nem HUD-csomag",
   "settings.hud.offer_body": "Ezt a csomagot egy címről töltötték le, és nem ellenőrizték. A lejátszásvezérlők megjelenését változtatja meg.",
   "settings.hud.offer_from": "Innen: {host}",
-  "settings.hud.offer_dev": "Fejlesztői forrás"
+  "settings.hud.offer_dev": "Fejlesztői forrás",
+  "settings.trace.section": "Diagnosztika",
+  "settings.trace.title": "Diagnosztika rögzítése",
+  "settings.trace.detail": "Helyben: 60 mp / 8 MiB. Lassíthatja a videót.",
+  "settings.trace.export": "Diagnosztikai napló mentése",
+  "settings.trace.export_detail": "Helyi napló a támogatáshoz.",
+  "settings.trace.delete": "Diagnosztikai felvételek törlése",
+  "settings.trace.off": "Ki",
+  "settings.trace.recording": "Rögzítés",
+  "settings.trace.saved": "Rögzítve",
+  "settings.trace.exported": "Mentve",
+  "settings.trace.unavailable": "Nem érhető el",
+  "settings.trace.failed": "Hiba",
+  "settings.trace.saving": "Mentés"
 }

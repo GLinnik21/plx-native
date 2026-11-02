@@ -336,5 +336,18 @@
   "settings.hud.not_a_hud": "Non è un pacchetto HUD",
   "settings.hud.offer_body": "Questo pacchetto è stato scaricato da un indirizzo e non è stato verificato. Cambia l'aspetto dei controlli di riproduzione.",
   "settings.hud.offer_from": "Da {host}",
-  "settings.hud.offer_dev": "Fonte di sviluppo"
+  "settings.hud.offer_dev": "Fonte di sviluppo",
+  "settings.trace.section": "Diagnostica",
+  "settings.trace.title": "Registra diagnostica",
+  "settings.trace.detail": "Locale: 60s / 8 MiB. Può rallentare il video.",
+  "settings.trace.export": "Salva registro diagnostico",
+  "settings.trace.export_detail": "Registro locale per l’assistenza.",
+  "settings.trace.delete": "Elimina registrazioni diagnostiche",
+  "settings.trace.off": "Disattivato",
+  "settings.trace.recording": "Registrazione",
+  "settings.trace.saved": "Registrato",
+  "settings.trace.exported": "Salvato",
+  "settings.trace.unavailable": "Non disponibile",
+  "settings.trace.failed": "Errore",
+  "settings.trace.saving": "Salvataggio"
 }

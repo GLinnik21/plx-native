@@ -336,5 +336,18 @@
   "settings.hud.not_a_hud": "Eso no es un paquete de HUD",
   "settings.hud.offer_body": "Este paquete se descargó de una dirección y no ha sido revisado. Cambia el aspecto de los controles de reproducción.",
   "settings.hud.offer_from": "De {host}",
-  "settings.hud.offer_dev": "Fuente de desarrollo"
+  "settings.hud.offer_dev": "Fuente de desarrollo",
+  "settings.trace.section": "Diagnóstico",
+  "settings.trace.title": "Grabar diagnóstico",
+  "settings.trace.detail": "Local: 60s / 8 MiB. Puede ralentizar.",
+  "settings.trace.export": "Guardar registro de diagnóstico",
+  "settings.trace.export_detail": "Registro local para soporte.",
+  "settings.trace.delete": "Eliminar grabaciones de diagnóstico",
+  "settings.trace.off": "Desactivado",
+  "settings.trace.recording": "Grabando",
+  "settings.trace.saved": "Grabado",
+  "settings.trace.exported": "Guardado",
+  "settings.trace.unavailable": "No disponible",
+  "settings.trace.failed": "Error",
+  "settings.trace.saving": "Guardando"
 }

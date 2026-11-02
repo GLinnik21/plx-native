@@ -600,3 +600,10 @@ to 17882145870915066293. All three anchors were recorded again on the merged tre
 interval and halved idle sleeps, passed `plxnative-rec check`, and were installed with
 `tools/plxnative-rec rerecord`, anchors retained. `make check-replay` replays all three with
 `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+
+Opt-in playback diagnostics adds the Settings root's recorder status and addressed query/reply
+shape. The three anchors were observed failing the old shape preflight, then recorded afresh
+against tests/mock_pms.py with tests/focusfp.sh --rec --only 1,6,12 (350 ms key interval and
+halved settle waits). The busy host needed a longer mock startup wait. They were checked and
+installed with tools/plxnative-rec rerecord, preserving anchor flags; the synthetic alphabet
+adds only the new English labels and the deterministic status/off codec vocabulary.

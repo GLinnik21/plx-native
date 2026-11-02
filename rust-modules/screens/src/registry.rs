@@ -50,6 +50,8 @@ pub enum AppFx {
     SessionEffect(plx_session::auth::owner::SessionFx),
     /// Account and install preference IO, admitted by the application before work starts.
     Preferences(PreferenceCmd),
+    /// Local firmware logging; the runner answers this surface through an addressed event.
+    PlaybackTrace(plx_platform::playback_trace::Command),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
     Store(StoreId, StoreCmd),
     /// Poll only the store work this visible route owns, after its read-only step returns.
@@ -1396,6 +1398,7 @@ pub enum DetailRefreshPhase {
 
 /// The application's messages (spec §3.1).
 pub enum AppMsg {
+    PlaybackTrace(plx_platform::playback_trace::Status),
     Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),
     /// A command of the player-HUD package store, delivered to [`MachineId::Huds`].
@@ -2506,6 +2509,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
     // Descriptive only, and already behind the shipped list (no fr, no it): never generate this
     // from the language registry, or every added language moves SCREEN_SHAPES_PIN and forces the
     // replay fixtures to be re-recorded.
+    "PlaybackDiagnosticsV1{Root:{trace:off|recording|saved|exported|saving|unavailable|failed},Effects:command->addressed-status}",
     "LocalizationSettingsV4{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,busy:bool,failed:bool},Contribute:QrLink,LoginReportAlert:{send:bool,scroll_target_bits:u32},ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
     crate::preferences::SHAPE,
     crate::preferences::PICKER_SHAPE,
@@ -2702,7 +2706,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`, so the Speed page can be
 // addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
 // 0x9425_f33f_3f53_6aa5.
-const SCREEN_SHAPES_PIN: u64 = 0xb633_b65b_ed93_ca93;
+// Opt-in playback diagnostics adds Root status and addressed command replies.
+// Replay anchors are re-recorded through tools/plxnative-rec rerecord.
+const SCREEN_SHAPES_PIN: u64 = 0x666e053447eaa2de;
 
 #[cfg(test)]
 mod arg_tests {

@@ -399,6 +399,7 @@ pub(crate) struct Bridge {
     huds_page: Option<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
+    trace_save: Option<(MachineId, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
@@ -672,6 +673,7 @@ impl Bridge {
             huds: super::adapters::huds::HudDriver::off(),
             huds_page: None,
             huds_notice: None,
+            trace_save: None,
             consent_adapter,
             store_runner,
             late_store_jobs: 0,
@@ -2492,7 +2494,39 @@ impl Rig<AppHost> for Bridge {
 }
 
 impl Bridge {
+    fn playback_trace_command(&mut self, from: MachineId, command: plx_platform::playback_trace::Command)
+        -> plx_platform::playback_trace::Status {
+        use plx_platform::playback_trace::{self as trace, Command, Status};
+        if self.trace_save.is_some() { return Status::Saving; }
+        if command != Command::Export { return trace::execute(command); }
+        let generation = trace::prepare_export();
+        match plx_base::storage_worker::submit(move || trace::save_export(generation)) {
+            Ok(ticket) => { self.trace_save = Some((from, ticket)); Status::Saving }
+            Err(_) => { trace::execute(Command::Stop); Status::Failed }
+        }
+    }
+
+    pub(crate) fn playback_trace_poll(&mut self) -> Option<(MachineId, plx_platform::playback_trace::Status)> {
+        use std::sync::mpsc::TryRecvError;
+        let (_, ticket) = self.trace_save.as_ref()?;
+        let status = match ticket.try_recv() {
+            Ok(status) => status,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::Status::Failed,
+        };
+        let (to, _) = self.trace_save.take()?;
+        Some((to, status))
+    }
+
     fn app_effect(&mut self, from: MachineId, fx: AppFx, out: &mut Effects<'_, AppHost>) {
+        // Controlled replay cannot start recording. Its only authorized status is Off;
+        // opening Settings must not consult a live native recorder or become unsupported IO.
+        if self.home_io.is_some() && matches!(fx,
+            AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status)) {
+            out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(
+                plx_platform::playback_trace::Status::Off)))));
+            return;
+        }
         if let Some(io) = &mut self.home_io {
             if let Err(reason) = super::bootstrap::effects::app(&fx) {
                 io.failure = Some(reason);
@@ -2504,6 +2538,10 @@ impl Bridge {
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
             AppFx::Preferences(command) => super::preferences::execute(command),
+            AppFx::PlaybackTrace(command) => {
+                let status = self.playback_trace_command(from, command);
+                out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(status)))));
+            }
             AppFx::Huds(command) => out.push(Fx::Deliver(MachineId::Huds, Delivery::Machine(AppMsg::Huds(command)))),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(

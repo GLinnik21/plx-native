@@ -328,6 +328,12 @@ fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route:
 /// describes THIS frame and a spring's velocity can be judged as travel-this-frame rather than as
 /// a bare units-per-second.
 fn clock_and_press(app: &mut App, fr: &mut Frame) {
+    plx_platform::playback_trace::tick();
+    if let Some((to, status)) = app.bridge.playback_trace_poll() {
+        app.pages.emit(to, plx_machine::machine::Fx::Deliver(to,
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::PlaybackTrace(status)))));
+    }
     if app.boot_initial.is_some() && app.prev == 0 {
         plx_base::eventlog::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
     }

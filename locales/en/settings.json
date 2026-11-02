@@ -1380,5 +1380,57 @@
   "settings.hud.offer_dev": {
     "value": "Development source",
     "description": "Settings > Playback > Player HUD: The prompt label for a package fetched over plain http:// from a device on the home network (a development source)."
+  },
+  "settings.trace.section": {
+    "value": "Diagnostics",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.section"
+  },
+  "settings.trace.title": {
+    "value": "Record playback diagnostics",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.title"
+  },
+  "settings.trace.detail": {
+    "value": "Local: up to 60s / 8 MiB. May slow playback.",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.detail"
+  },
+  "settings.trace.export": {
+    "value": "Save diagnostic log",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.export"
+  },
+  "settings.trace.export_detail": {
+    "value": "Local recording and app log for support.",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.export_detail"
+  },
+  "settings.trace.delete": {
+    "value": "Delete diagnostic recordings",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.delete"
+  },
+  "settings.trace.off": {
+    "value": "Off",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.off"
+  },
+  "settings.trace.recording": {
+    "value": "Recording",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.recording"
+  },
+  "settings.trace.saved": {
+    "value": "Recorded",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.saved"
+  },
+  "settings.trace.exported": {
+    "value": "Saved",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.exported"
+  },
+  "settings.trace.unavailable": {
+    "value": "Unavailable",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.unavailable"
+  },
+  "settings.trace.failed": {
+    "value": "Failed",
+    "description": "Opt-in local playback diagnostic recording; settings.trace.failed"
+  },
+  "settings.trace.saving": {
+    "value": "Saving",
+    "description": "Local playback diagnostics save in progress."
   }
 }

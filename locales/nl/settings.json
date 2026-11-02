@@ -333,5 +333,18 @@
   "settings.hud.not_a_hud": "Dat is geen HUD-pakket",
   "settings.hud.offer_body": "Dit pakket is van een adres gedownload en niet beoordeeld. Het verandert hoe de afspeelknoppen eruitzien.",
   "settings.hud.offer_from": "Van {host}",
-  "settings.hud.offer_dev": "Ontwikkelbron"
+  "settings.hud.offer_dev": "Ontwikkelbron",
+  "settings.trace.section": "Diagnostiek",
+  "settings.trace.title": "Afspeeldiagnose opnemen",
+  "settings.trace.detail": "Lokaal: 60s / 8 MiB. Kan afspelen vertragen.",
+  "settings.trace.export": "Diagnoselogboek opslaan",
+  "settings.trace.export_detail": "Lokaal logboek voor ondersteuning.",
+  "settings.trace.delete": "Diagnoseopnamen verwijderen",
+  "settings.trace.off": "Uit",
+  "settings.trace.recording": "Opnemen",
+  "settings.trace.saved": "Opgenomen",
+  "settings.trace.exported": "Opgeslagen",
+  "settings.trace.unavailable": "Niet beschikbaar",
+  "settings.trace.failed": "Mislukt",
+  "settings.trace.saving": "Opslaan"
 }

@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 46] = [
+const DIAG: [&str; 47] = [
     "plxnative-diag.log",
     "plxnative-hud-text-metrics",
     "plxnative-hud-text-metrics.json",
@@ -121,6 +121,7 @@ const DIAG: [&str; 46] = [
     // from under the very session being measured.
     "plxnative-gstlog",
     "plxnative-gst.log",
+    "plxnative-playback.log",
     // The forced Stats-for-nerds overlay. It only changes presentation, and grading a playback
     // case without the read-out risks a failure whose evidence was never put on screen.
     "plxnative-stats",

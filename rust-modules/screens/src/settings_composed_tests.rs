@@ -758,7 +758,8 @@ pub fn settle_frames(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, from_m
 
 /// Walk focus to `elem` with real DOWN presses (a `set_focus` seat sends the page no `FocusMoved`).
 pub fn walk_to(d: &mut Dispatcher<InnerHost>, rig: &mut SurfaceRig, mut ms: u32, elem: u32) -> u32 {
-    for _ in 0..12 {
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(d.focus().map(|k| k.elem)) {
         if d.focus().map(|k| k.elem) == Some(elem) {
             return ms;
         }

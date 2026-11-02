@@ -1,10 +1,9 @@
 //! The bounded diagnostic ring — **the log this app already writes, kept in memory**.
 //!
-//! There is no second logging system here and no new call site anywhere: `crate::eventlog::log` is the ONE
-//! sink every diagnostic line in the app passes through, and this taps it one line below
-//! `redact_tokens`. So the ring is by construction a strict subset of `plxnative-events.log`, with
-//! the shipped credential backstop already applied, and a module that starts logging tomorrow is
-//! in the snapshot with no change here.
+//! This taps messages sent through `crate::eventlog::log` after credential scrubbing. The ring is
+//! a strict subset of `plxnative-events.log`; modules using that sink join the snapshot without
+//! changes here. Opt-in firmware playback messages use a separate local trace file and are absent
+//! from this ring and lab snapshots.
 //!
 //! # Two caps, not one
 //!
