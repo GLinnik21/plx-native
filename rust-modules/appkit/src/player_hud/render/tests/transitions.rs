@@ -394,6 +394,41 @@ fn an_inline_package_fades_its_compact_only_band_and_keeps_the_lift() {
     assert!(top > s_both.y + 0.01 && top < s_info.y + 0.01 || top < s_both.y - 0.01 && top > s_info.y - 0.01, "a second section opening moves the scrim part of the way: {top} between {} and {}", s_info.y, s_both.y);
 }
 
+/// A band whose presence depends on Info fades on Info's spring while Chapters keeps the page up.
+/// Both a compact-present band and one that only Chapters holds keep their Chapters-state place;
+/// opening, reversing and closing Info draw the same alpha at the same spring value.
+#[test]
+fn an_inline_partial_band_fades_when_a_second_section_opens_and_closes() {
+    let _serial = plx_base::testlock::serial();
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let store = store();
+    for when in [r#""!panel.info""#, r#"["sections", "!panel.info"]"#] {
+        let compiled = load(&edit(REFERENCE, r#"{ "id": "bar", "gap_before": "SM","#,
+            &format!(r#"{{ "id": "bar", "when": {when}, "gap_before": "SM","#)));
+        let rest = draw_in(&compiled, &mut motion(Section::Chapters, 1.0, 1.0), &store, OPEN_CHAPTERS, NONE, true);
+        let rest_clock = clock(&rest).expect("Chapters holds the bar");
+        for closing in [false, true] {
+            for appear in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let mut row = motion(Section::Chapters, 1.0, 1.0);
+                row.set_section_appear_for_test(Section::Info, appear);
+                let open = if closing { OPEN_CHAPTERS } else { OPEN_CHAPTERS | OPEN_INFO };
+                row.follow(open);
+                row.set_page_for_test(1.0);
+                let drew = draw_in(&compiled, &mut row, &store, open, NONE, true);
+                if appear == 1.0 {
+                    assert!(clock(&drew).is_none(), "{when}, closing {closing}: Info hides the bar at rest");
+                } else {
+                    let bar = clock(&drew).unwrap_or_else(|| panic!("{when}, closing {closing}, appear {appear}: the fading bar draws"));
+                    assert!(near(bar.ink[3], (1.0 - appear) * rest_clock.ink[3]),
+                        "{when}, closing {closing}, appear {appear}: alpha {} rather than {}", bar.ink[3], (1.0 - appear) * rest_clock.ink[3]);
+                    assert!(near(bar.at.y, rest_clock.at.y),
+                        "{when}, closing {closing}, appear {appear}: the bar fades where Chapters puts it, {} rather than {}", bar.at.y, rest_clock.at.y);
+                }
+            }
+        }
+    }
+}
+
 /// A `fixed` scrim is the same rect in every state and stands still; a block scrim follows the tabs' clock. Through
 /// a switch the top edge is the weighted mean of the two sections' tops.
 #[test]

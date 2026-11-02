@@ -561,8 +561,9 @@ tabs, strip, section. Up off the topmost group hides the transport (swallowed wh
 up) and Down off the bottom one stays put. Up or Down into the control that opened an open section lands on that
 control, a disc or a pill, as BACK does; a section no control opens (reachable through More) lands where the group
 usually seats. Only a pill is a tab: a disc that opens a section is a stop of the row, so a click on it and OK on it are
-one press of the same disc (the reference has no tab group). A modal package's open section is unchanged: it takes the
-middle, Up from its tab enters it and Down off its bottom closes it.
+one press of the same disc (the reference has no tab group). A modal package's open section takes the middle:
+from its tab, the direction toward the compiled page enters it; off the page toward the tabs closes it. Classic's
+tabs sit below its page, so Up enters and Down closes; tabs above the page reverse those directions.
 
 ### Commands
 

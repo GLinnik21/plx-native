@@ -37,7 +37,8 @@
 //! mean of its y in the open states), an INLINE one by `lift` as it always has (only the fade is added). Hit rects,
 //! stops and focus stay at the band's logical rest. The scrim's TOP edge follows the same clock and the bottom edge
 //! stays, never a translate; a `fixed` scrim has one rect and stands still. [`draw`] walks, in this order: the
-//! compact bands the open state does not hold (fading out), the logical state with the table applied, then each
+//! bands from the closest inline subset (or compact modal state) the logical state does not hold, the logical
+//! state with the table applied, then each
 //! section still leaving (its own spans, plus the transport bands only it holds). The compact walk and a moving
 //! frame never `reset_title`: the title's marquee is released once the motion is over. At rest the table is empty
 //! and the walk is today's, bit for bit (the frozen classic census holds it). On the opening frame the screen may
@@ -170,11 +171,18 @@ impl<'c> Layers<'c> {
         let mut moves = moves_of(compiled, state, base, f, inline, row);
         if inline {
             // the lift is an inline package's travel: it rides the section's own spring, not the page's
-            for (id, dy) in lift(compiled, state, base, f, &appear) {
-                match moves.iter_mut().find(|(band, _)| *band == id) {
-                    Some((_, m)) => m.dy += dy,
-                    None => moves.push((id, Move { dy, alpha: 1.0 })),
+            let mut held: Vec<&str> = Vec::new();
+            for source in inline_sources(compiled, base, f) {
+                for (id, dy) in lift(compiled, source, source.key.open, f, &appear) {
+                    if held.contains(&id) || (source.key.open != base && !transport_ids(source).any(|band| band == id)) {
+                        continue;
+                    }
+                    match moves.iter_mut().find(|(band, _)| *band == id) {
+                        Some((_, m)) => m.dy += dy,
+                        None => moves.push((id, Move { dy, alpha: 1.0 })),
+                    }
                 }
+                held.extend(transport_ids(source));
             }
         }
         Self { appear, moves, moving: row.page_moving() || row.sections_moving() }
@@ -223,8 +231,9 @@ fn transport_ids(state: &CompiledState) -> impl Iterator<Item = &str> {
 
 /// **Where the page's motion has taken each band of the transport** (`docs/hud-plugins.md`, D6): one entry per band
 /// that is not at its rest place and seen whole in `state`, the state the frame's open bits select. A band has a place
-/// `C` in the compact state and a place in each open state; the open states are the presented sections' (each weighted
-/// by its appear) for a modal package and `state` alone, at weight 1, for an inline one.
+/// `C` in the compact state and a place in each open state; the open states are the presented sections', each weighted
+/// by its appear. An inline package instead blends conditional presence over the section combinations
+/// ([`inline_moves`]), while keeping its lift for travel.
 ///
 /// - in the compact state and in no open one: it fades, at `1 - page`, where the compact state puts it;
 /// - in an open state and not in the compact one: it fades in at `page`, or, when some open state lacks it, at the
@@ -238,21 +247,20 @@ fn transport_ids(state: &CompiledState) -> impl Iterator<Item = &str> {
 /// (the bands that fade out with the page), else the first leaving section's. At a settled spring every `dy` is
 /// exactly `0` and every alpha exactly `1`, so a frame at rest has no entry at all.
 fn moves_of<'c>(compiled: &'c Compiled, state: &'c CompiledState, base: u8, f: &Frame<'_>, inline: bool, row: &HudMotion) -> Vec<(&'c str, Move)> {
+    if inline {
+        return inline_moves(compiled, base, f, row);
+    }
     let compact = state_for(compiled, 0, f);
     // (weight, state, is it leaving: presented, and not in the frame's open bits)
     let mut open: Vec<(f32, &'c CompiledState, bool)> = Vec::new();
-    if inline {
-        open.push((1.0, state, false));
-    } else {
-        let presented = row.presented();
-        for section in [Section::Chapters, Section::Info] {
-            let bit = section.open_bit();
-            if presented & bit == 0 {
-                continue;
-            }
-            if let Some(s) = state_for(compiled, bit, f) {
-                open.push((row.section_appear(section), s, base & bit == 0));
-            }
+    let presented = row.presented();
+    for section in [Section::Chapters, Section::Info] {
+        let bit = section.open_bit();
+        if presented & bit == 0 {
+            continue;
+        }
+        if let Some(s) = state_for(compiled, bit, f) {
+            open.push((row.section_appear(section), s, base & bit == 0));
         }
     }
     let page = row.page_appear();
@@ -294,9 +302,58 @@ fn moves_of<'c>(compiled: &'c Compiled, state: &'c CompiledState, base: u8, f: &
             (None, None) => continue,
         };
         let walked = y_in(state, id).or(c).or_else(|| open.iter().filter(|(_, _, leaving)| *leaving).find_map(|(_, s, _)| y_in(s, id)));
-        let dy = if inline { 0.0 } else { walked.map_or(0.0, |w| y - w) };
+        let dy = walked.map_or(0.0, |w| y - w);
         if dy != 0.0 || alpha < 1.0 {
             out.push((id, Move { dy, alpha }));
+        }
+    }
+    out
+}
+
+/// The inline block and its subsets, most sections first. A transport band missing from the composite is
+/// drawn once from the closest subset that holds it, so adding Info above Chapters does not drop a Chapters-only
+/// band or send a compact-present band back to its compact position while it fades.
+fn inline_sources<'c>(compiled: &'c Compiled, base: u8, f: &Frame<'_>) -> Vec<&'c CompiledState> {
+    [OPEN_CHAPTERS | OPEN_INFO, OPEN_CHAPTERS, OPEN_INFO, 0]
+        .into_iter()
+        .filter(|bits| bits & base == *bits)
+        .filter_map(|bits| state_for(compiled, bits, f))
+        .collect()
+}
+
+/// Inline conditional presence is the blend of the four section combinations on each section's own spring.
+/// Bands confined to compact, or present in every open state alone, keep the page clock, so a second section
+/// never brings a compact-only band back. Geometry still comes from the source state's existing `lift`.
+fn inline_moves<'c>(compiled: &'c Compiled, base: u8, f: &Frame<'_>, row: &HudMotion) -> Vec<(&'c str, Move)> {
+    let states: Vec<_> = [0, OPEN_CHAPTERS, OPEN_INFO, OPEN_CHAPTERS | OPEN_INFO]
+        .into_iter()
+        .filter_map(|bits| state_for(compiled, bits, f).map(|state| (bits, state)))
+        .collect();
+    let mut ids = Vec::new();
+    for id in inline_sources(compiled, base, f).into_iter().flat_map(transport_ids) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let appear = [(OPEN_CHAPTERS, row.section_appear(Section::Chapters)), (OPEN_INFO, row.section_appear(Section::Info))];
+    let mut out = Vec::new();
+    for id in ids {
+        let has = |state: &CompiledState| y_in(state, id).is_some();
+        let compact = states.iter().any(|(bits, state)| *bits == 0 && has(state));
+        let open = || states.iter().filter(|(bits, _)| *bits != 0);
+        let alpha = if states.iter().all(|(_, state)| has(state)) {
+            1.0
+        } else if compact && open().all(|(_, state)| !has(state)) {
+            1.0 - row.page_appear()
+        } else if !compact && open().all(|(_, state)| has(state)) {
+            row.page_appear()
+        } else {
+            states.iter().filter(|(_, state)| has(state)).map(|(bits, _)| {
+                appear.iter().map(|(bit, a)| if bits & bit != 0 { *a } else { 1.0 - a }).product::<f32>()
+            }).sum::<f32>().clamp(0.0, 1.0)
+        };
+        if alpha < 1.0 {
+            out.push((id, Move { dy: 0.0, alpha }));
         }
     }
     out
@@ -350,7 +407,8 @@ fn lift<'c>(compiled: &Compiled, state: &'c CompiledState, base: u8, f: &Frame<'
 /// has no state for this frame (the caller then draws what it drew before the renderer existed).
 ///
 /// **The walks, in order** (every frame; the first and the third are empty when nothing is owed): the bands of the
-/// compact state that the logical one does not hold, while they still fade out with the page; the logical state (the
+/// closest inline subsets (or the modal compact state) that the logical one does not hold, while still visible;
+/// the logical state (the
 /// open bits' own; for an inline package the presented sections' block), each band moved by the table; and each
 /// leaving section of a modal package, as one layer, with the transport bands that only that state holds.
 pub fn draw<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter) -> bool
@@ -371,7 +429,16 @@ where
     let Some(state) = state_for(compiled, base, f) else { return false };
     let layers = Layers::of(compiled, state, base, f, inline, row);
     let compact = state_for(compiled, 0, f);
-    if base != 0 {
+    if inline {
+        let mut held: Vec<&str> = transport_ids(state).collect();
+        for source in inline_sources(compiled, base, f).into_iter().filter(|source| source.key.open != base) {
+            let fading = owed(source, &layers, |id| held.contains(&id));
+            if !fading.is_empty() {
+                walk(compiled, source, f, df, row, p, &layers, Pick::Bands(&fading));
+                held.extend(fading);
+            }
+        }
+    } else if base != 0 {
         if let Some(compact) = compact {
             let fading = owed(compact, &layers, |id| y_in(state, id).is_some());
             if !fading.is_empty() {
