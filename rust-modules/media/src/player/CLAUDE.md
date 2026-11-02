@@ -17,9 +17,11 @@ fork. The engine, the pump and the drivers beside them execute their effects.
 
 ## Pipeline
 
-In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process
-path (`com.webos.media/load`) could not provide — that code is gone, and `docs/buffer-feed-plan.md`
-records the pivot (treat it as history, not spec). URI mode exists in the tree once more only as a
+Normal playback uses in-process buffer-feed. Earlier URI/out-of-process experiments
+(`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
+(history, not spec). The controlled 2026-11-02 experiment later displayed its SDR720p24 fixture
+through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
+`docs/measurements/uri-acb-dass-2026-11-02.md`. URI mode exists in the tree only as a
 developer probe: `uriprobe.rs` (the pure machine) and `uriprobe_drive.rs` (its driver, forked to
 from `engine::start_bufferfeed_inner` by the `plxnative-uriprobe` trigger) play one stream through
 `com.webos.media` with no Engine behind it, to learn what webOS 5+ does with the exported window id

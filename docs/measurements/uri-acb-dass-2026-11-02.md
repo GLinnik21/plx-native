@@ -66,9 +66,82 @@ URI bus unregister and asynchronous ACB completion are separate facts. After ack
 URI release the experiment sends ACB UNLOADED once and retains its slot until application
 exit; the next arm starts a new process. This avoids asserting an unproven ACB release fence.
 
-## Local evidence artifacts
+## Device result
 
-The initial baseline was stopped before deployment because `tv-session.sh up` attempted an
-automatic rebuild under the lease. It supplies no playback result. The application was closed,
-automation triggers cleared and the lease released. Subsequent runs must use a committed,
-checked binary built before acquiring the television.
+**Both arms displayed moving URI video on the webOS 4.5 dev set.** The control did not invoke
+`connectDass`, so that call is not necessary for the demonstrated sequence. The individual
+contribution of the shared changes (foreground notification, player type, descriptor, dummy ID,
+timing and full-screen binding) was not isolated. This does not establish all 4.x firmware,
+formats, partial rectangles or normal playback support.
+
+Both runs used committed source `01b23f455`, the same debug-flavour release-profile ARM binary,
+and fresh application processes. The launcher verified deployed bytes against the local build
+before each run. App SHA-256:
+`edf5e7b7f86798640a93aa119d92000264e1f762dddbc7a85b04b29d5c82af30`.
+
+| Observation | `acb-control` | `acb-dass` |
+|---|---|---|
+| Native initialization | player type 0, return 1, callback installed | Same |
+| URI registration | Named | Named |
+| Foreground notification | Accepted | Accepted |
+| Video metadata | 1280 × 720, 24 fps, bitrate 4,139,352 | Same |
+| Descriptor | Explicit SDR720p24 fixture | Same |
+| `connectDass(0)` | Skipped, timed slot retained | Return 1, task 2, callback observed |
+| Display captures, embedded media time | 13.750 s and 21.375 s | 12.792 s and 20.125 s |
+| Video-only capture, embedded media time | 24.625 s | 23.375 s |
+| Picture | Moving colour bars in all captures | Moving colour bars in all captures |
+| Back | URI unregister, one ACB UNLOADED, retained quarantine | Same |
+| Stopped display | Home; no fixture picture visible | Same |
+
+All captures were opened and inspected. These are service captures with the panel off, not GL
+readbacks or photographs of the physical panel. Sound was muted and audibility was not tested.
+
+The call completion → next-dispatch intervals were 208/216/215/312 ms in the control and
+209/216/215/315 ms in the Dass arm, meeting the same requested 200/200/200/300 ms spacing.
+All native stage dispatches returned 1; the callbacks recorded no recognized `ERROR_06`.
+Those observations supplement the pictures; neither a dispatch result nor absence of an error
+would establish visible binding by itself.
+
+Both stops reported successful bus release, sent UNLOADED exactly once, observed its callback
+with play state 0, and retained the deliberate `need-relaunch` quarantine. The stopped display
+showed Home. This is not a general asynchronous ACB release proof, and the ownership fence remains.
+The driver closed each app, removed automation triggers, stopped its reverse mock tunnel and
+released the TV lease after the run. No household account was used.
+
+Pause/resume, seeking, duration reporting, subtitles, EOS and sustained playback were not tested
+by these short picture-binding arms. In particular, this does not replace the webOS 5.4.2/26
+transport logs requested through #1064 or enable a production URI route.
+
+### Captures and logs
+
+The images are unchanged service output. The logs retain only URI probe and numeric ACB evidence;
+raw application/session logs are not published. [Artifact hashes](uri-acb-dass-2026-11-02/SHA256SUMS)
+pin the exact saved bytes.
+
+| Arm | Display 1 | Display 2 | Video only | Stopped | Log |
+|---|---|---|---|---|---|
+| Control | [13.750 s](uri-acb-dass-2026-11-02/control-frame1.png) | [21.375 s](uri-acb-dass-2026-11-02/control-frame2.png) | [24.625 s](uri-acb-dass-2026-11-02/control-video.png) | [Home](uri-acb-dass-2026-11-02/control-stopped.png) | [Control](uri-acb-dass-2026-11-02/control.txt) |
+| Dass | [12.792 s](uri-acb-dass-2026-11-02/dass-frame1.png) | [20.125 s](uri-acb-dass-2026-11-02/dass-frame2.png) | [23.375 s](uri-acb-dass-2026-11-02/dass-video.png) | [Home](uri-acb-dass-2026-11-02/dass-stopped.png) | [Dass](uri-acb-dass-2026-11-02/dass.txt) |
+
+## Host verification
+
+On committed source `01b23f455`, with a clean tree before and after the gates:
+
+- `make check` passed both Rust suites, all 119 Python steps and all 546 mock harness tests.
+- `make check-nodef` and `make FLAVOR=debug ARM_PROFILE=release` passed.
+- ELF instruction/dependency checks passed. The private-IP/default-placeholder checks were
+  skipped because the build used an ignored synthetic mock configuration.
+- The app passed all nine gated firmware import inventories; the helper passed all 14.
+  Both linker-input/SHA-256 receipts matched their binaries.
+- PR, firmware-compatibility and prose reviews completed. Four additional regressions failed
+  before the media-identity and native-initialization review fixes, then passed.
+
+The final media hostsim result was:
+
+```text
+test result: ok. 2276 passed; 0 failed; 78 ignored; 0 measured; 0 filtered out; finished in 90.09s
+```
+
+The experiment remains Sans-IO: the machine receives time and addressed answers and emits typed
+effects; the driver executes bus and native calls. The dependency gate reports unchanged
+worker/global/fork/effect-lane ledgers.
