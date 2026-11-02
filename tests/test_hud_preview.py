@@ -60,6 +60,17 @@ class Matrix(unittest.TestCase):
         queue=preview.screenshots.mock_pms.Library.continuous_queue(lib,movie)
         self.assertEqual(queue,[movie])
 
+    def test_long_chapters_replace_the_pms_tag_read_by_the_player(self):
+        movie={"Media":[{"Part":[{"id":1020}]}],
+               "Chapter":[{"startTimeOffset":0,"tag":"Short chapter"}]}
+        spec={"navigation_pair":False,"real_episode":False,"background":"dark","chapters":True,
+              "long_title":True,"lang":"de"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);hud=root/"example.json";hud.write_text("{}")
+            preview.fixture(spec,hud)(SimpleNamespace(lib=SimpleNamespace(items={102:movie})),root)
+        self.assertEqual(movie["Chapter"][0]["tag"],preview.LONG_TITLES["de"])
+        self.assertNotIn("title",movie["Chapter"][0])
+
     def test_a_new_shipped_language_requires_a_long_title_sample(self):
         value = inspection()
         value["languages"].append({"lang":"xx", "states":[]})
