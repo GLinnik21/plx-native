@@ -33,6 +33,14 @@ pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load d
 pub mod preview;
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
+#[cfg(feature = "devtriggers")]
+pub mod uri_protocol;
+#[cfg(feature = "devtriggers")]
+pub mod uri_lifecycle;
+#[cfg(feature = "devtriggers")]
+pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uriprobe`): what to say to com.webos.media (pure machine); `uriprobe_drive` runs it
+#[cfg(feature = "devtriggers")]
+pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
 // `test` here is THIS crate's own test build only, not `any(test, feature = "test-support")`: the
 // application crate's `port.rs` names `StarfishSink` in every build of its library that is not its
 // own test build, and `cargo check --lib --tests` builds that library with this crate's
@@ -647,8 +655,15 @@ fn acb_playstate_ready(stage: shared::Stage) -> bool {
 /// `Stage::Streaming` is the FIRST stage at which the ordered ACB bind transaction has finished:
 /// `setMediaId` → LOADED → `setMediaVideoData` → `setDisplayWindow` → PLAYING. It is the same
 /// predicate [`acb_mirror_playstate`] uses to decide whether the sink can take a PLAYSTATE at all,
-/// deliberately — one definition of "the plane is really ours", not two. No engine means no sink,
-/// so the bit clears on teardown without teardown having to remember to say so.
+/// deliberately — one definition of "the plane is really ours", not two. Buffer-feed ownership
+/// clears when its Engine is removed.
+///
+/// A URI-mode probe session (`uriprobe_drive`, dev trigger `plxnative-uriprobe`) has no Engine and
+/// so no Engine ACB stage: its observation starts with service `playing`, or with the controlled
+/// ACB experiment's first bind call. It remains latched through logical stop until release is
+/// acknowledged. The ACB experiment retains plane ownership through bus release until app exit,
+/// because asynchronous ACB completion is unproven. `drive` steps ownership before this call,
+/// including frames after the player screen has gone.
 ///
 /// This is an OBSERVATION of the adapter, not a second owner: it hands the answer to
 /// [`machine::Player::set_video_plane_bound`], which is the only writer and the only publisher.
@@ -657,6 +672,8 @@ pub fn observe_video_plane(
     pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
     let bound = pa.engine().is_some_and(|e| acb_playstate_ready(e.stage));
+    #[cfg(feature = "devtriggers")]
+    let bound = bound || pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
 }
 
@@ -2796,14 +2813,12 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
 #[no_mangle]
 pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let r = if reply.is_null() {
-            String::new()
-        } else {
-            unsafe { CStr::from_ptr(reply) }
-                .to_string_lossy()
-                .into_owned()
+        let (code, binding_error) = if reply.is_null() { (None, false) } else {
+            let text = unsafe { CStr::from_ptr(reply) }.to_string_lossy();
+            let code = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|value| value.get("errorCode").and_then(serde_json::Value::as_i64));
+            (code, text.contains("ERROR_06"))
         };
-        log(&format!("acb_cb ev={ev} reply={r}"));
+        log(&format!("acb_cb ev={ev} errorCode={code:?} ERROR_06={binding_error}"));
     }));
 }
 

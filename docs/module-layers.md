@@ -274,9 +274,10 @@ the port fills at boot. `tv::Port` is a table of function pointers, installed on
 statement of `port::plex_run`, before anything that reads it. With no port installed (host unit
 tests, where nothing calls `plex_run`) `tv::ABSENT` answers what the host arms answered before; a
 shipping build that reaches it logs `tv: port not installed - using the no-port defaults` once.
-Only `tv`'s own modules read the table. The one thing that leaves it is the sink, through
-`tv::sink::installed()`, and `ci/check-deps.sh` (rule `sink`) fails on that name or `VideoSink`
-outside `player/`, `tv/`, `tv.rs` and `port.rs`.
+Only `tv`'s own modules read the table. Two things leave it: the sink, through
+`tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences it to `player/`, `tv/`, `tv.rs`
+and `port.rs`), and, in a `devtriggers` build only, the developer URI-mode probe's
+`tv::uri::installed()`, read by `player::uriprobe_drive`.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are
 published values rather than hooks: the webOS code writes them into `tv::device`, `tv::sandbox` and
 `devcaps::dv` at the same boot moment as before, so readers keep their `OnceLock` semantics.

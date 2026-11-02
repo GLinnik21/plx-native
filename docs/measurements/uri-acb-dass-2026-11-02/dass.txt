@@ -1,0 +1,160 @@
+ptype=0
+acb initialize playerType=0 rv=1 callback_installed=1
+uriprobe: t=0 armed variant=acb-dass scheme=http kind=direct window=none app=com.beb.plxnative.debug
+uriprobe: t=0 acb request=1 step=Check
+uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection
+uriprobe: t=0 acb gate mode=1 boot_handle=true actual_ptype=0 dass_available=true initialized=true
+uriprobe: t=1 acb answer step=Check invoked=true (not plane proof)
+ls2uri: register shape=named ok after 3ms
+uriprobe: t=30 register shape=named ok
+ls2uri: call sent
+uriprobe: t=46 call load ok
+ls2uri: call sent
+ls2uri: call sent
+uriprobe: t=64 call notifyForeground ok
+uriprobe: t=64 ev=unknown (unparsed)
+uriprobe: t=64 call subscribe ok
+uriprobe: t=615 ev=audioInfo
+uriprobe: t=694 ev=videoInfo width=1280 height=720 frameRate=24
+uriprobe: t=774 ev=sourceInfo
+uriprobe: t=774 ev=unknown (unparsed)
+uriprobe: t=774 ev=loadCompleted
+ls2uri: call sent
+uriprobe: t=774 acb request=2 step=MediaId
+acb probe mediaId sink_rv=1 rv=1
+uriprobe: t=779 acb answer step=MediaId invoked=true (not plane proof)
+uriprobe: t=790 call play ok
+uriprobe: t=804 ev=bufferRange beginTime=0 endTime=3
+uriprobe: t=804 ev=playing
+uriprobe: t=988 acb request=3 step=Loaded
+acb probe loaded rv=1 task=1
+uriprobe: t=989 acb answer step=Loaded invoked=true (not plane proof)
+acb callback task=1 ev=1 app=1 play=1
+acb_cb ev=1 errorCode=None ERROR_06=false
+uriprobe: t=1205 ev=bufferRange beginTime=0 endTime=7
+uriprobe: t=1205 acb request=4 step=Connect
+acb probe connectDass mode=0 rv=1 task=2
+uriprobe: t=1207 acb answer step=Connect invoked=true (not plane proof)
+acb callback task=2 ev=1 app=1 play=1
+acb_cb ev=1 errorCode=None ERROR_06=false
+uriprobe: t=1388 ev=streamingInfo
+uriprobe: t=1406 ev=currentTime value=138 (first report)
+uriprobe: t=1422 acb request=5 step=VideoData
+uriprobe: acb video facts width=1280 height=720 frameRate=24 bitRate=Some(4139352)
+uriprobe: acb descriptor=explicit-SDR720p24-fixture
+acb videoData rv=1 task=3
+uriprobe: t=1424 acb answer step=VideoData invoked=true (not plane proof)
+acb callback task=3 ev=1 app=1 play=1
+acb_cb ev=1 errorCode=None ERROR_06=false
+uriprobe: t=1605 ev=currentTime value=338
+uriprobe: t=1605 ev=bufferRange beginTime=0 endTime=11
+uriprobe: t=1739 acb request=6 step=Display
+acb display fullscreen=1 rv=1 task=4
+acb playing rv=1 task=5
+uriprobe: t=1740 acb answer step=Display invoked=true (not plane proof)
+acb callback task=5 ev=1 app=1 play=2
+acb_cb ev=1 errorCode=None ERROR_06=false
+acb callback task=4 ev=1 app=1 play=2
+acb_cb ev=1 errorCode=None ERROR_06=false
+uriprobe: t=1997 ev=bufferRange beginTime=0 endTime=15
+uriprobe: t=2399 ev=streamingInfo
+uriprobe: t=2399 ev=bufferRange beginTime=1 endTime=20
+uriprobe: t=2614 ev=currentTime value=1341
+uriprobe: t=2799 ev=bufferRange beginTime=1 endTime=24
+uriprobe: t=3214 ev=bufferRange beginTime=1 endTime=28
+uriprobe: t=3399 ev=streamingInfo
+uriprobe: t=3619 ev=currentTime value=2345
+uriprobe: t=3619 ev=bufferRange beginTime=2 endTime=32
+uriprobe: t=4015 ev=bufferRange beginTime=2 endTime=32
+uriprobe: t=4395 ev=streamingInfo
+uriprobe: t=4412 ev=bufferRange beginTime=3 endTime=33
+uriprobe: t=4811 ev=currentTime value=3550
+uriprobe: t=4811 ev=bufferRange beginTime=3 endTime=33
+uriprobe: t=5211 ev=bufferRange beginTime=3 endTime=33
+uriprobe: t=5619 ev=bufferRange beginTime=4 endTime=34
+uriprobe: t=5812 ev=currentTime value=4553
+uriprobe: t=6011 ev=bufferRange beginTime=4 endTime=34
+uriprobe: t=6412 ev=bufferRange beginTime=5 endTime=35
+uriprobe: t=6827 ev=currentTime value=5558
+uriprobe: t=6827 ev=bufferRange beginTime=5 endTime=35
+uriprobe: t=7227 ev=bufferRange beginTime=5 endTime=35
+uriprobe: t=7627 ev=bufferRange beginTime=6 endTime=36
+uriprobe: t=7827 ev=currentTime value=6563
+uriprobe: t=8031 ev=bufferRange beginTime=6 endTime=36
+uriprobe: t=8427 ev=bufferRange beginTime=7 endTime=37
+uriprobe: t=8835 ev=currentTime value=7570
+uriprobe: t=8835 ev=bufferRange beginTime=7 endTime=37
+uriprobe: t=9235 ev=bufferRange beginTime=7 endTime=37
+uriprobe: t=9635 ev=bufferRange beginTime=8 endTime=38
+uriprobe: t=9835 ev=currentTime value=8574
+uriprobe: t=10035 ev=bufferRange beginTime=8 endTime=38
+uriprobe: t=10435 ev=bufferRange beginTime=9 endTime=39
+uriprobe: t=10852 ev=currentTime value=9580
+uriprobe: t=10852 ev=bufferRange beginTime=9 endTime=39
+uriprobe: t=11252 ev=bufferRange beginTime=9 endTime=39
+uriprobe: t=11651 ev=bufferRange beginTime=10 endTime=40
+uriprobe: t=11852 ev=currentTime value=10586
+uriprobe: t=12051 ev=bufferRange beginTime=10 endTime=40
+uriprobe: t=12451 ev=bufferRange beginTime=11 endTime=41
+uriprobe: t=12851 ev=bufferRange beginTime=11 endTime=41
+uriprobe: t=13051 ev=currentTime value=11791
+uriprobe: t=13267 ev=bufferRange beginTime=11 endTime=41
+uriprobe: t=13652 ev=bufferRange beginTime=12 endTime=42
+uriprobe: t=14060 ev=currentTime value=12794
+uriprobe: t=14060 ev=bufferRange beginTime=12 endTime=42
+uriprobe: t=14468 ev=bufferRange beginTime=13 endTime=43
+uriprobe: t=14867 ev=bufferRange beginTime=13 endTime=43
+uriprobe: t=15067 ev=currentTime value=13798
+uriprobe: t=15267 ev=bufferRange beginTime=13 endTime=43
+uriprobe: t=15659 ev=bufferRange beginTime=14 endTime=44
+uriprobe: t=16058 ev=bufferRange beginTime=14 endTime=44
+uriprobe: t=16276 ev=currentTime value=15004
+uriprobe: t=16475 ev=bufferRange beginTime=15 endTime=45
+uriprobe: t=16875 ev=bufferRange beginTime=15 endTime=45
+uriprobe: t=17275 ev=bufferRange beginTime=16 endTime=46
+uriprobe: t=17475 ev=currentTime value=16208
+uriprobe: t=17675 ev=bufferRange beginTime=16 endTime=46
+uriprobe: t=18067 ev=bufferRange beginTime=16 endTime=46
+uriprobe: t=18483 ev=currentTime value=17211
+uriprobe: t=18483 ev=bufferRange beginTime=17 endTime=47
+uriprobe: t=18883 ev=bufferRange beginTime=17 endTime=47
+uriprobe: t=19282 ev=bufferRange beginTime=18 endTime=48
+uriprobe: t=19683 ev=currentTime value=18417
+uriprobe: t=19683 ev=bufferRange beginTime=18 endTime=48
+uriprobe: t=20083 ev=bufferRange beginTime=18 endTime=48
+uriprobe: t=20483 ev=bufferRange beginTime=19 endTime=49
+uriprobe: t=20882 ev=currentTime value=19622
+uriprobe: t=20882 ev=bufferRange beginTime=19 endTime=49
+uriprobe: t=21299 ev=bufferRange beginTime=20 endTime=50
+uriprobe: t=21690 ev=bufferRange beginTime=20 endTime=50
+uriprobe: t=21891 ev=currentTime value=20626
+uriprobe: t=22092 ev=bufferRange beginTime=20 endTime=50
+uriprobe: t=22490 ev=bufferRange beginTime=21 endTime=51
+uriprobe: t=22890 ev=bufferRange beginTime=21 endTime=51
+uriprobe: t=23090 ev=currentTime value=21830
+uriprobe: t=23290 ev=bufferRange beginTime=22 endTime=52
+uriprobe: t=23706 ev=bufferRange beginTime=22 endTime=52
+uriprobe: t=24089 ev=bufferRange beginTime=22 endTime=52
+uriprobe: t=24290 ev=currentTime value=23033
+uriprobe: t=24506 ev=bufferRange beginTime=23 endTime=53
+uriprobe: t=24906 ev=bufferRange beginTime=23 endTime=53
+uriprobe: t=25306 ev=currentTime value=24038
+uriprobe: t=25306 ev=bufferRange beginTime=24 endTime=54
+uriprobe: t=25698 ev=bufferRange beginTime=24 endTime=54
+uriprobe: t=26097 ev=bufferRange beginTime=24 endTime=54
+uriprobe: t=26315 ev=currentTime value=25042
+uriprobe: t=26505 ev=bufferRange beginTime=25 endTime=55
+uriprobe: t=26906 ev=bufferRange beginTime=25 endTime=55
+uriprobe: t=27305 ev=bufferRange beginTime=26 endTime=56
+uriprobe: t=27505 ev=currentTime value=26247
+uriprobe: t=27722 ev=bufferRange beginTime=26 endTime=56
+uriprobe: t=28106 ev=bufferRange beginTime=26 endTime=56
+uriprobe: t=28398 call unload requested
+uriprobe: t=28398 summary load=ok playing=yes t_load=774 t_playing=804 currentTime_advanced=yes videoInfo=seen audioInfo=seen window=none setWindowId=n/a variant=acb-dass scheme=http shape=named end=back
+uriprobe: t=28398 tester: report picture yes/no and sound yes/no
+ls2uri: call sent
+ls2uri: released
+acb unloaded rv=1 task=6
+uriprobe: acb=quarantined bus=released plane-release=unproven need-relaunch
+acb callback task=6 ev=1 app=1 play=0
+acb_cb ev=1 errorCode=None ERROR_06=false

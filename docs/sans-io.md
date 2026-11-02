@@ -44,7 +44,7 @@ dropped.
 **Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
 `plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs`, `recovery.rs`
-(the failed-open ladder machine) and `release.rs` (the native object's release machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
+(the failed-open ladder machine), `release.rs` (the native object's release machine) and `uriprobe.rs` (the developer URI-mode probe's machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
 `net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
 of every crate that holds a machine (`FORK_SCOPE`): `data/`, `plex/`, `media/`, `session/`, `screens/`,
 `ui/`, `appkit/` and `machine/`, because a fork anywhere in them is a test that does not run the

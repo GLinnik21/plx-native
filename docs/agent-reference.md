@@ -1096,7 +1096,9 @@ input decoding live in `system.rs` / `app/events.rs` + `app/input.rs`, not the C
 threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Read it before
 touching playback):** LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
 `BUFFERSTREAM` **buffer-feed** mode, the decoded sink bound to the hardware video plane via
-**`libAcbAPI` (ACB)** — in-process is what lets ACB bind the app-owned sink. The media pipeline
+**`libAcbAPI` (ACB)**. Normal playback uses this in-process buffer-feed path; the controlled
+[URI experiment](measurements/uri-acb-dass-2026-11-02.md) also displayed its SDR720p24 fixture
+through ACB on the webOS 4.5 dev set, with and without `connectDass`. The normal media pipeline
 is all Rust: `PMS HTTP GET` → demux (**`ff.rs`, over a custom AVIO on the
 FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
 `--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
@@ -1533,7 +1535,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   inside `is_back`, in `consts.rs` itself, beside the constant and the comment explaining it).
   Preserve this raw-offset reading if you touch input.
 - **Starfish/ACB ABI + bind-order rules** (the C++-from-C mangled-symbol seam, `Load` with
-  `uid=NULL`, the exact ACB bind sequence, sourceInfo-verbatim (one exception: PQ VP9 is rewritten to HDR10), never feed audio to ACB, the
+  `uid=NULL`, the exact ACB bind sequence, buffer-feed sourceInfo-verbatim (PQ VP9 is rewritten to HDR10;
+  the developer URI ACB fixture uses a separate experimental descriptor), never feed audio to ACB, the
   3-arg taskId ABI) — moved to **`rust-modules/media/src/player/CLAUDE.md`**; read it before touching
   playback or `src/starfish.c`.
 - **Wayland transparency** (`system.rs`)**:** the UI surface is forced to a 32-bit RGBA config and
@@ -2440,6 +2443,18 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   reader demuxes the Part's subtitle packets over a fresh-session range read and the client
   renderer draws that track; logs `subside: open|anchor|reopen|failed|stop …`, never a URL, token
   or session; `media::player::subside`, `ff_subside.rs`),
+  `/tmp/plxnative-uriprobe[=load|late|none|drive]` (the webOS 5+ URI-mode probe, issue #1064: the
+  next Play hands its stream URL to `com.webos.media` over the platform bus instead of building an
+  Engine, to learn whether the exported window id is honoured and where it may go. The content
+  picks the variant: empty or `load` puts `windowId` in the `load` payload, `late` sends it with
+  `setWindowId` after `loadCompleted`, `none` sends no window at all, and `drive` binds like `load`
+  and then exercises the transport — pause, resume, a seek 20 s ahead, a text and an audio
+  `selectTrack`, `setSubtitleEnable` — logging the position before and after each, so the summary
+  says whether the pipeline accepts them; text naming no variant leaves the probe unarmed and the
+  play normal. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
+  runs, so nothing is reported to Plex (no timeline, scrobble or unscrobble). The event log gets `uriprobe: …` lines ending in one `summary` line, never the URL,
+  token, host or a service payload; a tester sends those lines and removes the file.
+  `dev::DIAG`, so it does not move the boot screen; `media::player::uriprobe`, `uriprobe_drive`),
   `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
