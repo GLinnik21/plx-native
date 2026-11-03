@@ -24,84 +24,23 @@ use super::subs::SubCue;
 use super::*;
 use std::sync::{Arc, Mutex};
 
-/// How far ahead of the playhead (Part time minus `delta`) the reader may be before it parks.
-pub(super) const WINDOW_NS: i64 = 12_000_000_000;
+// Clock evidence is shared with presentation; this FFmpeg reader only supplies bytes and times.
+pub(crate) use plx_playback_contract::subtitle::{Anchor, delta_exact, playhead_of};
+use plx_playback_contract::subtitle::{delta_assumed, judged_clock, pacing_parks};
+
+/// The reader lead budget, shared with the neutral pacing rule.
+pub(super) const WINDOW_NS: i64 = plx_playback_contract::subtitle::WINDOW_NS;
+
 /// How long it parks per decision.
 pub(super) const PARK_MS: u64 = 250;
 /// The half-width of the keyframe scan around the start offset, both directions.
 pub(crate) const SCAN_NS: i64 = 15_000_000_000;
 
-/// **Pacing**: is this packet (stamped `pkt_part_ns` in the Part's own time) more than
-/// [`WINDOW_NS`] ahead of the remux playhead `playpos_ns` once `delta_ns` maps one clock onto the
-/// other? Pure, so the decision is graded without a thread.
-pub(super) fn pacing_parks(pkt_part_ns: i64, delta_ns: i64, playpos_ns: i64) -> bool {
-    pkt_part_ns.saturating_sub(delta_ns) > playpos_ns.saturating_add(WINDOW_NS)
-}
-
 // ---- the clock mapping ----------------------------------------------------------------------
-
-/// How many bytes of the head and the tail of a packet identify it.
-const FINGERPRINT: usize = 32;
-
-/// The first video keyframe the MAIN demuxer read from the remux: its stream time and enough of its
-/// payload to recognise the same picture in the Part. Size alone is not an identity (two keyframes
-/// of one film can share a size), and the remux copies the video, so the bytes agree exactly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Anchor {
-    /// The packet's stream time in the remux's own clock, nanoseconds.
-    pub pts_ns: i64,
-    pub size: usize,
-    pub head: [u8; FINGERPRINT],
-    pub tail: [u8; FINGERPRINT],
-}
-
-impl Anchor {
-    /// The anchor of a packet of stream time `pts_ns` holding `data`.
-    pub(crate) fn of(pts_ns: i64, data: &[u8]) -> Anchor {
-        let (head, tail) = fingerprint(data);
-        Anchor { pts_ns, size: data.len(), head, tail }
-    }
-
-    /// Is `data` the same keyframe? Size, head AND tail must all agree.
-    pub(crate) fn matches(&self, data: &[u8]) -> bool {
-        let (head, tail) = fingerprint(data);
-        data.len() == self.size && head == self.head && tail == self.tail
-    }
-}
-
-/// The first and last [`FINGERPRINT`] bytes of `data`, zero-padded when it is shorter.
-fn fingerprint(data: &[u8]) -> ([u8; FINGERPRINT], [u8; FINGERPRINT]) {
-    let mut head = [0u8; FINGERPRINT];
-    let mut tail = [0u8; FINGERPRINT];
-    let h = data.len().min(FINGERPRINT);
-    head[..h].copy_from_slice(&data[..h]);
-    tail[..h].copy_from_slice(&data[data.len() - h..]);
-    (head, tail)
-}
-
-/// The remux playhead that the packet at remux stream time `anchor_pts_ns` is shown at —
-/// `fed − pts_shift + disp_base`, the formula `player::mod`'s position callback stores in
-/// `playpos_ns`.
-pub(crate) fn playhead_of(anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
-    anchor_pts_ns.saturating_sub(pts_shift).saturating_add(disp_base)
-}
-
-/// `delta = part_time − playhead` from a keyframe the scan matched byte for byte.
-pub(crate) fn delta_exact(part_kf_pts: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
-    part_kf_pts.saturating_sub(playhead_of(anchor_pts_ns, pts_shift, disp_base))
-}
 
 /// The last keyframe at or before `offset_ns`, from keyframe times in any order.
 pub(super) fn keyframe_at_or_before(keyframes: &[i64], offset_ns: i64) -> Option<i64> {
     keyframes.iter().copied().filter(|k| *k <= offset_ns).max()
-}
-
-/// `delta` when no keyframe matched: ASSUMES PMS started the remux on the last keyframe at or
-/// before `offset`. That is wrong whenever PMS started earlier (917 s: started 914.914, assumed
-/// 916.916, 2.002 s off), so the sidecar draw never uses it (only
-/// [`crate::player::subside::publish_exact`]'s byte-exact delta); an embedded track's cues still do.
-pub(super) fn delta_assumed(k_le: i64, anchor_pts_ns: i64, pts_shift: i64, disp_base: i64) -> i64 {
-    delta_exact(k_le, anchor_pts_ns, pts_shift, disp_base)
 }
 
 // ---- stopping -------------------------------------------------------------------------------
@@ -591,17 +530,6 @@ pub(super) fn anchor_line(
 /// the subtitle stream with the video by a second or so, so the CLEAR of a set can sit slightly
 /// behind a video packet already read.
 const OPEN_SET_SLACK_NS: i64 = 2_000_000_000;
-
-/// The playhead the side reader judges a cue against, on the remux's display clock: the player's
-/// own `playpos` once it has advanced, but never behind where the first keyframe of this run is
-/// shown (`anchor_playhead`) — before the first frame (a start, or a seek's reload) `playpos` is
-/// still 0 or the position the viewer just left, and a cue read then must not be placed against it.
-/// Taken on the SUBTITLE clock too (the viewer's timing offset), keeping the earlier of the two so
-/// that a delay never lets a still-due cue be judged past.
-pub(super) fn judged_clock(playpos_ns: i64, anchor_playhead_ns: i64, offset_ns: i64) -> i64 {
-    let now = playpos_ns.max(anchor_playhead_ns);
-    now.min(now.saturating_sub(offset_ns))
-}
 
 /// Hands the side reader's cues to the render stores.
 ///

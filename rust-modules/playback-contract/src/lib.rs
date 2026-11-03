@@ -6,6 +6,7 @@
 
 mod state;
 pub mod adaptive;
+pub mod subtitle;
 pub use state::{BackendState, Fx, Event, Intent, Phase, Snapshot};
 
 /// One logical start, supplied by the existing route owner. Its pair matches a route

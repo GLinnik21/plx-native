@@ -28,7 +28,8 @@
 //! Logs: `subside: open|anchor|reopen|failed|clock-only failed|stop …` — labels and numbers, never
 //! the URL, host, token or session identifier.
 
-use crate::ff::subside::{read_once, Anchor, ReadCfg, RunEnd, SideStop};
+use crate::ff::subside::{read_once, ReadCfg, RunEnd, SideStop};
+use plx_playback_contract::subtitle::Anchor;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
