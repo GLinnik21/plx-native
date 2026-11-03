@@ -342,6 +342,37 @@ pub fn commit_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Op
     accepted
 }
 
+/// A URI native selection is applied only after the common owner accepts its exact command's
+/// confirmed track report. It changes the selected source stream and the existing Plex/memory
+/// projections without scheduling a Feed demux reload or a server conversion.
+#[cfg(feature = "play-uri")]
+pub fn confirm_uri_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Option<AudioMemo>) {
+    ps.cur_audio = Some(audio);
+    ps.selection_known = true;
+    ps.cur_memory_note = false;
+    queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+    if let Some(memo) = memo { remember_track_pick(ps, TrackPick::Audio(memo)); }
+}
+
+/// The product URI driver renders its selected embedded subtitle. No side reader, burn refresh,
+/// or Feed subtitle mailbox may run for this confirmed native selection.
+#[cfg(feature = "play-uri")]
+pub fn confirm_uri_subtitle_pick(ps: &mut PlaybackSession, ordinal: i32, stream_id: i64,
+    memo: Option<SubtitleMemo>) {
+    let changed = subtitle_pick_changed(ps.cur_sub_sid, stream_id,
+        ps.sub_mode == SubMode::ForcedOnly);
+    ps.sub_mode = SubMode::of_stream(stream_id);
+    ps.cur_sub_sid = stream_id;
+    ps.cur_sub_ordinal = ordinal;
+    ps.cur_sub_sidecar = false;
+    ps.cur_sub_client_drawable = false;
+    ps.cur_memory_note = false;
+    queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+    if let Some(memo) = memo.filter(|_| changed) {
+        remember_track_pick(ps, TrackPick::Subtitle(memo));
+    }
+}
+
 /// **The track menu's subtitle pick: commit it, and remember it.** `memo` is
 /// [`SubtitleMemo::Off`] for Off, or [`memo_of_subtitle`](super::super::memo_of_subtitle) of the picked
 /// track (an embedded track, a sidecar, a fresh download); `None` remembers nothing. A subtitle

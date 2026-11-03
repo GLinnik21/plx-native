@@ -41,6 +41,23 @@ use plx_playback_contract::Playback;
 use plx_play_uri::backend::{Binding as UriBinding, Config as UriConfig,
     MonotonicClock, UriBackend, UriSource};
 
+#[cfg(feature = "play-uri")]
+struct PendingUriAudio {
+    attempt: AttemptId,
+    command: CommandId,
+    audio: crate::route::CarriedAudio,
+    memo: Option<plx_plex::plex::session::prefs::AudioMemo>,
+}
+
+#[cfg(feature = "play-uri")]
+struct PendingUriSubtitle {
+    attempt: AttemptId,
+    command: CommandId,
+    ordinal: i32,
+    stream_id: i64,
+    memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>,
+}
+
 /// Explicit product URI settings supplied by the future source qualifier. Platform transport
 /// and display are resolved at the IO composition boundary, never through Feed's VideoSink.
 #[cfg(feature = "play-uri")]
@@ -348,6 +365,10 @@ pub struct PlayerAdapter {
     uri_stop_requested: bool,
     #[cfg(feature = "play-uri")]
     uri_finalized: bool,
+    #[cfg(feature = "play-uri")]
+    pending_uri_audio: Option<PendingUriAudio>,
+    #[cfg(feature = "play-uri")]
+    pending_uri_subtitle: Option<PendingUriSubtitle>,
     /// Route identity and product trace for the installed physical attempt. The feed itself
     /// receives only the canonical contract ID and native epoch.
     feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
@@ -417,6 +438,10 @@ impl PlayerAdapter {
             uri_stop_requested: false,
             #[cfg(feature = "play-uri")]
             uri_finalized: false,
+            #[cfg(feature = "play-uri")]
+            pending_uri_audio: None,
+            #[cfg(feature = "play-uri")]
+            pending_uri_subtitle: None,
             feed_attempt: None,
             timeline: None,
             repair: None,
@@ -513,6 +538,110 @@ impl PlayerAdapter {
         { super::set_play_rate(ps, permille) }
         #[cfg(not(feature = "play-feed"))]
         { let _ = (ps, permille); false }
+    }
+
+    /// `None` means the active route is Feed. `Some(false)` is an explicit URI refusal, so a
+    /// caller must never fall through to Feed track or sidecar controls for this route.
+    #[cfg(feature = "play-uri")]
+    pub fn select_uri_audio(&mut self, ps: &crate::route::PlaybackSession,
+        audio: crate::route::CarriedAudio,
+        memo: Option<plx_plex::plex::session::prefs::AudioMemo>) -> Option<bool> {
+        if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return None; }
+        if crate::route::cur_sub_mode(ps) == crate::route::SubMode::ForcedOnly {
+            return Some(false);
+        }
+        let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
+        let Ok(id) = u64::try_from(audio.sid) else { return Some(false); };
+        let attempt = route_attempt.contract_id();
+        let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri, attempt,
+            operation: Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Audio,
+                choice: plx_playback_contract::TrackChoice::Selected(id) } },
+            super::attempt_metrics::Origin::Fresh, self.backend_tick());
+        if result.playback.iter().any(|fx| matches!(fx,
+            plx_playback_contract::Fx::Rejected { .. }
+                | plx_playback_contract::Fx::CommandRefused { .. })) { return Some(false); }
+        let Some(command) = self.backend.snapshot().last_queued else { return Some(false); };
+        self.pending_uri_audio = Some(PendingUriAudio { attempt, command, audio, memo });
+        Some(true)
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub fn select_uri_subtitle(&mut self, ps: &crate::route::PlaybackSession,
+        ordinal: i32, stream_id: i64,
+        memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> Option<bool> {
+        if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return None; }
+        // Off and external sidecars have no confirmed native operation in this transport.
+        let Ok(id) = u64::try_from(stream_id) else { return Some(false); };
+        if id == 0 || ordinal < 0 { return Some(false); }
+        let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
+        let attempt = route_attempt.contract_id();
+        let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri, attempt,
+            operation: Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Subtitle,
+                choice: plx_playback_contract::TrackChoice::Selected(id) } },
+            super::attempt_metrics::Origin::Fresh, self.backend_tick());
+        if result.playback.iter().any(|fx| matches!(fx,
+            plx_playback_contract::Fx::Rejected { .. }
+                | plx_playback_contract::Fx::CommandRefused { .. })) { return Some(false); }
+        let Some(command) = self.backend.snapshot().last_queued else { return Some(false); };
+        self.pending_uri_subtitle = Some(PendingUriSubtitle {
+            attempt, command, ordinal, stream_id, memo,
+        });
+        Some(true)
+    }
+
+    pub fn commit_audio_track(&mut self, ps: &mut crate::route::PlaybackSession,
+        audio: crate::route::CarriedAudio,
+        memo: Option<plx_plex::plex::session::prefs::AudioMemo>) -> bool {
+        #[cfg(feature = "play-uri")]
+        if let Some(accepted) = self.select_uri_audio(ps, audio.clone(), memo.clone()) {
+            return accepted;
+        }
+        #[cfg(feature = "play-feed")]
+        { crate::route::commit_audio_pick(ps, audio, memo) }
+        #[cfg(not(feature = "play-feed"))]
+        { let _ = (ps, audio, memo); false }
+    }
+
+    pub fn commit_subtitle_track(&mut self, ps: &mut crate::route::PlaybackSession,
+        ordinal: i32, stream_id: i64, sidecar_key: Option<String>, sidecar_codec: String,
+        memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> bool {
+        #[cfg(feature = "play-uri")]
+        if let Some(accepted) = self.select_uri_subtitle(ps, ordinal, stream_id, memo.clone()) {
+            return accepted;
+        }
+        #[cfg(feature = "play-feed")]
+        {
+            crate::route::commit_subtitle_and_sidecar(ps, ordinal, stream_id,
+                sidecar_key, sidecar_codec, memo);
+            true
+        }
+        #[cfg(not(feature = "play-feed"))]
+        { let _ = (ps, ordinal, stream_id, sidecar_key, sidecar_codec, memo); false }
+    }
+
+    pub fn commit_forced_only_track(&mut self, ps: &mut crate::route::PlaybackSession,
+        ordinal: i32, stream_id: i64, lang: &str, changed: bool) -> bool {
+        if ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri) {
+            return false;
+        }
+        #[cfg(feature = "play-feed")]
+        {
+            crate::route::commit_forced_only_and_sidecar(ps, ordinal, stream_id, lang, changed);
+            true
+        }
+        #[cfg(not(feature = "play-feed"))]
+        { let _ = (ps, ordinal, stream_id, lang, changed); false }
+    }
+
+    pub fn commit_audio_enhancement(&mut self, ps: &mut crate::route::PlaybackSession,
+        enhancement: plx_plex::plex::AudioEnhancements) -> bool {
+        if ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri) {
+            return false;
+        }
+        #[cfg(feature = "play-feed")]
+        { super::request_audio_enhancement(ps, enhancement); true }
+        #[cfg(not(feature = "play-feed"))]
+        { let _ = (ps, enhancement); false }
     }
 
     /// Address a seek to the active URI attempt. A refused command changes no Feed mailbox or
@@ -744,6 +873,8 @@ impl PlayerAdapter {
         self.uri_route_settled = false;
         self.uri_stop_requested = false;
         self.uri_finalized = false;
+        self.pending_uri_audio = None;
+        self.pending_uri_subtitle = None;
     }
 
     #[cfg(feature = "play-uri")]
@@ -857,6 +988,50 @@ impl PlayerAdapter {
                             super::attempt_view::Backend::Uri, facts);
                     }
                 }
+                plx_playback_contract::Fx::AcceptedTrackSettled {
+                    backend: BackendKind::Uri, attempt, command,
+                    kind: plx_playback_contract::TrackKind::Audio,
+                    choice: plx_playback_contract::TrackChoice::Selected(id),
+                } => {
+                    if self.uri_route_attempt.is_some_and(|route| route.contract_id() == attempt)
+                        && self.pending_uri_audio.as_ref().is_some_and(|pending|
+                            pending.attempt == attempt && pending.command == command
+                                && u64::try_from(pending.audio.sid).ok() == Some(id)) {
+                        let pending = self.pending_uri_audio.take().expect("matched URI audio pick");
+                        crate::route::confirm_uri_audio_pick(ps, pending.audio, pending.memo);
+                    }
+                }
+                plx_playback_contract::Fx::AcceptedTrackSettled {
+                    backend: BackendKind::Uri, attempt, command,
+                    kind: plx_playback_contract::TrackKind::Subtitle,
+                    choice: plx_playback_contract::TrackChoice::Selected(id),
+                } => {
+                    if self.uri_route_attempt.is_some_and(|route| route.contract_id() == attempt)
+                        && self.pending_uri_subtitle.as_ref().is_some_and(|pending|
+                            pending.attempt == attempt && pending.command == command
+                                && u64::try_from(pending.stream_id).ok() == Some(id)) {
+                        let pending = self.pending_uri_subtitle.take().expect("matched URI subtitle pick");
+                        crate::route::confirm_uri_subtitle_pick(ps, pending.ordinal,
+                            pending.stream_id, pending.memo);
+                    }
+                }
+                plx_playback_contract::Fx::CommandRefused {
+                    backend: BackendKind::Uri, attempt, command,
+                    operation: Operation::SelectTrack { kind, .. }, ..
+                } => match kind {
+                    plx_playback_contract::TrackKind::Audio => {
+                        if self.pending_uri_audio.as_ref().is_some_and(|pending|
+                            pending.attempt == attempt && pending.command == command) {
+                            self.pending_uri_audio = None;
+                        }
+                    }
+                    plx_playback_contract::TrackKind::Subtitle => {
+                        if self.pending_uri_subtitle.as_ref().is_some_and(|pending|
+                            pending.attempt == attempt && pending.command == command) {
+                            self.pending_uri_subtitle = None;
+                        }
+                    }
+                },
                 plx_playback_contract::Fx::ReleaseOutcome {
                     backend: BackendKind::Uri, attempt, status,
                 } => {
@@ -876,6 +1051,8 @@ impl PlayerAdapter {
                         status: ReleaseStatus::Released, .. }) {
                         self.uri_route_attempt = None;
                         self.uri_stop_requested = false;
+                        self.pending_uri_audio = None;
+                        self.pending_uri_subtitle = None;
                     }
                 }
                 _ => {}

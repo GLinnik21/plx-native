@@ -544,24 +544,25 @@ pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<sup
 /// writes nothing.
 pub(crate) fn commit_track(
     ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
     commit: plx_appkit::track_menu::TrackCommit,
 ) {
     use plx_appkit::track_menu::TrackCommit;
     match commit {
         TrackCommit::Audio { carried, memo } => {
-            plx_media::route::commit_audio_pick(ps, carried, memo);
+            pa.commit_audio_track(ps, carried, memo);
         }
-        TrackCommit::AudioEnhancement(a) => plx_media::player::request_audio_enhancement(ps, a),
+        TrackCommit::AudioEnhancement(a) => { pa.commit_audio_enhancement(ps, a); }
         // The route commits the pick and performs the sidecar half of it too
         // (`route::commit_subtitle_and_sidecar`): the sidecar policy lives beside the track memory's.
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec, memo } => {
-            plx_media::route::commit_subtitle_and_sidecar(ps, render_ordinal, stream_id, sidecar_key, sidecar_codec, memo);
+            pa.commit_subtitle_track(ps, render_ordinal, stream_id, sidecar_key, sidecar_codec, memo);
         }
         // Forced only (FO): the panel matched the forced track for the playing audio (or nothing),
         // the route holds the mode and remembers `ForcedOnly { lang }` when it changed, and drops
         // any sidecar (`route::commit_forced_only_and_sidecar`).
         TrackCommit::SubtitleForcedOnly { render_ordinal, stream_id, lang, changed } => {
-            plx_media::route::commit_forced_only_and_sidecar(ps, render_ordinal, stream_id, &lang, changed);
+            pa.commit_forced_only_track(ps, render_ordinal, stream_id, &lang, changed);
         }
         TrackCommit::SubtitleTone(tone) => plx_media::player::set_subtitle_tone(tone),
         // live first, persisted after, nothing republished on completion (`route::select_subtitle_size`)
@@ -622,7 +623,7 @@ pub(crate) fn player_requests(
             // The pump keeps the pause across it (see `commit_seek`).
             PlayerReq::CommitSeek(ns) => commit_seek(&mut player.session, pa, ns),
             PlayerReq::More(action) => apply_more_action(&mut player.session, pa, bridge, action),
-            PlayerReq::CommitTrack(commit) => commit_track(&mut player.session, commit),
+            PlayerReq::CommitTrack(commit) => commit_track(&mut player.session, pa, commit),
             // The failure-read-out's recovery escape (`ChooseQuality`) and the Tracks->Timing hand-off, which
             // present a panel immediately rather than through the deferred press `ArmControlRow` uses. The
             // tabs row is not an asker: it asks `ToggleSection` (Info and Chapters are sections).

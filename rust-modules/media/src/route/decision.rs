@@ -34,6 +34,8 @@ pub use memory::{
     commit_audio_pick, commit_forced_only_and_sidecar, commit_forced_only_pick, commit_subtitle_and_sidecar, commit_subtitle_pick,
     on_decoded_frame, persist_subtitle_offset, rematch_subtitle_with_names, repoint_parked_subtitle, send_parked_write_back,
 };
+#[cfg(feature = "play-uri")]
+pub use memory::{confirm_uri_audio_pick, confirm_uri_subtitle_pick};
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::{park_write_back_for_test, write_back_parked};
 pub(super) use memory::ParkedWriteBack;

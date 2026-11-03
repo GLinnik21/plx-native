@@ -1716,12 +1716,14 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
             Some(surface) => match surface.resolve_menupick_track(&target) {
                 Some(i) => match surface.pick_sub_track(meta, i) {
-                    Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
+                    Some(commit) => crate::app::playback::commit_track(&mut app.player.session,
+                        &mut app.adapters.player, commit),
                     None => plx_base::eventlog::log(&format!("menupick: track {i} gave no commit")),
                 },
                 None => match surface.resolve_menupick_row(&target) {
                     Some(row) => match surface.pick_track_row(meta, row) {
-                        Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
+                        Some(commit) => crate::app::playback::commit_track(&mut app.player.session,
+                            &mut app.adapters.player, commit),
                         // The menu's own on_ok treats picking the already-active row as a no-op: no
                         // commit, no route transition line. Without this, a manifest case whose row
                         // no longer differs from the start pick (e.g. #210's file-default rule) fails
@@ -2013,6 +2015,7 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
     app.scenarios.subtiming.pending = Some(SubtimingPending { sid: stream_id, armed_at: fr.now });
     crate::app::playback::commit_track(
         &mut app.player.session,
+        &mut app.adapters.player,
         plx_appkit::track_menu::TrackCommit::Subtitle {
             render_ordinal,
             stream_id,

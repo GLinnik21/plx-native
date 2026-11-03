@@ -5809,7 +5809,8 @@ mod lifecycle_regression_tests {
             let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.commit_sub_track(index, meta) else {
                 panic!("the menu committed nothing for subtitle {id}");
             };
-            super::super::playback::commit_track(&mut self.app.player.session, commit);
+            super::super::playback::commit_track(&mut self.app.player.session,
+                &mut self.app.adapters.player, commit);
         }
 
         /// Pick the Subtitles tab's Forced only row through the track menu: focus it, OK, and perform
@@ -5821,7 +5822,8 @@ mod lifecycle_regression_tests {
             let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.on_ok(meta) else {
                 panic!("the menu committed nothing for Forced only");
             };
-            super::super::playback::commit_track(&mut self.app.player.session, commit);
+            super::super::playback::commit_track(&mut self.app.player.session,
+                &mut self.app.adapters.player, commit);
         }
 
         /// Pick the audio track `id` through the track menu: focus its row, OK.
@@ -5834,7 +5836,8 @@ mod lifecycle_regression_tests {
             let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.on_ok(meta) else {
                 panic!("the menu committed nothing for audio {id}");
             };
-            super::super::playback::commit_track(&mut self.app.player.session, commit);
+            super::super::playback::commit_track(&mut self.app.player.session,
+                &mut self.app.adapters.player, commit);
         }
 
         /// Advance to the queue's next episode the way the countdown does (the loop's
