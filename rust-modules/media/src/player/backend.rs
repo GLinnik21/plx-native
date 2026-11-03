@@ -27,6 +27,18 @@ impl BackendRunner {
         self.startup.viewer_paused(backend, attempt)
     }
 
+    /// The route's viewer goal, including a pre-Ready startup change and a queued interactive
+    /// command. Native Playback observations remain separate from this requested state.
+    pub fn viewer_paused(&self, backend: BackendKind, attempt: AttemptId) -> Option<bool> {
+        if self.state.snapshot().backend != Some(backend)
+            || self.state.snapshot().attempt != Some(attempt)
+            || !matches!(self.state.snapshot().phase, Phase::Starting | Phase::Active) {
+            return None;
+        }
+        self.startup.viewer_paused(backend, attempt)
+            .or(self.state.snapshot().viewer_paused)
+    }
+
     pub fn metrics_snapshot(&self) -> Option<&measure::RequestSummary<LogicalRequestId, AttemptId>> {
         self.metrics.snapshot()
     }
@@ -91,7 +103,8 @@ impl BackendRunner {
                     vec![Fx::Rejected { backend, attempt, failure: Failure::Refused }]
                 } else if matches!(operation, Operation::Play | Operation::Pause) {
                     self.metrics.intent(intent, at, &mut result.metrics);
-                    self.advance(drivers, ctx, at, &mut result);
+                    self.feed(drivers, ctx, Event::ViewerGoal { backend, attempt,
+                        paused: operation == Operation::Pause }, None, None, at, &mut result);
                     return result;
                 } else {
                     vec![Fx::Rejected { backend, attempt, failure: Failure::Busy }]
@@ -473,6 +486,7 @@ mod tests {
         runner.send(&mut drivers, &(), Intent::Control { backend: URI, attempt: A,
             operation: Operation::Pause });
         assert_eq!(runner.startup_viewer_paused(URI, A), Some(true));
+        assert_eq!(runner.viewer_paused(URI, A), Some(true));
         drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
             attempt: A, observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
                 from: EvidenceSource::BackendReport }) } });
@@ -486,6 +500,7 @@ mod tests {
         assert_eq!(drivers.sent.len(), 2);
         assert_eq!(runner.startup_viewer_paused(URI, A), None,
             "an intentionally paused session's later interactive Play is ordinary control");
+        assert_eq!(runner.viewer_paused(URI, A), Some(false));
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub(super) struct FeedDriver {
     ready_emitted: bool,
     startup_acceptance_emitted: bool,
     startup_play_command: Option<CommandId>,
+    deferred_transport_play: Option<(AttemptId, CommandId)>,
     last_position_tick: u32,
     stop_requested: Option<(AttemptId, StopReason)>,
     transport_actions: VecDeque<FeedTransportAction>,
@@ -38,6 +39,7 @@ impl FeedDriver {
         Self {
             staged: HashMap::new(), active: None, ready_emitted: false,
             startup_acceptance_emitted: false, startup_play_command: None,
+            deferred_transport_play: None,
             last_position_tick: 0, stop_requested: None,
             transport_actions: VecDeque::new(), events: VecDeque::new(),
         }
@@ -77,6 +79,7 @@ impl FeedDriver {
                         self.ready_emitted = false;
                         self.startup_acceptance_emitted = false;
                         self.startup_play_command = None;
+                        self.deferred_transport_play = None;
                         self.last_position_tick = 0;
                         DispatchResult::Queued
                     }
@@ -88,6 +91,7 @@ impl FeedDriver {
                 }
             }
             Operation::Play if self.active == Some(attempt) => {
+                self.deferred_transport_play = None;
                 let Some(eng) = feed.engine() else { return DispatchResult::Refused(Failure::Stale); };
                 if !eng.startup_controlled { return DispatchResult::Refused(Failure::Stale); }
                 if !eng.startup_play_commanded {
@@ -109,12 +113,14 @@ impl FeedDriver {
                 DispatchResult::Queued
             }
             Operation::Pause if self.active == Some(attempt) => {
+                self.deferred_transport_play = None;
                 self.transport_actions.push_back(FeedTransportAction::Pause { attempt, command });
                 DispatchResult::Queued
             }
             Operation::Stop(reason) if self.active == Some(attempt) => {
                 // A transport request queued earlier on this frame must not run after Stop.
                 self.transport_actions.clear();
+                self.deferred_transport_play = None;
                 self.stop_requested = Some((attempt, reason));
                 DispatchResult::Queued
             }
@@ -169,6 +175,15 @@ impl FeedDriver {
                         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
                             event: DriverEvent::ControlRefused { attempt, command,
                                 operation: Operation::Play, failure: Failure::Refused } });
+                    }
+                }
+                if !eng.prime_play {
+                    if let Some((pending_attempt, command)) = self.deferred_transport_play.take() {
+                        if pending_attempt == attempt {
+                            self.events.push_back(BackendEvent { backend: BackendKind::Feed,
+                                event: DriverEvent::ControlAccepted { attempt, command,
+                                    operation: Operation::Play, native_acknowledged: true } });
+                        }
                     }
                 }
                 // The callback's type=0 position report is a real native clock sample, not a
@@ -230,10 +245,15 @@ impl FeedDriver {
         };
         if self.active != Some(attempt) { return; }
         if !accepted {
+            self.deferred_transport_play = None;
             self.events.push_back(BackendEvent { backend: BackendKind::Feed,
                 event: DriverEvent::ControlRefused { attempt, command, operation,
                     failure: Failure::Refused } });
             return;
+        }
+        if operation == Operation::Play && !native_acknowledged
+            && feed.engine().is_some_and(|eng| eng.attempt == attempt && eng.prime_play) {
+            self.deferred_transport_play = Some((attempt, command));
         }
         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
             event: DriverEvent::ControlAccepted { attempt, command, operation,
@@ -245,6 +265,7 @@ impl FeedDriver {
         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
             event: DriverEvent::Release { attempt, status } });
         self.transport_actions.clear();
+        self.deferred_transport_play = None;
         if status == ReleaseStatus::Released {
             self.active = None;
             self.stop_requested = None;
