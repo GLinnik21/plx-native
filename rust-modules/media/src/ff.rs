@@ -4258,7 +4258,15 @@ struct HlsTrialPort<'a> {
     timeline: Option<crate::hls::SegmentTimeline>,
     clock: Option<crate::hls::SegmentClock>,
     output: Option<HlsSegmentOutput>,
-    error: Option<HlsExit>,
+}
+
+fn hls_feed_failure(error: HlsExit) -> FeedFailure {
+    match error {
+        HlsExit::Aborted => FeedFailure::Aborted,
+        HlsExit::PrimeExpired | HlsExit::StallAbort(_) => FeedFailure::Deadline,
+        HlsExit::NotReady => FeedFailure::NotReady,
+        HlsExit::Failed(_) => FeedFailure::Parse,
+    }
 }
 
 impl FeedPort for HlsTrialPort<'_> {
@@ -4311,14 +4319,7 @@ impl HlsTrialPort<'_> {
                 FeedObservation::Opened { trial, declared_bps }
             }
             Err(error) => {
-                self.error = Some(error);
-                let failure = match error {
-                    HlsExit::Aborted => FeedFailure::Aborted,
-                    HlsExit::PrimeExpired | HlsExit::StallAbort(_) => FeedFailure::Deadline,
-                    HlsExit::NotReady => FeedFailure::NotReady,
-                    HlsExit::Failed(_) => FeedFailure::Parse,
-                };
-                FeedObservation::Failed { trial, failure }
+                FeedObservation::Failed { trial, failure: hls_feed_failure(error) }
             }
         }
     }
@@ -4335,14 +4336,7 @@ impl HlsTrialPort<'_> {
             }
             Ok(None) => FeedObservation::Failed { trial, failure: FeedFailure::Ended },
             Err(error) => {
-                self.error = Some(error);
-                let failure = match error {
-                    HlsExit::Aborted => FeedFailure::Aborted,
-                    HlsExit::PrimeExpired | HlsExit::StallAbort(_) => FeedFailure::Deadline,
-                    HlsExit::NotReady => FeedFailure::NotReady,
-                    HlsExit::Failed(_) => FeedFailure::Parse,
-                };
-                FeedObservation::Failed { trial, failure }
+                FeedObservation::Failed { trial, failure: hls_feed_failure(error) }
             }
         }
     }
@@ -4382,14 +4376,7 @@ impl HlsTrialPort<'_> {
         ) } {
             Ok(output) => output,
             Err(error) => {
-                self.error = Some(error);
-                let failure = match error {
-                    HlsExit::Aborted => FeedFailure::Aborted,
-                    HlsExit::PrimeExpired | HlsExit::StallAbort(_) => FeedFailure::Deadline,
-                    HlsExit::NotReady => FeedFailure::NotReady,
-                    HlsExit::Failed(_) => FeedFailure::Parse,
-                };
-                return FeedObservation::Failed { trial, failure };
+                return FeedObservation::Failed { trial, failure: hls_feed_failure(error) };
             }
         };
         timeline.commit(clock);
@@ -5411,19 +5398,6 @@ fn reject_hls_abr_after_transaction(
     publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
 }
 
-/// Translate a transport exit without pretending every failed request says something about the
-/// rendition. Only an exhausted physical deadline is censored candidate evidence. Abort, parse,
-/// HTTP and session failures are circumstances; replaying them may be undesirable operationally,
-/// but a larger reserve does not logically validate or invalidate the actuator.
-fn abr_reject_for_hls_exit(exit: HlsExit) -> crate::abr::RejectCause {
-    let failure = match exit {
-        HlsExit::PrimeExpired | HlsExit::StallAbort(_) => adaptive::AcquisitionFailure::Deadline,
-        HlsExit::Aborted | HlsExit::NotReady | HlsExit::Failed(_) =>
-            adaptive::AcquisitionFailure::Other,
-    };
-    adaptive::reject_cause_for_acquisition(failure)
-}
-
 /// **One shared reducer for a `StallAbort` returned against the ACTIVE cursor.** The ordinary
 /// fetch and the same-encoder lookahead observe the identical terminal boundary and must handle
 /// it identically: log it, requeue the segment (exactly once — it is put back here, and nowhere
@@ -6321,15 +6295,15 @@ fn hls_demux(
             crate::player::log("abr: candidate spent its exploration reserve in the control plane");
             continue;
         }
-        let (opened, mut candidate_slot, open_error) = {
+        let (opened, mut candidate_slot) = {
             let mut port = HlsTrialPort {
                 trial: trial_id, origin, aq, net: &mut net, acodec,
                 reserve: &mut exploration_reserve, source: None,
                 candidate: None, segment: None, timeline: None,
-                clock: None, output: None, error: None,
+                clock: None, output: None,
             };
             let opened = adaptive::open_candidate(&mut port, trial_id, primed.url.clone());
-            (opened, port.candidate.take(), port.error.take())
+            (opened, port.candidate.take())
         };
         if opened.trial() != trial_id {
             state.abandon(&primed.encoder_session);
@@ -6359,18 +6333,18 @@ fn hls_demux(
                 tx.finish("feed_protocol");
                 return Err(HlsExit::Failed("adaptive feed open protocol violation"));
             }
-            FeedObservation::Failed { .. } => {
-                let error = open_error.expect("a failed candidate open records its physical exit");
-                if matches!(error, HlsExit::Aborted) {
+            FeedObservation::Failed { failure, .. } => {
+                if failure == FeedFailure::Aborted {
                     state.abandon(&primed.encoder_session);
                     tx.finish("aborted");
                     return Err(HlsExit::Aborted);
                 }
                 state.abandon(&primed.encoder_session);
                 reject_hls_abr_after_transaction(
-                    state, proposal, abr_reject_for_hls_exit(error), &mut tx, now_ms(),
+                    state, proposal, adaptive::reject_cause_for_feed_failure(failure),
+                    &mut tx, now_ms(),
                 );
-                tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                tx.finish(if failure == FeedFailure::Deadline {
                     "master_deadline"
                 } else {
                     "no_master_playlist"
@@ -6398,15 +6372,15 @@ fn hls_demux(
             crate::player::log("abr: candidate spent its exploration reserve before media");
             continue;
         }
-        let (next, candidate_slot, segment_slot, next_error) = {
+        let (next, candidate_slot, segment_slot) = {
             let mut port = HlsTrialPort {
                 trial: trial_id, origin, aq, net: &mut net, acodec,
                 reserve: &mut exploration_reserve, source: None,
                 candidate: Some(candidate), segment: None, timeline: None,
-                clock: None, output: None, error: None,
+                clock: None, output: None,
             };
             let next = adaptive::next_candidate_segment(&mut port, trial_id);
-            (next, port.candidate.take(), port.segment.take(), port.error.take())
+            (next, port.candidate.take(), port.segment.take())
         };
         if next.trial() != trial_id {
             state.abandon(&primed.encoder_session);
@@ -6442,13 +6416,13 @@ fn hls_demux(
                 crate::player::log("abr: candidate stream ended before media; staying");
                 continue 'segments;
             }
-            FeedObservation::Failed { .. } => {
-                let error = next_error.expect("failed playlist read records its physical exit");
+            FeedObservation::Failed { failure, .. } => {
                 state.abandon(&primed.encoder_session);
                 reject_hls_abr_after_transaction(
-                    state, proposal, abr_reject_for_hls_exit(error), &mut tx, now_ms(),
+                    state, proposal, adaptive::reject_cause_for_feed_failure(failure),
+                    &mut tx, now_ms(),
                 );
-                tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                tx.finish(if failure == FeedFailure::Deadline {
                     "playlist_deadline"
                 } else {
                     "no_media_playlist"
@@ -6532,18 +6506,18 @@ fn hls_demux(
                 "abr: terminal floor recovery keeps the only candidate response alive",
             );
         }
-        let (acquired, candidate_slot, timeline_slot, clock_slot, output_slot, acquisition_error) = {
+        let (acquired, candidate_slot, timeline_slot, clock_slot, output_slot) = {
             let mut port = HlsTrialPort {
                 trial: trial_id, origin, aq, net: &mut net, acodec,
                 reserve: &mut exploration_reserve, source: None,
                 candidate: Some(candidate), segment: Some(candidate_segment),
-                timeline: Some(timeline), clock: None, output: None, error: None,
+                timeline: Some(timeline), clock: None, output: None,
             };
             let acquired = adaptive::acquire_first_candidate(
                 &mut port, trial_id, budget, reserve_started_ns,
             );
             (acquired, port.candidate.take(), port.timeline.take(),
-             port.clock.take(), port.output.take(), port.error.take())
+             port.clock.take(), port.output.take())
         };
         if acquired.trial() != trial_id {
             state.abandon(&primed.encoder_session);
@@ -6590,12 +6564,11 @@ fn hls_demux(
                 ));
                 continue;
             }
-            FeedObservation::Failed { .. } => {
-                let error = acquisition_error
-                    .expect("failed acquisition records its physical exit");
+            FeedObservation::Failed { failure, .. } => {
                 state.abandon(&primed.encoder_session);
                 reject_hls_abr_after_transaction(
-                    state, proposal, abr_reject_for_hls_exit(error), &mut tx, now_ms(),
+                    state, proposal, adaptive::reject_cause_for_feed_failure(failure),
+                    &mut tx, now_ms(),
                 );
                 tx.finish("warmup_failed");
                 crate::player::log("abr: candidate segment failed; staying on current rung");
@@ -6666,15 +6639,15 @@ fn hls_demux(
             ));
             trial_protocol.observe(trial_id, TrialEvent::FollowupRequested)
                 .expect("a repeatable read follows its first staged object");
-            let (next, candidate_slot, segment_slot, next_error) = {
+            let (next, candidate_slot, segment_slot) = {
                 let mut port = HlsTrialPort {
                     trial: trial_id, origin, aq, net: &mut net, acodec,
                     reserve: &mut exploration_reserve, source: None,
                     candidate: Some(candidate), segment: None, timeline: None,
-                    clock: None, output: None, error: None,
+                    clock: None, output: None,
                 };
                 let next = adaptive::next_candidate_segment(&mut port, trial_id);
-                (next, port.candidate.take(), port.segment.take(), port.error.take())
+                (next, port.candidate.take(), port.segment.take())
             };
             if next.trial() != trial_id {
                 state.abandon(&primed.encoder_session);
@@ -6713,13 +6686,13 @@ fn hls_demux(
                     tx.finish("feed_protocol");
                     return Err(HlsExit::Failed("adaptive feed follow-up protocol violation"));
                 }
-                FeedObservation::Failed { .. } => {
-                    let error = next_error.expect("failed follow-up read records its physical exit");
+                FeedObservation::Failed { failure, .. } => {
                     state.abandon(&primed.encoder_session);
                     reject_hls_abr_after_transaction(
-                        state, proposal, abr_reject_for_hls_exit(error), &mut tx, now_ms(),
+                        state, proposal, adaptive::reject_cause_for_feed_failure(failure),
+                        &mut tx, now_ms(),
                     );
-                    tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                    tx.finish(if failure == FeedFailure::Deadline {
                         "repeatable_playlist_deadline"
                     } else {
                         "repeatable_playlist_failed"
@@ -6727,16 +6700,16 @@ fn hls_demux(
                     continue;
                 }
             };
-            let (acquired, candidate_slot, timeline_slot, clock_slot, output_slot, acquisition_error) = {
+            let (acquired, candidate_slot, timeline_slot, clock_slot, output_slot) = {
                 let mut port = HlsTrialPort {
                     trial: trial_id, origin, aq, net: &mut net, acodec,
                     reserve: &mut exploration_reserve, source: None,
                     candidate: Some(candidate), segment: Some(repeatable_segment),
-                    timeline: Some(staged_timeline), clock: None, output: None, error: None,
+                    timeline: Some(staged_timeline), clock: None, output: None,
                 };
                 let acquired = adaptive::acquire_followup_candidate(&mut port, trial_id);
                 (acquired, port.candidate.take(), port.timeline.take(),
-                 port.clock.take(), port.output.take(), port.error.take())
+                 port.clock.take(), port.output.take())
             };
             if acquired.trial() != trial_id {
                 state.abandon(&primed.encoder_session);
@@ -6772,18 +6745,16 @@ fn hls_demux(
                     tx.finish("feed_protocol");
                     return Err(HlsExit::Failed("adaptive feed follow-up acquisition protocol violation"));
                 }
-                FeedObservation::Failed { .. } => {
-                    let error = acquisition_error
-                        .expect("failed follow-up acquisition records its physical exit");
+                FeedObservation::Failed { failure, .. } => {
                     state.abandon(&primed.encoder_session);
                     reject_hls_abr_after_transaction(
                         state,
                         proposal,
-                        abr_reject_for_hls_exit(error),
+                        adaptive::reject_cause_for_feed_failure(failure),
                         &mut tx,
                         now_ms(),
                     );
-                    tx.finish(if matches!(error, HlsExit::PrimeExpired) {
+                    tx.finish(if failure == FeedFailure::Deadline {
                         "repeatable_deadline"
                     } else {
                         "repeatable_failed"

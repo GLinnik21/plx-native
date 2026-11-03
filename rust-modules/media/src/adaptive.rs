@@ -4,7 +4,7 @@
 
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
-use plx_playback_contract::adaptive::{Acquisition, FeedAction, FeedObservation, FeedPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 
 /// The route owner's captured inputs at a worker start. No second route identity is
@@ -148,8 +148,6 @@ pub(crate) fn classify_prime_failure(
     }
 }
 
-pub(crate) enum AcquisitionFailure { Deadline, Other }
-
 /// The runner binds the primed locator only in the feed's private source slot.
 /// Adaptive policy and the lower action carry its opaque worker-local key.
 pub(crate) fn open_candidate(
@@ -196,10 +194,12 @@ pub(crate) fn candidate_sample(
     )
 }
 
-pub(crate) fn reject_cause_for_acquisition(failure: AcquisitionFailure) -> abr::RejectCause {
-    match failure {
-        AcquisitionFailure::Deadline => abr::RejectCause::Censored,
-        AcquisitionFailure::Other => abr::RejectCause::Circumstance,
+/// A physical feed failure is a circumstance unless the candidate's reserve clock expired.
+pub(crate) fn reject_cause_for_feed_failure(failure: FeedFailure) -> abr::RejectCause {
+    if failure == FeedFailure::Deadline {
+        abr::RejectCause::Censored
+    } else {
+        abr::RejectCause::Circumstance
     }
 }
 
