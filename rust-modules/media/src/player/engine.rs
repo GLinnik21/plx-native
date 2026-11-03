@@ -5738,6 +5738,7 @@ mod load_in_flight_tests {
             plx_base::task::MainThread::assume()
         });
         crate::route::set_url(&mut ps, "http://127.0.0.1:1/hls/start.m3u8");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL));
         install_engine_with_timed_out_load(&mut ps, &mut pa);
 
         // `land_recovery_flight`'s own two calls: the reload (whose teardown parks the
@@ -5837,6 +5838,7 @@ mod load_in_flight_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_abandoned_load(), "PRECONDITION FAILED: the Load must be parked");
         crate::route::set_url(&mut ps, "http://127.0.0.1:1/hls/start.m3u8");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL));
         crate::route::set_stream_acodec(&mut ps, "aac");
 
         // The resumed foreground's `PlayerForegroundActuator::start_load`.
@@ -7322,6 +7324,7 @@ mod pcm_stack_wiring_tests {
         let _stack = audio_stack_on_this_thread_for_test(stack);
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         crate::route::set_url(&mut ps, "http://127.0.0.1:1/track.flac");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL));
         crate::route::set_stream_acodec(&mut ps, "flac");
         crate::route::set_carried_audio_for_test(
             &mut ps,

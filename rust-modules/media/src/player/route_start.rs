@@ -35,7 +35,12 @@ pub fn start_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::
 /// Foreground recovery uses this to wait for the media-thread result instead of treating thread
 /// creation as proof that the television accepted the payload.
 pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
-    if plx_platform::tv::sandbox::blocks_native_video() {
+    #[cfg(feature = "play-uri")]
+    pa.refresh_uri_qualification(ps);
+    let uri_chosen = matches!(ps.backend_offer(),
+        crate::route::backend_policy::Selection::Open(offer)
+            if offer.backend == plx_playback_contract::BackendKind::Uri);
+    if !uri_chosen && plx_platform::tv::sandbox::blocks_native_video() {
         ps.jail_load_blocked = true;
         log("start_bufferfeed: refusing native video; affected chassis cannot read /dev/rtkmem");
         if let Some(ticket) = crate::route::begin_route_start() {
@@ -65,6 +70,27 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
             return BufferfeedStartOutcome::Failed;
         }
         return BufferfeedStartOutcome::AlreadyRunning;
+    }
+    #[cfg(feature = "play-uri")]
+    if let Some(existing) = pa.active_uri_attempt() {
+        if matches!(pa.backend_snapshot().phase,
+            plx_playback_contract::Phase::Releasing | plx_playback_contract::Phase::Quarantined) {
+            if let crate::route::LiveEngineStartRelation::Conflict(ticket) =
+                crate::route::classify_live_engine_start(existing) {
+                let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::StartFailed);
+            }
+            return BufferfeedStartOutcome::Failed;
+        }
+        match crate::route::classify_live_engine_start(existing) {
+            crate::route::LiveEngineStartRelation::CurrentAttempt =>
+                return BufferfeedStartOutcome::Launched(existing),
+            crate::route::LiveEngineStartRelation::NoPendingRoute =>
+                return BufferfeedStartOutcome::AlreadyRunning,
+            crate::route::LiveEngineStartRelation::Conflict(ticket) => {
+                let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::StartFailed);
+                return BufferfeedStartOutcome::Failed;
+            }
+        }
     }
     if let Some(existing) = pa.active_feed_attempt() {
         match crate::route::classify_live_engine_start(existing) {
@@ -152,7 +178,19 @@ pub(super) fn start_bufferfeed_for(
         log("start_bufferfeed: the previous Unload is still running; start deferred");
         return BufferfeedStartOutcome::Deferred;
     }
-    match start_bufferfeed_inner(ps, pa, route_start) {
+    #[cfg(feature = "play-uri")]
+    pa.refresh_uri_qualification(ps);
+    #[cfg(feature = "play-uri")]
+    let start = if matches!(ps.backend_offer(),
+        crate::route::backend_policy::Selection::Open(offer)
+            if offer.backend == plx_playback_contract::BackendKind::Uri) {
+        start_qualified_uri_inner(ps, pa, route_start)
+    } else {
+        start_bufferfeed_inner(ps, pa, route_start)
+    };
+    #[cfg(not(feature = "play-uri"))]
+    let start = start_bufferfeed_inner(ps, pa, route_start);
+    match start {
         Ok(attempt) => {
             // Every start funnels through here (fresh, reload and the rollback's reload alike), so
             // the refusal's read-out ends at the first start that is NOT refused. Clearing it only
@@ -171,6 +209,57 @@ pub(super) fn start_bufferfeed_for(
             BufferfeedStartOutcome::Failed
         }
     }
+}
+
+/// A source-specific qualified URI offer uses the same route claim and common attempt runner as
+/// Feed. The caller supplied the owned URL and exact native track map; no MDE or device codec
+/// declaration can create this offer on its own.
+#[cfg(feature = "play-uri")]
+fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
+    route_start: crate::route::RouteStartTransaction)
+    -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
+    use crate::route::backend_policy::{OfferId, Selection};
+    let fail = crate::route::RouteStartResult::StartFailed;
+    if !crate::route::prepare_route_start(route_start) { return Err(fail); }
+    let route_attempt = crate::route::claim_route_start_attempt(route_start).ok_or(fail)?;
+    let offer = pa.take_qualified_uri(ps, route_start).ok_or(fail)?;
+    if !matches!(ps.backend_offer(), Selection::Open(choice)
+        if choice.backend == plx_playback_contract::BackendKind::Uri
+            && choice.id == OfferId::URI_ORIGINAL) {
+        ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
+            OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+        return Err(fail);
+    }
+    let attempt = route_attempt.contract_id();
+    let source = match pa.stage_uri_source(attempt, offer.source) {
+        Ok(source) => source,
+        Err(_) => {
+            ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
+                OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+            return Err(fail);
+        }
+    };
+    let at = pa.backend_tick();
+    let result = pa.backend_send_at(plx_playback_contract::Intent::Start {
+        backend: plx_playback_contract::BackendKind::Uri,
+        attempt,
+        source,
+        requirements: offer.requirements,
+        initial: offer.initial,
+    }, super::attempt_metrics::Origin::Fresh, at);
+    if result.playback.iter().any(|fx| matches!(fx,
+        plx_playback_contract::Fx::Rejected { attempt: id, .. }
+        | plx_playback_contract::Fx::CommandRefused { attempt: id, .. } if *id == attempt
+    )) {
+        ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
+            OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+        return Err(fail);
+    }
+    assert!(ps.backend_offer_admitted(plx_playback_contract::BackendKind::Uri,
+        OfferId::URI_ORIGINAL), "qualified URI offer must remain selected on the main thread");
+    ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Uri);
+    pa.bind_uri_attempt(route_attempt);
+    Ok(route_attempt)
 }
 
 
@@ -742,6 +831,33 @@ pub(super) fn exit_native_with(
             idle();
         }
     }
+    #[cfg(feature = "play-uri")]
+    if pa.uri_backend_exit_pending() {
+        if let Some(attempt) = pa.active_uri_attempt() {
+            if !matches!(pa.backend_snapshot().phase,
+                plx_playback_contract::Phase::Releasing | plx_playback_contract::Phase::Quarantined) {
+                let at = pa.backend_tick();
+                let _ = pa.backend_send_at(plx_playback_contract::Intent::Stop {
+                    backend: plx_playback_contract::BackendKind::Uri,
+                    attempt: attempt.contract_id(),
+                    reason: plx_playback_contract::StopReason::Exit,
+                }, super::attempt_metrics::Origin::Fresh, at);
+            }
+        }
+        let started = clock();
+        while pa.uri_backend_exit_pending() {
+            let at = pa.backend_tick();
+            let _ = pa.backend_poll_at(at);
+            if !pa.uri_backend_exit_pending() { break; }
+            if clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
+                log("exit: URI ownership unresolved; the display is left to the OS");
+                pa.park_uri_backend_for_exit();
+                leak_parked_for_exit(pa);
+                return NativeExit::WorkerInFirmware;
+            }
+            idle();
+        }
+    }
     reap_abandoned_load(pa);
     if pa.has_abandoned_load() {
         log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
@@ -860,6 +976,18 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
     for_reload: bool, reason: plx_playback_contract::StopReason) {
     engine::clear_failed_engine_release_arm();
+    #[cfg(feature = "play-uri")]
+    if let Some(route_attempt) = pa.active_uri_attempt() {
+        let at = pa.backend_tick();
+        let _ = pa.backend_send_at(plx_playback_contract::Intent::Stop {
+            backend: plx_playback_contract::BackendKind::Uri,
+            attempt: route_attempt.contract_id(), reason,
+        }, super::attempt_metrics::Origin::Fresh, at);
+        let _ = begin_teardown(ps, pa, for_reload);
+        let at = pa.backend_tick();
+        let _ = pa.backend_poll_session_at(ps, at);
+        return;
+    }
     if let Some(route_attempt) = pa.active_feed_attempt() {
         let attempt = route_attempt.contract_id();
         let at = pa.backend_tick();
@@ -979,9 +1107,10 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
 /// next physical start calls `begin_attempt_view` and clears it to Unknown for the new attempt.
 fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
     let Some(attempt) = ps.attempt_view().attempt() else { return; };
+    let Some(backend) = ps.attempt_view().backend() else { return; };
     let mut facts = *ps.attempt_view().facts();
     facts.started = Some(false);
-    let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
+    let _ = ps.ingest_attempt_facts(attempt, backend, facts);
 }
 
 /// Capture final reporting facts before native teardown resets position and duration.
