@@ -1760,7 +1760,7 @@ mod sections {
             let mut run = classic_run(Occupant::Plain);
             let mut facts = *run.rig.session.attempt_view().facts();
             facts.duration_ns = Some(7_200_000_000_000);
-            super::publish_facts(&mut run.rig.session, facts);
+            super::super::publish_facts(&mut run.rig.session, facts);
             run.open_from_tab(open);
             let held = run.held();
             run.asked();
