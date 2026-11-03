@@ -1051,7 +1051,14 @@ pub(super) fn attempt_facts(feed: &FeedResources) -> Option<plx_playback_contrac
         SHARED.load_timed_out.load(Relaxed),
     );
     let requested_kbps = SHARED.dg_abr_kbps.load(Relaxed);
+    let seek_pending_ns = TX.seek_to_ns.load(Relaxed);
+    let seek_display_ns = SHARED.seek_display_ns.load(Relaxed);
     let facts = AttemptFacts {
+        started: Some(TX.started.load(Relaxed)),
+        ended: Some(SHARED.ended.load(Relaxed)),
+        seek_pending_ns: (seek_pending_ns >= 0).then_some(seek_pending_ns),
+        rebuffering: Some(SHARED.hls_rebuffering.load(Relaxed)),
+        seek_display_ns: (seek_display_ns >= 0).then_some(seek_display_ns),
         status: Some(super::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))),
         requested_kbps: (requested_kbps > 0).then_some(requested_kbps),
         refusal_path: Some(SHARED.refusal_path()),
