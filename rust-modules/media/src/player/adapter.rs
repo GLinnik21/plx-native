@@ -312,7 +312,7 @@ pub struct PlayerAdapter {
     /// HUD, the stop ritual's `take`) must never see a probe. Owned here, not by a static, for the
     /// same reason the Engine is: ending it calls the window verbs of the sink, which only the
     /// main thread may. Absent from a release build.
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     uri: Option<super::uriprobe_drive::UriSession>,
 }
 
@@ -365,7 +365,7 @@ impl PlayerAdapter {
             release: super::release::NativeRelease::new(),
             queued_watch: QueuedWatch::Unwatched,
             preview_admission: None,
-            #[cfg(feature = "devtriggers")]
+            #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
             uri: None,
         }
     }
@@ -1110,7 +1110,7 @@ impl PlayerAdapter {
     /// Is a URI-mode probe session running? `start_bufferfeed`'s double-start guard asks this beside
     /// [`is_live`](Self::is_live): a probe holds the route-start attempt and the exported window, so
     /// a second Play cannot begin under it.
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     #[inline]
     pub fn uri_live(&self) -> bool {
         self.uri.is_some()
@@ -1118,35 +1118,35 @@ impl PlayerAdapter {
 
     /// The service says the probe's video plays (`observe_video_plane`'s term for a session which
     /// has no Engine to read the ACB play state from).
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     #[inline]
     pub fn uri_plane_open(&self) -> bool {
         self.uri.as_ref().is_some_and(|session| session.plane_open())
     }
 
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     pub fn uri_closing(&self) -> bool {
         self.uri.as_ref().is_some_and(|session| session.closing())
     }
 
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     pub(super) fn uri_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
         self.uri.as_ref().map(|session| session.route_start_attempt())
     }
 
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     pub(super) fn uri_acb_exit_quarantine(&self) -> bool { self.uri.as_ref().is_some_and(|session| session.acb_exit_quarantine()) }
 
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     pub(super) fn install_uri(&mut self, session: super::uriprobe_drive::UriSession) {
         debug_assert!(self.uri.is_none(), "a second URI-mode session cannot start under a live one");
         self.uri = Some(session);
     }
 
     /// Take a physically released probe out of the slot, or leak unresolved ownership at exit.
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     #[inline]
     pub(super) fn take_uri(&mut self) -> Option<super::uriprobe_drive::UriSession> {
         self.uri.take()
@@ -1154,7 +1154,7 @@ impl PlayerAdapter {
 
     /// The probe's session AND the token at once, borrowed from disjoint fields (the same split
     /// [`split`](Self::split) makes for the Engine).
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     #[inline]
     pub(super) fn uri_split(&mut self) -> (Option<&mut super::uriprobe_drive::UriSession>, &MainThread) {
         (self.uri.as_mut(), &self.mt)

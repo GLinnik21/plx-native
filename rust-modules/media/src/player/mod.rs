@@ -41,13 +41,13 @@ pub mod preview;
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uri_protocol;
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uri_lifecycle;
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uriprobe`): what to say to com.webos.media (pure machine); `uriprobe_drive` runs it
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
 #[cfg(feature = "hostsim")]
 pub mod ffi_host;
@@ -694,7 +694,7 @@ pub fn observe_video_plane(
     pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
     let bound = pa.feed_stage().is_some_and(acb_playstate_ready);
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     let bound = bound || pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
 }

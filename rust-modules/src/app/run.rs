@@ -1996,7 +1996,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // driver steps the machine once a frame, here, so the plane question just below reads this
         // frame's answer. Outside `is_started` too: a probe never sets it, and a session which ended
         // by itself must still be released.
-        #[cfg(feature = "devtriggers")]
+        #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
         plx_media::player::uriprobe_drive::drive(&mut app.player.session, &mut app.adapters.player);
         // Physical Load/prime evidence arrives after the feed pump. The persistent common
         // owner then advances exact startup controls, including its first Play. URI has no
