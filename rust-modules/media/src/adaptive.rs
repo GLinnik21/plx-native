@@ -492,6 +492,11 @@ pub(crate) struct ActiveAfterPrefetch {
     pub(crate) source: LatchedOriginalRecovery,
 }
 
+pub(crate) struct PreparedOriginalSwitch {
+    pub(crate) kbps: u32,
+    pub(crate) cancelled: Option<(abr::Proposal, bool)>,
+}
+
 pub(crate) struct ActiveQuantumResult {
     sample: abr::SegmentSample,
     pub(crate) cleanup_ready: bool,
@@ -843,6 +848,22 @@ impl Coordinator {
             self.recover_kbps, fresh_probe_kbps, decision, cleanup_ready,
             buffered_ms, media_duration_ms,
         )
+    }
+
+    /// A latched source recovery wins over a pending rung proposal only after
+    /// the physical automatic lease is acquired. Return its diagnostic receipt
+    /// before the caller enters the AQ publication fence.
+    pub(crate) fn prepare_original_switch(
+        &mut self, source: LatchedOriginalRecovery, now_ms: u64,
+    ) -> Option<PreparedOriginalSwitch> {
+        let LatchedOriginalRecovery::Switch { kbps, cancel } = source else {
+            return None;
+        };
+        let cancelled = cancel.map(|proposal| {
+            let refreshing = self.reject(proposal, abr::RejectCause::Circumstance, now_ms);
+            (proposal, refreshing)
+        });
+        Some(PreparedOriginalSwitch { kbps, cancelled })
     }
 
     /// The active observation is complete and any same-encoder lookahead has

@@ -5873,21 +5873,18 @@ fn hls_demux(
         // A `Prime` answer here has not started its transaction yet; the already-latched source
         // decision therefore cancels that pending rung explicitly instead of becoming stale
         // across a new operating point.
-        if let adaptive::LatchedOriginalRecovery::Switch { kbps, cancel } = after_prefetch.source {
+        if matches!(&after_prefetch.source, adaptive::LatchedOriginalRecovery::Switch { .. }) {
                 if let Some(lease) = HlsAutomaticLease::begin(
                     crate::player::HlsAutomaticTransition::Original,
                     expected_user_sequence,
                 ) {
-                    if let Some(proposal) = cancel {
-                        reject_hls_abr(
-                            state,
-                            proposal,
-                            crate::abr::RejectCause::Circumstance,
-                            now_ms(),
-                        );
+                    let prepared = state.prepare_original_switch(after_prefetch.source, now_ms())
+                        .expect("a latched source switch was selected");
+                    if let Some((proposal, refreshing)) = prepared.cancelled {
+                        publish_hls_abr_action(proposal, refreshing, Some(false));
                     }
                     match state.publish_original(
-                        &mut AqPublicationPort(aq), lease.authorize_commit(), kbps,
+                        &mut AqPublicationPort(aq), lease.authorize_commit(), prepared.kbps,
                         || SHARED.playpos_ns.load(Ordering::Relaxed).max(0),
                         || SHARED.dg_abr_action.store(
                             crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
@@ -5895,7 +5892,8 @@ fn hls_demux(
                     ) {
                         adaptive::OriginalPublication::Published => {
                             crate::player::log(&format!(
-                                "abr: source sustainable again at {kbps}kbps; requesting Original",
+                                "abr: source sustainable again at {}kbps; requesting Original",
+                                prepared.kbps,
                             ));
                             break;
                         }
