@@ -206,6 +206,17 @@ pub trait FeedPort {
     fn step(&mut self, action: FeedAction) -> FeedObservation;
 }
 
+/// The feed worker's physical clock fence. It is armed before candidate AUs
+/// enter the queue and settled only after the queued route has been published
+/// and its cursor promoted. Dropping an unsettled fence leaves teardown to
+/// reset the generation.
+pub trait CandidateFencePort {
+    type Fence;
+    type Error;
+    fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error>;
+    fn settle(&mut self, fence: Self::Fence);
+}
+
 /// Synchronous AQ abort fence. The closure is short and performs no IO. It is
 /// invoked exactly once while the queue lock is held, or not invoked on abort.
 pub trait PublicationGate {
