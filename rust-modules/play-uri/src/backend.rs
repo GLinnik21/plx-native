@@ -94,23 +94,32 @@ impl UriBackend {
         }
     }
 
+    fn refuse_before_open(&mut self, attempt: AttemptId, reason: Failure) -> DispatchResult {
+        // The common reducer requires a resource-owner verdict even if admission failed before
+        // registration. Do not claim release while another attempt or native slot is occupied.
+        if self.active.is_none() && self.lifecycle.released() {
+            self.pending.push_back(DriverEvent::Release { attempt, status: ReleaseStatus::Released });
+        }
+        DispatchResult::Refused(reason)
+    }
+
     fn start(&mut self, mt: &MainThread, attempt: AttemptId, source: SourceKey,
         requirements: plx_playback_contract::Requirements) -> DispatchResult {
-        if self.active.is_some() || !self.lifecycle.released() { return DispatchResult::Refused(Failure::Busy); }
-        if self.last_started.is_some_and(|last| attempt <= last) { return DispatchResult::Refused(Failure::Stale); }
-        if requirements.source == SourceKind::PacketFeed { return DispatchResult::Refused(Failure::Unsupported); }
-        if !self.config.capabilities.supports(requirements) { return DispatchResult::Refused(Failure::Unsupported); }
-        let Some(staged) = self.staged.take() else { return DispatchResult::Refused(Failure::Refused); };
+        if self.active.is_some() || !self.lifecycle.released() { return self.refuse_before_open(attempt, Failure::Busy); }
+        if self.last_started.is_some_and(|last| attempt <= last) { return self.refuse_before_open(attempt, Failure::Stale); }
+        if requirements.source == SourceKind::PacketFeed { return self.refuse_before_open(attempt, Failure::Unsupported); }
+        if !self.config.capabilities.supports(requirements) { return self.refuse_before_open(attempt, Failure::Unsupported); }
+        let Some(staged) = self.staged.take() else { return self.refuse_before_open(attempt, Failure::Refused); };
         if staged.attempt != attempt || staged.key != source || self.config.clock.now_ms() >= staged.deadline_ms {
-            return DispatchResult::Refused(Failure::Stale);
+            return self.refuse_before_open(attempt, Failure::Stale);
         }
         if matches!(self.config.binding, Binding::Exported { .. }) && self.config.display.window_mode() != VP_EXPORTED {
-            return DispatchResult::Refused(Failure::Unsupported);
+            return self.refuse_before_open(attempt, Failure::Unsupported);
         }
         let window_id = match self.config.binding {
             Binding::Exported { canvas } => {
                 let Some(id) = session_io::create_exported_window(self.config.display, mt) else {
-                    return DispatchResult::Refused(Failure::Backend);
+                    return self.refuse_before_open(attempt, Failure::Backend);
                 };
                 self.window = true;
                 session_io::place_exported_window(self.config.display, mt, canvas, canvas);
@@ -534,10 +543,14 @@ mod tests {
         rig.driver.cancel_staged(A);
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::Start { source: KEY, requirements: REQ }), DispatchResult::Refused(Failure::Refused));
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Released }], "a pre-open refusal has a proven empty owner");
         rig.driver.stage_source(A, KEY, URL.into()).unwrap();
         rig.clock.0.store(50, Ordering::Relaxed);
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::Start { source: KEY, requirements: REQ }), DispatchResult::Refused(Failure::Stale));
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Released }]);
         assert!(rig.driver.staged.is_none());
     }
 }
