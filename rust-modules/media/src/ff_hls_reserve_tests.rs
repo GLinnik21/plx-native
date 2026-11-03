@@ -111,21 +111,22 @@ fn teardown_wins_over_an_expired_plaintext_open_snapshot() {
 
 #[test]
 fn classify_curl_open_err_matches_its_plaintext_sibling() {
+    let observer = super::test_support::demux_observer();
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Deadline),
+        classify_curl_open_err(crate::curlio::OpenErr::Deadline, observer.as_ref()),
         HlsExit::PrimeExpired
     ));
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Aborted),
+        classify_curl_open_err(crate::curlio::OpenErr::Aborted, observer.as_ref()),
         HlsExit::Aborted
     ));
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Status(404)),
+        classify_curl_open_err(crate::curlio::OpenErr::Status(404), observer.as_ref()),
         HlsExit::NotReady
     ));
     SHARED.dg_http_status.store(0, Ordering::Relaxed);
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Status(500)),
+        classify_curl_open_err(crate::curlio::OpenErr::Status(500), observer.as_ref()),
         HlsExit::Failed(_)
     ));
     assert_eq!(
@@ -134,7 +135,7 @@ fn classify_curl_open_err_matches_its_plaintext_sibling() {
         "a non-404 status is still recorded for diagnostics"
     );
     assert!(matches!(
-        classify_curl_open_err(crate::curlio::OpenErr::Local),
+        classify_curl_open_err(crate::curlio::OpenErr::Local, observer.as_ref()),
         HlsExit::Failed(_)
     ));
 }
