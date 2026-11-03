@@ -2431,12 +2431,15 @@ fn h264_is_rap(nal: &[u8], intra_ok: bool) -> bool {
 /// ([`dovi_converts_to_p81`]). Every enhancement-layer NAL ([`is_dv_enhancement_layer`]) is
 /// dropped and every RPU is rewritten by [`rewrite_dv_rpu_p7_to_p81`], so what leaves here is the
 /// single-layer stream the Load payload declares (`DolbyHdrInfo profileId 8`).
+/// `strip_hdr10plus` is false for Force Original, where even unsupported dynamic
+/// metadata is preserved rather than silently changing the source bitstream.
 unsafe fn packet_to_annexb(
     data: *const u8,
     size: usize,
     nls: usize,
     is_hevc: bool,
     dv_p7: bool,
+    strip_hdr10plus: bool,
     container_key: bool,
     param: &[u8],
     out: &mut Vec<u8>,
@@ -2475,8 +2478,9 @@ unsafe fn packet_to_annexb(
     if is_key {
         out.extend_from_slice(param);
     }
-    // pass 2: emit each NAL as 00 00 00 01 + bytes, dropping per-frame HDR10+ SEI (HEVC) and, on a
-    // converted Dolby Vision Profile 7, the enhancement layer (its RPUs are rewritten instead)
+    // pass 2: emit each NAL as 00 00 00 01 + bytes. Ordinary playback drops per-frame HDR10+
+    // SEI (HEVC); converted Dolby Vision Profile 7 also drops the enhancement layer and rewrites
+    // its RPUs. Force Original preserves both kinds of metadata.
     let sc = [0u8, 0, 0, 1];
     let mut i = 0usize;
     while i + nls <= size {
@@ -2528,7 +2532,7 @@ unsafe fn packet_to_annexb(
         }
         let mut nal = nal;
         let rewritten;
-        if is_hevc {
+        if is_hevc && strip_hdr10plus {
             match strip_hdr10plus_sei(nal) {
                 SeiStrip::Keep => {}
                 strip => {
@@ -2604,9 +2608,17 @@ fn dts_core_packet(packet: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
     })
 }
 
+/// The current native Load declares DTS core. Force Original cannot silently
+/// discard an HD extension or normalize a packed/swapped core into a different
+/// packet. Admit only a complete 16-bit big-endian core already in wire shape.
+fn force_original_dts_is_native(packet: &[u8]) -> bool {
+    matches!(dts_core_packet(packet),
+        Some(std::borrow::Cow::Borrowed(core)) if core.len() == packet.len())
+}
+
 #[cfg(test)]
 mod dts_core_tests {
-    use super::dts_core_packet;
+    use super::{dts_core_packet, force_original_dts_is_native};
 
     fn core() -> Vec<u8> {
         let mut frame = vec![0x55; 128];
@@ -2670,6 +2682,9 @@ mod dts_core_tests {
         let mut hd = core.clone();
         hd.extend_from_slice(&[0x64, 0x58, 0x20, 0x25, 0x01, 0x02, 0x03, 0x04]);
         assert_eq!(dts_core_packet(&hd).unwrap().as_ref(), core);
+        assert!(force_original_dts_is_native(&core));
+        assert!(!force_original_dts_is_native(&hd),
+            "Force Original cannot feed a stripped DTS-HD packet to a DTS-core Load");
     }
 
     #[test]
@@ -2689,6 +2704,7 @@ mod dts_core_tests {
         let mut swapped = core.clone();
         for word in swapped.chunks_exact_mut(2) { word.swap(0, 1); }
         assert_eq!(dts_core_packet(&swapped).unwrap().as_ref(), core);
+        assert!(!force_original_dts_is_native(&swapped));
         let mut packed = Vec::new();
         let (mut bits, mut count) = (0u32, 0u32);
         for &byte in core.iter().chain([0u8; 2].iter()) {
@@ -2702,6 +2718,7 @@ mod dts_core_tests {
             }
         }
         assert_eq!(dts_core_packet(&packed).unwrap().as_ref(), core);
+        assert!(!force_original_dts_is_native(&packed));
         for word in packed.chunks_exact_mut(2) { word.swap(0, 1); }
         assert_eq!(dts_core_packet(&packed).unwrap().as_ref(), core);
     }
@@ -7314,6 +7331,7 @@ pub(crate) fn demux(
     origin: plx_plex::plex::Origin,
     path: String,
     acodec: String,
+    force_original: bool,
     abr: Option<crate::adaptive::Start>,
     auto_original: Option<crate::adaptive::OriginalStart>,
     aq: SendPtr<AuQueue>,
@@ -7327,6 +7345,13 @@ pub(crate) fn demux(
     // contract the panic barrier below exists to keep.
     if !abi_ok() {
         crate::player::log("demux: refusing — bundled FFmpeg ABI is not the one built for");
+        crate::aq::aq_set_eof(aq.0);
+        crate::aq::aq_set_eof(aqa.0);
+        return;
+    }
+    if force_original && (abr.is_some() || auto_original.is_some()) {
+        crate::player::log("demux: Force Original refused an automatic adaptive route");
+        SHARED.fail_demux(DemuxExitClass::Other);
         crate::aq::aq_set_eof(aq.0);
         crate::aq::aq_set_eof(aqa.0);
         return;
@@ -7678,24 +7703,40 @@ pub(crate) fn demux(
                 } else {
                     None
                 };
-                // Native DTS: the set's own decoder takes the core. Not when the Load declared the lossy PCM,
-                // which is the app decoding DTS itself (`pcm_dec` below, `Caps::app_decodes_lossy_track`).
+                if force_original && ai >= 0 && !FEED_AUDIO.load(Ordering::Relaxed) {
+                    crate::player::log("ff: Force Original refused — audio feed is disabled");
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
+                // Native DTS: ordinary playback extracts the core for the set's DTS declaration.
+                // Force Original accepts only an unchanged core packet and refuses DTS-HD or
+                // packed/swapped wire shapes that declaration cannot represent. A lossy PCM Load
+                // instead decodes DTS in the app (`pcm_dec` below).
                 let dts_audio = ai >= 0 && !pcm_lossy() && std::ffi::CStr::from_ptr(avcodec_get_name(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"dts";
-                if dts_audio {
+                if dts_audio && !force_original {
                     crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
                 }
                 // Playback speed: this session's Load declared PCM, so the audio must be decoded,
                 // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
                 // engine refused the speed at Load (`player::session_rate`), so this is a guard.
                 let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
+                if force_original && speed_permille != crate::player::RATE_NORMAL {
+                    crate::player::log("ff: Force Original refused — playback speed would decode and transform audio");
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
                 // App-decoded audio (FLAC, ALAC, LPCM, and the lossy rows of `devcaps::APP_DECODED` the attempt decodes in the app): decode to the PCM the
                 // Load declared, or refuse the stream — the Load and the file must agree, or the
                 // panel plays the wrong pitch. Not at a speed: that session's Load declares the
                 // speed decoder's own PCM (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes
                 // it too, and the two must never both decode one stream.
-                let app_decoded = if ai >= 0 {
+                let app_decoded = if ai >= 0 && !force_original {
                     let name = std::ffi::CStr::from_ptr(avcodec_get_name(
                         (*stream_codecpar(*streams.add(ai as usize))).codec_id
                     )).to_string_lossy();
@@ -7759,7 +7800,8 @@ pub(crate) fn demux(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
                     ));
                 }
-                let mut speed_dec = if ai >= 0 && speed_permille != crate::player::RATE_NORMAL {
+                let mut speed_dec = if ai >= 0 && !force_original
+                    && speed_permille != crate::player::RATE_NORMAL {
                     let d = SpeedDecoder::open(stream_codecpar(*streams.add(ai as usize)), speed_permille);
                     crate::player::log(&format!(
                         "speed: audio decoder for {speed_permille} {}",
@@ -7926,12 +7968,12 @@ pub(crate) fn demux(
                 // AV1 is framed by av1_packet_to_tu as Section-5 temporal units with the av1C config
                 // in-band on keyframes, because the TV pipeline is given no codec_data for AV1.
                 let is_hevc = framing == VideoFraming::AnnexB { hevc: true };
-                // A Dolby Vision Profile 7 with a cross-compatible base layer is converted to
-                // Profile 8.1 while it is fed (`packet_to_annexb` drops the enhancement layer and
-                // rewrites the RPUs), so the pipeline is handed the single-layer stream the Load
-                // payload declares (`plx_data::metadata::Dovi::converts_to_p81`). Armed whether or
-                // not a node was sent: undeclared, what remains is the HDR10 base layer.
-                let dv_p7 = is_hevc && dovi_conf(vcp).is_some_and(|d| dovi_converts_to_p81(&d));
+                // Ordinary playback converts a cross-compatible Dolby Vision Profile 7 to
+                // Profile 8.1 while feeding (`packet_to_annexb` drops the enhancement layer and
+                // rewrites RPUs), matching its Load declaration. Force Original leaves both
+                // layers and every RPU intact; the route must declare that native source shape.
+                let dv_p7 = !force_original && is_hevc
+                    && dovi_conf(vcp).is_some_and(|d| dovi_converts_to_p81(&d));
                 if dv_p7 {
                     crate::player::log(
                         "ff: Dolby Vision P7 -> P8.1 conversion armed (EL dropped, RPUs rewritten)",
@@ -7945,7 +7987,7 @@ pub(crate) fn demux(
                     parse_extradata(extradata.as_ptr(), extradata.len(), is_hevc)
                 };
                 let av1_cfg = if is_av1 { parse_av1c(extradata) } else { Vec::new() };
-                let av1_framing = if is_av1 {
+                let av1_framing = if is_av1 && !force_original {
                     Av1Framing::from_trigger(plx_base::devtrig::read("av1obu").as_deref())
                 } else {
                     Av1Framing::DEFAULT
@@ -8136,6 +8178,7 @@ pub(crate) fn demux(
                                 nal_len_size,
                                 is_hevc,
                                 dv_p7,
+                                !force_original,
                                 (*pkt).flags & AV_PKT_FLAG_KEY != 0,
                                 &param_blob,
                                 &mut aubuf,
@@ -8293,15 +8336,29 @@ pub(crate) fn demux(
                             }
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
-                            let Some(core) = dts_core_packet(raw) else {
-                                crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
-                                SHARED.fail_demux(DemuxExitClass::DtsCoreMissing);
-                                SHARED.demux_io_failed.store(true, Ordering::Release);
-                                av_packet_unref(pkt);
-                                break;
+                            let data = if force_original {
+                                if !force_original_dts_is_native(raw) {
+                                    crate::player::log(
+                                        "ff: Force Original refused — DTS packet is HD, packed, or lacks an exact native core",
+                                    );
+                                    SHARED.fail_demux(DemuxExitClass::Other);
+                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    av_packet_unref(pkt);
+                                    break;
+                                }
+                                std::borrow::Cow::Borrowed(raw)
+                            } else {
+                                let Some(core) = dts_core_packet(raw) else {
+                                    crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
+                                    SHARED.fail_demux(DemuxExitClass::DtsCoreMissing);
+                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    av_packet_unref(pkt);
+                                    break;
+                                };
+                                core
                             };
                             crate::aq::aq_push_gated(
-                                aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2, gate,
+                                aqa_p, data.as_ptr(), data.len() as c_int, pts, 1, 2, gate,
                                 || state.drain_wire(),
                             )
                         } else {
