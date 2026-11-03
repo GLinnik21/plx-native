@@ -627,6 +627,37 @@ mod backend_offer_session_tests {
     }
 
     #[test]
+    fn abandoned_original_trial_reopens_the_still_current_hls_without_spending_rollback() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        session.tsession.clear();
+        session.cur_contract = Default::default();
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert_eq!(session.planned_feed_offer(), Some(OfferId::FEED_ORIGINAL));
+        // The trial failed before its common Start acquired a new physical owner.
+        set_url(&mut session, "https://example.invalid/reopened.m3u8");
+        session.tsession = "hls-session".into();
+        session.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::FixedHls {
+            seconds_per_segment: 2,
+        };
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::RollbackExisting));
+        assert!(session.backend_planned_feed_allowed());
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        // The previous HLS recipe remains spent for a new recovery decision.
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_HLS,
+            CandidatePurpose::NewCandidate));
+        assert!(!session.backend_planned_feed_allowed());
+    }
+
+    #[test]
     fn qualified_original_feed_precedes_uri_conversion_then_uri_precedes_feed_conversion() {
         let mut session = PlaybackSession::IDLE;
         set_url(&mut session, "https://example.invalid/original.mkv");
@@ -750,6 +781,16 @@ impl PlaybackSession {
         } else {
             super::backend_policy::OfferId::FEED_PMS_ENCODE
         };
+        let still_current = purpose == CandidatePurpose::RollbackExisting
+            && self.backend_policy.as_ref().is_some_and(|policy|
+                policy.can_reopen(plx_playback_contract::BackendKind::Feed, id));
+        let purpose = if still_current { CandidatePurpose::ReopenCurrent } else { purpose };
+        if still_current {
+            // A failed Original trial may be abandoned before its Start was admitted. The
+            // previous HLS is still the last physical recipe, even though staging the trial
+            // cleared the pending admission marker. Restore only that exact admitted recipe.
+            self.admitted_feed_offer = Some(id);
+        }
         self.qualify_resolved_feed_offer(id, purpose)
     }
 
@@ -5170,6 +5211,8 @@ pub(super) fn install_original_recovery(
         return None;
     }
     install_original_remux(ps, &plan.candidate, plan.watched, &prepared);
+    let _ = ps.qualify_resolved_feed_offer(super::backend_policy::OfferId::FEED_PMS_REMUX,
+        CandidatePurpose::NewCandidate);
     rollback.replacement_encoder = prepared.replacement;
     set_pending_original(ps, rollback, automatic);
     #[cfg(feature = "play-feed")]
@@ -5358,6 +5401,8 @@ fn recover_original_direct(
     );
     crate::player::request_subtitle(candidate.subtitle_ordinal.unwrap_or(-1));
     set_pending_original(ps, rollback, automatic);
+    let _ = ps.qualify_resolved_feed_offer(super::backend_policy::OfferId::FEED_ORIGINAL,
+        CandidatePurpose::NewCandidate);
     // This is a new source attempt. A prior probe's typed failure explains the HLS route we
     // are leaving, not the replacement now being opened; a failure of this open republishes
     // its own exact status from the pump.
