@@ -6707,8 +6707,9 @@ fn hls_demux(
             .expect("queueing follows candidate authorization");
         for (output, _, _) in &candidate_outputs {
             if let Err(error) = hls_feed_segment(output, aq, aqa) {
+                let terminal = trial_protocol.observe(trial_id, TrialEvent::Ended);
                 debug_assert_eq!(
-                    trial_protocol.observe(trial_id, TrialEvent::Ended),
+                    terminal,
                     Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
                 );
                 state.abandon(&primed.encoder_session);
@@ -6738,8 +6739,9 @@ fn hls_demux(
             now_ms(),
         );
         if !matches!(&publication, adaptive::CandidatePublication::Active { .. }) {
+            let terminal = trial_protocol.observe(trial_id, TrialEvent::Ended);
             debug_assert_eq!(
-                trial_protocol.observe(trial_id, TrialEvent::Ended),
+                terminal,
                 Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
             );
         }

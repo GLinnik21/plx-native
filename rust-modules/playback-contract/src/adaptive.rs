@@ -43,13 +43,13 @@ pub enum TrialProtocolError { Stale, OutOfOrder, TerminalAfterQueue }
 
 /// The synchronous owner of one trial's phase. IO outcomes are addressed to this ID;
 /// a late result cannot settle the next trial, even if it names the same source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TrialProtocol { id: TrialId, phase: TrialPhase }
 
 impl TrialProtocol {
     pub const fn new(id: TrialId) -> Self { Self { id, phase: TrialPhase::Granted } }
-    pub const fn id(self) -> TrialId { self.id }
-    pub const fn phase(self) -> TrialPhase { self.phase }
+    pub const fn id(&self) -> TrialId { self.id }
+    pub const fn phase(&self) -> TrialPhase { self.phase }
 
     pub fn observe(
         &mut self, id: TrialId, observation: TrialObservation,
