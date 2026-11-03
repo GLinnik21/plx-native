@@ -1294,7 +1294,7 @@ mod tests {
     }
 
     fn observe_facts(ps: &mut crate::route::PlaybackSession, attempt: crate::route::RouteStartAttempt, facts: crate::player::attempt_view::AttemptFacts) {
-        assert!(ps.ingest_attempt_facts(attempt, facts));
+        assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts));
     }
 
     /// PR #104 review: `ATTEMPT_CONNECTION` packs the server slot, link code and ip code into one

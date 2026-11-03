@@ -559,9 +559,10 @@ impl PlaybackSession {
     pub fn ingest_attempt_facts(
         &mut self,
         attempt: RouteStartAttempt,
+        backend: crate::player::attempt_view::Backend,
         facts: crate::player::attempt_view::AttemptFacts,
     ) -> bool {
-        self.attempt_view.ingest(attempt, facts)
+        self.attempt_view.ingest(attempt, backend, facts)
     }
 
     /// Nothing playing: what the module holds before the first play, and the value the static is

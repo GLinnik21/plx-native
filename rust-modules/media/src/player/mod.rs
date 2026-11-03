@@ -3014,7 +3014,7 @@ mod tests {
         TX.started.store(true, Relaxed);
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
-        assert!(ps.ingest_attempt_facts(attempt, attempt_view::AttemptFacts {
+        assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, attempt_view::AttemptFacts {
             position_ns: Some(42_000_000_000), ..Default::default()
         }));
         assert!(set_play_rate(&ps, 1500));

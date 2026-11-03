@@ -4528,7 +4528,7 @@ mod lifecycle_regression_tests {
         shared.desired_sub_idx.store(3, Relaxed);
         let attempt = plx_media::route::RouteStartAttempt::fixture();
         app.player.session.begin_attempt_view(attempt, plx_media::player::attempt_view::Backend::Feed);
-        assert!(app.player.session.ingest_attempt_facts(attempt, plx_media::player::attempt_view::AttemptFacts {
+        assert!(app.player.session.ingest_attempt_facts(attempt, plx_media::player::attempt_view::Backend::Feed, plx_media::player::attempt_view::AttemptFacts {
             position_ns: Some(7_000_000_000), seek_display_ns: Some(9_000_000_000),
             duration_ns: Some(100_000_000_000), ..Default::default()
         }));
