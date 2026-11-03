@@ -997,10 +997,6 @@ fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> 
     plx_play_feed::with_pcm_info(p, audio, pcm.map(Into::into))
 }
 
-fn pcm_decode_line(codec: &str, f: &crate::route::PcmFormat) -> String {
-    plx_play_feed::pcm_decode_line(codec, &(*f).into())
-}
-
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
 /// the sink envelope.
 #[cfg(test)]
@@ -6379,11 +6375,14 @@ mod pcm_info_tests {
     /// The diagnostics line names the track's own rate only where the app resamples it.
     #[test]
     fn the_decode_log_line_names_the_source_rate_only_when_it_is_resampled() {
+        let line = |codec: &str, format: &PcmFormat| {
+            plx_play_feed::pcm_decode_line(codec, &(*format).into())
+        };
         let exact = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
-        assert_eq!(pcm_decode_line("flac", &exact), "pcm: flac decoded in-app -> 48000Hz 16-bit 2ch");
+        assert_eq!(line("flac", &exact), "pcm: flac decoded in-app -> 48000Hz 16-bit 2ch");
         let hires = PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 };
-        assert_eq!(pcm_decode_line("flac", &hires), "pcm: flac decoded in-app -> 48000Hz 32-bit 2ch (resampled from 96000Hz)");
-        assert_eq!(pcm_decode_line("dca", &PcmFormat::STEREO_48K), "pcm: dca decoded in-app -> 48000Hz 16-bit 2ch");
+        assert_eq!(line("flac", &hires), "pcm: flac decoded in-app -> 48000Hz 32-bit 2ch (resampled from 96000Hz)");
+        assert_eq!(line("dca", &PcmFormat::STEREO_48K), "pcm: dca decoded in-app -> 48000Hz 16-bit 2ch");
     }
 
     /// Every rate the PCM path admits is declared in kilohertz, the unit libpf's table is in. In
