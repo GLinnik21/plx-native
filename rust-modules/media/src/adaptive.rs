@@ -613,6 +613,11 @@ pub(crate) struct ExplorationGrant {
     pub(crate) budget_ms: i64,
 }
 
+pub(crate) enum PreprimePlan {
+    Recovery,
+    Exploration { grant: ExplorationGrant, started_ns: i64 },
+}
+
 pub(crate) enum ExplorationFailure {
     ReserveUnknown { refreshing_same_request: bool },
     NoRunway { refreshing_same_request: bool },
@@ -685,7 +690,7 @@ impl Coordinator {
         );
         Some(plx_playback_contract::adaptive::TrialProtocol::new(id))
     }
-    pub(crate) fn grant_exploration(
+    fn grant_exploration(
         &mut self, proposal: abr::Proposal, buffered_ms: Option<i64>, now_ms: u64,
     ) -> Result<ExplorationGrant, ExplorationFailure> {
         let Some(buffered_ms) = buffered_ms else {
@@ -710,6 +715,20 @@ impl Coordinator {
             return Err(ExplorationFailure::BudgetMoved { budget_ms });
         }
         Ok(ExplorationGrant { buffered_ms, runway_ms, budget_ms })
+    }
+    pub(crate) fn preprime_plan(
+        &mut self, proposal: abr::Proposal,
+        buffer: impl FnOnce() -> (Option<i64>, i64),
+        now_ms: impl FnOnce() -> u64,
+    ) -> Result<PreprimePlan, ExplorationFailure> {
+        match proposal.direction {
+            abr::Direction::Down => Ok(PreprimePlan::Recovery),
+            abr::Direction::Up => {
+                let (buffered_ms, started_ns) = buffer();
+                let grant = self.grant_exploration(proposal, buffered_ms, now_ms())?;
+                Ok(PreprimePlan::Exploration { grant, started_ns })
+            }
+        }
     }
     pub(crate) fn reject(&mut self, proposal: abr::Proposal, cause: abr::RejectCause, now_ms: u64) -> bool {
         let refreshing = proposal.rung == self.controller.current();

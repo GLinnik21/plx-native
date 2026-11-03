@@ -6080,16 +6080,46 @@ fn hls_demux(
                 continue;
             }
         let Some((proposal, reserve_policy)) = trial else { continue; };
-        let automatic_kind = match proposal.direction {
-            crate::abr::Direction::Up => crate::player::HlsAutomaticTransition::QualityUp,
-            crate::abr::Direction::Down => crate::player::HlsAutomaticTransition::QualityDown,
+        let preprime = match state.preprime_plan(
+            proposal,
+            || {
+                let (snapshot, started_ns) = hls_buffer_snapshot_with_playhead(None);
+                (snapshot.buffered_ms(), started_ns)
+            },
+            || now_ms(),
+        ) {
+            Ok(plan) => plan,
+            Err(failure) => {
+                if let Some(refreshing) = failure.refreshing_same_request() {
+                    publish_hls_abr_action(proposal, refreshing, Some(false));
+                }
+                match failure {
+                    adaptive::ExplorationFailure::ReserveUnknown { .. } => crate::player::log(
+                        "abr: candidate reserve unreadable before exploration; staying on current rung",
+                    ),
+                    adaptive::ExplorationFailure::NoRunway { .. } => crate::player::log(
+                        "abr: candidate has no completed current acquisition to preserve; staying",
+                    ),
+                    adaptive::ExplorationFailure::NoSurplus { .. } => crate::player::log(
+                        "abr: candidate has no reserve above rollback boundary; staying on current rung",
+                    ),
+                    adaptive::ExplorationFailure::BudgetMoved { budget_ms } => crate::player::log(&format!(
+                        "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
+                        budget_ms, proposal.rung.kbps(),
+                    )),
+                }
+                continue;
+            }
         };
         // A recovery downshift may legitimately span an internally-held rebuffer clock, so it
         // does not use the upward trial-reserve certificate below. It still owns the same single
         // automatic-actuator slot for the whole PMS/candidate transaction: source recovery and a
         // second rung transaction cannot both pass an earlier snapshot and publish independently.
-        let _automatic_lease = if proposal.direction == crate::abr::Direction::Down {
-            let Some(lease) = HlsAutomaticLease::begin(automatic_kind, expected_user_sequence)
+        let _automatic_lease = if matches!(&preprime, adaptive::PreprimePlan::Recovery) {
+            let Some(lease) = HlsAutomaticLease::begin(
+                crate::player::HlsAutomaticTransition::QualityDown,
+                expected_user_sequence,
+            )
             else {
                 reject_hls_abr(
                     state,
@@ -6118,34 +6148,7 @@ fn hls_demux(
         // advances, even though they move no media bytes.
         let mut _trial_reserve = None;
         let mut exploration_reserve = None;
-        if proposal.direction == crate::abr::Direction::Up {
-            let (buffer_snapshot, exploration_started_ns) = hls_buffer_snapshot_with_playhead(None);
-            let grant = match state.grant_exploration(
-                proposal, buffer_snapshot.buffered_ms(), now_ms(),
-            ) {
-                Ok(grant) => grant,
-                Err(failure) => {
-                    if let Some(refreshing) = failure.refreshing_same_request() {
-                        publish_hls_abr_action(proposal, refreshing, Some(false));
-                    }
-                    match failure {
-                        adaptive::ExplorationFailure::ReserveUnknown { .. } => crate::player::log(
-                            "abr: candidate reserve unreadable before exploration; staying on current rung",
-                        ),
-                        adaptive::ExplorationFailure::NoRunway { .. } => crate::player::log(
-                            "abr: candidate has no completed current acquisition to preserve; staying",
-                        ),
-                        adaptive::ExplorationFailure::NoSurplus { .. } => crate::player::log(
-                            "abr: candidate has no reserve above rollback boundary; staying on current rung",
-                        ),
-                        adaptive::ExplorationFailure::BudgetMoved { budget_ms } => crate::player::log(&format!(
-                            "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
-                            budget_ms, proposal.rung.kbps(),
-                        )),
-                    }
-                    continue;
-                }
-            };
+        if let adaptive::PreprimePlan::Exploration { grant, started_ns } = preprime {
             let adaptive::ExplorationGrant { buffered_ms, runway_ms, budget_ms } = grant;
             let Some(trial_reserve) = HlsTrialReserve::arm(runway_ms, expected_user_sequence)
             else {
@@ -6162,7 +6165,7 @@ fn hls_demux(
             };
             _trial_reserve = Some(trial_reserve);
             exploration_reserve = Some(ReserveDeadlineState::from_playhead_at(
-                exploration_started_ns,
+                started_ns,
                 std::time::Duration::from_millis(u64::try_from(budget_ms).unwrap_or(u64::MAX)),
                 false,
             ));
