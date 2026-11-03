@@ -1143,7 +1143,8 @@ pub(super) fn prepare_native_open(
         }
     };
 
-    Ok(NativePrepared { open, sample, stream, payload_c, audio_lead, clock_start, native_start, side_reader })
+    Ok(NativePrepared { open, sample, stream, payload_c, audio_lead, clock_start, native_start,
+        user_held, side_reader })
 }
 
 /// One physical Load declaration and its native callback guards, prepared before the route owner
@@ -1156,6 +1157,7 @@ pub(super) struct NativePrepared {
     audio_lead: PcmLead,
     clock_start: ClockStartGuard,
     native_start: NativeSessionStartGuard,
+    user_held: bool,
     side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
 }
 
@@ -1177,7 +1179,8 @@ pub(super) fn launch_native_open(
     attempt: plx_playback_contract::AttemptId,
     prepared: NativePrepared,
 ) -> Result<(), NativeOpenError> {
-    let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start, mut side_reader } = prepared;
+    let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start,
+        user_held, mut side_reader } = prepared;
     let shared = feed.shared();
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
@@ -1313,6 +1316,7 @@ pub(super) fn launch_native_open(
         seek_base_pts: 0,
         prime_play: false,
         startup_controlled: true,
+        startup_user_held: user_held,
         startup_play_commanded: false,
         startup_first_play_done: false,
         startup_play_refused: false,
@@ -3572,6 +3576,7 @@ mod prime_livelock_tests {
             seek_base_pts: 0,
             prime_play: true,
             startup_controlled: false,
+            startup_user_held: false,
             startup_play_commanded: false,
             startup_first_play_done: false,
             startup_play_refused: false,

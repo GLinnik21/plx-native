@@ -14,6 +14,8 @@ use plx_playback_contract::Capabilities;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FeedTransportAction {
+    /// Release the captured viewer hold before the initial physical prime may Play.
+    ResumeInitial { attempt: AttemptId, command: CommandId },
     Play { attempt: AttemptId, command: CommandId },
     Pause { attempt: AttemptId, command: CommandId },
 }
@@ -87,7 +89,10 @@ impl FeedDriver {
                 if !eng.startup_play_commanded {
                     eng.startup_play_commanded = true;
                     self.startup_play_command = Some(command);
-                    if eng.startup_immediate_play {
+                    if eng.startup_user_held {
+                        self.transport_actions.push_back(FeedTransportAction::ResumeInitial {
+                            attempt, command });
+                    } else if eng.startup_immediate_play {
                         if engine::play_initial_now(mt, eng) == Some(false) {
                             eng.startup_play_commanded = false;
                             self.startup_play_command = None;
@@ -176,8 +181,31 @@ impl FeedDriver {
         self.transport_actions.pop_front()
     }
 
-    pub(super) fn note_transport_result(&mut self, action: FeedTransportAction, accepted: bool) {
+    pub(super) fn note_transport_result(&mut self, feed: &mut FeedResources,
+        mt: &MainThread, action: FeedTransportAction, accepted: bool) {
+        if let FeedTransportAction::ResumeInitial { attempt, command } = action {
+            if self.active != Some(attempt) { return; }
+            let Some(eng) = feed.engine().filter(|eng| eng.attempt == attempt) else { return };
+            if !accepted {
+                eng.startup_play_commanded = false;
+                self.startup_play_command = None;
+                self.events.push_back(BackendEvent { backend: BackendKind::Feed,
+                    event: DriverEvent::ControlRefused { attempt, command,
+                        operation: Operation::Play, failure: Failure::Refused } });
+                return;
+            }
+            eng.startup_user_held = false;
+            if eng.startup_immediate_play && engine::play_initial_now(mt, eng) == Some(false) {
+                eng.startup_play_commanded = false;
+                self.startup_play_command = None;
+                self.events.push_back(BackendEvent { backend: BackendKind::Feed,
+                    event: DriverEvent::ControlRefused { attempt, command,
+                        operation: Operation::Play, failure: Failure::Refused } });
+            }
+            return;
+        }
         let (attempt, command, operation, value) = match action {
+            FeedTransportAction::ResumeInitial { .. } => unreachable!("handled above"),
             FeedTransportAction::Play { attempt, command } =>
                 (attempt, command, Operation::Play, Playback::Playing),
             FeedTransportAction::Pause { attempt, command } =>
