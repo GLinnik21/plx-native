@@ -40,7 +40,8 @@ impl ForegroundActuator for RigActuator {
         unreachable!("no rollback in this rig")
     }
 
-    fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+    fn before_load(&mut self, _ps: &mut crate::route::PlaybackSession, _resume_ns: i64,
+        _clock: ForegroundClock) {}
 
     fn start_load(&mut self, ps: &mut crate::route::PlaybackSession) -> ForegroundLoadStart<u64> {
         self.loads.push((SHARED.disp_base.load(Relaxed), crate::route::url(ps)));

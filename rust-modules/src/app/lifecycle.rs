@@ -106,12 +106,24 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         }
     }
 
-    fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
+    fn before_load(&mut self, ps: &mut plx_media::route::PlaybackSession, _resume_ns: i64,
+        clock: ForegroundClock) {
+        let feed_load = self.pa.planned_start_backend(ps)
+            == Some(plx_playback_contract::BackendKind::Feed);
         match clock {
             ForegroundClock::Paused => {
-                *self.repause_at = resume_ns;
-                set_resume_pend(true);
-                plx_media::player::TX.begin_paused_seek();
+                #[cfg(feature = "play-feed")]
+                if feed_load {
+                    *self.repause_at = _resume_ns;
+                    set_resume_pend(true);
+                    // The common runner's paused viewer goal survives the park in `clock`, but
+                    // a never-started native Load may have accepted no physical Pause. Prepare
+                    // the new Feed's hold before arming its one-frame seek preroll.
+                    if !self.pa.is_live() {
+                        plx_media::player::TX.commit_paused(true);
+                    }
+                    plx_media::player::TX.begin_paused_seek();
+                }
             }
             // A paused save the claim restores Playing (a PLAY press, or a toggle on a paused
             // decoder-release park): the park left the viewer's pause standing, and the Load is
@@ -119,7 +131,9 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // from `TX.paused`: a live Engine (a replacement the pump launched after a refused
             // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
             // only while `TX.paused` still reads Paused.
-            ForegroundClock::Playing if viewer_paused_for(self.pa) && !self.pa.is_live() => {
+            ForegroundClock::Playing if feed_load
+                && viewer_paused_for(self.pa) && !self.pa.is_live() => {
+                #[cfg(feature = "play-feed")]
                 plx_media::player::transport::commit_viewer_resume_for_load();
             }
             ForegroundClock::Playing => {}

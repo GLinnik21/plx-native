@@ -6550,7 +6550,7 @@ mod lifecycle_regression_tests {
             "OK keeps the saved pause, got {:?}",
             rig.app.player.lifecycle.state()
         );
-        assert!(paused(), "the viewer's pause stands");
+        assert!(viewer_paused_for(&rig.app.adapters.player), "the viewer's pause stands");
         assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
     }
 
@@ -6607,7 +6607,7 @@ mod lifecycle_regression_tests {
             "a click on a control keeps the saved pause, got {:?}",
             rig.app.player.lifecycle.state()
         );
-        assert!(paused(), "the viewer's pause stands");
+        assert!(viewer_paused_for(&rig.app.adapters.player), "the viewer's pause stands");
         assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
         assert!(!rig.app.ptr.ok_from_click, "the click was not re-sent as OK, so this is the wake path");
     }
@@ -6642,7 +6642,8 @@ mod lifecycle_regression_tests {
             unreachable!("RefusedLoad starts no rollback")
         }
 
-        fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+        fn before_load(&mut self, _ps: &mut plx_media::route::PlaybackSession,
+            _resume_ns: i64, _clock: ForegroundClock) {}
 
         fn start_load(
             &mut self,

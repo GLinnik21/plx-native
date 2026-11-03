@@ -2029,9 +2029,10 @@ impl Transport {
         }
     }
 
-    /// Publish a native-accepted user transport transition to both the feed gate and the exact
-    /// pause clock. Every production writer goes through this method; refused native transitions
-    /// never enter either state.
+    /// Publish a committed physical transport transition to both the feed gate and the exact
+    /// pause clock. An active object reaches this only after native acceptance; before a new
+    /// object exists, the common foreground owner may seed its saved paused viewer goal as the
+    /// initial hold. Refused native transitions never enter either state.
     pub fn commit_paused(&self, paused: bool) {
         let mut clock = self.pause_clock.lock().unwrap_or_else(|e| e.into_inner());
         // The timestamp belongs to the mutex-order transition. Sampling it before `lock` lets a

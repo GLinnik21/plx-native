@@ -286,7 +286,8 @@ mod transport_pause_contract_tests {
                 unreachable!("this actuator never goes pending")
             }
 
-            fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+            fn before_load(&mut self, _ps: &mut crate::route::PlaybackSession, _resume_ns: i64,
+                _clock: ForegroundClock) {}
 
             fn start_load(
             &mut self,
