@@ -10,6 +10,7 @@ publish = false
 [package.metadata.plx]
 mount = "play_feed"
 
+
 [lib]
 name = "plx_play_feed"
 crate-type = ["rlib"]

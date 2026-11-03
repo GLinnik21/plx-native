@@ -247,10 +247,52 @@ pub(super) fn start_bufferfeed_inner(
         log("start_bufferfeed: prepared route lost before native construction");
         return Err(crate::route::RouteStartResult::StartFailed);
     };
-    prepared_native.bind_demux_session(route_attempt.contract_id());
+    let attempt = route_attempt.contract_id();
+    let force_original = prepared_native.force_original();
+    prepared_native.bind_demux_session(attempt);
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
-    pa.launch_native_feed(route_attempt.contract_id(), prepared_native)
+    let source = pa.next_source_key();
+    pa.stage_native_feed(attempt, source, prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    let fidelity = if force_original {
+        plx_playback_contract::Fidelity::Exact
+    } else {
+        plx_playback_contract::Fidelity::Compatible
+    };
+    let backend_at = pa.backend_tick();
+    let result = pa.backend_send_at(
+        plx_playback_contract::Intent::Start {
+            backend: plx_playback_contract::BackendKind::Feed,
+            attempt,
+            source,
+            requirements: plx_playback_contract::Requirements {
+                source: plx_playback_contract::SourceKind::PacketFeed,
+                video: fidelity,
+                audio: fidelity,
+                // Route preparation has already selected the feed's streams. The native
+                // driver has no separate track command to confirm during startup.
+                audio_track: plx_playback_contract::TrackChoice::Unspecified,
+                subtitle_track: plx_playback_contract::TrackChoice::Unspecified,
+            },
+            // Resume/seek rebasing is already encoded in the prepared physical source.
+            initial: plx_playback_contract::InitialPlayback {
+                position: None,
+                paused: TX.paused.load(Ordering::Acquire),
+            },
+        },
+        if crate::route::is_preview(ps) {
+            super::attempt_metrics::Origin::Preview
+        } else {
+            super::attempt_metrics::Origin::Fresh
+        },
+        backend_at,
+    );
+    if result.playback.iter().any(|fx| matches!(fx,
+        plx_playback_contract::Fx::Rejected { attempt: id, .. }
+        | plx_playback_contract::Fx::CommandRefused { attempt: id, .. } if *id == attempt
+    )) {
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
     pa.bind_feed_attempt(route_attempt, trace_generation);
     // The app gates its first pump on this readout. Publish after physical start and exact
     // attempt binding, before the caller returns to that gate.
@@ -282,7 +324,11 @@ pub(super) fn run_release_effects(
             E::RunTail { epoch } => {
                 if let Some(p) = joined.take() {
                     debug_assert_eq!(p.epoch(), epoch);
+                    let attempt = p.attempt();
                     engine::run_release_tail(pa.mt(), p);
+                    pa.note_backend_feed_release(attempt, plx_playback_contract::ReleaseStatus::Released);
+                    let at = pa.backend_tick();
+                    let _ = pa.backend_poll_at(at);
                     pass.tail_ran = true;
                 }
             }
@@ -807,6 +853,24 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
     for_reload: bool) {
     engine::clear_failed_engine_release_arm();
+    if let Some(route_attempt) = pa.active_feed_attempt() {
+        let attempt = route_attempt.contract_id();
+        let at = pa.backend_tick();
+        let _ = pa.backend_send_at(
+            plx_playback_contract::Intent::Stop {
+                backend: plx_playback_contract::BackendKind::Feed,
+                attempt,
+                reason: if for_reload {
+                    plx_playback_contract::StopReason::Replace
+                } else {
+                    plx_playback_contract::StopReason::Stop
+                },
+            },
+            super::attempt_metrics::Origin::Fresh,
+            at,
+        );
+        let _ = pa.take_backend_feed_stop();
+    }
     if !begin_teardown(ps, pa, for_reload) { return; }
     // An abandoned preview Load is never joined on the frame while native Load is in flight.
     if crate::route::is_preview(ps) {
@@ -843,6 +907,13 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     }
     finish_feed_teardown(ps, for_reload, report_th);
     pa.finish_native_stop(native, for_reload);
+    pa.note_backend_feed_release(route_attempt.contract_id(), if pa.release_busy() {
+        plx_playback_contract::ReleaseStatus::Closing
+    } else {
+        plx_playback_contract::ReleaseStatus::Released
+    });
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_at(at);
 }
 
 

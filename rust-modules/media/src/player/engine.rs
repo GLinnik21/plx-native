@@ -1139,6 +1139,10 @@ pub(super) struct NativePrepared {
 }
 
 impl NativePrepared {
+    pub(super) fn force_original(&self) -> bool {
+        self.open.as_ref().is_some_and(|open| open.feed_payload.force_direct_play)
+    }
+
     /// The route claim supplies the canonical attempt only after native preflight succeeds.
     /// Attach the observer while this prepared source is still owned on the main thread.
     pub(super) fn bind_demux_session(&mut self, attempt: plx_playback_contract::AttemptId) {
@@ -1291,6 +1295,9 @@ pub(super) fn launch_native_open(
         feed_pace: FeedPace::default(),
         seek_base_pts: 0,
         prime_play: false,
+        startup_controlled: true,
+        startup_play_commanded: false,
+        startup_immediate_play: false,
         aq_video: aqv_box,
         aq_audio: aqa_box,
         hs,
@@ -1840,6 +1847,39 @@ pub fn arm_live_clock_prime(eng: &mut Engine) {
     eng.prime_play = true;
 }
 
+/// Execute the first immediate Play only after the common startup runner has commanded it.
+/// The same clock reservation and completion rule is used by the progressive legacy fixture.
+pub(super) fn play_initial_now(mt: &MainThread, eng: &mut Engine) {
+    let shared = eng.shared;
+    let generation = shared.hls_candidate_generation.load(Ordering::Acquire);
+    let recovery = shared.hls_recovery();
+    if let Some((token, _)) =
+        shared.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, recovery)
+    {
+        let accepted = unsafe { sink().play(mt) } != 0;
+        match shared.complete_hls_prime_play(token, accepted) {
+            HlsPlayCompletion::Accepted { resume_acb } => {
+                if resume_acb {
+                    super::acb_mirror_playstate_at(mt, eng.stage, true);
+                }
+                eng.prime_play = false;
+                log("SMP Play");
+            }
+            HlsPlayCompletion::Refused => {
+                eng.prime_play = true;
+                log("SMP Play refused; priming for retry");
+            }
+            HlsPlayCompletion::Stale => {
+                eng.prime_play = true;
+                log("SMP Play result stale; priming for retry");
+            }
+        }
+    } else {
+        eng.prime_play = true;
+        log("SMP Play fenced; priming before retry");
+    }
+}
+
 /// **Start the clock once both lanes are buffered past the seek base** — video to [`PRIME_NS`]
 /// AND audio to [`PRIME_AUDIO_NS`], with a video-only escape at [`PRIME_VIDEO_MAX_NS`] so an
 /// audioless or briefly-starved stream still starts.
@@ -1861,6 +1901,9 @@ pub fn arm_live_clock_prime(eng: &mut Engine) {
 pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
     let shared = eng.shared;
     if !eng.prime_play {
+        return;
+    }
+    if eng.startup_controlled && !eng.startup_play_commanded {
         return;
     }
     let Some(prime_kind) = shared.hls_prime_kind() else {
@@ -3488,6 +3531,9 @@ mod prime_livelock_tests {
             feed_pace: FeedPace::default(),
             seek_base_pts: 0,
             prime_play: true,
+            startup_controlled: false,
+            startup_play_commanded: false,
+            startup_immediate_play: false,
             aq_video: Some(crate::aq::aq_new(AQ_VIDEO_BYTES)),
             aq_audio: Some(crate::aq::aq_new(AQ_AUDIO_BYTES)),
             hs: plx_net::stream::http_stream_boxed(),
