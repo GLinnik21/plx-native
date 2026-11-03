@@ -17,6 +17,7 @@ pub use state::{BackendState, Event, Fx, Intent, Phase, Snapshot, TrackFact};
 /// an old backend cannot publish into a successor even if a malformed event reused its attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BackendKind { Uri, Feed }
+pub mod demux;
 
 /// One logical start, supplied by the existing route owner. Its pair matches a route
 /// transaction and that transaction's physical start attempt; the contract does not mint a

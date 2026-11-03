@@ -5,6 +5,7 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
+use plx_playback_contract::demux::{DemuxEffect, DemuxSession, PauseLane};
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
 use crate::player::SHARED;
@@ -4289,7 +4290,7 @@ struct HlsRoundPort<'a> {
     cursor: &'a mut HlsCursor,
     timeline: &'a mut crate::hls::SegmentTimeline,
     prefetched: &'a mut Option<ActiveMedia>,
-    pause_cursor: &'a mut crate::player::UserPauseCursor,
+    session: &'a mut dyn DemuxSession,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
     publication_gate: AqPublicationPort,
@@ -4935,9 +4936,7 @@ impl CandidateFencePort for HlsRoundPort<'_> {
     type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
     fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
-        HlsCandidateTransition::arm(automatic_token)
-            .map(plx_playback_contract::adaptive::FenceHandle::new)
-            .map_err(Into::into)
+        self.session.adaptive().arm_candidate(automatic_token)
     }
 
     fn settle(&mut self, fence: Self::Fence) { fence.settle(); }
@@ -4958,18 +4957,11 @@ impl AutomaticPort for HlsRoundPort<'_> {
     fn begin(
         &mut self, kind: AutomaticTransition, expected_user_sequence: u64,
     ) -> Option<Self::Lease> {
-        let kind = match kind {
-            AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
-            AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
-            AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
-        };
-        HlsAutomaticLease::begin(kind, expected_user_sequence).map(|lease| {
-            plx_playback_contract::adaptive::LeaseHandle::new(lease.token(), lease)
-        })
+        self.session.adaptive().begin(kind, expected_user_sequence)
     }
 
     fn authorize(&mut self, lease: &Self::Lease) -> bool {
-        SHARED.authorize_hls_automatic_transition_commit(lease.token())
+        self.session.adaptive().authorize(lease.token())
     }
 
     fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.aq) } }
@@ -4985,9 +4977,7 @@ impl TrialActuatorPort for HlsRoundPort<'_> {
     fn arm_trial_reserve(
         &mut self, runway_ms: i64, expected_user_sequence: u64,
     ) -> Option<Self::TrialReserve> {
-        HlsTrialReserve::arm(runway_ms, expected_user_sequence).map(|reserve| {
-            plx_playback_contract::adaptive::LeaseHandle::new(reserve.token(), reserve)
-        })
+        self.session.adaptive().arm_trial(runway_ms, expected_user_sequence)
     }
 
     fn lease_token(&self, lease: &Self::Lease) -> u64 { lease.token() }
@@ -4997,21 +4987,17 @@ impl TrialActuatorPort for HlsRoundPort<'_> {
 
 impl AdaptiveRoundPort for HlsRoundPort<'_> {
     fn position_sampler(&self) -> fn() -> i64 {
-        || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+        self.session.clock().playpos_sampler()
     }
 
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool {
-        SHARED.hls_automatic_transition_permitted(match kind {
-            AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
-            AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
-            AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
-        })
+        self.session.adaptive_ref().transition_permitted(kind)
     }
 
     fn rebuffer_state(&self) -> (bool, bool) {
         (
-            SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
-            SHARED.hls_rebuffering.load(Ordering::Acquire),
+            self.session.clock().rebuffer_requested(),
+            self.session.clock().rebuffering(),
         )
     }
 
@@ -5020,11 +5006,10 @@ impl AdaptiveRoundPort for HlsRoundPort<'_> {
     }
 
     fn pause_fact(&mut self) -> PauseFact {
-        let commit_pause = crate::player::TX.pause_state_sample();
+        let commit_pause = self.session.clock_mut().pause_event(PauseLane::Hls);
         PauseFact {
             paused: commit_pause.paused,
-            completed_ms: self.pause_cursor.consume_completed(commit_pause)
-                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+            completed_ms: commit_pause.completed_ms,
         }
     }
 }
@@ -5241,7 +5226,9 @@ impl HlsRoundPort<'_> {
                 };
                 if !output.aus.is_empty() {
                     hls_feed_segment(output, self.aq, self.aqa)?;
-                    SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
+                    self.session.media().publish(DemuxEffect::RecoverySegment {
+                        total_us: output.transfer.total_us, duration: segment.duration,
+                    });
                     self.timeline.commit(*clock);
                 }
                 Ok(ActiveObservation::Fed { round })
@@ -5253,11 +5240,10 @@ impl HlsRoundPort<'_> {
                 Ok(ActiveObservation::Buffer { round, fact: hls_buffer_fact(Some(output)) })
             }
             ActiveAction::Pause { .. } => {
-                let snapshot = crate::player::TX.pause_state_sample();
-                let completed_ms = self.pause_cursor.consume_completed(snapshot)
-                    .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+                let snapshot = self.session.clock_mut().pause_event(PauseLane::Hls);
                 Ok(ActiveObservation::Pause {
-                    round, paused: snapshot.paused, sequence: snapshot.sequence, completed_ms,
+                    round, paused: snapshot.paused, sequence: snapshot.sequence,
+                    completed_ms: snapshot.completed_ms,
                 })
             }
             ActiveAction::RollbackDuration { .. } => {
@@ -5295,6 +5281,7 @@ fn hls_demux(
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
     transport: DemuxTransport,
+    session: &mut dyn DemuxSession,
 ) -> Result<(), HlsExit> {
     // The change detector is process-global, so a second playback of the same stream would
     // otherwise log nothing at all. Cleared here rather than on teardown: this is the one place
@@ -5331,8 +5318,7 @@ fn hls_demux(
     // Consume native-accepted pause EVENTS, not a sampled bool. The worker can spend a complete
     // Pause→Resume cycle blocked in aq_push/network I/O and must still age the first post-resume
     // estimate by the exact cumulative interval.
-    let mut pause_cursor =
-        crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
+    session.clock_mut().begin_pause_lane(PauseLane::Hls);
     let mut prefetched: Option<ActiveMedia> = None;
 
     loop {
@@ -5343,7 +5329,9 @@ fn hls_demux(
             let delivered = !output.aus.is_empty();
             if delivered {
                 hls_feed_segment(&output, aq, aqa)?;
-                SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
+                session.media().publish(DemuxEffect::RecoverySegment {
+                    total_us: output.transfer.total_us, duration: segment.duration,
+                });
                 timeline.commit(clock);
             }
             if hls_should_prefetch_after_abr(delivered, fetch_abandoned, true) {
@@ -5364,7 +5352,7 @@ fn hls_demux(
         let mut physical = HlsRoundPort {
             round: None, trial: None, origin,
             cursor: &mut cursor, timeline: &mut timeline,
-            prefetched: &mut prefetched, pause_cursor: &mut pause_cursor,
+            prefetched: &mut prefetched, session,
             aq, aqa, publication_gate: AqPublicationPort(aq),
             net: &mut net, acodec, current: None, reserve: None,
             source: None, candidate: None, segment: None,
@@ -5919,6 +5907,7 @@ pub(crate) fn demux(
     acodec: String,
     force_original: bool,
     transport: DemuxTransport,
+    mut session: Box<dyn DemuxSession>,
     abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
     aq: SendPtr<AuQueue>,
@@ -5956,7 +5945,7 @@ pub(crate) fn demux(
     {
         crate::player::log("hls: segmented demux start");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p, transport)
+            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p, transport, session.as_mut())
         }));
         match outcome {
             Ok(Ok(())) | Ok(Err(HlsExit::Aborted)) => {}
@@ -6024,8 +6013,7 @@ pub(crate) fn demux(
     if let Some(watch) = original_watch.as_mut() { watch.begin_on_worker(); }
     // Same accepted-event cursor as HLS. Progressive reads and queue pushes can hide an entire
     // pause cycle, so a local `paused_since` sampled around packets is not a valid clock.
-    let mut original_pause_cursor =
-        crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
+    session.clock_mut().begin_pause_lane(PauseLane::Original);
     // `base()` re-brackets a v6 host, which is what a URL needs; the plaintext arm hands the
     // `Origin` itself to `open_plain_progressive`, which dials its BARE `host()`.
     let url = format!("{}{}", origin.base(), path); // delivery identity; may carry a token, never logged
@@ -7031,10 +7019,8 @@ pub(crate) fn demux(
                     }
                     if !SHARED.seeking.load(Ordering::Relaxed) {
                         if let Some(watch) = original_watch.as_mut() {
-                            let pause_state = crate::player::TX.pause_state_sample();
-                            let completed_pause_ms = original_pause_cursor
-                                .consume_completed(pause_state)
-                                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+                            let pause_state = session.clock_mut().pause_event(PauseLane::Original);
+                            let completed_pause_ms = pause_state.completed_ms;
                             let (buffered_ms, remaining_ms) = if pause_state.paused {
                                 (None, None)
                             } else {

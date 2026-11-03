@@ -20,6 +20,7 @@
 #![allow(non_upper_case_globals)]
 pub mod adapter;
 pub mod attempt_view;
+pub mod demux_session;
 pub mod backend;
 pub mod claim_hold;
 pub mod ass; // pinned libass worker and immutable rendered frames
