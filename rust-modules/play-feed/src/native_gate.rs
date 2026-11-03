@@ -106,12 +106,9 @@ impl NativeSessionState {
         }
     }
 
-    fn next(&mut self) -> u32 {
-        self.next_epoch = self.next_epoch.wrapping_add(1);
-        if self.next_epoch == 0 {
-            self.next_epoch = 1;
-        }
-        self.next_epoch
+    fn next(&mut self) -> Option<u32> {
+        self.next_epoch = self.next_epoch.checked_add(1)?;
+        Some(self.next_epoch)
     }
 }
 
@@ -174,8 +171,8 @@ impl NativeGate {
 
     /// Enter the only state in which a Starfish `Load` may publish callbacks.
     ///
-    /// `None` rejects an overlapping native session instead of silently retagging two live
-    /// objects with one process-global owner.
+    /// `None` rejects an overlapping native session or exhausted identity domain instead of
+    /// retagging a live object or reusing an old callback address.
     pub fn begin_native_session(&self) -> Option<u32> {
         let mut state = self
             .state
@@ -184,7 +181,7 @@ impl NativeGate {
         if state.phase != NativeSessionPhase::Idle {
             return None;
         }
-        let epoch = state.next();
+        let epoch = state.next()?;
         state.phase = NativeSessionPhase::Active {
             epoch,
             presentation_gate: NativePresentationGate::Armed,

@@ -578,7 +578,7 @@ pub struct Shared {
     pub native_audio_refused: AtomicBool,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
-    /// (the native gate skips 0 on wraparound), so comparing against this is enough
+    /// (the native gate refuses exhaustion instead of wrapping), so comparing against this is enough
     /// to log the deferral exactly once per session without needing an `Engine` field: the pump's
     /// `loadCompleted` arm can be entered many times while `Load` is in flight, and only the
     /// first should log.
