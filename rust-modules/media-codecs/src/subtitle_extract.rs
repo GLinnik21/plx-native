@@ -1,13 +1,26 @@
 //! Cancellable, owned byte input for the optional subtitle demux. The caller owns the
 //! transport and its cancellation wake; this crate owns only the FFmpeg AVIO callback state.
 //! No URL, route, network client, or player registry is visible here.
-use crate::ffi::{self, AVDictionary, AVFormatContext, AVIOContext, AVStream, AVERROR_EOF, AVERROR_IO};
+use crate::ffi::{self, AVDictionary, AVFormatContext, AVIOContext, AVPacket, AVStream, AVERROR_EOF, AVERROR_IO};
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::sync::Arc;
 
 const AVIO_BUFFER_BYTES: usize = 65_536;
 const AVSEEK_SIZE: c_int = 0x10000;
+
+/// Packet time in nanoseconds, preferring PTS and then DTS. Missing timestamps are zero
+/// when a cue requires a concrete start.
+pub unsafe fn pts_ns(pkt: *const AVPacket, st: *mut AVStream) -> i64 {
+    pts_ns_opt(pkt, st).unwrap_or(0)
+}
+
+/// The same packet clock without inventing a time when neither timestamp exists.
+pub unsafe fn pts_ns_opt(pkt: *const AVPacket, st: *mut AVStream) -> Option<i64> {
+    let t = if (*pkt).pts != ffi::AV_NOPTS_VALUE { (*pkt).pts } else { (*pkt).dts };
+    if t == ffi::AV_NOPTS_VALUE { None }
+    else { Some(ffi::av_rescale_q(t, ffi::stream_time_base(st), ffi::NS_TB)) }
+}
 
 /// The lower codec's owned, bounded container metadata. Each header slot corresponds to the
 /// caller's track list in file order; `None` means that track had no admitted ASS header.

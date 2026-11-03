@@ -1802,28 +1802,7 @@ fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
     true
 }
 
-#[inline]
-unsafe fn pts_ns(pkt: *const AVPacket, st: *mut AVStream) -> i64 {
-    let t = if (*pkt).pts != AV_NOPTS_VALUE {
-        (*pkt).pts
-    } else {
-        (*pkt).dts
-    };
-    if t == AV_NOPTS_VALUE {
-        return 0;
-    }
-    av_rescale_q(t, stream_time_base(st), NS_TB)
-}
-
-#[inline]
-unsafe fn pts_ns_opt(pkt: *const AVPacket, st: *mut AVStream) -> Option<i64> {
-    let t = if (*pkt).pts != AV_NOPTS_VALUE {
-        (*pkt).pts
-    } else {
-        (*pkt).dts
-    };
-    (t != AV_NOPTS_VALUE).then(|| av_rescale_q(t, stream_time_base(st), NS_TB))
-}
+use plx_media_codecs::subtitle_extract::{pts_ns, pts_ns_opt};
 
 // -- AV1 framing ------------------------------------------------------------------------
 //
