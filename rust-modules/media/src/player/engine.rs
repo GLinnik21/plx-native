@@ -1466,6 +1466,18 @@ pub(super) struct NativePrepared {
     native_start: NativeSessionStartGuard,
 }
 
+impl NativePrepared {
+    /// The route claim supplies the canonical attempt only after native preflight succeeds.
+    /// Attach the observer while this prepared source is still owned on the main thread.
+    pub(super) fn bind_demux_session(&mut self, attempt: plx_playback_contract::AttemptId) {
+        let epoch = self.native_start.epoch();
+        if let Some(open) = self.open.as_mut() {
+            debug_assert!(open.session.is_none());
+            open.session = Some(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
+        }
+    }
+}
+
 /// Launch workers against the route's exact attempt; this owns no route/session policy.
 pub(super) fn launch_native_open(
     feed: &mut super::feed_resources::FeedResources,
