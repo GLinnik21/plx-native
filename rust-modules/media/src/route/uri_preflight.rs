@@ -135,6 +135,7 @@ impl ResolvePort {
                 && known.requirements.source == SourceKind::ProgressiveUri
                 && known.requirements.video == Fidelity::Exact
                 && known.requirements.audio == Fidelity::Exact
+                && known.source.can_supply(known.requirements)
                 && (!dovi.present || known.certified_dolby_vision == Some(dovi))
                 && known.requirements.subtitle_track == subtitle_choice
                 && (selected.subtitle_sid <= 0 || (subtitle.as_ref().is_some_and(|sub| sub.embedded)

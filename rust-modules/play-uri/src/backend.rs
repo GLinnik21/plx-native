@@ -42,6 +42,25 @@ pub struct NativeTrackIndex { pub selection: TrackSelection, pub index: i64 }
 pub struct UriSource { url: String, tracks: Vec<NativeTrackIndex> }
 impl UriSource {
     pub fn new(url: String, tracks: Vec<NativeTrackIndex>) -> Self { Self { url, tracks } }
+
+    fn valid_track_map(&self) -> bool {
+        !self.tracks.iter().enumerate().any(|(i, track)| track.index < 0
+            || self.tracks[..i].iter().any(|prior| prior.selection == track.selection
+                || (prior.selection.kind == track.selection.kind && prior.index == track.index)))
+    }
+
+    /// Whether this owned source can execute its required native track choices. The same
+    /// check guards qualification and the physical Start; no URL or index map escapes.
+    pub fn can_supply(&self, requirements: plx_playback_contract::Requirements) -> bool {
+        let mapped = |choice, kind| match choice {
+            TrackChoice::Unspecified => true,
+            TrackChoice::Off => false,
+            TrackChoice::Selected(id) => native_index(&self.tracks, TrackSelection { kind, id }).is_some(),
+        };
+        !self.url.is_empty() && self.valid_track_map()
+            && mapped(requirements.audio_track, TrackKind::Audio)
+            && mapped(requirements.subtitle_track, TrackKind::Subtitle)
+    }
 }
 struct StagedSource { attempt: AttemptId, key: SourceKey, source: UriSource, deadline_ms: u64 }
 
@@ -101,9 +120,7 @@ impl UriBackend {
         if source.url.is_empty() || self.last_started.is_some_and(|last| attempt <= last) {
             return Err(Failure::Stale);
         }
-        if source.tracks.iter().enumerate().any(|(i, track)| track.index < 0
-            || source.tracks[..i].iter().any(|prior| prior.selection == track.selection
-                || (prior.selection.kind == track.selection.kind && prior.index == track.index))) {
+        if !source.valid_track_map() {
             return Err(Failure::Unsupported);
         }
         let deadline_ms = self.config.clock.now_ms().saturating_add(self.config.source_ttl_ms);
@@ -168,13 +185,7 @@ impl UriBackend {
         if staged.attempt != attempt || staged.key != source || self.config.clock.now_ms() >= staged.deadline_ms {
             return self.refuse_before_open(attempt, Failure::Stale);
         }
-        let mapped = |choice, kind| match choice {
-            TrackChoice::Unspecified => true,
-            TrackChoice::Off => false,
-            TrackChoice::Selected(id) => native_index(&staged.source.tracks, TrackSelection { kind, id }).is_some(),
-        };
-        if !mapped(requirements.audio_track, TrackKind::Audio)
-            || !mapped(requirements.subtitle_track, TrackKind::Subtitle) {
+        if !staged.source.can_supply(requirements) {
             return self.refuse_before_open(attempt, Failure::Unsupported);
         }
         if matches!(self.config.binding, Binding::Exported { .. }) && self.config.display.window_mode() != VP_EXPORTED {
