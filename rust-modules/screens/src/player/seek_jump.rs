@@ -263,11 +263,11 @@ mod tests {
         page.hud.dismissed = true;
         assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
         assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Repeat, 1_500).is_empty());
-        page.step_scrub_hold(1_600);
+        page.step_scrub_hold(plx_media::route::idle_session_for_test(), 1_600);
         assert!(page.scrub.ns > 40_000_000_000);
         assert!(!page.hud.dismissed);
         assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Up, 1_610).is_empty());
-        page.step_scrub_hold(1_800);
+        page.step_scrub_hold(plx_media::route::idle_session_for_test(), 1_800);
         let target = page.scrub.ns;
         assert_eq!(key(&mut page, consts::SDLK_RETURN, Edge::Down, 1_810), vec![PlayerReq::SeekTo(target)]);
     }
