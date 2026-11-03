@@ -990,6 +990,14 @@ make fixtures-pipeline          # ~0.9 GB into $FIXTURES_OUT/pipeline; ~4 min, o
 ./tests/run.py --list           # offline: what would run, at what resolution, what is missing
 ```
 
+`--extra-trigger NAME[=CONTENT]` also applies to every synthetic case. For example,
+`./tests/run.py --extra-trigger plxnative-uriprobe=load --save-logs /tmp/uri-suite`
+runs the original assertions with the developer URI probe armed. It does not translate the
+buffer-feed assertions or control scripts into a URI backend: inspect each saved log for
+`uriprobe: ... armed variant=at-load` before attributing its result to URI. The controlled ACB
+probe variants are restricted to their known SDR720p24 fixture and must not be applied to this
+mixed-codec matrix.
+
 Nothing else is required — no `manifest.local.json`, no PMS, no token, no ratingKey, no library, no
 sharing. The TV address comes from the overlay's `tv` if you have one, else from `tools/tv-config.sh`
 (this checkout's gitignored `.tv-host`, the main checkout's, then the per-user

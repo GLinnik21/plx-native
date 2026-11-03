@@ -1959,6 +1959,27 @@ class PipelineTier(unittest.TestCase):
     def _pipeline_cases(self):
         return _manifest()["pipeline_cases"]
 
+    def test_pipeline_case_arms_requested_extra_triggers_without_changing_assertions(self):
+        case = {"name": "uri-routing", "fixture": "clip.mkv", "operations": [{"op": "play"}],
+                "expect": {"require_video_bound": True}}
+        cfg = {"tv": "test-tv", "extra_triggers": [("plxnative-uriprobe", "load")]}
+        server = mock.Mock()
+        server.stats.return_value = (1, 0, 0)
+        with mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
+                mock.patch.object(run, "apply_triggers") as arm, \
+                mock.patch.object(run, "early_exit_allowed", return_value=(False, None)), \
+                mock.patch.object(run, "stream_case", return_value=([], 1, False, None)), \
+                mock.patch.object(run, "evaluate_pipeline", return_value=(False, [("video_bound", False, "missing")])) as grade, \
+                mock.patch.object(run, "crash_gate", side_effect=lambda cfg, c, n, ls, ok, rs: (ok, rs)), \
+                mock.patch.object(run, "report_and_record"), mock.patch("sys.stdout", io.StringIO()):
+            passed, results, _ = run.run_pipeline_case(case, cfg, server, "http://fixture.invalid", False)
+        self.assertIn(("plxnative-uriprobe", "load"), arm.call_args.args[1])
+        self.assertEqual(json.loads(dict(arm.call_args.args[1])["plxnative-playurl"])["url"],
+                         "http://fixture.invalid/clip.mkv")
+        self.assertIs(grade.call_args.args[0], case)
+        self.assertFalse(passed)
+        self.assertEqual(results, [("video_bound", False, "missing")])
+
     def test_every_case_ends_with_a_path_or_a_skip(self):
         """The invariant behind `case["fixture"]`/`case["path"]` downstream. Run against an EMPTY
         pack, which is every machine that has not built one."""

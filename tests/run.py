@@ -5414,6 +5414,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # candidate refresh remain distinct even though both paths say /__abr/22000.
     srv.set_abr_response_profile(case.get("abr_response_profile"))
     files = triggers_for_case(case, url_base=url_base)
+    files.extend(cfg.get("extra_triggers") or ())
     apply_triggers(tv, files)
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
 
@@ -6963,7 +6964,7 @@ def main():
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--extra-trigger", action="append", default=[], metavar="NAME[=CONTENT]",
-                    help="arm one more plxnative-* trigger for every fps scene of this run (e.g. "
+                    help="arm one more plxnative-* trigger for every synthetic case or FPS scene (e.g. "
                          "plxnative-cpuprof, plxnative-framedrop=20). A profiler trigger disqualifies "
                          "the run's fps= as a pacing number, exactly as --graphics-profile does; use "
                          "it to attribute a frame, never to grade one.")
