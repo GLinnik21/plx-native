@@ -416,19 +416,15 @@ pub use pump::{
 };
 pub use attempt_view::PlaybackState;
 
-impl PlaybackState {
-    /// The one-line status the HUD shows beside the spinner. A `&'static CStr` (the house idiom
-    /// for UI strings) so the draw path allocates nothing — this is read 60x/second for the whole
-    /// load window, and indefinitely in `Error`.
-    pub fn caption(self) -> &'static std::ffi::CStr {
-        match self {
-            PlaybackState::Resolving => plx_platform::i18n::msg::widgets_status_preparing_c(),
-            PlaybackState::Connecting => plx_platform::i18n::msg::widgets_status_connecting_c(),
-            PlaybackState::Buffering => plx_platform::i18n::msg::widgets_status_buffering_c(),
-            PlaybackState::Seeking => plx_platform::i18n::msg::widgets_status_seeking_c(),
-            PlaybackState::Error => plx_platform::i18n::msg::widgets_status_failed_c(),
-            _ => c"",
-        }
+/// Localized status copy belongs to the common presentation layer.
+pub fn state_caption(state: PlaybackState) -> &'static std::ffi::CStr {
+    match state {
+        PlaybackState::Resolving => plx_platform::i18n::msg::widgets_status_preparing_c(),
+        PlaybackState::Connecting => plx_platform::i18n::msg::widgets_status_connecting_c(),
+        PlaybackState::Buffering => plx_platform::i18n::msg::widgets_status_buffering_c(),
+        PlaybackState::Seeking => plx_platform::i18n::msg::widgets_status_seeking_c(),
+        PlaybackState::Error => plx_platform::i18n::msg::widgets_status_failed_c(),
+        _ => c"",
     }
 }
 
@@ -465,7 +461,7 @@ pub fn busy_caption_with(st: PlaybackState, audio_switch: bool) -> &'static std:
     if audio_switch && st == PlaybackState::Buffering {
         plx_platform::i18n::msg::widgets_status_switching_audio_c()
     } else {
-        st.caption()
+        state_caption(st)
     }
 }
 
@@ -4672,11 +4668,11 @@ mod audio_switch_tests {
     fn the_caption_is_chosen_by_the_pick_and_only_for_buffering() {
         use PlaybackState as S;
         assert_eq!(busy_caption_with(S::Buffering, true), plx_platform::i18n::msg::widgets_status_switching_audio_c());
-        assert_eq!(busy_caption_with(S::Buffering, false), S::Buffering.caption());
+        assert_eq!(busy_caption_with(S::Buffering, false), state_caption(S::Buffering));
         // a switch never renames the other waits
-        assert_eq!(busy_caption_with(S::Seeking, true), S::Seeking.caption());
-        assert_eq!(busy_caption_with(S::Connecting, true), S::Connecting.caption());
-        assert_eq!(busy_caption_with(S::Resolving, true), S::Resolving.caption());
+        assert_eq!(busy_caption_with(S::Seeking, true), state_caption(S::Seeking));
+        assert_eq!(busy_caption_with(S::Connecting, true), state_caption(S::Connecting));
+        assert_eq!(busy_caption_with(S::Resolving, true), state_caption(S::Resolving));
     }
 
     #[test]
