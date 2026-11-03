@@ -20,23 +20,32 @@
 #![allow(non_upper_case_globals)]
 pub mod adapter;
 pub mod attempt_view;
+#[cfg(feature = "play-feed")]
 pub mod demux_session;
 pub mod backend;
+#[cfg(feature = "play-feed")]
 pub mod claim_hold;
 pub mod ass; // pinned libass worker and immutable rendered frames
 pub mod ass_perf; // per-second libass cost line (`assperf:`)
 pub mod ass_timing; // libass clock reading and the validity window of a rendered frame
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
+#[cfg(feature = "play-feed")]
 pub mod engine;
+#[cfg(feature = "play-feed")]
 mod feed_driver;
+#[cfg(feature = "play-feed")]
 mod feed_open; // one resolved request for the prepared route's physical feed open
+#[cfg(feature = "play-feed")]
 mod feed_pump; // physical Load gate and exported-window placement
+#[cfg(feature = "play-feed")]
 mod feed_resources; // private ownership of the native feed slot and worker receipts
 pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
+#[cfg(feature = "play-feed")]
 pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
+#[cfg(feature = "play-feed")]
 pub mod preview;
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
@@ -49,17 +58,21 @@ pub mod uri_lifecycle;
 pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uriprobe`): what to say to com.webos.media (pure machine); `uriprobe_drive` runs it
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
-#[cfg(feature = "hostsim")]
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub mod ffi_host;
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
+#[cfg(feature = "play-feed")]
 mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
+#[cfg(feature = "play-feed")]
 mod native_stall; // the surround native-audio stall watchdog (pure state) and the AU size evidence line
+#[cfg(feature = "play-feed")]
 mod pump;
 pub mod report;
-#[cfg(all(test, feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod foreground_flight_tests;
-#[cfg(all(test, feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod resume_tests;
+#[cfg(feature = "play-feed")]
 mod shared;
 mod shared_resources;
 mod subtitle_bitmap;
@@ -68,26 +81,32 @@ pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
 pub(crate) mod subtitle_cue; // shared text/ASS/bitmap cue publication for main and side readers
-#[cfg(feature = "hostsim")]
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
+#[cfg(feature = "play-feed")]
 pub mod threads;
 mod timeline;
 pub mod transport;
 pub mod video_geometry;
+#[cfg(feature = "play-feed")]
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 
 use plx_base::task::MainThread;
-#[cfg(test)]
+#[cfg(all(test, feature = "play-feed"))]
 pub(crate) use shared::pinned_pause_clock;
+#[cfg(feature = "play-feed")]
 pub use shared::HlsAutomaticTransition;
+#[cfg(feature = "play-feed")]
 pub use shared::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub use subtitle_bitmap::SubRect;
 use subtitle_bitmap::SubBitmap;
 pub use plx_data::metadata::track_names::TrackNames;
+#[cfg(feature = "play-feed")]
 pub use shared::UserPauseCursor;
+#[cfg(feature = "play-feed")]
 use shared::{
     HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume,
 };
@@ -101,6 +120,7 @@ use shared::{
 /// main thread cannot reach the object the worker is inside (the fence `PlayerAdapter::mt` used to
 /// provide by joining the worker, without a bound: PLX-NATIVE-1Q). The release itself, which has
 /// to reach the real seam, uses [`raw_sink`].
+#[cfg(feature = "play-feed")]
 fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     if SHARED.native_releasing() {
         &FENCE
@@ -112,15 +132,16 @@ fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
 /// What a main-thread verb gets while the object is inside its off-frame `Unload`: nothing happens
 /// (every verb refused, `NoSink`'s answers), except the memoized queries that say nothing about the
 /// object, which keep the real answer.
+#[cfg(feature = "play-feed")]
 static FENCE: plx_platform::tv::sink::RefusingSink = plx_platform::tv::sink::RefusingSink(raw_sink);
 
 /// The seam itself, unfenced: only the native release (the `Unload` worker and its main-thread
 /// tail) may use it while the object is `Releasing`.
-#[cfg(not(all(any(test, feature = "test-support"), feature = "hostsim")))]
+#[cfg(all(feature = "play-feed", not(all(any(test, feature = "test-support"), feature = "hostsim"))))]
 fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     plx_platform::tv::sink::installed()
 }
-#[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
 fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     &ffi_host::HostSink
 }
@@ -787,8 +808,9 @@ pub fn request_seek(ns: i64) {
     crate::route::note_user_seek_intent(ns);
     SHARED.ended.store(false, Relaxed); // seeking back from the end un-ends the stream
     SHARED.pipeline_eos.store(false, Relaxed);
-    SHARED.seeking.store(true, Relaxed); // HUD: spinner + freeze the playhead until it lands
     SHARED.seek_display_ns.store(ns, Relaxed);
+    SHARED.seeking.store(true, std::sync::atomic::Ordering::Release);
+    // The seek target is now published before a worker can observe the seek flag or request.
     TX.seek_to_ns.store(ns, Relaxed);
     // Count the request even though the target it carries may be overwritten before the pump
     // ever sees it — that overwrite IS the coalescing, and this is the only place it's countable.
@@ -839,10 +861,10 @@ pub fn rebuffering(ps: &crate::route::PlaybackSession) -> Option<bool> {
 /// Logging that pre-roll 0 would show the harness a 0→600 step and read as 600s of "climb"
 /// inside one second — a false PASS on `min_timeline_climb_s`.
 pub fn is_playing(ps: &crate::route::PlaybackSession) -> bool {
-    matches!(state(ps), shared::PlaybackState::Playing)
+    matches!(state(ps), PlaybackState::Playing)
 }
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
-pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
+pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once
     // an engine exists, which is false for the whole resolve window. Deriving in the one reader
     // keeps a single writer instead of poking the state in from the frame loop.
@@ -852,8 +874,10 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // the Resolving spinner until it lands. So does every recovery no Engine waits on (the
     // foreground restore's resume, a rollback after a Load that failed before its Engine
     // existed): `route::engineless_flight_outstanding`.
-    if crate::route::play_pending() || crate::route::engineless_flight_outstanding() || SHARED.start_queued.load(Relaxed) {
-        return shared::PlaybackState::Resolving;
+    if crate::route::play_pending() || crate::route::engineless_flight_outstanding()
+        || { #[cfg(feature = "play-feed")] { SHARED.start_queued.load(Relaxed) }
+             #[cfg(not(feature = "play-feed"))] { false } } {
+        return PlaybackState::Resolving;
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
     // byte of video moves, so the plan fails with no URL, no engine is ever built, and the pump
@@ -869,7 +893,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
         || crate::route::play_resolution_failed(ps)
         || crate::route::engine_failure(ps).is_some()
     {
-        return shared::PlaybackState::Error;
+        return PlaybackState::Error;
     }
     // A seek in flight is derived HERE too, not only published by the pump's own ladder (which
     // says the same thing in the same order — a seek outranks frames). `request_seek` sets the
@@ -882,15 +906,19 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
         return if facts.runtime_failure.is_some() { PlaybackState::Error }
             else { facts.status.unwrap_or(PlaybackState::Connecting) };
     }
-    if SHARED.seeking.load(Relaxed) {
-        return shared::PlaybackState::Seeking;
+    #[cfg(feature = "play-feed")]
+    {
+        if SHARED.seeking.load(Relaxed) {
+            return PlaybackState::Seeking;
+        }
+        // A retranscode claim holds presentation during the server round trip.
+        if claim_hold::active() {
+            return PlaybackState::Buffering;
+        }
+        PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
     }
-    // A retranscode claim's flight holds presentation (`claim_hold`): the stream is paused for the
-    // server's round trip, and the transport's busy mark is the HUD's existing way to say "working".
-    if claim_hold::active() {
-        return shared::PlaybackState::Buffering;
-    }
-    shared::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))
+    #[cfg(not(feature = "play-feed"))]
+    { PlaybackState::Idle }
 }
 
 /// The one line that makes a phone photograph of the failure read-out a complete report:
