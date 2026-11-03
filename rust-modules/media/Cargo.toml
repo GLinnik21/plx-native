@@ -37,7 +37,7 @@ lab-diagnostics = []
 # `cfg(test)` alone cannot give a dependent (the stand-in sink, the stepped feed clock, the asset
 # directory, the settled route start). Enabled from the dependents' `[dev-dependencies]`; never in a
 # shipped build.
-test-support = ["plx_media_codecs/test-support", "plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx?/test-support", "plx_net/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support"]
+test-support = ["plx_play_feed/test-support", "plx_media_codecs/test-support", "plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx?/test-support", "plx_net/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support"]
 
 [dependencies]
 plx_playback_contract = { path = "../playback-contract" }

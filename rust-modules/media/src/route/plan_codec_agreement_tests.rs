@@ -1,4 +1,4 @@
-//! The three places that each say "this television can play codec X" must agree, because only the
+//! Auto's three places that say "this television can play codec X" must agree, because only the
 //! first is the server's answer and the other two are what runs when it is not:
 //!
 //! 1. the capability profile sent to PMS (`plex::direct_play_video_codecs`, the list its
@@ -54,15 +54,13 @@ fn a_refused_load_is_never_a_codec_the_profile_asked_for() {
 }
 
 #[test]
-fn forced_mode_feeds_exactly_what_the_load_does_not_refuse() {
+fn forced_mode_attempts_every_software_feed_format_despite_declared_codec_rows() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
     for bits in 0..8u8 {
         let c = caps(bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
         for codec in CODECS {
-            let lv = LoadVideo::of_stream(codec).unwrap();
-            if video_feed_supported(codec, dp, &c) {
-                assert!(!load_video_refused(lv, &c), "{codec}: forced mode feeds it but the Load refuses it");
-            }
+            assert!(video_feed_supported(codec, dp, &c),
+                "{codec}: forced mode attempts the original stream regardless of device declarations");
         }
     }
 }

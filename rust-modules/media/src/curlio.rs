@@ -2,7 +2,7 @@
 //! The transport lives in `plx_net`; this alias binds its per-request URL check to the
 //! live Plex credential grant, including reopens and redirect hops.
 
-pub use plx_net::curlio::{
+pub use plx_net::range_io::{
     abort_active, available, boot, media_stall_budget, Abort, BodyFailure, OpenErr,
     OpenReservation, ThroughputFailure, ThroughputSample, READ_DEADLINE, READ_STOPPED,
 };
@@ -10,20 +10,20 @@ pub use plx_net::curlio::{
 /// The media URL authority, read for each request rather than snapshotted at source creation.
 pub struct PlexAuthorization;
 
-impl plx_net::curlio::UrlAuthorizer for PlexAuthorization {
+impl plx_net::range_io::UrlAuthorizer for PlexAuthorization {
     fn allows(url: &str) -> bool {
         let (origin, path) = plx_net::net::origin::split(url);
         plx_plex::http::credential_transport_allowed(&origin, path, &[])
     }
 }
 
-pub type CurlSource = plx_net::curlio::CurlSource<PlexAuthorization>;
+pub type CurlSource = plx_net::range_io::CurlSource<PlexAuthorization>;
 
 pub fn sample_throughput_result(
     url: &str, target_bytes: usize, setup_budget: std::time::Duration,
     body_budget: std::time::Duration,
 ) -> Result<ThroughputSample, ThroughputFailure> {
-    plx_net::curlio::sample_throughput_result::<PlexAuthorization>(
+    plx_net::range_io::sample_throughput_result::<PlexAuthorization>(
         url, target_bytes, setup_budget, body_budget,
     )
 }
@@ -35,7 +35,7 @@ pub fn sample_active_throughput_result<F>(
 where
     F: FnOnce() -> bool,
 {
-    plx_net::curlio::sample_active_throughput_result::<PlexAuthorization, F>(
+    plx_net::range_io::sample_active_throughput_result::<PlexAuthorization, F>(
         url, target_bytes, setup_budget, body_budget, cancelled,
     )
 }

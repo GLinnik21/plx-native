@@ -10,6 +10,7 @@
 //! build their tests on, plus the one test-only CA-bundle override `net::request_result` honours.
 //! The application crate enables it in `[dev-dependencies]` only, so no shipped build sees it.
 
-pub mod curlio; // interruptible HTTPS byte-range source
+#[path = "curlio.rs"]
+pub mod range_io; // interruptible HTTPS byte-range source
 pub mod net; // HTTPS client over the TV's libcurl (plex.tv account/login calls — stream.rs can't do TLS/DNS)
 pub mod stream;
