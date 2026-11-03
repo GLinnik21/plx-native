@@ -254,10 +254,19 @@ impl PlayerAdapter {
     /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
     /// or replaced Engine cannot settle a successor's route, even if a worker returns afterward.
     pub(super) fn drain_load_outcomes(&mut self, ps: &mut crate::route::PlaybackSession) {
-        for (attempt, ok) in self.feed.take_load_outcomes() {
-            let result = if ok { crate::route::RouteStartResult::Started }
+        // Construction may still be installing the Engine when the synchronous Load returns.
+        // Leave the inbox intact until its owner can validate the native epoch and attempt.
+        if !self.feed.is_live() { return; }
+        for outcome in self.feed.take_load_outcomes() {
+            if let Some(elapsed_ms) = outcome.elapsed_ms {
+                super::report::note_load_gate_for(
+                    outcome.trace_generation,
+                    super::report::LoadElapsedClass::from_ms(elapsed_ms as i64),
+                );
+            }
+            let result = if outcome.ok { crate::route::RouteStartResult::Started }
                 else { crate::route::RouteStartResult::StartFailed };
-            let _ = crate::route::settle_route_start(ps, attempt, result);
+            let _ = crate::route::settle_route_start(ps, outcome.attempt, result);
         }
     }
 
@@ -435,7 +444,7 @@ mod load_outcome_tests {
         // A worker may answer before construction finishes, but its route cannot become Stable
         // without an installed Engine. This was the original Load-return race.
         let early = pa.load_receipt(attempt, 7, 0);
-        early.deliver(7, true);
+        early.deliver(7, true, Some(31));
         pa.drain_load_outcomes(&mut ps);
         assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending);
 
@@ -443,13 +452,13 @@ mod load_outcome_tests {
         eng.route_start = attempt;
         pa.install(eng);
         let late = pa.load_receipt(attempt, 7, 0);
-        late.deliver(7, true);
+        late.deliver(7, true, Some(32));
         pa.drain_load_outcomes(&mut ps);
         assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending,
             "an older native epoch cannot settle the same route attempt");
 
         let current = pa.load_receipt(attempt, 8, 0);
-        current.deliver(8, true);
+        current.deliver(8, true, Some(33));
         pa.drain_load_outcomes(&mut ps);
         assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Started);
         pa.drain_load_outcomes(&mut ps);
@@ -459,5 +468,42 @@ mod load_outcome_tests {
         crate::player::SHARED.reset_session();
         crate::player::TX.reset();
         crate::route::reset_player_control_for_test(&ps);
+    }
+
+    #[test]
+    fn elapsed_fact_keeps_its_captured_trace_after_engine_installation() {
+        let _serial = plx_base::testlock::serial();
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let mut ps = crate::route::PlaybackSession::IDLE;
+
+        // The worker can return before the Engine is installed. Polling cannot discard that
+        // result or report it before the owner can validate the native epoch.
+        let early = pa.load_receipt(attempt, 8, 41);
+        early.deliver(8, true, Some(123));
+        pa.drain_load_outcomes(&mut ps);
+
+        let mut eng = crate::player::engine::streaming_engine_for_test(8);
+        eng.route_start = attempt;
+        pa.install(eng);
+        let old_epoch = pa.load_receipt(attempt, 7, 42);
+        old_epoch.deliver(7, false, Some(456));
+        let wrong_epoch = pa.load_receipt(attempt, 8, 43);
+        wrong_epoch.deliver(9, false, Some(789));
+        let cancelled = pa.load_receipt(attempt, 8, 44);
+        let cancelled_token = cancelled.token();
+        cancelled.deliver(8, false, Some(900));
+        pa.cancel_load_receipt(cancelled_token);
+
+        let admitted = pa.feed.take_load_outcomes();
+        assert_eq!(admitted.len(), 1, "only the installed Engine's live receipt is admitted");
+        assert_eq!(admitted[0].attempt, attempt);
+        assert_eq!(admitted[0].trace_generation, 41, "trace identity was captured at issue time");
+        assert_eq!(admitted[0].elapsed_ms, Some(123));
+        assert!(admitted[0].ok);
+        assert!(pa.feed.take_load_outcomes().is_empty(), "each receipt is consumed once");
+        drop(pa.take());
+        crate::player::SHARED.reset_session();
+        crate::player::TX.reset();
     }
 }
