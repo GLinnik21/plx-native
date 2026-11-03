@@ -4270,6 +4270,8 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
 fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
     let live = Live::start(EnhMode::Honor("ac3"));
     install_truehd_remux(ps, &live);
+    ps.begin_attempt_view(RouteStartAttempt::fixture(),
+        crate::player::attempt_view::Backend::Feed);
     admit_side_reader(ps);
     commit_subtitle_selection(ps, -1, 79, true);
     assert!(ps.cur_sub_sidecar);
