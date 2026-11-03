@@ -2658,6 +2658,7 @@ pub fn fail_current_engine() {
     drop(control);
     if flight_ended {
         // The claim's presentation hold (`player::claim_hold`) has nothing left to give back to.
+        #[cfg(feature = "play-feed")]
         crate::player::claim_hold::clear();
     }
 }
@@ -2752,6 +2753,7 @@ pub fn begin_engine_teardown(for_reload: bool) {
     drop(control);
     if dropped_start_flight || dropped_claim_flight {
         discard_retranscode_claim_slot();
+        #[cfg(feature = "play-feed")]
         crate::player::claim_hold::clear();
     }
 }
@@ -3973,15 +3975,19 @@ fn note_visible_switch(ps: &mut PlaybackSession, now_ms: u32) {
 /// Only the DELIVERY estimate crosses. The buffer, the risk history and any pending transaction
 /// describe a position that no longer exists and are reset by the new `Controller`'s construction.
 fn auto_prior(ps: &PlaybackSession) -> Option<crate::abr::CapacityEstimate> {
+    #[cfg(feature = "play-feed")]
     let carried = crate::player::SHARED.abr_seed().map(|(readout, elapsed_ms)| {
         age_carried_estimate(readout, elapsed_ms)
     });
+    #[cfg(not(feature = "play-feed"))]
+    let carried = None;
     carried.or_else(|| {
         let kbps = ps.auto_prior_kbps;
         (kbps > 0).then(|| crate::abr::CapacityEstimate::from_prior(kbps))
     })
 }
 
+#[cfg(feature = "play-feed")]
 fn age_carried_estimate(
     readout: plx_playback_contract::adaptive::SeedReadout, elapsed_ms: u64,
 ) -> crate::abr::CapacityEstimate {
@@ -5162,6 +5168,7 @@ pub(super) fn install_original_recovery(
     install_original_remux(ps, &plan.candidate, plan.watched, &prepared);
     rollback.replacement_encoder = prepared.replacement;
     set_pending_original(ps, rollback, automatic);
+    #[cfg(feature = "play-feed")]
     crate::player::clear_original_failure();
     crate::player::log(match plan.cause {
         RecoveryCause::Automatic => "auto: recovered Original remux; HLS encoder held pending frames",
@@ -5341,6 +5348,7 @@ fn recover_original_direct(
         s.stream_dv_decision = candidate.dv_decision;
         s.stream_immersive = candidate.audio.as_ref().is_some_and(|a| a.immersive);
     } };
+    #[cfg(feature = "play-feed")]
     crate::player::set_audio_track(
         candidate.audio.as_ref().map_or(-1, |a| a.ordinal),
     );
@@ -5349,6 +5357,7 @@ fn recover_original_direct(
     // This is a new source attempt. A prior probe's typed failure explains the HLS route we
     // are leaving, not the replacement now being opened; a failure of this open republishes
     // its own exact status from the pump.
+    #[cfg(feature = "play-feed")]
     crate::player::clear_original_failure();
     crate::player::log(match cause {
         RecoveryCause::Automatic => {
@@ -9110,12 +9119,14 @@ fn begin_track_selection(s: &mut PlaybackSession, retry: Option<RetryContext>) {
 /// the landing re-clamps it once the subtitle is re-selected (`player::reclamp_subtitle_offset`),
 /// since the reset has just deselected the sidecar whose range allows an advance.
 fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
+    #[cfg(feature = "play-feed")]
     crate::player::reset_audio_track();
     crate::player::reset_subtitle();
     match retry {
         Some(retry) => crate::player::restore_subtitle_offset(retry.sub_offset_ms),
         None => {
             // A retry is the same item and keeps its speed; a new one starts at 1x.
+            #[cfg(feature = "play-feed")]
             crate::player::reset_play_rate();
             if let Some(offset_ms) = remembered_subtitle_offset(sid, rk) {
                 crate::player::restore_subtitle_offset(offset_ms);
@@ -10658,18 +10669,23 @@ pub fn sidecar_over_remux(ps: &PlaybackSession) -> bool {
 /// draw is silenced by: a transcode burns whatever is selected, except a remux the app draws the
 /// subtitle over ([`SubtitlePresenter::ClientOverRemux`]).
 pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
+    #[cfg(feature = "play-feed")]
+    let side_reader_override = ps.cur_sub_sid == 0 && crate::player::subside::active();
+    #[cfg(not(feature = "play-feed"))]
+    let side_reader_override = false;
     is_transcoding(ps)
         && subtitle_presenter(ps) != SubtitlePresenter::ClientOverRemux
         // Dev trigger `plxnative-subside` only: the reader draws an embedded track over a plain
         // remux while the route has NO subtitle selected (so the presenter says `None`, not
         // `ClientOverRemux`). A selected subtitle is the presenter's alone to answer, so a refused
         // or failed reader (`ServerBurn`) is never silenced by a reader that is still shutting down.
-        && !(ps.cur_sub_sid == 0 && crate::player::subside::active())
+        && !side_reader_override
 }
 
 /// Make the side reader match the live route: start it for an admitted embedded pick, switch its
 /// track, run it clock-only for a sidecar, or stop it for Off. Never blocks (see
 /// `player::subside::sync`).
+#[cfg(feature = "play-feed")]
 fn sync_side_reader(ps: &PlaybackSession) {
     crate::player::subside::sync(
         side_reader_target(ps).and_then(|t| crate::player::subside::spec_for(&t)),
@@ -10681,6 +10697,7 @@ fn sync_side_reader(ps: &PlaybackSession) {
 /// and the server's burn is all that is left, so the stream is rebuilt as the burn. The presenter
 /// then reads `ServerBurn(AudioConversion)` and the menu's dimmed Style/Timing rows say why. Does
 /// nothing when the reader was not drawing the selected subtitle (the dev trigger's run).
+#[cfg(feature = "play-feed")]
 pub fn side_subtitles_failed(ps: &mut PlaybackSession) {
     // Only the reader's own track: a sidecar the app fetches itself is not what failed, so a
     // failure raised for the reader the viewer has since left says nothing about it.
@@ -10700,6 +10717,7 @@ pub fn side_subtitles_failed(ps: &mut PlaybackSession) {
 }
 
 /// What the side subtitle reader needs to read the film's original Part beside a plain remux.
+#[cfg(feature = "play-feed")]
 pub struct SideReaderTarget {
     pub sid: plx_plex::plex::ServerId,
     /// The Part's key (path), never logged.
@@ -10715,6 +10733,7 @@ pub struct SideReaderTarget {
     pub ordinal: i32,
 }
 
+#[cfg(feature = "play-feed")]
 impl SideReaderTarget {
     /// Does the reader only measure the clock (a sidecar is drawn), reading no subtitle?
     pub fn clock_only(&self) -> bool {
@@ -10733,6 +10752,7 @@ impl SideReaderTarget {
 /// file time, is drawn where the picture is (`player::sidecar_clock_ns`) once that scan matches —
 /// a moment after each remux start, and not at all off this gate, where the sidecar is drawn on
 /// the remux's own clock as it always was.
+#[cfg(feature = "play-feed")]
 pub fn side_reader_target(ps: &PlaybackSession) -> Option<SideReaderTarget> {
     if ps.preview || live_family(ps) != RouteFamily::Remux {
         return None;
@@ -11041,8 +11061,13 @@ pub enum ClaimTail {
 fn run_legacy(ps: &mut PlaybackSession) -> Option<ClaimTail> {
     match legacy_action(ps) {
         LegacyAction::Native { ordinal, codec } => {
+            #[cfg(feature = "play-feed")]
+            {
             crate::player::stage_native_audio(ps, ordinal, &codec);
             Some(ClaimTail::NativeAudio)
+            }
+            #[cfg(not(feature = "play-feed"))]
+            { let _ = (ps, ordinal, codec); None }
         }
         // The rebuild needs the very inputs the plan has just failed to capture (this is only
         // reached once `prepare_retranscode_inputs` refused them: no server, no item, a forced
@@ -11181,8 +11206,14 @@ fn plan_claim_flight(
         },
         ClaimPrimary::Legacy => match legacy_action(ps) {
             LegacyAction::Native { ordinal, codec } => {
+                #[cfg(feature = "play-feed")]
+                {
                 crate::player::stage_native_audio(ps, ordinal, &codec);
                 return RetranscodeClaimDispatch::Sync(ClaimTail::NativeAudio);
+                }
+                #[cfg(not(feature = "play-feed"))]
+                { let _ = (ordinal, codec); return RetranscodeClaimDispatch::Sync(
+                    ClaimTail::Rejected(LEGACY_REJECTED)); }
             }
             LegacyAction::Retranscode => match plain_rebuild_precheck(ps, &expected) {
                 Some(contract) => ClaimWork::Encode(contract),
@@ -11378,6 +11409,7 @@ pub fn execute_recover_original_claim(
 /// merge table let it replace the Retranscode that carried it). On a direct route the reload
 /// feeds `desired_audio_idx`, which a displaced pick never wrote — store the picked track before
 /// reloading. Every other case already rebuilds from `cur_audio`/`cur_sub_sid`.
+#[cfg(feature = "play-feed")]
 pub fn honour_displaced_pick(ps: &mut PlaybackSession, displaced_pick: bool, arm: &str) {
     if !displaced_pick {
         return;
@@ -11652,6 +11684,7 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
 /// ([`follow_audio_with_forced_only`]), which PUTs like any in-playback subtitle change and writes
 /// NO memory: the memo stays Forced only.
 pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
+    if !cfg!(feature = "play-feed") { return false; }
     let sid = audio.sid;
     let accepted = commit_audio_route(ps, audio);
     if accepted {
@@ -11730,7 +11763,10 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
         return true;
     }
     if native {
+        #[cfg(feature = "play-feed")]
         crate::player::request_audio_track(ps, ordinal, &codec);
+        #[cfg(not(feature = "play-feed"))]
+        return false;
     } else {
         crate::player::request_audio_switch(ps, stream_id);
     }
@@ -11874,6 +11910,7 @@ fn commit_subtitle_selection_inner(
     if in_place {
         // The stream stays; what the app reads beside it follows the pick (start, switch or stop
         // the side reader). Handed to a worker inside `sync`: stopping a reader joins its thread.
+        #[cfg(feature = "play-feed")]
         sync_side_reader(ps);
     }
     // A subtitle turns the enhancement's offer off (I6) and Off may turn it back on. On direct
