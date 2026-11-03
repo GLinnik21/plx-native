@@ -1,7 +1,7 @@
 //! **The cold resume of a transcoded item, driven the way the run loop drives it.** A play that
 //! resolves with a saved position on a transcode used to rebuild the encoder at that offset inline
 //! on the frame that landed it (`main-thread block: PMS HTTP`). It is a flight now
-//! (`engine::begin_resume` plans, a worker registers the replacement, `engine::land_resume` installs
+//! (`route_start::begin_resume` plans, a worker registers the replacement, `route_start::land_resume` installs
 //! it). These tests run both frame-thread halves inside a `FrameScope`, against the loopback server
 //! of `route::flight_rig`, and grade what the frame thread did and what became of the replacement.
 
