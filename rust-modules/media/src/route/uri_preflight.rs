@@ -137,3 +137,50 @@ pub struct ProductQualifier;
 impl OriginalQualifier for ProductQualifier {
     fn qualify(&self, _off: &OffFrame, _request: OriginalRequest) -> Verdict { Verdict::Unknown }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Certified { dovi: Option<plx_data::metadata::Dovi>, expired: bool }
+    impl OriginalQualifier for Certified {
+        fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
+            Verdict::Known(KnownSource { selection: request.selection,
+                source: UriSource::new(request.source_url, Vec::new()),
+                requirements: Requirements { source: SourceKind::ProgressiveUri,
+                    video: Fidelity::Exact, audio: Fidelity::Exact,
+                    audio_track: TrackChoice::Selected(42), subtitle_track: TrackChoice::Unspecified },
+                certified_dolby_vision: self.dovi,
+                expires_at: if self.expired { Instant::now() - std::time::Duration::from_secs(1) }
+                    else { Instant::now() + std::time::Duration::from_secs(5) } })
+        }
+    }
+
+    #[test]
+    fn dolby_vision_needs_an_exact_source_certificate() {
+        let dovi = plx_data::metadata::Dovi { present: true, profile: 7, el_present: true,
+            ..plx_data::metadata::Dovi::NONE };
+        let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+            pause: true, seek: true, audio_track: true, subtitle_track: false,
+            audio_off: false, subtitle_off: false };
+        let evidence = ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false };
+        let request = || OriginalRequest { selection: SourceSelection {
+                server: plx_plex::plex::ServerId::from_raw(1), part_id: 4, audio_sid: 42,
+                subtitle_sid: 0, audio_contract: plx_plex::plex::AudioEnhancements::NONE },
+            source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
+            video_codec: "hevc".to_owned(), dolby_vision: dovi, audio_codec: "ac3".to_owned(),
+            source_kbps: Some(4000), raster: Some((1920, 1080)),
+            requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
+            quality_allows_original: true, link_allows_original: true, auto_allows_original: true,
+            requires_subtitle_burn: false, preview: false };
+        let off = OffFrame::for_test();
+        let unknown = ResolvePort::new(evidence, Arc::new(Certified { dovi: None, expired: false }));
+        assert!(matches!(unknown.qualify(&off, request()), Verdict::Unknown));
+        let certified = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi), expired: false }));
+        assert!(matches!(certified.qualify(&off, request()), Verdict::Known(_)));
+        let expired = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi), expired: true }));
+        assert!(matches!(expired.qualify(&off, request()), Verdict::Unknown));
+    }
+}
