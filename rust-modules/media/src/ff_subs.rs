@@ -13,6 +13,7 @@
 use super::*;
 use crate::player::text_ass::TextDialect;
 use plx_media_codecs::subtitle_extract::ImageDecoders;
+#[cfg(test)]
 pub(super) use plx_media_codecs::subtitle::open_sub_decoder;
 /// How a subtitle stream's payload turns into displayable text — classified by the codec's
 /// name (avcodec_get_name is already linked, so we avoid hardcoding the n3.3 subtitle codec-id

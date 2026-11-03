@@ -223,11 +223,9 @@ impl ReadSeek for SideIo {
         if self.stop.is_set() { return ReadOutcome::End; }
         if dst.is_empty() { return ReadOutcome::Bytes(0); }
         let n = c_int::try_from(dst.len()).unwrap_or(c_int::MAX);
-        let r = unsafe {
-            match &mut self.src {
-                SideSrc::Socket { hs, .. } => plx_net::stream::http_read(&mut **hs, dst.as_mut_ptr(), n),
-                SideSrc::Curl(cs) => cs.read(dst),
-            }
+        let r = match &mut self.src {
+            SideSrc::Socket { hs, .. } => plx_net::stream::http_read(&mut **hs, dst.as_mut_ptr(), n),
+            SideSrc::Curl(cs) => cs.read(dst),
         };
         if self.stop.is_set() { ReadOutcome::End }
         else if r < 0 { ReadOutcome::Failed }
