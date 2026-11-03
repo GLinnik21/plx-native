@@ -700,3 +700,29 @@ pub(super) fn finish_feed_teardown(
         crate::route::finish_engine_teardown();
     }
 }
+
+#[cfg(test)]
+mod readout_stop_tests {
+    use super::*;
+
+    #[test]
+    fn logical_stop_retains_failure_evidence_until_next_attempt() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
+        assert!(ps.ingest_attempt_facts(attempt, super::super::attempt_view::AttemptFacts {
+            started: Some(true),
+            runtime_failure: Some(super::super::attempt_view::RuntimeFailure::TvPipeline),
+            ..Default::default()
+        }));
+
+        mark_attempt_stopped(&mut ps);
+        assert_eq!(ps.attempt_view().facts().started, Some(false));
+        assert!(matches!(ps.attempt_view().facts().runtime_failure,
+            Some(super::super::attempt_view::RuntimeFailure::TvPipeline)));
+
+        ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
+        assert_eq!(ps.attempt_view().facts().started, None);
+        assert!(ps.attempt_view().facts().runtime_failure.is_none());
+    }
+}
