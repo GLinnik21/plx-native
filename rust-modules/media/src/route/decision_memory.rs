@@ -347,7 +347,11 @@ pub fn commit_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Op
 /// projections without scheduling a Feed demux reload or a server conversion.
 #[cfg(feature = "play-uri")]
 pub fn confirm_uri_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Option<AudioMemo>) {
+    let sid = audio.sid;
     ps.cur_audio = Some(audio);
+    if let Some(source) = ps.source_selection.as_mut() {
+        source.audio_sid = sid;
+    }
     ps.selection_known = true;
     ps.cur_memory_note = false;
     queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
@@ -363,6 +367,9 @@ pub fn confirm_uri_subtitle_pick(ps: &mut PlaybackSession, ordinal: i32, stream_
         ps.sub_mode == SubMode::ForcedOnly);
     ps.sub_mode = SubMode::of_stream(stream_id);
     ps.cur_sub_sid = stream_id;
+    if let Some(source) = ps.source_selection.as_mut() {
+        source.subtitle_sid = stream_id;
+    }
     ps.cur_sub_ordinal = ordinal;
     ps.cur_sub_sidecar = false;
     ps.cur_sub_client_drawable = false;
