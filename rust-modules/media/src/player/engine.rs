@@ -1221,15 +1221,13 @@ pub(super) fn native_slot_available() -> Option<()> {
 
 /// Construct one physical feed from facts and the route owner's addressed attempt. The request
 /// has already frozen its URL, codec declaration, playback rate, and trace identity.
-pub(super) fn open_prepared(
+pub(super) fn prepare_native_open(
     pa: &mut super::adapter::PlayerAdapter,
-    route_attempt: crate::route::RouteStartAttempt,
     mut open: Option<FeedOpenRequest>,
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
     session_rate: i32,
-    trace_generation: u32,
-) -> Result<(), crate::route::RouteStartResult> {
+) -> Result<NativePrepared, crate::route::RouteStartResult> {
     let stream = sample.is_none();
     let sample = sample.map(|sample| Box::new(SampleBuf {
         data: sample.data, au: sample.au, next: 0, loops: 0,
@@ -1450,6 +1448,29 @@ pub(super) fn open_prepared(
         }
     };
 
+    Ok(NativePrepared { open, sample, stream, payload_c, audio_lead, clock_start, native_start })
+}
+
+/// One physical Load declaration and its native callback guards, prepared before the route owner
+/// mints an attempt. Dropping it on a superseded route retracts both guards automatically.
+pub(super) struct NativePrepared {
+    open: Option<FeedOpenRequest>,
+    sample: Option<Box<SampleBuf>>,
+    stream: bool,
+    payload_c: std::ffi::CString,
+    audio_lead: PcmLead,
+    clock_start: ClockStartGuard,
+    native_start: NativeSessionStartGuard,
+}
+
+/// Launch workers against the route's exact attempt; this owns no route/session policy.
+pub(super) fn launch_native_open(
+    pa: &mut super::adapter::PlayerAdapter,
+    route_attempt: crate::route::RouteStartAttempt,
+    trace_generation: u32,
+    prepared: NativePrepared,
+) -> Result<(), crate::route::RouteStartResult> {
+    let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start } = prepared;
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aqv_box: Option<Box<AuQueue>> = None;
