@@ -194,7 +194,7 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
     assert!(plx_net::net::global_init());
     let all = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
-        audio_off: true, subtitle_off: true };
+        audio_off: false, subtitle_off: false };
     let evidence = crate::route::uri_preflight::ProductEvidence { display_exported: true,
         binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
         certified: all, preview_rectangle: false };
@@ -233,7 +233,7 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
     assert!(plx_net::net::global_init());
     let all = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
-        audio_off: true, subtitle_off: true };
+        audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
         crate::route::uri_preflight::ProductEvidence { display_exported: true,
             binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
@@ -269,7 +269,7 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
     assert!(plx_net::net::global_init());
     let callable = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
-        audio_off: true, subtitle_off: true };
+        audio_off: false, subtitle_off: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
         crate::route::uri_preflight::ProductEvidence { display_exported: true,
             binding: Binding::Exported { canvas: (1920, 1080) }, callable,
