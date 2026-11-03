@@ -1,7 +1,7 @@
 //! Cancellable, owned byte input for the optional subtitle demux. The caller owns the
 //! transport and its cancellation wake; this crate owns only the FFmpeg AVIO callback state.
 //! No URL, route, network client, or player registry is visible here.
-use crate::ffi::{self, AVDictionary, AVFormatContext, AVIOContext, AVPacket, AVStream, AVERROR_EOF, AVERROR_IO};
+use crate::ffi::{self, AVCodecContext, AVDictionary, AVFormatContext, AVIOContext, AVPacket, AVStream, AVERROR_EOF, AVERROR_IO};
 use std::ffi::c_void;
 use std::os::raw::c_int;
 use std::sync::Arc;
@@ -90,6 +90,51 @@ pub unsafe fn collect_manifest(
         fonts.push(EmbeddedFont { name, data: data.into() });
     }
     Manifest { headers, fonts, font_bytes }
+}
+
+/// Software image-subtitle decoders owned by this codec job, one slot per file-order subtitle
+/// track. Text tracks have a null slot. Close before the format context that supplied params.
+pub struct ImageDecoders {
+    contexts: Vec<*mut AVCodecContext>,
+}
+
+impl ImageDecoders {
+    pub fn empty() -> Self { Self { contexts: Vec::new() } }
+
+    /// # Safety
+    /// `streams` must be the live format's full stream table, and all indices must be valid.
+    pub unsafe fn open(streams: *mut *mut AVStream, tracks: &[(c_int, bool)]) -> Self {
+        let mut contexts = Vec::with_capacity(tracks.len());
+        for (si, image) in tracks {
+            if *image {
+                contexts.push(crate::subtitle::open_sub_decoder(ffi::stream_codecpar(*streams.add(*si as usize))));
+            } else {
+                contexts.push(std::ptr::null_mut());
+            }
+        }
+        Self { contexts }
+    }
+
+    pub fn context(&self, pos: usize) -> *mut AVCodecContext { self.contexts[pos] }
+
+    /// # Safety
+    /// `pkt` must be live for the call and belong to the decoder at `pos`.
+    pub unsafe fn decode(&self, pos: usize, pkt: *mut AVPacket, budget: usize) -> Option<crate::subtitle::BitmapDisplay> {
+        let dec = self.contexts[pos];
+        if dec.is_null() { None } else { crate::subtitle::decode_bitmap(dec, pkt, budget) }
+    }
+
+    pub unsafe fn close(&mut self) {
+        for dec in &mut self.contexts {
+            if !dec.is_null() { ffi::avcodec_free_context(dec); }
+        }
+    }
+}
+
+impl Drop for ImageDecoders {
+    fn drop(&mut self) {
+        unsafe { self.close() }
+    }
 }
 
 /// One read from the caller's owned source. Payload bytes are never retained by AVIO.

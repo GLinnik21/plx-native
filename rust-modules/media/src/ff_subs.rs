@@ -12,6 +12,7 @@
 
 use super::*;
 use crate::player::text_ass::TextDialect;
+use plx_media_codecs::subtitle_extract::ImageDecoders;
 pub(super) use plx_media_codecs::subtitle::open_sub_decoder;
 /// How a subtitle stream's payload turns into displayable text — classified by the codec's
 /// name (avcodec_get_name is already linked, so we avoid hardcoding the n3.3 subtitle codec-id
@@ -46,7 +47,11 @@ unsafe fn decode_bitmap(
 ) -> Option<SubCue<'static>> {
     let display = plx_media_codecs::subtitle::decode_bitmap(dec, pkt, crate::player::SUB_BITMAP_BUDGET)?;
     let pts = pts_ns(pkt, st);
-    Some(match display {
+    Some(bitmap_cue(display, track, pts))
+}
+
+fn bitmap_cue(display: plx_media_codecs::subtitle::BitmapDisplay, track: c_int, pts: i64) -> SubCue<'static> {
+    match display {
         plx_media_codecs::subtitle::BitmapDisplay::Clear => SubCue::BitmapClear { track, pts },
         plx_media_codecs::subtitle::BitmapDisplay::Set { cw, ch, rects, total_rects } => {
             SubCue::BitmapSet {
@@ -57,7 +62,7 @@ unsafe fn decode_bitmap(
                 total_rects,
             }
         }
-    })
+    }
 }
 
 /// Player-store adapter for the shared, generic byte-budget selector.
@@ -174,6 +179,7 @@ pub(super) struct SubTracks {
     /// (ffmpeg stream index, kind, decoder ctx). The decoder is non-null only for Bitmap tracks
     /// (PGS/VobSub/DVB), which are software-decoded to pixels; text tracks carry a null ctx.
     streams: Vec<(c_int, SubKind, *mut AVCodecContext)>,
+    decoders: ImageDecoders,
     /// Per track (same order as `streams`): the language-derived text charset, fixed by the first
     /// non-UTF-8 packet (`player::sub_charset`).
     charsets: Vec<crate::player::sub_charset::TrackCharset>,
@@ -185,29 +191,27 @@ impl SubTracks {
         if fmt.is_null() || streams.is_null() {
             return Self::empty();
         }
-        let mut out: Vec<(c_int, SubKind, *mut AVCodecContext)> = Vec::new();
+        let mut kinds: Vec<(c_int, SubKind)> = Vec::new();
         let mut charsets = Vec::new();
         for i in 0..(*fmt).nb_streams {
             let cp = stream_codecpar(*streams.add(i as usize));
             if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
                 let k = sub_kind((*cp).codec_id);
-                let dec = if k == SubKind::Bitmap {
-                    open_sub_decoder(cp)
-                } else {
-                    std::ptr::null_mut()
-                };
-                out.push((i as c_int, k, dec));
+                kinds.push((i as c_int, k));
                 charsets.push(crate::player::sub_charset::TrackCharset::new(
                     stream_language(*streams.add(i as usize)).as_deref(),
                 ));
             }
         }
-        SubTracks { streams: out, charsets }
+        let specs: Vec<(c_int, bool)> = kinds.iter().map(|(si, k)| (*si, *k == SubKind::Bitmap)).collect();
+        let decoders = ImageDecoders::open(streams, &specs);
+        let streams = kinds.into_iter().enumerate().map(|(pos, (si, kind))| (si, kind, decoders.context(pos))).collect();
+        SubTracks { streams, decoders, charsets }
     }
 
     /// No tracks: what the main demuxer holds while a side reader owns the subtitles.
     pub(super) fn empty() -> Self {
-        SubTracks { streams: Vec::new(), charsets: Vec::new() }
+        SubTracks { streams: Vec::new(), decoders: ImageDecoders::empty(), charsets: Vec::new() }
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -261,10 +265,11 @@ impl SubTracks {
         pkt: *mut AVPacket,
         st: *mut AVStream,
     ) -> Option<SubCue<'p>> {
-        let (_, kind, dec) = self.streams[pos];
+        let (_, kind, _) = self.streams[pos];
         if kind == SubKind::Bitmap {
-            if crate::player::desired_sub_idx() >= 0 && !dec.is_null() {
-                return decode_bitmap(dec, pkt, pos as c_int, st);
+            if crate::player::desired_sub_idx() >= 0 {
+                let display = self.decoders.decode(pos, pkt, crate::player::SUB_BITMAP_BUDGET)?;
+                return Some(bitmap_cue(display, pos as c_int, pts_ns(pkt, st)));
             }
             return None;
         }
@@ -303,11 +308,8 @@ impl SubTracks {
 
     /// Free every image decoder (they are reopened fresh by the next [`Self::open`]).
     pub(super) unsafe fn close(&mut self) {
-        for (_, _, dec) in self.streams.iter_mut() {
-            if !dec.is_null() {
-                avcodec_free_context(dec); // frees + nulls
-            }
-        }
+        self.decoders.close();
+        for (_, _, dec) in self.streams.iter_mut() { *dec = std::ptr::null_mut(); }
     }
 }
 
