@@ -299,6 +299,11 @@ pub(crate) struct FinalCandidateGrade {
     pub(crate) disposition: HlsCandidateDisposition,
 }
 
+pub(crate) struct CandidateBudget {
+    pub(crate) media_deadline: Option<std::time::Duration>,
+    pub(crate) yields_to_rebuffer: bool,
+}
+
 impl Coordinator {
     pub(crate) fn start(start: Start, pin: Option<abr::Rung>) -> Self {
         let Start { control, ticket } = start;
@@ -337,8 +342,7 @@ impl Coordinator {
     pub(crate) fn current(&self) -> abr::Rung { self.controller.current() }
     pub(crate) fn delivery(&self) -> abr::CapacityEstimate { self.controller.delivery() }
     pub(crate) fn prime_runway_ms(&self) -> Option<i64> { self.controller.prime_runway_ms() }
-    pub(crate) fn worst_overhead_us(&self) -> u64 { self.controller.worst_overhead_us() }
-    pub(crate) fn candidate_wire_kbps(&self, rung: abr::Rung) -> u32 {
+    fn candidate_wire_kbps(&self, rung: abr::Rung) -> u32 {
         self.controller.catalog().candidate(rung).expected_wire_kbps
     }
     pub(crate) fn pending_reserve_policy(&self, proposal: abr::Proposal) -> abr::ReservePolicy {
@@ -414,6 +418,28 @@ impl Coordinator {
         FinalCandidateGrade {
             raster_ready, quality_improves,
             disposition: hls_candidate_disposition(raster_ready, quality_improves, verdict),
+        }
+    }
+    pub(crate) fn candidate_budget(
+        &self, proposal: abr::Proposal, reserve_policy: abr::ReservePolicy,
+        duration: std::time::Duration, reserve: std::time::Duration,
+        internally_held: bool,
+    ) -> CandidateBudget {
+        let delivery = self.controller.delivery();
+        let predicted = abr::predicted_transfer(
+            self.candidate_wire_kbps(proposal.rung), duration,
+            delivery.conservative_kbps(), delivery.uncertainty_pm,
+        );
+        let warmup = abr::candidate_warmup_budget(
+            proposal, duration, reserve, predicted,
+            std::time::Duration::from_micros(self.controller.worst_overhead_us()),
+        );
+        CandidateBudget {
+            media_deadline: abr::candidate_media_reserve_deadline(
+                proposal, reserve_policy, internally_held, warmup,
+            ),
+            yields_to_rebuffer: proposal.direction == abr::Direction::Down
+                && proposal.rung.at_floor(),
         }
     }
     pub(crate) fn abandon(&self, encoder: &str) { self.control.abandon(encoder); }

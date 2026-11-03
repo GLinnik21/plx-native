@@ -6360,47 +6360,24 @@ fn hls_demux(
             .and_then(ReserveDeadlineState::remaining)
             .unwrap_or_else(|| crate::abr::reserve_as_budget(reserve_ms));
         // The floor is a DOWNSHIFT's only protection against the reserve it is trying to refill:
-        // see `candidate_warmup_budget`. Both terms are read here, at the transaction, so the
-        // prediction describes the rung actually being primed against the capacity actually
-        // measured — `expected_wire_kbps` is the catalog's observed output for the target, not its
-        // request ceiling, and `conservative_kbps` comes only from completed segments.
-        let delivery = state.delivery();
-        let predicted = crate::abr::predicted_transfer(
-            state.candidate_wire_kbps(proposal.rung),
-            candidate_segment.duration,
-            delivery.conservative_kbps(),
-            delivery.uncertainty_pm,
-        );
-        let warmup_budget = crate::abr::candidate_warmup_budget(
-            proposal,
-            candidate_segment.duration,
-            reserve,
-            predicted,
-            // What a segment on this playback costs BEFORE any of its bytes move. `predicted` is
-            // `bits / rate` and pays for the body read only; a warm-up also has to open, request
-            // and probe, and on a fresh candidate session those are dearer than the steady-state
-            // figure this reports.
-            std::time::Duration::from_micros(state.worst_overhead_us()),
-        );
-        let media_budget = crate::abr::candidate_media_reserve_deadline(
-            proposal,
-            reserve_policy,
+        // see `candidate_warmup_budget`. The coordinator receives the transaction's current
+        // reserve and internally held clock, so its prediction uses the actual candidate and
+        // completed delivery evidence instead of the request ceiling.
+        let budget = state.candidate_budget(
+            proposal, reserve_policy, candidate_segment.duration, reserve,
             SHARED.hls_rebuffering.load(Ordering::Acquire),
-            warmup_budget,
         );
-        if let Some(media_budget) = media_budget {
+        if let Some(media_budget) = budget.media_deadline {
             tx.mark_warmup_deadline(media_budget);
         } else {
             crate::player::log(
                 "abr: terminal floor recovery keeps the only candidate response alive",
             );
         }
-        let deadline_yields_to_rebuffer =
-            proposal.direction == crate::abr::Direction::Down && proposal.rung.at_floor();
         let candidate_deadline = candidate_reserve_deadline(
             exploration_reserve,
-            media_budget,
-            deadline_yields_to_rebuffer,
+            budget.media_deadline,
+            budget.yields_to_rebuffer,
             reserve_started_ns,
             proposal.direction,
         );
