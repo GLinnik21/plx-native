@@ -186,8 +186,11 @@ fn pdf_proposal_more_opens_the_on_deck_episode_even_outside_the_loaded_season() 
     d.request(MachineId::Nav, NavOp::Root(AppArg::Content(ContentArg::Detail { sid, rk: "show".into() })));
     for now in 0..6 { d.frame_with(&mut rig, tick(now), Vec::new(), Vec::new(), &mut NoTap, false); }
     // The screen owns its element IDs (Go to Show and More are independent controls).
-    let arg = (0..4096u32).find_map(|elem| answers(&d, &rig, elem)
-        .filter(|arg| arg.rk == "on-deck")).expect("More opens the on-deck episode's menu");
+    let entry = d.nav.top_page().unwrap().id;
+    let arg = (0..4096u32).find_map(|elem| {
+        let ret = ReturnState { focus: Some(FocusKey { entry, elem }), ..Default::default() };
+        rig.content_menu_arg(&d, entry, &ret).filter(|arg| arg.rk == "on-deck")
+    }).expect("More opens the on-deck episode's menu");
     assert_eq!(arg.rk, "on-deck");
     assert!(matches!(arg.kind, ItemMenuKind::Episode { mark: plx_ui::widgets::PosterMark::InProgress, .. }));
     assert!(!arg.loaded_episode, "the on-deck item uses the addressed fetch path, independent of the season window");
