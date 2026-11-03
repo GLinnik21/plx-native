@@ -389,6 +389,30 @@ pub trait AdaptiveSession: Send {
     ) -> AdaptiveProgress;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalQuantum {
+    pub bytes: u64,
+    pub active_us: u64,
+    pub buffered_ms: Option<i64>,
+    pub remaining_ms: Option<i64>,
+    pub paused: bool,
+    pub completed_pause_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalProgress { Continue, Published, Retired }
+
+/// Progressive Original's watchdog and route ticket. The physical feed only
+/// reports completed byte and buffer facts, plus the late playhead sampler
+/// used at the route publication boundary.
+pub trait OriginalSession: Send {
+    fn source_kbps(&self) -> u32;
+    fn begin_on_worker(&mut self);
+    fn seek(&mut self, bytes: u64, active_us: u64) -> bool;
+    fn observe(&mut self, quantum: OriginalQuantum, position_ns: fn() -> i64)
+        -> OriginalProgress;
+}
+
 /// The feed worker's physical clock fence. It is armed before candidate AUs
 /// enter the queue and settled only after the queued route has been published
 /// and its cursor promoted. Dropping an unsettled fence leaves teardown to

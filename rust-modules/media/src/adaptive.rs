@@ -6,7 +6,7 @@ use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
     ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
-    RoundId, SeedReadout, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
+    OriginalProgress, OriginalQuantum, OriginalSession, RoundId, SeedReadout, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
 use std::sync::atomic::Ordering;
@@ -309,6 +309,107 @@ impl OriginalCoordinator {
             route::AutomaticIntentResult::Busy => OriginalFallbackResult::Busy,
             route::AutomaticIntentResult::Stale => OriginalFallbackResult::RouteMoved,
         }
+    }
+}
+
+struct ProgressiveOriginalSession {
+    start: Option<OriginalStart>,
+    coordinator: Option<OriginalCoordinator>,
+    source_kbps: u32,
+    since: Option<std::time::Instant>,
+}
+
+/// Capture the progressive route owner without reading time or player state.
+/// The existing feed worker starts its watchdog clock after the first source
+/// declaration and before opening the progressive URL.
+pub fn boxed_original_session(start: OriginalStart) -> Box<dyn OriginalSession> {
+    let source_kbps = start.source_kbps();
+    Box::new(ProgressiveOriginalSession {
+        start: Some(start), coordinator: None, source_kbps, since: None,
+    })
+}
+
+impl OriginalSession for ProgressiveOriginalSession {
+    fn source_kbps(&self) -> u32 { self.source_kbps }
+
+    fn begin_on_worker(&mut self) {
+        if self.coordinator.is_some() { return; }
+        self.coordinator = Some(self.start.take()
+            .expect("an uninitialized Original owner retains its route").start());
+        self.since = Some(std::time::Instant::now());
+    }
+
+    fn seek(&mut self, bytes: u64, active_us: u64) -> bool {
+        self.begin_on_worker();
+        let refreshed = self.coordinator.as_mut()
+            .expect("Original worker owns its controller").seek(bytes, active_us);
+        if refreshed {
+            let shared = &crate::player::SHARED;
+            shared.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+            shared.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+            shared.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+            self.since = Some(std::time::Instant::now());
+        }
+        refreshed
+    }
+
+    fn observe(
+        &mut self, quantum: OriginalQuantum, position_ns: fn() -> i64,
+    ) -> OriginalProgress {
+        self.begin_on_worker();
+        let watch = self.coordinator.as_mut()
+            .expect("Original worker owns its controller");
+        if let Some(elapsed_ms) = quantum.completed_pause_ms {
+            watch.on_resume(elapsed_ms);
+        }
+        if quantum.paused { return OriginalProgress::Continue; }
+        let Some(remaining_ms) = quantum.remaining_ms else {
+            return OriginalProgress::Continue;
+        };
+        let now_ms = self.since.as_ref()
+            .expect("Original worker owns its clock").elapsed().as_millis() as u64;
+        let Some(observation) = watch.observe(
+            quantum.bytes, quantum.active_us, quantum.buffered_ms,
+            remaining_ms, now_ms,
+        ) else { return OriginalProgress::Continue; };
+        let shared = &crate::player::SHARED;
+        shared.dg_abr_net_kbps.store(i64::from(observation.measured_kbps), Ordering::Relaxed);
+        shared.dg_abr_buffer_ms.store(observation.buffered_ms, Ordering::Relaxed);
+        shared.dg_abr_unsafe_deficit_ms.store(observation.unsafe_deficit_ms, Ordering::Relaxed);
+        let rel = Ordering::Relaxed;
+        let horizon = observation.horizon_secs.map(i64::from).unwrap_or(-1);
+        shared.dg_abr_slope_ms_per_s.store(observation.slope_ms_per_s, rel);
+        shared.dg_abr_starve_secs.store(horizon, rel);
+        shared.dg_abr_safe_kbps.store(i64::from(observation.conservative_kbps), rel);
+        if let Some(reason) = observation.fallback {
+            crate::player::log(&format!(
+                "auto: Original -> HLS {reason:?} measured={}kbps safe={}kbps need={}kbps buf={}ms slope={}ms/s starve={} held={}ms target={}kbps",
+                observation.measured_kbps,
+                observation.conservative_kbps,
+                observation.requirement_kbps,
+                observation.buffered_ms,
+                observation.slope_ms_per_s,
+                observation.horizon_secs.map(|s| s.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                observation.unsafe_deficit_ms,
+                observation.target.map(|r| r.kbps()).unwrap_or(0),
+            ));
+            match watch.request_hls_fallback(
+                observation.conservative_kbps.max(1), position_ns(),
+            ) {
+                OriginalFallbackResult::Published => return OriginalProgress::Published,
+                OriginalFallbackResult::Busy => crate::player::log(
+                    "auto: Original fallback retained behind another route transition",
+                ),
+                OriginalFallbackResult::RouteMoved => {
+                    crate::player::log(
+                        "auto: discarded Original fallback from a superseded worker intent",
+                    );
+                    return OriginalProgress::Retired;
+                }
+            }
+        }
+        OriginalProgress::Continue
     }
 }
 
