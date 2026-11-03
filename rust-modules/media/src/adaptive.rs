@@ -822,18 +822,18 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
     /// physical cursor/timeline transfer is synchronous and local, between the
     /// queue ACK and the short guarded route/controller publication. A failed
     /// queue or publication is terminal and owns candidate cleanup here.
-    pub(crate) fn queue_publish<F: CandidateFencePort>(
-        &mut self, coordinator: &mut Coordinator, fence_port: &mut F,
-        gate: &mut dyn PublicationGate, automatic_token: u64,
+    pub(crate) fn queue_publish(
+        &mut self, coordinator: &mut Coordinator,
+        automatic_token: u64,
         primed: &route::PrimedHls, proposal: abr::Proposal,
         sample: abr::SegmentSample, variant: abr::ObservedHlsVariant,
         now_ms: impl FnOnce() -> u64,
         mut on_trace: impl FnMut(QueueTrace),
-    ) -> QueueAttempt<F::Fence, F::Error>
-    where P: CandidateMediaPort,
+    ) -> QueueAttempt<P::Fence, P::Error>
+    where P: CandidateMediaPort + CandidateFencePort,
     {
         on_trace(QueueTrace::Decided);
-        let fence = match fence_port.arm(automatic_token) {
+        let fence = match self.port.arm(automatic_token) {
             Ok(fence) => fence,
             Err(error) => {
                 coordinator.abandon(&primed.encoder_session);
@@ -864,7 +864,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
             return QueueAttempt::Failed("adaptive staged timeline protocol violation");
         }
         let publication = coordinator.publish_queued_candidate(
-            self.protocol, gate, primed, proposal, sample, variant, now_ms(),
+            self.protocol, self.port.publication_gate(), primed, proposal, sample, variant, now_ms(),
         );
         match publication {
             CandidatePublication::Active { previous } => QueueAttempt::Published { previous, fence },

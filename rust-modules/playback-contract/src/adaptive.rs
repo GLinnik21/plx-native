@@ -265,6 +265,7 @@ pub trait CandidateMediaPort: FeedPort<Locator = String> {
     fn candidate_declared_bps(&self) -> Option<u64>;
     fn stage_queued_timeline(&mut self) -> bool;
     fn promote_candidate(&mut self) -> bool;
+    fn publication_gate(&mut self) -> &mut dyn PublicationGate;
 }
 
 /// The feed worker's physical clock fence. It is armed before candidate AUs

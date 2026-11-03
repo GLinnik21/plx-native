@@ -4232,6 +4232,7 @@ struct HlsRoundPort<'a> {
     pause_cursor: &'a mut crate::player::UserPauseCursor,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
+    publication_gate: AqPublicationPort,
     net: &'a mut HlsNet,
     acodec: &'a str,
     current: Option<ActiveMedia>,
@@ -4450,6 +4451,10 @@ impl CandidateMediaPort for HlsRoundPort<'_> {
         *self.prefetched = None;
         *self.cursor = candidate;
         true
+    }
+
+    fn publication_gate(&mut self) -> &mut dyn plx_playback_contract::adaptive::PublicationGate {
+        &mut self.publication_gate
     }
 }
 
@@ -4981,9 +4986,7 @@ impl HlsCandidateTransition {
     }
 }
 
-struct HlsCandidateFencePort;
-
-impl CandidateFencePort for HlsCandidateFencePort {
+impl CandidateFencePort for HlsRoundPort<'_> {
     type Fence = HlsCandidateTransition;
     type Error = HlsExit;
 
@@ -5540,7 +5543,8 @@ fn hls_demux(
             round: round_id, trial: None, origin,
             cursor: &mut cursor, timeline: &mut timeline,
             prefetched: &mut prefetched, pause_cursor: &mut pause_cursor,
-            aq, aqa, net: &mut net, acodec, current: None, reserve: None,
+            aq, aqa, publication_gate: AqPublicationPort(aq),
+            net: &mut net, acodec, current: None, reserve: None,
             source: None, candidate: None, segment: None,
             candidate_timeline: None, clock: None, output: None, staged: Vec::new(),
         };
@@ -5718,11 +5722,10 @@ fn hls_demux(
         // The route must remain old until every candidate AU which precedes the switch is safely
         // queued. Otherwise teardown can abort a blocked feed after publication and leave a live
         // route naming media the playback pipeline never received.
-        let mut fence_port = HlsCandidateFencePort;
         // A queue ACK transfers only the local cursor/timeline. The common owner
         // then enters the existing AQ abort gate for route/controller publication.
         let queued = runner.queue_publish(
-            state, &mut fence_port, &mut AqPublicationPort(aq), automatic_token,
+            state, automatic_token,
             &primed, proposal, sample, candidate_variant, || now_ms(),
             |event| match event {
                 adaptive::QueueTrace::Decided => tx.mark_decided(),
@@ -5782,7 +5785,7 @@ fn hls_demux(
         // All behavioral projections now name the candidate: controller, global route,
         // worker-local encoder/cursor, runway and recovery policy. Release both main-thread gates
         // before encoder cleanup, whose task-spawn fallback may perform synchronous network I/O.
-        fence_port.settle(fence);
+        physical.settle(fence);
         drop(_trial_reserve.take());
         state.retire(previous);
         // **`out=` is what was DECODED; the pair before it is the rung's bounding box.** They are
