@@ -1,0 +1,12 @@
+{
+  "package_format": "1.0",
+  "id": "com.plxnative.examples.palette",
+  "version": "1.0.0",
+  "name": "Palette",
+  "author": "PlxNative",
+  "license": "CC0-1.0",
+  "hud": {
+    "format": "1.0",
+    "entry": "hud.json"
+  }
+}

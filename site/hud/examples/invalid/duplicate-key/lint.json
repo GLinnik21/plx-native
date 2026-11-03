@@ -1,0 +1,88 @@
+{
+  "costs": [],
+  "file": "examples/invalid/duplicate-key",
+  "findings": [
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"anchor\": one of: bottom",
+      "message": "the required key `anchor` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    },
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"inset\": a spacing token or an integer number of px",
+      "message": "the required key `inset` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    },
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"x_inset\": a spacing token or an integer number of px",
+      "message": "the required key `x_inset` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    },
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"band\": one of: controls, block",
+      "message": "the required key `band` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    },
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"sections\": one of: modal, inline",
+      "message": "the required key `sections` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    },
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"block\": an array of at most 16 values",
+      "message": "the required key `block` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    },
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"up_next\": a `up_next` object",
+      "message": "the required key `up_next` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    },
+    {
+      "code": "HUD-E0101",
+      "file": "hud.json",
+      "hint": "keep one; the first is the one the app would read",
+      "message": "`layout` is written more than once",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-unique",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "70b1aaf7511d758515b54bcd924cc93ab752903c790a428a72c1e57cc90adb32",
+  "protocol": 1
+}
