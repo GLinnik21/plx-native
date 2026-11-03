@@ -16,7 +16,6 @@ use plx_playback_contract::demux::DemuxFault;
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
 pub use plx_media_codecs::Venc;
 
@@ -4377,7 +4376,7 @@ impl FeedPort for HlsRoundPort<'_> {
                 FeedObservation::BudgetSnapshot {
                     trial, buffered_ms: buffer, started_ns,
                     remaining: self.reserve.as_ref().and_then(ReserveDeadlineState::remaining),
-                    rebuffering: SHARED.hls_rebuffering.load(Ordering::Acquire),
+                    rebuffering: self.session.clock().rebuffering(),
                 }
             }
             FeedAction::PrimeDeadline { trial } => FeedObservation::PrimeDeadline {
@@ -4578,7 +4577,7 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
     }
 
     fn candidate_offset_micros(&self) -> Option<i64> {
-        SHARED.disp_base.load(Ordering::Relaxed).max(0)
+        self.session.clock().display_base_ns().max(0)
             .checked_add(self.timeline.end_ns()).map(|ns| ns / 1_000)
     }
 
