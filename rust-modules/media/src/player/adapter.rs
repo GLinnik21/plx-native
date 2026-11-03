@@ -278,6 +278,33 @@ impl PlayerAdapter {
         super::feed_pump::note_missing_era_callback(&mut self.feed);
     }
 
+    pub(super) fn stuck_seek_due(&mut self, now: u32, feed_allowed: bool,
+        route_flight: bool, budget_ms: u32) -> bool {
+        super::feed_pump::stuck_seek_due(&mut self.feed, now, feed_allowed, route_flight, budget_ms)
+    }
+
+    pub(super) fn retry_stuck_seek(&mut self, now: u32, target_ns: i64,
+        can_retry: bool) -> super::feed_pump::StuckSeekAction {
+        super::feed_pump::retry_stuck_seek(&mut self.feed, now, target_ns, can_retry)
+    }
+
+    pub(super) fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
+        super::feed_pump::pending_seek_ready(&self.feed, seek_reloads)
+    }
+    pub(super) fn prepare_seek_pause(&self) -> super::feed_pump::SeekPause {
+        super::feed_pump::prepare_seek_pause(&self.mt)
+    }
+    pub(super) fn begin_seek_discontinuity(&self) -> bool {
+        super::feed_pump::begin_seek_discontinuity(&self.feed)
+    }
+    pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
+        mode: super::SeekMode, coalesced: u32) {
+        super::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
+    }
+    pub(super) fn apply_inplace_seek_post(&mut self, target_ns: i64, now: u32) {
+        super::feed_pump::apply_inplace_seek_post(&mut self.feed, target_ns, now);
+    }
+
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
     /// the exclusive borrow — `start_bufferfeed`'s double-start guard only needs to ask.
     #[inline]
