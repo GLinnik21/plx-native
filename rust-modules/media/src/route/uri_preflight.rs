@@ -211,6 +211,10 @@ mod tests {
         let no_render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: None, expired: false }));
         assert!(matches!(no_render_proof.qualify(&off, subtitle_request()), Verdict::Unknown));
+        let wrong_codec = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
+            subtitle: Some(SourceSubtitle { codec: "vobsub".to_owned(), embedded: true }),
+            expired: false }));
+        assert!(matches!(wrong_codec.qualify(&off, subtitle_request()), Verdict::Unknown));
         let render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: Some(source_subtitle), expired: false }));
         assert!(matches!(render_proof.qualify(&off, subtitle_request()), Verdict::Known(_)));
