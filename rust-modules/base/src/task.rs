@@ -111,7 +111,7 @@ impl OffFrame {
 ///
 /// It gates the two things in `player/` that were main-thread-confined by comment only:
 ///
-/// * **the ACB/Starfish seam** — `player::ffi`'s wrappers. The raw `extern "C"` block is private
+/// * **the ACB/Starfish seam** — the platform sink's wrappers. The raw `extern "C"` block is private
 ///   to that module, so the token is the only way in. Bind order (`setMediaId` → `LOADED` →
 ///   `setMediaVideoData` → `setDisplayWindow` → `PLAYING`) is a sequence of calls with no
 ///   locking behind it; a second thread stepping into the middle of it corrupts the sink.

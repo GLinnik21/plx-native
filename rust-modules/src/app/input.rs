@@ -651,7 +651,7 @@ unsafe fn play_loaded_hero(
 ///
 /// Runs in the default feature set too: `menu_play_tick`'s landed arm reaches `start_playback` and
 /// the video sink, but `port.rs` installs `tv::sink::NoSink` under `cfg(test)`, so the sink a bare
-/// `cargo test --lib` meets answers every verb with nothing (`player::ffi` is compiled, and never reached).
+/// `cargo test --lib` meets answers every verb with nothing (the native sink is compiled, and never reached).
 #[cfg(test)]
 mod activate_card_tests {
     use super::*;
