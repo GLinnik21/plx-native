@@ -382,9 +382,10 @@ pub(super) fn start_bufferfeed_inner(
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { feed_start_rate(ps) } else { super::RATE_NORMAL };
+    let start_paused = feed_start_paused(ps);
     let trace_generation = crate::route::playback_trace_generation();
     let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(),
-        TX.paused.load(Ordering::Acquire), TX.seek_preroll_active(),
+        start_paused, TX.seek_preroll_active(),
         open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
@@ -419,7 +420,7 @@ pub(super) fn start_bufferfeed_inner(
             // Resume/seek rebasing is already encoded in the prepared physical source.
             initial: plx_playback_contract::InitialPlayback {
                 position: None,
-                paused: TX.paused.load(Ordering::Acquire),
+                paused: start_paused,
             },
         },
         if crate::route::is_preview(ps) {
@@ -450,6 +451,12 @@ pub(super) fn start_bufferfeed_inner(
 #[cfg(feature = "play-feed")]
 fn feed_start_rate(ps: &crate::route::PlaybackSession) -> i32 {
     super::session_rate_for(ps)
+}
+
+/// Capture one pause goal for both the physical hold and common Start intent.
+#[cfg(feature = "play-feed")]
+fn feed_start_paused(_ps: &crate::route::PlaybackSession) -> bool {
+    TX.paused.load(Ordering::Acquire)
 }
 
 
@@ -1494,5 +1501,28 @@ mod feed_start_controls_tests {
             "the accepted session rate must configure the next physical Feed Load");
         assert_eq!(SHARED.play_rate_permille.load(Ordering::Relaxed), 1500,
             "the physical payload preflight must see the same requested rate");
+    }
+
+    #[test]
+    fn a_reconfigured_feed_start_captures_the_viewer_pause_goal() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) { TX.commit_paused(self.0); }
+        }
+        let _restore = Restore(TX.paused.load(Ordering::Acquire));
+        let mut ps = crate::route::PlaybackSession::IDLE;
+
+        // The outgoing URI owned the viewer's Pause while the Feed mailbox was idle.
+        TX.commit_paused(false);
+        ps.set_reconfigure_pause_goal(true);
+        assert!(feed_start_paused(&ps),
+            "the native Load hold and InitialPlayback must both be Paused");
+
+        // An old Feed hold must not pause the newly requested Playing attempt.
+        TX.commit_paused(true);
+        ps.set_reconfigure_pause_goal(false);
+        assert!(!feed_start_paused(&ps),
+            "the new Feed attempt must not inherit an old physical Pause");
     }
 }
