@@ -3877,6 +3877,17 @@ fn hls_body_complete(declared_size: i64, delivered: i64) -> bool {
     declared_size < 0 || delivered >= declared_size
 }
 
+fn settle_hls_segment(
+    runtime: &mut AcquisitionRuntime,
+    error: HlsExit,
+    observer: &dyn DemuxObserver,
+) -> HlsExit {
+    let Some(expected) = observer.audio_expected() else {
+        return HlsExit::Aborted;
+    };
+    runtime.settle(error, expected && FEED_AUDIO.load(Ordering::Relaxed))
+}
+
 unsafe fn hls_demux_segment(
     segment: &crate::hls::Segment,
     auth: &crate::hls::InheritedAuth,
@@ -3896,8 +3907,6 @@ unsafe fn hls_demux_segment(
         .request_path(&segment.resource)
         .map_err(|_| HlsExit::Failed("segment credential rejected"))?;
     let request_started = runtime.request_started();
-    let audio_expected =
-        || SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed);
     let retry_budget = segment
         .duration
         .saturating_mul(3)
@@ -3916,11 +3925,14 @@ unsafe fn hls_demux_segment(
         if crate::aq::aq_is_aborted(aq) {
             return Err(HlsExit::Aborted);
         }
-        if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-            return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
+        if reserve_deadline.expire_if_due(
+            net.observer.rebuffering().ok_or(HlsExit::Aborted)?
+        ) {
+            return Err(settle_hls_segment(&mut runtime, HlsExit::PrimeExpired,
+                net.observer.as_ref()));
         }
         let attempt = std::time::Instant::now();
-        let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+        let rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
         let reserve_snapshot = reserve_deadline.active(rebuffering);
         let effective = transport_watchdog.effective(reserve_snapshot);
         runtime.enter(Phase::Opening);
@@ -3934,7 +3946,8 @@ unsafe fn hls_demux_segment(
         );
         // Every unsuccessful open is SETTLED by a fresh check before it is classified: a transport
         // deadline shorter than the checkpoint slice ends the wait without asking again.
-        let opened = opened.map_err(|error| runtime.settle(error, audio_expected()));
+        let opened = opened.map_err(|error| settle_hls_segment(&mut runtime, error,
+            net.observer.as_ref()));
         match opened {
             // A segment has no children, so where a redirect landed is of no further use.
             Ok((src, size, _landed)) => {
@@ -3946,7 +3959,7 @@ unsafe fn hls_demux_segment(
             // tick that established the internal hold. Re-open under the promoted policy; the
             // ordinary transport liveness bound remains, only the rollback deadline disappears.
             Err(HlsExit::PrimeExpired) => {
-                let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                let current_rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
                 let wake = observe_hls_deadline(
                     Some(&mut reserve_deadline),
                     effective,
@@ -3971,14 +3984,17 @@ unsafe fn hls_demux_segment(
                 if crate::aq::aq_is_aborted(aq) {
                     return Err(HlsExit::Aborted);
                 }
-                if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-                    return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
+                if reserve_deadline.expire_if_due(
+                    net.observer.rebuffering().ok_or(HlsExit::Aborted)?
+                ) {
+                    return Err(settle_hls_segment(&mut runtime, HlsExit::PrimeExpired,
+                        net.observer.as_ref()));
                 }
                 // Never sleep past the deadline. A fixed 250 ms wait against a deadline 40 ms away
                 // overshoots by 210 ms of reserve, every time, for no information — the poll after
                 // it can only be discarded.
                 let mut wait = std::time::Duration::from_millis(250);
-                let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                let rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
                 let reserve_snapshot = reserve_deadline.active(rebuffering);
                 let effective = transport_watchdog.effective(reserve_snapshot);
                 wait = wait.min(
@@ -3988,10 +4004,11 @@ unsafe fn hls_demux_segment(
                 );
                 runtime.enter(Phase::RetryWaiting);
                 let waited = hls_wait(aq, wait, Some(effective.at), &mut runtime)
-                    .map_err(|error| runtime.settle(error, audio_expected()));
+                    .map_err(|error| settle_hls_segment(&mut runtime, error,
+                        net.observer.as_ref()));
                 match waited {
                     Err(HlsExit::PrimeExpired) => {
-                        let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                        let current_rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
                         let wake = observe_hls_deadline(
                             Some(&mut reserve_deadline),
                             effective,
@@ -4161,7 +4178,7 @@ unsafe fn hls_demux_segment(
     if input
         .state
         .reserve_deadline
-        .expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire))
+        .expire_if_due(net.observer.rebuffering().ok_or(HlsExit::Aborted)?)
     {
         return Err(HlsExit::PrimeExpired);
     }

@@ -436,6 +436,7 @@ mod tests {
         SHARED.reset_session();
         let first_epoch = SHARED.begin_native_session().expect("first native epoch");
         let first = PlayerDemuxSession::capture(AttemptId::new(7, 1), first_epoch);
+        let observer = first.observer();
         SHARED.playpos_ns.store(11_000_000, Ordering::Release);
         SHARED.duration_ns.store(100_000_000, Ordering::Release);
         let position = first.clock().playpos_sampler();
@@ -456,6 +457,9 @@ mod tests {
         assert_eq!(buffer(), None);
         assert_eq!(remaining(), None);
         assert_eq!(sequence(), None);
+        assert_eq!(observer.rebuffering(), None);
+        assert_eq!(observer.audio_expected(), None);
+        assert_eq!(observer.duration_ns(), None);
         assert_eq!(next.clock().playpos_sampler()(), Some(22_000_000));
         assert_eq!(next.clock().remaining_playback_sampler()(), Some(178));
     }
