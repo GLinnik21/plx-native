@@ -45,6 +45,25 @@ pub struct Acquisition {
     pub declared_bps: u64,
 }
 
+/// Normalized content-time tails sampled by the physical feed. A missing audio
+/// tail remains absent even when audio is expected; it is not an empty buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferFact {
+    pub playback_ms: i64,
+    pub video_tail_ms: i64,
+    pub audio_tail_ms: Option<i64>,
+    pub audio_expected: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActiveQuantum {
+    pub acquisition: Acquisition,
+    pub buffer: BufferFact,
+    pub abandoned: bool,
+    pub delivered: bool,
+    pub now_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedFailure {
     Aborted, Deadline, Ended, NotReady, Parse, SourceMoved, Protocol, TimelineOverflow,

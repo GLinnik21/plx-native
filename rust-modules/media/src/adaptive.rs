@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock,
+    Acquisition, ActiveQuantum, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock,
     TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -304,6 +304,36 @@ pub(crate) fn candidate_sample(
     )
 }
 
+pub(crate) fn buffer_snapshot(fact: BufferFact) -> abr::BufferSnapshot {
+    abr::BufferSnapshot {
+        playback: abr::MediaTimeMs(fact.playback_ms),
+        video_tail: abr::MediaTimeMs(fact.video_tail_ms),
+        audio_tail: fact.audio_tail_ms.map(abr::MediaTimeMs),
+        audio_expected: fact.audio_expected,
+    }
+}
+
+pub(crate) fn active_sample(
+    acquisition: Acquisition, buffer: BufferFact, abandoned: bool,
+) -> Option<abr::SegmentSample> {
+    let duration_ms = u32::try_from(acquisition.duration.as_millis()).ok()?;
+    let obligation_ms = u32::try_from(
+        acquisition.duration.as_nanos().checked_add(999_999)? / 1_000_000,
+    ).ok()?;
+    let buffer = buffer_snapshot(buffer);
+    if abandoned {
+        abr::SegmentSample::abandoned_acquisition(
+            acquisition.bytes, acquisition.active_us, acquisition.total_us,
+            duration_ms, obligation_ms, buffer,
+        )
+    } else {
+        abr::SegmentSample::new_with_obligation(
+            acquisition.bytes, acquisition.active_us, acquisition.total_us,
+            duration_ms, obligation_ms, buffer,
+        )
+    }
+}
+
 /// A physical feed failure is a circumstance unless the candidate's reserve clock expired.
 pub(crate) fn reject_cause_for_feed_failure(failure: FeedFailure) -> abr::RejectCause {
     if failure == FeedFailure::Deadline {
@@ -454,6 +484,11 @@ pub(crate) struct RoundDecision {
     pub(crate) decision: abr::Decision,
     pub(crate) telemetry: abr::ControllerTelemetry,
     pub(crate) prime_runway_ms: Option<i64>,
+}
+
+pub(crate) struct ActiveQuantumResult {
+    pub(crate) sample: abr::SegmentSample,
+    pub(crate) cleanup_ready: bool,
 }
 
 pub(crate) struct Reconsideration {
@@ -931,6 +966,35 @@ impl Coordinator {
         } else {
             self.control.encoder_cleanup_ready()
         }
+    }
+
+    /// The first active-boundary step runs before the rollback playlist lookup.
+    /// That lookup may block, so cleanup and variant evidence use this earlier
+    /// measurement instant exactly as they did in the feed loop.
+    pub(crate) fn begin_active_quantum(
+        &mut self, acquisition: Acquisition, buffer: impl FnOnce() -> BufferFact,
+        abandoned: bool, delivered: bool, now_ms: u64,
+    ) -> Option<ActiveQuantumResult> {
+        self.advance_to(now_ms);
+        let quantum = ActiveQuantum {
+            acquisition, buffer: buffer(), abandoned, delivered, now_ms,
+        };
+        let sample = active_sample(
+            quantum.acquisition, quantum.buffer, quantum.abandoned,
+        )?;
+        if quantum.delivered {
+            if let Some(variant) = abr::ObservedHlsVariant::new(
+                quantum.acquisition.declared_bps,
+                quantum.acquisition.width,
+                quantum.acquisition.height,
+            ) {
+                self.observe_active_variant(variant, sample.network_kbps());
+            }
+        }
+        let cleanup_ready = self.encoder_cleanup_ready(
+            quantum.delivered && sample.completed(),
+        );
+        Some(ActiveQuantumResult { sample, cleanup_ready })
     }
 
     pub(crate) fn on_resume(&mut self, elapsed_ms: u64) {

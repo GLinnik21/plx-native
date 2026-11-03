@@ -6,7 +6,7 @@
 use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
-use plx_playback_contract::adaptive::{Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -4348,15 +4348,7 @@ impl HlsTrialPort<'_> {
             }
         };
         timeline.commit(clock);
-        let acquisition = Acquisition {
-            bytes: output.transfer.bytes,
-            active_us: output.transfer.active_us,
-            total_us: output.transfer.total_us,
-            duration: segment.duration,
-            width: output.video_width,
-            height: output.video_height,
-            declared_bps: candidate.declared_bps,
-        };
+        let acquisition = hls_acquisition(&output, segment.duration, candidate.declared_bps);
         self.timeline = Some(timeline);
         self.clock = Some(clock);
         self.output = Some(output);
@@ -4543,10 +4535,10 @@ fn hls_cursor_next_duration_ms(
     Ok(Some(duration_ms))
 }
 
-fn hls_buffer_snapshot_at(
+fn hls_buffer_fact_at(
     output: Option<&HlsSegmentOutput>,
     playhead_ns: i64,
-) -> crate::abr::BufferSnapshot {
+) -> BufferFact {
     let mut video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
     let mut audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
     let mut audio_expected = audio >= 0;
@@ -4561,14 +4553,20 @@ fn hls_buffer_snapshot_at(
     // movie timeline (`disp_base + fed PTS`). Translate both demux tails by the same display base
     // before the controller compares them; raw FFmpeg PTS still never cross this boundary.
     let display_base = SHARED.disp_base.load(Ordering::Relaxed).max(0);
-    crate::abr::BufferSnapshot {
-        playback: crate::abr::MediaTimeMs(playhead_ns.max(0) / 1_000_000),
-        video_tail: crate::abr::MediaTimeMs(video.max(0).saturating_add(display_base) / 1_000_000),
-        audio_tail: (audio >= 0).then_some(crate::abr::MediaTimeMs(
+    BufferFact {
+        playback_ms: playhead_ns.max(0) / 1_000_000,
+        video_tail_ms: video.max(0).saturating_add(display_base) / 1_000_000,
+        audio_tail_ms: (audio >= 0).then_some(
             audio.max(0).saturating_add(display_base) / 1_000_000,
-        )),
+        ),
         audio_expected,
     }
+}
+
+fn hls_buffer_snapshot_at(
+    output: Option<&HlsSegmentOutput>, playhead_ns: i64,
+) -> crate::abr::BufferSnapshot {
+    adaptive::buffer_snapshot(hls_buffer_fact_at(output, playhead_ns))
 }
 
 fn hls_buffer_snapshot_with_playhead(
@@ -4580,6 +4578,11 @@ fn hls_buffer_snapshot_with_playhead(
 
 fn hls_buffer_snapshot(output: Option<&HlsSegmentOutput>) -> crate::abr::BufferSnapshot {
     hls_buffer_snapshot_with_playhead(output).0
+}
+
+fn hls_buffer_fact(output: Option<&HlsSegmentOutput>) -> BufferFact {
+    let playhead_ns = SHARED.playpos_ns.load(Ordering::Relaxed).max(0);
+    hls_buffer_fact_at(output, playhead_ns)
 }
 
 /// Progressive Original uses absolute movie PTS, unlike offset-zero HLS, so no display-base
@@ -4623,6 +4626,20 @@ fn hls_segment_sample(
     )
 }
 
+fn hls_acquisition(
+    output: &HlsSegmentOutput, duration: std::time::Duration, declared_bps: u64,
+) -> Acquisition {
+    Acquisition {
+        bytes: output.transfer.bytes,
+        active_us: output.transfer.active_us,
+        total_us: output.transfer.total_us,
+        duration,
+        width: output.video_width,
+        height: output.video_height,
+        declared_bps,
+    }
+}
+
 /// The active cursor's sample for one round of the demux loop. The constructor is chosen BEFORE
 /// validation: an abandoned round goes through `SegmentSample::abandoned_acquisition`, which
 /// admits the zero bytes and zero body time of an abort before the first body byte, so the
@@ -4633,16 +4650,10 @@ fn hls_round_sample(
     duration: std::time::Duration,
     fetch_abandoned: bool,
 ) -> Option<crate::abr::SegmentSample> {
-    if !fetch_abandoned {
-        return hls_segment_sample(output, duration);
-    }
-    crate::abr::SegmentSample::abandoned_acquisition(
-        output.transfer.bytes,
-        output.transfer.active_us,
-        output.transfer.total_us,
-        u32::try_from(duration.as_millis()).ok()?,
-        hls_duration_obligation_ms(duration)?,
-        hls_buffer_snapshot(Some(output)),
+    adaptive::active_sample(
+        hls_acquisition(output, duration, 0),
+        hls_buffer_fact(Some(output)),
+        fetch_abandoned,
     )
 }
 
@@ -5727,21 +5738,20 @@ fn hls_demux(
             }
             continue;
         };
-        // Advance recovery against the worker's one monotonic time origin.
-        state.advance_to(now_ms());
-        let Some(mut sample) = hls_round_sample(&output, segment.duration, fetch_abandoned) else {
+        // Advance recovery and record the active acquisition before the rollback
+        // playlist lookup, which may wait on the server.
+        let active_now_ms = now_ms();
+        let Some(active) = state.begin_active_quantum(
+            hls_acquisition(&output, segment.duration, cursor.declared_bps),
+            || hls_buffer_fact(Some(&output)),
+            fetch_abandoned, delivered, active_now_ms,
+        ) else {
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };
-        if delivered {
-            if let Some(variant) = crate::abr::ObservedHlsVariant::new(
-                cursor.declared_bps, output.video_width, output.video_height,
-            ) {
-                state.observe_active_variant(variant, sample.network_kbps());
-            }
-        }
+        let mut sample = active.sample;
         // The route cleanup runner coalesces a physical ping and exact close.
-        let encoder_cleanup_ready = state.encoder_cleanup_ready(delivered && sample.completed());
+        let encoder_cleanup_ready = active.cleanup_ready;
         if !encoder_cleanup_ready && !cleanup_wait_logged {
             cleanup_wait_logged = true;
             crate::player::log(
