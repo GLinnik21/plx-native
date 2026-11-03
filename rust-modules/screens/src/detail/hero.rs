@@ -60,9 +60,9 @@ pub const HERO_GROUP: GroupId = GroupId(0);
 // the disc-unfurl budget and the meta line) lives in `appkit::hero_layout`, so the catalog page lays
 // out with the same numbers.
 pub use plx_appkit::hero_layout::{HeroWidths, CD, DISCS, MAX_CTLS};
-use plx_appkit::hero_layout::FACTS_R;
+use plx_appkit::hero_layout::{CGAP, FACTS_R};
 #[cfg(test)]
-use plx_appkit::hero_layout::{CGAP, PW};
+use plx_appkit::hero_layout::PW;
 const PEOPLE_MAX_LINES: usize = 2;
 /// Names on the hero's Starring line: a summary. The whole cast is the Cast row further down the
 /// page, one headshot per credit with nothing cut (`cards::Cards` counts `Detail::credits_len`).
