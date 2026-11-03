@@ -3789,22 +3789,22 @@ mod tests {
         let epoch = SHARED.begin_native_session().expect("native session");
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let callback = std::thread::spawn(move || {
+        let callback = plx_base::task::spawn("native callback race", move || {
             SHARED.with_native_session(epoch, shared::NativeEventClass::Other, 0, || {
                 entered_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
-            })
-        });
+            });
+        }).expect("spawn native callback race");
         entered_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .expect("callback entered the native-session reducer");
 
         let (retired_tx, retired_rx) = std::sync::mpsc::channel();
-        let retire = std::thread::spawn(move || {
+        let retire = plx_base::task::spawn("native retirement race", move || {
             retired_tx
                 .send(SHARED.retire_native_session(epoch))
                 .unwrap();
-        });
+        }).expect("spawn native retirement race");
         assert!(
             retired_rx
                 .recv_timeout(std::time::Duration::from_millis(20))
