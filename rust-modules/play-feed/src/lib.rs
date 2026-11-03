@@ -3,6 +3,7 @@
 
 pub mod aq;
 pub mod hls;
+pub mod native_gate;
 
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
 // video+AC3 for streaming. Copied VERBATIM from playback.c.
