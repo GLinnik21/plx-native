@@ -64,7 +64,9 @@ pub struct BackendPolicy {
     tried: Vec<bool>,
     force_original: bool,
     last_backend: Option<BackendKind>,
+    last_offer: Option<(BackendKind, OfferId)>,
     crossed: bool,
+    rollback_used: bool,
 }
 
 impl BackendPolicy {
@@ -76,9 +78,23 @@ impl BackendPolicy {
     /// on this backend. A handoff to the other backend retires this exception, even though the
     /// old recipe remains spent in the finite recovery catalog.
     pub fn can_reopen(&self, backend: BackendKind, id: OfferId) -> bool {
-        self.last_backend == Some(backend)
+        self.last_offer == Some((backend, id))
+    }
+
+    /// A failed Original trial may restore one previously admitted recipe on the same backend.
+    /// This is a bounded rollback, not another recovery candidate or a return handoff.
+    pub fn can_rollback_existing(&self, backend: BackendKind, id: OfferId) -> bool {
+        !self.rollback_used && self.last_backend == Some(backend)
+            && self.last_offer != Some((backend, id))
             && self.offers.iter().zip(&self.tried).any(|(offer, tried)|
                 *tried && offer.backend == backend && offer.id == id)
+    }
+
+    pub fn admit_rollback_existing(&mut self, backend: BackendKind, id: OfferId) -> bool {
+        if !self.can_rollback_existing(backend, id) { return false; }
+        self.rollback_used = true;
+        self.last_offer = Some((backend, id));
+        true
     }
 
     /// Finite recipes for one selected source and its selected streams. The URI offer begins
@@ -121,7 +137,7 @@ impl BackendPolicy {
 
     pub fn new(offers: Vec<Offer>, force_original: bool) -> Self {
         Self { tried: vec![false; offers.len()], offers, force_original,
-            last_backend: None, crossed: false }
+            last_backend: None, last_offer: None, crossed: false, rollback_used: false }
     }
 
     fn permitted(&self, offer: Offer) -> bool {
@@ -151,6 +167,7 @@ impl BackendPolicy {
         if (offer.backend, offer.id) != (backend, id) { return false; }
         if self.last_backend.is_some_and(|last| last != backend) { self.crossed = true; }
         self.last_backend = Some(backend);
+        self.last_offer = Some((backend, id));
         // Duplicate recipes cannot buy retries by appearing twice in a refreshed server offer.
         for (candidate, tried) in self.offers.iter().zip(&mut self.tried) {
             if (candidate.backend, candidate.id) == (backend, id) { *tried = true; }
@@ -243,6 +260,20 @@ mod tests {
         assert_eq!(remux.id, OfferId::FEED_PMS_REMUX);
         assert!(policy.admitted(remux.backend, remux.id));
         policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        assert_eq!(policy.choose(), Selection::Unqualified);
+    }
+
+    #[test]
+    fn rollback_restores_one_prior_same_backend_recipe_without_replenishing_recovery() {
+        let mut policy = BackendPolicy::for_request(false);
+        policy.qualify_planned_feed(OfferId::FEED_PMS_HLS);
+        assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(!policy.can_reopen(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        assert!(policy.admit_rollback_existing(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        assert!(!policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(!policy.admit_rollback_existing(BackendKind::Feed, OfferId::FEED_ORIGINAL));
         assert_eq!(policy.choose(), Selection::Unqualified);
     }
 

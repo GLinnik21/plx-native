@@ -132,6 +132,7 @@ pub struct PlaybackSession {
     backend_policy: Option<super::backend_policy::BackendPolicy>,
     /// The exact Feed recipe the latest resolved plan prepared, if it produced a source.
     planned_feed_offer: Option<super::backend_policy::OfferId>,
+    planned_feed_purpose: CandidatePurpose,
     /// A seek or foreground reload can reopen the already admitted recipe without buying a
     /// new recovery rung. A changed recipe still has to pass the finite policy.
     admitted_feed_offer: Option<super::backend_policy::OfferId>,
@@ -546,7 +547,7 @@ pub struct UriSelection {
 /// The route decision explicitly distinguishes another recovery candidate from a physical
 /// reopen of its current recipe, even if PMS refreshes the URL during a seek or restore.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CandidatePurpose { NewCandidate, ReopenCurrent }
+pub enum CandidatePurpose { NewCandidate, ReopenCurrent, RollbackExisting }
 
 #[cfg(all(test, feature = "play-feed"))]
 mod backend_offer_session_tests {
@@ -598,6 +599,31 @@ mod backend_offer_session_tests {
             CandidatePurpose::ReopenCurrent));
         assert!(session.backend_planned_feed_allowed(),
             "a seek or foreground restore may refresh the URL without buying a recovery retry");
+    }
+
+    #[test]
+    fn recovery_landing_spends_a_new_recipe_and_one_rollback_restores_the_prior_one() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_HLS,
+            CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL,
+            CandidatePurpose::NewCandidate));
+        assert!(session.backend_planned_feed_allowed());
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+
+        set_url(&mut session, "https://example.invalid/rollback.m3u8");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_HLS,
+            CandidatePurpose::RollbackExisting));
+        assert!(session.backend_planned_feed_allowed());
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL,
+            CandidatePurpose::RollbackExisting));
+        assert!(!session.backend_planned_feed_allowed(),
+            "rollback does not replenish a prior recovery recipe");
     }
 
     #[test]
@@ -701,19 +727,47 @@ impl PlaybackSession {
         if !cfg!(feature = "play-feed") || !self.ensure_backend_offers() { return false; }
         self.backend_policy.as_mut().expect("catalog exists").qualify_planned_feed(id);
         self.planned_feed_offer = Some(id);
+        self.planned_feed_purpose = purpose;
         if purpose == CandidatePurpose::NewCandidate { self.admitted_feed_offer = None; }
         true
+    }
+
+    /// A recovery flight installs a resolved route without passing through `apply_plan`.
+    /// Classify that installed source by the same stable recipe identities as a cold plan;
+    /// keep the request's spent catalog and cross-backend history intact.
+    pub(super) fn qualify_installed_feed_offer(&mut self, purpose: CandidatePurpose) -> bool {
+        let id = if self.tsession.is_empty() {
+            if self.stream_acodec != self.src_acodec {
+                super::backend_policy::OfferId::FEED_APP_AUDIO
+            } else {
+                super::backend_policy::OfferId::FEED_ORIGINAL
+            }
+        } else if matches!(self.cur_contract.delivery,
+            plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
+            super::backend_policy::OfferId::FEED_PMS_HLS
+        } else if self.cur_contract.remux {
+            super::backend_policy::OfferId::FEED_PMS_REMUX
+        } else {
+            super::backend_policy::OfferId::FEED_PMS_ENCODE
+        };
+        self.qualify_resolved_feed_offer(id, purpose)
     }
 
     /// A normal seek/foreground reload reuses its admitted source recipe. A changed recovery
     /// plan must be the next qualified catalog choice before it may acquire another native owner.
     pub fn backend_planned_feed_allowed(&self) -> bool {
         let Some(id) = self.planned_feed_offer else { return false };
-        (self.admitted_feed_offer == Some(id)
+        (self.planned_feed_purpose == CandidatePurpose::RollbackExisting
+            && self.backend_policy.as_ref().is_some_and(|policy|
+                policy.can_rollback_existing(plx_playback_contract::BackendKind::Feed, id)))
+            || (self.planned_feed_purpose == CandidatePurpose::ReopenCurrent
+            && self.admitted_feed_offer == Some(id)
             && self.backend_policy.as_ref().is_some_and(|policy|
                 policy.can_reopen(plx_playback_contract::BackendKind::Feed, id)))
-            || matches!(self.backend_offer(), super::backend_policy::Selection::Open(offer)
+            || (self.planned_feed_purpose == CandidatePurpose::NewCandidate
+                && matches!(self.backend_offer(), super::backend_policy::Selection::Open(offer)
                 if offer.backend == plx_playback_contract::BackendKind::Feed && offer.id == id)
+            )
     }
 
     /// Admit only the current catalog choice after the common backend owner accepted Start.
@@ -721,7 +775,14 @@ impl PlaybackSession {
         id: super::backend_policy::OfferId) -> bool {
         if backend == plx_playback_contract::BackendKind::Feed {
             if self.planned_feed_offer != Some(id) { return false; }
+            if self.planned_feed_purpose == CandidatePurpose::RollbackExisting {
+                let admitted = self.backend_policy.as_mut().is_some_and(|policy|
+                    policy.admit_rollback_existing(backend, id));
+                if admitted { self.admitted_feed_offer = Some(id); }
+                return admitted;
+            }
             if self.admitted_feed_offer == Some(id)
+                && self.planned_feed_purpose == CandidatePurpose::ReopenCurrent
                 && self.backend_policy.as_ref().is_some_and(|policy| policy.can_reopen(backend, id)) {
                 return true;
             }
@@ -758,6 +819,7 @@ impl PlaybackSession {
         attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
         backend_policy: None,
         planned_feed_offer: None,
+        planned_feed_purpose: CandidatePurpose::NewCandidate,
         admitted_feed_offer: None,
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
@@ -851,6 +913,7 @@ impl PlaybackSession {
             attempt_view,
             backend_policy: _,
             planned_feed_offer,
+            planned_feed_purpose: _,
             admitted_feed_offer: _,
             direct_play_mode,
             jail_load_blocked,
@@ -926,6 +989,7 @@ impl PlaybackSession {
             attempt_view: *attempt_view,
             backend_policy: None,
             planned_feed_offer: *planned_feed_offer,
+            planned_feed_purpose: CandidatePurpose::NewCandidate,
             admitted_feed_offer: None,
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
@@ -1021,6 +1085,7 @@ impl PlaybackSession {
         self.recovery = Some(crate::player::recovery::OpenRecovery::new(caps));
         self.backend_policy = None;
         self.planned_feed_offer = None;
+        self.planned_feed_purpose = CandidatePurpose::NewCandidate;
         self.admitted_feed_offer = None;
     }
 
@@ -9474,6 +9539,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
             backend_policy: Some(backend_policy),
             planned_feed_offer,
+            planned_feed_purpose: candidate_purpose,
             admitted_feed_offer,
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,

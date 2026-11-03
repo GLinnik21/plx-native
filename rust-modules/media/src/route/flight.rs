@@ -674,6 +674,11 @@ fn install_recovery_landing(
             // `install_rebase` settles the start transaction itself on every refusal.
             match install_rebase(ps, plan, outcome) {
                 Some(installed) => {
+                    let _ = ps.qualify_installed_feed_offer(if rollback {
+                        CandidatePurpose::RollbackExisting
+                    } else {
+                        CandidatePurpose::ReopenCurrent
+                    });
                     if rollback {
                         note_original_rolled_back_onto(&installed);
                         crate::player::report::note_delivery_requested_for(
@@ -700,6 +705,7 @@ fn install_recovery_landing(
                 release_rebase_start(owner, ticket);
                 return RecoveryVerdict::Refused;
             };
+            let _ = ps.qualify_installed_feed_offer(CandidatePurpose::NewCandidate);
             // Nothing is playing, so the Original it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             installed.retire_replaced();
@@ -722,6 +728,7 @@ fn install_recovery_landing(
                 return RecoveryVerdict::Refused;
             }
             install_retranscode_outcome(ps, &applied);
+            let _ = ps.qualify_installed_feed_offer(CandidatePurpose::NewCandidate);
             // The attempt now lacks the facet the pipeline refused: the Original candidate the ABR
             // climb would return to is graded against it again, so the climb does not propose the
             // refused audio's direct play or the refused video raster.
