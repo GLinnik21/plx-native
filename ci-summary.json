@@ -57,22 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-03T12:16:44Z",
+ "generated": "2026-11-03T15:38:03Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 69.8,
+   "change7_pct": 69.2,
    "d30": null,
    "delta30": null,
-   "delta7": 135.5,
+   "delta7": 135,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 86,
-   "n_prev": 89,
-   "now": 329.5,
-   "prev7": 194,
+   "n_now": 85,
+   "n_prev": 87,
+   "now": 330,
+   "prev7": 195,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -81,18 +81,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -0.2,
-   "change7_pct": 34.2,
-   "d30": 289.0,
-   "delta30": -0.5,
-   "delta7": 73.5,
+   "change30_pct": -1.0,
+   "change7_pct": 34.4,
+   "d30": 292.0,
+   "delta30": -3.0,
+   "delta7": 74,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 86,
-   "n_prev": 89,
-   "now": 288.5,
+   "n_now": 85,
+   "n_prev": 87,
+   "now": 289,
    "prev7": 215,
    "shown": true,
    "state": "worse",
@@ -103,18 +103,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 25.8,
+   "change7_pct": 23.9,
    "d30": null,
    "delta30": null,
-   "delta7": 41.5,
+   "delta7": 39,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 78,
-   "n_prev": 79,
-   "now": 202.5,
-   "prev7": 161,
+   "n_now": 77,
+   "n_prev": 77,
+   "now": 202,
+   "prev7": 163,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -123,19 +123,40 @@
    "unit": "s"
   },
   {
-   "change30_pct": -61.1,
-   "change7_pct": 20.4,
-   "d30": 1053.0,
-   "delta30": -643.5,
-   "delta7": 69.5,
+   "change30_pct": 30.7,
+   "change7_pct": 20.1,
+   "d30": 311.5,
+   "delta30": 95.5,
+   "delta7": 68,
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "kind": "job",
+   "label": "CI: host unit tests (default features)",
+   "n_now": 85,
+   "n_prev": 87,
+   "now": 407,
+   "prev7": 339,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -60.5,
+   "change7_pct": 19.6,
+   "d30": 1034.5,
+   "delta30": -625.5,
+   "delta7": 67,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 86,
-   "n_prev": 91,
-   "now": 409.5,
-   "prev7": 340,
+   "n_now": 85,
+   "n_prev": 89,
+   "now": 409,
+   "prev7": 342,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -144,19 +165,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.3,
-   "change7_pct": 16.2,
-   "d30": 2584,
-   "delta30": -59.5,
-   "delta7": 352.5,
+   "change30_pct": -1.7,
+   "change7_pct": 16.1,
+   "d30": 2572,
+   "delta30": -44,
+   "delta7": 350.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 74,
-   "n_prev": 72,
-   "now": 2524.5,
-   "prev7": 2172.0,
+   "n_now": 73,
+   "n_prev": 70,
+   "now": 2528,
+   "prev7": 2177.5,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -165,19 +186,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -62.6,
-   "change7_pct": 14.6,
-   "d30": 1110.0,
-   "delta30": -695.0,
-   "delta7": 53,
+   "change30_pct": -62.3,
+   "change7_pct": 14.0,
+   "d30": 1102,
+   "delta30": -687,
+   "delta7": 51,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 211,
-   "n_prev": 213,
+   "n_now": 209,
+   "n_prev": 211,
    "now": 415,
-   "prev7": 362,
+   "prev7": 364,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -324,10 +345,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.5,
+   "change30_pct": 32.9,
    "change7_pct": 5.3,
-   "d30": 745.5,
-   "delta30": 249.5,
+   "d30": 748.5,
+   "delta30": 246.5,
    "delta7": 50,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -345,39 +366,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 30.0,
-   "change7_pct": 19.5,
-   "d30": 311.5,
-   "delta30": 93.5,
-   "delta7": 66.0,
-   "group": "ci",
-   "id": "ci|host unit tests (default features)",
-   "kind": "job",
-   "label": "CI: host unit tests (default features)",
-   "n_now": 86,
-   "n_prev": 89,
-   "now": 405.0,
-   "prev7": 339,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": null,
    "change7_pct": 4.7,
    "d30": null,
    "delta30": null,
-   "delta7": 15.0,
+   "delta7": 15,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 86,
-   "n_prev": 89,
-   "now": 336.0,
+   "n_now": 85,
+   "n_prev": 87,
+   "now": 336,
    "prev7": 321,
    "shown": true,
    "state": "flat",
@@ -387,19 +387,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 36.5,
-   "change7_pct": 17.2,
+   "change30_pct": 35.9,
+   "change7_pct": 16.0,
    "d30": 245.0,
-   "delta30": 89.5,
-   "delta7": 49.0,
+   "delta30": 88.0,
+   "delta7": 46.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 86,
-   "n_prev": 88,
-   "now": 334.5,
-   "prev7": 285.5,
+   "n_now": 85,
+   "n_prev": 86,
+   "now": 333,
+   "prev7": 287.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.5,
-   "change7_pct": 7.3,
-   "d30": 224,
-   "delta30": 61.5,
-   "delta7": 19.5,
+   "change30_pct": 27.2,
+   "change7_pct": 7.1,
+   "d30": 224.0,
+   "delta30": 61.0,
+   "delta7": 19,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 78,
-   "n_prev": 79,
-   "now": 285.5,
+   "n_now": 77,
+   "n_prev": 77,
+   "now": 285,
    "prev7": 266,
    "shown": true,
    "state": "flat",
@@ -429,19 +429,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -79.0,
-   "change7_pct": 7.7,
-   "d30": 1028,
-   "delta30": -812.0,
-   "delta7": 15.5,
+   "change30_pct": -78.9,
+   "change7_pct": 7.5,
+   "d30": 1026.0,
+   "delta30": -810.0,
+   "delta7": 15.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 78,
-   "n_prev": 78,
-   "now": 216.0,
-   "prev7": 200.5,
+   "n_now": 77,
+   "n_prev": 76,
+   "now": 216,
+   "prev7": 201.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -450,18 +450,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 1.1,
-   "change7_pct": 12.4,
-   "d30": 183.5,
-   "delta30": 2.0,
-   "delta7": 20.5,
+   "change30_pct": 3.0,
+   "change7_pct": 13.3,
+   "d30": 181.5,
+   "delta30": 5.5,
+   "delta7": 22,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 86,
-   "n_prev": 89,
-   "now": 185.5,
+   "n_now": 85,
+   "n_prev": 87,
+   "now": 187,
    "prev7": 165,
    "shown": true,
    "state": "flat",
@@ -536,18 +536,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 12.5,
+   "change30_pct": 9.1,
    "change7_pct": 0.0,
-   "d30": 16,
-   "delta30": 2.0,
-   "delta7": 0.0,
+   "d30": 16.5,
+   "delta30": 1.5,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 78,
-   "n_prev": 79,
-   "now": 18.0,
+   "n_now": 77,
+   "n_prev": 77,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -582,14 +582,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 86,
-   "n_prev": 89,
-   "now": 5.0,
+   "n_now": 85,
+   "n_prev": 87,
+   "now": 5,
    "prev7": 5,
    "shown": false,
    "state": "flat",
@@ -601,16 +601,16 @@
   {
    "change30_pct": -98.9,
    "change7_pct": 0.0,
-   "d30": 272,
-   "delta30": -269.0,
+   "d30": 272.5,
+   "delta30": -269.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 86,
-   "n_prev": 88,
-   "now": 3.0,
+   "n_now": 85,
+   "n_prev": 86,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -620,18 +620,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -99.7,
+   "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 861,
-   "delta30": -858.0,
+   "d30": 824.0,
+   "delta30": -821.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 86,
-   "n_prev": 88,
-   "now": 3.0,
+   "n_now": 85,
+   "n_prev": 86,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -664,7 +664,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 69.8,
+   "change_pct": 69.2,
    "commits": [
     {
      "pr": 1206,
@@ -717,15 +717,15 @@
      "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
-   "from": 194,
+   "from": 195,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 329.5
+   "to": 330
   },
   {
-   "change_pct": 34.2,
+   "change_pct": 34.4,
    "commits": [
     {
      "pr": 1206,
@@ -783,10 +783,10 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 288.5
+   "to": 289
   },
   {
-   "change_pct": 25.8,
+   "change_pct": 23.9,
    "commits": [
     {
      "pr": 1206,
@@ -839,15 +839,15 @@
      "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
-   "from": 161,
+   "from": 163,
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 202.5
+   "to": 202
   },
   {
-   "change_pct": 20.4,
+   "change_pct": 20.1,
    "commits": [
     {
      "pr": 1206,
@@ -900,15 +900,76 @@
      "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
-   "from": 340,
+   "from": 339,
+   "id": "ci|host unit tests (default features)",
+   "label": "CI: host unit tests (default features)",
+   "since": "2026-11-03",
+   "threshold_pct": 20.0,
+   "to": 407
+  },
+  {
+   "change_pct": 19.6,
+   "commits": [
+    {
+     "pr": 1206,
+     "sha": "f1436ba47",
+     "title": "Add source-pinned Player HUD registry tooling"
+    },
+    {
+     "pr": 1204,
+     "sha": "8da3add42",
+     "title": "Dependencies: sentry-native -> 0.17.5"
+    },
+    {
+     "pr": 1209,
+     "sha": "1c9a75db4",
+     "title": "Publish HUD authoring files and verify registry setup"
+    },
+    {
+     "pr": 1210,
+     "sha": "60b35acea",
+     "title": "Add opt-in firmware playback diagnostics"
+    },
+    {
+     "pr": 1212,
+     "sha": "3bc30f4ed",
+     "title": "Preserve UTF-8 in fixed text buffers"
+    },
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
+    },
+    {
+     "pr": 1214,
+     "sha": "e3bb1aebc",
+     "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
+    }
+   ],
+   "from": 342,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-11-03",
    "threshold_pct": 15.0,
-   "to": 409.5
+   "to": 409
   },
   {
-   "change_pct": 16.2,
+   "change_pct": 16.1,
    "commits": [
     {
      "pr": 1206,
@@ -961,12 +1022,12 @@
      "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
-   "from": 2172.0,
+   "from": 2177.5,
    "id": "minutes",
    "label": "Runner time per push",
    "since": "2026-11-01",
    "threshold_pct": 15.0,
-   "to": 2524.5
+   "to": 2528
   }
  ],
  "schema": 2,
@@ -981,25 +1042,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 405.0
+   "now": 407
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 336.0
+   "now": 336
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 334.5
+   "now": 333
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 329.5
+   "now": 330
   }
  ],
  "slowest_local": [
