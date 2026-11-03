@@ -2016,6 +2016,11 @@ mod tests {
             super::super::SHARED.reset_session();
             let epoch = super::super::SHARED.begin_native_session().expect("session");
             super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+            let attempt = begin_view(&mut ps);
+            observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+                pipeline_error: Some(super::super::SHARED.dg_cb_err_num.load(Relaxed)),
+                ..Default::default()
+            });
             observe(&ps, S::Resolving);
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
             super::super::SHARED.retire_native_session(epoch);
