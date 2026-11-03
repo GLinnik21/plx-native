@@ -29,6 +29,8 @@ pub enum Event {
     Intent(Intent),
     CommandAnswer { backend: BackendKind, attempt: AttemptId, command: CommandId, result: DispatchResult },
     Observation { backend: BackendKind, attempt: AttemptId, observation: Observation },
+    /// A viewer goal intercepted by startup before it can issue a physical command.
+    ViewerGoal { backend: BackendKind, attempt: AttemptId, paused: bool },
     ControlAccepted { backend: BackendKind, attempt: AttemptId, command: CommandId,
         operation: Operation, native_acknowledged: bool },
     ControlRefused { backend: BackendKind, attempt: AttemptId, command: CommandId,
@@ -77,6 +79,8 @@ pub struct Snapshot {
     pub attempt: Option<AttemptId>,
     pub playback: Option<Observed<Playback>>,
     pub position: Option<Observed<ContentTime>>,
+    /// Desired viewer transport, distinct from observed native playback.
+    pub viewer_paused: Option<bool>,
     pub presented: bool,
     pub audio_track: Option<Observed<TrackFact>>,
     pub subtitle_track: Option<Observed<TrackFact>>,
@@ -87,7 +91,8 @@ pub struct Snapshot {
 impl Default for Snapshot {
     fn default() -> Self {
         Self { phase: Phase::Vacant, backend: None, attempt: None, playback: None,
-            position: None, presented: false, audio_track: None, subtitle_track: None,
+            position: None, viewer_paused: None, presented: false,
+            audio_track: None, subtitle_track: None,
             last_queued: None, seek_landed: None, failure: None }
     }
 }
@@ -101,6 +106,8 @@ pub struct BackendState {
     pending: BTreeMap<CommandId, Operation>,
     latest_queued_seek: Option<CommandId>,
     latest_queued_transport: Option<(CommandId, Operation)>,
+    settled_viewer_paused: Option<bool>,
+    deferred_control_noticed: Option<CommandId>,
     latest_queued_track: [Option<(CommandId, TrackChoice)>; 2],
 }
 impl BackendState {
@@ -108,6 +115,7 @@ impl BackendState {
         Self { last_attempt: None, next_command: 0, snapshot: Snapshot::default(),
             pending: BTreeMap::new(), latest_queued_seek: None,
             latest_queued_transport: None,
+            settled_viewer_paused: None, deferred_control_noticed: None,
             latest_queued_track: [None; 2] }
     }
 
@@ -142,7 +150,7 @@ impl BackendState {
     /// absent; no source or operation is dispatched to an unavailable driver.
     pub fn step(&mut self, event: Event, capabilities: Option<Capabilities>, effects: &mut Vec<Fx>) {
         match event {
-            Event::Intent(Intent::Start { backend, attempt, source, requirements, initial: _ }) => {
+            Event::Intent(Intent::Start { backend, attempt, source, requirements, initial }) => {
                 let failure = if self.snapshot.phase != Phase::Vacant {
                     Some(Failure::Busy)
                 } else if self.last_attempt.is_some_and(|last| attempt <= last) {
@@ -159,6 +167,8 @@ impl BackendState {
                     self.snapshot.phase = Phase::Starting;
                     self.snapshot.backend = Some(backend);
                     self.snapshot.attempt = Some(attempt);
+                    self.snapshot.viewer_paused = Some(initial.paused);
+                    self.settled_viewer_paused = Some(initial.paused);
                     self.dispatch(backend, attempt, Operation::Start { source, requirements }, effects);
                 }
             }
@@ -188,6 +198,7 @@ impl BackendState {
                 self.pending.clear();
                 self.latest_queued_seek = None;
                 self.latest_queued_transport = None;
+                self.deferred_control_noticed = None;
                 self.latest_queued_track = [None; 2];
                 if capabilities.is_none() {
                     self.snapshot.phase = Phase::Quarantined;
@@ -210,6 +221,8 @@ impl BackendState {
                         }
                         if matches!(operation, Operation::Play | Operation::Pause) {
                             self.latest_queued_transport = Some((command, operation));
+                            self.deferred_control_noticed = None;
+                            self.snapshot.viewer_paused = Some(operation == Operation::Pause);
                         }
                         if let Operation::SelectTrack { kind, choice } = operation {
                             self.latest_queued_track[Self::track_slot(kind)] = Some((command, choice));
@@ -262,6 +275,13 @@ impl BackendState {
                 effects.push(Fx::AcceptedObservation { backend, attempt, observation });
             }
             Event::Observation { .. } => {}
+            Event::ViewerGoal { backend, attempt, paused }
+                if self.owns(backend, attempt)
+                    && matches!(self.snapshot.phase, Phase::Starting | Phase::Active) => {
+                self.snapshot.viewer_paused = Some(paused);
+                self.settled_viewer_paused = Some(paused);
+            }
+            Event::ViewerGoal { .. } => {}
             Event::ControlRefused { backend, attempt, command, operation, failure }
                 if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active =>
             {
@@ -269,6 +289,8 @@ impl BackendState {
                     Operation::Play | Operation::Pause => {
                         if self.latest_queued_transport == Some((command, operation)) {
                             self.latest_queued_transport = None;
+                            self.deferred_control_noticed = None;
+                            self.snapshot.viewer_paused = self.settled_viewer_paused;
                             true
                         } else { false }
                     }
@@ -296,7 +318,13 @@ impl BackendState {
                 if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active
                     && self.latest_queued_transport == Some((command, operation)) =>
             {
-                self.latest_queued_transport = None;
+                if native_acknowledged {
+                    self.latest_queued_transport = None;
+                    self.deferred_control_noticed = None;
+                    self.settled_viewer_paused = self.snapshot.viewer_paused;
+                } else if self.deferred_control_noticed.replace(command) == Some(command) {
+                    return;
+                }
                 effects.push(Fx::AcceptedControl { backend, attempt, command, operation,
                     native_acknowledged });
             }
@@ -328,6 +356,7 @@ impl BackendState {
                         self.pending.clear();
                         self.latest_queued_seek = None;
                         self.latest_queued_transport = None;
+                        self.deferred_control_noticed = None;
                         self.latest_queued_track = [None; 2];
                     }
                     ReleaseStatus::Quarantined => {
@@ -336,12 +365,15 @@ impl BackendState {
                         self.pending.clear();
                         self.latest_queued_seek = None;
                         self.latest_queued_transport = None;
+                        self.deferred_control_noticed = None;
                         self.latest_queued_track = [None; 2];
                     }
                     ReleaseStatus::Released => {
                         self.pending.clear();
                         self.latest_queued_seek = None;
                         self.latest_queued_transport = None;
+                        self.deferred_control_noticed = None;
+                        self.settled_viewer_paused = None;
                         self.latest_queued_track = [None; 2];
                         self.snapshot = Snapshot::default();
                     }
@@ -477,6 +509,55 @@ mod tests {
             operation: Operation::Play, native_acknowledged: true }, None).is_empty());
         assert_eq!(state.snapshot.playback.unwrap().value, Playback::ReadyAwaitPlay);
         assert!(!state.snapshot.presented);
+    }
+
+    #[test]
+    fn deferred_acceptance_keeps_refusal_correlation_and_latest_goal_rolls_back() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(2, 3);
+        start(&mut state, FEED, attempt);
+        ready(&mut state, FEED, attempt);
+        let pause = step(&mut state, Event::Intent(Intent::Control { backend: FEED,
+            attempt, operation: Operation::Pause }), Some(CAPS));
+        let [Fx::Dispatch { command: first, .. }] = pause.as_slice() else { panic!("pause") };
+        let first = *first;
+        step(&mut state, Event::CommandAnswer { backend: FEED, attempt, command: first,
+            result: DispatchResult::Queued }, None);
+        assert_eq!(state.snapshot.viewer_paused, Some(true));
+        assert_eq!(step(&mut state, Event::ControlAccepted { backend: FEED, attempt,
+            command: first, operation: Operation::Pause, native_acknowledged: false }, None),
+            [Fx::AcceptedControl { backend: FEED, attempt, command: first,
+                operation: Operation::Pause, native_acknowledged: false }]);
+        let refusal = Event::ControlRefused { backend: FEED, attempt, command: first,
+            operation: Operation::Pause, failure: Failure::Refused };
+        assert_eq!(step(&mut state, refusal, None), [Fx::CommandRefused { backend: FEED,
+            attempt, command: first, operation: Operation::Pause, failure: Failure::Refused }]);
+        assert_eq!(state.snapshot.viewer_paused, Some(false));
+
+        let second = step(&mut state, Event::Intent(Intent::Control { backend: FEED,
+            attempt, operation: Operation::Pause }), Some(CAPS));
+        let [Fx::Dispatch { command: second, .. }] = second.as_slice() else { panic!("pause") };
+        let second = *second;
+        step(&mut state, Event::CommandAnswer { backend: FEED, attempt, command: second,
+            result: DispatchResult::Queued }, None);
+        assert!(step(&mut state, refusal, None).is_empty(), "old refusal is stale");
+        assert_eq!(state.snapshot.viewer_paused, Some(true));
+        step(&mut state, Event::ControlAccepted { backend: FEED, attempt, command: second,
+            operation: Operation::Pause, native_acknowledged: false }, None);
+        assert_eq!(step(&mut state, Event::ControlAccepted { backend: FEED, attempt,
+            command: second, operation: Operation::Pause, native_acknowledged: true }, None),
+            [Fx::AcceptedControl { backend: FEED, attempt, command: second,
+                operation: Operation::Pause, native_acknowledged: true }]);
+        let play = step(&mut state, Event::Intent(Intent::Control { backend: FEED,
+            attempt, operation: Operation::Play }), Some(CAPS));
+        let [Fx::Dispatch { command: play, .. }] = play.as_slice() else { panic!("play") };
+        let play = *play;
+        step(&mut state, Event::CommandAnswer { backend: FEED, attempt, command: play,
+            result: DispatchResult::Queued }, None);
+        assert_eq!(state.snapshot.viewer_paused, Some(false));
+        step(&mut state, Event::ControlRefused { backend: FEED, attempt, command: play,
+            operation: Operation::Play, failure: Failure::Refused }, None);
+        assert_eq!(state.snapshot.viewer_paused, Some(true), "latest refusal restores settled goal");
     }
 
     #[test]
