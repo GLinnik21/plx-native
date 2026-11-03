@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::sync::{atomic::Ordering, Mutex};
 
 pub struct Shared {
-    pub feed: super::shared::Shared,
+    pub feed: plx_play_feed::shared::PhysicalShared,
     pub ass_sources: Mutex<super::ass_source::Store>,
     pub ass_renderer: super::ass::Runtime,
 }
@@ -12,10 +12,19 @@ pub struct Shared {
 impl Shared {
     pub const fn new() -> Self {
         Self {
-            feed: super::shared::Shared::new(),
+            feed: plx_play_feed::shared::PhysicalShared::new(),
             ass_sources: Mutex::new(super::ass_source::Store::new()),
             ass_renderer: super::ass::Runtime::new(),
         }
+    }
+
+    /// Map common report classification to the physical first-wins diagnostic latch.
+    pub fn note_demux_exit(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
+        self.feed.note_demux_exit_latch(exit.latch());
+    }
+
+    pub fn fail_demux(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
+        self.feed.fail_demux_latch(exit.latch());
     }
 
     pub fn reset_session(&self) {
@@ -40,6 +49,6 @@ impl Shared {
 }
 
 impl Deref for Shared {
-    type Target = super::shared::Shared;
+    type Target = plx_play_feed::shared::PhysicalShared;
     fn deref(&self) -> &Self::Target { &self.feed }
 }

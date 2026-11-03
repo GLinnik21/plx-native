@@ -8,6 +8,7 @@ pub mod native_load;
 pub mod open;
 pub mod pcm_lead;
 pub mod side_reader;
+pub mod shared;
 pub mod vp9_hdr;
 mod send_ptr;
 pub use send_ptr::SendPtr;
