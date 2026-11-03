@@ -80,7 +80,6 @@ impl SubTracks {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::player::subtitle_cue::SubCue;
     const PALETTE_BYTES: usize = plx_media_codecs::subtitle::PALETTE_BYTES;
 

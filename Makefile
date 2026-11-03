@@ -263,8 +263,8 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 # NDK gcc default target is cortex-a9 / armv7-a / soft-float — portable across
 # webOS 3–6 and safe on the A53 (ARMv7 barriers are `dmb`, not the ARMv6 CP15
 # `mcr p15` that SIGILLs on ARMv8). So we do NOT pin -mcpu here.
-# -Wall -Wextra -Werror: the C side is five files (boot shim, crash tracer, narrow Sentry value
-# wrapper, Starfish/ACB seam and nanosvg rasterizer) and it built without this gate until
+# -Wall -Wextra -Werror: the C side includes the boot shim, crash tracer, narrow Sentry value
+# wrapper, separate Starfish/display seams and nanosvg rasterizer and it built without this gate until
 # 2026-08-15 — so the crash tracer and the 15-symbol C++ seam, the two places where a sloppy cast is
 # least survivable, were compiled at gcc's bare default. Turning it on cost nothing: the only hit
 # in the tree is inside the fetched nanosvg, suppressed at its include in src/svg.c.
