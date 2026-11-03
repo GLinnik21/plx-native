@@ -429,7 +429,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
                 feed_failure(other), &now_ms, &mut on_trace,
             ),
         };
-        self.trace(&mut on_trace, TrialTrace::FirstMedia);
+        self.trace(&mut on_trace, TrialTrace::FirstMedia(acquisition));
         self.observe(TrialObservation::FirstAcquired)
             .expect("the first candidate acquisition follows prime");
         let buffer = match self.stage_acquired() {
@@ -557,7 +557,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         reserve_policy: abr::ReservePolicy, current: VariantFacts,
         first: Acquisition, first_buffer: BufferFact, opened_declared_bps: u64,
         mut on_followup: impl FnMut(Option<u64>),
-        mut on_trace: impl FnMut(&mut P, TrialTraceMoment),
+        mut on_trace: impl FnMut(TrialTraceMoment),
     ) -> StagedCandidate {
         let first_variant = VariantFacts {
             width: first.width, height: first.height, declared_bps: first.declared_bps,
@@ -598,7 +598,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
             height: final_acquisition.height,
             declared_bps: final_acquisition.declared_bps,
         };
-        on_trace(self.physical(), TrialTraceMoment::FinalEvidence);
+        on_trace(TrialTraceMoment::FinalEvidence(final_acquisition));
         let grade = self.final_action(
             coordinator, proposal, reserve_policy, current, candidate, &acquisitions, verdict,
         );
@@ -699,7 +699,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
     fn read_repeatable(
         &mut self, remaining_ms: Option<u64>,
         on_followup: &mut impl FnMut(Option<u64>),
-        on_trace: &mut impl FnMut(&mut P, TrialTraceMoment),
+        on_trace: &mut impl FnMut(TrialTraceMoment),
     ) -> Result<(Acquisition, BufferFact), StagedCandidate> {
         on_followup(remaining_ms);
         self.observe(TrialObservation::FollowupRequested)
@@ -725,7 +725,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
                 },
             }),
         };
-        on_trace(self.physical(), TrialTraceMoment::FollowupMedia);
+        on_trace(TrialTraceMoment::FollowupMedia(acquisition));
         self.observe(TrialObservation::FollowupAcquired)
             .expect("the repeatable acquisition follows its request");
         match self.stage_acquired() {
@@ -1872,7 +1872,7 @@ pub(crate) enum TrialTrace {
     Master(u64),
     ControlPlane,
     WarmupDeadline(std::time::Duration),
-    FirstMedia,
+    FirstMedia(Acquisition),
     Decided,
     Rejected { refreshing: bool },
     Finish(&'static str),
@@ -1880,7 +1880,10 @@ pub(crate) enum TrialTrace {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TrialTraceMoment { FollowupMedia, FinalEvidence }
+pub(crate) enum TrialTraceMoment {
+    FollowupMedia(Acquisition),
+    FinalEvidence(Acquisition),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrialStep {
@@ -3185,7 +3188,6 @@ mod trial_runner_tests {
         struct Port {
             replies: VecDeque<FeedObservation>,
             actions: Vec<FeedAction>,
-            media_trace: Vec<TrialTraceMoment>,
         }
         impl FeedPort for Port {
             type Locator = ();
@@ -3214,13 +3216,14 @@ mod trial_runner_tests {
                 FeedObservation::Acquired { trial, acquisition },
                 FeedObservation::Staged { trial, buffer, count: 2 },
             ]),
-            actions: Vec::new(), media_trace: Vec::new(),
+            actions: Vec::new(),
         };
         let mut budgets = Vec::new();
+        let mut media_trace = Vec::new();
         let mut runner = TrialRunner::new(&mut port, &mut protocol);
         let result = runner.read_repeatable(
             Some(700), &mut |budget| budgets.push(budget),
-            &mut |port, moment| port.media_trace.push(moment),
+            &mut |moment| media_trace.push(moment),
         );
         assert!(matches!(result, Ok((got, fact)) if got == acquisition && fact == buffer));
         drop(runner);
@@ -3230,7 +3233,7 @@ mod trial_runner_tests {
             FeedAction::AcquireFollowup { trial },
             FeedAction::StageAcquired { trial },
         ]);
-        assert_eq!(port.media_trace, [TrialTraceMoment::FollowupMedia]);
+        assert_eq!(media_trace, [TrialTraceMoment::FollowupMedia(acquisition)]);
         assert_eq!(protocol.phase(), TrialPhase::FollowupAcquired);
     }
 

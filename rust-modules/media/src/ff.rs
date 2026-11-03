@@ -5630,10 +5630,8 @@ fn hls_demux(
                 adaptive::TrialTrace::ControlPlane => tx.mark_control_plane(),
                 adaptive::TrialTrace::WarmupDeadline(deadline) =>
                     tx.mark_warmup_deadline(deadline),
-                adaptive::TrialTrace::FirstMedia => {
-                    let transfer = &physical.output.as_ref()
-                        .expect("acquired media has staged access units").transfer;
-                    tx.mark_media(transfer.bytes, transfer.total_us, false);
+                adaptive::TrialTrace::FirstMedia(acquisition) => {
+                    tx.mark_media(acquisition.bytes, acquisition.total_us, false);
                 }
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
@@ -5669,17 +5667,13 @@ fn hls_demux(
                 "abr: setup-bearing candidate retains one staged observation budget={}ms",
                 remaining_ms.unwrap_or(0),
             )),
-            |physical, moment| match moment {
-                adaptive::TrialTraceMoment::FollowupMedia => {
-                    let transfer = &physical.output.as_ref()
-                        .expect("acquired repeatable media has staged access units").transfer;
-                    tx.mark_media(transfer.bytes, transfer.total_us, true);
+            |moment| match moment {
+                adaptive::TrialTraceMoment::FollowupMedia(acquisition) => {
+                    tx.mark_media(acquisition.bytes, acquisition.total_us, true);
                 }
-                adaptive::TrialTraceMoment::FinalEvidence => {
-                    let (output, _, duration) = physical.staged.last()
-                        .expect("a graded candidate has staged media");
+                adaptive::TrialTraceMoment::FinalEvidence(acquisition) => {
                     tx.mark_candidate_evidence(
-                        output.transfer.bytes, output.transfer.total_us, *duration,
+                        acquisition.bytes, acquisition.total_us, acquisition.duration,
                     );
                 }
             },
