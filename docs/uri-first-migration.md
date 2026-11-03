@@ -108,6 +108,10 @@ composition, native-build and package registrations. The other backend, shared o
 UI and contract must still build without source changes. Restore using Git and repeat for the
 other backend. A feature-off build alone does not prove physical removability.
 
+The [W19H subtitle handler inspection](measurements/uri-subtitle-handler-2026-11-03.md)
+records the native setter/response ordering and its limits. It does not establish a public-service
+completion event or enable a product capability.
+
 URI promotion additionally requires independently observed picture/control/EOS and reusable
 release evidence on the relevant firmware strata. Host compilation and synthetic transport
 acknowledgments do not satisfy those device gates.
