@@ -224,6 +224,11 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         self.step(FeedAction::AcquireFollowup { trial })
     }
 
+    pub(crate) fn stage_acquired(&mut self) -> FeedObservation {
+        let trial = self.protocol.id();
+        self.step(FeedAction::StageAcquired { trial })
+    }
+
     pub(crate) fn first_action(
         &mut self, coordinator: &Coordinator, proposal: abr::Proposal,
         current: VariantFacts, candidate: VariantFacts,

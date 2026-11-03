@@ -4205,7 +4205,7 @@ struct HlsTrialPort<'a> {
     timeline: Option<crate::hls::SegmentTimeline>,
     clock: Option<crate::hls::SegmentClock>,
     output: Option<HlsSegmentOutput>,
-    staged: Vec<HlsSegmentOutput>,
+    staged: Vec<(HlsSegmentOutput, crate::hls::SegmentClock, std::time::Duration)>,
 }
 
 fn hls_feed_failure(error: HlsExit) -> FeedFailure {
@@ -4229,6 +4229,7 @@ impl FeedPort for HlsTrialPort<'_> {
             FeedAction::Open { trial, .. } | FeedAction::ReadNext { trial }
             | FeedAction::AcquireFirst { trial, .. }
             | FeedAction::AcquireFollowup { trial }
+            | FeedAction::StageAcquired { trial }
             | FeedAction::CheckFollowupReserve { trial }
             | FeedAction::QueueStaged { trial } => trial,
         };
@@ -4244,6 +4245,7 @@ impl FeedPort for HlsTrialPort<'_> {
                 trial, media_budget, yields_to_rebuffer, started_ns, clock,
             ),
             FeedAction::AcquireFollowup { trial } => self.acquire_followup(trial),
+            FeedAction::StageAcquired { trial } => self.stage_acquired(trial),
             FeedAction::CheckFollowupReserve { trial } => self.check_followup_reserve(trial),
             FeedAction::QueueStaged { trial } => self.queue_staged(trial),
         }
@@ -4318,6 +4320,17 @@ impl HlsTrialPort<'_> {
         FeedObservation::FollowupReserve { trial, funded, remaining_ms }
     }
 
+    fn stage_acquired(&mut self, trial: TrialId) -> FeedObservation {
+        let (Some(output), Some(clock), Some(segment)) = (
+            self.output.take(), self.clock.take(), self.segment.take(),
+        ) else {
+            return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
+        };
+        let buffer = hls_buffer_fact(Some(&output));
+        self.staged.push((output, clock, segment.duration));
+        FeedObservation::Staged { trial, buffer, count: self.staged.len() }
+    }
+
     fn acquire(&mut self, trial: TrialId, deadline: ReserveDeadlineState) -> FeedObservation {
         let (Some(candidate), Some(segment), Some(mut timeline)) = (
             self.candidate.as_ref(), self.segment.as_ref(), self.timeline.take(),
@@ -4351,7 +4364,7 @@ impl HlsTrialPort<'_> {
         if self.staged.is_empty() {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
-        for output in &self.staged {
+        for (output, _, _) in &self.staged {
             if let Err(error) = hls_feed_segment(output, self.aq, self.aqa) {
                 return FeedObservation::Failed { trial, failure: hls_feed_failure(error) };
             }
@@ -6426,14 +6439,8 @@ fn hls_demux(
         }
         runner.physical().timeline = Some(timeline);
         let acquired = runner.acquire_first(budget, reserve_started_ns);
-        let (candidate_output, candidate_clock, first_acquisition) = match acquired {
-            FeedObservation::Acquired { acquisition, .. } => {
-                let output = runner.physical().output.take()
-                    .expect("acquired media has staged access units");
-                let clock = runner.physical().clock.take()
-                    .expect("acquired media has a staged content clock");
-                (output, clock, acquisition)
-            }
+        let first_acquisition = match acquired {
+            FeedObservation::Acquired { acquisition, .. } => acquisition,
             other => {
                 let failure = match other {
                     FeedObservation::Failed { failure, .. } => failure,
@@ -6448,14 +6455,20 @@ fn hls_demux(
                 }
             }
         };
-        tx.mark_media(&candidate_output, false);
+        tx.mark_media(
+            runner.physical().output.as_ref().expect("acquired media has staged access units"),
+            false,
+        );
         runner.observe(TrialEvent::FirstAcquired)
             .expect("the first candidate acquisition follows prime");
-        let mut candidate_outputs = vec![(
-            candidate_output,
-            candidate_clock,
-            first_acquisition.duration,
-        )];
+        let first_buffer = match runner.stage_acquired() {
+            FeedObservation::Staged { buffer, count: 1, .. } => buffer,
+            _ => {
+                state.abandon(&primed.encoder_session);
+                tx.finish("feed_protocol");
+                return Err(HlsExit::Failed("adaptive feed stage protocol violation"));
+            }
+        };
         let mut final_acquisition = first_acquisition;
         let mut candidate_acquisitions = vec![first_acquisition];
         let mut candidate_transition: Option<HlsCandidateTransition> = None;
@@ -6479,7 +6492,7 @@ fn hls_demux(
         };
         let first_sample = adaptive::candidate_sample(
             first_acquisition,
-            hls_buffer_snapshot(Some(&candidate_outputs[0].0)),
+            adaptive::buffer_snapshot(first_buffer),
         );
         let first_action = runner.first_action(
             state,
@@ -6538,14 +6551,8 @@ fn hls_demux(
                 }
             };
             let acquired = runner.acquire_followup();
-            let (repeatable_output, repeatable_clock, repeatable_acquisition) = match acquired {
-                FeedObservation::Acquired { acquisition, .. } => (
-                    runner.physical().output.take()
-                        .expect("acquired repeatable media has staged access units"),
-                    runner.physical().clock.take()
-                        .expect("acquired repeatable media has a staged content clock"),
-                    acquisition,
-                ),
+            let repeatable_acquisition = match acquired {
+                FeedObservation::Acquired { acquisition, .. } => acquisition,
                 other => {
                     let failure = match other {
                         FeedObservation::Failed { failure, .. } => failure,
@@ -6560,35 +6567,49 @@ fn hls_demux(
                     }
                 }
             };
-            tx.mark_media(&repeatable_output, true);
+            tx.mark_media(
+                runner.physical().output.as_ref()
+                    .expect("acquired repeatable media has staged access units"),
+                true,
+            );
             runner.observe(TrialEvent::FollowupAcquired)
                 .expect("the repeatable acquisition follows its request");
-            candidate_outputs.push((
-                repeatable_output,
-                repeatable_clock,
-                repeatable_acquisition.duration,
-            ));
+            let repeatable_buffer = match runner.stage_acquired() {
+                FeedObservation::Staged { buffer, count: 2, .. } => buffer,
+                _ => {
+                    state.abandon(&primed.encoder_session);
+                    tx.finish("feed_protocol");
+                    return Err(HlsExit::Failed("adaptive feed follow-up stage protocol violation"));
+                }
+            };
             final_acquisition = repeatable_acquisition;
             candidate_acquisitions.push(repeatable_acquisition);
             verdict = runner.followup_verdict(
                 state, proposal,
                 adaptive::candidate_sample(
                     repeatable_acquisition,
-                    hls_buffer_snapshot(Some(&candidate_outputs[1].0)),
+                    adaptive::buffer_snapshot(repeatable_buffer),
                 ),
                 opened_declared_bps,
             );
         }
 
-        let (candidate_output, _, candidate_duration) =
-            candidate_outputs.last().expect("candidate output");
+        let (candidate_buffer, staged_count) = {
+            let physical = runner.physical();
+            let (candidate_output, _, candidate_duration) =
+                physical.staged.last().expect("candidate output");
+            tx.mark_candidate_evidence(candidate_output, *candidate_duration);
+            (
+                hls_buffer_fact(Some(candidate_output)),
+                physical.staged.len(),
+            )
+        };
         let candidate_variant_facts = adaptive::VariantFacts {
             width: final_acquisition.width, height: final_acquisition.height,
             declared_bps: final_acquisition.declared_bps,
         };
-        tx.mark_candidate_evidence(candidate_output, *candidate_duration);
         let candidate_sample = adaptive::candidate_sample(
-            final_acquisition, hls_buffer_snapshot(Some(candidate_output)),
+            final_acquisition, adaptive::buffer_snapshot(candidate_buffer),
         );
         let grade = runner.final_action(
             state, proposal, reserve_policy, current_variant, candidate_variant_facts,
@@ -6603,8 +6624,8 @@ fn hls_demux(
             if !raster_ready {
                 crate::player::log(&format!(
                     "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
-                    candidate_output.video_width,
-                    candidate_output.video_height,
+                    final_acquisition.width,
+                    final_acquisition.height,
                     proposal.rung.raster().0,
                     proposal.rung.raster().1,
                 ));
@@ -6613,8 +6634,8 @@ fn hls_demux(
                     "abr: candidate request {}kbps produced {}x{} @ {}kbps versus current {}x{} @ \
                      {}kbps; no measured quality gain, staying on current rung",
                     proposal.rung.kbps(),
-                    candidate_output.video_width,
-                    candidate_output.video_height,
+                    final_acquisition.width,
+                    final_acquisition.height,
                     opened_declared_bps / 1_000,
                     output.video_width,
                     output.video_height,
@@ -6624,7 +6645,7 @@ fn hls_demux(
                 crate::player::log(&format!(
                     "abr: candidate verdict={verdict:?}; discarded {} staged segment(s) without \
                      changing the active media owner",
-                    candidate_outputs.len(),
+                    staged_count,
                 ));
             }
             tx.finish(outcome);
@@ -6633,8 +6654,8 @@ fn hls_demux(
         let sample = candidate_sample.expect("a ready candidate has a completed segment sample");
         let Some(candidate_variant) = crate::abr::ObservedHlsVariant::new(
             final_acquisition.declared_bps,
-            candidate_output.video_width,
-            candidate_output.video_height,
+            final_acquisition.width,
+            final_acquisition.height,
         ) else {
             state.abandon(&primed.encoder_session);
             return Err(HlsExit::Failed(
@@ -6664,8 +6685,6 @@ fn hls_demux(
         }
         runner.authorize_queue();
         let feed_started = std::time::Instant::now();
-        runner.physical().staged = candidate_outputs
-            .into_iter().map(|(output, _, _)| output).collect();
         let queued = runner.queue_staged();
         if queued != (FeedObservation::Queued { trial: trial_id }) {
             state.abandon(&primed.encoder_session);
