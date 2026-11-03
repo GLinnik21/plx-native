@@ -4,7 +4,6 @@
 #![allow(dead_code)]
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
-use crate::adaptive;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
@@ -5291,7 +5290,7 @@ fn hls_demux(
     origin: &Origin,
     path: &str,
     acodec: &str,
-    abr: Option<crate::adaptive::Start>,
+    abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
@@ -5328,9 +5327,7 @@ fn hls_demux(
         );
     }
     let mut timeline = crate::hls::SegmentTimeline::default();
-    let mut adaptive = abr.map(|start| {
-        adaptive::boxed_session(start, Box::new(adaptive::PlayerAdaptiveEffects))
-    });
+    let mut adaptive = abr;
     // Consume native-accepted pause EVENTS, not a sampled bool. The worker can spend a complete
     // Pause→Resume cycle blocked in aq_push/network I/O and must still age the first post-resume
     // estimate by the exact cumulative interval.
@@ -5922,8 +5919,8 @@ pub(crate) fn demux(
     acodec: String,
     force_original: bool,
     transport: DemuxTransport,
-    abr: Option<crate::adaptive::Start>,
-    auto_original: Option<crate::adaptive::OriginalStart>,
+    abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
+    auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
     aq: SendPtr<AuQueue>,
     aqa: SendPtr<AuQueue>,
     hs: SendPtr<HttpStream>,
@@ -6004,7 +6001,7 @@ pub(crate) fn demux(
         crate::player::log("hls: segmented demux ended");
         return;
     }
-    let mut original_watch = auto_original.map(crate::adaptive::boxed_original_session);
+    let mut original_watch = auto_original;
     if let Some(watch) = original_watch.as_ref() {
         // Auto deliberately begins by trying Original. Publish that state before the first
         // measurement window completes so Stats for Nerds says what the policy is doing instead
