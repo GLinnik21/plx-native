@@ -490,6 +490,12 @@ fn decode_in_app(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
     if crate::route::is_transcoding(ps) {
         return fail_engine_for_good();
     }
+    // This recovery rung changes the physical recipe while preserving the original URL.
+    // The attempt's narrowed caps now declare PCM; spend the fixed app-audio candidate before
+    // the reload instead of reopening the refused native-audio recipe.
+    if !ps.qualify_installed_feed_offer(crate::route::CandidatePurpose::NewCandidate) {
+        return fail_engine_for_good();
+    }
     super::report::note_refusal_recovery_delivery(ps);
     let _ = settle_reload(super::engine::reload_at(ps, pa, offset_ns), "app decode after a refused open");
 }

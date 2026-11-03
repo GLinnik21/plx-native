@@ -735,9 +735,9 @@ impl PlaybackSession {
     /// A recovery flight installs a resolved route without passing through `apply_plan`.
     /// Classify that installed source by the same stable recipe identities as a cold plan;
     /// keep the request's spent catalog and cross-backend history intact.
-    pub(super) fn qualify_installed_feed_offer(&mut self, purpose: CandidatePurpose) -> bool {
+    pub(crate) fn qualify_installed_feed_offer(&mut self, purpose: CandidatePurpose) -> bool {
         let id = if self.tsession.is_empty() {
-            if self.stream_acodec != self.src_acodec {
+            if stream_pcm_is_lossy(self) || self.stream_acodec != self.src_acodec {
                 super::backend_policy::OfferId::FEED_APP_AUDIO
             } else {
                 super::backend_policy::OfferId::FEED_ORIGINAL
