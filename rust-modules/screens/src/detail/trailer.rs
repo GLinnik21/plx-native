@@ -239,7 +239,7 @@ impl Transport {
     /// There is no `Reveal`-only first press here (unlike the HUD, which a LEFT/RIGHT can arrive
     /// at hidden): full-trailer mode's transport is already up the instant it is entered
     /// ([`reveal`](Self::reveal) fires on promotion), so every press is a real gesture. `dur_ns`
-    /// is `player::duration_ns()`, `live_ns` is `player::playpos_ns()` — passed in rather than
+    /// is `player::duration_ns(ps)`, `live_ns` is `player::playpos_ns(ps)` — passed in rather than
     /// read here so this stays a pure function of state the caller already has, like the rest of
     /// this type.
     ///
