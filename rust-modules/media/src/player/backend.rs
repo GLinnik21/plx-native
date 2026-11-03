@@ -12,8 +12,22 @@ pub use metrics::{LogicalRequestId, MetricNotice};
 use startup::Startup;
 
 /// Immediate caller-owned results. Metric notices are local values; no report is sent here.
+/// A command sent to a physical driver. Start's source key is deliberately excluded; this
+/// receipt is for caller correlation of controls and never claims native acceptance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlDispatch {
+    pub backend: BackendKind,
+    pub attempt: AttemptId,
+    pub command: plx_playback_contract::CommandId,
+    pub operation: Operation,
+}
+
 #[derive(Default)]
-pub struct RunResult { pub playback: Vec<Fx>, pub metrics: Vec<MetricNotice> }
+pub struct RunResult {
+    pub playback: Vec<Fx>,
+    pub metrics: Vec<MetricNotice>,
+    pub controls: Vec<ControlDispatch>,
+}
 
 pub struct BackendRunner { state: BackendState, startup: Startup, metrics: metrics::Metrics }
 
@@ -171,6 +185,9 @@ impl BackendRunner {
         for effect in effects {
             match effect {
                 Fx::Dispatch { backend, attempt, command, operation } => {
+                    if !matches!(operation, Operation::Start { .. }) {
+                        result.controls.push(ControlDispatch { backend, attempt, command, operation });
+                    }
                     let paused = matches!(event, Event::Intent(Intent::Start { initial, .. }) if initial.paused);
                     self.metrics.dispatch(backend, attempt, operation, attempt_origin, paused,
                         at, &mut result.metrics);
@@ -784,6 +801,29 @@ mod tests {
         assert_eq!(summary.rebuffer_ms, 10);
         assert_eq!(summary.unknown_time_events, 1);
     }
+    #[test]
+    fn control_receipt_names_its_exact_dispatch_without_exposing_start_source() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let initial = InitialPlayback { position: None, paused: true };
+        let started = runner.send_at(&mut drivers, &(), Intent::Start { backend: URI,
+            attempt: A, source: SourceKey::new(81), requirements: REQ, initial },
+            measure::Origin::Fresh, tick(0));
+        assert!(started.controls.is_empty(), "source escrow is not a control receipt");
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed {
+                value: Playback::ReadyAwaitPlay, from: EvidenceSource::BackendReport }) } });
+        let ready = runner.poll_at(&mut drivers, &(), tick(1));
+        assert!(ready.controls.is_empty(), "a paused goal does not autoplay");
+        let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Audio,
+            choice: TrackChoice::Selected(42) };
+        let selected = runner.send_at(&mut drivers, &(), Intent::Control { backend: URI,
+            attempt: A, operation }, measure::Origin::Fresh, tick(2));
+        assert_eq!(selected.controls, [ControlDispatch { backend: URI, attempt: A,
+            command: drivers.sent.last().unwrap().2, operation }]);
+        assert!(selected.playback.is_empty(), "dispatch receipt is not native acceptance");
+    }
+
     #[test]
     fn measured_handoff_and_rebuffer_share_their_overlapping_time() {
         let mut runner = BackendRunner::new();

@@ -590,14 +590,17 @@ impl PlayerAdapter {
         let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
         let Ok(id) = u64::try_from(audio.sid) else { return Some(false); };
         let attempt = route_attempt.contract_id();
+        let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Audio,
+            choice: plx_playback_contract::TrackChoice::Selected(id) };
         let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri, attempt,
-            operation: Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Audio,
-                choice: plx_playback_contract::TrackChoice::Selected(id) } },
+            operation },
             super::attempt_metrics::Origin::Fresh, self.backend_tick());
         if result.playback.iter().any(|fx| matches!(fx,
             plx_playback_contract::Fx::Rejected { .. }
                 | plx_playback_contract::Fx::CommandRefused { .. })) { return Some(false); }
-        let Some(command) = self.backend.snapshot().last_queued else { return Some(false); };
+        let Some(command) = result.controls.iter().find(|sent|
+            (sent.backend, sent.attempt, sent.operation) == (BackendKind::Uri, attempt, operation))
+            .map(|sent| sent.command) else { return Some(false); };
         self.pending_uri_audio = Some(PendingUriAudio { attempt, command, audio, memo });
         Some(true)
     }
@@ -612,14 +615,17 @@ impl PlayerAdapter {
         if id == 0 || ordinal < 0 || has_sidecar { return Some(false); }
         let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
         let attempt = route_attempt.contract_id();
+        let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Subtitle,
+            choice: plx_playback_contract::TrackChoice::Selected(id) };
         let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri, attempt,
-            operation: Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Subtitle,
-                choice: plx_playback_contract::TrackChoice::Selected(id) } },
+            operation },
             super::attempt_metrics::Origin::Fresh, self.backend_tick());
         if result.playback.iter().any(|fx| matches!(fx,
             plx_playback_contract::Fx::Rejected { .. }
                 | plx_playback_contract::Fx::CommandRefused { .. })) { return Some(false); }
-        let Some(command) = self.backend.snapshot().last_queued else { return Some(false); };
+        let Some(command) = result.controls.iter().find(|sent|
+            (sent.backend, sent.attempt, sent.operation) == (BackendKind::Uri, attempt, operation))
+            .map(|sent| sent.command) else { return Some(false); };
         self.pending_uri_subtitle = Some(PendingUriSubtitle {
             attempt, command, ordinal, stream_id, memo,
         });
@@ -792,6 +798,7 @@ impl PlayerAdapter {
             let next = self.backend.poll_at(&mut drivers, &self.mt, at);
             result.playback.extend(next.playback);
             result.metrics.extend(next.metrics);
+            result.controls.extend(next.controls);
         }
         #[cfg(not(feature = "play-feed"))]
         let _ = at;

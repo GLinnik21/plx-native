@@ -98,3 +98,54 @@ fn external_sidecar_with_positive_native_id_never_dispatches_a_uri_track() {
     assert!(pa.pending_uri_subtitle.is_none());
     crate::route::reset_player_control_for_test(&ps);
 }
+
+#[test]
+fn queued_and_acknowledged_uri_picks_keep_the_prior_route_until_exact_confirmation() {
+    let _serial = plx_base::testlock::serial();
+    let (mut ps, mut pa, bus, _) = opened();
+    assert!(pa.commit_audio_track(&mut ps, crate::route::CarriedAudio::named(42, 3), None));
+    let first = pa.pending_uri_audio.as_ref().expect("queued audio command").command;
+    assert_eq!(bus.calls("selectTrack"), 1);
+    assert_eq!(crate::route::cur_audio_sid(&ps), 0, "queue success is not selection");
+
+    // A second same-kind request is refused while the first native request is unresolved.
+    assert!(!pa.commit_audio_track(&mut ps, crate::route::CarriedAudio::named(43, 4), None));
+    assert_eq!(pa.pending_uri_audio.as_ref().map(|pick| pick.command), Some(first));
+    assert_eq!(crate::route::cur_audio_sid(&ps), 0);
+
+    bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert_eq!(crate::route::cur_audio_sid(&ps), 0, "native ACK is not selected-track evidence");
+    bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":3}}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert_eq!(crate::route::cur_audio_sid(&ps), 42);
+    assert!(pa.pending_uri_audio.is_none());
+
+    assert!(pa.commit_audio_track(&mut ps, crate::route::CarriedAudio::named(43, 4), None));
+    let second = pa.pending_uri_audio.as_ref().expect("successor command").command;
+    assert_ne!(first, second);
+    bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":3}}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert_eq!(crate::route::cur_audio_sid(&ps), 42,
+        "late old selection cannot commit the pending successor");
+    bus.say("selectTrack", r#"{"returnValue":false,"mediaId":"m1"}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert!(pa.pending_uri_audio.is_none(), "exact refusal retires only the pending command");
+    assert_eq!(crate::route::cur_audio_sid(&ps), 42);
+
+    assert!(pa.commit_subtitle_track(&mut ps, 5, 77, None, String::new(), None));
+    assert_eq!(crate::route::cur_sub_sid(&ps), 0);
+    bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"text","index":5}}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert_eq!(crate::route::cur_sub_sid(&ps), 0, "uncorrelated native report is not a commit");
+    bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert_eq!(crate::route::cur_sub_sid(&ps), 77);
+    crate::route::reset_player_control_for_test(&ps);
+}
