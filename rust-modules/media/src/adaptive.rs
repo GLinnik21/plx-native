@@ -3,6 +3,9 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 
 use crate::{abr, route};
+use plx_playback_contract::adaptive::PublicationGate;
+use plx_playback_contract::adaptive::{FeedAction, FeedObservation, FeedPort, TrialId};
+use plx_playback_contract::SourceKey;
 
 /// The route owner's captured inputs at a worker start. No second route identity is
 /// minted here: the ticket remains the route's complete worker-generation fence.
@@ -147,6 +150,16 @@ pub(crate) fn classify_prime_failure(
 
 pub(crate) enum AcquisitionFailure { Deadline, Other }
 
+/// The runner binds the primed locator only in the feed's private source slot.
+/// Adaptive policy and the lower action carry its opaque worker-local key.
+pub(crate) fn open_candidate(
+    port: &mut impl FeedPort<Locator = String>, trial: TrialId, locator: String,
+) -> FeedObservation {
+    let source = SourceKey::new(trial.serial);
+    port.bind_source(source, locator);
+    port.step(FeedAction::Open { trial, source })
+}
+
 pub(crate) fn reject_cause_for_acquisition(failure: AcquisitionFailure) -> abr::RejectCause {
     match failure {
         AcquisitionFailure::Deadline => abr::RejectCause::Censored,
@@ -156,8 +169,41 @@ pub(crate) fn reject_cause_for_acquisition(failure: AcquisitionFailure) -> abr::
 
 /// The feed's existing abort mutex is the first serialization boundary. Its
 /// implementation must run the callback while holding that mutex and do no IO.
-pub(crate) trait PublicationPort {
-    fn if_not_aborted<T>(&mut self, transition: impl FnOnce() -> T) -> Option<T>;
+fn inside_publication_gate<T>(
+    gate: &mut dyn PublicationGate, transition: impl FnOnce() -> T,
+) -> Option<T> {
+    let mut transition = Some(transition);
+    let mut result = None;
+    let ran = gate.if_not_aborted(&mut || {
+        result = Some(transition.take().expect("AQ publication callback runs once")());
+    });
+    if ran { result } else { None }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+
+    struct Gate { aborted: bool, calls: usize }
+    impl PublicationGate for Gate {
+        fn if_not_aborted(&mut self, transition: &mut dyn FnMut()) -> bool {
+            if self.aborted { return false; }
+            self.calls += 1;
+            transition();
+            true
+        }
+    }
+
+    #[test]
+    fn abort_wins_before_any_route_or_controller_publication() {
+        let mut gate = Gate { aborted: true, calls: 0 };
+        let mut active = 7;
+        assert_eq!(inside_publication_gate(&mut gate, || { active = 8; active }), None);
+        assert_eq!((active, gate.calls), (7, 0));
+        gate.aborted = false;
+        assert_eq!(inside_publication_gate(&mut gate, || { active = 8; active }), Some(8));
+        assert_eq!((active, gate.calls), (8, 1));
+    }
 }
 
 
@@ -173,7 +219,7 @@ pub(crate) enum CandidatePublication {
 /// One AQ -> ACTIVE -> controller publication. A grant or a primed encoder is
 /// not active: only this successful callback changes route/controller ownership.
 pub(crate) fn publish_candidate(
-    port: &mut impl PublicationPort,
+    port: &mut dyn PublicationGate,
     control: &route::HlsAbrControl,
     controller: &mut abr::Controller,
     ticket: &mut route::WorkerTicket,
@@ -184,7 +230,7 @@ pub(crate) fn publish_candidate(
     now_ms: u64,
 ) -> CandidatePublication {
     let expected = ticket.clone();
-    port.if_not_aborted(|| {
+    inside_publication_gate(port, || {
         match control.commit_transition(
             &expected, candidate, proposal, (variant, sample.network_kbps()),
             || controller.commit_candidate(proposal, sample, variant, now_ms)
@@ -209,7 +255,7 @@ pub(crate) enum OriginalPublication { Published, Busy, Aborted, RouteMoved, Cloc
 /// Publish an Original request at the same AQ -> ACTIVE boundary. The caller's
 /// clock lease must have authorized this transition before entering the AQ lock.
 pub(crate) fn publish_original(
-    port: &mut impl PublicationPort,
+    port: &mut dyn PublicationGate,
     authorized: bool,
     control: &route::HlsAbrControl,
     ticket: &route::WorkerTicket,
@@ -218,7 +264,7 @@ pub(crate) fn publish_original(
     on_published: impl FnOnce(),
 ) -> OriginalPublication {
     if !authorized { return OriginalPublication::ClockMoved; }
-    port.if_not_aborted(|| match control.request_original_recovery(
+    inside_publication_gate(port, || match control.request_original_recovery(
         ticket, recover_kbps, position_ns(),
     ) {
         route::AutomaticIntentResult::Accepted => {
@@ -663,7 +709,7 @@ impl Coordinator {
         }
     }
     pub(crate) fn publish_candidate(
-        &mut self, port: &mut impl PublicationPort, candidate: &route::PrimedHls,
+        &mut self, port: &mut dyn PublicationGate, candidate: &route::PrimedHls,
         proposal: abr::Proposal, sample: abr::SegmentSample,
         variant: abr::ObservedHlsVariant, now_ms: u64,
     ) -> CandidatePublication {
@@ -671,7 +717,7 @@ impl Coordinator {
             candidate, proposal, sample, variant, now_ms)
     }
     pub(crate) fn publish_original(
-        &self, port: &mut impl PublicationPort, authorized: bool,
+        &self, port: &mut dyn PublicationGate, authorized: bool,
         kbps: u32, position_ns: impl FnOnce() -> i64,
         on_published: impl FnOnce(),
     ) -> OriginalPublication {

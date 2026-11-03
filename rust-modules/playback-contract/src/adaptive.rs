@@ -1,7 +1,7 @@
 //! Addressed adaptive trial phases. The backend keeps source handles and staged media;
 //! this contract carries only identities, normalized measurements, and ordering.
 
-use crate::AttemptId;
+use crate::{AttemptId, SourceKey};
 
 /// A worker-local trial serial under the route owner's existing playback attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -9,6 +9,36 @@ pub struct TrialId { pub attempt: AttemptId, pub serial: u64 }
 
 impl TrialId {
     pub const fn new(attempt: AttemptId, serial: u64) -> Self { Self { attempt, serial } }
+}
+
+/// Instructions for the existing feed worker. A source is an opaque local key;
+/// its URL and authentication remain in that worker's private source binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedAction {
+    Open { trial: TrialId, source: SourceKey },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedFailure { Aborted, Deadline, NotReady, Parse, SourceMoved }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedObservation {
+    Opened { trial: TrialId, declared_bps: u64 },
+    Failed { trial: TrialId, failure: FeedFailure },
+}
+
+/// One worker-local IO port. Binding a locator is a runner operation; stepped
+/// policy actions see only SourceKey. Physical cursor state stays in the port.
+pub trait FeedPort {
+    type Locator;
+    fn bind_source(&mut self, source: SourceKey, locator: Self::Locator);
+    fn step(&mut self, action: FeedAction) -> FeedObservation;
+}
+
+/// Synchronous AQ abort fence. The closure is short and performs no IO. It is
+/// invoked exactly once while the queue lock is held, or not invoked on abort.
+pub trait PublicationGate {
+    fn if_not_aborted(&mut self, transition: &mut dyn FnMut()) -> bool;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

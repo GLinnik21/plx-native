@@ -6,6 +6,8 @@
 use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
+use plx_playback_contract::adaptive::{FeedAction, FeedFailure, FeedObservation, FeedPort, TrialId};
+use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
@@ -4240,6 +4242,64 @@ struct HlsCursor {
     start_applied: bool,
 }
 
+/// The feed's private locator and cursor slot for one candidate open. The
+/// adaptive runner addresses it by TrialId and SourceKey; no URL enters the
+/// lower action or a diagnostic formatter.
+struct HlsTrialOpenPort<'a> {
+    trial: TrialId,
+    origin: &'a plx_plex::plex::Origin,
+    aq: *mut AuQueue,
+    net: &'a mut HlsNet,
+    reserve: &'a mut Option<ReserveDeadlineState>,
+    source: Option<(SourceKey, String)>,
+    candidate: Option<HlsCursor>,
+    error: Option<HlsExit>,
+}
+
+impl FeedPort for HlsTrialOpenPort<'_> {
+    type Locator = String;
+
+    fn bind_source(&mut self, source: SourceKey, locator: Self::Locator) {
+        self.source = Some((source, locator));
+    }
+
+    fn step(&mut self, action: FeedAction) -> FeedObservation {
+        let FeedAction::Open { trial, source } = action;
+        if trial != self.trial {
+            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+        }
+        let Some((bound, locator)) = self.source.take() else {
+            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+        };
+        if bound != source {
+            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+        }
+        let parsed = plx_plex::plex::StreamUrl::parse(&locator);
+        if parsed.origin != *self.origin {
+            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+        }
+        match hls_cursor_open(
+            &parsed.origin, &parsed.path, self.aq, self.net, false, self.reserve.as_mut(),
+        ) {
+            Ok(candidate) => {
+                let declared_bps = candidate.declared_bps;
+                self.candidate = Some(candidate);
+                FeedObservation::Opened { trial, declared_bps }
+            }
+            Err(error) => {
+                self.error = Some(error);
+                let failure = match error {
+                    HlsExit::Aborted => FeedFailure::Aborted,
+                    HlsExit::PrimeExpired | HlsExit::StallAbort(_) => FeedFailure::Deadline,
+                    HlsExit::NotReady => FeedFailure::NotReady,
+                    HlsExit::Failed(_) => FeedFailure::Parse,
+                };
+                FeedObservation::Failed { trial, failure }
+            }
+        }
+    }
+}
+
 fn hls_cursor_open(
     origin: &plx_plex::plex::Origin,
     path: &str,
@@ -5023,9 +5083,9 @@ fn settle_candidate_transition(transition: &mut Option<HlsCandidateTransition>) 
 /// The physical feed's AQ-abort serialization port. Adaptive policy never names a queue.
 struct AqPublicationPort(*mut AuQueue);
 
-impl adaptive::PublicationPort for AqPublicationPort {
-    fn if_not_aborted<T>(&mut self, transition: impl FnOnce() -> T) -> Option<T> {
-        crate::aq::aq_if_not_aborted(self.0, transition)
+impl plx_playback_contract::adaptive::PublicationGate for AqPublicationPort {
+    fn if_not_aborted(&mut self, transition: &mut dyn FnMut()) -> bool {
+        crate::aq::aq_if_not_aborted(self.0, transition).is_some()
     }
 }
 
@@ -6152,42 +6212,39 @@ fn hls_demux(
             crate::player::log("abr: candidate spent its exploration reserve in the control plane");
             continue;
         }
-        let candidate_url = plx_plex::plex::StreamUrl::parse(&primed.url);
-        if candidate_url.origin != *origin {
-            state.abandon(&primed.encoder_session);
-            reject_hls_abr_after_transaction(
-                state,
-                proposal,
-                crate::abr::RejectCause::Circumstance,
-                &mut tx,
-                now_ms(),
-            );
-            tx.finish("origin_changed");
-            crate::player::log("abr: candidate changed origin; rejected");
-            continue;
-        }
-        let mut candidate = match hls_cursor_open(
-            &candidate_url.origin,
-            &candidate_url.path,
-            aq,
-            &mut net,
-            false,
-            exploration_reserve.as_mut(),
-        ) {
-            Ok(candidate) => candidate,
-            Err(HlsExit::Aborted) => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("aborted");
-                return Err(HlsExit::Aborted);
-            }
-            Err(error) => {
+        let (opened, mut candidate_slot, open_error) = {
+            let mut port = HlsTrialOpenPort {
+                trial: trial_id, origin, aq, net: &mut net,
+                reserve: &mut exploration_reserve, source: None,
+                candidate: None, error: None,
+            };
+            let opened = adaptive::open_candidate(&mut port, trial_id, primed.url.clone());
+            (opened, port.candidate.take(), port.error.take())
+        };
+        let (mut candidate, opened_declared_bps) = match opened {
+            FeedObservation::Opened { trial, declared_bps } if trial == trial_id =>
+                (candidate_slot.take().expect("an opened trial owns its cursor"), declared_bps),
+            FeedObservation::Failed { failure: FeedFailure::SourceMoved, .. }
+            | FeedObservation::Opened { .. } => {
                 state.abandon(&primed.encoder_session);
                 reject_hls_abr_after_transaction(
-                    state,
-                    proposal,
-                    abr_reject_for_hls_exit(error),
-                    &mut tx,
-                    now_ms(),
+                    state, proposal, crate::abr::RejectCause::Circumstance,
+                    &mut tx, now_ms(),
+                );
+                tx.finish("origin_changed");
+                crate::player::log("abr: candidate changed origin; rejected");
+                continue;
+            }
+            FeedObservation::Failed { .. } => {
+                let error = open_error.expect("a failed candidate open records its physical exit");
+                if matches!(error, HlsExit::Aborted) {
+                    state.abandon(&primed.encoder_session);
+                    tx.finish("aborted");
+                    return Err(HlsExit::Aborted);
+                }
+                state.abandon(&primed.encoder_session);
+                reject_hls_abr_after_transaction(
+                    state, proposal, abr_reject_for_hls_exit(error), &mut tx, now_ms(),
                 );
                 tx.finish(if matches!(error, HlsExit::PrimeExpired) {
                     "master_deadline"
@@ -6198,7 +6255,7 @@ fn hls_demux(
                 continue 'segments;
             }
         };
-        tx.mark_master(candidate.declared_bps);
+        tx.mark_master(opened_declared_bps);
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             state.abandon(&primed.encoder_session);
             tx.finish("aborted");
